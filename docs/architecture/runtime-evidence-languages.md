@@ -98,15 +98,20 @@ executing line per frame follows Go.
 
 `_jvm` joins by line first: the innermost method at the line, whose name is the
 frame's method (the class name for `<init>`) and whose id nests it in the
-frame's innermost class (`_id_parent`). A JVM frame with no line, and a
+frame's innermost class (`_id_parent`); where the frame carries parameter
+types, they must fit the id (`_params_agree`), so a line a few rows off onto a
+neighbouring overload is a mismatch, not a join. A JVM frame with no line, and a
 constructor whose line is a field initializer, join by name instead, through
 `_name_join(callables, owner=, name=, params=, by_count=)`. It is the seam for
 any frame that names a type and a method:
 
-1. The callables named `name` whose id parent segment is `owner` (`""` for a
-   top-level function). One: joined.
-2. Several, and the frame has parameter types: with `by_count`, keep those whose
-   id count (`#2`) is the frame's; one left: joined.
+1. The callables named `name` that are direct members of `owner` (`""` for a
+   top-level function): an anonymous class's method, ided under the method that
+   declares it, never stands in for a named class. One, and its id agrees with
+   the frame's parameters: joined.
+2. Several, and the frame has parameter types: with `by_count`, and when every
+   candidate's id carries a count, keep those whose count (`#2`) is the frame's;
+   one left: joined.
 3. Then the id's types (`#2(Object,Type)`, written only when two overloads share
    a count) must equal the frame's erased simple types. One: joined.
 4. Otherwise `ambiguous`: a name never picks one of several overloads.

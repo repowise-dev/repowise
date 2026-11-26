@@ -127,6 +127,8 @@ def _split_stack(stack: str) -> list[str]:
             parts.append(stack[start:i])
             start = i + 1
         i += 1
+    if depth:
+        return stack.split(";")  # an unbalanced "(" is no signature: split as before
     parts.append(stack[start:])
     return parts
 

@@ -86,7 +86,9 @@ def frame_language(path: str, function: str = "") -> FrameLanguage:
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     dot = name.rfind(".")
     tag = REGISTRY.from_extension(name[dot:].lower()) if dot > 0 else "unknown"
-    if tag == "unknown" and function and parse_jvm_frame(function) is not None:
+    # Only a frame with no file of its own (empty, or a bare ``Cache.java``): an
+    # extensionless script's ``App.run`` keeps its own language.
+    if tag == "unknown" and function and "/" not in path.replace("\\", "/") and parse_jvm_frame(function):
         tag = "java"
     return cast("FrameLanguage", tag)
 

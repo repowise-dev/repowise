@@ -358,3 +358,93 @@ def test_kotlin_top_level_functions_join_through_the_file_class() -> None:
     assert res.reasons[1] == "ambiguous"
     names = Counter(_local(r.symbol.symbol_id) for r in res.resolved)
     assert names == Counter({"twice": 2})
+
+
+def test_a_default_package_class_is_placed_only_at_a_source_root() -> None:
+    frames = [ProfileFrame("", 0, "java", "Main.main(String[])")]
+    nested = place_jvm_frames(frames, root=ROOT, files=["src/main/java/com/foo/Main.java"])
+    at_root = place_jvm_frames(frames, root=ROOT, files=["app/src/main/java/Main.java"])
+    assert nested[0].path == ""
+    assert at_root[0].path == f"{ROOT}/app/src/main/java/Main.java"
+
+
+def test_a_vendored_copy_of_a_class_does_not_hide_the_maintained_one() -> None:
+    files = ["src/main/java/com/acme/Cache.java", "vendor/src/main/java/com/acme/Cache.java"]
+    (placed,) = place_jvm_frames(
+        [ProfileFrame("", 0, "java", "com.acme.Cache.get()")], root=ROOT, files=files
+    )
+    assert placed.path == f"{ROOT}/src/main/java/com/acme/Cache.java"
+
+
+ANON = b"""package p;
+
+public class T {
+  static class Impl {
+    public int f(int a) {
+      return a;
+    }
+  }
+
+  int m() {
+    Impl b =
+        new Impl() {
+          public int f(int a) {
+            return a + 1;
+          }
+
+          public int f(String s) {
+            return 0;
+          }
+        };
+    return b.f(1);
+  }
+
+  int g(int a) {
+    return a;
+  }
+
+  int g(String s) {
+    return 0;
+  }
+}
+"""
+
+
+def test_an_anonymous_subclass_never_lends_its_overloads_to_the_named_class() -> None:
+    rel = "src/main/java/p/T.java"
+    symbols = _symbols(rel, ANON)
+    _, res = _joined(_collapsed("p/T$Impl.f(I)I 1"), symbols)
+    assert _local(res.resolved[0].symbol.symbol_id) == "Impl::f"
+
+
+def test_a_line_that_drifted_onto_a_neighbouring_overload_is_a_mismatch() -> None:
+    rel = "src/main/java/p/T.java"
+    path = f"{ROOT}/{rel}"
+    frames = [
+        ProfileFrame(path, 29, "java", "p.T.g(int)"),  # line 29 is in g(String)
+        ProfileFrame(path, 29, "java", "p.T.g(String)"),
+    ]
+    res = resolve_frames(frames, root=ROOT, symbols_by_file=_symbols(rel, ANON))
+    assert res.reasons[0] == "second_signal_mismatch"
+    assert _local(res.resolved[0].symbol.symbol_id) == "T::g#1(String)"
+
+
+def test_javacs_access_constructor_and_local_classes() -> None:
+    frames = [
+        ProfileFrame(f"{ROOT}/{REL}", 0, "java", "calc.Calc.<init>(Calc$1)"),
+        ProfileFrame(f"{ROOT}/{REL}", 0, "java", "calc.Calc.sum(int, int, int)"),
+    ]
+    res = resolve_frames(frames, root=ROOT, symbols_by_file=_symbols())
+    assert res.reasons == ("generated", "ambiguous")
+
+
+def test_a_frame_with_a_path_keeps_its_own_language() -> None:
+    # An extensionless script, a Cython module: their frames are not JVM frames.
+    assert frame_language("/repo/bin/app", "App.run") == "unknown"
+    assert frame_language("/repo/fast.pyx", "Parser.feed") == "unknown"
+    assert frame_language("Cache.java", "com.acme.Cache.get") == "java"
+
+
+def test_an_unbalanced_parenthesis_splits_as_before() -> None:
+    run = _collapsed("a(b;c;d 1")
+    assert [f.function for f in run.frames] == ["a(b", "c", "d"]

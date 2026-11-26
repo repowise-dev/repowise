@@ -536,7 +536,9 @@ def place_jvm_frames(
                 rel
                 for tail in tails
                 for rel in by_name.get(tail.rsplit("/", 1)[-1], ())
-                if rel == tail or rel.endswith("/" + tail)
+                if (rel == tail or rel.endswith("/" + tail))
+                and (name.package or _at_source_root(rel))
+                and path_origin(rel) not in ("vendored", "generated")
             }
             placed[key] = found.pop() if len(found) == 1 else None
         rel = placed[key]
@@ -546,6 +548,20 @@ def place_jvm_frames(
         language: FrameLanguage = "kotlin" if rel.endswith(".kt") else "java"
         out.append(replace(frame, path=f"{base}/{rel}", language=language, line=frame.line or name.line))
     return tuple(out)
+
+
+#: Where a class in the default package can sit: a JVM source root, or the checkout's root.
+_JVM_SOURCE_ROOTS = ("src/main/java", "src/main/kotlin", "src/test/java", "src/test/kotlin", "src", "java", "kotlin")
+
+
+def _at_source_root(rel: str) -> bool:
+    """Whether *rel* sits directly in a source root, as a default-package class's file does.
+
+    Without a package, a file name alone would match ``com/acme/Main.java``
+    for a frame of the default package's ``Main``.
+    """
+    parent = rel.rpartition("/")[0]
+    return parent == "" or any(parent == r or parent.endswith("/" + r) for r in _JVM_SOURCE_ROOTS)
 
 
 async def load_jvm_source_paths(session: Any, repository_id: str) -> list[str]:
@@ -577,10 +593,14 @@ def _jvm(frame: ProfileFrame, symbols: Sequence[IndexedSymbol], *, kotlin: bool)
         or method.endswith("$default")
         or method == "$values"
         or "" in segments  # ``Outer$$Lambda``, ``Outer$$EnhancerBySpringCGLIB$$1a2b``
+        # javac's access constructor ``Main(Main$1)`` (Java 10 and older) takes a marker class.
+        or any(p.isdigit() for p in name.params or ())
     ):
         return "generated"
     if method == "<clinit>":
         return (None, False)
+    # A local class is ``Outer$1Local``: the index names it ``Local``.
+    segments = [s if s.isdigit() else s.lstrip("0123456789") for s in segments]
     named = [s for s in segments if not s.isdigit()]
     anonymous = segments[-1].isdigit()
     lam = _JVM_LAMBDA_RE.fullmatch(method)
@@ -616,7 +636,9 @@ def _jvm(frame: ProfileFrame, symbols: Sequence[IndexedSymbol], *, kotlin: bool)
             return "generated"
         return "no_span"
     if lam is None and not anonymous and symbol.name == wanted and _id_parent(symbol) == owner:
-        return (symbol, False)
+        # The line found the method; the frame's parameters, where it has them, must agree,
+        # or a line that drifted onto a neighbouring overload would join it.
+        return (symbol, False) if _params_agree(symbol, name.params, by_count) else "second_signal_mismatch"
     if enclosing is not None:
         parent = named[-1] if enclosing == "new" else enclosing
         if symbol.name == parent and _jvm_in_class(named, symbol):
@@ -672,23 +694,47 @@ def _name_join(
     frame's. Still several: ``ambiguous``; none: ``no_span``. One of several
     overloads is never picked by name alone.
     """
-    from repowise.core.ingestion.symbol_identity import split_symbol_id
+    from repowise.core.ingestion.symbol_identity import local_symbol_id, split_symbol_id
 
-    found = [s for s in callables if s.name == name and _id_parent(s) == owner]
+    # Direct members only: an anonymous class's method is ided under the method
+    # that declares it (``C::m::Impl::f``), and its supertype's name is no owner.
+    found = [
+        s
+        for s in callables
+        if s.name == name and _id_parent(s) == owner and local_symbol_id(s.symbol_id).count("::") <= 1
+    ]
     if len(found) == 1:
-        return (found[0], False)
+        return (found[0], False) if _params_agree(found[0], params, by_count) else "second_signal_mismatch"
     if not found:
         return "no_span"
     if params is None:
         return "ambiguous"
     payloads = {s.symbol_id: split_symbol_id(s.symbol_id)[1] or "" for s in found}
-    if by_count:
+    # Narrow only when every member carries its count: an id without one is not an overload.
+    if by_count and all(payloads[s.symbol_id][:1].isdigit() for s in found):
         found = [s for s in found if payloads[s.symbol_id].partition("(")[0] == str(len(params))]
         if len(found) == 1:
             return (found[0], False)
     types = ",".join(params) + ")"
     typed = [s for s in found if payloads[s.symbol_id].partition("(")[1:] == ("(", types)]
     return (typed[0], False) if len(typed) == 1 else "ambiguous"
+
+
+def _params_agree(symbol: IndexedSymbol, params: Sequence[str] | None, by_count: bool) -> bool:
+    """Whether the frame's parameters fit the count and types *symbol*'s id spells.
+
+    Checked only where a compiled count is the source's (*by_count*); an id
+    with no count says nothing, and a frame with no parameters is not checked.
+    """
+    from repowise.core.ingestion.symbol_identity import split_symbol_id
+
+    payload = split_symbol_id(symbol.symbol_id)[1]
+    if params is None or not by_count or not payload or not payload[:1].isdigit():
+        return True
+    count, paren, types = payload.partition("(")
+    if int(count) != len(params):
+        return False
+    return not paren or types == ",".join(params) + ")"
 
 
 # -- JavaScript ----------------------------------------------------------------

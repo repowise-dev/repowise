@@ -799,8 +799,9 @@ def _jvm_target(stack: Stack, repo_root: Path, commit: str | None) -> dict[str, 
     ingest = evidence_ingest_line(profile, name, "load_test", commit) if commit else None
     reason = (
         f"Start the JVM to measure (a benchmark, or the service under load: unit tests mostly "
-        f"measure JUnit) with JAVA_TOOL_OPTIONS={options} in its environment; surefire's argLine "
-        "is often pinned, and every JVM reads the variable. When it exits, run this command"
+        f"measure JUnit) with JAVA_TOOL_OPTIONS={options} in its environment: every JVM reads "
+        "it, where a pom's surefire argLine is often pinned. Set it for that JVM alone, since a "
+        "build tool's own JVM would write the same file when it exits. When the run ends, run this command"
         + (f", then: {ingest}" if ingest else "; evidence needs a git checkout for the commit.")
     )
     target = _target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
