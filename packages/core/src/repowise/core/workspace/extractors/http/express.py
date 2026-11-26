@@ -43,8 +43,16 @@ from ..base import line_at
 from ..calls import code_matches, outside_comments
 from ..langs import JS_TS
 from .dialect import build_provider_contract
+from .express_handed import (
+    HandedFunctions,
+    declare_handed,
+    handed_calls,
+    handed_key,
+    is_handed,
+    served_prefix,
+)
 from .fastify import fastify_module
-from .mounts import add_mounts, compose_prefix, declare_module_mount, module_prefix
+from .mounts import add_mounts, compose_prefix, declare_module_mount
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -61,7 +69,7 @@ _APP_USE_RE = re.compile(
 )
 _REQUIRE_SPEC_RE = re.compile(r"""require\s*\(\s*['"]([^'"]+)['"]""")
 _BARE_NAME_RE = re.compile(r"[\w$]+")
-_NAMESPACE_IMPORT_RE =re.compile(r"""\bimport\s+\*\s+as\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]""")
+_NAMESPACE_IMPORT_RE = re.compile(r"""\bimport\s+\*\s+as\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]""")
 # What a module exports as its default: `module.exports = x`, `export default x`
 # or `export { x as default }`.
 _DEFAULT_EXPORT_RE = re.compile(
@@ -82,6 +90,8 @@ class _File:
 
     def __init__(self, ctx: ScanContext) -> None:
         self.module = module_key(ctx.rel_path)
+        self.rel_path = ctx.rel_path
+        self.content = ctx.content
         self.bindings = js_router_bindings(ctx.content)
         self.routes = [
             r
@@ -90,26 +100,32 @@ class _File:
         ]
         # In-file mounts: router variable -> {(receiver, path)}.
         self.local: dict[str, set[tuple[str, str]]] = {}
-        # Imported mounts: (module, exported name, receiver, path).
-        self.imported: list[tuple[str, str, str, str]] = []
+        # Imported mounts: (module, exported name, receiver, path, offset).
+        self.imported: list[tuple[str, str, str, str, int]] = []
+        self._imports: dict[str, tuple[str, str]] | None = None
         self._read_mounts(ctx)
         self.default = self._default_export(ctx.content)
+        # The exported functions routers are handed to, read when first asked.
+        self.handed = HandedFunctions(ctx, self.module, self._exported_as)
+
+    @property
+    def imports(self) -> dict[str, tuple[str, str]]:
+        if self._imports is None:
+            self._imports = _module_bindings(self.content)
+        return self._imports
 
     def _read_mounts(self, ctx: ScanContext) -> None:
-        imports: dict[str, tuple[str, str]] | None = None
         for m in code_matches(ctx, _APP_USE_RE):
             receiver = chain_receiver(ctx.content, m.start()) or ""
             path, target = m.group(1), m.group(2)
-            if imports is None:
-                imports = _module_bindings(ctx.content)
-            source = _imported_router(target, imports)
+            source = _imported_router(target, self.imports)
             if source is None:
                 if _BARE_NAME_RE.fullmatch(target):
                     self.local.setdefault(target, set()).add((receiver, path))
                 continue
             module = resolve_module(ctx.rel_path, source[0])
             if module is not None and module != self.module:
-                self.imported.append((module, source[1], receiver, path))
+                self.imported.append((module, source[1], receiver, path, m.start()))
 
     def _default_export(self, content: str) -> str | None:
         found = _DEFAULT_EXPORT_RE.search(content)
@@ -128,6 +144,26 @@ class _File:
     def key(self, var: str) -> str:
         """The mount key of router *var*: its module and the name it is imported by."""
         return _key(self.module, "default" if var == self.default else var)
+
+    def _exported_as(self, name: str) -> str | None:
+        """The name a module-level *name* is exported under, None when it is not."""
+        if name == self.default:
+            return "default"
+        return name if _named_export_re(name).search(self.content) else None
+
+    def root_key(self, root: str, offset: int) -> str:
+        """The mount key of router *root*, which a mount or call at *offset*
+        hangs off: the parameter of the exported function around it that
+        *root* names, an imported router, or a router of this module."""
+        handed = self.handed.key(root, offset)
+        if handed is not None:
+            return handed
+        source = _imported_router(root, self.imports)
+        if source is not None:
+            module = resolve_module(self.rel_path, source[0])
+            if module is not None and module != self.module:
+                return _key(module, source[1])
+        return self.key(root)
 
     def placed(self, var: str, depth: int = 0) -> tuple[str, str] | None:
         """``(root router, prefix within the file)`` for router *var*.
@@ -160,9 +196,7 @@ def _module_bindings(content: str) -> dict[str, tuple[str, str]]:
     return out
 
 
-def _imported_router(
-    target: str, imports: dict[str, tuple[str, str]]
-) -> tuple[str, str] | None:
+def _imported_router(target: str, imports: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
     """``(spec, exported name)`` of the router a mount names from another
     module: an inline ``require('./x')``, an imported name, or a member of an
     imported module (``users.router``). None for anything else."""
@@ -216,13 +250,17 @@ class ExpressDialect:
             return {}
         f = _File(ctx)
         out: dict[str, str] = {}
-        for module, exported, receiver, path in f.imported:
+        for module, exported, receiver, path, offset in f.imported:
             placed = f.placed(receiver)
             if placed is None:
                 prefix, parent = None, ""
             else:
-                prefix, parent = compose_prefix(placed[1], path), f.key(placed[0])
-            add_mounts(out, declare_module_mount(_NAMESPACE, _key(module, exported), prefix, parent))
+                prefix, parent = compose_prefix(placed[1], path), f.root_key(placed[0], offset)
+            add_mounts(
+                out, declare_module_mount(_NAMESPACE, _key(module, exported), prefix, parent)
+            )
+        if "require" in ctx.content or "import" in ctx.content:
+            _handed_mounts(ctx, f, out)
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
@@ -246,7 +284,9 @@ class ExpressDialect:
             c = build_provider_contract(
                 ctx,
                 method=route.verb,
-                path_raw=compose_prefix(_mount_of(ctx, f, route.receiver), route.path),
+                path_raw=compose_prefix(
+                    _mount_of(ctx, f, route.receiver, route.offset), route.path
+                ),
                 framework=framework,
                 line=line_at(ctx.content, route.offset),
             )
@@ -255,7 +295,25 @@ class ExpressDialect:
         return out
 
 
-def _mount_of(ctx: ScanContext, f: _File, var: str) -> str:
+def _handed_mounts(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
+    """Record each router this file hands to another module's exported
+    function (``require('./routes/users')(api)``), at the prefix it serves
+    under (see :mod:`.express_handed`)."""
+    calls = handed_calls(ctx, f.imports, lambda spec: resolve_module(ctx.rel_path, spec))
+    for module, exported, index, arg, offset in calls:
+        if module == f.module:
+            continue
+        placed = f.placed(arg)
+        if placed is None:
+            prefix, parent = None, ""
+        else:
+            prefix, parent = placed[1], f.root_key(placed[0], offset)
+        key = handed_key(module, exported, index)
+        add_mounts(out, declare_module_mount(_NAMESPACE, key, prefix, parent))
+        add_mounts(out, declare_handed(module))
+
+
+def _mount_of(ctx: ScanContext, f: _File, var: str, offset: int) -> str:
     """The full prefix router *var* serves under, "" when unmounted.
 
     A router mounted at two different prefixes reads as unmounted, as an
@@ -269,7 +327,15 @@ def _mount_of(ctx: ScanContext, f: _File, var: str) -> str:
     if placed is None:
         return ""
     root, within = placed
-    mounted, outer = module_prefix(ctx.mounts, _NAMESPACE, f.key(root))
+    if is_handed(ctx.mounts, f.module):
+        # A router handed to the exported function the route sits in serves
+        # wherever its call sites put it.
+        handed = f.handed.key(root, offset)
+        if handed is not None:
+            mounted, outer = served_prefix(ctx.mounts, handed)
+            if mounted and outer is not None:
+                return compose_prefix(outer, within)
+    mounted, outer = served_prefix(ctx.mounts, f.key(root))
     if not mounted:
-        _mounted, outer = module_prefix(ctx.mounts, _NAMESPACE, _key(f.module, root))
+        _mounted, outer = served_prefix(ctx.mounts, _key(f.module, root))
     return compose_prefix(outer or "", within)
