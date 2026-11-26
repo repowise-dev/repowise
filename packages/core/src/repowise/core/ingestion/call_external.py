@@ -33,6 +33,13 @@ _MOCK_RUNNERS = frozenset({"jest", "vi"})
 _MOCK_METHODS = frozenset({"mock", "doMock", "unstable_mockModule"})
 #: The method name at a call's ``start_byte``, then a plain string first argument.
 _MOCK_SPEC = re.compile(rb"[\w$]+\s*\(\s*(['\"`])([^'\"`\\\r\n]+)\1")
+#: A partial mock keeps the real module, so it replaces nothing provably: a
+#: factory with a parameter (Vitest's ``importOriginal``), or a file that reads
+#: the original through ``requireActual("m")`` / ``importActual("m")``.
+_FACTORY_TAKES_ORIGINAL = re.compile(
+    rb"\s*,\s*(?:async\s*)?(?:\(\s*[\w${\[]|[\w$]+\s*=>|function\s*[\w$]*\s*\(\s*[\w${\[])"
+)
+_ACTUAL_OF = rb"(?:requireActual|importActual)\s*(?:<[^>()]*>)?\s*\(\s*['\"`]%s['\"`]"
 _MOCKS_DIR = "__mocks__"
 _JS_SUFFIXES = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
 
@@ -125,8 +132,13 @@ class ExternalCallsMixin:
             if starts:
                 data = source_bytes(file_path, parsed.file_info.abs_path, self._source_map)  # type: ignore[attr-defined]
                 for start in starts:
-                    if m := _MOCK_SPEC.match(data, start):
-                        found.add(m.group(2).decode("utf-8", "replace"))
+                    m = _MOCK_SPEC.match(data, start)
+                    # A factory handed the original keeps the package's real exports.
+                    if m is None or _FACTORY_TAKES_ORIGINAL.match(data, m.end()):
+                        continue
+                    spec = m.group(2)
+                    if re.search(_ACTUAL_OF % re.escape(spec), data) is None:
+                        found.add(spec.decode("utf-8", "replace"))
             specs = cache[file_path] = frozenset(found)
         return specs
 

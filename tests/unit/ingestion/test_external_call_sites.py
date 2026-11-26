@@ -250,12 +250,23 @@ def test_vitest_and_esm_mocks_replace_the_package(tmp_path: Path, mock: str) -> 
     assert {s[3] for s in _sites(_build(tmp_path, {"src/a.test.ts": src}))} == {"vitest"}
 
 
+@pytest.mark.parametrize(
+    "mock",
+    [
+        "jest.mock('axios', () => ({ ...jest.requireActual('axios'), post: jest.fn() }));",
+        "vi.mock('axios', async (importOriginal) => ({ ...(await importOriginal()) }));",
+    ],
+)
+def test_a_partial_mock_keeps_the_package(tmp_path: Path, mock: str) -> None:
+    src = f"const axios = require('axios');\n{mock}\naxios.get('/u');\n"
+    assert {s[3] for s in _sites(_build(tmp_path, {"a.test.js": src}))} == {"axios"}
+
+
 def test_a_manual_mock_directory_replaces_the_package_in_tests_only(tmp_path: Path) -> None:
     files = {
         "commands/__mocks__/@scope/output.js": "module.exports = jest.fn();\n",
         "commands/__tests__/run.test.js": (
-            "const output = require('@scope/output');\n"
-            "test('x', () => {\n  output.logged();\n});\n"
+            "const output = require('@scope/output');\ntest('x', () => {\n  output.logged();\n});\n"
         ),
         "commands/run.js": (
             "const output = require('@scope/output');\nfunction run(x) {\n  output(x);\n}\n"
