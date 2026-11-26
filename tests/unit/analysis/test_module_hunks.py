@@ -305,3 +305,17 @@ def test_a_changed_memoized_function_keeps_the_graph() -> None:
         )
     )
     assert isinstance(out, str) and "table" in out
+
+
+@pytest.mark.parametrize(
+    ("new", "pure"),
+    [
+        ("LIMIT = registry.set(4)", False),
+        ("LIMIT = cache.list()", False),
+        ("LIMIT = re.compile('x')", True),
+        ("LIMIT = os.getenv('X')", True),
+    ],
+)
+def test_a_method_named_like_a_builder_is_not_pure(new: str, pure: bool) -> None:
+    out = _change(_swap("LIMIT = 3", new))
+    assert (out == ModuleChange(frozenset({"LIMIT"}), frozenset())) is pure

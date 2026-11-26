@@ -227,6 +227,33 @@ _PURE_CALLS = frozenset(
 )  # fmt: skip
 
 
+#: Standard modules whose builders a pure call may be reached through
+#: (``re.compile``, ``functools.lru_cache``, ``logging.getLogger``).
+_PURE_MODULES = frozenset(
+    {
+        "collections", "dataclasses", "datetime", "functools", "logging", "os", "pathlib",
+        "re", "structlog", "types", "typing",
+    }
+)  # fmt: skip
+
+
+def _pure_call(func: ast.expr) -> bool:
+    """A call to a pure builder by its bare name, or through a standard module.
+
+    A method on any other object (``registry.set(...)``, ``cache.list()``) is not
+    pure, whatever its name.
+    """
+    pure = _PURE_CALLS | _PURE_DECORATORS
+    if isinstance(func, ast.Name):
+        return func.id in pure
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr in pure
+        and isinstance(func.value, ast.Name)
+        and func.value.id in _PURE_MODULES
+    )
+
+
 def _runs_code(stmt: ast.stmt) -> str | None:
     """Why *stmt* runs repo code at import (a call, an ``await``, a walrus), else ``None``.
 
@@ -246,10 +273,9 @@ def _runs_code(stmt: ast.stmt) -> str | None:
             continue
         if isinstance(node, ast.Await | ast.NamedExpr | ast.Yield | ast.YieldFrom):
             return f"a module-level {type(node).__name__.lower()} runs at import"
-        if isinstance(node, ast.Call):
+        if isinstance(node, ast.Call) and not _pure_call(node.func):
             name = _decorator_name(node.func)
-            if name not in _PURE_CALLS and name not in _PURE_DECORATORS:
-                return f"a module-level call to {name or 'an expression'} runs at import"
+            return f"a module-level call to {name or 'an expression'} runs at import"
         stack.extend(ast.iter_child_nodes(node))
     return None
 
