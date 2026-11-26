@@ -73,27 +73,19 @@ async def test_a_refusal_is_its_own_channel_not_a_failed_step(repo):
     assert not any(entry.startswith("Deleted-file prune:") for entry in degraded)
 
 
-async def test_persist_exposes_the_refusals_to_the_writer(repo, monkeypatch):
-    """persist_incremental_index forwards refusals out of the writer context."""
+async def test_persist_aborts_on_refusal_before_publication(repo, monkeypatch):
     from repowise.core.pipeline.incremental import persist_index as inc
+    from repowise.core.pipeline.incremental.prune import PruneHoldError
 
-    async def _prune(session, repo_id, repo_path, graph_builder, live_paths, **kwargs):
-        # Mirrors the real shape: the refusals are collected on the list the
-        # caller handed the writer, so what lands here is visible out there.
+    async def _prune(*args, **kwargs):
         kwargs["prune_refusals"].append("prune refused")
 
-    monkeypatch.setattr(inc, "prune_deleted_files", _prune, raising=False)
-    refusals: list[str] = []
-    await persist_incremental_index(
-        repo,
-        object(),
-        {"src/a.py": {"file_path": "src/a.py"}},
-        None,
-        None,
-        ["src/a.py"],
-        log=lambda _m: None,
-        degraded=[],
-        failed_steps=[],
-        prune_refusals=refusals,
-    )
-    assert refusals, "the writer did not hand the refusals back to the caller"
+    async def _publish(*args, **kwargs):
+        pytest.fail("Refused transactions must not publish")
+
+    monkeypatch.setattr(inc, "prune_deleted_files", _prune)
+    monkeypatch.setattr(inc, "publish_index_persistence", _publish)
+    with pytest.raises(PruneHoldError, match="Sync pointers held"):
+        await persist_incremental_index(
+            repo, object(), {"src/a.py": {"file_path": "src/a.py"}}, None, None, ["src/a.py"],
+        )

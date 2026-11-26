@@ -57,6 +57,12 @@ from repowise.core.ingestion.git_indexer import (
     git_history_stale,
 )
 from repowise.core.pipeline import PhaseTimings, timed
+from repowise.core.pipeline.incremental.prune import (
+    PRUNE_HOLD_MESSAGE,
+    PRUNE_REFUSED_AT,
+    PruneHoldError,
+    clear_prune_refusal,
+)
 from repowise.core.reasoning import REASONING_MODES
 from repowise.core.settings.model import flag
 
@@ -88,6 +94,7 @@ from .persistence import (
     parser_changed,
     renderer_changed,
     rescan_security_if_changed,
+    save_prune_hold,
     security_scanner_changed,
     stamp_file_page_scope,
     stamp_head_commit,
@@ -481,9 +488,7 @@ def update_command(
     workspace exists upstream of the working directory. Use --no-workspace to
     force single-repo mode and --workspace to force workspace mode.
     """
-    # Click ignores the return value, so don't forward run_update's outcome
-    # here (keeps this command's ``-> None`` annotation honest).
-    run_update(
+    outcome = run_update(
         path=path,
         provider_name=provider_name,
         model=model,
@@ -507,6 +512,8 @@ def update_command(
         defer_docs=defer_docs,
         refresh_git=refresh_git,
     )
+    if outcome == UpdateOutcome.PRUNE_REFUSED:
+        raise click.exceptions.Exit(1)
 
 
 class UpdateOutcome(StrEnum):
@@ -522,6 +529,7 @@ class UpdateOutcome(StrEnum):
     DEFERRED = "deferred"  # another update held the single-flight lock; queued
     NOOP = "noop"  # already current / no relevant changes to regenerate
     DRY_RUN = "dry_run"  # dry run, nothing written
+    PRUNE_REFUSED = "prune_refused"  # writes ran, but the sync pointers did not advance
 
 
 def _render_full_upgrade_dry_run(
@@ -702,7 +710,7 @@ def _emit_done(
 
             extra.update(docs_deferred=True, stale_pages=run_async(stale_page_count(run.repo_path)))
         run.emitter.done(
-            ok=True,
+            ok=outcome != UpdateOutcome.PRUNE_REFUSED,
             pages_generated=pages_generated,
             cost_usd=cost_usd,
             duration_s=time.monotonic() - run.start if duration_s is None else duration_s,
@@ -717,6 +725,8 @@ def _errors_reported(run: UpdateRun):
     """Report an escaping error as a JSON ``error`` event, then re-raise it."""
     try:
         yield
+    except PruneHoldError:
+        raise  # The owning update reports this only after saving the hold.
     except Exception as exc:
         if run.emitter is not None:
             run.emitter.error(str(exc))
@@ -781,7 +791,7 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
             reason="full_needs_one_repo",
         )
     with _errors_reported(run):
-        _workspace_update(
+        prune_held = _workspace_update(
             target,
             dry_run=opts.dry_run,
             agents_md=opts.agents_md,
@@ -798,7 +808,8 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
             progress=opts.progress,
             include_working_tree=opts.include_working_tree,
         )
-    return _emit_done(run, UpdateOutcome.REGENERATED)
+    outcome = UpdateOutcome.PRUNE_REFUSED if prune_held else UpdateOutcome.REGENERATED
+    return _emit_done(run, outcome)
 
 
 def _full_upgrade(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
@@ -814,6 +825,9 @@ def _full_upgrade(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
             model=opts.model,
         )
         return _emit_done(run, UpdateOutcome.DRY_RUN)
+    if PRUNE_REFUSED_AT in load_state(run.repo_path):
+        console.print(f"[yellow]{PRUNE_HOLD_MESSAGE}[/yellow]")
+        return _emit_done(run, UpdateOutcome.PRUNE_REFUSED)
 
     from repowise.cli.commands.upgrade_flow import upgrade_to_full
 
@@ -958,6 +972,8 @@ def _widen_to_pending_repair(run: UpdateRun) -> None:
     repaired_ref, give_up = resolve_repair_base(run.repo_path, run.state, run.base_ref, run.head)
     run.unchecked_repair = unchecked_repair_marker(run.state, repaired_ref, give_up)
     if give_up is not None:
+        if PRUNE_REFUSED_AT in run.state:
+            return  # Keep the repair reasons; use the existing base for this retry.
         console.print(
             f"[yellow]Dropping the pending repair of an earlier update: {give_up}. "
             "Run [bold]repowise init --force[/bold] to rebuild the index.[/yellow]"
@@ -1042,6 +1058,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     current_but_config = bool(
         run.head
         and run.head == run.base_ref
+        and PRUNE_REFUSED_AT not in state
         and (not run.renderer_changed or opts.defer_docs)
         and not run.wiki_rebuild
         and not run.working_tree_diffs
@@ -1437,6 +1454,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
         or run.stale_db_paths
         or run.stale_deterministic_ids
         or run.fill_file_pages
+        or PRUNE_REFUSED_AT in run.state
     )
 
 
@@ -1489,6 +1507,7 @@ def _config_change_only(run: UpdateRun) -> bool:
         run.file_diffs
         or config.git_changed
         or run.full_generation
+        or PRUNE_REFUSED_AT in run.state
         or rework_pending(run, defer_renderer=run.defer_docs)
     )
 
@@ -1569,6 +1588,7 @@ def _rebuild_index(run: UpdateRun) -> None:
             or run.wiki_rebuild
             or run.refresh_git
         ),
+        retry_prune=PRUNE_REFUSED_AT in run.state,
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
         # The update that re-scores every file detects communities afresh too.
@@ -2000,8 +2020,6 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
                 decay_paths=run.affected.decay_only,
                 degraded=degraded,
             )
-        if run.head:
-            run.state["last_docs_commit"] = run.head
         console.print(
             f"  [green]✓[/green] Rebuilt [bold]{len(out.pages):,}[/bold] "
             "documentation pages from code"
@@ -2347,6 +2365,7 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
             require_decision_persist_success=docs.git_history_remined,
             history_window_changed=config.git_changed,
             failed_steps=docs.failed_steps,
+            retry_prune=PRUNE_REFUSED_AT in run.state,
             timings=run.timings,
         )
 
@@ -2394,7 +2413,7 @@ def _rescore_after_persist(run: UpdateRun, docs: DocsPass) -> None:
 
 
 def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
-    """Advance both sync pointers and write the run's state."""
+    """Write the run's state, holding both sync pointers if pruning stopped."""
     from repowise.cli.helpers import config_fingerprint
 
     repo_path, state, head = run.repo_path, run.state, run.head
@@ -2403,6 +2422,7 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
 
     # Before the pointer moves: the marker keeps the old one. A clean run leaves
     # an earlier marker for the index-only update that widens to it.
+    clear_prune_refusal(state)
     if docs.failed_steps:
         from .persistence import record_repair_marker
 
@@ -2646,6 +2666,18 @@ def run_update(
     if _config_change_only(run):
         return _config_only_update(opts, run)
 
+    try:
+        return _apply_update(opts, run)
+    except PruneHoldError as exc:
+        try:
+            # Do not save provisional stamps set on the in-memory run before persistence.
+            save_prune_hold(repo_path, load_state(repo_path), exc)
+        finally:
+            release_update_lock(repo_path)
+        return _emit_done(run, UpdateOutcome.PRUNE_REFUSED, degraded=run.degraded)
+
+
+def _apply_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     render_changed_files(run.file_diffs, verbose=opts.verbose)
     _rebuild_index(run)
     _plan_pages(opts, run)
@@ -2656,5 +2688,4 @@ def run_update(
     _refresh_knowledge_graph_stage(run)
     if run.index_only:
         return _index_only_update(opts, run)
-
     return _docs_update(opts, run)

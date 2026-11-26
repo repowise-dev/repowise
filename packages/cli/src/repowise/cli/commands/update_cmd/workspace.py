@@ -11,6 +11,7 @@ from typing import Any
 import click
 
 from repowise.cli.helpers import CommandTarget, console, run_async
+from repowise.core.pipeline.incremental.prune import PRUNE_REFUSED_AT
 
 
 def _print_repo_result(result: Any) -> None:
@@ -60,7 +61,7 @@ def _workspace_update(
     no_cost_tracking: bool = False,
     progress: str = "rich",
     include_working_tree: bool = False,
-) -> None:
+) -> bool:
     """Update stale repos in a workspace.
 
     Takes a resolved :class:`CommandTarget` so the caller has full control
@@ -116,16 +117,16 @@ def _workspace_update(
                 repo_filter=repo_alias,
                 agents_md=agents_md,
             )
-        return
+        return False
 
     if dry_run:
         console.print(f"[yellow]Dry run: {scan.stale_count} repo(s) would be updated.[/yellow]")
-        return
+        return False
 
     # Repos that want docs take the full single-repo docs path; an all
     # index-only workspace stays on the fast parallel path below.
     if scan.docs_aliases:
-        _workspace_docs_update(
+        return _workspace_docs_update(
             ws_root=ws_root,
             ws_config=ws_config,
             repo_filter=repo_alias,
@@ -146,8 +147,7 @@ def _workspace_update(
             progress=progress,
             include_working_tree=include_working_tree,
         )
-        return
-    _workspace_index_only_update(
+    return _workspace_index_only_update(
         ws_root,
         ws_config,
         repo_alias,
@@ -258,23 +258,39 @@ def _repo_staleness(
             or repo_state.get("config_fingerprint") != config_fingerprint(abs_path)
         )
     )
-    is_stale = is_stale or config_stale
+    prune_held = PRUNE_REFUSED_AT in repo_state
+    is_stale = is_stale or config_stale or prune_held
     dirty = bool(
         indexed and not is_stale and include_working_tree and has_working_tree_changes(abs_path)
     )
     is_stale = is_stale or dirty
     status = _staleness_label(
-        indexed=indexed, config_stale=config_stale, dirty=dirty, behind=behind, is_stale=is_stale
+        indexed=indexed,
+        config_stale=config_stale,
+        dirty=dirty,
+        behind=behind,
+        is_stale=is_stale,
+        prune_held=prune_held,
     )
     return _RepoStaleness(indexed, is_stale, head, status, repo_state)
 
 
 def _staleness_label(
-    *, indexed: bool, config_stale: bool, dirty: bool, behind: int, is_stale: bool
+    *,
+    indexed: bool,
+    config_stale: bool,
+    dirty: bool,
+    behind: int,
+    is_stale: bool,
+    prune_held: bool = False,
 ) -> str:
     """The scan line's status for one repo, most specific reason first."""
     if not indexed:
         return "[dim]not indexed[/dim]"
+    if prune_held:
+        # A refused prune is not staleness a commit can fix: the next update
+        # has to reconcile the rows before the pointer can move (#5410).
+        return "[yellow]deleted-file prune unresolved[/yellow]"
     if config_stale and not behind:
         return "[yellow]config changed[/yellow]"
     if dirty:
@@ -337,7 +353,7 @@ def _workspace_index_only_update(
     started_at: datetime,
     agents_md: bool | None,
     include_working_tree: bool,
-) -> None:
+) -> bool:
     """Update every stale repo on the fast parallel index-only path."""
     from repowise.core.workspace import update_workspace
 
@@ -394,6 +410,7 @@ def _workspace_index_only_update(
         total_symbols=total_symbols,
         elapsed=time.monotonic() - start,
     )
+    return any(getattr(r, "prune_refused", False) for r in results)
 
 
 _BREAKING_DETAIL_LINES = 3
@@ -472,6 +489,7 @@ class _DocsTally:
 
     updated: int = 0
     failed: int = 0
+    prune_held: bool = False
     deferred: int = 0  # bailed on another update's single-flight lock
     noop: int = 0  # already current / nothing to regenerate
     #: Members that really regenerated, for the cross-repo pass.
@@ -499,7 +517,7 @@ def _workspace_docs_update(
     no_cost_tracking: bool,
     progress: str,
     include_working_tree: bool = False,
-) -> None:
+) -> bool:
     """Update a workspace where at least one stale repo wants docs.
 
     Docs repos (``docs_aliases``) run through the full single-repo update
@@ -584,6 +602,7 @@ def _workspace_docs_update(
         agents_md=agents_md,
     )
     _print_docs_update_summary(core_results, docs, ws_root, start=start, started_at=started_at)
+    return docs.prune_held or any(getattr(r, "prune_refused", False) for r in core_results)
 
 
 def _update_core_members(
@@ -650,6 +669,9 @@ def _update_docs_members(
         # its in-flight note. Only a real regeneration feeds the cross-repo pass.
         if outcome == UpdateOutcome.DEFERRED:
             tally.deferred += 1
+        elif outcome == UpdateOutcome.PRUNE_REFUSED:
+            tally.failed += 1
+            tally.prune_held = True
         elif outcome == UpdateOutcome.REGENERATED:
             tally.updated += 1
             tally.changed.append(entry.alias)
@@ -688,7 +710,9 @@ def _print_docs_update_summary(
     summary = _docs_update_summary(core_updated, deferred, docs)
     console.print()
     # "Complete" would overclaim while the real regeneration runs elsewhere.
-    if deferred and not (docs.updated or core_updated):
+    if docs.prune_held or any(getattr(r, "prune_refused", False) for r in core_results):
+        console.print(f"[yellow]Workspace update incomplete: deleted-file prune unresolved[/yellow]: {summary}.")
+    elif deferred and not (docs.updated or core_updated):
         console.print(
             f"[yellow]Workspace update deferred[/yellow]: {summary}. "
             f"{_deferred_tail(core_results)} "

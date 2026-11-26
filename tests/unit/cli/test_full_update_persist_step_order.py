@@ -21,7 +21,6 @@ from repowise.core.pipeline.incremental import persist_incremental_index
 from tests.unit._persist_step_recorders import (
     FAILURE,
     GIT_META,
-    REFUSAL,
     SWEPT,
     TOMBSTONED,
     StepRecorder,
@@ -221,7 +220,7 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
     # Seeded debt is what reaches the vector tail once tombstoning has failed.
     record_cleanup_debt(repo, "vectors", {"file_page:src/old.py"})
     rec = StepRecorder(monkeypatch, fail=frozenset(HAPPY_ORDER) - _SURVIVORS)
-    _install(rec, prune_ret=(1, [REFUSAL]))
+    _install(rec)
     degraded: list[str] = []
 
     await _persist_full(repo, rec, _Inputs(), degraded)
@@ -303,7 +302,6 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
                 "External systems refresh",
             )
         ),
-        REFUSAL,
         f"Synthetic graph node prune: {FAILURE}",
         f"Queue rebuild after prune: {FAILURE}",
         f"Git rollups: {FAILURE}",

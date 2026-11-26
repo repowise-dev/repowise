@@ -31,6 +31,12 @@ from repowise.core.analysis.health import health_analyzer_changed
 from repowise.core.analysis.security.patterns import security_scanner_changed
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
+from repowise.core.pipeline.incremental.prune import (
+    PRUNE_REFUSED_AT,
+    PruneHoldError,
+    clear_prune_refusal,
+    record_prune_refusal,
+)
 from repowise.core.pipeline.incremental.repair import record_repair_marker
 from repowise.core.pipeline.incremental.rescore import (  # noqa: F401 (re-export)
     RescoreCoverage,
@@ -346,6 +352,11 @@ def heal_commit_offsets(repo_path: Any) -> None:
         run_async(_run())
 
 
+def save_prune_hold(repo_path: Path, state: dict, exc: PruneHoldError) -> None:
+    """Record the repair after SQL rollback, without changing either pointer."""
+    record_prune_refusal(state, exc.failed_steps)
+    save_state(repo_path, state)
+    console.print(f"[yellow]{exc}[/yellow]")
 def _rescore_stale_findings(
     repo_path: Any,
     graph_builder: Any,
@@ -674,6 +685,7 @@ def _persist_index_only_update(
             log=console.print,
             degraded=degraded,
             failed_steps=failed_steps,
+            retry_prune=PRUNE_REFUSED_AT in state,
             prune_refusals=prune_refusals,
             timings=timings,
         )
@@ -740,15 +752,23 @@ def _persist_index_only_update(
     # A clean run clears the marker only if it re-covered the marker's range.
     if unchecked_repair is not None and "pending_repair" not in new_state:
         new_state["pending_repair"] = unchecked_repair
+    # A hold recorded by an earlier run survives anything short of a run that
+    # actually cleared the stale rows; only a clean persist may drop it.
+    clear_prune_refusal(new_state)
+    if failed_steps:
+        prior = {**new_state, "last_sync_commit": state.get("last_sync_commit")}
+        record_repair_marker(new_state, prior, failed_steps)
     if prune_refusals:
         # The prune refused to apply part of this change set, so the index is
         # behind the commit it would be recorded against. Leave the pointer
-        # where it is and record the range, exactly like a failed step: the
-        # next update re-covers it, and the repair marker is what stops it
-        # being skipped forever (#5410).
-        record_repair_marker(new_state, state, [*failed_steps, "Deleted-file prune (refused)"])
+        # where it is and keep the hold: the row sets stay stale until an
+        # authoritative re-init reconciles them, so a later refusal must not
+        # advance the pointer either (#5410).
         new_state["last_sync_commit"] = state.get("last_sync_commit")
         new_state["last_docs_commit"] = state.get("last_docs_commit")
+        # Recorded after the pointers are restored, so the hold names the
+        # commit the index actually covers rather than the one it refused.
+        record_prune_refusal(new_state, failed_steps)
         console.print(
             "[yellow]The deleted-file prune refused part of this change and left "
             "those rows in place; the sync pointer has not advanced, so the next "
@@ -762,6 +782,8 @@ def _persist_index_only_update(
             "the next update will re-cover it.[/yellow]"
         )
     backfill_docs_pointer(new_state, state)
+    if template_wiki and pages_rendered and head:
+        new_state["last_docs_commit"] = head
     if knowledge_graph_result is not None:
         try:
             from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
@@ -906,6 +928,7 @@ def _persist_full_update(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
+    retry_prune: bool = False,
     prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
@@ -954,6 +977,7 @@ def _persist_full_update(
             require_decision_persist_success=require_decision_persist_success,
             history_window_changed=history_window_changed,
             failed_steps=failed_steps,
+            retry_prune=retry_prune,
             prune_refusals=prune_refusals if prune_refusals is not None else [],
             timings=timings,
         )
@@ -987,6 +1011,7 @@ async def _persist_full_update_async(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
+    retry_prune: bool = False,
     prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
@@ -1028,6 +1053,7 @@ async def _persist_full_update_async(
         log=console.print,
         degraded=degraded,
         failed_steps=failed_steps,
+        retry_prune=retry_prune,
         prune_refusals=prune_refusals if prune_refusals is not None else [],
         timings=timings,
     )
