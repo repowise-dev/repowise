@@ -1364,6 +1364,14 @@ def test_a_test_files_partners_keep_tests_beside_shipped_code():
     assert order == ["tests/test_b.py", "src/a.py", "docs_src/tutorial/a.py"]
 
 
+def test_a_docs_files_partners_still_lead_with_shipped_code():
+    order = _co_change_paths(
+        ["docs_src/tutorial/b.py", "src/a.py"], target_origin="docs_example"
+    )
+
+    assert order == ["src/a.py", "docs_src/tutorial/b.py"]
+
+
 def test_co_change_rank_reads_the_stored_origin_first():
     order = _co_change_paths(["src/gen.py", "src/b.py"], origins={"src/gen.py": "generated"})
 
@@ -1390,6 +1398,7 @@ async def test_get_risk_since_without_a_checkout_says_the_window_was_not_applied
     ]
 
     assert card["co_change_window"]["applied"] is False
+    assert "could not walk" in card["co_change_window"]["reason"]
     assert card["co_change_window"]["since"] == "2024-01-01"
     assert card["co_change_partners"]
     assert " since " not in card["risk_summary"]

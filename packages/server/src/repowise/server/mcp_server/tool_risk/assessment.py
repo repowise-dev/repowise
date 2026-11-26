@@ -70,10 +70,10 @@ class CoChangeWindow:
 def _partner_rank(origin: str, target_origin: str) -> int:
     """Shipped code first, then other non-test code, then tests.
 
-    A partner of the target's own origin ranks with shipped code, so a test
-    file's partners keep the tests that change with it at the top.
+    A test target's test partners rank with shipped code, so the tests that
+    change with a test stay at the top of its card.
     """
-    if origin in ("production", target_origin):
+    if origin == "production" or origin == target_origin == "test":
         return 0
     return 2 if origin == "test" else 1
 
@@ -486,7 +486,10 @@ async def _co_change_source(
             note = {
                 "since": window.git_since,
                 "applied": False,
-                "reason": "no git checkout to walk; partners span the indexed history",
+                "reason": (
+                    "git could not walk the checkout (missing, failed or timed out); "
+                    "partners span the indexed history"
+                ),
             }
         else:
             records, commits = walked
