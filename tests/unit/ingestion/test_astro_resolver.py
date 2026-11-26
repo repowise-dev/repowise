@@ -82,6 +82,8 @@ def test_custom_astro_directories(tmp_path: Path) -> None:
     assert resolve_import("/app/scripts/root.ts", page, "astro", ctx) == (
         "apps/site/app/scripts/root.ts"
     )
+    ctx.path_set.add("apps/site/src/lib.js")
+    assert resolve_import("/src/lib.js", page, "astro", ctx) == "apps/site/src/lib.js"
     manifest = npm_manifests(tmp_path, paths)[0]
     facts, _ = js_frameworks(manifest, paths)[0]
     entries = set(facts.entry_files(manifest.rel_dir, paths))
