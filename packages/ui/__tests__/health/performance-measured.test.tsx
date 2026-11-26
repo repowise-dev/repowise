@@ -282,7 +282,25 @@ describe("buildMeasuredFunctionsPrompt", () => {
     );
     expect(prompt).toContain("Symbol id: `src/render/markdown.py::render_block`");
     expect(prompt).toContain("Static performance causes on it: `perf3_render`");
+    expect(prompt).toContain("Nearest tests by call graph: `tests/test_markdown.py::test_render`");
+    expect(prompt).not.toContain("Benchmark to run");
     expect(prompt).not.toMatch(/—/);
+  });
+
+  it("names the tests that ran a function and the benchmark that verifies a fix", () => {
+    const prompt = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [
+        measuredRow({
+          tests_basis: "per_test_map",
+          verify: "pytest benchmarks/bench_render.py::test_render --benchmark-only",
+        }),
+      ],
+    });
+    expect(prompt).toContain("Tests that ran it: `tests/test_markdown.py::test_render`");
+    expect(prompt).toContain(
+      "Benchmark to run before and after: `pytest benchmarks/bench_render.py::test_render --benchmark-only`",
+    );
   });
 
   it("gives a rank and no share for an ordering-only run", () => {

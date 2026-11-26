@@ -42,6 +42,7 @@ from .coverage_map import (
     save_test_coverage,
     tests_covering,
     tests_covering_files,
+    tests_running_spans,
 )
 from .dead_code import (
     finding_data_from_row,
@@ -275,6 +276,7 @@ __all__ = [
     "tests_covering",
     "tests_covering_files",
     "tests_for_functions",
+    "tests_running_spans",
     "unranked_command",
     "unranked_reason",
     "update_dead_code_status",

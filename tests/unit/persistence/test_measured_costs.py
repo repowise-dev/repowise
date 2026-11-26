@@ -14,7 +14,9 @@ from repowise.core.persistence.crud import (
     replace_symbol_hotness,
     replace_workload_hotness,
 )
+from repowise.core.persistence.crud import tests_running_spans as spans_run
 from repowise.core.persistence.models import (
+    EvidenceBenchmarkResult,
     EvidenceRun,
     FunctionFact,
     GitMetadata,
@@ -22,6 +24,8 @@ from repowise.core.persistence.models import (
     GraphNode,
     HealthFinding,
     PerformanceOpportunity,
+    TestCoverageSource,
+    TestCoverageTest,
 )
 from tests.unit.persistence.helpers import insert_repo, make_wiki_symbol
 
@@ -184,6 +188,8 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     assert serve["callers_total"] == 1 and serve["callers"] == ["src/main.py::main"]
     assert serve["owner"] == {"name": "Ada", "commit_pct": 0.8}
     assert serve["tests"] == ["tests/test_app.py::test_serve"]
+    # No per-test map: the nearest test by call graph, labelled so.
+    assert (serve["tests_basis"], serve["verify"]) == ("call_graph", None)
     # ``share`` is the cost (self), with its interval; inclusive is context.
     assert (serve["share"], serve["share_low"], serve["share_high"]) == (0.1, 0.08, 0.12)
     assert serve["inclusive"] == 0.3
@@ -216,6 +222,97 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     assert [r["workload_class"] for r in tests_group["runs"]] == ["unit_test"]
     # Never mapped to tests: unknown, not "no tests".
     assert tests_group["rows"][0]["tests"] is None
+    assert tests_group["rows"][0]["tests_basis"] is None
+
+
+def _map(repo_id: str, tests: list[tuple[str, str]], ranges: list[str]) -> list:
+    """A per-test map row for ``APP``: test *i* ran ``ranges[i]``."""
+    return [
+        *(
+            TestCoverageTest(repository_id=repo_id, test_no=no, test_id=test_id, test_file=path)
+            for no, (test_id, path) in enumerate(tests)
+        ),
+        TestCoverageSource(
+            repository_id=repo_id,
+            source_file=APP,
+            tests_json=json.dumps([[no, r] for no, r in enumerate(ranges)]),
+            test_count=len(tests),
+            source_format="coverage.py",
+        ),
+    ]
+
+
+async def test_the_per_test_map_names_the_tests_that_ran_each_function(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    async_session.add_all(
+        [
+            _run(repo.id, "r1"),
+            *_map(
+                repo.id,
+                [
+                    ("tests/test_app.py::test_run[a]|run", "tests/test_app.py"),
+                    ("tests/test_load.py::test_load", "tests/test_load.py"),
+                    # A pytest-benchmark test: its stored result says so.
+                    ("tests/test_app.py::test_timed", "tests/test_app.py"),
+                    ("tests/test_app.py::test_module_only", "tests/test_app.py"),
+                    # Ran only ``load``'s def line: an import, not a call.
+                    ("tests/test_app.py::test_import_only", "tests/test_app.py"),
+                ],
+                ["3-6", "32-33,36", "2", "25", "30"],
+            ),
+            EvidenceBenchmarkResult(
+                run_id="r1", benchmark_key="test_timed", repository_id=repo.id,
+                symbol_id="tests/test_app.py::test_timed", median=1.0,
+            ),
+        ]
+    )
+    await async_session.flush()
+    await replace_workload_hotness(
+        async_session,
+        repo.id,
+        [_hot("serve"), _hot("load", rank=2), _hot("helper", rank=3)],
+    )
+
+    rows = {
+        r["symbol_id"].partition("::")[2]: r
+        for r in (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"]
+    }
+
+    # The map has the file: only tests that ran the lines, never the static
+    # nearest one the map did not see run it, nor the benchmark.
+    assert (rows["serve"]["tests"], rows["serve"]["tests_basis"]) == (
+        ["tests/test_app.py::test_run"],
+        "per_test_map",
+    )
+    assert rows["serve"]["verify"] == "pytest tests/test_app.py::test_timed --benchmark-only"
+    assert rows["load"]["tests"] == ["tests/test_load.py::test_load"]
+    assert rows["load"]["verify"] is None
+    # The map has the file and no test ran it: none ran it, not unknown.
+    assert (rows["helper"]["tests"], rows["helper"]["tests_basis"]) == ([], "per_test_map")
+
+
+async def test_a_benchmark_calling_the_function_is_its_verify_command(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    bench = "app_test.go::BenchmarkServe"
+    async_session.add_all(
+        [
+            _run(repo.id, "r1"),
+            GraphNode(repository_id=repo.id, node_id=bench, node_type="symbol"),
+            GraphEdge(
+                repository_id=repo.id, source_node_id=bench, target_node_id=f"{APP}::serve",
+                edge_type="calls",
+            ),
+        ]
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("serve")])
+
+    row = (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"][0]
+
+    assert row["verify"] == "go test -run '^$' -bench '^BenchmarkServe$' -count 5 ."
+    assert row["tests"] == ["tests/test_app.py::test_serve"]
 
 
 async def test_unit_test_evidence_never_lists_under_measured(async_session) -> None:
@@ -613,3 +710,46 @@ async def test_a_measured_hotspots_evidence_on_rest_is_the_run_that_measured_it(
         repo.id, static.opportunity_id, limit=50, offset=0, session=async_session
     )
     assert all(r["biomarker_type"] != "measured_hotspot" for r in other["items"])
+
+
+async def test_a_one_line_python_function_is_unknown_to_the_map(async_session) -> None:
+    repo = await insert_repo(async_session)
+    async_session.add_all(
+        _map(repo.id, [("tests/test_app.py::test_imports", "tests/test_app.py")], ["1-3,90"])
+    )
+    await async_session.flush()
+    spans = {"one": (APP, 90, 90), "body": (APP, 1, 3), "elsewhere": ("src/other.py", 1, 9)}
+
+    found = await spans_run(async_session, repo.id, spans)
+
+    # Its def line runs on import: no line tells a call apart, so no claim either way.
+    assert "one" not in found and "elsewhere" not in found
+    assert found["body"] == [("tests/test_app.py::test_imports", "tests/test_app.py", 2)]
+
+
+async def test_a_stored_benchmark_among_the_nearest_tests_is_never_listed(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    timed = "tests/test_app.py::test_timed"
+    async_session.add_all(
+        [
+            _run(repo.id, "r1"),
+            FunctionFact(
+                repository_id=repo.id,
+                symbol_id=f"{APP}::load",
+                tests_json=encode_tests(
+                    [MappedTest(timed, 2), MappedTest("tests/test_load.py::test_load", 2)]
+                ),
+            ),
+            EvidenceBenchmarkResult(
+                run_id="r1", benchmark_key="test_timed", repository_id=repo.id,
+                symbol_id=timed, median=1.0,
+            ),
+        ]
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("load")])
+
+    row = (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"][0]
+
+    assert (row["tests"], row["tests_basis"]) == (["tests/test_load.py::test_load"], "call_graph")

@@ -187,8 +187,14 @@ class MeasuredRow(_Strict):
     callers_total: int | None
     callers: list[str]
     owner: MeasuredOwner | None
-    #: Nearest tests; null when the function was never mapped to tests.
+    #: Tests for the function, at most three; null when unknown. Empty: no
+    #: test ran it (``per_test_map``) or reaches it (``call_graph``).
     tests: list[str] | None
+    #: ``per_test_map``: tests the per-test map saw run its lines;
+    #: ``call_graph``: its nearest tests by call graph, where no map has its file.
+    tests_basis: Literal["per_test_map", "call_graph"] | None = None
+    #: The command that reruns the benchmarks that measure it, before and after a fix.
+    verify: str | None = None
     #: Open static performance causes on the function, by opportunity id.
     on_static_findings: list[str] = Field(default_factory=list)
 
