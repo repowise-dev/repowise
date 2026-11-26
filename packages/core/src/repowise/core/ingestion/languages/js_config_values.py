@@ -22,15 +22,46 @@ TEST_SETUP_KEYS: tuple[str, ...] = (
     "globalTeardown",
 )
 
-# A ``//`` after ``:`` is a URL (``https://``), not a comment.
-_LINE_COMMENT_RE = re.compile(rb"(?<![:\w])//[^\n]*")
-_BLOCK_COMMENT_RE = re.compile(rb"/\*.*?\*/", re.DOTALL)
 _OPEN, _CLOSE, _QUOTES = b"([{", b")]}", b"\"'`"
 
 
 def strip_comments(text: bytes) -> bytes:
-    """*text* without ``//`` and ``/* */`` comments."""
-    return _LINE_COMMENT_RE.sub(b"", _BLOCK_COMMENT_RE.sub(b"", text))
+    """*text* without ``//`` and ``/* */`` comments.
+
+    Only comments outside string and template literals are dropped, so a
+    ``/*`` or ``//`` inside one (``"docs/*"``, ``"https://..."``) stays text.
+    A ``//`` right after ``:`` or a word character is kept too (an unquoted
+    URL). Ceiling: a regex literal is read as code.
+    """
+    out = bytearray()
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch in _QUOTES:
+            end = min(_string_end(text, i) + 1, len(text))
+            out += text[i:end]
+            i = end
+            continue
+        if ch == ord("/") and text[i + 1 : i + 2] == b"*":
+            close = text.find(b"*/", i + 2)
+            if close >= 0:
+                i = close + 2
+                continue
+        elif ch == ord("/") and text[i + 1 : i + 2] == b"/" and not _ends_url_scheme(text, i):
+            line_end = text.find(b"\n", i)
+            i = len(text) if line_end < 0 else line_end
+            continue
+        out.append(ch)
+        i += 1
+    return bytes(out)
+
+
+def _ends_url_scheme(text: bytes, i: int) -> bool:
+    """Whether the ``//`` at *i* follows ``:`` or a word character."""
+    if i == 0:
+        return False
+    prev = text[i - 1]
+    return prev in b":_" or bytes([prev]).isalnum()
 
 
 @lru_cache(maxsize=16)
