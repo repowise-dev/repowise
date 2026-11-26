@@ -109,7 +109,13 @@ async def _why_and_drivers(
     session: AsyncSession, repository_id: str, rows: list[Any]
 ) -> dict[str, list[str]]:
     """``{symbol id: [why, driven by]}`` from each fresh row's action row,
-    reading only for rows whose run measured inside or calling the function."""
+    reading only for rows whose run measured inside or calling the function.
+
+    Best effort like the line itself: any failure (a failed read, a stored
+    finding or row that does not parse) leaves every line without them. The
+    reads run after the line's own, as the call's last; a failed statement
+    here leaves the session unusable for any read added after this one.
+    """
     fresh = [r for r in rows if r.freshness != "stale" and (r.inside_json or r.drivers_json)]
     if not fresh:
         return {}
@@ -121,32 +127,33 @@ async def _why_and_drivers(
             [r for r in fresh if r.inside_json and r.workload_class in STEP_CLASSES],
         )
         callers = await measured_callers(session, repository_id, fresh)
-    except SQLAlchemyError:
-        # The line stands without them.
-        _log.debug("get_context: measured why/drivers read failed", exc_info=True)
+        held = {r.symbol_id: _why_drivers_of(r, findings, callers) for r in fresh}
+    except Exception:  # Optional parts: the measured line stands without them.
+        _log.debug("get_context: measured why/drivers failed", exc_info=True)
         return {}
-    out: dict[str, list[str]] = {}
-    for r in fresh:
-        step = row_step(
-            r.symbol_id,
-            json_list(r.inside_json),
-            json_list(r.drivers_json),
-            r.workload_name,
-            r.workload_class,
-            findings,
-        )
-        row = action_row(
-            r,
-            workload_name=r.workload_name,
-            workload_class=r.workload_class,
-            next_step=step,
-            callers=callers.get(r.symbol_id, ()),
-            drivers_json=r.drivers_json,
-        ).as_dict()
-        parts = row_why_drivers(row)
-        if parts:
-            out[r.symbol_id] = parts
-    return out
+    return {sid: parts for sid, parts in held.items() if parts}
+
+
+def _why_drivers_of(
+    r: Any, findings: list[dict[str, Any]], callers: dict[str, list[str]]
+) -> list[str]:
+    step = row_step(
+        r.symbol_id,
+        json_list(r.inside_json),
+        json_list(r.drivers_json),
+        r.workload_name,
+        r.workload_class,
+        findings,
+    )
+    row = action_row(
+        r,
+        workload_name=r.workload_name,
+        workload_class=r.workload_class,
+        next_step=step,
+        callers=callers.get(r.symbol_id, ()),
+        drivers_json=r.drivers_json,
+    )
+    return row_why_drivers(row.as_dict())
 
 
 def _line_for(

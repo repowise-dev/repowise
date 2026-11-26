@@ -93,7 +93,8 @@ async def save_evidence_run(
         raise ValueError("history_runs and max_runs must keep at least the new run")
     run_id = _new_uuid()
     filled = [
-        _full_row(table, {**row, "run_id": run_id, "repository_id": repository_id}) for row in rows
+        _full_row(table, {**row, "run_id": run_id, "repository_id": repository_id})
+        for row in rows
     ]
     _refuse_repeated_keys(table, filled)
     at = run.get("ingested_at") or _now_utc()
@@ -174,9 +175,7 @@ async def newest_evidence_run(
             select(EvidenceRun.commit_sha, EvidenceRun.ingested_at)
             .where(EvidenceRun.repository_id == repository_id)
             .order_by(
-                *(c.desc() for c in preferred),
-                EvidenceRun.ingested_at.desc(),
-                EvidenceRun.id.desc(),
+                *(c.desc() for c in preferred), EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc()
             )
             .limit(1)
         )
@@ -370,9 +369,7 @@ async def replace_symbol_hotness(
     ``built_at``, one per symbol id. Returns the rows written.
     """
     at = _now_utc()
-    return await _replace(
-        session, SymbolHotness, repository_id, [{**r, "built_at": at} for r in rows]
-    )
+    return await _replace(session, SymbolHotness, repository_id, [{**r, "built_at": at} for r in rows])
 
 
 async def replace_workload_hotness(
@@ -423,7 +420,9 @@ async def hotness_for_symbols(
         clauses: list[Any] = [sid.in_(ids)] if ids else []
         clauses += ranges
         result = await session.execute(
-            select(SymbolHotness).where(SymbolHotness.repository_id == repository_id, or_(*clauses))
+            select(SymbolHotness).where(
+                SymbolHotness.repository_id == repository_id, or_(*clauses)
+            )
         )
         out.update({row.symbol_id: row for row in result.scalars()})
     return out
@@ -437,10 +436,10 @@ async def measured_callers(
     :func:`~repowise.core.evidence.action_row.action_row` weighs by share.
 
     A caller counts when the call graph lists it as a caller and its file is
-    production code (``code_origin``), as on the measured rows. Only the
-    callers a run measured are read and judged, so a function with hundreds
-    of callers costs what its two or three drivers cost. A row with no such
-    caller is left out; rows that stored no ``drivers`` cost no read.
+    production code (``code_origin``), as on the measured rows. The graph read
+    is ``_callers_of``'s (every caller edge of each function); only the callers
+    a run measured have their files judged. A row with no such caller is left
+    out; rows that stored no ``drivers`` cost no read.
     """
     from ....evidence.ingest import load_origins
     from ....evidence.payloads import json_list
@@ -525,11 +524,7 @@ async def step_findings(
     origins = await load_origins(session, repository_id, {f.file_path for f in found.values()})
     return [
         static_finding(
-            f.file_path,
-            f.function_name,
-            f.biomarker_type,
-            f.reason,
-            json.loads(f.details_json or "{}"),
+            f.file_path, f.function_name, f.biomarker_type, f.reason, json.loads(f.details_json or "{}")
         )
         for f in sorted(found.values(), key=lambda f: (f.file_path, f.line_start or 0, f.id))
         if origins.get(f.file_path) == "production"

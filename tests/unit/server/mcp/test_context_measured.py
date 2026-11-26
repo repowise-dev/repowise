@@ -73,9 +73,8 @@ def test_unit_test_run_says_in_tests():
 
 
 def test_tracer_run_is_ordering_only():
-    row = _row(
-        ordering_only=True, share_low=None, share_high=None, total_share=None, self_share=None
-    )
+    row = _row(ordering_only=True, share_low=None, share_high=None, total_share=None,
+               self_share=None)
     assert symbol_line(row, NOW) == (
         'rank 3 of repo code in entry_point "cli build" '
         "(ordering only; repo code itself 40%), 2d old"
@@ -364,4 +363,28 @@ async def test_stale_or_bare_rows_keep_the_plain_line(setup_mcp, session, popula
     await session.flush()
     line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
     assert line.endswith("d old")
+    assert "why" not in line and "driven" not in line
+
+
+@pytest.mark.asyncio
+async def test_a_failure_behind_why_or_drivers_keeps_the_plain_line(
+    setup_mcp, session, populated_db, monkeypatch
+):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+
+    async def _broken(*args, **kwargs):
+        raise ValueError("a stored finding that does not parse")
+
+    monkeypatch.setattr(measured, "step_findings", _broken)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in entry_point "cli build"')
     assert "why" not in line and "driven" not in line
