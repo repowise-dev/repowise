@@ -11,13 +11,16 @@ Nothing here reads a store.
 - :func:`measured_payload`: the ``measured`` route from a ``measured_costs``
   view (or ``None``) and the repository's ``measured_status`` token;
 - :func:`functions_payload` / :func:`function_payload`: the ``functions``
-  route from ``symbol_hotness`` rows.
+  route from ``symbol_hotness`` rows;
+- :func:`owner_history_payload`: a measured function's owner and last change
+  from its ``git_function_blame`` row and the newest commit's row.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
+from datetime import timedelta
 from typing import Any
 
 from repowise.core.ingestion.symbol_identity import file_of_symbol
@@ -77,6 +80,45 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
     }
 
 
+def owner_history_payload(blame: Any, commit: Any | None) -> dict[str, Any]:
+    """A function's owner and last change from its ``git_function_blame`` row.
+
+    The owner wrote most of the function's current lines (``line_pct`` of
+    them). The last change is the newest commit blame credits a current line
+    to, with *commit* its ``git_commits`` row (``None`` when the commit is
+    older than the indexed window: the sha alone, then). The change number
+    comes from the commit subject. Built only from a function's own row: no
+    row, no owner (never the file's).
+    """
+    from repowise.core.forges import change_number
+
+    try:
+        shas = json.loads(blame.commit_shas_json or "[]")
+    except (TypeError, ValueError):
+        shas = []
+    last = None
+    if isinstance(shas, list) and shas:
+        subject = (commit.subject or None) if commit is not None else None
+        at = commit.committed_at if commit is not None else None
+        if at is not None:
+            # The committer's own calendar day: ``committed_at`` is a UTC instant.
+            at += timedelta(minutes=getattr(commit, "committed_offset_minutes", None) or 0)
+        last = {
+            "sha": str(shas[0]),
+            "date": at.date().isoformat() if at is not None else None,
+            "subject": subject,
+            "pr": change_number(subject) if subject else None,
+        }
+    return {
+        "owner": (
+            {"name": blame.owner_name, "line_pct": blame.owner_line_pct}
+            if blame.owner_name
+            else None
+        ),
+        "last_change": last,
+    }
+
+
 def functions_payload(rows: Mapping[str, Any]) -> dict[str, Any]:
     """The ``functions`` route from ``{symbol_id: symbol_hotness row}``, by id."""
     return {"functions": [function_payload(row) for _, row in sorted(rows.items())]}
@@ -129,6 +171,7 @@ __all__ = [
     "function_payload",
     "functions_payload",
     "measured_payload",
+    "owner_history_payload",
     "runs_payload",
     "status_payload",
 ]

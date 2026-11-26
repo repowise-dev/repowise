@@ -42,7 +42,8 @@ ROW = {
     "freshness": "current",
     "callers_total": 2,
     "callers": ["src/main.py::main"],
-    "owner": {"name": "Ada", "commit_pct": 0.8},
+    "owner": {"name": "Ada", "line_pct": 0.8},
+    "last_change": {"sha": "abcdef1234", "date": "2026-10-03", "subject": "x (#42)", "pr": 42},
     "tests": ["tests/test_app.py::test_serve"],
     "tests_basis": "call_graph",
     "verify": None,
@@ -75,7 +76,7 @@ def test_each_run_states_its_basis_and_where_its_time_went() -> None:
     # The cost leads; inclusive time is context, never "94% of the run".
     assert (
         "self 30% of the run (27% to 33%) · with callees 94% · 1,590 samples · 2 callers · "
-        "owner Ada" in out
+        "owner Ada · last changed 2026-10-03 (abcdef1, #42) · nearest test" in out
     )
     assert "94% of the run" not in out
     assert "nearest test by call graph tests/test_app.py::test_serve" in out

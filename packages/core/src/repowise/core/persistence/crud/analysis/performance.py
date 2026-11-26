@@ -1329,7 +1329,8 @@ async def _static_causes_on(
 class _FunctionContext(NamedTuple):
     callers_total: dict[str, int]
     callers: dict[str, list[str]]
-    owners: dict[str, Any]
+    # Owner and last change from the function's own lines (``git_function_blame``).
+    history: dict[str, dict[str, Any]]
     tests: dict[str, Any]
     verify: dict[str, str]
 
@@ -1340,9 +1341,10 @@ async def _function_context(
     symbol_ids: list[str],
     spans: dict[str, list[Any]],
 ) -> _FunctionContext:
-    """Callers, file owner, tests and verify command of *symbol_ids*, from the
-    stores ``get_context`` reads: graph edges, git metadata, the per-test map
-    and the function test map.
+    """Callers, owner, last change, tests and verify command of *symbol_ids*,
+    from the stores ``get_context`` reads: graph edges, function blame, the
+    per-test map and the function test map. *spans* are the indexed symbols'
+    lines per file.
 
     Callers in test code (``code_origin``) are neither listed nor counted: a
     measured production function's callers say who pays for it in production.
@@ -1360,7 +1362,7 @@ async def _function_context(
     from ....evidence.ingest import load_origins
     from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
     from ....ingestion.symbol_identity import file_of_symbol
-    from ..git import get_git_metadata_bulk
+    from ..git import function_owner_history
     from ..graph import get_node_degree_counts_bulk
     from .coverage_map import tests_running_spans
     from .function_facts import tests_for_functions
@@ -1404,8 +1406,15 @@ async def _function_context(
     return _FunctionContext(
         callers_total={i: len(outside_tests.get(i, ())) for i in symbol_ids if i in degrees},
         callers={sid: found[:_MEASURED_CALLERS] for sid, found in outside_tests.items() if found},
-        owners=await get_git_metadata_bulk(
-            session, repository_id, sorted({file_of_symbol(i) for i in symbol_ids})
+        history=await function_owner_history(
+            session,
+            repository_id,
+            [
+                (s.symbol_id, s.start_line, s.end_line)
+                for i in symbol_ids
+                for s in spans.get(file_of_symbol(i), ())
+                if s.symbol_id == i
+            ],
         ),
         tests={
             sid: row_tests(ran.get(sid), near.get(sid), k=_MEASURED_TESTS, benchmarks=stored)
@@ -1510,7 +1519,7 @@ def _measured_row(
     symbol_id = row.symbol_id
     path = file_of_symbol(symbol_id)
     span = next((s for s in spans.get(path, ()) if s.symbol_id == symbol_id), None)
-    owner = context.owners.get(path)
+    history = context.history.get(symbol_id) or {}
     tests = context.tests[symbol_id]
     out = {
         "symbol_id": symbol_id,
@@ -1527,11 +1536,9 @@ def _measured_row(
         "freshness": row.freshness,
         "callers_total": context.callers_total.get(symbol_id),
         "callers": context.callers.get(symbol_id, []),
-        "owner": (
-            {"name": owner.primary_owner_name, "commit_pct": owner.primary_owner_commit_pct}
-            if owner is not None and owner.primary_owner_name
-            else None
-        ),
+        # From the function's own lines; none without its blame row, never the file's.
+        "owner": history.get("owner"),
+        "last_change": history.get("last_change"),
         # ``None``: unknown. ``[]``: no test ran it (``per_test_map``) or reaches it.
         "tests": tests.tests,
         # ``per_test_map``: tests that ran its lines; ``call_graph``: nearest by call graph.
