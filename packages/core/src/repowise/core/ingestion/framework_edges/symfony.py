@@ -31,64 +31,172 @@ if TYPE_CHECKING:
     from ..resolvers import ResolverContext
 
 
-SYMFONY_COMMAND_BASE = "Symfony\\Component\\Console\\Command\\Command"
-SYMFONY_AS_COMMAND_ATTR = "Symfony\\Component\\Console\\Attribute\\AsCommand"
-SYMFONY_EVENT_SUBSCRIBER = "Symfony\\Component\\EventDispatcher\\EventSubscriberInterface"
-SYMFONY_AS_EVENT_LISTENER_ATTR = "Symfony\\Component\\EventDispatcher\\Attribute\\AsEventListener"
+SYMFONY_COMMAND_BASE_LOWER = "symfony\\component\\console\\command\\command"
+SYMFONY_AS_COMMAND_ATTR_LOWER = "symfony\\component\\console\\attribute\\ascommand"
+SYMFONY_EVENT_SUBSCRIBER_LOWER = (
+    "symfony\\component\\eventdispatcher\\eventsubscriberinterface"
+)
+SYMFONY_AS_EVENT_LISTENER_ATTR_LOWER = (
+    "symfony\\component\\eventdispatcher\\attribute\\aseventlistener"
+)
 
-_CLASS_DECL_RE = re.compile(
-    r"\bclass\s+(?P<name>[A-Za-z_]\w*)"
-    r"(?:\s+extends\s+(?P<extends>\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*))?"
-    r"(?:\s+implements\s+(?P<implements>[^{]+))?",
+_DECLARATION_PREFIX = r"^[ \t]*(?:(?:final|abstract|readonly)[ \t]+)*"
+
+_TYPE_DECL_RE = re.compile(
+    _DECLARATION_PREFIX
+    + r"(?P<kind>class|interface)[ \t]+(?P<name>[A-Za-z_]\w*)"
+    + r"(?:[ \t]+extends[ \t]+(?P<extends>\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*(?:[ \t]*,[ \t]*\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*)*))?"
+    + r"(?:[ \t]+implements[ \t]+(?P<implements>[^{]+))?",
     re.MULTILINE,
 )
 
 _AS_COMMAND_ATTR_RE = re.compile(
-    r"""#\[(?:[^\]]*,)?\s*(?P<name>\\?(?:Symfony\\Component\\Console\\Attribute\\)?AsCommand)\b"""
+    r"""#\[(?:[^\]]*,)?\s*(?P<name>\\?(?:[A-Za-z_]\w*\\)*AsCommand)\b""",
+    re.IGNORECASE,
 )
 _AS_EVENT_LISTENER_ATTR_RE = re.compile(
-    r"""#\[(?:[^\]]*,)?\s*(?P<name>\\?(?:Symfony\\Component\\EventDispatcher\\Attribute\\)?AsEventListener)\b"""
+    r"""#\[(?:[^\]]*,)?\s*(?P<name>\\?(?:[A-Za-z_]\w*\\)*AsEventListener)\b""",
+    re.IGNORECASE,
 )
 
 
 class _PhpFile:
     """One PHP file's text and namespace/use-alias environment."""
 
-    __slots__ = ("aliases", "namespace", "path", "text")
+    __slots__ = ("aliases", "lower_aliases", "namespace", "path", "text")
 
     def __init__(self, path: str, parsed: Any, source_map: dict[str, bytes]) -> None:
         self.path = path
         self.text = source_text(path, parsed, source_map)
         self.namespace = file_namespace(self.text) if self.text else None
         self.aliases = php_use_aliases(parsed)
+        self.lower_aliases = {k.lower(): v for k, v in self.aliases.items()}
 
     def qualify(self, name: str) -> str:
+        name_clean = name.lstrip("\\")
+        first, sep, rest = name_clean.partition("\\")
+        if first.lower() in self.lower_aliases:
+            target = self.lower_aliases[first.lower()]
+            return f"{target}\\{rest}" if sep else target
         return qualify_php_name(name, self.namespace, self.aliases)
+
+
+def _has_attribute(
+    f: _PhpFile,
+    blanked: str,
+    keyword: str,
+    attr_re: re.Pattern[str],
+    expected_lower: str,
+) -> bool:
+    """Check whether *blanked* applies an attribute matching *expected_lower*."""
+    if keyword not in blanked.lower():
+        return False
+    for m in attr_re.finditer(blanked):
+        if f.qualify(m.group("name")).lower() == expected_lower:
+            return True
+    for local, fqn in f.lower_aliases.items():
+        if fqn.lower() == expected_lower and re.search(
+            rf"#\[(?:[^\]]*,)?\s*\\?{re.escape(local)}\b", blanked, re.IGNORECASE
+        ):
+            return True
+    return False
 
 
 def _has_symfony_attribute(f: _PhpFile, blanked: str) -> bool:
     """True if *f* uses #[AsCommand] or #[AsEventListener] resolving to Symfony."""
-    if "AsCommand" in blanked:
-        for m in _AS_COMMAND_ATTR_RE.finditer(blanked):
-            if f.qualify(m.group("name")) == SYMFONY_AS_COMMAND_ATTR:
-                return True
-        for local, fqn in f.aliases.items():
-            if fqn == SYMFONY_AS_COMMAND_ATTR and re.search(
-                rf"#\[(?:[^\]]*,)?\s*{re.escape(local)}\b", blanked
-            ):
-                return True
+    return _has_attribute(
+        f, blanked, "ascommand", _AS_COMMAND_ATTR_RE, SYMFONY_AS_COMMAND_ATTR_LOWER
+    ) or _has_attribute(
+        f,
+        blanked,
+        "aseventlistener",
+        _AS_EVENT_LISTENER_ATTR_RE,
+        SYMFONY_AS_EVENT_LISTENER_ATTR_LOWER,
+    )
 
-    if "AsEventListener" in blanked:
-        for m in _AS_EVENT_LISTENER_ATTR_RE.finditer(blanked):
-            if f.qualify(m.group("name")) == SYMFONY_AS_EVENT_LISTENER_ATTR:
-                return True
-        for local, fqn in f.aliases.items():
-            if fqn == SYMFONY_AS_EVENT_LISTENER_ATTR and re.search(
-                rf"#\[(?:[^\]]*,)?\s*{re.escape(local)}\b", blanked
-            ):
-                return True
 
-    return False
+def _record_declarations(
+    f: _PhpFile,
+    blanked: str,
+    class_to_files: dict[str, set[str]],
+    class_to_parent: dict[str, str],
+    class_to_interfaces: dict[str, list[str]],
+    interface_to_parents: dict[str, list[str]],
+) -> None:
+    """Extract class/interface declarations, inheritance, and implementations."""
+    for m in _TYPE_DECL_RE.finditer(blanked):
+        name = m.group("name")
+        fqn = f"{f.namespace}\\{name}" if f.namespace else name
+        fqn_lower = fqn.lower()
+        class_to_files.setdefault(fqn_lower, set()).add(f.path)
+
+        kind = m.group("kind")
+        extends = m.group("extends")
+        implements = m.group("implements")
+
+        if kind == "interface":
+            if extends:
+                interface_to_parents[fqn_lower] = [
+                    f.qualify(p.strip()).lower()
+                    for p in extends.split(",")
+                    if p.strip()
+                ]
+        else:
+            if extends:
+                class_to_parent[fqn_lower] = f.qualify(extends.strip()).lower()
+            if implements:
+                class_to_interfaces[fqn_lower] = [
+                    f.qualify(iface.strip()).lower()
+                    for iface in implements.split(",")
+                    if iface.strip()
+                ]
+
+
+def _resolve_commands(class_to_parent: dict[str, str]) -> set[str]:
+    """Find all classes extending Symfony Command transitively."""
+    command_fqns = {SYMFONY_COMMAND_BASE_LOWER}
+    changed = True
+    while changed:
+        changed = False
+        for cls_fqn, parent_fqn in class_to_parent.items():
+            if parent_fqn in command_fqns and cls_fqn not in command_fqns:
+                command_fqns.add(cls_fqn)
+                changed = True
+    return command_fqns
+
+
+def _resolve_subscribers(
+    class_to_parent: dict[str, str],
+    class_to_interfaces: dict[str, list[str]],
+    interface_to_parents: dict[str, list[str]],
+) -> set[str]:
+    """Find all classes implementing Symfony EventSubscriberInterface transitively."""
+    subscriber_ifaces = {SYMFONY_EVENT_SUBSCRIBER_LOWER}
+    changed = True
+    while changed:
+        changed = False
+        for iface_fqn, parents in interface_to_parents.items():
+            if iface_fqn not in subscriber_ifaces and any(
+                p in subscriber_ifaces for p in parents
+            ):
+                subscriber_ifaces.add(iface_fqn)
+                changed = True
+
+    subscriber_classes: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for cls_fqn, ifaces in class_to_interfaces.items():
+            if cls_fqn not in subscriber_classes and any(
+                i in subscriber_ifaces for i in ifaces
+            ):
+                subscriber_classes.add(cls_fqn)
+                changed = True
+        for cls_fqn, parent in class_to_parent.items():
+            if parent in subscriber_classes and cls_fqn not in subscriber_classes:
+                subscriber_classes.add(cls_fqn)
+                changed = True
+    return subscriber_classes
 
 
 def _add_symfony_edges(
@@ -107,64 +215,35 @@ def _add_symfony_edges(
     if not php_files:
         return 0
 
-    class_to_file: dict[str, str] = {}
+    class_to_files: dict[str, set[str]] = {}
     class_to_parent: dict[str, str] = {}
     class_to_interfaces: dict[str, list[str]] = {}
+    interface_to_parents: dict[str, list[str]] = {}
     attributed_files: set[str] = set()
 
     for f in php_files:
         blanked = blank_php_comments(f.text)
         if _has_symfony_attribute(f, blanked):
             attributed_files.add(f.path)
+        _record_declarations(
+            f,
+            blanked,
+            class_to_files,
+            class_to_parent,
+            class_to_interfaces,
+            interface_to_parents,
+        )
 
-        for m in _CLASS_DECL_RE.finditer(blanked):
-            cls_name = m.group("name")
-            cls_fqn = f"{f.namespace}\\{cls_name}" if f.namespace else cls_name
-            class_to_file[cls_fqn] = f.path
-
-            extends = m.group("extends")
-            if extends:
-                class_to_parent[cls_fqn] = f.qualify(extends.strip())
-
-            implements = m.group("implements")
-            if implements:
-                class_to_interfaces[cls_fqn] = [
-                    f.qualify(iface.strip())
-                    for iface in implements.split(",")
-                    if iface.strip()
-                ]
-
-    # Resolve command class hierarchy transitively
-    command_fqns = {SYMFONY_COMMAND_BASE}
-    changed = True
-    while changed:
-        changed = False
-        for cls_fqn, parent_fqn in class_to_parent.items():
-            if parent_fqn in command_fqns and cls_fqn not in command_fqns:
-                command_fqns.add(cls_fqn)
-                changed = True
-
-    # Resolve subscriber class hierarchy transitively
-    subscriber_fqns = {SYMFONY_EVENT_SUBSCRIBER}
-    changed = True
-    while changed:
-        changed = False
-        for cls_fqn, ifaces in class_to_interfaces.items():
-            if cls_fqn not in subscriber_fqns and any(i in subscriber_fqns for i in ifaces):
-                subscriber_fqns.add(cls_fqn)
-                changed = True
-        for cls_fqn, parent_fqn in class_to_parent.items():
-            if parent_fqn in subscriber_fqns and cls_fqn not in subscriber_fqns:
-                subscriber_fqns.add(cls_fqn)
-                changed = True
+    command_fqns = _resolve_commands(class_to_parent)
+    subscriber_fqns = _resolve_subscribers(
+        class_to_parent, class_to_interfaces, interface_to_parents
+    )
 
     target_files: set[str] = set(attributed_files)
     for cls_fqn in command_fqns:
-        if cls_fqn in class_to_file:
-            target_files.add(class_to_file[cls_fqn])
+        target_files.update(class_to_files.get(cls_fqn, ()))
     for cls_fqn in subscriber_fqns:
-        if cls_fqn in class_to_file:
-            target_files.add(class_to_file[cls_fqn])
+        target_files.update(class_to_files.get(cls_fqn, ()))
 
     count = 0
     for target in sorted(target_files):
