@@ -1406,11 +1406,11 @@ repowise coverage suggest-gates --format json
 
 Ingest runtime evidence: a profile, benchmark results, test timings or query counts, as one
 [`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
-profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile`, collapsed
-stacks or Python cProfile/pstats](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
-runner's ([pytest-benchmark, hyperfine or Vitest benchmark JSON, or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
-or a test run's [JUnit XML](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them),
-converted first. Several profiles of one run (a parent process and its workers, or a directory
+profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile`, `jfr print`
+text, collapsed stacks or Python cProfile/pstats](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
+runner's ([pytest-benchmark, Google Benchmark, hyperfine or Vitest benchmark JSON, Criterion estimates, or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
+a test run's [JUnit XML or `go test -json`](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them),
+or a [`pg_stat_statements` CSV](../layers/RUNTIME_EVIDENCE.md#production-files), converted first. Several profiles of one run (a parent process and its workers, or a directory
 holding one file per process) merge into one run, and so do JUnit XML reports (a Maven or Gradle
 report directory, other files in it left out).
 
@@ -1449,7 +1449,7 @@ writes nothing.
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local`; `production` for a production file |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pstats`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`, `criterion`, `junit`, `pg-stat-statements`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pstats`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`, `criterion`, `junit`, `pg-stat-statements`, `jfr`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument and cProfile `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--path` | Repo path. | cwd, or the workspace primary |
@@ -1487,11 +1487,15 @@ writes nothing.
   kind keeps. Each run says its freshness against the indexed commit (`current`, `stale`, or
   `unknown` when either commit is missing), where its time went (`repo_self_share`,
   `wait_share`, `library_share`; unknown for a run stored before they were recorded, or with no
-  total), and its counts.
-- `tests` reads the JUnit XML timings `evidence add` stored (the newest run of each test workload) and lists
-  the slowest tests and the test time spent on each production file. Time per file is `measured` from the
-  per-test coverage map when one is stored, else `inferred` from each function's nearest tests on the call
-  graph. Timing orders work; it never gates. `--limit` sets how many tests and files to list (default 20,
+  total), and its counts. `--compare` adds what got slower: each workload's newest run against a band
+  of up to 5 earlier runs at other commits, and the commits in between that changed a function the
+  slower workload ran ([rules](../layers/RUNTIME_EVIDENCE.md#evidence-status)).
+- `tests` reads the JUnit XML timings `evidence add` stored (the newest run of each test workload) and says
+  where to start: up to 3 groups of tests that run the same production files and take the most time over
+  the rest's pace, each with the fixture its tests share when they ask for one, then the slowest tests. A
+  suite under a minute, or with no group 5 s over the rest, gets one line. Groups need the per-test coverage
+  map; without it the output is how concentrated the time is
+  ([rules](../layers/RUNTIME_EVIDENCE.md#evidence-tests)). Timing orders work; it never gates. `--limit` sets how many tests to list (default 20,
   1 to 500). Takes `--path` and `--format`.
 - `setup` runs nothing and writes nothing. Per build unit it prints the stack (`unknown` when
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
