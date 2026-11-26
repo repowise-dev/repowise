@@ -352,6 +352,9 @@ _GO_ROUTE_RE = go_route_pattern(_GO_VERBS, f"{GO_PATH_LITERAL}|{_GO_PATH_CONCAT}
 _GO_GROUP_RE = re.compile(
     r"""(?P<var>\w+)\s*:?=\s*(?P<parent>\w+)\s*\.\s*Group\s*\(\s*["'](?P<prefix>[^"']+)["']"""
 )
+# r := g.Use(mw) — gin's Use returns the group it is called on, so routes on
+# `r` serve under `g`'s prefix.
+_GO_USE_RE = re.compile(r"(?P<var>\w+)\s*:?=\s*(?P<parent>\w+)\s*\.\s*Use\s*\(")
 
 # Go 1.22 net/http patterns: `"GET /items/{id}"`, `"POST api.example.com/x"`.
 _GO_METHOD_PATTERN_RE = re.compile(
@@ -440,8 +443,10 @@ def go_routes(content: str) -> Iterator[RouteMatch]:
 
 
 def go_groups(content: str) -> Iterator[GroupMatch]:
-    """``Group`` prefix bindings in *content*."""
-    return _groups(_GO_GROUP_RE, content)
+    """``Group`` prefix bindings in *content*, and ``Use`` bindings with no prefix of their own."""
+    yield from _groups(_GO_GROUP_RE, content)
+    for m in _GO_USE_RE.finditer(content):
+        yield GroupMatch(var=m.group("var"), parent=m.group("parent"), prefix="")
 
 
 # ---------------------------------------------------------------------------
