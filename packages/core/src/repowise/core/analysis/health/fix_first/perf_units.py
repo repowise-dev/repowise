@@ -153,15 +153,8 @@ def _perf_fields(cause: _PerfCause) -> dict[str, Any]:
         cause.facets.get("amplification"),
         cause.facets.get("loop_magnitude"),
     )
-    verify = _verify(cause.plan.get("validation"))
     row = cause.details.get("measured_row")
-    if row:
-        verify = _row_verify(row, verify)
-    steps = _perf_steps(cause, verify.command)
-    step = (row or {}).get("next_step")
-    if step and steps:
-        # The row's next step as is: the target already names the function.
-        steps = (replace(steps[0], text=step["next"][:1].upper() + step["next"][1:]), *steps[1:])
+    verify, steps = _verify_and_steps(cause, row)
     strategy = field(lead, "fix_strategy") or ""
     fields = {
         "title": text.clip(_perf_title(cause, name)),
@@ -192,6 +185,22 @@ def _perf_fields(cause: _PerfCause) -> dict[str, Any]:
     if row:
         fields.update(_row_fields(row, cause.facets.get("measured")))
     return fields
+
+
+def _verify_and_steps(
+    cause: _PerfCause, row: Mapping[str, Any] | None
+) -> tuple[FixVerify, tuple[FixStep, ...]]:
+    """The item's verify block and steps; a measured hotspot's from its row:
+    its one verify command and tests, and its next step as the first step."""
+    verify = _verify(cause.plan.get("validation"))
+    if row:
+        verify = _row_verify(row, verify)
+    steps = _perf_steps(cause, verify.command)
+    step = (row or {}).get("next_step")
+    if step and steps:
+        # The row's next step as is: the target already names the function.
+        steps = (replace(steps[0], text=step["next"][:1].upper() + step["next"][1:]), *steps[1:])
+    return verify, steps
 
 
 def _row_fields(row: Mapping[str, Any], workload: str | None) -> dict[str, Any]:
