@@ -75,12 +75,13 @@ def test_recent_tie_goes_to_the_stored_recent_owner() -> None:
 
 def test_truncated_author_list_marks_its_total() -> None:
     rows = [_author(f"dev{i}", 50 - i, 0) for i in range(50)]
-    assert _commit_leaders(json.dumps(rows), None)["all_time"].endswith(" of 1275+")
+    assert _commit_leaders(json.dumps(rows), None, 51)["all_time"].endswith(" of 1275+")
+    assert _commit_leaders(json.dumps(rows), None, 50)["all_time"].endswith(" of 1275")
 
 
 def test_recent_leader_outside_the_kept_authors_gets_no_count() -> None:
     rows = [_author(f"dev{i}", 50 - i, 0) for i in range(50)]
-    assert "last_90d" not in _commit_leaders(json.dumps(rows), "newcomer")
+    assert "last_90d" not in _commit_leaders(json.dumps(rows), "newcomer", 51)
 
 
 def test_rows_without_per_author_counts_add_nothing() -> None:

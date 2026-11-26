@@ -22,7 +22,6 @@ from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.attribution import attribution_enabled, file_share
 from repowise.core.generation.layers import is_fallback_layer
 from repowise.core.generation.page_selection import is_stale_status
-from repowise.core.ingestion.git_indexer._constants import _MAX_TOP_AUTHORS
 from repowise.core.persistence.crud import (
     accepted_predicate,
     decision_currencies,
@@ -348,7 +347,7 @@ async def _ownership_section(card: CardState) -> None:
         if recent and recent != meta.primary_owner_name:
             ownership["recent_owner"] = recent
             ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
-        commits = _commit_leaders(meta.top_authors_json, recent)
+        commits = _commit_leaders(meta.top_authors_json, recent, ownership["contributor_count"])
         if commits:
             ownership["commits"] = commits
         _agent_provenance(card, meta, ownership)
@@ -360,7 +359,9 @@ async def _ownership_section(card: CardState) -> None:
     card.data["ownership"] = ownership
 
 
-def _commit_leaders(top_authors_json: str | None, recent_owner: str | None) -> dict[str, str]:
+def _commit_leaders(
+    top_authors_json: str | None, recent_owner: str | None, contributors: int = 0
+) -> dict[str, str]:
     """Who made the most commits to a file, all time and in the last 90 days.
 
     ``primary_owner`` is the blame owner on a standard index, so it can rank
@@ -378,7 +379,7 @@ def _commit_leaders(top_authors_json: str | None, recent_owner: str | None) -> d
     rows = [a for a in authors if isinstance(a, dict) and isinstance(a.get("commit_count"), int)]
     if not rows:
         return {}
-    more = "+" if len(rows) >= _MAX_TOP_AUTHORS else ""
+    more = "+" if contributors > len(rows) else ""
     total = sum(a["commit_count"] for a in rows)
     lead = rows[0]  # stored most-commits first
     leaders = {"all_time": f"{lead.get('name')} {lead['commit_count']} of {total}{more}"}
