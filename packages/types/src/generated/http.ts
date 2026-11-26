@@ -651,6 +651,12 @@ export interface ChangeCandidatesResponse {
   health_check_supported?: boolean;
 }
 
+/** What decided ``category``: ``changelog_fragment``, ``forge_label`` or ``title``. */
+export interface ChangeCategoryBasis {
+  signal: string;
+  value?: string | null;
+}
+
 /** The evidence checklist (``repowise.core.changes.evidence``), versioned. */
 export interface ChangeEvidence {
   schema_version: number;
@@ -818,6 +824,7 @@ export interface ChangeRecord {
   provenance?: ChangeProvenance | null;
   health?: ChangeHealthResponse | null;
   touches_hotspot?: number;
+  category_basis?: ChangeCategoryBasis | null;
   commits: string[];
   files: ChangeFile[];
   metadata: ChangeForgeMetadata;

@@ -384,3 +384,192 @@ async def test_other_forges_name_their_own_change_ref(
         f'`AuthService` was introduced by {forge_ref} "Add the auth service"'
     )
     assert result["origin"]["change"] == "pr-12"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("When did we start limiting the number of content codings?", True),
+        ("When and why did aiohttp start refusing chained codings? Which pull request?", True),
+        ("Which PR started bounding the request queue?", True),
+        # A regression began, or no history is asked: not a behaviour's origin.
+        ("When did the login start failing?", False),
+        ("When did the tests start timing out?", False),
+        # A whole failure verb only: "timestamping" is a behaviour.
+        ("When did we start timestamping commits?", True),
+        ("How do we limit login attempts?", False),
+    ],
+)
+def test_behaviour_origin_questions(question, expected):
+    from repowise.server.mcp_server.tool_answer.origin import asks_behaviour_origin
+
+    assert asks_behaviour_origin(question) is expected
+
+
+@pytest.mark.parametrize(
+    ("name", "limit", "cover"),
+    [
+        ("MAX_LOGIN_ATTEMPTS", True, 3),
+        ("maxLoginAttempts", True, 3),
+        # The MAX part counts only when the question describes a limit.
+        ("MAX_LOGIN_ATTEMPTS", False, 0),
+        # A part the question does not spell rules the name out.
+        ("SUPPORTED_LOGIN_ATTEMPTS", True, 0),
+        # One spelled word names too much.
+        ("LoginForm", True, 0),
+    ],
+)
+def test_a_name_resolves_only_when_the_question_spells_all_of_it(name, limit, cover):
+    from repowise.server.mcp_server.tool_answer.origin import _behaviour_words, _name_cover
+
+    words = _behaviour_words("When did we start limiting login attempts?")
+    assert _name_cover(name, words, limit) == cover
+
+
+@pytest.fixture
+def limit_history(tmp_path):
+    """service.py exists first; a later commit adds the login-attempt limit."""
+    _git(tmp_path, "init", "-q")
+    path = tmp_path / "src/auth/service.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "src")
+    _git(tmp_path, "commit", "-qm", "seed")
+    path.write_text("x = 1\nMAX_LOGIN_ATTEMPTS = 5\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-qam", "Lock accounts after five failed logins (#9)")
+    return _git(tmp_path, "rev-parse", "HEAD")
+
+
+async def _seed_symbol(session, name: str, path: str = "src/auth/service.py") -> None:
+    from repowise.core.persistence.models import WikiSymbol
+
+    session.add(
+        WikiSymbol(
+            id=f"{name}-{path}"[:32],
+            repository_id="repo1",
+            file_path=path,
+            symbol_id=f"{path}::{name}",
+            name=name,
+            qualified_name=name,
+            kind="variable",
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_described_behaviour_resolves_to_the_symbol_it_spells(
+    setup_mcp, session, limit_history
+):
+    from repowise.server.mcp_server import get_answer
+
+    await _seed_symbol(session, "MAX_LOGIN_ATTEMPTS")
+    result = await get_answer("When did we start limiting login attempts?")
+    assert result["confidence"] == "high"
+    assert result["answer"].startswith("The question describes `MAX_LOGIN_ATTEMPTS`")
+    assert (
+        f'commit {limit_history[:12]} "Lock accounts after five failed logins (#9)"'
+        in (result["answer"])
+    )
+    assert result["origin"]["subject"] == "MAX_LOGIN_ATTEMPTS"
+    assert result["origin"]["resolved_from"] == "question"
+
+
+@pytest.mark.asyncio
+async def test_two_names_matching_as_well_resolve_to_neither(setup_mcp, session, limit_history):
+    from repowise.server.mcp_server import get_answer
+
+    await _seed_symbol(session, "MAX_LOGIN_ATTEMPTS")
+    await _seed_symbol(session, "LOGIN_ATTEMPTS_LIMIT", "src/auth/policy.py")
+    result = await get_answer("When did we start limiting login attempts?")
+    assert "origin" not in result
+    assert result["next_action_hint"].startswith("Run `git log -S'<identifier>' --reverse")
+
+
+@pytest.mark.asyncio
+async def test_a_name_only_test_code_spells_is_not_the_behaviour(setup_mcp, session, limit_history):
+    from repowise.server.mcp_server import get_answer
+
+    await _seed_symbol(session, "MAX_LOGIN_ATTEMPTS", "tests/test_login.py")
+    result = await get_answer("When did we start limiting login attempts?")
+    assert "origin" not in result
+    assert "git log -S'<identifier>'" in result["next_action_hint"]
+
+
+@pytest.mark.parametrize(
+    ("part", "word", "same"),
+    [
+        ("decompress", "decompresses", True),
+        ("coding", "codings", True),
+        ("validate", "validating", True),
+        ("time", "timeout", False),
+        ("read", "ready", False),
+    ],
+)
+def test_a_name_part_matches_a_word_only_through_an_inflection(part, word, same):
+    from repowise.server.mcp_server.tool_answer.origin import _same_word
+
+    assert _same_word(part, word) is same
+
+
+def test_the_name_must_name_the_behaviour_that_started():
+    from repowise.server.mcp_server.tool_answer.origin import _behaviour_words, _name_cover
+
+    question = "When did the config parser start returning None?"
+    assert _name_cover("ConfigParser", _behaviour_words(question), False, "returning") == 0
+
+
+@pytest.mark.asyncio
+async def test_a_typed_symbol_is_where_the_behaviour_happens_not_the_behaviour(
+    setup_mcp, session, limit_history
+):
+    from repowise.server.mcp_server import get_answer
+
+    await _seed_symbol(session, "MAX_LOGIN_ATTEMPTS")
+    result = await get_answer("When did MAX_LOGIN_ATTEMPTS start limiting logins?")
+    assert "origin" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_change_inside_a_named_symbol_still_says_unknown(setup_mcp, history):
+    from repowise.server.mcp_server import get_answer
+
+    result = await get_answer("When did we start adding retries to AuthService?")
+    assert result["answer"].startswith("Not known from the index which change introduced")
+    assert "git log -L:AuthService:src/auth/service.py" in result["next_action_hint"]
+
+
+@pytest.mark.asyncio
+async def test_a_scope_without_the_symbol_resolves_nothing(setup_mcp, session, limit_history):
+    from repowise.server.mcp_server import get_answer
+
+    await _seed_symbol(session, "MAX_LOGIN_ATTEMPTS")
+    result = await get_answer("When did we start limiting login attempts?", scope="src/db/")
+    assert "origin" not in result
+
+
+def test_a_digit_run_stays_with_its_letters():
+    from repowise.server.mcp_server.tool_answer.origin import _behaviour_words, _name_cover
+
+    words = _behaviour_words("When did we start validating UTF8 input?")
+    assert _name_cover("validateUTF8", words, False, "validating") == 2
+
+
+def test_a_code_noun_in_the_question_still_spells_the_name():
+    from repowise.server.mcp_server.tool_answer.origin import _behaviour_words, _name_cover
+
+    words = _behaviour_words("Which pull request started limiting request body size?")
+    assert "pull" not in words
+    assert _name_cover("MAX_REQUEST_BODY_SIZE", words, True, "limiting") == 4
+
+
+@pytest.mark.asyncio
+async def test_a_scan_past_its_cap_resolves_nothing(setup_mcp, session, limit_history, monkeypatch):
+    from repowise.server.mcp_server import get_answer
+    from repowise.server.mcp_server.tool_answer import origin
+
+    await _seed_symbol(session, "MAX_LOGIN_ATTEMPTS")
+    await _seed_symbol(session, "LOGIN_ATTEMPTS_MAX_COUNT", "src/auth/policy.py")
+    monkeypatch.setattr(origin, "_MAX_SCANNED_NAMES", 1)
+    result = await get_answer("When did we start limiting login attempts?")
+    assert "origin" not in result

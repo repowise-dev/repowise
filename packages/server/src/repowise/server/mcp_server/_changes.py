@@ -13,6 +13,7 @@ attribution is off for the repo.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import subprocess
 from collections import Counter
@@ -287,17 +288,99 @@ def _line_log_shas(
     change by weeks. The walk only diffs commits that touch the file, and the
     timeout turns a history too long to walk into the file-level answer.
     """
+    out = _line_log(repo_root, at_commit, file_path, lines, "--format=%H")
+    if out is None:
+        return None
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def _line_log(
+    repo_root: str | None,
+    at_commit: str,
+    file_path: str,
+    lines: tuple[int, int],
+    *extra: str,
+    timeout: float = _LINE_LOG_TIMEOUT_SECONDS,
+) -> str | None:
+    """``git log -L`` over *lines* of *file_path* at *at_commit*; None when git cannot say."""
     if not repo_root:
         return None
     start, end = lines
-    args = ["log", f"-L{start},{end}:{file_path}", "--no-patch", "--format=%H", at_commit]
+    args = ["log", f"-L{start},{end}:{file_path}", "--no-patch", *extra, at_commit]
     try:
-        proc = run_git(args, repo_root, timeout=_LINE_LOG_TIMEOUT_SECONDS)
+        proc = run_git(args, repo_root, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
         return None
-    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    return proc.stdout
+
+
+# -- last_change on a symbol: the newest commit that edited its lines ----------
+
+#: The newest-commit walk (include=["last_change"] on a symbol) is bounded
+#: tighter than the full history walk; past it the card serves the file's.
+_NEWEST_LINE_TIMEOUT_SECONDS = 5
+
+
+class _LineHistoryError(Exception):
+    """git could not name the newest commit on the lines; never cached."""
+
+
+@functools.lru_cache(maxsize=2048)
+def _newest_line_commit(
+    repo_root: str, at_commit: str, file_path: str, lines: tuple[int, int]
+) -> tuple[str, str, datetime]:
+    """``(sha, author, committed_at as naive UTC)`` of the newest commit that
+    changed *lines*. Keyed on the indexed commit, so a cached answer stays true
+    until the next index. A failed walk raises :class:`_LineHistoryError`, which
+    ``lru_cache`` does not keep, so a passing failure is retried next call.
+    """
+    out = _line_log(
+        repo_root,
+        at_commit,
+        file_path,
+        lines,
+        "-n1",
+        "--format=%H%x1f%aN%x1f%cI",
+        timeout=_NEWEST_LINE_TIMEOUT_SECONDS,
+    )
+    first = (out or "").strip().splitlines()[:1]
+    parts = first[0].split("\x1f") if first else []
+    if len(parts) != 3:
+        raise _LineHistoryError
+    try:
+        moment = datetime.fromisoformat(parts[2])
+    except ValueError as exc:
+        raise _LineHistoryError from exc
+    return parts[0], parts[1], moment.astimezone(UTC).replace(tzinfo=None)
+
+
+async def symbol_last_change(
+    session: Any,
+    repository: Any,
+    repo_root: str | None,
+    file_path: str,
+    lines: tuple[int, int] | None,
+) -> dict[str, Any] | None:
+    """The newest commit that edited a symbol's lines: ``sha``, ``author``,
+    ``committed_at`` and, when a stored change landed it, ``ref``.
+
+    Walked at the indexed commit, like :func:`symbol_changes`. None with no
+    line range, no indexed commit or a failed walk; the caller then serves the
+    file's last change labelled as the file's.
+    """
+    if lines is None or not repository.head_commit or not repo_root:
+        return None
+    try:
+        sha, author, committed_at = await asyncio.to_thread(
+            _newest_line_commit, repo_root, repository.head_commit, file_path, lines
+        )
+    except _LineHistoryError:
+        return None
+    found = await find_changes(session, repository.id, sha, limit=1)
+    ref = (found[0].forge_ref or found[0].change_id) if found else None
+    return {"sha": sha, "author": author, "committed_at": committed_at, "ref": ref}
 
 
 # -- include=["provenance"]: a file's three-state attribution ------------------

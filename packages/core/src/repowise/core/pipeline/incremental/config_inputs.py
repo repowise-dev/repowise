@@ -119,11 +119,14 @@ DATA_LANGUAGES = frozenset({"json", "yaml", "toml"})
 
 @cache
 def _registry_names() -> frozenset[str]:
-    """Every manifest or descriptor name a language spec declares, lowercased."""
+    """Every manifest or descriptor name a language spec declares, and every
+    framework config ``framework_facts`` reads beside a ``package.json``, lowercased."""
+    from repowise.core.ingestion.framework_facts import JS_FRAMEWORKS
     from repowise.core.ingestion.languages.registry import REGISTRY
 
     names = REGISTRY.manifest_filenames() | REGISTRY.descriptor_filenames()
-    return frozenset(name.lower() for name in names)
+    configs = {name for facts in JS_FRAMEWORKS for name in facts.config_files}
+    return frozenset(name.lower() for name in names | configs)
 
 
 @cache
@@ -183,7 +186,8 @@ def _opened_unindexed(path: str, language: str | None) -> bool:
 
 # Top-level package.json fields no graph step reads. The dependency fields'
 # versions feed only the tech stack, which is compared on its own; their names
-# also say which JS framework loads files by convention, so those are kept.
+# also say which JS framework loads files by convention, so those are kept, as
+# is Nuxt's version, which says whether its default source directory is app/.
 _NPM_UNREAD = frozenset(
     {
         "version", "description", "keywords", "author", "contributors", "maintainers",
@@ -218,15 +222,18 @@ def _package_json(text: str, _path: Path, _root: Path) -> object:
         leaves_its_directory,
         setup_specs,
     )
-    from repowise.core.ingestion.framework_facts import npm_dependency_names
+    from repowise.core.ingestion.framework_facts import NUXT, parse_npm_manifest
 
     data = json.loads(text)
-    dependency_names = sorted(npm_dependency_names(data))
+    manifest = parse_npm_manifest(data)
+    dependency_names = sorted(manifest.dependencies) if manifest else []
+    versions = manifest.versions if manifest else {}
+    read_versions = {p: versions[p] for p in NUXT.npm_packages if p in versions}
     if isinstance(data, dict):
         data = {k: v for k, v in data.items() if k not in _NPM_UNREAD}
     # The test-runner handler scans the raw text, at any depth.
     raw = text.encode()
-    return [data, setup_specs(raw), leaves_its_directory(raw), dependency_names]
+    return [data, setup_specs(raw), leaves_its_directory(raw), dependency_names, read_versions]
 
 
 def _without(table: object, unread: frozenset[str]) -> object:

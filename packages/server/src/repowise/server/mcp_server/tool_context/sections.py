@@ -44,6 +44,7 @@ from repowise.server.mcp_server._changes import (
     file_provenance,
     load_file_meta,
     symbol_changes,
+    symbol_last_change,
 )
 from repowise.server.mcp_server._directory import _git_rows_under
 from repowise.server.mcp_server._edit_sites import edit_set_block
@@ -347,6 +348,9 @@ async def _ownership_section(card: CardState) -> None:
         if recent and recent != meta.primary_owner_name:
             ownership["recent_owner"] = recent
             ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
+        commits = _commit_leaders(meta.top_authors_json, recent, ownership["contributor_count"])
+        if commits:
+            ownership["commits"] = commits
         _agent_provenance(card, meta, ownership)
     else:
         ownership["primary_owner"] = None
@@ -354,6 +358,55 @@ async def _ownership_section(card: CardState) -> None:
         ownership["contributor_count"] = 0
         ownership["bus_factor"] = 0
     card.data["ownership"] = ownership
+
+
+def _commit_leaders(
+    top_authors_json: str | None, recent_owner: str | None, contributors: int = 0
+) -> dict[str, str]:
+    """Who made the most commits to a file, all time and in the last 90 days.
+
+    ``primary_owner`` is the blame owner on a standard index, so it can rank
+    someone other than the top committer first, and ``recent_owner`` is only
+    shown when it differs. These two lines carry the counts behind both, so
+    "who should review" needs no ``git log``. The 90 days run back from the
+    newest indexed commit. Bots never reach ``top_authors_json``. Each file
+    keeps its top 50 authors, so a longer tail marks its total with ``+``.
+    Empty when the stored authors carry no commit counts; only the all-time
+    line when they carry no 90-day counts.
+    """
+    try:
+        authors = json.loads(top_authors_json or "[]")
+    except (TypeError, ValueError):
+        return {}
+    rows = [a for a in authors if isinstance(a, dict) and isinstance(a.get("commit_count"), int)]
+    if not rows:
+        return {}
+    more = "+" if contributors > len(rows) else ""
+    total = sum(a["commit_count"] for a in rows)
+    lead = rows[0]  # stored most-commits first
+    leaders = {"all_time": f"{lead.get('name')} {lead['commit_count']} of {total}{more}"}
+    recent = _recent_leader(rows, recent_owner, more)
+    if recent:
+        leaders["last_90d"] = recent
+    return leaders
+
+
+def _recent_leader(rows: list[dict], recent_owner: str | None, more: str) -> str | None:
+    """The 90-day line of :func:`_commit_leaders`; None when no count can be given."""
+    if any("recent_commit_count" not in a for a in rows):
+        return None  # indexed before per-author recent counts were stored
+    names = [a.get("name") for a in rows]
+    if more and recent_owner and recent_owner not in names:
+        return None  # the recent leader is outside the kept authors
+    counts = [a["recent_commit_count"] or 0 for a in rows]
+    total = sum(counts)
+    if not total:
+        return "no commits"
+    top = max(counts)
+    tied = [name for name, n in zip(names, counts, strict=True) if n == top]
+    # Ties go to the stored recent owner, so the two fields never disagree.
+    name = recent_owner if recent_owner in tied else tied[0]
+    return f"{name} {top} of {total}{more}"
 
 
 def _directory_ownership(rows: list[Any]) -> dict[str, Any]:
@@ -405,8 +458,43 @@ async def _last_change_section(card: CardState) -> None:
     if card.dir_path is not None:
         card.data["last_change"] = await _directory_last_change(card)
         return
+    if card.resolved.target_type == "symbol" and card.git_path:
+        own = await _symbol_last_change(card, card.git_path)
+        if own is not None:
+            card.data["last_change"] = own
+            return
     meta = await _git_meta_row(card, card.git_path)
-    card.data["last_change"] = await _change_of(card, meta)
+    change = await _change_of(card, meta)
+    if card.resolved.target_type == "symbol":
+        # Git could not walk the symbol's lines: never pass the file's off as its own.
+        change["scope"] = "file"
+    card.data["last_change"] = change
+
+
+async def _symbol_last_change(card: CardState, file_path: str) -> dict[str, Any] | None:
+    """The newest commit that edited the symbol's lines, in the file shape
+    plus ``ref``, the stored change that landed it."""
+    repository = card.query.repository
+    found = await symbol_last_change(
+        card.session,
+        repository,
+        served_root(repository, card.query.repo_root),
+        file_path,
+        _symbol_lines(card),
+    )
+    if found is None:
+        return None
+    moment = found["committed_at"]
+    change: dict[str, Any] = {
+        "date": moment.isoformat(),
+        "days_ago": await _days_since_last_change(
+            card.session, card.repo_id, moment, card.query.as_of_ts
+        ),
+        "author": found["author"],
+    }
+    if found["ref"]:
+        change["ref"] = found["ref"]
+    return change
 
 
 async def _directory_last_change(card: CardState) -> dict[str, Any]:
@@ -482,10 +570,15 @@ async def _file_changes_section(card: CardState, file_path: str | None) -> None:
         card.data["provenance"] = file_provenance(meta, attribution)
 
 
-async def _symbol_changes_section(card: CardState, file_path: str) -> None:
+def _symbol_lines(card: CardState) -> tuple[int, int] | None:
+    """The symbol's line range as indexed; None when the index has none."""
     sym = card.resolved.sym_matches[0] if card.resolved.sym_matches else card.resolved.graph_symbol
     start, end = getattr(sym, "start_line", None), getattr(sym, "end_line", None)
-    lines = (start, end) if start and end and end >= start else None
+    return (start, end) if start and end and end >= start else None
+
+
+async def _symbol_changes_section(card: CardState, file_path: str) -> None:
+    lines = _symbol_lines(card)
     repository = card.query.repository
     card.data.update(
         await symbol_changes(
