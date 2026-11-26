@@ -651,6 +651,8 @@ def test_record_names_what_decided_the_category():
         "value": "CHANGES/13.bugfix.rst",
     }
     assert change_record(_row())["category_basis"] == {"signal": "title", "value": None}
+    # Stored before fragments were read: no basis until an update re-labels it.
+    assert change_record(_row(files_json=files, category="other"))["category_basis"] is None
 
 
 @pytest.mark.asyncio

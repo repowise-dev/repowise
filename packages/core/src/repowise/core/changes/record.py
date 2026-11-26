@@ -86,8 +86,14 @@ def change_record(row: Any, *, attribution: bool = True) -> dict[str, Any]:
         "lines_deleted": row.lines_deleted,
         "category": row.category,
         # Where the category came from: a changelog fragment the change adds,
-        # a forge label, or the title.
-        "category_basis": {"signal": basis.signal, "value": basis.value},
+        # a forge label, or the title. Null on a row stored under older rules
+        # until the next update re-labels it, so the basis never explains a
+        # category it would not give.
+        "category_basis": (
+            {"signal": basis.signal, "value": basis.value}
+            if basis.category == row.category
+            else None
+        ),
         "provenance": (
             provenance_block(
                 row.provenance, row.provenance_agent, row.provenance_known, len(commits)

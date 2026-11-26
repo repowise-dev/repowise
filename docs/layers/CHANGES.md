@@ -105,7 +105,8 @@ When one change carries several kinds, a fix wins. A type or label with no
 mapping falls through to the next signal. Changesets declare a semver bump, not a
 kind, so they are not read. The record's `category_basis` names the deciding
 signal and the fragment path or label (`{"signal": "changelog_fragment", "value":
-"CHANGES/13743.bugfix.rst"}`). Per-file fix counts and `prior_defect` still read
+"CHANGES/13743.bugfix.rst"}`). It is `null` on a row an older index stored until
+the next update re-labels it. Per-file fix counts and `prior_defect` still read
 commit subjects; see [Bug history](BUG_HISTORY.md).
 
 ### Metadata
