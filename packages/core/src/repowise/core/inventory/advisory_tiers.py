@@ -8,6 +8,22 @@ where each package is imported (:mod:`.usage`), the proven calls into it
 graph). :func:`~.vuln_reach.tier_advisory` decides the tier, so the CLI, MCP
 and the web UI never disagree.
 
+The surfaces show three tiers, the ones a precision check on real repositories
+supports:
+
+``package_called``
+    A function production code reaches makes a proven call into the package,
+    at a call site shown. Python only (:data:`CALL_SITE_ECOSYSTEMS`).
+``imported``
+    Shipping code imports the package; no call is claimed.
+``unknown``
+    No shipping import was found, but the package may come through another
+    dependency or under an import name the index does not link to it. It is
+    never ranked below ``imported``.
+
+Symbol-level ``reachable`` and the discounting tiers below ``imported`` are
+computed by the fold but not shown: see :data:`SHOWN_TIERS`.
+
 :func:`check_package` answers "is this package at this version safe to add?"
 from the same stored document: it never fetches a feed.
 """
@@ -28,19 +44,32 @@ from repowise.core.inventory.advisories import (
 )
 from repowise.core.inventory.osv import pick_fixed
 from repowise.core.inventory.vuln_reach import (
-    TIERS,
     Dependency,
     ImportSite,
     TierResult,
     tier_advisory,
 )
 
-#: Ecosystems the call-site table covers; elsewhere no call can be proven.
-CALL_SITE_ECOSYSTEMS = frozenset({"pypi", "npm"})
+#: Ecosystems whose stored calls back a ``package_called`` claim. Ceiling: npm
+#: call sites are stored but not claimed, because a call on a module a
+#: ``jest.mock``/``vi.mock`` replaced is recorded as a call into the package;
+#: add ``"npm"`` once the call-site writer refuses those bindings and a fresh
+#: precision sample passes. Go has no call sites.
+CALL_SITE_ECOSYSTEMS = frozenset({"pypi"})
 
-#: Tiers where production code is shown to call into the package: the ones an
-#: agent or a CI gate acts on.
-CALLED_TIERS = ("reachable", "package_called")
+#: The tiers the surfaces show, strongest first. Ceiling: no symbol-level
+#: claim is made (OSV names no PyPI or npm symbols, and Go import-path
+#: granularity over-claims), so ``reachable`` never appears; and every fold
+#: tier below ``imported`` shows as ``unknown``, because the linker does not
+#: yet tie every import name to its declaration (``yaml`` to ``PyYAML``, a Go
+#: subpackage to its module) and a called package can land there.
+SHOWN_TIERS = ("package_called", "imported", "unknown")
+
+#: The tier production code is shown to call into: what an agent or a CI gate acts on.
+CALLED_TIERS = ("package_called",)
+
+#: Shown tier to rank: ``unknown`` sits with ``imported``, never below it.
+_RANK = {"package_called": 0, "imported": 1, "unknown": 1}
 
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
@@ -63,8 +92,19 @@ class TieredAdvisory:
     tier: TierResult
 
     @property
+    def shown_tier(self) -> str:
+        """The tier the surfaces show (:data:`SHOWN_TIERS`)."""
+        if self.tier.tier in ("reachable", "package_called"):
+            return "package_called"
+        return "imported" if self.tier.tier == "imported" else "unknown"
+
+    @property
+    def rank(self) -> int:
+        return _RANK[self.shown_tier]
+
+    @property
     def called(self) -> bool:
-        return self.tier.tier in CALLED_TIERS
+        return self.shown_tier in CALLED_TIERS
 
     def sites(self) -> list[str]:
         """``path:line`` of each evidence site (``path`` when it has no line)."""
@@ -75,7 +115,7 @@ class TieredAdvisory:
             "package": self.package,
             "ecosystem": self.ecosystem,
             "id": self.advisory.id,
-            "tier": self.tier.tier,
+            "tier": self.shown_tier,
             "basis": self.tier.basis,
         }
         if self.advisory.aliases:
@@ -100,7 +140,7 @@ class TieredAdvisory:
 
 def _order(row: TieredAdvisory) -> tuple:
     return (
-        TIERS.index(row.tier.tier),
+        row.rank,
         _SEVERITY_RANK.get(row.advisory.severity or "", 4),
         -(row.advisory.score or 0.0),
         row.package.casefold(),
@@ -142,12 +182,62 @@ def _import_sites(doc: dict[str, Any]) -> list[ImportSite]:
     ]
 
 
+async def _cli_commands(session: Any, repository_id: str) -> list[str]:
+    """CLI command functions, seeded over the stored import, framework and reference edges.
+
+    Ceiling: decorators are not stored, so a CLI declared only by a decorator
+    is missed; its entry-point file still roots it.
+    """
+    import networkx as nx
+    from sqlalchemy import select
+
+    from repowise.core.analysis.execution_roles import seed_roles
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    graph = nx.DiGraph()
+    nodes = await session.execute(
+        select(
+            GraphNode.node_id,
+            GraphNode.node_type,
+            GraphNode.kind,
+            GraphNode.name,
+            GraphNode.file_path,
+            GraphNode.language,
+        ).where(GraphNode.repository_id == repository_id)
+    )
+    for node_id, node_type, kind, name, file_path, language in nodes:
+        graph.add_node(
+            node_id,
+            node_type=node_type,
+            kind=kind,
+            name=name,
+            file_path=file_path,
+            language=language,
+        )
+    edges = await session.execute(
+        select(
+            GraphEdge.source_node_id,
+            GraphEdge.target_node_id,
+            GraphEdge.edge_type,
+            GraphEdge.hint_source,
+        ).where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.edge_type.in_(("imports", "framework", "framework_binds", "references")),
+        )
+    )
+    for source, target, edge_type, hint in edges:
+        graph.add_edge(source, target, edge_type=edge_type, hint_source=hint)
+    return sorted(seed_roles(graph).by_role.get("cli", set()))
+
+
 async def _reachable(session: Any, repository_id: str) -> frozenset[str]:
     """Execution-graph nodes reached from the production roots."""
     from repowise.core.analysis.test_reach.db import call_graph_from_db
     from repowise.core.inventory.vuln_reach import load_production_roots
 
-    roots = await load_production_roots(session, repository_id)
+    roots = await load_production_roots(
+        session, repository_id, cli_commands=await _cli_commands(session, repository_id)
+    )
     if not roots:
         return frozenset()
     graph = await call_graph_from_db(session, repository_id)
@@ -244,7 +334,8 @@ def _tier_all(joined: _Joined, calls: Sequence[Any]) -> list[TieredAdvisory]:
         for advisory, affected, version in p.verdicts:
             tier = tier_advisory(
                 ecosystem=p.ecosystem or "",
-                affected=advisory.affected,
+                # No symbol-level claim is shown (SHOWN_TIERS), so none is computed.
+                affected=(),
                 import_sites=p.imports,
                 call_sites=pkg_calls,
                 reachable=joined.reachable,

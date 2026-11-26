@@ -200,23 +200,23 @@ def _advisory_cell(a: dict[str, Any]) -> str:
     return f"{text} ({', '.join(notes)})" if notes else text
 
 
-def _tier_choices() -> list[str]:
-    from repowise.core.inventory.vuln_reach import TIERS
-
-    return list(TIERS)
+#: ``--tier`` / ``--fail-on`` values, strongest first; ``imported`` also takes
+#: in ``unknown``, which is never ranked below it.
+_TIER_CHOICES = ("package_called", "imported")
+_TIER_RANK = {"package_called": 0, "imported": 1}
 
 
 @packages_group.command("vulns")
 @click.option(
     "--tier",
     "min_tier",
-    type=click.Choice(_tier_choices()),
+    type=click.Choice(_TIER_CHOICES),
     default=None,
     help="List only advisories at this tier or stronger.",
 )
 @click.option(
     "--fail-on",
-    type=click.Choice([*_tier_choices(), "never"]),
+    type=click.Choice([*_TIER_CHOICES, "never"]),
     default="package_called",
     show_default=True,
     help="Exit 1 when an advisory sits at this tier or stronger.",
@@ -226,13 +226,13 @@ def _tier_choices() -> list[str]:
 def packages_vulns(min_tier: str | None, fail_on: str, repo: str | None, fmt: str) -> None:
     """Each stored advisory, tiered by how close production code comes to it.
 
-    Tiers, strongest first: reachable (production code calls an affected
-    symbol), package_called (production code calls into the package),
-    imported, indirect_unknown, test_or_dev_only, not_imported. Exits 2 when
-    no advisory document was imported.
+    Tiers: package_called (a function production code reaches calls into the
+    package, at the call site shown; Python), imported (shipping code imports
+    it), unknown (no shipping import found; it may still come through another
+    dependency, so it ranks with imported). Exits 2 when no advisory document
+    was imported.
     """
     from repowise.core.inventory.advisory_tiers import tier_advisories
-    from repowise.core.inventory.vuln_reach import TIERS
 
     root = _repo_root(repo)
     rows = run_async(_with_index(root, lambda s, rid: tier_advisories(s, rid, root)))
@@ -240,10 +240,8 @@ def packages_vulns(min_tier: str | None, fail_on: str, repo: str | None, fmt: st
         click.echo(_NO_DOCUMENT, err=True)
         raise SystemExit(2)
     if min_tier is not None:
-        rows = [r for r in rows if TIERS.index(r.tier.tier) <= TIERS.index(min_tier)]
-    failing = fail_on != "never" and any(
-        TIERS.index(r.tier.tier) <= TIERS.index(fail_on) for r in rows
-    )
+        rows = [r for r in rows if r.rank <= _TIER_RANK[min_tier]]
+    failing = fail_on != "never" and any(r.rank <= _TIER_RANK[fail_on] for r in rows)
     if fmt == "json":
         emit_json({"advisories": [r.as_dict() for r in rows], "fail_on": fail_on, "failed": failing})
     elif fmt == "sarif":
@@ -270,13 +268,13 @@ def _print_vulns(rows: list[Any]) -> None:
         sites = r.sites()
         where = ", ".join(sites[:2]) + (f" (+{len(sites) - 2})" if len(sites) > 2 else "")
         table.add_row(
-            r.tier.tier,
+            r.shown_tier,
             escape(f"{r.ecosystem or '?'}:{r.package}"),
             escape(f"{advisory} ({', '.join(notes)})" if notes else advisory),
             escape(where),
         )
     console.print(table)
-    counts = Counter(r.tier.tier for r in rows)
+    counts = Counter(r.shown_tier for r in rows)
     console.print(
         f"{len(rows)} advisory(ies): " + ", ".join(f"{n} {t}" for t, n in counts.items()) + "."
     )
@@ -284,7 +282,7 @@ def _print_vulns(rows: list[Any]) -> None:
         console.print("[dim]? = no exact version to check the range against.[/dim]")
 
 
-_SARIF_LEVEL = {"reachable": "error", "package_called": "warning"}
+_SARIF_LEVEL = {"package_called": "warning"}
 
 
 def _vulns_sarif(rows: list[Any]) -> dict[str, Any]:
@@ -297,13 +295,14 @@ def _vulns_sarif(rows: list[Any]) -> dict[str, Any]:
     for r in rows:
         if not r.tier.sites:
             continue
-        rule_id = f"advisory/{r.tier.tier}"
+        tier = r.shown_tier
+        rule_id = f"advisory/{tier}"
         rules.setdefault(
             rule_id,
             sarif.rule(
                 rule_id,
-                r.tier.tier,
-                f"Package advisory, tier {r.tier.tier}",
+                tier,
+                f"Package advisory, tier {tier}",
                 "A package advisory and the closest production code comes to it.",
             ),
         )
@@ -312,13 +311,13 @@ def _vulns_sarif(rows: list[Any]) -> dict[str, Any]:
         results.append(
             sarif.result(
                 rule_id,
-                _SARIF_LEVEL.get(r.tier.tier, "note"),
-                f"{r.advisory.id} in {r.package} ({r.tier.tier}){fix}",
+                _SARIF_LEVEL.get(tier, "note"),
+                f"{r.advisory.id} in {r.package} ({tier}){fix}",
                 site.path,
                 site.line,
                 "repowiseAdvisory/v1",
                 f"{r.ecosystem}:{r.package}:{r.advisory.id}",
-                {"tier": r.tier.tier, "severity": r.advisory.severity},
+                {"tier": tier, "severity": r.advisory.severity},
             )
         )
     return sarif.run("repowise", __version__, list(rules.values()), results)

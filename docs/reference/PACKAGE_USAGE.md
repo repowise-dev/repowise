@@ -20,25 +20,22 @@
 
 ## Advisories and tiers
 
-`repowise packages vulns` lists each stored advisory the version in use is not proven clear of, with one tier: the closest production code comes to it. Tiers, strongest first:
+`repowise packages vulns` lists each stored advisory the version in use is not proven clear of, with one tier, strongest first:
 
 | Tier | Meaning |
 |---|---|
-| `reachable` | The advisory names affected symbols, and a function production code reaches calls one. Go is judged by import path: a reached file imports an affected package path. |
-| `package_called` | A function production code reaches makes a proven call into the package, but no call to a named affected symbol is proven, or the advisory names none (PyPI and npm advisories rarely do). |
-| `imported` | Shipping code imports the package, and no reachable call into it is proven. |
-| `indirect_unknown` | No shipping code imports it, but it is, or may be, pulled in by another dependency, whose calls into it the index cannot see. |
-| `test_or_dev_only` | A direct-only dependency imported only by test, tooling, build or docs-example code. |
-| `not_imported` | A direct-only dependency nothing imports. |
+| `package_called` | A function production code reaches makes a proven call into the package, at the call site shown. Python code. |
+| `imported` | Shipping code imports the package; no call into it is claimed. JavaScript, TypeScript and Go stop here. |
+| `unknown` | No shipping import was found. The package may still come through another dependency, or under an import name the index does not link to it, so it ranks with `imported`, never below it. |
 
 What each tier rests on:
 
-- **Production roots:** entry points, files a framework loads by convention, and the functions serving stored HTTP routes, kept only in production code (`code_origin`). Reach walks the reliable call graph from them.
-- **Calls into a package:** a call the index proves is bound to the package by an import in the caller's file (`from x import y; y()`, `import x; x.y()`, `import {y} from 'x'`, `require('x').y()`), recorded for Python, JavaScript and TypeScript. Method calls on a value of a package type are not recorded, so their absence keeps an advisory at `imported`. An index built before call recording reads as `imported` until the next `repowise update` with a change.
-- **Never buried:** nothing goes below `imported` without proof, and a package that may be transitive stays at `indirect_unknown`. A document that marks a package direct does not rule out another dependency requiring it, so `test_or_dev_only` and `not_imported` need a dependency graph that shows it is direct only.
+- **Production roots:** entry points, files a framework loads by convention, the functions serving stored HTTP routes, and CLI commands, kept only in production code (`code_origin`). Reach walks the reliable call graph from them.
+- **Calls into a package:** a call the index proves is bound to the package by an import in the caller's file (`from x import y; y()`, `import x; x.y()`). Method calls on a value of a package type are not recorded, so their absence keeps an advisory at `imported`. An index built before call recording reads as `imported` until the next `repowise update` with a change.
+- **No discounting:** Repowise never says a vulnerable package is unused or test-only, and makes no claim about which function inside a package an advisory affects.
 
-`--fail-on TIER` (default `package_called`) exits 1 when an advisory sits at that tier or stronger, for CI; `--format sarif` writes one result per advisory at its first site, for code scanning.
+`--fail-on TIER` (default `package_called`) exits 1 when an advisory sits at that tier or stronger, for CI (`imported` also counts `unknown`); `--format sarif` writes one result per advisory at its first site, for code scanning.
 
 `repowise packages check pypi:requests@2.31.0` answers from the stored document before a package is added: `has_advisories` (with the fix above that version), `ok` (the document names the package and no advisory covers the version), or `unknown_no_source` (no document, or it does not name the package). Repowise does not look the package up anywhere; an `advisory-source` plugin can supply a feed.
 
-Agents get the same answers. `get_context(targets=["package:pypi:requests"])` adds `advisories` (up to 5: id, tier, severity, fix, sites) to the card, and `package:pypi:requests@2.31.0` adds a `check`. `get_risk` adds one `advisory_call` line to a file whose call production code reaches into a package with an advisory (tier `reachable` or `package_called`). A package or file with no stored advisory gets neither.
+Agents get the same answers. `get_context(targets=["package:pypi:requests"])` adds `advisories` (up to 5: id, tier, severity, fix, sites) to the card, and `package:pypi:requests@2.31.0` adds a `check`. `get_risk` adds one `advisory_call` line to a file holding a `package_called` call site. A package or file with no stored advisory gets neither.

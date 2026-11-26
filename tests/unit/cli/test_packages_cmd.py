@@ -91,20 +91,23 @@ def test_vulns_lists_tiers_and_gates(repo):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     tiers = {(a["package"], a["tier"]) for a in data["advisories"]}
-    assert tiers == {("requests", "imported"), ("jinja2", "indirect_unknown")}
+    assert tiers == {("requests", "imported"), ("jinja2", "unknown")}
     assert data["failed"] is False
 
     gated = CliRunner().invoke(cli, ["packages", "vulns", "--path", str(repo), "--fail-on", "imported"])
     assert gated.exit_code == 1
     assert "GHSA-9wx4-h78v-vm56" in gated.output
 
-    only = _invoke(["packages", "vulns", "--path", str(repo), "--tier", "imported", "--format", "json"])
-    assert [a["package"] for a in json.loads(only.output)["advisories"]] == ["requests"]
+    called = _invoke(
+        ["packages", "vulns", "--path", str(repo), "--tier", "package_called", "--format", "json"]
+    )
+    assert json.loads(called.output)["advisories"] == []
 
     sarif = _invoke(["packages", "vulns", "--path", str(repo), "--format", "sarif"])
     log = json.loads(sarif.output)
     assert log["version"] == "2.1.0"
     assert [r["ruleId"] for r in log["runs"][0]["results"]] == ["advisory/imported"]
+    assert log["runs"][0]["results"][0]["level"] == "note"
 
 
 def test_check_answers_from_the_stored_document(repo):

@@ -239,10 +239,7 @@ def advisory_call_line(rows: list[Any]) -> str:
     head = f"{top.advisory.id}{f' ({notes})' if notes else ''}"
     site = top.tier.sites[0]
     where = f"{site.path}:{site.line}" if site.line else site.path
-    if top.tier.tier == "reachable":
-        line = f"{head}: its affected function {site.symbol} is called from production code at {where}"
-    else:
-        line = f"{head} in {top.package}: production code calls into the package at {where}"
+    line = f"{head} in {top.package}: a production function calls into the package at {where}"
     if len(rows) > 1:
         key = f"package:{top.ecosystem}:{top.package}" if top.ecosystem else f"package:{top.package}"
         line += f'; {len(rows) - 1} more advisory(ies): get_context(targets=["{key}"])'

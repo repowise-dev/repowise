@@ -118,7 +118,7 @@ def _same(row_eco: str | None, row_name: str, eco: str | None, name: str) -> boo
 
 def _advisory_row(row: Any) -> dict[str, Any]:
     """``{id, tier, severity, fix, sites}``; the full record is in ``repowise packages vulns``."""
-    out: dict[str, Any] = {"id": row.advisory.id, "tier": row.tier.tier}
+    out: dict[str, Any] = {"id": row.advisory.id, "tier": row.shown_tier}
     if row.advisory.severity:
         out["severity"] = row.advisory.severity
     if row.fix:

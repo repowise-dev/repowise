@@ -87,9 +87,69 @@ async def test_a_reached_call_makes_the_package_called(session, tmp_path):  # no
     assert requests.as_dict()["sites"] == [
         {"path": "src/app/util.py", "line": 5, "symbol": "requests.get"}
     ]
-    # Named by the document, imported nowhere, may be transitive: never buried.
+    # Named by the document, imported nowhere, may be transitive: shown as
+    # unknown, never as a tier below imported.
     assert by_pkg["jinja2"].tier.tier == "indirect_unknown"
+    assert by_pkg["jinja2"].shown_tier == "unknown"
+    assert by_pkg["jinja2"].as_dict()["tier"] == "unknown"
+    assert by_pkg["jinja2"].rank == 1
     assert rows[0].package == "requests"  # strongest tier first
+
+
+async def test_npm_calls_are_not_claimed(session, tmp_path):  # noqa: F811
+    """A stored npm call never makes a package called: npm stays at imported."""
+    import json
+
+    from repowise.core.persistence.models import ExternalSystem, GraphNode
+
+    session.add_all(
+        [
+            ExternalSystem(
+                id=10, repository_id=REPO, name="lodash", ecosystem="npm",
+                version="4.17.20", declared_in="package.json",
+            ),
+            GraphNode(
+                repository_id=REPO, node_id="src/app/web.ts", node_type="file",
+                language="typescript", is_entry_point=True,
+            ),
+            GraphNode(
+                repository_id=REPO, node_id="external:lodash", node_type="external",
+                external_system_id=10,
+            ),
+            GraphEdge(
+                repository_id=REPO, source_node_id="src/app/web.ts",
+                target_node_id="external:lodash", imported_names_json='["merge"]',
+                edge_type="imports",
+            ),
+        ]
+    )  # fmt: skip
+    (tmp_path / "src/app/web.ts").write_text("import { merge } from 'lodash';\n", encoding="utf-8")
+    call = ExternalCallSite(
+        file_path="src/app/web.ts", line=2, caller_symbol_id="src/app/web.ts::__module__",
+        ecosystem="npm", module="lodash", package="lodash", external_node="external:lodash",
+        local_name="merge", symbol_path="merge", binding="named",
+    )  # fmt: skip
+    await replace_external_call_sites(
+        session, REPO, {"src/app/web.ts": [call]}, scope=None, live_paths=["src/app/web.ts"]
+    )
+    doc = {
+        "results": [
+            {
+                "packages": [
+                    {
+                        "package": {"name": "lodash", "version": "4.17.20", "ecosystem": "npm"},
+                        "vulnerabilities": [{"id": "GHSA-35jh-r3h4-6jhm"}],
+                    }
+                ]
+            }
+        ]
+    }
+    (tmp_path / "npm.json").write_text(json.dumps(doc), encoding="utf-8")
+    await join_usage(session, REPO, tmp_path, str(tmp_path / "npm.json"), store=True)
+    await session.commit()
+    (row,) = await tier_advisories(session, REPO, tmp_path)
+    assert (row.shown_tier, row.tier.basis) == ("imported", "no_call_records")
+    assert await called_advisories_in_files(session, REPO, tmp_path, ["src/app/web.ts"]) == {}
 
 
 async def test_incomplete_call_table_stays_imported(session, tmp_path):  # noqa: F811

@@ -37,7 +37,7 @@ async def test_risk_line_only_on_the_file_whose_call_production_reaches(session,
     untouched = copy.deepcopy(cards[1:])
     await attach_advisory_calls(session, REPO, str(tmp_path), cards)
     assert cards[0]["advisory_call"] == (
-        "GHSA-9wx4-h78v-vm56 in requests: production code calls into the package "
+        "GHSA-9wx4-h78v-vm56 in requests: a production function calls into the package "
         "at src/app/util.py:5"
     )
     # An unreached call and a file with no call add zero bytes.
