@@ -988,8 +988,11 @@ Contracts inside one repository, off by default. When on, `init` and `update`
 read the repo's HTTP routes and client calls, gRPC services, sockets and
 message topics into `.repowise/contracts.json` and link each caller to the
 route it reaches, across the repo's services. An update re-reads them only when
-a commit or an uncommitted edit touches a file that can hold one. A workspace
-keeps its own contracts in `.repowise-workspace/contracts.json`.
+a commit or an uncommitted edit touches a file that can hold one. Each run
+prints one line: contracts found, caller-to-route links inside the repo
+(`contract_links`), and links to other repos known only by host
+(`service_links`). A workspace keeps its own contracts in
+`.repowise-workspace/contracts.json`.
 
 ```yaml
 contracts:
