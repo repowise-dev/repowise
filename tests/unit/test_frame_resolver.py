@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.frame_resolver import ProfileFrame, resolve_frames
 from repowise.core.workspace.repo_index import IndexedSymbol
 
@@ -402,3 +404,95 @@ def test_rust_type_line_is_not_put_on_the_file() -> None:
 
 def test_rust_frame_without_name_is_no_second_signal() -> None:
     assert _resolve(_rs(15, "")).skipped == {"no_second_signal": 1}
+
+
+# -- Pascal --------------------------------------------------------------
+
+PAS_CLASS = _sym("src/cart.pas", "cart.TCart", 3, 6, "class")
+PAS_TOTAL = _sym("src/cart.pas", "cart.TCart.Total", 9, 18, "method")
+PAS_TOTAL_STR = _sym("src/cart.pas", "cart.TCart.Total", 19, 19, "method")
+PAS_SYMBOLS = {"src/cart.pas": [PAS_CLASS, PAS_TOTAL, PAS_TOTAL_STR], "src/demo.lpr": []}
+PAS_SOURCE = {
+    "src/cart.pas": [
+        "unit cart;",
+        "interface",
+        "type TCart = class",
+        "  function Total(N: Integer): Int64;",
+        "  function Total(const S: string): Int64; overload;",
+        "end;",
+        "implementation",
+        "",
+        "function TCart.Total(N: Integer): Int64;",
+        "  procedure Add(I: Integer);",
+        "    PROCEDURE Deep;",
+        "    begin Result := Result + I end;",
+        "  begin Deep end;",
+        "var I: Integer;",
+        "begin",
+        "  Result := 0;",
+        "  for I := 1 to N do Add(I);",
+        "end;",
+        "function TCart.Total(const S: string): Int64; begin Result := Length(S) end;",
+        "initialization",
+        "  Prepare;",
+        "end.",
+    ]
+}
+
+
+def _pas(line: int, name: str, path: str = "src/cart.pas") -> ProfileFrame:
+    return ProfileFrame(f"{ROOT}/{path}", line, "pascal", function=name)
+
+
+def _pas_resolve(*frames: ProfileFrame, **kw):
+    kw.setdefault("read_lines", PAS_SOURCE.get)
+    return _resolve(*frames, symbols_by_file=PAS_SYMBOLS, **kw)
+
+
+@pytest.mark.parametrize("name", ["Total", "TOTAL", "TCart.Total", "tcart.total"])
+def test_pascal_joins_a_method_by_line_and_name_without_case(name: str) -> None:
+    resolution = _pas_resolve(_pas(17, name))
+    assert _one(resolution) is PAS_TOTAL
+    assert not resolution.resolved[0].folded
+
+
+def test_pascal_overloads_are_told_apart_by_the_line() -> None:
+    assert _one(_pas_resolve(_pas(19, "Total"))) is PAS_TOTAL_STR
+
+
+@pytest.mark.parametrize(("line", "name"), [(13, "Add"), (12, "Deep"), (12, "deep")])
+def test_pascal_nested_routine_folds_into_its_parent(line: int, name: str) -> None:
+    resolution = _pas_resolve(_pas(line, name))
+    assert _one(resolution) is PAS_TOTAL
+    assert resolution.resolved[0].folded
+
+
+def test_pascal_name_of_no_routine_declared_above_the_line_is_a_mismatch() -> None:
+    resolution = _pas_resolve(_pas(17, "Length"), _pas(10, "Deep"), _pas(17, "TOther.Total"))
+    assert resolution.skipped == {"second_signal_mismatch": 3}
+
+
+def test_pascal_nested_routine_needs_the_source() -> None:
+    assert _pas_resolve(_pas(12, "Deep"), read_lines=None).skipped == {"no_source": 1}
+
+
+def test_pascal_frame_without_a_name_has_no_second_signal() -> None:
+    assert _pas_resolve(_pas(17, "")).skipped == {"no_second_signal": 1}
+
+
+@pytest.mark.parametrize(
+    ("line", "name", "path"),
+    [
+        (4, "$main", "src/demo.lpr"),
+        (21, "$CART_$$_init$", "src/cart.pas"),
+        (21, "$CART_$$_finalize$", "src/cart.pas"),
+    ],
+)
+def test_pascal_program_and_unit_blocks_resolve_to_the_file(line: int, name: str, path: str) -> None:
+    resolution = _pas_resolve(_pas(line, name, path))
+    assert _one(resolution) is None
+    assert not resolution.resolved[0].folded
+
+
+def test_pascal_routine_outside_every_span_has_no_span() -> None:
+    assert _pas_resolve(_pas(21, "Prepare")).skipped == {"no_span": 1}
