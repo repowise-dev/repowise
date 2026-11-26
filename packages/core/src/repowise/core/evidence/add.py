@@ -786,7 +786,9 @@ async def _convert(
     from repowise.core.frame_resolver import checkout_reader, frame_paths, load_frame_symbols
 
     from .profile_convert import convert_profile
+    from .source_maps import remap_profile
 
+    reader = checkout_reader(root)
     symbols, origins = await load_frame_symbols(
         session,
         repo_id,
@@ -794,14 +796,25 @@ async def _convert(
         fold_case=sys.platform == "win32",
     )
     try:
+        mapped = remap_profile(run, root=str(root), read_lines=reader,
+                               origins=origins, dirty_paths=changed or ())
+        # Load original sources as well as the bundle paths in the profile.
+        extra = frame_paths(mapped.frames, root=str(root)) - frame_paths(run.frames, root=str(root))
+        if extra:
+            original_symbols, original_origins = await load_frame_symbols(
+                session, repo_id, extra, fold_case=sys.platform == "win32",
+            )
+            symbols.update(original_symbols)
+            origins.update(original_origins)
         return convert_profile(
-            run,
+            mapped,
             root=str(root),
             symbols_by_file=symbols,
             dirty_paths=changed or (),
             origins=origins,
-            read_lines=checkout_reader(root),
+            read_lines=reader,
             value_kind=value_kind,
+            map_sources=False,
         )
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
