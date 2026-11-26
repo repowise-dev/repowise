@@ -618,7 +618,7 @@ async def imported_names_by_test(
         return {}
     out: dict[str, dict[str, frozenset[str]]] = {}
     barrels: dict[str, dict[str, frozenset[str]]] = {}
-    for source, target, names in await _imported_names(session, repo_id, targets):
+    for source, target, names in await imported_names(session, repo_id, targets):
         if source in test_files:
             _add_names(out, target, source, names)
         elif PurePosixPath(source).name in BARREL_FILENAMES:
@@ -636,7 +636,7 @@ async def _add_barrel_imports(
     out: dict[str, dict[str, frozenset[str]]],
 ) -> None:
     """Credit each test importing a barrel with the names the barrel passes on from each file."""
-    for source, barrel, names in await _imported_names(session, repo_id, sorted(barrels)):
+    for source, barrel, names in await imported_names(session, repo_id, sorted(barrels)):
         if source not in test_files:
             continue
         for target, exported in barrels[barrel].items():
@@ -653,7 +653,7 @@ def _add_names(
     by_test[test] = by_test.get(test, frozenset()) | names
 
 
-async def _imported_names(
+async def imported_names(
     session: AsyncSession, repo_id: str, targets: list[str]
 ) -> list[tuple[str, str, frozenset[str]]]:
     """``(importer, imported file, names)`` for every import edge into *targets*."""
@@ -701,6 +701,23 @@ async def load_import_graph(session: AsyncSession, repo_id: str) -> ImportGraph:
     for source, target in rows:
         importers.setdefault(target, []).append(source)
     # Sorted, so a bounded walk does not depend on the order rows come back in.
+    return ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()})
+
+
+async def load_time_importers(session: AsyncSession, repo_id: str) -> ImportGraph:
+    """The import edges that run when a module loads, reversed: type-only and deferred
+    (function-body) imports left out, as cycle detection leaves them out."""
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+            "WHERE repository_id = :repo_id AND edge_type = 'imports' "
+            "AND type_only = :no AND deferred = :no"
+        ),
+        {"repo_id": repo_id, "no": False},
+    )
+    importers: dict[str, list[str]] = {}
+    for source, target in rows:
+        importers.setdefault(target, []).append(source)
     return ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()})
 
 
