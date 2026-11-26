@@ -66,6 +66,11 @@ def _extract_imports(
         seen_imports[dedup_key] = []
 
         module_text = node_text(module_nodes[0], src).strip().strip("\"'` ")
+        # C/C++ ``#include <x>``: the resolver contract (see
+        # ``resolvers/cpp.py``) expects the ``< >`` wrapper already stripped.
+        # Without this, ``<cfg.hpp>`` never matches a project file.
+        if language in ("c", "cpp") and module_text.startswith("<") and module_text.endswith(">"):
+            module_text = module_text[1:-1]
         if not module_text:
             continue
 
