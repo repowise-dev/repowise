@@ -722,7 +722,7 @@ async def test_file_last_change_is_dated_by_the_merge_that_landed_it(setup_mcp, 
     path = "src/auth/service.py"
     last = (await get_context([path], include=["last_change"]))["targets"][path]["last_change"]
     assert last["date"].startswith("2026-08-12")
-    assert last["authored"] == "2026-01-18"
+    assert "authored" not in last  # stored history keeps committer dates only
 
 
 @pytest.mark.asyncio

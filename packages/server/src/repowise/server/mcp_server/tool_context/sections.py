@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import RETIRED_STATUSES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
-from repowise.core.analysis.git_cli import landed_apart
 from repowise.core.attribution import attribution_enabled, file_share
 from repowise.core.generation.layers import is_fallback_layer
 from repowise.core.generation.page_selection import is_stale_status
@@ -524,10 +523,11 @@ async def _change_of(card: CardState, row: Any) -> dict[str, Any]:
 
     The date is the file's newest commit's, unless a stored change touching
     the file landed later (:func:`file_landing`, a merge of an older branch):
-    then it is that change's merge, with ``authored``, the day its newest
-    commit on the file was made, when that is more than a day earlier.
-    ``author`` is the stored author whose own newest commit is that commit,
-    and is absent when none matches: the primary owner is not who made it.
+    then it is that change's merge. No ``authored`` day: the stored history
+    keeps committer dates only, and a rebase moves those (a symbol's walk reads
+    the author date). ``author`` is the stored author whose own newest commit
+    is that change's newest commit on the file, and is absent when none
+    matches: the primary owner is not who made it.
     """
     if row is None or row.last_commit_at is None:
         return {"date": None, "days_ago": None}
@@ -546,8 +546,6 @@ async def _change_of(card: CardState, row: Any) -> dict[str, Any]:
     author = _author_at(row.top_authors_json, written)
     if author:
         change["author"] = author
-    if landed_apart(moment.isoformat(), written.isoformat()):
-        change["authored"] = written.date().isoformat()
     return change
 
 
