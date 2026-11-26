@@ -18,7 +18,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
-from tests.unit.cli.test_evidence_cmd import _git_repo, _index, _stored
+from tests.unit.cli.test_evidence_cmd import _indexed_copy, _stored
 
 
 def _speedscope(root: Path) -> bytes:
@@ -45,10 +45,8 @@ def _ingest(root: Path, data: bytes, **options) -> dict:
 
 
 @pytest.fixture
-def indexed(tmp_path: Path) -> tuple[Path, str]:
-    head = _git_repo(tmp_path)
-    _index(tmp_path)
-    return tmp_path, head
+def indexed(tmp_path: Path, tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
+    return tmp_path, _indexed_copy(tmp_path, tmp_path_factory)
 
 
 def test_an_uploaded_profile_is_converted_and_stored(indexed) -> None:
