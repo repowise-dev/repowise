@@ -370,7 +370,8 @@ def _commit_leaders(
     "who should review" needs no ``git log``. The 90 days run back from the
     newest indexed commit. Bots never reach ``top_authors_json``. Each file
     keeps its top 50 authors, so a longer tail marks its total with ``+``.
-    Empty on rows indexed before per-author recent counts were stored.
+    Empty when the stored authors carry no commit counts; only the all-time
+    line when they carry no 90-day counts.
     """
     try:
         authors = json.loads(top_authors_json or "[]")

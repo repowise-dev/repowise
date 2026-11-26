@@ -88,6 +88,9 @@ def test_rows_without_per_author_counts_add_nothing() -> None:
     # Fixtures and indexes from before per-author counts were stored.
     assert _commit_leaders(json.dumps([{"name": "Carol", "count": 3}]), None) == {}
     assert _commit_leaders("not json", None) == {}
+    # Commit counts but no 90-day counts: the all-time line alone.
+    rows = [{"name": "Carol", "commit_count": 3}]
+    assert _commit_leaders(json.dumps(rows), None) == {"all_time": "Carol 3 of 3"}
 
 
 def test_a_bot_leading_recent_commits_is_never_the_recent_leader() -> None:
