@@ -144,17 +144,19 @@ def helper_readers(
     texts = _naming_texts(test_files, wanted, read)
     if texts is None:
         return {}
-    files = sorted(test_files)
-    return {
-        h: [p for p in files if p != h and _reads(p, h, found, texts)] for h, found in names.items()
-    }
+    out: dict[str, list[str]] = {h: [] for h in names}
+    for p in sorted(test_files):  # file by file, so its per-text reads are cached once
+        for h, found in names.items():
+            if p != h and _reads(p, h, found, texts):
+                out[h].append(p)
+    return out
 
 
 def _naming_texts(
     test_files: Collection[str], wanted: Collection[str], read: Callable[[str], str | None]
 ) -> dict[str, str] | None:
     """``{test file: its code text}`` for each holding one of *wanted* or a listing;
-    ``None`` when one cannot be read."""
+    ``None`` when one cannot be read. Python's dotted names are joined again."""
     texts: dict[str, str] = {}
     for p in sorted(test_files):
         raw = read(p)
@@ -162,7 +164,8 @@ def _naming_texts(
             return None
         text = raw.lower()
         if any(map(text.__contains__, wanted)) or _LISTING.search(text):
-            texts[p] = code_text(p, text)
+            code = code_text(p, text)
+            texts[p] = _join_dots(code) if p.endswith(".py") else code
     return texts
 
 
@@ -252,8 +255,6 @@ def _names_helper(
     test file *reader*; in a config (*reader* ``None``, in directory *at*) only a bare
     file name does, and a relative path counts when it resolves to the helper from *at*.
     """
-    if reader and reader.endswith(".py"):  # tokenized by :func:`code_text`
-        text = _join_dots(text)
     path = PurePosixPath(helper.lower())
     stem = path.name.split(".")[0]
     module = (*path.parts[:-1], stem)
@@ -277,12 +278,11 @@ def _names_helper(
 _WINDOW = 256
 
 
-@functools.lru_cache(maxsize=64)
 def _join_dots(text: str) -> str:
     """Python text :func:`code_text` tokenized, with its dotted names joined again.
 
     ``aiohttp . client`` reads ``aiohttp.client``; ``from . . client`` reads
-    ``from ..client``, a relative import. Cached: each test file is read once per helper.
+    ``from ..client``, a relative import.
     """
     pieces = _STRING.split(text)
     for i in range(0, len(pieces), 2):  # the code between string literals, which stay as written
@@ -298,7 +298,7 @@ def _join_dots(text: str) -> str:
 _STRING = re.compile(r"""("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')""")
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=8)
 def _aliases(text: str) -> frozenset[str]:
     """The names *text* binds with ``as``."""
     return frozenset(re.findall(r"\bas\s+(\w+)", text))
