@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-FrameLanguage = Literal["go", "python", "javascript", "java", "kotlin"]
+FrameLanguage = Literal["go", "python", "javascript", "rust", "java", "kotlin"]
 
 #: JVM frames: no file of their own, placed by class name (:func:`place_jvm_frames`).
 _JVM = frozenset({"java", "kotlin"})
@@ -146,21 +146,26 @@ def resolve_frames(
     the method name and class to agree with the innermost method at its line;
     with no line it joins by name (:func:`_name_join`): the one method of that
     name in that class, else the one whose parameter count (and types) match
-    the frame's, else ``ambiguous``. A frame is never put on one overload of
-    several by name alone.
+    the frame's, else ``ambiguous``. Rust needs the demangled function name
+    (``crate::module::Type::method``, with hash suffix cut) to agree with the
+    innermost method or function at its line. A frame is never put on one
+    overload of several by name alone.
 
     Folding, when the frame's own function has no symbol: a Go closure
     (``Outer.func1``) whose start line lies inside ``Outer``; a Python frame
     whose qualified name runs through ``<locals>`` or ends in ``<lambda>``,
     ``<genexpr>`` or a comprehension, charged to the symbol its enclosing name
     matches; a JavaScript function that starts on a body line of an indexed
-    function. Module bodies (Python ``<module>``, the Go package initializer,
-    the CommonJS wrapper at 1:1, a JVM static initializer) resolve to the
-    file, and a Python frame on a decorator line resolves to the function it
-    decorates. A JVM lambda (``lambda$name$0``, Kotlin ``name$lambda$0``) and a
-    method of an anonymous class (``Outer$1``) fold into the method at their
-    line; compiler-made accessors and bridges (``access$000``, ``$default``,
-    ``$$Lambda``, ``$$`` proxies) are ``generated``.
+    function; a Rust ``{{closure}}`` or ``{{async_block}}`` frame folded into
+    the enclosing function, and frames on struct or module body lines
+    attributed to the file. Module bodies (Python ``<module>``, the Go package
+    initializer, the CommonJS wrapper at 1:1, a JVM static initializer)
+    resolve to the file, and a Python frame on a decorator line resolves to the
+    function it decorates. A JVM lambda (``lambda$name$0``, Kotlin
+    ``name$lambda$0``) and a method of an anonymous class (``Outer$1``) fold
+    into the method at their line; compiler-made accessors and bridges
+    (``access$000``, ``$default``, ``$$Lambda``, ``$$`` proxies) are
+    ``generated``.
     """
     paths = _PathMap(root, symbols_by_file, dirty_paths)
     reader = _read_once(read_lines) if read_lines is not None else None
@@ -283,7 +288,7 @@ def _resolve(
     rel = paths.relative(frame.path)
     if rel is None:
         return "outside_root"
-    if frame.language not in ("go", "python", "javascript", *_JVM):
+    if frame.language not in ("go", "python", "javascript", "rust", *_JVM):
         return "unsupported_language"
     # A JVM frame without a line still has its class, method and parameters.
     if frame.line < 1 and frame.language not in _JVM:
@@ -312,6 +317,8 @@ def _resolve(
         outcome = _go(frame, symbols)
     elif frame.language in _JVM:
         outcome = _jvm(frame, symbols, kotlin=rel.endswith(".kt"))
+    elif frame.language == "rust":
+        outcome = _rust(frame, symbols)
     else:
         outcome = _python(frame, symbols, lines)
     return (rel, outcome) if isinstance(outcome, tuple) else outcome
@@ -434,6 +441,66 @@ def _decorated(
 def _qualname_tail(frame_name: str, qualified_name: str) -> bool:
     """Whether *frame_name* (``Flask.__init__``) ends *qualified_name* at a dot."""
     return qualified_name == frame_name or qualified_name.endswith("." + frame_name)
+
+
+# -- Rust ----------------------------------------------------------------------
+
+_RUST_HASH_RE = re.compile(r"::h[0-9a-fA-F]+$")
+_RUST_FOLD_RE = re.compile(r"(?:::\{\{(?:closure|async_block)\}\})+$")
+
+
+def _rust(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipReason:
+    raw_name = frame.function
+    if not raw_name:
+        return "no_second_signal"
+
+    clean = _RUST_HASH_RE.sub("", raw_name)
+
+    fold_match = _RUST_FOLD_RE.search(clean)
+    folded = fold_match is not None
+    base_name = clean[: fold_match.start()] if folded else clean
+
+    symbol = symbol_at((s for s in symbols if s.kind in _CALLABLE_KINDS), frame.line)
+
+    if symbol is None:
+        if folded:
+            return (None, True)
+        container = symbol_at(
+            (s for s in symbols if s.kind in ("struct", "enum", "impl", "trait", "module")),
+            frame.line,
+        )
+        if container is not None:
+            return (None, False)
+        return "no_span"
+
+    if base_name.startswith("<") and ">::" in base_name:
+        bracket_content, method_part = base_name[1:].split(">::", 1)
+        type_part = bracket_content.split(" as ")[0].strip()
+        base_name = f"{type_part}::{method_part}"
+
+    normalized = base_name.replace("::", ".")
+    qual_parts = symbol.qualified_name.split(".")
+    if len(qual_parts) >= 2 and symbol.kind == "method":
+        parent = qual_parts[-2]
+        expected_suffix = f"{parent}.{symbol.name}"
+        if (
+            normalized == expected_suffix
+            or normalized.endswith("." + expected_suffix)
+            or normalized == symbol.name
+            or symbol.qualified_name.endswith("." + normalized)
+        ):
+            return (symbol, folded)
+        return "second_signal_mismatch"
+
+    if (
+        normalized == symbol.name
+        or normalized.endswith("." + symbol.name)
+        or symbol.qualified_name == normalized
+        or symbol.qualified_name.endswith("." + normalized)
+    ):
+        return (symbol, folded)
+
+    return "second_signal_mismatch"
 
 
 # -- JVM (Java, Kotlin) ----------------------------------------------------------

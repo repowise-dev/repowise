@@ -235,3 +235,33 @@ def test_javascript_reads_each_file_once() -> None:
     frames = [_js(6, 15), _js(6, 15, "x"), _js(5, 23, "handle")]
     resolve_frames(frames, root=ROOT, symbols_by_file={"lib/app.js": JS}, read_lines=read)
     assert calls == ["lib/app.js"]
+
+
+# -- Rust ------------------------------------------------------------------------
+
+RS_SYM = [
+    _sym("cart.rs", "cart.Cart", 1, 30, "struct"),
+    _sym("cart.rs", "cart.Cart.total", 5, 20, "method"),
+]
+
+
+def _rs(line: int, name: str) -> ProfileFrame:
+    return ProfileFrame(f"{ROOT}/cart.rs", line, "rust", function=name)
+
+
+def test_rust_closure_folds_into_enclosing_method() -> None:
+    assert _hit(_run(_rs(8, "cart::Cart::total::{{closure}}::h1234"), RS_SYM)) == (RS_SYM[1], True)
+    assert _hit(_run(_rs(8, "Cart::total::{{closure}}"), RS_SYM)) == (RS_SYM[1], True)
+
+
+def test_rust_async_block_folds_into_enclosing_method() -> None:
+    assert _hit(_run(_rs(8, "cart::Cart::total::{{async_block}}::h1234"), RS_SYM)) == (RS_SYM[1], True)
+
+
+def test_rust_closure_at_module_level_folds_into_file() -> None:
+    assert _hit(_run(_rs(35, "cart::{{closure}}"), RS_SYM)) == (None, True)
+
+
+def test_rust_closure_with_wrong_method_is_mismatch() -> None:
+    assert _run(_rs(8, "cart::Cart::other::{{closure}}"), RS_SYM).skipped == {"second_signal_mismatch": 1}
+
