@@ -1285,7 +1285,7 @@ def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, f
     if tests and not any("coverlet.collector" in t for p, t in files.items() if p in tests):
         notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
                      "test project (`dotnet add package coverlet.collector`).")
-    if tests and not any("junitxml.testlogger" in t.lower() for p, t in files.items() if p in tests):
+    if target and not any("junitxml.testlogger" in t.lower() for t in files.values()):
         notes.append(f"`{_DOTNET_JUNIT}` needs the `JunitXml.TestLogger` package in each "
                      "test project (`dotnet add package JunitXml.TestLogger`).")
     if target:

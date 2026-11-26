@@ -1306,3 +1306,14 @@ def test_dotnet_without_target_has_no_junit_report():
     assert stack.junit_report == "" and stack.junit_flag == ""
     assert stack.with_junit("dotnet test") is None
 
+
+def test_dotnet_solution_target_without_test_in_path_emits_junit_logger_note():
+    files = {
+        "App.sln": "Microsoft Visual Studio Solution File",
+        "nested/deep/spec/Specs.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>',
+    }
+    (stack,) = detect_stacks(list(files), files)
+    assert stack.junit_flag == '--logger "junit;LogFilePath=junit.xml"'
+    assert any("JunitXml.TestLogger" in n for n in stack.notes)
+
+
