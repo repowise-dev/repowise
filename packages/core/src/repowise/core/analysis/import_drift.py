@@ -154,7 +154,9 @@ def _parsed_imports(path: str, language: str, source: bytes) -> list[Any] | None
 
 
 def _import_key(imp: Any) -> tuple:
-    return imp.module_path, tuple(sorted(imp.imported_names)), imp.is_reexport
+    # A glob import's later patterns change what it reaches too.
+    globs = getattr(imp, "glob_patterns", ())
+    return imp.module_path, tuple(sorted(imp.imported_names)), imp.is_reexport, globs
 
 
 @dataclass(frozen=True)

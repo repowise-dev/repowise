@@ -11,7 +11,7 @@ from .lwc import lwc_bundle_dir, resolve_lwc_module
 from .nuxt import resolve_nuxt_alias
 from .subpath_imports import resolve_subpath_import
 from .svelte_kit import resolve_lib_alias
-from .ts_workspace import resolve_via_workspaces
+from .ts_workspace import _vitest_glob_to_regex, resolve_via_workspaces
 
 # Metro (React Native) platform extensions, in sorted order so the candidates
 # generated from them are deterministic.
@@ -213,3 +213,84 @@ def resolve_ts_js_import_all(
     platform_targets.discard(single or "")
     targets.extend(sorted(platform_targets))
     return tuple(targets)
+
+
+_GLOB_CHARS = frozenset("*?[{")
+
+
+def resolve_ts_js_glob(
+    patterns: tuple[str, ...], importer_path: str, ctx: ResolverContext
+) -> tuple[str, ...]:
+    """Every indexed file a Vite ``import.meta.glob`` call loads, sorted.
+
+    Follows Vite's reading of each pattern: ``./`` and ``../`` from the
+    importer's directory, ``**`` anywhere in the repository, anything else
+    through the same aliases an import takes (tsconfig ``paths``, Nuxt ``~/``,
+    SvelteKit ``$lib``, ``#`` subpath imports, workspace packages). A ``!``
+    pattern removes what it matches. Vite never loads the importer itself.
+
+    Only files in ``ctx.path_set`` match, so excluded and unindexed files get
+    no edge. A ``/``-rooted pattern (from the Vite root) is not read: the root
+    comes from the bundler config, so it matches nothing here.
+    """
+    matched: set[str] = set()
+    removed: set[str] = set()
+    for pattern in patterns:
+        negated = pattern.startswith("!")
+        files = _glob_files(pattern[1:] if negated else pattern, importer_path, ctx)
+        (removed if negated else matched).update(files)
+    matched -= removed
+    matched.discard(importer_path)
+    return tuple(sorted(matched))
+
+
+def _glob_files(pattern: str, importer_path: str, ctx: ResolverContext) -> set[str]:
+    if pattern.startswith("**"):
+        return _regex_matches(pattern, ctx)
+    if pattern.startswith(("./", "../")):
+        joined = posixpath.normpath(posixpath.join(posixpath.dirname(importer_path), pattern))
+        return set() if joined.startswith("../") else _regex_matches(joined, ctx)
+    if not pattern or pattern.startswith("/"):
+        return set()
+    return _alias_glob_files(pattern, importer_path, ctx)
+
+
+def _regex_matches(repo_glob: str, ctx: ResolverContext) -> set[str]:
+    regex = _vitest_glob_to_regex(repo_glob)
+    return {path for path in ctx.path_set if regex.match(path)}
+
+
+def _alias_glob_files(pattern: str, importer_path: str, ctx: ResolverContext) -> set[str]:
+    """Files an alias-rooted glob (``@/pages/*.vue``) matches.
+
+    The alias part is the static directory before the first wildcard. A file
+    matches when its path ends in a part the wildcard tail matches and the
+    importer, writing ``<static dir>/<that part>``, resolves to it, so every
+    alias an import understands applies, with nothing re-implemented here.
+    """
+    first_wild = min((i for i, c in enumerate(pattern) if c in _GLOB_CHARS), default=-1)
+    if first_wild < 0:
+        hit = _resolve_in_repo(pattern, importer_path, ctx)
+        return {hit} if hit else set()
+    static, slash, _ = pattern[:first_wild].rpartition("/")
+    if not slash:
+        return set()
+    tail = pattern[len(static) + 1 :]
+    tail_regex = _vitest_glob_to_regex(tail)
+    # A tail without ``**`` spans a fixed number of segments, so each path has
+    # one candidate split; with ``**`` every split is tried.
+    fixed = None if "**" in tail else tail.count("/") + 1
+    hits: set[str] = set()
+    for path in ctx.path_set:
+        parts = path.split("/")
+        starts = range(1, len(parts)) if fixed is None else (len(parts) - fixed,)
+        for start in starts:
+            if start < 1:
+                continue
+            rest = "/".join(parts[start:])
+            if tail_regex.match(rest) and (
+                _resolve_in_repo(f"{static}/{rest}", importer_path, ctx) == path
+            ):
+                hits.add(path)
+                break
+    return hits
