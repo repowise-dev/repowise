@@ -217,6 +217,10 @@ class GraphBuilder(
         # Shared import-name maps (built once per build(), injected into the
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
+        # {path: imports a framework writes for the file with no statement}
+        # (Nuxt auto-imports), made each build and never stored on ParsedFile,
+        # so the parse cache and the resolution cache keep the file's own list.
+        self._implicit_imports: dict[str, list[Import]] = {}
         # {path: the targets each of its imports resolved to, in order}. A
         # patch compares these to decide which files an edit re-routes.
         self.import_resolutions: dict[str, list[tuple[str, ...]]] = {}
@@ -252,6 +256,7 @@ class GraphBuilder(
         self.__dict__.setdefault("_cycle_subgraph_cache", None)
         self.__dict__.setdefault("_centrality_subgraph_cache", None)
         self.__dict__.setdefault("fresh_communities", False)
+        self.__dict__.setdefault("_implicit_imports", {})
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -351,6 +356,16 @@ class GraphBuilder(
             parsed_files=self._parsed_files,
             source_map=self._source_map,
         )
+
+    def _collect_implicit_imports(self, ctx: ResolverContext) -> None:
+        """Set :attr:`_implicit_imports` for every file (Nuxt auto-imports)."""
+        from ..resolvers.nuxt import nuxt_auto_imports
+
+        try:
+            self._implicit_imports = nuxt_auto_imports(self._parsed_files, ctx)
+        except Exception as exc:  # a reader bug must not fail the index
+            log.warning("nuxt_auto_imports_failed", error=str(exc))
+            self._implicit_imports = {}
 
     def _collect_build_units(self, ctx: ResolverContext) -> None:
         """Set :attr:`build_units` from the indexes the warmups left on *ctx*."""
@@ -566,6 +581,7 @@ class GraphBuilder(
 
         run_warmups(self._parsed_files, ctx, progress=progress)
         self._collect_build_units(ctx)
+        self._collect_implicit_imports(ctx)
 
         # Tests the import graph cannot see into, from the bytes already held,
         # so selection reads a stored fact and never re-reads test files.
@@ -614,6 +630,11 @@ class GraphBuilder(
                     file_imports.add(target)
                     self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)
             self.import_resolutions[path] = resolved
+            # Already resolved, and kept out of ``import_resolutions``, which
+            # lines up with ``parsed.imports`` one for one.
+            for imp in self._implicit_imports.get(path, ()):
+                file_imports.add(imp.resolved_file)
+                self._add_import_edge(path, imp.resolved_file, imp, _unit_fanout, _own_dir)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
             check_cancelled()

@@ -49,7 +49,7 @@ class ResolveMixin:
         if maps is None:
             from ..import_index import build_import_name_maps
 
-            maps = build_import_name_maps(self._parsed_files)
+            maps = build_import_name_maps(self._parsed_files, self._implicit_imports)
             self._import_name_maps = maps
         return maps
 
