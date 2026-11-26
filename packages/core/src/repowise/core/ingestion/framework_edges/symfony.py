@@ -41,7 +41,7 @@ SYMFONY_AS_EVENT_LISTENER_ATTR_LOWER = (
 )
 
 _DECLARATION_PREFIX = (
-    r"^[ \t]*(?:#\[[^\]]*\]\s*)*(?:(?:final|abstract|readonly)\s+)*"
+    r"^[ \t]*(?:#\[(?:[^\]\[]|\[[^\]]*\])*\]\s*)*(?:(?:final|abstract|readonly)\s+)*"
 )
 
 _TYPE_DECL_RE = re.compile(
