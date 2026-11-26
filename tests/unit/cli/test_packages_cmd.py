@@ -78,6 +78,56 @@ def test_import_joins_an_osv_file(repo):
     assert "from a syft file" in text.output
 
 
+def test_vulns_needs_an_imported_document(repo):
+    result = CliRunner().invoke(cli, ["packages", "vulns", "--path", str(repo)])
+    assert result.exit_code == 2
+    assert "packages import" in result.output
+
+
+def test_vulns_lists_tiers_and_gates(repo):
+    _invoke(["packages", "import", str(FIXTURES / "osv-scanner.json"), "--path", str(repo)])
+    # No call-site table in this index: nothing is proven called, so the gate passes.
+    result = _invoke(["packages", "vulns", "--path", str(repo), "--format", "json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    tiers = {(a["package"], a["tier"]) for a in data["advisories"]}
+    assert tiers == {("requests", "imported"), ("jinja2", "indirect_unknown")}
+    assert data["failed"] is False
+
+    gated = CliRunner().invoke(cli, ["packages", "vulns", "--path", str(repo), "--fail-on", "imported"])
+    assert gated.exit_code == 1
+    assert "GHSA-9wx4-h78v-vm56" in gated.output
+
+    only = _invoke(["packages", "vulns", "--path", str(repo), "--tier", "imported", "--format", "json"])
+    assert [a["package"] for a in json.loads(only.output)["advisories"]] == ["requests"]
+
+    sarif = _invoke(["packages", "vulns", "--path", str(repo), "--format", "sarif"])
+    log = json.loads(sarif.output)
+    assert log["version"] == "2.1.0"
+    assert [r["ruleId"] for r in log["runs"][0]["results"]] == ["advisory/imported"]
+
+
+def test_check_answers_from_the_stored_document(repo):
+    unknown = _invoke(["packages", "check", "pypi:requests@2.31.0", "--path", str(repo)])
+    assert unknown.exit_code == 0, unknown.output
+    assert "unknown_no_source" in unknown.output
+
+    _invoke(["packages", "import", str(FIXTURES / "osv.json"), "--path", str(repo)])
+    hit = CliRunner().invoke(
+        cli, ["packages", "check", "pypi:requests@2.31.0", "--path", str(repo), "--format", "json"]
+    )
+    assert hit.exit_code == 1
+    doc = json.loads(hit.output)
+    assert doc["verdict"] == "has_advisories"
+    assert doc["advisories"][0]["fix"] == "2.32.0"
+    assert doc["files"] == 4
+    assert doc["declared"][0]["declared_in"] == "pyproject.toml"
+
+    ok = _invoke(["packages", "check", "requests@2.32.0", "--path", str(repo)])
+    assert ok.exit_code == 0
+    assert "ok" in ok.output
+
+
 def test_import_rejects_an_unknown_file(repo, tmp_path):
     bad = tmp_path / "x.json"
     bad.write_text('{"hello": 1}', encoding="utf-8")

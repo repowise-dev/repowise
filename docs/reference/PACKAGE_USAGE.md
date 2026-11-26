@@ -17,3 +17,28 @@
 `repowise packages export --format cyclonedx` writes a CycloneDX 1.6 JSON document: one `library` component per declared package (spellings that name the same package, such as `PyYAML` and `pyyaml`, merge into one), with `evidence.occurrences` (`location`, `line`, `symbol`, `additionalContext`) for each declared import site. It records where packages are used. It is not an SBOM: there are no hashes or licenses, no transitive dependencies, and no resolved versions; the manifest's version specifier is kept as the `repowise:declared_version` property.
 
 `repowise packages import <file>` reads a Syft JSON, SPDX 2.x JSON, CycloneDX JSON or OSV JSON file you supply (a record, a list of records, or OSV-Scanner output) and joins its packages to usage by name, and by ecosystem when the file gives one. Repowise never fetches advisory feeds. Each advisory keeps its severity, the affected symbols the record names, and its fixed versions. OSV-Scanner output is already matched to resolved versions; for raw OSV records, the affected ranges are checked against each version the manifests pin exactly (PEP 440 for PyPI, SemVer for npm and Cargo, module versions for Go), and an advisory stays undecided (`affected: null`) when the manifest declares a range. The document is stored as the repository's advisory data, replacing the previous import. The reader is the local default of the `advisory-source` seam (`REPOWISE_SEAM_ADVISORY_SOURCE`); a plugin can register another source, which receives the repository's declared packages.
+
+## Advisories and tiers
+
+`repowise packages vulns` lists each stored advisory the version in use is not proven clear of, with one tier: the closest production code comes to it. Tiers, strongest first:
+
+| Tier | Meaning |
+|---|---|
+| `reachable` | The advisory names affected symbols, and a function production code reaches calls one. Go is judged by import path: a reached file imports an affected package path. |
+| `package_called` | A function production code reaches makes a proven call into the package, but no call to a named affected symbol is proven, or the advisory names none (PyPI and npm advisories rarely do). |
+| `imported` | Shipping code imports the package, and no reachable call into it is proven. |
+| `indirect_unknown` | No shipping code imports it, but it is, or may be, pulled in by another dependency, whose calls into it the index cannot see. |
+| `test_or_dev_only` | A direct-only dependency imported only by test, tooling, build or docs-example code. |
+| `not_imported` | A direct-only dependency nothing imports. |
+
+What each tier rests on:
+
+- **Production roots:** entry points, files a framework loads by convention, and the functions serving stored HTTP routes, kept only in production code (`code_origin`). Reach walks the reliable call graph from them.
+- **Calls into a package:** a call the index proves is bound to the package by an import in the caller's file (`from x import y; y()`, `import x; x.y()`, `import {y} from 'x'`, `require('x').y()`), recorded for Python, JavaScript and TypeScript. Method calls on a value of a package type are not recorded, so their absence keeps an advisory at `imported`. An index built before call recording reads as `imported` until the next `repowise update` with a change.
+- **Never buried:** nothing goes below `imported` without proof, and a package that may be transitive stays at `indirect_unknown`. A document that marks a package direct does not rule out another dependency requiring it, so `test_or_dev_only` and `not_imported` need a dependency graph that shows it is direct only.
+
+`--fail-on TIER` (default `package_called`) exits 1 when an advisory sits at that tier or stronger, for CI; `--format sarif` writes one result per advisory at its first site, for code scanning.
+
+`repowise packages check pypi:requests@2.31.0` answers from the stored document before a package is added: `has_advisories` (with the fix above that version), `ok` (the document names the package and no advisory covers the version), or `unknown_no_source` (no document, or it does not name the package). Repowise does not look the package up anywhere; an `advisory-source` plugin can supply a feed.
+
+Agents get the same answers. `get_context(targets=["package:pypi:requests"])` adds `advisories` (up to 5: id, tier, severity, fix, sites) to the card, and `package:pypi:requests@2.31.0` adds a `check`. `get_risk` adds one `advisory_call` line to a file whose call production code reaches into a package with an advisory (tier `reachable` or `package_called`). A package or file with no stored advisory gets neither.

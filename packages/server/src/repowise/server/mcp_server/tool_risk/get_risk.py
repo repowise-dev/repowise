@@ -60,6 +60,7 @@ from .assessment import (
     CoChangeWindow,
     _assess_one_target,
     _get_active_contributor_count,
+    attach_advisory_calls,
     fix_annotation,
     normalize_target_path,
 )
@@ -378,6 +379,7 @@ async def _gather_evidence(
                 for t in targets
             ]
         )
+        await attach_advisory_calls(session, repo_id, repo_root, list(results))
         global_hotspots = []
         if "hotspots" in include_set:
             global_hotspots = await _global_hotspots(

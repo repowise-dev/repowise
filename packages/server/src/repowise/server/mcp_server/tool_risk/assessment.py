@@ -227,6 +227,52 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
         return []
 
 
+def advisory_call_line(rows: list[Any]) -> str:
+    """One line naming the strongest advisory production code reaches through a file.
+
+    *rows* are one file's
+    :func:`~repowise.core.inventory.advisory_tiers.called_advisories_in_files`
+    rows, strongest first; their sites are calls in that file.
+    """
+    top = rows[0]
+    notes = ", ".join(n for n in (top.advisory.severity, top.fix and f"fixed in {top.fix}") if n)
+    head = f"{top.advisory.id}{f' ({notes})' if notes else ''}"
+    site = top.tier.sites[0]
+    where = f"{site.path}:{site.line}" if site.line else site.path
+    if top.tier.tier == "reachable":
+        line = f"{head}: its affected function {site.symbol} is called from production code at {where}"
+    else:
+        line = f"{head} in {top.package}: production code calls into the package at {where}"
+    if len(rows) > 1:
+        key = f"package:{top.ecosystem}:{top.package}" if top.ecosystem else f"package:{top.package}"
+        line += f'; {len(rows) - 1} more advisory(ies): get_context(targets=["{key}"])'
+    return line
+
+
+async def attach_advisory_calls(
+    session: AsyncSession, repo_id: str, repo_root: str | None, cards: list[dict]
+) -> None:
+    """Add ``advisory_call`` to each card whose file calls, from production code,
+    a package with a stored advisory. Every other card is left untouched, and
+    with no stored package call in the targets this is one indexed read."""
+    from repowise.core.inventory.advisory_tiers import called_advisories_in_files
+
+    by_path = {
+        normalize_target_path(card["target"], repo_root=repo_root): card
+        for card in cards
+        if card.get("resolved") is not False
+    }
+    if not by_path:
+        return
+    try:
+        found = await called_advisories_in_files(session, repo_id, repo_root or ".", by_path)
+    except Exception:
+        # The card stands without the line; it is never worth failing the call.
+        return
+    for path, rows in found.items():
+        by_path[path]["advisory_call"] = advisory_call_line(rows)
+
+
 def _build_co_changes(
     meta: Any,
     structural_related: Any,
