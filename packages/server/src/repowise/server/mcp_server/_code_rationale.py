@@ -491,7 +491,9 @@ def grep_comment_candidates(
         root = Path(str(repo_root))
     except Exception:
         return []
-    if not repo_root:
+    from repowise.server.mcp_server import _state
+
+    if not repo_root or not _state.git_available():
         return []
     numbers = _salient_numbers(query)[:_MAX_GREP_NUMBERS]
     terms = _content_terms(query)
@@ -574,6 +576,10 @@ _HARVEST_CACHE: dict[tuple[str, str, bool], list[dict]] = {}
 
 
 def _head(root: Path) -> str | None:
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     try:
         proc = subprocess.run(
             ["git", "--no-pager", "rev-parse", "HEAD"],

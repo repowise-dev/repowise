@@ -28,8 +28,9 @@ def _row(symbol_id: str = LOGIN, **kw):
         "run_samples": 1000,
         "share_low": 0.10,
         "share_high": 0.14,
-        "total_share": 0.12,
-        "explained_share": 0.4,
+        "total_share": 0.5,
+        "self_share": 0.12,
+        "repo_self_share": 0.4,
         "workload_name": "cli build",
         "workload_class": "entry_point",
         "ordering_only": False,
@@ -43,10 +44,19 @@ def _row(symbol_id: str = LOGIN, **kw):
 # -- wording -----------------------------------------------------------------
 
 
-def test_symbol_line_names_basis_share_interval_explained_and_age():
-    assert symbol_line(_row(), NOW) == (
+def test_symbol_line_names_basis_self_share_interval_repo_self_and_age():
+    # The cost (self) leads; inclusive time is never stated as the function's.
+    line = symbol_line(_row(), NOW)
+    assert line == (
         'rank 3 of repo code in entry_point "cli build" '
-        "(12% of samples, 10-14%; repo code explains 40%), 2d old"
+        "(12% self, 10-14%; repo code itself 40%), 2d old"
+    )
+    assert "50%" not in line and "explains" not in line
+
+
+def test_a_run_stored_without_its_split_leaves_it_out():
+    assert symbol_line(_row(repo_self_share=None), NOW) == (
+        'rank 3 of repo code in entry_point "cli build" (12% self, 10-14%), 2d old'
     )
 
 
@@ -63,16 +73,17 @@ def test_unit_test_run_says_in_tests():
 
 
 def test_tracer_run_is_ordering_only():
-    row = _row(ordering_only=True, share_low=None, share_high=None, total_share=None)
+    row = _row(ordering_only=True, share_low=None, share_high=None, total_share=None,
+               self_share=None)
     assert symbol_line(row, NOW) == (
         'rank 3 of repo code in entry_point "cli build" '
-        "(ordering only; repo code explains 40%), 2d old"
+        "(ordering only; repo code itself 40%), 2d old"
     )
 
 
 def test_without_counted_samples_the_share_has_no_interval():
     row = _row(samples=None, run_samples=None, share_low=None, share_high=None)
-    assert "(12% of the run; repo code explains 40%)" in symbol_line(row, NOW)
+    assert "(12% self; repo code itself 40%)" in symbol_line(row, NOW)
 
 
 def test_measured_tier_is_not_ranked():
@@ -94,12 +105,12 @@ def test_body_unchanged_says_earlier_commit():
 
 
 def test_file_line_caps_named_functions_and_counts_the_rest():
-    rows = [_row(f"{FILE}::f{i}", rank=i + 1, samples=100 - i) for i in range(5)]
+    rows = [_row(f"{FILE}::f{i}", rank=i + 1, self_share=0.10 - i / 1000) for i in range(5)]
     rows.append(_row(f"{FILE}::old", freshness="stale", rank=None))
     line = file_line(rows, NOW)
-    assert line.startswith('in entry_point "cli build" (repo code explains 40%), 2d old: ')
+    assert line.startswith('in entry_point "cli build" (repo code itself 40%), 2d old: ')
     assert line.count(" rank ") == measured.MAX_NAMED_IN_FILE
-    assert "f0 rank 1 (10% of samples, 10-14%)" in line
+    assert "f0 rank 1 (10% self, 10-14%)" in line
     assert "f3" not in line and "old rank" not in line
     assert line.endswith("; 2 more measured; 1 stale")
 
@@ -115,7 +126,7 @@ def test_file_line_names_only_the_lead_run():
     rows.append(_row(f"{FILE}::old", freshness="stale", rank=None))
     assert file_line(rows, NOW).endswith("; 1 more measured; 1 in other runs; 1 stale")
     # One run, within the cap: no counts at all.
-    assert file_line(rows[:1], NOW).endswith("a rank 1 (12% of samples, 10-14%)")
+    assert file_line(rows[:1], NOW).endswith("a rank 1 (12% self, 10-14%)")
 
 
 def test_file_line_all_stale():
@@ -151,7 +162,7 @@ async def test_symbol_and_file_cards_carry_the_line(setup_mcp, session, populate
     cards = result["targets"]
     assert cards[LOGIN]["type"] == "symbol"
     assert cards[LOGIN]["measured"].startswith('rank 3 of repo code in entry_point "cli build"')
-    assert cards[FILE]["measured"].endswith("login rank 3 (12% of samples, 10-14%)")
+    assert cards[FILE]["measured"].endswith("login rank 3 (12% self, 10-14%)")
     # No evidence for this file: no key at all, never an empty or null one.
     assert "measured" not in cards["src/db/models.py"]
     assert "_measured_target" not in json.dumps(result)
@@ -201,11 +212,11 @@ async def test_store_without_the_table_answers_as_no_evidence(
 
 
 def test_low_share_interval_never_rounds_past_the_estimate():
-    row = _row(samples=4, run_samples=1000, share_low=0.0016, share_high=0.0102)
-    assert "(<1% of samples, 0-1%;" in symbol_line(row, NOW)
+    row = _row(self_share=0.004, share_low=0.0016, share_high=0.0102)
+    assert "(<1% self, 0-1%;" in symbol_line(row, NOW)
     # A lower end that is exact in decimal but not in binary keeps its value.
-    row = _row(samples=600, share_low=0.57, share_high=0.63)
-    assert "(60% of samples, 57-63%;" in symbol_line(row, NOW)
+    row = _row(self_share=0.6, share_low=0.57, share_high=0.63)
+    assert "(60% self, 57-63%;" in symbol_line(row, NOW)
 
 
 def test_run_without_a_class_names_only_the_workload():
@@ -233,4 +244,4 @@ async def test_class_target_and_missed_symbol(setup_mcp, session, populated_db):
     assert "measured" not in cards[cls]
     # A missed name degrades to the file's card, which carries the file's line.
     assert cards[miss]["resolved_to"] == FILE
-    assert cards[miss]["measured"].endswith("login rank 3 (12% of samples, 10-14%)")
+    assert cards[miss]["measured"].endswith("login rank 3 (12% self, 10-14%)")

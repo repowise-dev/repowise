@@ -1839,6 +1839,9 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert second["items"] == block["items"][1:2]
     # The lead is the queue's, whatever page is shown.
     assert second["lead"] == block["lead"] == dashboard["lead"]
+    # Both say why ``gain`` need not fall down the list.
+    assert block["order"] == dashboard["order"]
+    assert block["order"].startswith("value band")
 
 
 @pytest.mark.asyncio
@@ -3292,3 +3295,42 @@ async def test_targeted_only_hint_names_the_keys_this_call_has(setup_mcp, health
 
     kept = await get_health(targets=["src/auth/service.py"], only=["metrics"])
     assert len(kept["metrics"]) == 1 and "unknown_only_keys" not in kept
+
+
+@pytest.mark.asyncio
+async def test_dashboard_counts_import_cycles_and_the_static_only_ones(
+    setup_mcp, health_data, session
+):
+    """Stored cycles are counted, a cycle of ``import x`` edges as static only."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GraphEdge, GraphNodeMembership
+    from repowise.server.mcp_server import get_health
+
+    assert "import_cycles" not in await get_health()
+
+    a, b = "src/auth/service.py", "src/db/models.py"
+    session.add(
+        GraphEdge(
+            id="ge_back", repository_id=health_data, source_node_id=b, target_node_id=a,
+            module_form=True,
+        )
+    )
+    await session.execute(update(GraphEdge).where(GraphEdge.id == "ge1").values(module_form=True))
+    session.add_all(
+        GraphNodeMembership(
+            repository_id=health_data, node_id=n, node_type="file", scc_id=1, scc_size=2
+        )
+        for n in (a, b)
+    )
+    await session.flush()
+
+    assert (await get_health())["import_cycles"] == {"total": 1, "static_only": 1}
+    only = await get_health(only=["import_cycles"])
+    assert only["import_cycles"] == {"total": 1, "static_only": 1}
+    assert "unknown_only_keys" not in only
+
+    # One edge that runs a ``from`` import at load: still a cycle, no longer static only.
+    await session.execute(update(GraphEdge).where(GraphEdge.id == "ge1").values(module_form=False))
+    await session.flush()
+    assert (await get_health())["import_cycles"] == {"total": 1, "static_only": 0}

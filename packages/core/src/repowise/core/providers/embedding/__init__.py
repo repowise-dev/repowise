@@ -11,6 +11,7 @@ registry to instantiate an embedder by name.
 Built-in embedders:
     openai  — text-embedding-3-small (1536d), text-embedding-3-large (3072d)
     gemini  — gemini-embedding-001 (768d, up to 3072d)
+    fastembed — BAAI/bge-small-en-v1.5 (384d), in-process; extra ``local-embed``
     mock    — KeylessEmbedder: what a no-key index embeds with (zero deps)
 """
 

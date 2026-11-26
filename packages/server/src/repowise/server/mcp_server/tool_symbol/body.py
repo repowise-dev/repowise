@@ -17,6 +17,8 @@ from repowise.server.mcp_server import tool_symbol as _pkg
 from repowise.server.mcp_server._budget.contracts import DEFAULT_RESPONSE_CHARS
 from repowise.server.mcp_server._helpers import (
     clean_signature,
+    no_source_field,
+    serves_no_source,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
@@ -171,6 +173,21 @@ def _unreadable_source_response(row: Any, symbol_id: str, repository: Any, t0: f
             ),
         },
     )
+
+
+def _no_source_response(row: Any, symbol_id: str, repository: Any, t0: float) -> dict:
+    """The stored symbol without its body, on a request with no source to read it from."""
+    return {
+        "symbol_id": symbol_id,
+        "file": row.file_path,
+        "name": row.name,
+        "kind": row.kind,
+        "signature": row.signature,
+        "start_line": row.start_line,
+        "end_line": row.end_line,
+        **no_source_field(row.file_path, row.start_line, row.end_line),
+        "_meta": _build_meta(timing_ms=_elapsed_ms(t0), repository=repository),
+    }
 
 
 class _ServedBody(NamedTuple):
@@ -354,14 +371,16 @@ async def _serve_symbol(
     t0: float,
 ) -> dict:
     """Live-verified body of one resolved symbol, with callee bodies past depth 1."""
-    repo_root = Path(str(ctx.path))
+    if serves_no_source():
+        return _no_source_response(row, symbol_id, repository, t0)
+    repo_root = Path(str(ctx.path)) if ctx.path else None
     text = _read_file_text(repo_root, row.file_path)
     if text is None:
         return _unreadable_source_response(row, symbol_id, repository, t0)
 
-    from repowise.server.mcp_server._savings.reads import read_tokens
+    from repowise.server.mcp_server._savings.reads import note_served, read_tokens
 
-    full_tokens = read_tokens(text)
+    note_served(row.file_path, read_tokens(text))
 
     # Stored bounds are checked against the live file first: stale ones are
     # corrected and healed, unfindable ones served as approximate.
@@ -388,8 +407,9 @@ async def _serve_symbol(
         if callee_block is not None:
             response["callee_bodies"] = callee_block
 
-    # Serving one symbol replaced reading the whole file.
+    # The first symbol served from a file replaced reading that file.
     from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.reads import read_credit
 
-    declare_replaced(response, full_tokens)
+    declare_replaced(response, read_credit(repo_root, row.file_path, text))
     return response

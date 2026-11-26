@@ -272,6 +272,23 @@ describe("the status sentence", () => {
     }
   });
 
+  it("counts setup steps beside the work in the sentence, the tab and the folded heading", () => {
+    const now = action({ id: "n", tier: "act_now", horizons: ["week"] });
+    const steps = ["s1", "s2"].map((id) =>
+      action({ id, tier: "improve_signal", rule: "sync_hook_missing", horizons: ["week"] }),
+    );
+    const { container } = render(
+      <NextActions data={response([now, ...steps], [])} hrefFor={() => null} defaultOpen={false} />,
+    );
+    expect(
+      screen.getByText(
+        "1 thing worth doing in the week to Sep 28, the last indexed commit, 1 of them now · 2 setup steps.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Do next · 1 · 2 setup steps" })).toBeInTheDocument();
+    expect(within(container).getByRole("radio", { name: /This week/ })).toHaveTextContent("1 + 2");
+  });
+
   it("points to the other time frame when the open one is clear and no summary is sent", () => {
     render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
     fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
@@ -295,6 +312,9 @@ describe("actionHref", () => {
         "/repos/r",
       ),
     ).toBe("/repos/r/decisions/d1");
+    expect(
+      actionHref(action({ surface: "setup", rule: "sync_hook_missing" }), "/repos/r"),
+    ).toBe("/repos/r/settings/setup#sync_hook_missing");
   });
 });
 

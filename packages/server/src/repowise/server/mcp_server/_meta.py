@@ -81,6 +81,9 @@ def full_meta(tool: str | None = None) -> bool:
 # The preferred path is the git-HEAD comparison below, which fires only on a
 # real mismatch and gives a single, calibrated stale signal.
 _STALE_AGE_FLOOR_DAYS = 90
+#: Past this age a lean reply keeps ``indexed_commit`` (:func:`keeps_indexed_commit`):
+#: a week-old index is worth naming, though not worth a warning.
+_STAMP_AGE_DAYS = 7
 
 
 def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | None:
@@ -93,15 +96,24 @@ def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | No
     ``.git`` (a file in a worktree). Any other row, such as another repo in a
     shared store, keeps its stored path; *ctx_path* stands in only when the
     row has none. The row is never rewritten.
+
+    A request served from a context (``_state.serving``) reads the context's
+    checkout, and none when the context has no source: the stored path names
+    where the index was built, which that server cannot read.
     """
     from repowise.server.mcp_server import _state
 
+    request = _state.request_context()
+    if request is not None:
+        if request.source is None:
+            return None
+        return str(request.path) if request.path is not None else None
     caller = _checkout.current()
     local = getattr(repository, "local_path", None)
     if caller is not None and caller.own_index and local and same_path(local, caller.served):
         # A worktree index seeded from this one keeps its repository id.
         return str(caller.served)
-    served = _state._repo_path
+    served = _state.served_path()
     if (
         served
         and _state._registry is None
@@ -114,6 +126,13 @@ def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | No
     # Ceiling: a workspace server keeps each repo's stored path; giving it
     # the same override needs the registry to record each store's one row.
     return getattr(repository, "local_path", None) or (str(ctx_path) if ctx_path else None)
+
+
+def _no_source() -> bool:
+    from repowise.server.mcp_server import _state
+
+    request = _state.request_context()
+    return request is not None and request.source is None
 
 
 def read_live_head(local_path: str | None) -> str | None:
@@ -194,6 +213,10 @@ def _changed_files_between(
     fall back to the repo-level warning instead of falsely reporting the
     served targets as unaffected.
     """
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     key = (local_path, indexed_full, live_full)
     if key in _changed_files_cache:
         return _changed_files_cache[key]
@@ -278,6 +301,10 @@ def _working_tree_dirty_paths(local_path: str) -> frozenset[str] | None:
     An untracked directory is reported once, with a trailing ``/``. Paths are
     git-root relative; the ``.git`` gate below makes that root ``local_path``.
     """
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     now = time.monotonic()
     hit = _dirty_paths_cache.get(local_path)
     if hit is not None:
@@ -575,8 +602,14 @@ def freshness_from_repo(
             # Match. No prose, since silence is the signal, but the comparison
             # did run and its answer is "not behind", so say so explicitly.
             out["index_behind"] = False
-    elif live_full is None and age_days is not None and age_days > _STALE_AGE_FLOOR_DAYS:
-        # No git signal available and the index is genuinely old.
+    elif (
+        live_full is None
+        and age_days is not None
+        and age_days > _STALE_AGE_FLOOR_DAYS
+        and not _no_source()
+    ):
+        # No git signal available and the index is genuinely old. Without a
+        # checkout there is no HEAD to fall behind; ``index_age_days`` says it.
         out["stale_warning"] = _checkout.stale_fact(
             f"an index {age_days} days old", "HEAD is unreadable"
         )
@@ -884,9 +917,26 @@ def drop_false_status_flags(result: Any) -> Any:
     return result
 
 
+def keeps_indexed_commit(meta: dict[str, Any]) -> bool:
+    """Whether a lean ``_meta`` keeps ``indexed_commit``: the index is behind HEAD
+    or older than :data:`_STAMP_AGE_DAYS`, and no ``stale_warning`` names it already
+    (the age-only warning names none).
+
+    A current index says nothing by its hash, so the default reply stays its size.
+    """
+    commit = meta.get("indexed_commit")
+    if commit and commit in (meta.get("stale_warning") or ""):
+        return False
+    age = meta.get("index_age_days")
+    return meta.get("index_behind") is True or (isinstance(age, int) and age > _STAMP_AGE_DAYS)
+
+
 def _lean_meta(meta: dict[str, Any]) -> None:
+    stamp = meta.get("indexed_commit") if keeps_indexed_commit(meta) else None
     for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, *_DEBUG_LAYER_KEYS, "embedder"):
         meta.pop(key, None)
+    if stamp:
+        meta["indexed_commit"] = stamp
     existing = meta.pop("degraded", None)
     reasons = [existing] if isinstance(existing, str) else list(existing or [])
     for key in sorted(k for k in meta if k.endswith("_degraded")):
@@ -1292,6 +1342,7 @@ def answer_hint(
     degraded: str | None = None,
     retrieval_quality: str | None = None,
     has_bodies: bool = False,
+    body_answers: bool = False,
 ) -> str | None:
     """Hint for `get_answer` callers.
 
@@ -1316,7 +1367,9 @@ def answer_hint(
     and let `confidence` rate the other half.
     """
     if degraded:
-        if retrieval_quality == "weak":
+        # A served body that answers the question is the evidence however
+        # retrieval rated: a refine-the-search hint would send the agent away.
+        if retrieval_quality == "weak" and not body_answers:
             return (
                 "No synthesis, and retrieval was weak. Refine the query with "
                 "search_codebase rather than reading these files in order."

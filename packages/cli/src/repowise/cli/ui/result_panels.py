@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Any
 
 from rich.console import Console, Group
-from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
@@ -126,12 +125,8 @@ def serve_step(target: str = "dashboard", gloss: str | None = None) -> tuple[str
     )
 
 
-#: What ``repowise serve`` is for at the end of ``init``.
-TOUR_GLOSS = "a guided tour of all this in your browser"
-
-
-#: Prints the agent's pass over the decisions on the busiest files.
-DISCOVER_COMMAND = "repowise decision discover"
+#: What ``repowise serve`` is for at the end of ``init``, and that it does not return.
+SERVE_GLOSS = "open the dashboard (keeps running; Ctrl+C stops it)"
 
 #: Lists the settings that fit this repository. Doctor and status name it too.
 SUGGESTED_STEP = "repowise config list --suggested"
@@ -140,84 +135,38 @@ SUGGESTED_STEP = "repowise config list --suggested"
 _MAX_FOLLOW_UPS = 2
 
 
-def _discover_step(records: int | None, hotspot_count: int) -> list[tuple[str, str]]:
-    """The agent's pass over the decisions on the busiest files, as zero or one row."""
-    if records:
-        noun = "record" if records == 1 else "records"
-        return [
-            (
-                DISCOVER_COMMAND,
-                f"a prompt for your agent: check {records} background {noun} on the busiest files",
-            )
-        ]
-    if records == 0 and hotspot_count > 0:
-        return [
-            (DISCOVER_COMMAND, "a prompt for your agent: record the decisions behind the busiest files")
-        ]
-    return []
-
-
 def build_contextual_next_steps(
     *,
     fast_mode: bool = False,
-    dead_unreachable: int = 0,
-    dead_unused: int = 0,
-    hotspot_count: int = 0,
-    top_hotspot: str = "",
-    discovery_records: int | None = None,
     setup: Any = None,
-    suggested: int = 0,
 ) -> list[tuple[str, str]]:
-    """The dashboard, then the two moves that most need making.
+    """The dashboard, then only what stops this index from being used.
 
     ``repowise serve`` is the headline in every mode: the dashboard is the one
     place the graph, hotspots, dead code, decisions and documentation are all
     browsable, and it is useful before any upgrade.
 
-    The follow-ups are the first two of these that apply, in this order, which
-    is "what is stopping this index from being used at all" before "what is
-    stopping it from being finished" before "what did it find":
+    The follow-ups, in this order, are the ones that block use:
 
     1. nothing wired an MCP client, so no agent can reach any of this yet
        (``--no-editor-setup``, the CI shape, has no Connected line to say so);
-    2. the index is deliberately partial (fast);
-    3. settings that fit this repository better than their defaults
-       (``suggested``, counted by ``repowise config list --suggested``);
-    4. the agent's pass over the decisions on the busiest files: the
-       background records to check, or with none (a keyless index mines
-       none), the decisions nobody recorded. Left out when the store could not
-       be read (``discovery_records`` is None) or nothing is busy;
-    5. the largest concrete finding, or a search row when there is none.
+    2. the index is deliberately partial (fast).
+
+    Findings, decisions, settings and sync are not steps here: they wait as
+    rows in ``repowise next`` and the dashboard, ranked by the actions engine.
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
-        candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
-    from repowise.core.index_scope import FAST_TO_FULL_COMMAND
-
-    # Documentation built from the index gets the panel's "add a model" block
-    # instead of a step, so the model command is not named twice.
+        candidates.append(
+            ("repowise agents add", "connect your coding agent: a checklist shows the ones installed")
+        )
     if fast_mode:
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
         )
-    if suggested:
-        noun = "setting fits" if suggested == 1 else "settings fit"
-        candidates.append(
-            (SUGGESTED_STEP, f"{suggested} {noun} this repo, each with why and the command")
-        )
-    candidates.extend(_discover_step(discovery_records, hotspot_count))
-    dead = dead_unreachable + dead_unused
-    if dead > 0:
-        noun = "finding" if dead == 1 else "findings"
-        candidates.append(("repowise dead-code", f"explore {dead} dead code {noun}"))
-    elif hotspot_count > 0 and top_hotspot:
-        candidates.append(
-            (f"repowise risk {escape(top_hotspot)}", "assess risk for the top hotspot")
-        )
-    elif not fast_mode:
-        candidates.append(('repowise search "<query>"', "search the documentation"))
-
-    return [serve_step(gloss=TOUR_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
+    return [serve_step(gloss=SERVE_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
 
 
 def keyless_upgrade_note(semantic_available: bool, reindex_command: str | None = None) -> str:

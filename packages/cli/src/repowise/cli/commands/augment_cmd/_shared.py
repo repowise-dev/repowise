@@ -283,8 +283,13 @@ def record_saving(
     raw_tokens: int,
     distilled_tokens: int,
     hook_adapter: str | None = None,
+    session_id: str | None = None,
+    avoided_file: str | None = None,
 ) -> None:
     """Bill one replacement to the savings ledger so ``repowise saved`` sees it.
+
+    *avoided_file* is the repo-relative path whose Read this replacement stood
+    in for, credited once per *session_id* as a file not opened.
 
     Writes the legacy row and the canonical event. The legacy one stays until
     the costs endpoint, the overview headline and ``repowise saved`` read the
@@ -308,7 +313,9 @@ def record_saving(
         try:
             # One version read when current. Repairs a store another process
             # created but had not finished initializing when this one opened it.
-            initialize_savings_schema(con)
+            # A store a newer Repowise owns is left alone.
+            if not initialize_savings_schema(con):
+                return
             _record(
                 con,
                 filter_name=filter_name,
@@ -324,6 +331,8 @@ def record_saving(
                 raw_tokens=raw_tokens,
                 distilled_tokens=distilled_tokens,
                 hook_adapter=hook_adapter,
+                session_id=session_id,
+                avoided_file=avoided_file,
             )
         finally:
             con.close()
@@ -339,6 +348,8 @@ def _record_event(
     raw_tokens: int,
     distilled_tokens: int,
     hook_adapter: str | None,
+    session_id: str | None = None,
+    avoided_file: str | None = None,
 ) -> None:
     """Record the canonical event for one hook replacement. Never raises.
 
@@ -352,7 +363,10 @@ def _record_event(
 
     Attribution is real here rather than ``unknown``. The hook was handed the
     serving agent's own adapter, so which agent saved these tokens is evidence,
-    not a guess.
+    not a guess. The session and subagent ids come from the same hook payload
+    (:func:`.read_state.bind_agent`); a subagent's payload adds an ``agent_id``
+    to its parent's ``session_id``. Ids the event contract would refuse are
+    left out rather than costing the event.
 
     Pricing is read from cache only, never resolved. Detecting the agent's
     model means scanning local transcripts -- around six seconds when the
@@ -369,9 +383,13 @@ def _record_event(
         from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
         from repowise.core.savings.pricing import resolve_pricing_snapshot
 
+        from .read_state import bound_ids
+
         agent = slug_for_hook_adapter(hook_adapter)
+        # Not ``session_id``: that parameter is the host session the files credit keys on.
+        ledger_session_id, subagent_id = (_ledger_id(value) for value in bound_ids())
         event_id = new_event_id()
-        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False)
+        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False, agent=agent)
         recorder.record_event_on(
             connection,
             repo_path,
@@ -382,6 +400,8 @@ def _record_event(
                 "surface": "hook",
                 "integration": agent,
                 "agent": agent,
+                "session_id": ledger_session_id,
+                "subagent_id": subagent_id,
                 "operation": filter_name,
                 "evidence_kind": "measured",
                 "estimator": "chars_per_token_floor_v1",
@@ -391,11 +411,47 @@ def _record_event(
                 "baseline_input_tokens": raw_tokens,
                 "pre_budget_input_tokens": raw_tokens,
                 "delivered_input_tokens": distilled_tokens,
+                "host_session_id": session_id or None,
+                "avoided_files": ((avoided_file, raw_tokens),) if avoided_file else (),
                 **(pricing.as_payload() if pricing else {}),
             },
         )
     except Exception:
         return
+
+
+def record_file_read(repo_path: Path, session_id: str, rel: str) -> None:
+    """Note an agent Read of a path this session was credited as not opening.
+
+    Deferred like :func:`record_saving` and gated by the caller to paths the
+    session state says were credited, so an ordinary Read writes nothing.
+    Never creates the sidecar and never raises. Skips the schema check: a
+    credit to cancel exists only in a ledger already carrying the files tables.
+    """
+    db_path = _omission_db(repo_path)
+    if db_path is None or not session_id:
+        return
+    try:
+        import sqlite3
+
+        from repowise.core.savings.recorder import record_file_read_on
+
+        con = sqlite3.connect(str(db_path), timeout=2, isolation_level=None)
+        try:
+            record_file_read_on(con, repo_path, session_id, rel)
+        finally:
+            con.close()
+    except Exception:
+        return
+
+
+#: The event contract's bound on an id. A longer one would reject the event.
+_MAX_LEDGER_ID = 128
+
+
+def _ledger_id(value: str) -> str | None:
+    """*value* as a ledger id, or None when empty or longer than the contract allows."""
+    return value if 0 < len(value) <= _MAX_LEDGER_ID else None
 
 
 def record_forgone(
@@ -420,8 +476,12 @@ def record_forgone(
     try:
         import sqlite3
 
+        from repowise.core.savings.schema import is_newer_store
+
         con = sqlite3.connect(str(db_path), timeout=2)
         try:
+            if is_newer_store(con):
+                return
             con.execute(_FORGONE_TABLE_SQL)
             if "filter" not in {r[1] for r in con.execute("PRAGMA table_info(forgone_savings)")}:
                 con.execute(_FORGONE_MIGRATION_SQL)

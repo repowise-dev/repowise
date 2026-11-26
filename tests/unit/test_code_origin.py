@@ -1,4 +1,4 @@
-"""One origin per file: production, test, vendored, docs_example, generated, tooling, build."""
+"""One origin per file: production, test, vendored, docs_example, generated, tooling, build, data."""
 
 from __future__ import annotations
 
@@ -107,6 +107,25 @@ _OWN_HEADER = (
         ("ci/tools/lint.py", "tooling"),
         ("Tools/Gen/Program.cs", "tooling"),
         ("build/tools/gen.py", "tooling"),
+        # ``build/`` and ``devtools/`` are tooling outside a ``src/`` tree only.
+        ("build/build.ts", "tooling"),
+        ("tools/build/release.py", "tooling"),
+        ("scripts/build/bundle.js", "tooling"),
+        ("packages/build/index.ts", "tooling"),
+        ("build/cucumber-test-runner/src/com/x/Main.java", "tooling"),
+        ("buildSrc/src/main/java/org/x/build/Conventions.java", "tooling"),
+        ("devtools/cypress/support.js", "tooling"),
+        ("packages/next/src/build/x.ts", "production"),
+        ("src/node/build/build.ts", "production"),
+        ("crates/turbopack-cli/src/build/mod.rs", "production"),
+        ("lib/src/backends/build/analyzer.dart", "production"),
+        ("src/main/java/org/apache/commons/io/build/AbstractOrigin.java", "production"),
+        ("packages/react-devtools-shared/src/devtools/ContextMenu.js", "production"),
+        ("drift/lib/src/runtime/devtools/devtools.dart", "production"),
+        ("Src/Build/Compiler.cs", "production"),
+        ("src/build/scripts/bundle.py", "tooling"),
+        ("src/build/generated/x.ts", "generated"),
+        ("src/build/__tests__/a.ts", "test"),
         # A ``tools/`` folder inside the product is its own code.
         ("lib/ai/tools/get-weather.ts", "production"),
         ("src/tools/search.py", "production"),
@@ -203,7 +222,7 @@ def test_path_rules(path: str, expected: str) -> None:
     assert code_origin(path) == expected
 
 
-def test_every_answer_is_one_of_the_seven() -> None:
+def test_every_answer_is_one_of_the_eight() -> None:
     assert set(CODE_ORIGINS) == {
         "production",
         "test",
@@ -212,6 +231,7 @@ def test_every_answer_is_one_of_the_seven() -> None:
         "generated",
         "tooling",
         "build",
+        "data",
     }
 
 
@@ -904,7 +924,7 @@ def test_build_files_by_type(path: str) -> None:
         # Near misses: code named like a build step, which ships.
         ("src/build.rs", "production"),  # a ``mod build;``, not a Cargo build script
         ("homeassistant/setup.py", "production"),  # a nested setup.py is a module
-        ("src/build/compiler.ts", "tooling"),  # the build/ directory rule, not the type
+        ("src/build/compiler.ts", "production"),  # a build/ module of the source tree
         ("src/builder.py", "production"),
         ("src/gradle/GradlePlugin.java", "production"),
         ("lib/webpack.js", "production"),
@@ -1195,3 +1215,53 @@ def test_a_path_only_origin_reads_python_t_tree_as_tests() -> None:
     assert code_origin("t/smoke/workers/dev.py") == "test"
     assert code_origin("t/smoke/tasks.py") == "test"
     assert code_origin("t/basic.rb") == "production"
+
+
+def _bank(root, problems: int = 4) -> None:
+    """``backend/data``: per-problem JSON plus a solution in three languages."""
+    for i in range(problems):
+        item = root / "backend" / "data" / "problems" / f"p{i}"
+        (item / "solutions").mkdir(parents=True)
+        for n in range(12):
+            (item / f"case{n}.json").write_text("{}")
+        for name in ("python.py", "Solution.java", "go.go"):
+            (item / "solutions" / name).write_text("")
+
+
+def test_code_in_a_data_folder_of_mostly_data_in_several_languages_is_data(tmp_path) -> None:
+    _bank(tmp_path)
+    assert code_origin("backend/data/problems/p0/solutions/python.py", repo_root=tmp_path) == "data"
+    assert code_origin("backend/data/problems/p1/solutions/go.go", repo_root=tmp_path) == "data"
+
+
+def test_data_needs_the_folder_on_disk(tmp_path) -> None:
+    _bank(tmp_path)
+    assert code_origin("backend/data/problems/p0/solutions/python.py") == "production"
+
+
+def test_a_data_folder_of_one_language_stays_production(tmp_path) -> None:
+    # ``lib/data/*.ts`` beside JSON is an app's own data modules, imported as code.
+    data = tmp_path / "frontend" / "lib" / "data"
+    data.mkdir(parents=True)
+    for i in range(12):
+        (data / f"set{i}.json").write_text("{}")
+    for name in ("index.ts", "loader.ts"):
+        (data / name).write_text("")
+    assert code_origin("frontend/lib/data/index.ts", repo_root=tmp_path) == "production"
+
+
+def test_a_data_folder_mostly_of_code_stays_production(tmp_path) -> None:
+    data = tmp_path / "app" / "data"
+    data.mkdir(parents=True)
+    for name in ("repo.py", "models.ts", "Store.java", "seed.json"):
+        (data / name).write_text("")
+    assert code_origin("app/data/repo.py", repo_root=tmp_path) == "production"
+
+
+def test_a_test_under_a_data_folder_stays_a_test(tmp_path) -> None:
+    _bank(tmp_path)
+    for n in range(10):  # keep the folder a bank with the test file in it
+        (tmp_path / "backend" / "data" / f"extra{n}.json").write_text("{}")
+    (tmp_path / "backend" / "data" / "test_bank.py").write_text("")
+    assert code_origin("backend/data/problems/p0/solutions/go.go", repo_root=tmp_path) == "data"
+    assert code_origin("backend/data/test_bank.py", repo_root=tmp_path) == "test"

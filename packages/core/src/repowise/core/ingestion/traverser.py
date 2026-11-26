@@ -56,6 +56,7 @@ from ..pytest_roots import (
     pytest_options,
     pytest_roots,
 )
+from ..support_paths import is_doc_or_config_path
 from ..test_paths import is_test_related_path
 from .cobol.source import is_cobol_dclgen
 from .languages.registry import REGISTRY as _LANG_REGISTRY
@@ -583,6 +584,9 @@ class FileTraverser:
                 entry_points.append(f.path)
                 if f.is_application_main:
                     application_mains.append(f.path)
+        launchers = self._android_launchers(files)
+        application_mains = list(set(application_mains) | launchers)
+        entry_points = list(set(entry_points) | launchers)
 
         # Display-only estimate (~40 bytes/line), so no file is opened to count.
         total_loc = sum(f.size_bytes // 40 for f in files)
@@ -601,6 +605,15 @@ class FileTraverser:
             entry_points=sorted(entry_points),
             application_mains=sorted(application_mains),
         )
+
+    def _android_launchers(self, files: list[FileInfo]) -> set[str]:
+        """Launcher activity sources: an Android app has no main function, its
+        manifest names the activity the launcher starts and the app begins there."""
+        if not any(f.language in ("java", "kotlin") for f in files):
+            return set()
+        from .framework_edges.android_manifest import launcher_application_mains
+
+        return launcher_application_mains(self.repo_root, [f.path for f in files if not f.is_test])
 
     # ------------------------------------------------------------------
     # Internal: walking
@@ -1091,6 +1104,16 @@ class FileTraverser:
             self._dir_skipped[key] = skipped
         return skipped
 
+    def kept_files(self, rel_dir: str, names: list[str]) -> list[str]:
+        """*names* in the POSIX *rel_dir*, less the untracked ones when it is a
+        gitignored directory :meth:`dir_chain_skipped` kept only for the files
+        git tracks in it. Ask after :meth:`dir_chain_skipped` decided *rel_dir*.
+        """
+        prefix = f"{rel_dir}/"
+        if not rel_dir or not self._in_ignored_tracked_dir(f"{prefix}_"):
+            return names
+        return [name for name in names if self._is_tracked(prefix + name)]
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -1286,7 +1309,14 @@ def _detect_language(abs_path: Path, source: bytes | None = None) -> LanguageTag
 
 
 def _detect_by_shebang(abs_path: Path, source: bytes | None = None) -> LanguageTag:
-    """Classify an interpreter line from the bytes supplied by the caller."""
+    """Classify an interpreter line from the bytes supplied by the caller.
+
+    A file with a document or config suffix is never sniffed: a ``.txt`` or
+    ``.cfg`` file that starts with ``#!`` is data that holds a script (a
+    template backup, a fixture), never a script itself.
+    """
+    if is_doc_or_config_path(abs_path.name):
+        return "unknown"
     head = _head(abs_path, source, 800)
     if head is None:
         return "unknown"

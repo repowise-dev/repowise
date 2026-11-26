@@ -426,6 +426,10 @@ Steps 1–5 give you the symbols, imports and calls your query captures. They do
   node map. See [the three registries](#the-three-code-health-dialect-registries).
 - **Receiver typing.** Steps 9–11 above, and each is gated on measurement.
 - **Framework edges.** One module per framework under `framework_edges/`.
+- **Runtime evidence.** Profile frames join to functions only for languages
+  the frame resolver has a join for, and test timings need the stack to name a
+  JUnit report. See
+  [runtime-evidence-languages.md](runtime-evidence-languages.md).
 - **Class-level metrics, if the language does not nest method bodies in the
   type.** Go's external receivers and Object Pascal's split
   declaration/implementation sections both fail this, and both are deliberately
@@ -500,7 +504,7 @@ The tiers, highest evidence first:
 | 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `receiver_chain_import`, `return_type_import` | The receiver, chained field, returned type, or target resolved through an imported file or scoped alias |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
 | 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
-| 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
+| 0.50 | `global_unique`, `import_elsewhere` | The name is unique repo-wide, or (Python) imported only inside another function of the file. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,
 because they are three different scans over three different scopes:
@@ -802,7 +806,7 @@ dependency surface their syntax supports.
 | Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
 | Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
-| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths; same-named platform units reach every variant; project files as entry points |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths, `.lpk` file lists and unit paths; same-named platform units reach every variant; project files as entry points |
 | Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
 | Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
 | Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |

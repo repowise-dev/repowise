@@ -1,7 +1,8 @@
 """The source lines a search for one identifier or literal names.
 
 An identifier that resolves to one to three indexed symbols gets their edit
-sets (definition, imports, calls, references) from :mod:`_edit_sites`. A
+sets (definition, imports, calls, references) from :mod:`_edit_sites`, plus
+the name's definitions in files the index never parsed (generated code). A
 single-token query naming no indexed symbol (a number, a quoted string, an
 unindexed name) is scanned for in every file git lists (tracked and
 untracked, ignore rules applied), so config and docs the indexer never parsed
@@ -14,13 +15,18 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
+import fnmatch
 import logging
 import os
 import re
+import stat
 import subprocess
+import threading
 import time
 from collections import Counter
-from collections.abc import Container
+from collections.abc import Callable, Container, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -42,16 +48,22 @@ from repowise.server.mcp_server._edit_sites import (
     SMALL_SET_LINES,
     _bare_name,
     _cap_references_per_file,
+    _leaf,
     _read_lines,
+    incomplete_hint,
     reference_edit_set,
 )
+from repowise.server.mcp_server._enclosing import enclosing_ranges, mark_enclosing
 from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
+    NO_SOURCE_PREFIX,
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     is_excluded,
+    no_source_reason,
     read_repo_file_text,
+    serves_no_source,
 )
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, served_root
 from repowise.server.mcp_server._query_shape import (
@@ -89,11 +101,15 @@ _SNIFF_BYTES = 8192
 # text file for its lines. Past this neither is read; it is reported as skipped.
 _MAX_STREAM_BYTES = 64_000_000
 OVER_LINES = f"over {MAX_LINES} lines"
-_KIND_ORDER = {"definition": 0, "import": 1, "call": 2, "reference": 3, "match": 4}
+_KIND_ORDER = {"definition": 0, "import": 1, "call": 2, "reference": 3, "string": 4, "match": 5}
 # Under the short mixed-query cap, call sites say more than imports.
-_MIXED_KIND_ORDER = {"definition": 0, "call": 1, "import": 2, "reference": 3, "match": 3}
+_MIXED_KIND_ORDER = {
+    "definition": 0, "call": 1, "import": 2, "reference": 3, "string": 3, "match": 3
+}
 _QUOTED = re.compile(r"""^(["'`])(.+)\1$""")
 _TOKEN = re.compile(r"^[A-Za-z0-9_$][\w$.]*$")
+# Any letter opens a name, as ``\w`` in the hint's regex reads it (``été``).
+_IDENTIFIER = re.compile(r"(?:[^\W\d]|\$)[\w$]*")
 # Code punctuation: a leading decorator ``@``, an identifier glued to an opening
 # ``(`` or ``{`` (``send(``), or a glued ``=`` (``path="/x"``). Prose such as
 # ``Add (optional) support`` has a space before its parenthesis and matches none.
@@ -252,6 +268,10 @@ def _git_paths(
     root: Path, args: list[str], timeout: float, ok: tuple[int, ...]
 ) -> list[str] | None:
     """The NUL-separated paths a git command prints outside pruned dirs, or ``None`` on failure."""
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     try:
         proc = subprocess.run(
             ["git", "-C", str(root), *args],
@@ -281,7 +301,28 @@ def _listed_files(root: Path) -> list[str]:
     ]
 
 
+# One line search's git grep answers, so the edit set's grep of a name also
+# serves the unindexed-definition lookup. Set only inside one repo's line
+# read, so no answer outlives it.
+_HOLDING_MEMO: ContextVar[dict[tuple[Any, ...], list[str] | None] | None] = ContextVar(
+    "_holding_memo", default=None
+)
+
+
 def _files_holding(
+    root: Path, needle: str, *, word: bool = False, globs: tuple[str, ...] = ()
+) -> list[str] | None:
+    """:func:`_git_files_holding`, answered once per key inside one line read."""
+    memo = _HOLDING_MEMO.get()
+    if memo is None:
+        return _git_files_holding(root, needle, word=word, globs=globs)
+    key = (str(root), needle, word, globs)
+    if key not in memo:
+        memo[key] = _git_files_holding(root, needle, word=word, globs=globs)
+    return memo[key]
+
+
+def _git_files_holding(
     root: Path, needle: str, *, word: bool = False, globs: tuple[str, ...] = ()
 ) -> list[str] | None:
     """The files :func:`_listed_files` would list whose bytes hold *needle*, via git grep.
@@ -293,12 +334,124 @@ def _files_holding(
     """
     if not needle.isascii() or "\n" in needle or "\0" in needle or needle.startswith("-"):
         return None
-    args = ["-c", "grep.fullName=false", "grep", "-l", "-z", "--untracked", "--no-color", "-F"]
+    # Tracked files only: ``--untracked`` makes git walk and read the whole work
+    # tree instead of the index, several times slower on a large checkout. The
+    # untracked files are listed once (see :func:`_untracked_files`) and read here.
+    args = ["-c", "grep.fullName=false", "grep", "-l", "-z", "--no-color", "-F"]
     args += ["-w", "-e", needle] if word else ["-e", needle]
     if globs:
         args += ["--", *globs]
     # Exit 1 is "no file matched".
-    return _git_paths(root, args, _GIT_GREP_SECONDS, (0, 1))
+    tracked = _git_paths(root, args, _GIT_GREP_SECONDS, (0, 1))
+    if tracked is None:
+        return None
+    untracked = _untracked_holding(root, needle, word=word, globs=globs)
+    return None if untracked is None else tracked + untracked
+
+
+def _untracked_holding(
+    root: Path, needle: str, *, word: bool, globs: tuple[str, ...]
+) -> list[str] | None:
+    """The untracked files git grep ``--untracked`` would add, matched in
+    Python; ``None`` when they cannot all be read in the grep's time budget."""
+    untracked = _untracked_files(root)
+    if untracked is None:
+        return None
+    if globs:
+        untracked = [f for f in untracked if any(fnmatch.fnmatchcase(f, g) for g in globs)]
+    held = re.compile(
+        rb"(?<![A-Za-z0-9_])" + re.escape(needle.encode()) + rb"(?![A-Za-z0-9_])"
+        if word
+        else re.escape(needle.encode())
+    )
+    # One pass per repo at a time, so each budget measures its own work and not
+    # the prefetched passes it would share the interpreter with.
+    with _untracked_lock(root):
+        # The grep's own budget: a large untracked tree falls back as a slow grep did.
+        deadline = time.monotonic() + _GIT_GREP_SECONDS
+        found: list[str] = []
+        for f in untracked:
+            holds = _holds(root / f, held) if time.monotonic() <= deadline else None
+            if holds is None:
+                return None
+            if holds:
+                found.append(f)
+    return found
+
+
+def _holds(path: Path, needle: re.Pattern[bytes]) -> bool | None:
+    """Whether the regular file's bytes match *needle*, as git grep reads them.
+
+    A symlink does not (git greps its target path, not the file it names), nor
+    does a file gone since the listing. ``None`` for a file this cannot read
+    whole (unreadable, or past the stream cap): the caller's fallback scan reads
+    it and says why it could not.
+    """
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            return False
+        if info.st_size > _MAX_STREAM_BYTES:
+            return None
+        return needle.search(path.read_bytes()) is not None
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
+# Per repo root: repos list and match their untracked files side by side.
+_UNTRACKED_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _untracked_lock(root: Path) -> threading.Lock:
+    return _UNTRACKED_LOCKS.setdefault(str(root), threading.Lock())
+
+
+def _untracked_files(root: Path) -> list[str] | None:
+    """Untracked files outside the ignore rules and the pruned directories
+    (``.repowise/``, ``node_modules/``), or ``None`` when git cannot list them.
+    Listed once inside :func:`line_read_memo`: the work tree walk is the costly
+    part of a grep on a large checkout."""
+    args = ["ls-files", "-z", "--others", "--exclude-standard"]
+    memo = _HOLDING_MEMO.get()
+    if memo is None:
+        return _git_paths(root, args, 10, (0,))
+    key = ("untracked", str(root))
+    with _untracked_lock(root):
+        if key not in memo:
+            memo[key] = _git_paths(root, args, 10, (0,))
+        return memo[key]
+
+
+@contextlib.contextmanager
+def line_read_memo() -> Iterator[None]:
+    """Answer each git grep, and the untracked listing, once inside the block.
+
+    For one tool call: its stages grep the same words, and nothing it caches
+    outlives it.
+    """
+    if _HOLDING_MEMO.get() is not None:
+        yield  # an enclosing block's answers serve this one too
+        return
+    token = _HOLDING_MEMO.set({})
+    try:
+        yield
+    finally:
+        _HOLDING_MEMO.reset(token)
+
+
+async def prefetch_word_scans(root: Path, tokens: list[str]) -> None:
+    """Run the git grep each :func:`word_scan` of *tokens* opens with, side by
+    side, so scans run one after another inside :func:`line_read_memo` only
+    read files. A no-op outside it, where no grep answer is kept."""
+    if _HOLDING_MEMO.get() is None:
+        return
+    # A failed grep is the scan's to meet again, never the caller's.
+    await asyncio.gather(
+        *(asyncio.to_thread(_files_holding, root, t) for t in dict.fromkeys(tokens)),
+        return_exceptions=True,
+    )
 
 
 def _scan_rank(rel: str) -> int:
@@ -334,10 +487,104 @@ def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
     return files, reasons
 
 
-# A line declaring something, for a regex query's definition rows.
-_DECLARATION_LINE = re.compile(
-    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*(?:{_DECL_WORDS})\b"
+# Modifiers a declaration may open with, in C, Java and Kotlin as well.
+_MODIFIERS = (
+    r"public|private|protected|internal|static|final|abstract|override|open|sealed|data"
+    r"|suspend|inline|extern|virtual|synchronized|native|transient|volatile|lateinit"
+    r"|operator|infix|tailrec|external|inner|companion|annotation|enum|default|unsigned"
 )
+# A declaration's head: its keywords (``const enum``, ``const fn``) and the
+# names it declares (``var x, y``, ``const { a, b }``, ``let Point { x, y }``,
+# ``let (a, b)``), past a ``mut`` or a Go receiver (``func (s *S) Name``), which
+# names a type it does not declare. ``let c = open_ro(p)`` heads at ``let c``.
+_DECLARATION_HEAD = re.compile(
+    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|(?:{_MODIFIERS})\s+)*"
+    rf"(?:(?:{_DECL_WORDS})\b(?:\s*\*\s*|\s+))+(?P<receiver>(?<=func\s)\([^)]*\)\s*)?(?:mut\s+)?"
+    # A pattern holding a default (``{ a = load() }``) is not read: the default is a use.
+    r"(?:(?:[\w$:]+\s*)?\{[^}=(]*\}|[\[(][^\])=(]*[\])]|[\w$]+(?:\s*,\s*[\w$]+)*)?"
+)
+# Type parameters, one level of nesting deep: ``<T : Comparable<T>>``.
+_GENERICS = r"<(?:[^<>]|<[^<>]*>)*>"
+# Kotlin's ``fun``, ``val`` and ``object`` heads: past type parameters and an
+# extension receiver (``fun <T> List<T>.second()``), which names a type the
+# function does not declare.
+_KOTLIN_HEAD = re.compile(
+    rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:{_MODIFIERS})\s+)*(?:fun|val|var|object)\s+"
+    rf"(?P<receiver>(?:{_GENERICS}\s*)?(?:[\w$]+(?:{_GENERICS})?\??\.)?)(?P<names>[\w$]+)"
+)
+# A C or Java declaration led by its type: ``static int parse(``, ``public
+# List<Foo> items =``, ``char *name;``. The name follows the type; a line led
+# by a statement keyword (``return f(x);``) declares nothing. Two words alone
+# (``if f(x):``, ``cd dir;``) are a declaration only where the first reads as
+# a type: see ``_reads_as_type``.
+_TYPED_HEAD = re.compile(
+    rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:{_MODIFIERS}|const)\s+)*(?:{_GENERICS}\s*)?"
+    r"(?!(?:return|new|else|throw|case|goto|delete|await|yield|sizeof|typeof|package|import"
+    r"|go|defer|raise|assert|del|not|and|or|in|is|print|puts|echo|then|do)\b)"
+    r"(?P<type>[A-Za-z_][\w.]*)(?P<shape>(?:\s*<[^;=(){}]*>)?(?:\s*\[\s*\])*[\s*&]+)"
+    r"(?P<names>[A-Za-z_]\w*)\s*(?=[(=;,\[])"
+)
+_C_TYPE_WORDS = frozenset(
+    {"void", "int", "char", "long", "short", "float", "double", "bool", "boolean", "byte",
+     "signed", "unsigned", "auto", "var", "string", "size_t"}
+)
+
+
+_C_CONST_TYPE = re.compile(
+    rf"^\s*(?:(?:{_MODIFIERS})\s+)*const\s+(?:{'|'.join(sorted(_C_TYPE_WORDS))})\b"
+)
+
+
+def _reads_as_type(head: re.Match[str], line: str) -> bool:
+    """Whether a typed head's first word is a type, on a line that ends as a
+    declaration does (prose such as ``Returns foo(x) when`` does not): one
+    spelled with generics or an array, a pointer mark before the name
+    (``char *p``), a builtin or ``_t`` name, or a capitalised name (``List``,
+    ``java.util.Map``). ``a * f(x)``, ``a*f(x)`` and ``ok && f(x)`` are
+    operators."""
+    shape = head.group("shape")
+    word = head.group("type").rsplit(".", 1)[-1]
+    if not word or not line.rstrip().endswith(("{", ";", ")", ",")):
+        return False
+    if shape[:1] in ("<", "["):  # spelled on the type: ``List<T>``, ``int[]``
+        return True
+    marks = shape.strip()
+    if marks and "&&" not in marks and shape[0].isspace() and not shape[-1].isspace():
+        return True
+    return (
+        word in _C_TYPE_WORDS
+        or word.endswith("_t")
+        or (word[0].isupper() and any(c.islower() for c in word))
+    )
+
+
+def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
+    """Whether a line declares what a regex query matched: a match starts
+    inside the declaration's head, outside a Go receiver, so a call on a
+    declaring line (``const x = f(1)``) is a match, not a definition of ``f``.
+    A keyword glued to a parenthesis (``type(obj)``) declares nothing. A head
+    led by a C or Java type, or by a Kotlin ``fun``, declares only its name."""
+
+    def check(line: str) -> bool:
+        # ``const char *name(`` leads with a type, not a ``const`` binding.
+        head = None if _C_CONST_TYPE.match(line) else _DECLARATION_HEAD.match(line)
+        if head is None:
+            named = _KOTLIN_HEAD.match(line)
+            if named is None:
+                named = _TYPED_HEAD.match(line)
+                if named is None or not _reads_as_type(named, line):
+                    return False
+            start, end = named.span("names")
+            return any(start <= m.start() < end for m in pattern.finditer(line))
+        start, end = head.span("receiver")
+        for m in pattern.finditer(line):
+            if m.start() >= head.end():
+                return False
+            if not start <= m.start() < end:
+                return True
+        return False
+
+    return check
 
 
 def _scan_listed_regex(root: Path, pattern: re.Pattern[str]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -350,7 +597,7 @@ def _scan_listed_regex(root: Path, pattern: re.Pattern[str]) -> tuple[list[dict[
     needle = required_literal(pattern)
     files, reasons = _scan_files(root, needle)
     raw = needle.encode("utf-8") if needle else None
-    rows, scan_reasons = _scan(root, files, pattern, _DECLARATION_LINE, raw, per_line=True)
+    rows, scan_reasons = _scan(root, files, pattern, _declares(pattern), raw, per_line=True)
     return rows, reasons + scan_reasons
 
 
@@ -385,7 +632,7 @@ def production_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _hit_kinds(
-    rel: str, found: list[tuple[int, str]], definition: re.Pattern[str]
+    rel: str, found: list[tuple[int, str]], definition: Callable[[str], bool]
 ) -> list[tuple[int, str, str]]:
     """``(line number, line, kind)`` per hit in *rel*.
 
@@ -393,7 +640,7 @@ def _hit_kinds(
     """
     if is_doc_or_config_path(rel):
         return [(n, line, "match") for n, line in found]
-    return [(n, line, "definition" if definition.search(line) else "match") for n, line in found]
+    return [(n, line, "definition" if definition(line) else "match") for n, line in found]
 
 
 def _line_row(rel: str, n: int, line: str, kind: str) -> dict[str, Any]:
@@ -403,7 +650,7 @@ def _line_row(rel: str, n: int, line: str, kind: str) -> dict[str, Any]:
 def _with_tails(
     rows: list[dict[str, Any]],
     tails: list[tuple[str, list[tuple[int, str]]]],
-    definition: re.Pattern[str],
+    definition: Callable[[str], bool],
     capped: int,
 ) -> tuple[list[dict[str, Any]], int]:
     """``(rows, files still cut)``: *rows* with each cut file's remaining lines
@@ -427,7 +674,7 @@ def scan_literal(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Matching lines in *files*, definitions first, and why they may not be all."""
     pattern = re.compile(rf"(?<![\w$]){re.escape(needle)}(?![\w$])" if word else re.escape(needle))
-    return _scan(root, files, pattern, _definition_re(needle, word), needle.encode("utf-8"))
+    return _scan(root, files, pattern, _definition_re(needle, word).search, needle.encode("utf-8"))
 
 
 def _unscanned(files: list[str]) -> str:
@@ -442,7 +689,7 @@ def _scan(
     root: Path,
     files: list[str],
     pattern: re.Pattern[str],
-    definition: re.Pattern[str],
+    definition: Callable[[str], bool],
     raw: bytes | None,
     *,
     per_line: bool = False,
@@ -485,7 +732,7 @@ class _ScanRun:
         self,
         root: Path,
         pattern: re.Pattern[str],
-        definition: re.Pattern[str],
+        definition: Callable[[str], bool],
         raw: bytes | None,
         per_line: bool = False,
     ) -> None:
@@ -690,9 +937,30 @@ async def attach_line_hits(
     search response as it was.
     """
     try:
-        await _attach(response, query, mode, names, repo, fed)
+        ctx = await _attach(response, query, mode, names, repo, fed)
     except Exception:
         _log.warning("search_codebase: line hits failed", exc_info=True)
+        return
+    if ctx is not None:
+        await _name_enclosing(response.get("lines") or [], ctx)
+
+
+async def _name_enclosing(rows: list[dict[str, Any]], ctx: Any) -> None:
+    """Name each served line's enclosing symbol from the index of the repo it
+    is in: *ctx*'s for untagged rows, each tagged row's ``repo`` otherwise."""
+    ranges: dict[Any, dict[str, Any]] = {}
+    for alias in dict.fromkeys(r.get("repo") for r in rows):
+        paths = {r["path"] for r in rows if r.get("repo") == alias and r.get("kind") != "definition"}
+        if not paths:
+            continue
+        try:
+            repo_ctx = ctx if alias is None else await _resolve_repo_context(alias)
+            async with get_session(repo_ctx.session_factory) as session:
+                repo_id = (await _get_repo(session)).id
+                ranges[alias] = await enclosing_ranges(session, repo_id, paths)
+        except Exception:
+            _log.warning("search_codebase: enclosing symbols failed for %s", alias, exc_info=True)
+    mark_enclosing(rows, ranges)
 
 
 async def _attach(
@@ -702,17 +970,17 @@ async def _attach(
     names: Container[str] | None,
     repo: str | None,
     fed: Federation | None,
-) -> None:
+) -> Any:
+    """The context the lines were served from, or None when none were."""
     if repo == "all" and fed is None:
-        return
+        return None
     if mode != "path" and (shape := query_pattern(query)):
-        await _attach_pattern(response, query, shape, repo, fed)
-        return
+        return await _attach_pattern(response, query, shape, repo, fed)
     literal = _literal(query)
     if mode == "path" and (
         response.get("results") or literal is None or "/" not in literal[0]
     ):
-        return
+        return None
     candidates = _identifier_candidates(query, mode, names)
     if literal and not literal[1] and not _QUOTED.match(query.strip()):
         # Code punctuation names the text itself: an identifier inside it
@@ -721,10 +989,10 @@ async def _attach(
     if not candidates and literal and literal[1]:
         candidates = [literal[0]]
     if not candidates and not literal:
-        return
+        return None
     found = await _served_rows(response, repo, fed, query, candidates, literal)
     if found is None:
-        return
+        return None
     ctx, (rows, reasons, literal_scan) = found
     mixed = not literal and len(query.split()) > 1
     rows.sort(key=_row_order(mixed))
@@ -733,6 +1001,7 @@ async def _attach(
     if len(kept) > cap and over not in reasons:
         reasons.append(over)
     _serve_lines(response, query, ctx, rows, kept[:cap], reasons, mixed, literal_scan)
+    return ctx
 
 
 def _row_order(mixed: bool) -> Any:
@@ -785,11 +1054,20 @@ def _serve_lines(
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
+        # Lines from one name's edit set that may miss sites; the regex scan
+        # reads every file. A cut to the line cap or naming _meta.omitted
+        # already says where the rest is. The edit sets scan the symbol's own
+        # name, also for a ``pkg.mod.name`` or ``path::name`` query.
+        name = _leaf(query.strip())
+        budget = (OVER_LINES, OVER_LINES_MIXED)
+        missed = any("_meta.omitted" not in r and r not in budget for r in reasons)
+        if missed and not literal_scan and not mixed and _IDENTIFIER.fullmatch(name):
+            response.setdefault("hint", incomplete_hint(name))
     else:
         _drop_sweep_advice(response)
     _drop_pages_beside_definitions(response, every_page=not mixed)
     if shown:
-        _reconcile_symbol_miss(response, literal_scan=literal_scan)
+        _reconcile_symbol_miss(response, literal_scan=literal_scan, query=query)
 
 
 def _drop_pages_beside_definitions(response: dict, *, every_page: bool) -> None:
@@ -845,7 +1123,7 @@ async def _attach_pattern(
     shape: tuple[str, Any],
     repo: str | None,
     fed: Federation | None,
-) -> None:
+) -> Any:
     """``lines`` for a grep-shaped query: each alternative searched as its own
     query and served as its own group in query order, or a regex's matching
     lines. ``matched_as`` says which reading was used."""
@@ -855,7 +1133,7 @@ async def _attach_pattern(
     else:
         found = await _alternation_groups(response, repo, fed, value)
     if found is None:
-        return
+        return None
     ctx, rows, groups, reasons, literal_scan = found
     caps = _fair_caps([len(g) for g in groups], MAX_LINES)
     if any(len(g) > c for g, c in zip(groups, caps, strict=True)):
@@ -870,6 +1148,7 @@ async def _attach_pattern(
     ]
     response["matched_as"] = kind
     _serve_lines(response, query, ctx, rows, shown, reasons, False, literal_scan)
+    return ctx
 
 
 async def _regex_groups(
@@ -901,7 +1180,11 @@ async def _alternation_groups(
         cut: list[str] = []
         groups.append(_capped_per_file(part_rows, cut))
         rows += part_rows
-        reasons += [f"{part}: {r}" for r in part_reasons + cut]
+        for r in part_reasons + cut:
+            # The no-source reason holds for every part: said once, untagged.
+            tagged = r if r.startswith(NO_SOURCE_PREFIX) else f"{part}: {r}"
+            if not (tagged is r and r in reasons):
+                reasons.append(tagged)
         literal_scan = literal_scan and scan
         if not part_rows:
             unmatched.append(part)
@@ -958,8 +1241,10 @@ async def _repo_regex_rows(
 ) -> tuple[list[dict[str, Any]], list[str], bool]:
     """One repo's lines matching *pattern*, read from its live files."""
     async with get_session(ctx.session_factory) as session:
-        root = Path(served_root(await _get_repo(session), ctx.path))
-    rows, reasons = await asyncio.to_thread(_scan_listed_regex, root, pattern)
+        root = served_root(await _get_repo(session), ctx.path)
+    if serves_no_source():
+        return [], [no_source_reason()], True
+    rows, reasons = await asyncio.to_thread(_scan_listed_regex, Path(root), pattern)
     return rows, reasons, True
 
 
@@ -1010,15 +1295,93 @@ async def _repo_line_rows(
     spec = _get_exclude_spec(ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        root = Path(served_root(repository, ctx.path))
         found = await _exact_symbols(session, repository.id, query, candidates) if candidates else []
         nodes = [n for n in found if not is_excluded(n.file_path, spec)]
+        if serves_no_source():
+            # Where a checkout would have lines to read, say where they are.
+            return ([], [no_source_reason()], True) if nodes or literal else None
+        root = Path(served_root(repository, ctx.path))
         # Past MAX_SYMBOLS a name is too shared for one edit set per symbol.
-        sets = None if len(nodes) > MAX_SYMBOLS else [
-            await reference_edit_set(session, repository.id, root, n) for n in nodes
-        ]
+        sets, names, unindexed = await _symbol_sources(session, repository.id, root, nodes, spec)
     served = await _line_rows(root, nodes, sets, literal, response, ctx.alias)
+    if served is not None and unindexed:
+        served = await _with_unindexed_definitions(served, root, names, unindexed)
     return None if served is None else (*served, not sets)
+
+
+async def _symbol_sources(
+    session: Any, repo_id: str, root: Path, nodes: list[GraphNode], spec: Any
+) -> tuple[list[dict[str, Any]] | None, list[str], list[str]]:
+    """``(edit sets, names, unindexed files holding them)`` for *nodes*; the
+    sets are ``None`` past ``MAX_SYMBOLS``. One git grep per name serves both."""
+    with line_read_memo():
+        sets = None if len(nodes) > MAX_SYMBOLS else [
+            await reference_edit_set(session, repo_id, root, n) for n in nodes
+        ]
+        names = sorted({_bare_name(n) for n in nodes})
+        # A name past MAX_SYMBOLS serves definitions only and already says it
+        # is not every match, so it pays for no extra grep.
+        unindexed = await _unindexed_holders(session, repo_id, root, names, spec) if sets else []
+    return sets, names, unindexed
+
+
+async def _with_unindexed_definitions(
+    served: tuple[list[dict[str, Any]], list[str]], root: Path, names: list[str], files: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """*served* with the definitions of *names* in the unindexed *files* added."""
+    rows, reasons = served
+    found, why = await asyncio.to_thread(_unindexed_definitions, root, names, files)
+    seen = {(r["path"], r["line"]) for r in rows}
+    rows += [r for r in found if (r["path"], r["line"]) not in seen]
+    return rows, reasons + [r for r in why if r not in reasons]
+
+
+async def _unindexed_holders(
+    session: Any, repo_id: str, root: Path, names: list[str], spec: Any
+) -> list[str]:
+    """Source files holding one of *names* that the index never parsed.
+
+    The indexer skips generated files (a ``DO NOT EDIT`` banner, a generated
+    suffix), so a type such a file declares has no graph node and no edit set
+    lists it. Doc and config files declare nothing, and excluded paths stay
+    out as the graph's nodes do.
+    """
+    held: set[str] = set()
+    for name in names:
+        # Shortcut: without git there is no cheap list of the files holding the
+        # name, so the lines stay the edit sets alone, as before. A walk of every
+        # unindexed file under the scan budget is the upgrade path.
+        # The edit set's own grep (resolved root, not word-bounded): a memo hit.
+        found = await asyncio.to_thread(_files_holding, root.resolve(), name)
+        held.update(found or ())
+    files = sorted(f for f in held if not is_doc_or_config_path(f) and not is_excluded(f, spec))
+    indexed: set[str] = set()
+    for i in range(0, len(files), 500):
+        stmt = select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+            GraphNode.node_id.in_(files[i : i + 500]),
+        )
+        indexed.update((await session.execute(stmt)).scalars())
+    return [f for f in files if f not in indexed]
+
+
+def _unindexed_definitions(
+    root: Path, names: list[str], files: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lines in *files* declaring one of *names*, as ``definition`` rows, and
+    why they may not be all, under the literal scan's budget."""
+    alternatives = "|".join(re.escape(n) for n in names)
+    name = rf"(?:{alternatives})(?![\w$])"
+    # A keyword declaration (``type X struct``, ``class X``, ``def x``), a Go
+    # method past its receiver, or a top-level assignment (``X = ...``); an
+    # indented ``x = ...`` is a local or a keyword argument. One line each.
+    pattern = re.compile(
+        rf"\b(?:{_DECL_WORDS})[ \t]+{name}|\bfunc[ \t]*\([^)\n]*\)[ \t]*{name}|^{name}[ \t]*=(?![=>])",
+        re.M,
+    )
+    # No raw needle: a binary git grep listed is skipped, not counted as a match.
+    return _scan(root, files, pattern, lambda _line: True, None)
 
 
 def _across_repos(
@@ -1095,15 +1458,21 @@ def _definition_rows(root: Path, nodes: list[GraphNode]) -> list[dict[str, Any]]
     return rows
 
 
-def _reconcile_symbol_miss(response: dict, *, literal_scan: bool) -> None:
+def _reconcile_symbol_miss(response: dict, *, literal_scan: bool, query: str = "") -> None:
     """Keep the symbol stage's miss advice from contradicting the lines found.
 
     ``grep_hint`` and the no-exact-symbol ``note`` were written before any
     line was read, and tell the reader to recheck spelling or grep. With
     lines in hand both are wrong; ``exact_match: false`` still says no symbol
     has the name, so the note stays only to label fuzzy results.
+
+    The symbol stage matches names case-blind. When the scan found the
+    query's own spelling defined and no result carries it, the results are
+    another name (``variantResponse`` for ``VariantResponse``), not a match.
     """
     response.pop("grep_hint", None)
+    if literal_scan and response.get("exact_match") and _defined_in_another_case(response, query):
+        response["exact_match"] = False
     if not literal_scan or response.get("exact_match") is not False:
         return
     if response.get("results"):
@@ -1113,6 +1482,18 @@ def _reconcile_symbol_miss(response: dict, *, literal_scan: bool) -> None:
         )
     else:
         response.pop("note", None)
+
+
+def _defined_in_another_case(response: dict, query: str) -> bool:
+    """Whether ``lines`` define *query* as spelled while no result symbol is
+    named so: the case-blind exact match is a different name."""
+    name = query.strip()
+    if not _IDENTIFIER.fullmatch(name):
+        return False
+    if not any(r.get("kind") == "definition" for r in response.get("lines") or ()):
+        return False
+    rows = [r for r in response.get("results") or () if isinstance(r, dict)]
+    return not any(r.get("name") == name for r in rows)
 
 
 def _lines_after_budget(result: dict[str, Any]) -> None:

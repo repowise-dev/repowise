@@ -48,7 +48,7 @@ def test_keyless_repo_reports_structural_fallback_without_failing_doctor(
     assert rows["Provider config"] == (True, "No misconfigured provider keys")
     ok, detail = rows["LLM provider"]
     assert ok is True
-    assert detail.startswith("None configured: ")
+    assert detail.startswith("None configured. ")
     assert "a provider key or a local model" in detail
 
 

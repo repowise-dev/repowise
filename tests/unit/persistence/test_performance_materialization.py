@@ -97,6 +97,7 @@ async def test_one_pass_materializes_the_queue_its_plans_and_its_headline(
     assert row.performance_model_version == PERFORMANCE_MODEL_VERSION
     assert row.analyzed_commit == "b" * 40
     assert row.cost_proof == "proven"
+    assert row.static_cost == "grows_with_data"
 
     # Filter and order live in columns; the rest stays in the open payload, and
     # nothing appears in both.
@@ -411,6 +412,7 @@ async def test_an_unmeasured_loop_is_stored_unproven_and_never_leads(async_sessi
 
     (row,) = await _rows(async_session, repo.id)
     assert row.cost_proof == "unproven"
+    assert row.static_cost == "size_unknown"
     assert json.loads(row.details_json)["may_lead"] is False
     summary = json.loads((await crud.get_performance_summary(async_session, repo.id)).summary_json)
     assert summary["lead"] is None

@@ -57,7 +57,6 @@ async def test_get_risk_multiple_targets(setup_mcp):
     result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["churn"])
     targets = result["targets"]
     assert len(targets) == 2
-    assert "global_hotspots" in result
     # Both targets should have trend and risk_type
     for t in targets.values():
         assert "trend" in t
@@ -68,7 +67,7 @@ async def test_get_risk_multiple_targets(setup_mcp):
 async def test_get_risk_global_hotspots_exclude_targets(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["src/auth/service.py", "src/db/models.py"])
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["hotspots"])
     # service.py is a hotspot but should NOT appear in global_hotspots
     for h in result["global_hotspots"]:
         assert h["file_path"] != "src/auth/service.py"
@@ -602,6 +601,50 @@ def test_pr_directive_says_when_every_test_must_run():
     assert "Every test must run" in directive["summary"]
 
 
+def test_pr_directive_runs_all_when_the_selection_holds_most_of_the_suite():
+    """A subset holding most of the suite is not targeted; the ranked head stays."""
+    import dataclasses
+
+    tests = [f"tests/test_m{i:02}.py" for i in range(12)]
+    selected = _selected(set(tests))
+    most = dataclasses.replace(
+        selected,
+        selection=dataclasses.replace(selected.selection, known_tests=(*tests, "tests/test_x.py")),
+    )
+    directive = _directive({}, tests=most)
+    assert directive["tests_run_all"] is True
+    assert directive["tests_run_all_reasons"] == [
+        "selection_covers_most_of_suite: 12 of 13 test files."
+    ]
+    assert directive["tests_to_run"] == tests[:10]
+    assert "Every test must run" in directive["summary"]
+
+    others = tuple(f"tests/test_o{i:02}.py" for i in range(12))
+    few = dataclasses.replace(
+        selected,
+        selection=dataclasses.replace(selected.selection, known_tests=(*tests, *others)),
+    )
+    directive = _directive({}, tests=few)
+    assert directive["tests_run_all"] is False
+    assert "tests_run_all_reasons" not in directive
+
+
+def test_pr_directive_summary_leads_test_gaps_with_measured_coverage():
+    blast = {
+        "test_impact": {
+            "coverage": {
+                "status": "available",
+                "changed_files_total": 1,
+                "changed_files_with_measured_tests": 0,
+            },
+            "files_without_measured_tests": ["src/core.py"],
+        }
+    }
+    directive = _directive(blast, tests=_selected({"tests/test_core.py"}))
+    assert "Measured coverage: 0 of 1 changed file(s), 0 test gap(s)." in directive["summary"]
+    assert "Showing 0 of 0" not in directive["summary"]
+
+
 def test_pr_directive_without_a_selection_names_nothing_and_says_why():
     from repowise.server.mcp_server.tool_risk.directives import ChangeTests
 
@@ -826,12 +869,43 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
 
 
 @pytest.mark.asyncio
-async def test_get_risk_omits_global_hotspots_for_a_single_target(setup_mcp):
-    """Ambient orientation earns its place across targets, not on one named file."""
+async def test_get_risk_lists_global_hotspots_only_when_asked(setup_mcp):
+    """Files nobody named cost every caller tokens, so they are opt-in."""
     from repowise.server.mcp_server import get_risk
 
+    many = ["src/auth/service.py", "src/db/models.py"]
     assert "global_hotspots" not in await get_risk(["src/auth/service.py"])
-    assert "global_hotspots" in await get_risk(["src/auth/service.py", "src/db/models.py"])
+    assert "global_hotspots" not in await get_risk(many)
+    assert "global_hotspots" in await get_risk(many, include=["hotspots"])
+    assert "global_hotspots" in await get_risk(["src/auth/service.py"], include=["hotspots"])
+
+
+@pytest.mark.asyncio
+async def test_a_card_shows_three_co_change_partners_and_counts_the_rest(setup_mcp, session):
+    import json
+
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_risk
+
+    partners = [{"file_path": f"src/p{i}.py", "count": 9 - i} for i in range(6)]
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/auth/service.py")
+        .values(co_change_partners_json=json.dumps(partners))
+    )
+    await session.flush()
+
+    card = (await get_risk(["src/auth/service.py"]))["targets"]["src/auth/service.py"]
+
+    assert [p["file_path"] for p in card["co_change_partners"]] == [
+        "src/p0.py",
+        "src/p1.py",
+        "src/p2.py",
+    ]
+    assert card["co_change_partners_total"] == 6
+    assert card["co_change_partners_truncated"] is True
 
 
 @pytest.mark.asyncio
@@ -875,7 +949,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "changes", "churn", "graph", "owners", "scales", "tests"],
+            "valid": ["blast", "changes", "churn", "graph", "hotspots", "owners", "scales", "tests"],
         }
     ]
 
@@ -1145,6 +1219,46 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
         ("pickle_loads", "high"),
         ("tls_verify_false", "med"),
         ("weak_hash", "low"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_secret_signal_carries_its_kind_only(setup_mcp, session):
+    import json
+    from datetime import UTC, datetime
+
+    from repowise.core.analysis.security_scan import masked_snippet
+    from repowise.core.persistence.models import SecurityFinding
+    from repowise.server.mcp_server.tool_risk.assessment import _get_security_signals
+
+    value = "Zq9XjW7vK3pLm2NbQ8tR"  # made up for this test
+    rows = [
+        ("hardcoded_secret", masked_snippet(f'API_KEY = "{value}"')),
+        ("pickle_loads", "pickle.loads(blob)"),
+    ]
+    for line, (kind, snippet) in enumerate(rows, start=1):
+        session.add(
+            SecurityFinding(
+                repository_id="repo1",
+                file_path="src/auth/service.py",
+                kind=kind,
+                severity="high",
+                snippet=snippet,
+                line_number=line,
+                commit_sha="",
+                detected_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+    await session.flush()
+
+    signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
+    text = json.dumps(signals)
+    assert "API_KEY" not in text and "****" not in text
+    for at in range(len(value) - 2):
+        assert value[at : at + 3] not in text
+    assert signals == [
+        {"kind": "hardcoded_secret", "severity": "high"},
+        {"kind": "pickle_loads", "severity": "high", "snippet": "pickle.loads(blob)"},
     ]
 
 

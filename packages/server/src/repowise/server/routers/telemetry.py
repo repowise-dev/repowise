@@ -29,6 +29,7 @@ _WORKSPACE_VIEWS = (
     "contracts",
     "coChanges",
     "estateReport",
+    "setup",
 )
 _REPO_VIEWS = (
     "overview",

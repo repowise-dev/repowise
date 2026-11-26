@@ -59,6 +59,10 @@ class CoverageSummary(_Strict):
     report_paths: CoverageReportPaths | None
     #: Null when nothing is stored.
     freshness: CoverageSummaryFreshness | None
+    #: Indexed production files with code, of a type the report measured, that it has no row for.
+    unreported_file_count: int
+    #: The first five of them, sorted.
+    unreported_files: list[str]
 
 
 class CoverageHistoryPoint(_Strict):

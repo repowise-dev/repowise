@@ -57,22 +57,48 @@ from ._shared import (
 _READ_NUDGE_MIN_LINES = 100  # Read output lines before a replacement is worth it
 _READ_NUDGE_MIN_SAVINGS = 1500  # estimated tokens saved must clear this
 _READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
+_MAX_CREDITED = 200  # credited paths kept per session state file
 
 
 #: Per-session state lives in its own file, and that is not a detail.
 #:
 #: It used to be a single ``.augment-session.json`` per repo, keyed on
-#: ``session_id``, which **reset the whole file whenever the id changed**. A
-#: subagent sidechain runs under a different session id from its parent, and
-#: PostToolUse fires in sidechains, so a parent Read and a subagent Read
-#: alternating through one repo wiped each other's state on every event. No
-#: Read surface could hold a once-per-file gate long enough to fire, which
-#: looked like sidechains not being reachable and was really this file name.
+#: ``session_id``, which **reset the whole file whenever the id changed**, so
+#: two sessions alternating through one repo wiped each other's state on every
+#: event and no once-per-file gate could hold long enough to fire.
 #:
-#: Partitioning is also the semantically right answer, not merely the fix: a
-#: subagent never received the parent's bytes, so it must not inherit the
-#: parent's "you already have this".
+#: The partition is one context window, not one session id. A subagent's hook
+#: payload carries its parent's ``session_id`` and adds an ``agent_id``
+#: (Claude Code and Codex both; absent on the main thread), so the file is
+#: keyed on both (:func:`bind_agent`). A subagent never received the parent's
+#: bytes, so it must not inherit the parent's "you already have this", and the
+#: parent must not inherit the subagent's.
+#:
+#: Two facts belong to the whole session and live beside the partitions: the
+#: Edits any context window made (:func:`_record_session_edit`), so a write by
+#: a subagent is not reported to its parent as an outside change, and the
+#: session's one decision-capture ask (:func:`_load_shared_state`).
 _STATE_DIR = "hook-sessions"
+
+#: The ``agent_id`` of the hook event this process is handling, "" on a main
+#: thread. One hook event per process, so it is bound once at dispatch.
+_agent_id = ""
+#: The ``session_id`` of the same hook event, "" when the payload names none.
+_session_id = ""
+
+
+def bind_agent(payload: dict) -> None:
+    """Key this process's session state on the payload's subagent, when it names one."""
+    global _agent_id, _session_id
+    agent = payload.get("agent_id")
+    _agent_id = agent if isinstance(agent, str) else ""
+    session = payload.get("session_id")
+    _session_id = session if isinstance(session, str) else ""
+
+
+def bound_ids() -> tuple[str, str]:
+    """``(session_id, agent_id)`` of the hook event this process handles, "" when absent."""
+    return _session_id, _agent_id
 
 #: Session files older than this are swept, once, when a session first writes.
 #: A session lasts hours at the outside and the files are a few KB, so this is
@@ -81,12 +107,90 @@ _STATE_DIR = "hook-sessions"
 _STATE_TTL_SECONDS = 7 * 24 * 3600
 
 
-def _session_state_path(repo_path: Path, session_id: str = "") -> Path:
-    """This session's state file. One per session id — see :data:`_STATE_DIR`."""
+def _state_file(repo_path: Path, key: str) -> Path:
     import hashlib
 
-    digest = hashlib.sha1(session_id.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
+    digest = hashlib.sha1(key.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
     return Path(repo_path) / ".repowise" / _STATE_DIR / f"{digest}.json"
+
+
+def _session_state_path(repo_path: Path, session_id: str = "") -> Path:
+    """This context window's state file: one per session id and subagent (:data:`_STATE_DIR`)."""
+    return _state_file(repo_path, f"{session_id}/{_agent_id}" if _agent_id else session_id)
+
+
+def _shared_state_path(repo_path: Path, session_id: str) -> Path:
+    """The file every context window of *session_id* shares (:data:`_STATE_DIR`)."""
+    return _state_file(repo_path, f"{session_id}/*")
+
+
+def _load_shared_state(repo_path: Path, session_id: str) -> dict:
+    """The session's ``capture_prompted`` flag, shared by every context window."""
+    fresh = {"session_id": session_id, "capture_prompted": False}
+    try:
+        state = json.loads(_shared_state_path(repo_path, session_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fresh
+    if not isinstance(state, dict) or state.get("session_id") != session_id:
+        return fresh
+    for key, default in fresh.items():
+        if not isinstance(state.get(key), type(default)):
+            state[key] = default
+    return state
+
+
+def _write_state(path: Path, text: str) -> bool:
+    """Write a file several windows share. Atomic, so no reader sees half of it."""
+    from repowise.core.fsutils import atomic_write_text
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, text)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _save_shared_state(repo_path: Path, state: dict) -> bool:
+    """Persist the shared state; never raises. Returns whether the write landed."""
+    return _write_state(_shared_state_path(repo_path, state["session_id"]), json.dumps(state))
+
+
+def _edit_marker_path(repo_path: Path, session_id: str, rel: str) -> Path:
+    """One file per edited path, so two windows editing at once never share a write."""
+    return _state_file(repo_path, f"{session_id}/*/{rel}")
+
+
+def _record_session_edit(repo_path: Path, checkout: Path, rel: str, session_id: str) -> None:
+    """Note the mtime this session's Edit of *rel* left, for every window to see."""
+    _write_state(_edit_marker_path(repo_path, session_id, rel), str(_mtime_ns(checkout / rel)))
+
+
+def _mtime_ns(path: Path) -> int:
+    try:
+        return int(path.stat().st_mtime_ns)
+    except OSError:
+        return -1
+
+
+def _edited_by_another_window(
+    repo_path: Path, checkout: Path, rel: str, session_id: str, read_mt: object
+) -> bool:
+    """Whether another context window of this session Edited *rel* since this one read it.
+
+    Sequence numbers are per window, so the order comes from the file itself:
+    the last write is a session Edit when the mtime it left is the mtime now,
+    and it came after this window's read when the read saw another mtime.
+    """
+    if not isinstance(read_mt, int):
+        return False
+    try:
+        edit_mt = int(_edit_marker_path(repo_path, session_id, rel).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if edit_mt == -1 or edit_mt == read_mt:
+        return False
+    return _mtime_ns(checkout / rel) == edit_mt
 
 
 def _sweep_stale_sessions(directory: Path) -> None:
@@ -125,6 +229,7 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
     """
     fresh = {
         "session_id": session_id,
+        "agent_id": _agent_id,
         "seq": 0,
         "reads": {},
         "edits": {},
@@ -133,6 +238,9 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         # tool call it happened on. The whole basis of the re-read collapse,
         # and every field is load-bearing — see :mod:`.reread`.
         "read_meta": {},
+        # Per path, the file's mtime_ns at this window's last Read, replaced or
+        # not: the order of an Edit another window made (:func:`_edited_by_another_window`).
+        "read_mt": {},
         "stale_notified": [],
         # Files already flagged as changed-under-the-agent, so the notice is
         # once per file per session like every other one here.
@@ -150,13 +258,13 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         "read_whole": [],
         "skeleton_edit_warned": [],
         "decisions_shown": [],
-        # Whether this session has already been asked to record a decision.
-        # One ask per session is the whole cost control on a hook nobody can
-        # decline, so it is claimed on the ask and never cleared.
-        "capture_prompted": False,
         # File ranges served by repowise MCP responses this session, kept for
         # the read-after-served KPI (see read_enrich; rel -> [[start, end]]).
         "served": {},
+        # Paths this session was credited as not opening (a replaced Read, or
+        # a repowise MCP answer that served the file), newest last and capped
+        # at _MAX_CREDITED. A later Read of one is noted so the credit lapses.
+        "credited": [],
     }
     try:
         state = json.loads(
@@ -165,6 +273,8 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
     except (OSError, json.JSONDecodeError):
         return fresh
     if not isinstance(state, dict) or state.get("session_id") != session_id:
+        return fresh
+    if state.get("agent_id", "") != _agent_id:
         return fresh
     for key, default in fresh.items():
         if not isinstance(state.get(key), type(default)):
@@ -192,6 +302,9 @@ def _save_session_state(repo_path: Path, state: dict) -> bool:
     reads = state.get("reads", {})
     if isinstance(meta, dict) and len(meta) > len(reads):
         state["read_meta"] = {k: v for k, v in meta.items() if k in reads}
+    read_mt = state.get("read_mt")
+    if isinstance(read_mt, dict) and len(read_mt) > len(reads):
+        state["read_mt"] = {k: v for k, v in read_mt.items() if k in reads}
     path = _session_state_path(repo_path, state.get("session_id", ""))
     try:
         first_write = not path.exists()
@@ -231,12 +344,14 @@ def _handle_edit_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return None
-    rel = repo_relative(file_path, _checkout_root(Path(cwd), repo_path), resolve=True)
+    checkout = _checkout_root(Path(cwd), repo_path)
+    rel = repo_relative(file_path, checkout, resolve=True)
     if rel is None:
         return None
     state = _load_session_state(repo_path, session_id)
     state["seq"] += 1
     state["edits"][rel] = state["seq"]
+    _record_session_edit(repo_path, checkout, rel, session_id)
 
     notices: list[str] = []
     skeleton_warning = _edit_from_skeleton_notice(rel, state)
@@ -330,12 +445,17 @@ def _handle_read_post(
     notices: list[str] = []
     fired: list[tuple[str, str]] = []  # (category, text) for the efficacy ledger
 
-    # Stale-read: this session Read the file, then Edited/Wrote it, and is
-    # now Reading it again. The fresh Read is fine — the flag is about any
-    # reasoning still anchored on the pre-edit excerpt.
+    # Stale-read: this window Read the file, then it (or another window of the
+    # session, such as a subagent) Edited/Wrote it, and it is now Reading it
+    # again. The fresh Read is fine; the flag is about any reasoning still
+    # anchored on the pre-edit excerpt.
     last_read = state["reads"].get(rel)
     last_edit = state["edits"].get(rel)
-    edited_since_read = last_read is not None and last_edit is not None and last_read < last_edit
+    edited_since_read = (
+        last_read is not None and last_edit is not None and last_read < last_edit
+    ) or _edited_by_another_window(
+        repo_path, checkout, rel, session_id, state["read_mt"].get(rel)
+    )
     if edited_since_read and rel not in state["stale_notified"]:
         state["stale_notified"].append(rel)
         notices.append(
@@ -351,6 +471,7 @@ def _handle_read_post(
     prior_meta = state["read_meta"].get(rel)
     state["seq"] += 1
     state["reads"][rel] = state["seq"]
+    state["read_mt"][rel] = _mtime_ns(checkout / rel)
 
     served, on_emitted = _collapse_replacement(
         repo_path,
@@ -385,6 +506,8 @@ def _handle_read_post(
         if served is not None:
             fired.append((served.category, served.text))
             state["skeletonized"].append(rel)
+
+    on_emitted = _files_not_opened(repo_path, rel, session_id, state, served, on_emitted)
 
     _record_read_meta(checkout, rel, tool_input, tool_output, state, replaced=served is not None)
 
@@ -485,6 +608,56 @@ def _same_range(tool_input: dict, prior: dict) -> bool:
     ) == prior.get("lim")
 
 
+def _files_not_opened(repo_path: Path, rel: str, session_id: str, state: dict, served, on_emitted):
+    """Credit a replaced Read, or queue the note that cancels an earlier credit.
+
+    A Read of a credited path is noted once, after the response, and the path
+    leaves the credited list. Never changes what this Read returns.
+    """
+    try:
+        if served is not None:
+            note_credited(state, [rel])
+        elif session_id and rel in state["credited"]:
+            state["credited"].remove(rel)
+            return _then(on_emitted, lambda: _record_file_read(repo_path, session_id, rel))
+    except Exception:  # bookkeeping only; the Read result is already decided
+        return on_emitted
+    return on_emitted
+
+
+def note_credited(state: dict, paths: list[str]) -> None:
+    """Mark *paths* as credited this session, keeping the newest :data:`_MAX_CREDITED`."""
+    credited = state.setdefault("credited", [])
+    for path in paths:
+        if path in credited:
+            credited.remove(path)
+        credited.append(path)
+    del credited[:-_MAX_CREDITED]
+
+
+def _then(first, second):
+    """Run *second* after *first*; either may be None. For deferred writes."""
+    if first is None:
+        return second
+
+    def both() -> None:
+        try:
+            first()
+        finally:
+            second()
+
+    return both
+
+
+def _record_file_read(repo_path: Path, session_id: str, rel: str) -> None:
+    try:
+        from ._shared import record_file_read
+
+        record_file_read(repo_path, session_id, rel)
+    except Exception:
+        return
+
+
 def _collapse_replacement(
     repo_path: Path,
     checkout: Path,
@@ -553,6 +726,7 @@ def _collapse_replacement(
             tool_response=tool_output,
             build=lambda: collapse(rel, content, prior_meta, touched=touched),
             forgone_gate=lambda: _claim_forgone(rel, state),
+            session_id=state.get("session_id", ""),
         )
     except Exception:
         return None, None
@@ -615,6 +789,7 @@ def _skeleton_replacement(
                 min_saved_tokens=_READ_NUDGE_MIN_SAVINGS,
             ),
             forgone_gate=lambda: _claim_forgone(rel, state),
+            session_id=state.get("session_id", ""),
         )
     except Exception:
         # Everything is inside the try, gates included. A malformed config or

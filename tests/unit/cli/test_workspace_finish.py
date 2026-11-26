@@ -33,15 +33,17 @@ def _render(facts: WorkspaceFacts, setup=None) -> str:
     return console.export_text()
 
 
-def _facts(repos, provider=None) -> WorkspaceFacts:
+def _facts(repos, provider=None, cross_repo=None) -> WorkspaceFacts:
     return WorkspaceFacts(
         repos=repos, files=553, symbols=8528, primary=repos[0].alias, elapsed="6m 50s",
-        provider=provider,
+        provider=provider, cross_repo=cross_repo,
     )
 
 
 def test_one_repo_reads_like_the_single_repo_panel():
-    setup = EditorSetupOutcome(claude_code_connected=True, first_index=True)
+    setup = EditorSetupOutcome(
+        claude_code_connected=True, restart_hosts=({"id": "claude-code", "name": "Claude Code"},)
+    )
     facts = _facts(
         [RepoOutcome("beast", _WRITTEN, pages=937)],
         provider=provider_model("claude_cli", "claude_cli/claude-haiku-5-5"),
@@ -54,12 +56,15 @@ def test_one_repo_reads_like_the_single_repo_panel():
     assert "claude_cli/claude" not in text
     assert "553 files · 8,528 symbols" in text
     assert "beast" in text and "937 pages" in text
-    assert "Restart Claude Code" in text
-    assert "Try asking your agent" in text
+    assert "Restart Claude Code to load the repowise tools." in text
+    assert "Then ask your agent" in text
+    assert "Use Repowise to give me a tour of beast" in text
     assert "—" not in text
     steps = text[text.index("What's next:") :]
-    assert steps.index("repowise serve") < steps.index("repowise search")
-    assert len([ln for ln in steps.splitlines() if ln.strip().startswith("│   repowise")]) == 3
+    assert "open the workspace dashboard (keeps running" in steps
+    # serve is the only step; search, status and generate wait in `repowise next`.
+    assert len([ln for ln in steps.splitlines() if ln.strip("│ ").startswith("repowise")]) == 1
+    assert "repowise mcp" not in text and "Auto-sync" not in text
 
 
 def test_mixed_modes_count_each_and_label_each_repo():
@@ -80,7 +85,21 @@ def test_mixed_modes_count_each_and_label_each_repo():
     # Problems lead the list.
     assert text.index("✗ broken") < text.index("✓ api")
     assert "failed (parse failed)" in text
-    assert "repowise generate <repo>" in text
+    assert "repowise generate <repo>" not in text
+    flat = " ".join(text.replace("│", " ").split())
+    # The cross-repo question names the repos that indexed, not the failed one.
+    assert "Use Repowise to show me how api, web and infra depend on each other" in flat
+
+
+def test_the_cross_repo_finding_stands_out():
+    facts = _facts(
+        [RepoOutcome("api", _FROM_CODE, pages=12), RepoOutcome("web", _FROM_CODE, pages=8)],
+        cross_repo="api and web changed together in 30 work sessions",
+    )
+    text = _render(facts)
+    assert "What stood out" in text
+    assert "Across repos    api and web changed together in 30 work sessions" in text
+    assert "What stood out" not in _render(_facts([RepoOutcome("api", _FROM_CODE, pages=1)]))
 
 
 def test_many_repos_are_cut_after_ten_with_the_rest_counted():
@@ -124,3 +143,39 @@ def test_off_a_terminal_the_workspace_panel_is_plain_lines():
 
     assert "╭" not in out and "│" not in out
     assert "api" in out and "repowise serve" in out
+
+
+def test_the_cross_repo_finding_reads_what_analysis_wrote(tmp_path):
+    from repowise.cli.commands.init_cmd.workspace import cross_repo_finding
+    from repowise.core.workspace.cross_repo import (
+        CrossRepoCoChange,
+        CrossRepoOverlay,
+        save_overlay,
+    )
+
+    assert cross_repo_finding(tmp_path) is None
+
+    def edge(a, b, times):
+        return CrossRepoCoChange(a, "x.py", b, "y.py", strength=0.5, frequency=times, last_date="")
+
+    overlay = CrossRepoOverlay(
+        co_changes=[edge("web", "api", 30), edge("api", "web", 11), edge("api", "worker", 20)]
+    )
+    save_overlay(overlay, tmp_path)
+    # The file pair with the most shared sessions names the repo pair; sessions
+    # are not summed across file pairs, which would count one session twice.
+    assert cross_repo_finding(tmp_path) == "api and web changed together in 30 work sessions"
+
+
+def test_a_failing_cross_repo_read_costs_the_line_and_is_logged(tmp_path, monkeypatch):
+    from structlog.testing import capture_logs
+
+    from repowise.cli.commands.init_cmd import workspace
+
+    def broken(_root):
+        raise ValueError("bad overlay")
+
+    monkeypatch.setattr(workspace, "_busiest_repo_pair", broken)
+    with capture_logs() as logs:
+        assert workspace.cross_repo_finding(tmp_path) is None
+    assert any(e["event"] == "workspace_cross_repo_finding_failed" for e in logs)

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from repowise.core.generation.architecture_map import MAX_NODES, build_system_map
 from repowise.core.generation.architecture_mermaid import (
     HEADING,
@@ -126,6 +128,48 @@ class TestStructure:
         assert len(sm.nodes) <= MAX_NODES
         assert sm.omitted
         assert all(name for name in sm.omitted)
+
+    def test_production_only_map_keeps_its_boxes(self):
+        """No part holds a large share here: the ways in and largest parts rank as before."""
+        sm = _monorepo(extra_packages=12)
+        assert [n.id for n in sm.nodes] == [
+            "n_actor_user",
+            "n_actor_api",
+            "n_apps_web",
+            "n_apps_cli",
+            "n_libs_extra0",
+            "n_libs_extra1",
+            "n_libs_extra10",
+            "n_libs_extra11",
+            "n_services_api",
+            "n_libs_core",
+            "n_store",
+        ]
+
+    def test_many_small_routed_apps_never_crowd_out_the_main_package(self):
+        """A large JS monorepo ships one big package beside dozens of small routed apps.
+
+        Every app is entered through its pages, so each ranked as a way in ahead
+        of the main package, and the map drew a dozen fixture apps and no product.
+        """
+        files = {f"packages/next/src/server/m{i}.ts": "typescript" for i in range(40)}
+        files["packages/create-app/index.ts"] = "typescript"
+        manifests = ["packages/next/package.json", "packages/create-app/package.json"]
+        for i in range(12):
+            for name in ("page", "layout"):
+                files[f"evals/evals/agent-{i:03}/app/{name}.tsx"] = "typescript"
+            manifests.append(f"evals/evals/agent-{i:03}/package.json")
+        edges = [("packages/create-app/index.ts", "packages/next/src/server/m0.ts", "imports")]
+        sm = build_system_map(
+            files,
+            edges,
+            repo_name="next.js",
+            manifests=manifests,
+            entry_points=["packages/create-app/index.ts"],
+        )
+        paths = {n.path for n in sm.nodes if n.path}
+        assert "packages/next" in paths
+        assert len(sm.nodes) <= MAX_NODES
 
     def test_heavy_edge_is_drawn_thick_and_the_rest_are_capped(self):
         files = {f"p{i}/m.py": "python" for i in range(8)}
@@ -312,6 +356,88 @@ class TestStructure:
         shared = [n for n in sm.nodes if n.tier == "shared"]
         assert [(n.name, n.role) for n in shared] == [("Shared libraries", "2 TypeScript files")]
         assert _tier_of(sm)["core"] == "engine"
+
+    @pytest.mark.timeout(30)
+    def test_a_dense_library_graph_folds_in_linear_time(self):
+        """Libraries that each import every later one, behind a single way in.
+
+        Every import path from the last library back to the app is a subset of
+        the others, so walking paths rather than libraries never returns.
+        """
+        libs = [f"lib{i}" for i in range(40)]
+        files = dict.fromkeys(["web/a.ts", *(f"{lib}/a.ts" for lib in libs)], "typescript")
+        files.update(dict.fromkeys(["cli/a.py", "core/a.py"], "python"))
+        edges = [
+            ("web/a.ts", "lib0/a.ts", "imports"),
+            ("web/a.ts", "core/a.py", "imports"),
+            ("cli/a.py", "core/a.py", "imports"),
+            ("core/a.py", "external:db", "imports"),
+        ]
+        edges += [
+            (f"{a}/a.ts", f"{b}/a.ts", "imports")
+            for i, a in enumerate(libs)
+            for b in libs[i + 1 :]
+        ]
+        sm = build_system_map(
+            files,
+            edges,
+            repo_name="demo",
+            manifests=[f"{d}/package.json" for d in ("web", "cli", "core", *libs)],
+            stores={"external:db": "db"},
+        )
+        # The one app reaching them all takes every library in.
+        web = next(n for n in sm.nodes if n.path == "web")
+        assert (web.tier, web.role) == ("surface", "41 TypeScript files")
+
+    @staticmethod
+    def _tool_over_web(web: list[str], tool_files: int):
+        """A dev tool importing a web app that calls an API over a core library.
+
+        The web app imports a UI kit nothing else uses.
+        """
+        files = dict.fromkeys([f"web/{p}" for p in web], "typescript")
+        files.update({f"tool/t{i}.ts": "typescript" for i in range(tool_files)})
+        files["ui/button.ts"] = "typescript"
+        files.update(dict.fromkeys(["api/routes.py", "core/x.py", "cli/main.py"], "python"))
+        edges = [(f"tool/t{i}.ts", f"web/{web[0]}", "imports") for i in range(tool_files)]
+        edges += [
+            (f"web/{web[0]}", "ui/button.ts", "imports"),
+            ("api/routes.py", "core/x.py", "imports"),
+            ("cli/main.py", "core/x.py", "imports"),
+        ]
+        return build_system_map(
+            files,
+            edges,
+            repo_name="demo",
+            manifests=["web/package.json", "tool/package.json", "ui/package.json"]
+            + [f"{d}/pyproject.toml" for d in ("api", "core", "cli")],
+            route_files={"api/routes.py"},
+            http_links=[(f"web/{web[-1]}", "api/routes.py")],
+        )
+
+    def test_a_small_tool_does_not_absorb_the_larger_app_it_imports(self):
+        sm = self._tool_over_web([f"src/m{i}.ts" for i in range(6)], tool_files=1)
+        nodes = {n.path: n for n in sm.nodes if n.path}
+        # The app keeps its box and takes in the UI kit only it imports.
+        assert nodes["web"].role == "7 TypeScript files"
+        assert nodes["web"].tier == "surface"
+        assert "ui" not in nodes
+        assert ("n_web", "n_api") in {(e.source, e.target) for e in sm.edges}
+
+    def test_a_routed_web_page_makes_its_app_a_way_in(self):
+        web = ["app/page.tsx", "app/api/items/route.ts", "src/client.ts"]
+        sm = self._tool_over_web(web, tool_files=8)
+        verbs = {(e.source, e.target): e.verb for e in sm.edges}
+        assert verbs[("n_actor_user", "n_web")] == "uses"
+        assert next(n for n in sm.nodes if n.path == "web").role == "4 TypeScript files"
+        starts = next(f for n in sm.nodes if n.path == "web" for f in n.facts if "entry" in f)
+        assert starts == "entry points: web/app/page.tsx"
+
+    def test_other_files_in_an_app_folder_are_not_a_way_in(self):
+        """An Express or Angular ``app/`` folder holds middleware and error files too."""
+        web = ["app/middleware.js", "app/error.ts", "app/api/items/route.ts", "src/c.ts"]
+        sm = self._tool_over_web(web, tool_files=8)
+        assert ("n_actor_user", "n_web") not in {(e.source, e.target) for e in sm.edges}
 
     def test_re_exports_are_not_flow(self):
         files = {f"src/pkg/{n}/m.py": "python" for n in ("app", "cli", "a", "b", "c")}

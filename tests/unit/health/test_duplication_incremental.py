@@ -241,6 +241,64 @@ def test_chained_incremental_updates(tmp_path: Path):
     assert _key(second) == _key(_full(parsed))
 
 
+def _stored_groups(cache_dir: Path, limits=LIMITS):
+    """The pair index's raw and merged groups, keyed by path rather than id."""
+    index = load_pair_index(cache_dir, WINDOW, limits)
+    assert index is not None
+
+    def by_path(groups):
+        return {(index.paths[a], index.paths[b]): sorted(rows) for (a, b), rows in groups.items()}
+
+    return by_path(index.pairs), by_path(index.merged)
+
+
+def test_spliced_state_and_order_match_a_full_run(tmp_path: Path):
+    """Each splice keeps the file pairs it did not touch as stored and re-merges
+    the rest: the report, its pair order, and the stored raw and merged groups
+    must all equal a fresh full run over the same tree."""
+    both = _BODY + "\n" + _OTHER
+    cache_dir = _seed(
+        tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER, "d.py": _OTHER, "e.py": both}
+    )
+    steps = [
+        ({"f.py": _BODY.replace("doit", "added")}, set(), {"f.py"}),
+        ({"a.py": both.replace("other", "edited")}, set(), {"a.py"}),
+        ({}, {"b.py"}, set()),
+        ({"g.py": _OTHER, "c.py": _BODY}, {"d.py"}, {"g.py", "c.py"}),
+    ]
+    for step, (writes, deletes, changed) in enumerate(steps):
+        for rel, body in writes.items():
+            (tmp_path / rel).write_text(body)
+        for rel in deletes:
+            (tmp_path / rel).unlink()
+        parsed = _parsed(tmp_path)
+        report = _incremental(parsed, cache_dir, changed)
+        assert report.diagnostics.get("incremental") is True
+
+        oracle_dir = tmp_path / f"oracle{step}"
+        oracle_dir.mkdir()
+        for pf in parsed:
+            (oracle_dir / pf.file_info.path).write_bytes(
+                (tmp_path / pf.file_info.path).read_bytes()
+            )
+        oracle_parsed = _parsed(oracle_dir)
+        oracle_cache = oracle_dir / ".repowise"
+        oracle = detect_clones(
+            oracle_parsed,
+            window_tokens=WINDOW,
+            min_lines=MIN_LINES,
+            limits=LIMITS,
+            cache_dir=oracle_cache,
+        )
+        assert _key(report) == _key(oracle)
+        assert [_pair_order(p) for p in report.pairs] == [_pair_order(p) for p in oracle.pairs]
+        assert _stored_groups(cache_dir) == _stored_groups(oracle_cache)
+
+
+def _pair_order(p):
+    return (p.file_a, p.file_b, p.a_start_line, p.a_end_line, p.b_start_line, p.b_end_line)
+
+
 def test_gated_files_are_not_treated_as_new(tmp_path: Path, monkeypatch):
     """Files the seed run gated out (too small to window) must not count
     toward the changed-files guard on every later run."""

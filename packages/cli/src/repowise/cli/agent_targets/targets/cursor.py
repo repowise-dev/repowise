@@ -49,7 +49,13 @@ from pathlib import Path
 from repowise.core.agents import identity
 from repowise.core.owned_paths import CURSOR_RULES_PREFIX
 
-from ..formats.server_entry import RENAME_HINT, RemoteServerEntryError, ServerSpec
+from ..formats.server_entry import (
+    RENAME_HINT,
+    RemoteServerEntryError,
+    ServerSpec,
+    agents_remove_command,
+    read_servers,
+)
 from ..types import (
     Capability,
     DoctorReport,
@@ -61,6 +67,7 @@ from ..types import (
     InstallOptions,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 
@@ -532,6 +539,22 @@ class CursorTarget:
             return [str(user_hooks_path())]
         repo = repo_path or Path.cwd()
         return [str(mcp_config_path(repo)), str(rules_path(repo))]
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """``~/.cursor/mcp.json`` (never written here, still loaded) and the workspace's."""
+        user = Path.home() / ".cursor" / "mcp.json"
+        maps = [ServerMap(user, Scope.USER, read_servers(user, "mcpServers"))]
+        if repo_path is not None:
+            project = mcp_config_path(repo_path)
+            maps.append(
+                ServerMap(
+                    project,
+                    Scope.PROJECT,
+                    read_servers(project, "mcpServers"),
+                    remove_command=agents_remove_command(ID, "project"),
+                )
+            )
+        return maps
 
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the one user-level surface, the rewrite hook.

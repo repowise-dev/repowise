@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useFormatter, useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Button } from "@repowise-dev/ui/ui/button";
@@ -11,7 +11,6 @@ import { connectSetupAgent, type SetupResponse } from "@/lib/api/setup";
 import {
   MOMENT_BODY,
   MOMENT_CAPTION,
-  MOMENT_CARD,
   MOMENT_LINK,
   MOMENT_MICRO,
 } from "@/components/layout/moment-shell";
@@ -20,6 +19,19 @@ type SetupAgent = NonNullable<SetupResponse["agents"]>[number];
 
 /** Rows shown before the rest are left to Setup, which lists every agent. */
 const AGENTS_SHOWN = 4;
+
+/** How long a connected agent waits for its first call before the card says
+ *  what to check. */
+export const TIPS_AFTER_MS = 2 * 60_000;
+
+/** The `welcome.agent.tips` key with what to check in each agent; any other
+ *  agent gets the generic restart line. */
+const TIP_KEYS: Record<string, string> = {
+  "claude-code": "claudeCode",
+  cursor: "cursor",
+  vscode: "vscode",
+  codex: "codex",
+};
 
 const ROW = "flex flex-col gap-3 py-4 first:pt-0 last:pb-0 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between";
 
@@ -50,16 +62,21 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Step 2: the agents found on this machine, connected ones first, and two
- *  questions to try. */
+/** True while an agent is connected and none has called yet, with the call
+ *  log readable: the welcome then checks again for the first call. */
+export function waitingForFirstCall(setup: SetupResponse | null): boolean {
+  if (!setup?.calls_available || setup.calls.first_call_at) return false;
+  return (setup.agents ?? []).some((a) => a.connected && !a.first_call_at);
+}
+
+/** Step 2: the agents found on this machine, connected ones first, each
+ *  waiting for its first call. Tips show after two minutes of waiting. */
 export function WelcomeStepAgent({
   repoId,
   setup,
-  hotspotPath,
 }: {
   repoId: string;
   setup: SetupResponse | null;
-  hotspotPath: string | null;
 }) {
   const t = useTranslations("welcome.agent");
   // Connected here, before the setup data catches up.
@@ -69,53 +86,36 @@ export function WelcomeStepAgent({
     .sort((a, b) => Number(b.connected) - Number(a.connected));
   const agents = found.slice(0, AGENTS_SHOWN);
   const more = found.length - agents.length;
-  const questions = [
-    t("askFlow"),
-    hotspotPath ? t("askHotspot", { path: hotspotPath }) : t("askStart"),
-  ];
 
   return (
-    <div className="space-y-8">
-      <section aria-labelledby="welcome-agents">
-        <h3 id="welcome-agents" className={`${MOMENT_MICRO} mb-3`}>
-          {t("listLabel")}
-        </h3>
-        {agents.length === 0 ? (
-          <p className={MOMENT_CAPTION}>{t("none")}</p>
-        ) : (
-          <ul className="divide-y divide-[var(--color-border-default)]">
-            {agents.map((agent) => (
-              <AgentRow
-                key={agent.id}
-                repoId={repoId}
-                agent={agent}
-                connected={connected[agent.id] ?? agent.connected}
-                writesAllowed={setup?.writes_allowed ?? false}
-                callsKnown={setup?.calls_available ?? false}
-                onConnected={(value) => setConnected((c) => ({ ...c, [agent.id]: value }))}
-              />
-            ))}
-          </ul>
-        )}
-        {more > 0 && <p className={`${MOMENT_CAPTION} mt-3`}>{t("moreAgents", { count: more })}</p>}
-      </section>
-
-      <section aria-labelledby="welcome-ask">
-        <h3 id="welcome-ask" className={`${MOMENT_MICRO} mb-3`}>
-          {t("askLabel")}
-        </h3>
-        <ul className={`${MOMENT_CARD} divide-y divide-[var(--color-border-default)]`}>
-          {questions.map((q) => (
-            <li key={q} className="flex items-center justify-between gap-4 py-1 pl-4 pr-2">
-              <span className={`${MOMENT_BODY} min-w-0 py-2 text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}>
-                {q}
-              </span>
-              <CopyQuestion text={q} />
-            </li>
+    <section aria-labelledby="welcome-agents">
+      <h3 id="welcome-agents" className={`${MOMENT_MICRO} mb-3`}>
+        {t("listLabel")}
+      </h3>
+      {agents.length === 0 ? (
+        <p className={MOMENT_CAPTION}>{t("none")}</p>
+      ) : (
+        <ul className="divide-y divide-[var(--color-border-default)]">
+          {agents.map((agent) => (
+            <AgentRow
+              key={agent.id}
+              repoId={repoId}
+              agent={agent}
+              connected={connected[agent.id] ?? agent.connected}
+              writesAllowed={setup?.writes_allowed ?? false}
+              callsKnown={setup?.calls_available ?? false}
+              onConnected={(value) => setConnected((c) => ({ ...c, [agent.id]: value }))}
+            />
           ))}
         </ul>
-      </section>
-    </div>
+      )}
+      {more > 0 && <p className={`${MOMENT_CAPTION} mt-3`}>{t("moreAgents", { count: more })}</p>}
+      {waitingForFirstCall(setup) && (
+        <p role="status" className={`${MOMENT_CAPTION} mt-4`}>
+          {t("waitingNote")}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -158,6 +158,9 @@ function AgentRow({
   }
 
   const file = firstConfigFile(agent);
+  const waiting = connected && callsKnown && !agent.first_call_at;
+  const tipsDue = useAfter(TIPS_AFTER_MS, waiting);
+  const tipKey = TIP_KEYS[agent.id];
   return (
     <li className={ROW}>
       <div className="min-w-0">
@@ -185,6 +188,17 @@ function AgentRow({
         </p>
         {agent.default_profile === "core" && (
           <p className={`${MOMENT_CAPTION} pl-3.5`}>{t("coreTools")}</p>
+        )}
+        {tipsDue && (
+          <div role="status" className="mt-2 space-y-1 pl-3.5">
+            <p className={`${MOMENT_CAPTION} font-medium text-[var(--color-text-primary)]`}>{t("tips.title")}</p>
+            <p className={`${MOMENT_CAPTION} [overflow-wrap:anywhere]`}>
+              {tipKey ? t(`tips.${tipKey}`) : t("tips.generic", { name })}
+            </p>
+            <p className={`${MOMENT_CAPTION} [overflow-wrap:anywhere]`}>
+              {t.rich("tips.doctor", { mono: (c) => <span className="font-mono">{c}</span> })}
+            </p>
+          </div>
         )}
         {!connected && !writesAllowed && (
           <div className="mt-2 pl-3.5">
@@ -239,6 +253,11 @@ function RowAction({
   }
   return (
     <span className="flex shrink-0 flex-wrap items-center gap-2 pl-3.5 min-[561px]:pl-0">
+      {writesAllowed && (
+        <Button variant="outline" size="sm" className="h-11 min-[561px]:h-8" disabled={busy} onClick={onConnect}>
+          {busy ? t("connecting") : t("connect")}
+        </Button>
+      )}
       <AiPromptButton
         label={t("copyPrompt")}
         copiedLabel={t("copied")}
@@ -247,16 +266,24 @@ function RowAction({
         copyText={buildPrompt}
         className="max-[560px]:h-11"
       />
-      {writesAllowed && (
-        <Button variant="outline" size="sm" className="h-11 min-[561px]:h-8" disabled={busy} onClick={onConnect}>
-          {busy ? t("connecting") : t("connect")}
-        </Button>
-      )}
     </span>
   );
 }
 
-function CopyQuestion({ text }: { text: string }) {
+/** True once `ms` have passed with `active` held; false again when it drops. */
+function useAfter(ms: number, active: boolean): boolean {
+  const [due, setDue] = useState(false);
+  useEffect(() => {
+    setDue(false);
+    if (!active) return;
+    const timer = window.setTimeout(() => setDue(true), ms);
+    return () => window.clearTimeout(timer);
+  }, [ms, active]);
+  return due;
+}
+
+/** A copy button for one prompt or question, sized for touch. */
+export function CopyQuestion({ text }: { text: string }) {
   const t = useTranslations("welcome.agent");
   const [copied, setCopied] = useState(false);
   return (

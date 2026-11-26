@@ -81,3 +81,55 @@ export function doneFixture(overrides: Partial<SetupResponse> = {}): SetupRespon
     ...overrides,
   });
 }
+
+type SetupSteps = NonNullable<SetupResponse["setup"]>;
+type SetupStep = NonNullable<SetupSteps["actions"]>[number];
+
+/** One live setup step, shaped as core's setup rules emit it. */
+export function stepFixture(rule: string, overrides: Partial<SetupStep> = {}): SetupStep {
+  return {
+    id: `act_${rule}`,
+    rule,
+    tier: "improve_signal",
+    horizons: ["week", "quarter"],
+    severity: "low",
+    title: "A setup step",
+    impact: "What it changes.",
+    why: [],
+    target: { kind: "repo", path: "", symbol: null },
+    surface: "setup",
+    effort: "S",
+    confidence: "high",
+    value: 1,
+    priority: 1,
+    done_when: "",
+    command: null,
+    marker: null,
+    evidence_ids: [],
+    evidence_total: 0,
+    includes: [],
+    fingerprint: "f",
+    details: [],
+    details_total: 0,
+    commands: [],
+    ...overrides,
+  } as SetupStep;
+}
+
+/** The setup block: steps left, and the offer once an agent has called. */
+export function stepsFixture(actions: SetupStep[], overrides: Partial<SetupSteps> = {}): SetupSteps {
+  return {
+    open: actions.length,
+    offer: null,
+    dismissed: false,
+    completed: false,
+    agent_calls: 0,
+    claude_code_calls: 0,
+    first_call_at: null,
+    synced_commits: 0,
+    unlocks: { always_load: false, distill: false, suggested_settings: false },
+    actions,
+    thresholds: { agent_calls: 20, synced_commits: 10 },
+    ...overrides,
+  };
+}

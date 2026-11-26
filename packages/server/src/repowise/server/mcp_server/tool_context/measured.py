@@ -4,9 +4,11 @@ One short string on a symbol or file card, only when ``symbol_hotness`` has
 a row for the symbol (or for a function in the file). No row means no
 evidence, and then the key is absent: unknown is never written as cold.
 
-The line always names its basis (workload class and name), how much of the
-run repo code explains, and the age; the share's interval when the run counted
-samples; ``ordering only`` for a deterministic tracer. A ``unit_test`` run
+The line always names its basis (workload class and name), the function's
+self time (the cost it is ranked by: built-ins and libraries it called
+included, waits excluded) with its interval when the run counted samples, how
+much of the run went to repo code itself, and the age; ``ordering only`` for a
+deterministic tracer. A ``unit_test`` run
 reads "in tests". The ``lead_candidate`` tier is not worded as a claim until
 its thresholds are calibrated: it reads as ranked.
 
@@ -96,10 +98,10 @@ def _line_for(kind: str, key: str, rows: dict[str, Any], now: datetime) -> str |
 
 def symbol_line(row: Any, now: datetime) -> str:
     """One symbol's line, e.g. ``rank 3 of repo code in entry_point "cli build"
-    (12% of samples, 9-15%; repo code explains 40%), 2d old``."""
+    (12% self, 9-15%; repo code itself 40%), 2d old``."""
     if row.freshness == "stale":
         return f"stale: measured {_basis(row)} before the body changed, {_age(row, now)}"
-    details = "; ".join(d for d in (_share(row), _explained(row)) if d)
+    details = "; ".join(d for d in (_share(row), _repo_self(row)) if d)
     paren = f" ({details})" if details else ""
     return f"{_place(row)} {_basis(row)}{paren}, {_age(row, now)}{_earlier(row)}"
 
@@ -118,8 +120,8 @@ def file_line(rows: list[Any], now: datetime) -> str | None:
     in_lead = [r for r in fresh if r.run_id == lead.run_id]
     named = in_lead[:MAX_NAMED_IN_FILE]
     items = "; ".join(_file_item(r) for r in named)
-    explained = _explained(lead)
-    paren = f" ({explained})" if explained else ""
+    repo_self = _repo_self(lead)
+    paren = f" ({repo_self})" if repo_self else ""
     line = f"{_basis(lead)}{paren}, {_age(lead, now)}{_earlier(lead)}: {items}"
     # Counted apart, so nothing from another run reads as measured in this one.
     for count, label in (
@@ -165,23 +167,21 @@ def _basis(row: Any) -> str:
 
 
 def _share(row: Any) -> str | None:
-    """The share with its interval; a tracer run orders and gives none."""
+    """The self share (the cost) with its interval; a tracer run orders and gives none."""
     if row.ordering_only:
         return "ordering only"
-    if row.share_low is not None and row.share_high is not None and row.samples and row.run_samples:
-        return (
-            f"{_pct(row.samples / row.run_samples)} of samples, "
-            f"{_low(row.share_low)}-{_pct(row.share_high)}"
-        )
-    if row.total_share is not None:
-        return f"{_pct(row.total_share)} of the run"
+    if row.self_share is not None and row.share_low is not None and row.share_high is not None:
+        return f"{_pct(row.self_share)} self, {_low(row.share_low)}-{_pct(row.share_high)}"
+    if row.self_share is not None:
+        return f"{_pct(row.self_share)} self"
     return None
 
 
-def _explained(row: Any) -> str | None:
-    if row.explained_share is None:
+def _repo_self(row: Any) -> str | None:
+    """How much of the run went to repo code itself; absent for a run stored without it."""
+    if row.repo_self_share is None:
         return None
-    return f"repo code explains {_pct(row.explained_share)}"
+    return f"repo code itself {_pct(row.repo_self_share)}"
 
 
 def _age(row: Any, now: datetime) -> str:

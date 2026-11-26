@@ -11,13 +11,21 @@ from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server._code_rationale import can_lead_answer
+from repowise.server.mcp_server._helpers import resolve_enum_argument
+from repowise.server.mcp_server._meta import answer_hint
 from repowise.server.mcp_server.tool_answer.config import (
+    _BODY_NOTE,
+    _BODY_NOTE_TAIL,
     _CANDIDATE_FILES_HIGH,
     _CANDIDATE_FILES_MAX,
+    _CUT_BODY_NOTE_TAIL,
     _LARGE_FILE_BYTES,
+    _NO_SYNTHESIS_NOTE,
+    _RATIONALE_NOTE,
 )
 from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
+from repowise.server.mcp_server.tool_answer.verify import answer_anchor, verify_line
 from repowise.server.mcp_server.tool_answer.withheld import _parse_continuation
 
 _COLLECTIONS = (
@@ -35,6 +43,9 @@ _COLLECTIONS = (
 # ``retrieval_quality``, which feeds ``confidence`` and is otherwise not served
 # so the agent reads one trust signal.
 _INCLUDES = frozenset({"evidence", "diagnostics"})
+#: Why a keyless reply ignores ``include=["evidence"]``: it has no expanded
+#: shape, and the files the expansion would quote are already listed.
+_KEYLESS_EVIDENCE_REQUIRES = "an LLM provider; Read candidate_files"
 
 
 def _path(row: Any) -> str | None:
@@ -290,6 +301,30 @@ def _lead_rationale(payload: dict[str, Any]) -> dict[str, Any] | None:
     return next((row for row in rows if _same_file(_nav_path(row), top)), None)
 
 
+# Generic sentences a keyless ``note`` drops: ``degraded`` and ``answer`` already
+# say synthesis is off, and each field the rest names sits beside it. The cut
+# body sentence stays: it is the prose pointer at a body's continuation.
+_KEYLESS_GENERIC_NOTES = (
+    _NO_SYNTHESIS_NOTE,
+    _RATIONALE_NOTE,
+    _BODY_NOTE,
+)
+
+
+def _trim_keyless_note(payload: dict[str, Any]) -> None:
+    """Drop the generic sentences from a keyless ``note``; a sentence naming a
+    path or continuation is not one of them and stays."""
+    note = payload.get("note")
+    if payload.get("degraded") != "no-llm-provider" or not isinstance(note, str):
+        return
+    for generic in _KEYLESS_GENERIC_NOTES:
+        note = note.replace(generic, "")
+    if note.strip():
+        payload["note"] = note.strip()
+    else:
+        payload.pop("note", None)
+
+
 def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     """Describe only evidence that survived the external projection."""
     reason = payload.get("degraded")
@@ -449,6 +484,53 @@ def _slim_best_guesses(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     return True
 
 
+#: What a navigation ``key_symbols`` entry keeps: the keys
+#: ``serialize_hits(lean_symbols=True)`` serves on the low path.
+_LEAN_SYMBOL_KEYS = ("name", "kind", "signature", "start_line", "end_line")
+
+
+def _strip_row_text(row: dict[str, Any]) -> bool:
+    """Drop a row's page text and symbol text in place; whether anything went."""
+    dropped = False
+    for key in ("excerpt", "snippet"):
+        dropped |= row.pop(key, None) is not None
+    symbols = row.get("key_symbols")
+    if isinstance(symbols, list):
+        lean = [
+            {k: sym[k] for k in _LEAN_SYMBOL_KEYS if sym.get(k) is not None}
+            if isinstance(sym, dict)
+            else sym
+            for sym in symbols
+        ]
+        dropped |= lean != symbols
+        row["key_symbols"] = lean
+    return dropped
+
+
+def _slim_retrieval(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
+    """Serve a synthesized reply's ``retrieval`` rows as navigation, not page text.
+
+    The answer was written from these page excerpts, so by default a row keeps
+    its path, title, score and lean ``key_symbols`` (name, signature and lines,
+    which point a Read). Rows are never dropped here: the next step and the
+    fallback pruning already counted them. A row without symbols gets the
+    file's ``functions`` instead, as slim ``best_guesses`` rows do. ``include=["evidence"]`` restores the
+    excerpts and symbol text. Returns whether any text was dropped.
+    """
+    rows = payload.get("retrieval")
+    if not isinstance(rows, list) or not rows:
+        return False
+    dropped = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        dropped |= _strip_row_text(row)
+        known = facts.get(_nav_path(row))
+        if not row.get("key_symbols") and isinstance(known, dict) and known.get("functions"):
+            row["functions"] = known["functions"]
+    return dropped
+
+
 def _prune_fallback_targets(
     payload: dict[str, Any], raw_fallbacks: list[Any] | None
 ) -> None:
@@ -497,7 +579,6 @@ def _default_shape(
             payload.pop("code_rationale", None)
         else:
             _keep(payload, "code_rationale", 1)
-        payload.setdefault("next_action_hint", "Use the answer and citations directly.")
         return
 
     if confidence == "medium":
@@ -512,10 +593,6 @@ def _default_shape(
         payload.pop("candidates", None)
         if payload.get("best_guesses") or payload.get("retrieval"):
             payload.pop("fallback_targets", None)
-        payload.setdefault(
-            "next_action_hint",
-            "Verify the top evidence row before relying on details the answer does not settle.",
-        )
         return
 
     _keep(payload, "symbol_bodies", 2)
@@ -529,13 +606,8 @@ def _default_shape(
     payload.pop("candidates", None)
     _prune_fallback_targets(payload, raw_fallbacks)
 
-    if not payload.get("error"):
-        if not str(payload.get("answer") or "").strip():
-            payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
-        payload.setdefault(
-            "next_action_hint",
-            "Use the first emitted evidence row; refine the question if it does not resolve the issue.",
-        )
+    if not payload.get("error") and not str(payload.get("answer") or "").strip():
+        payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
 
 
 _RANKED_RATIONALE_CHARS = 200
@@ -553,7 +625,7 @@ def _ranked_list_only(payload: dict[str, Any]) -> bool:
     )
 
 
-def _serve_ranked_list(payload: dict[str, Any]) -> None:
+def _serve_ranked_list(payload: dict[str, Any], question: str) -> None:
     """Cut a keyless weak reply to best_guesses, candidate_files and one guidance line.
 
     A rationale row from the top guess, or one opening with its file's
@@ -595,18 +667,61 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
         payload.pop(key, None)
     if isinstance(payload.get("_meta"), dict):
         payload["_meta"].pop("hint", None)
+    anchor = answer_anchor(payload, question)
     payload["answer"] = (
         f"No synthesis ({payload['degraded']}), weak retrieval: best_guesses ranks the "
+        f"likeliest files. {verify_line(anchor, 'low')}"
+        if anchor
+        else f"No synthesis ({payload['degraded']}), weak retrieval: best_guesses ranks the "
         f"likeliest files, {top} first. If none fits, refine with search_codebase."
     )
+
+
+#: The next step when the reply names no file to check, by shape confidence.
+_DEFAULT_NEXT_STEP = {
+    "high": "Use the answer and citations directly.",
+    "medium": "Verify the top evidence row before relying on details the answer does not settle.",
+    "low": "Use the first emitted evidence row; refine the question if it does not resolve the issue.",
+}
+#: The generic ``_meta.hint`` texts a verify line replaces; one reply gives one next step.
+_GENERIC_META_HINTS = frozenset(
+    hint
+    for hint in (
+        answer_hint("low"),
+        answer_hint("low", degraded="-"),
+        answer_hint("low", degraded="-", has_bodies=True),
+        answer_hint("low", degraded="-", retrieval_quality="weak"),
+    )
+    if hint
+)
+
+
+def _set_next_step(payload: dict[str, Any], question: str, *, expanded: bool) -> None:
+    """Name the line to check the reply against, in place of a generic next step.
+
+    A hint a gate or a cut body wrote is specific and stays. With no file to
+    name, the default shape keeps its generic step.
+    """
+    if payload.get("error"):
+        return
+    anchor = answer_anchor(payload, question)
+    if anchor is None:
+        if not expanded:
+            step = _DEFAULT_NEXT_STEP.get(_shape_confidence(payload), _DEFAULT_NEXT_STEP["low"])
+            payload.setdefault("next_action_hint", step)
+        return
+    # A specific hint or the verify line is the next step: the generic one goes.
+    meta = payload.get("_meta")
+    if isinstance(meta, dict) and meta.get("hint") in _GENERIC_META_HINTS:
+        meta.pop("hint")
+    if "next_action_hint" not in payload:
+        payload["next_action_hint"] = verify_line(anchor, str(payload.get("confidence")))
 
 
 # Keyless replies serve source in place of prose. Past this many chars across
 # symbol_bodies, a body keeps its leading lines and a continuation to Read.
 _KEYLESS_BODY_CHARS = 2_000
 _KEYLESS_BODY_REASON = "keyless_body_budget"
-_BODY_NOTE_TAIL = "answer from that rather than re-reading the file."
-_CUT_BODY_NOTE_TAIL = "answer from that, and Read a body's continuation where it was cut."
 
 
 def _cut_body(entry: dict[str, Any], chars: int, root: Path | None) -> int:
@@ -779,27 +894,41 @@ def _project(
         _default_shape(payload, question, raw_fallbacks=raw_fallbacks)
         if _shape_confidence(payload) == "low":
             slimmed = _slim_best_guesses(payload, facts if isinstance(facts, dict) else {})
+    # Synthesized replies only: a degraded reply's excerpts are its evidence.
+    excerpts_cut = (
+        not expanded
+        and not payload.get("degraded")
+        and _slim_retrieval(payload, facts if isinstance(facts, dict) else {})
+    )
     bodies_cut = not expanded and _budget_keyless_bodies(payload, repo_root)
     _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
+    _trim_keyless_note(payload)
     ranked = not expanded and _ranked_list_only(payload)
     if ranked:
-        _serve_ranked_list(payload)
+        _serve_ranked_list(payload, question)
+    else:
+        _set_next_step(payload, question, expanded=expanded)
     _lead_with_graph_callers(payload)
     for key in _COLLECTIONS:
         if not payload.get(key):
             payload.pop(key, None)
     _record_reductions(
         payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
-        bodies_cut=bodies_cut,
+        bodies_cut=bodies_cut or excerpts_cut,
     )
     if "diagnostics" not in asked:
         payload.pop("retrieval_quality", None)
-    unknown = sorted(asked - _INCLUDES)
+    ignored: list[dict[str, Any]] = []
+    for key in sorted(asked):
+        resolve_enum_argument(key, _INCLUDES, argument="include", ignored=ignored)
     if keyless and "evidence" in asked:
-        unknown.append("evidence")
-    if unknown:
-        payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
+        # Named with its reason and where the files are, so it is not re-asked.
+        ignored.append(
+            {"argument": "include", "values": ["evidence"], "requires": _KEYLESS_EVIDENCE_REQUIRES}
+        )
+    if ignored:
+        payload.setdefault("_meta", {})["ignored_arguments"] = ignored
     return payload, slimmed, ranked
 
 

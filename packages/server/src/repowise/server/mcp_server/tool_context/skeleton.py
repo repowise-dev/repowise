@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.models import GraphNode, Repository
 from repowise.server.mcp_server._budget import DEFAULT_RESPONSE_CHARS
+from repowise.server.mcp_server._helpers import no_source_field, serves_no_source
 
 #: Same threshold get_symbol uses to outline a container instead of inlining it.
 _FOCUS_CONTAINER_MAX_CHARS = DEFAULT_RESPONSE_CHARS // 2
@@ -73,6 +74,9 @@ async def _resolve_skeleton(
     file_target = target.split("::", 1)[0] if is_symbol_target else target
     if not is_symbol_target and target_type != "file":
         result_data["skeleton"] = {"error": "skeleton requires a file target; pass the file path."}
+        return
+    if serves_no_source():
+        result_data["skeleton"] = no_source_field(file_target)
         return
     if not repo_root:
         result_data["skeleton"] = {"error": "MCP server has no repo path configured."}

@@ -3,9 +3,10 @@
 import { useCallback, useSyncExternalStore } from "react";
 import {
   activeNewRoutes,
+  navOwnsRoute,
   readNewSurfaces,
-  routeMatches,
   subscribeNewSurfaces,
+  tabOwnsRoute,
 } from "@/lib/release-moment";
 
 // The snapshot is the joined route list, a string, so an unchanged value keeps
@@ -14,17 +15,26 @@ function snapshot(): string {
   return activeNewRoutes(readNewSurfaces(), Date.now()).join("\n");
 }
 
-/** Whether a nav href opens a page the latest upgrade highlighted. */
-export function useIsNewSurface(): (href: string) => boolean {
-  const joined = useSyncExternalStore(subscribeNewSurfaces, snapshot, () => "");
+function useActiveRoutes(): string {
+  return useSyncExternalStore(subscribeNewSurfaces, snapshot, () => "");
+}
+
+/** Whether a nav entry leads to a page the latest upgrade highlighted. */
+export function useIsNewSurface(): (href: string, exact?: boolean) => boolean {
+  const joined = useActiveRoutes();
   return useCallback(
-    (href: string) => !!joined && joined.split("\n").some((r) => routeMatches(r, href) && sameDepth(r, href)),
+    (href: string, exact = false) =>
+      !!joined && joined.split("\n").some((r) => navOwnsRoute(r, href, exact)),
     [joined],
   );
 }
 
-// A nav item marks only its own page, not a parent of it: `/repos/:id` is not
-// the chat page.
-function sameDepth(route: string, href: string): boolean {
-  return route.split("/").filter(Boolean).length === href.split("/").filter(Boolean).length;
+/** Whether a tab's URL (`/repos/abc/code-health?tab=performance`) is one the
+ *  latest upgrade highlighted. */
+export function useIsNewTab(): (location: string) => boolean {
+  const joined = useActiveRoutes();
+  return useCallback(
+    (location: string) => !!joined && joined.split("\n").some((r) => tabOwnsRoute(r, location)),
+    [joined],
+  );
 }

@@ -342,7 +342,7 @@ def test_reindex_clears_the_unavailable_stamp(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "repowise.cli.providers.embedders.build_embedder",
-        lambda name, _p=None: _RealEmbedder(),
+        lambda name, _p=None, **_kw: _RealEmbedder(),
     )
     repowise_dir = tmp_path / ".repowise"
     repowise_dir.mkdir()

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.security_scan import source_lines
+from repowise.core.analysis.security_scan import shown_snippet, source_lines
 from repowise.core.persistence.models import Repository, SecurityFinding
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import SecurityFindingResponse, SecuritySummaryResponse
@@ -78,7 +78,7 @@ async def list_security_findings(
                 file_path=row.file_path,
                 kind=row.kind,
                 severity=row.severity,
-                snippet=row.snippet,
+                snippet=shown_snippet(row.kind, row.snippet),
                 detected_at=row.detected_at,
                 line_number=check.line_number,
                 line_verified=check.verified,

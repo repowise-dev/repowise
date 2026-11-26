@@ -33,6 +33,11 @@ _STEPS: dict[str, tuple[str | None, str]] = {
         None,
         "Select one row per key in the query instead of reducing all rows here",
     ),
+    "reduce_measured_self_time": (
+        "Find the work {sink} repeats and cut it: cache the result, move it out "
+        "of the loop that calls it, or call it less; then re-run the workload",
+        "",
+    ),
 }
 # Strategies whose edit is one per loop and variable, however many lines of
 # the loop the markers fired on, with the step that names the variable.
@@ -197,6 +202,9 @@ def _walks(iterates: object) -> str:
 
 
 _EFFORT_BANDS = ((1, "S"), (3, "M"), (8, "L"))
+#: Strategies sized by the work, not by the places that change: finding what a
+#: measured function repeats is reading and profiling before it is one edit.
+_MEASURED_EFFORT = {"reduce_measured_self_time": "M"}
 
 
 def edit_effort(sites: int) -> str:
@@ -353,7 +361,8 @@ def _suggestion(
         # Performance is a separate score dimension and its findings
         # intentionally carry zero defect-health impact.
         impact_delta=0.0,
-        effort_bucket=edit_effort(sites + (len(intro) + per_site > len(locations))),
+        effort_bucket=_MEASURED_EFFORT.get(fix.strategy)
+        or edit_effort(sites + (len(intro) + per_site > len(locations))),
         blast_radius={
             "files": sorted({item["file_path"] for item in opportunity.evidence}),
             "file_count": opportunity.affected_files_total,

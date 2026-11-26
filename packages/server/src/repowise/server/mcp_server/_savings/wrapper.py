@@ -188,7 +188,7 @@ def _index_mode() -> str | None:
     from repowise.server.mcp_server import _state
 
     live = interaction.current()
-    root = (live.repo_root if live is not None else None) or getattr(_state, "_repo_path", None)
+    root = (live.repo_root if live is not None else None) or _state.served_path()
     if not root:
         return None
     scope = load_index_scope(root)
@@ -342,7 +342,10 @@ def _emit_telemetry(
     ledger can't aggregate across installs.
     """
     from repowise.core.platform import telemetry
+    from repowise.server.mcp_server import _state
 
+    if not _state.telemetry_allowed():
+        return
     telemetry.record_event(
         "mcp_tool_call",
         _telemetry_properties(tool, result, duration_ms, cold_start=cold_start, include=include),
@@ -432,14 +435,14 @@ def _observe_baseline(tool: str, result: Any) -> None:
             from repowise.server.mcp_server import _state
 
             record_mcp_dead_end(
-                getattr(_state, "_repo_path", None), tool, response_tokens(result)
+                _state.served_path(), tool, response_tokens(result)
             )
         return
 
     delivered = response_tokens(result)
     from repowise.server.mcp_server import _state
 
-    repo_root = getattr(_state, "_repo_path", None)
+    repo_root = _state.served_path()
     recorded = record_mcp_saving(repo_root, tool, replaced, delivered)
     if recorded and isinstance(result, dict) and full_meta(tool):
         meta = result.setdefault("_meta", {})
@@ -501,9 +504,15 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
         try:
             from repowise.server.mcp_server import _state
 
-            record_call(getattr(_state, "_repo_path", None), tool, duration_ms)
+            record_call(_state.served_path(), tool, duration_ms)
         except Exception:  # pragma: no cover - defensive; the latency log never breaks a tool
             logger.debug("mcp latency log failed for %s", tool, exc_info=True)
+        try:
+            from repowise.server.mcp_server._setup_refresh import schedule_setup_refresh
+
+            schedule_setup_refresh(result)
+        except Exception:  # the setup refresh never breaks a tool
+            logger.debug("mcp setup refresh failed for %s", tool, exc_info=True)
         return result
 
     # Preserve the original signature so FastMCP builds the correct tool schema.

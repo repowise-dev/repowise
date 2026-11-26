@@ -245,6 +245,19 @@ def _refusal(status: int, body: dict[str, Any], repo: str) -> dict[str, Any]:
     """The error object for a refused bot request, worded for the person reading it."""
     raw = body.get("detail")
     detail = raw.get("message") if isinstance(raw, dict) else raw
+    code = raw.get("code") if isinstance(raw, dict) else None
+    if code == "pr_bot_ai_requires_paid":
+        return _error(
+            "needs_plan",
+            "AI review needs a paid plan (Pro or Teams). A person can upgrade at "
+            "https://repowise.dev/settings?tab=billing",
+        )
+    if code == "bot_config_locked":
+        return _error(
+            "locked",
+            (detail or "Locked by the organization's bot policy.")
+            + " An admin of the organization changes it at https://repowise.dev/settings/bot",
+        )
     if status == 402:
         return _error(
             "needs_plan",

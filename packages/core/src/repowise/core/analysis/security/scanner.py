@@ -44,6 +44,7 @@ from .patterns import (
 from .refinements import (
     _interpolates_sql_value,
     _is_html_type_annotation,
+    _lower_committed_keystore_passwords,
     _match_starting_in,
     _weak_hash_is_an_id,
 )
@@ -91,12 +92,23 @@ def _match_fstring_sql(
     return None
 
 
-def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> list[dict]:
-    """Scan *source* text and symbol names; return finding dicts. No I/O."""
+def scan_source(
+    file_path: str,
+    source: str,
+    symbols: Iterable[Any] = (),
+    *,
+    repo_root: str | None = None,
+) -> list[dict]:
+    """Scan *source* text and symbol names; return finding dicts.
+
+    *repo_root* lets the origin read the folders around the file (a docs site's
+    config, a data folder's contents), as indexing does; without it only the
+    path rules apply and nothing is read from disk.
+    """
     findings: list[dict] = []
     lines = source_lines(source)
     is_prose = file_path.lower().endswith(_PROSE_EXTENSIONS)
-    origin = code_origin(file_path, source)
+    origin = code_origin(file_path, source, repo_root=repo_root)
     secrets_only = is_prose or _holds_no_written_code(file_path, origin)
 
     # Masking is the costly step and most files match no pattern at all, so
@@ -126,7 +138,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     # Line-by-line pattern scan. A line's edges and the newline around it read
     # alike to every lookaround in ``_ANY_PATTERN``, so a file the whole-source
     # search rejects has no matching line, and most files are such.
-    is_low_sev_file = _is_low_severity_path(file_path)
+    is_low_sev_file = _is_low_severity_path(file_path, origin)
     is_python = file_path.lower().endswith((".py", ".pyi"))
     tls_lines: list[set[int] | None] = []
     scan_lines = lines if _ANY_PATTERN.search(source) else []
@@ -268,6 +280,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     for finding in findings:
         if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
             finding["severity"] = "low"
+    _lower_committed_keystore_passwords(
+        findings, file_path, lines, lambda: mask()[1], repo_root
+    )
 
     # Symbol-name scan (informational / low). Machine output and declarations
     # hold no written code, so their names are not ours to flag.
@@ -311,17 +326,19 @@ def scan_source_map(
     findings_by_file: dict[str, list[dict]] = {}
     scanned_paths: list[str] = []
     allowlisted: Callable[[str], bool] | None = None
+    root: str | None = None
     for pf in parsed_files:
         path = pf.file_info.path
         if allowlisted is None:
-            allowlisted = secret_path_allowlist(_repo_root(pf.file_info))
+            root = _repo_root(pf.file_info)
+            allowlisted = secret_path_allowlist(root)
         raw = source_map.get(path, b"")
         if isinstance(raw, (bytes, bytearray)):
             source_text = raw.decode("utf-8", errors="replace")
         else:
             source_text = raw or ""
         scanned_paths.append(path)
-        findings = scan_source(path, source_text, pf.symbols)
+        findings = scan_source(path, source_text, pf.symbols, repo_root=root)
         if findings and allowlisted(path):
             findings = [f for f in findings if f["kind"] not in SECRET_KINDS]
         if findings and IGNORE_TOKEN in source_text:

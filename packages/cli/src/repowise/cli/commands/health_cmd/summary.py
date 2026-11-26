@@ -39,6 +39,22 @@ def _render_fix_first(loaded: tuple[Any, Any] | None) -> None:
         console.print(f"    {escape(item.why)}")
         if item.verify.command:
             console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
+        for line in _measure_lines(item.verify.measure):
+            console.print(line)
+
+
+def _measure_lines(measure: dict[str, Any] | None) -> list[str]:
+    """How a performance item is re-measured (``verify.measure``): the baseline
+    before the edit, the comparison after it, from the directory it runs in."""
+    from rich.markup import escape
+
+    if not measure:
+        return []
+    where = f" [dim](from {escape(measure.get('cwd') or 'the repository root')})[/dim]"
+    return [
+        f"    [dim]measure before:[/dim] {escape(measure['before'])}{where}",
+        f"    [dim]measure after:[/dim] {escape(measure['after'])}{where}",
+    ]
 
 
 def _render_performance_section(report: Any, coverage: Any, causes: Any | None) -> None:
@@ -88,11 +104,12 @@ _MEASURED_GROUPS = (("measured", "Measured"), ("measured_in_tests", "Measured in
 
 
 def _render_measured_costs(view: dict[str, Any] | None) -> None:
-    """What stored runs measured (``crud.measured_costs``), one block per run.
+    """What each workload's newest run measured (``crud.measured_costs``), one
+    block per run.
 
-    Each block opens with its basis and how much of the run production code
-    explains, so a ranked function is never read without its workload.
-    Silent without ranked evidence.
+    Each block opens with its basis and where the run's time went, so a ranked
+    function is never read without its workload. Rows lead with the function's
+    self time, the cost it is ranked by. Silent without ranked evidence.
     """
     from rich.markup import escape
 
@@ -108,13 +125,53 @@ def _render_measured_costs(view: dict[str, Any] | None) -> None:
             for row in rows:
                 console.print(f"  {row['rank']}. [cyan]{escape(row['symbol_id'])}[/cyan]")
                 console.print(f"     [dim]{escape(_row_facts(row))}[/dim]")
-    linked = view.get("on_static_findings") or []
-    if linked:
-        many = len(linked) != 1
-        console.print(
-            f"[dim]{len(linked)} measured function{'s' if many else ''} already "
-            f"{'carry' if many else 'carries'} a static cause, shown with that cause.[/dim]"
-        )
+    _render_benchmarks(view.get("benchmarks"))
+
+
+def _render_benchmarks(group: dict[str, Any] | None) -> None:
+    """Each benchmark, the function it measures and its numbers per operation.
+    A benchmark profile never ranks, so its results are what a benchmark says."""
+    from rich.markup import escape
+
+    if not group:
+        return
+    for run in group["runs"]:
+        commit = f" at {run['commit'][:7]}" if run.get("commit") else ""
+        basis = f'"{run["workload_name"]}"{commit}'
+        console.print(f"\n[bold]Benchmarks[/bold] [dim]({escape(basis)})[/dim]")
+        for row in (r for r in group["rows"] if r["run_id"] == run["run_id"]):
+            measures = f" -> [cyan]{escape(row['measures'])}[/cyan]" if row.get("measures") else ""
+            console.print(f"  {escape(row['benchmark'])}{measures}")
+            console.print(f"     [dim]{escape(_benchmark_numbers(row))}[/dim]")
+
+
+def _render_connect_line(freshness: dict[str, Any] | None) -> None:
+    """One line pointing at ``evidence setup`` when no runtime evidence is
+    stored, so the performance figures above read as code shape. Silent when
+    the store cannot say."""
+    from repowise.core.evidence.setup import EVIDENCE_SETUP
+
+    if not freshness or freshness["runtime"]["present"]:
+        return
+    console.print(
+        "\n[dim]No runtime evidence stored, so performance here is code shape only. "
+        f"Connect a real run: [bold]{EVIDENCE_SETUP}[/bold] prints the profile and "
+        "ingest commands.[/dim]"
+    )
+
+
+def _benchmark_numbers(row: dict[str, Any]) -> str:
+    """``1,234 ns/op, 11 allocs/op, 2,048 B/op``: what the tool gave."""
+    parts = []
+    if row.get("time") is not None:
+        time = row["time"]
+        shown = f"{time:,.0f}" if time >= 100 else f"{time:.3g}"
+        parts.append(f"{shown} {row.get('unit') or 'units'}/op")
+    if row.get("allocs_per_op") is not None:
+        parts.append(f"{row['allocs_per_op']:,.0f} allocs/op")
+    if row.get("bytes_per_op") is not None:
+        parts.append(f"{row['bytes_per_op']:,.0f} B/op")
+    return ", ".join(parts) or "no numbers stored"
 
 
 def _pct(value: float | None) -> str:
@@ -122,7 +179,10 @@ def _pct(value: float | None) -> str:
 
 
 def _run_basis(run: dict[str, Any]) -> str:
-    """``entry_point "api" at abc1234, 3 days old: repo code explains 11% of 5,300 samples``."""
+    """``entry_point "api" at abc1234, 3 days old: repo code itself 47%, waits 30%,
+    libraries 12% of 5,300 samples``."""
+    from repowise.core.evidence.status import split_words
+
     parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
     if run.get("commit"):
         parts.append(f"at {run['commit'][:7]}")
@@ -130,11 +190,14 @@ def _run_basis(run: dict[str, Any]) -> str:
         parts.append(f"{run['age_days']} day{'s' if run['age_days'] != 1 else ''} old")
     basis = ", ".join(parts)
     samples = run.get("samples")
-    of = f" of {samples:,} samples" if samples else " of the run"
-    explained = f"repo code explains {_pct(run.get('explained_share'))}{of}"
+    split = split_words(run)
+    if split is None:
+        where = "time split unknown (stored before it was recorded; add the profile again)"
+    else:
+        where = split + (f" of {samples:,} samples" if samples else " of the run")
     if run.get("ordering_only"):
-        explained += "; traced, so the order counts and no share is given"
-    return f"{basis}: {explained}"
+        where += "; traced, so the order counts and no share is given"
+    return f"{basis}: {where}"
 
 
 def _row_facts(row: dict[str, Any]) -> str:
@@ -143,7 +206,9 @@ def _row_facts(row: dict[str, Any]) -> str:
         interval = ""
         if row.get("share_low") is not None and row.get("share_high") is not None:
             interval = f" ({_pct(row['share_low'])} to {_pct(row['share_high'])})"
-        parts.append(f"{_pct(row['share'])} of the run{interval}")
+        parts.append(f"self {_pct(row['share'])} of the run{interval}")
+    if row.get("inclusive") is not None:
+        parts.append(f"with callees {_pct(row['inclusive'])}")
     if row.get("samples") is not None:
         parts.append(f"{row['samples']:,} samples")
     callers = row.get("callers_total")
@@ -151,13 +216,22 @@ def _row_facts(row: dict[str, Any]) -> str:
         parts.append(f"{callers} caller{'s' if callers != 1 else ''}")
     if row.get("owner"):
         parts.append(f"owner {row['owner']['name']}")
+    last = row.get("last_change")
+    if last:
+        ref = ", ".join(x for x in (last["sha"][:7], f"#{last['pr']}" if last["pr"] else None) if x)
+        parts.append(f"last changed {last['date']} ({ref})" if last["date"] else f"last changed {ref}")
     tests = row.get("tests")
+    ran = row.get("tests_basis") == "per_test_map"
     if tests is None:
         parts.append("tests not mapped")
     elif tests:
-        parts.append(f"nearest test {tests[0]}")
+        parts.append(f"{'test that ran it' if ran else 'nearest test by call graph'} {tests[0]}")
     else:
-        parts.append("no test reaches it")
+        parts.append("no test ran it" if ran else "no test reaches it")
+    if row.get("verify"):
+        parts.append(f"verify: {row['verify']}")
+    if row.get("on_static_findings"):
+        parts.append(f"static cause {', '.join(row['on_static_findings'])}")
     return " · ".join(parts)
 
 

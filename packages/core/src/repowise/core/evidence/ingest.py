@@ -13,20 +13,23 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from repowise.core.ingestion.symbol_identity import local_symbol_id
+from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_function
 
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
+from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, WORKLOAD_CLASSES, evidence_kinds
+from .suite_cost import timing_summary
 
-#: Every workload class a run may carry, in the order of how far a claim may go.
-WORKLOAD_CLASSES = ("unit_test", "benchmark", "entry_point", "load_test", "production")
-#: ``production`` is set only by a verified source (a request-log or statement
-#: ingest, a connector), never by a flag someone types.
-FLAG_WORKLOAD_CLASSES = tuple(c for c in WORKLOAD_CLASSES if c != "production")
+#: Why ``--class production`` is refused, as ``evidence add`` prints it.
+PRODUCTION_FLAG_REFUSAL = (
+    "production comes only from a verified source or a production kind "
+    "(route_latency, statement_stats), never from --class; use load_test for a load test."
+)
 
 #: Origins whose code a run may spend time in but nobody here maintains.
 _UNMAINTAINED = frozenset({"generated", "vendored"})
@@ -49,11 +52,15 @@ class RunProvenance:
 
     workload_name: str
     workload_class: str
-    commit_sha: str
+    #: The commit measured; None only for a production-only kind whose window
+    #: spans deploys and whose source did not say which one ran.
+    commit_sha: str | None
     checkout_root: str
     dirty: bool | None
     environment: str = "unknown"
     source: str = "cli"
+    #: Tests that failed in the profiled suite, as the profile reports it; None when not said.
+    tests_failed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -151,7 +158,7 @@ def join_entries(
             joined.unlinked[reason] += 1
             reason = None
         if row is not None:
-            key = _ROW_KEY[doc.kind](row)
+            key = evidence_kinds[doc.kind].row_key(row)
             if key in seen:
                 row, reason = None, "duplicate"
             else:
@@ -177,12 +184,20 @@ def _join(
 
     A profile or query entry without its function is skipped for *reason*. A
     benchmark or test is a series of its own, so it keeps its row and
-    *reason* says why its function was not linked.
+    *reason* says why its function was not linked. A route or statement entry
+    names no function: its row is kept, and the route table and the
+    statement-site index link it to code once they are built (ceiling: until
+    then its symbol stays NULL and nothing ranks by it).
     """
-    optional = kind in ("benchmark", "test_timing")
-    location = entry.get("location") if optional else entry
+    spec = evidence_kinds[kind]
+    optional = spec.keeps_unlinked
+    if spec.join not in LOCATION_JOINS:
+        return spec.row(entry, None), None, None
+    location = spec.location(entry)
     if location is None:
-        return _ROW_BUILDERS[kind](entry, None), None, None
+        # A test named by a classname no indexed file matched (place_test_entries).
+        reason = "unplaced" if entry.get("classname") else None
+        return spec.row(entry, None), reason, None
     path = location["path"]
     origin = origins.get(path)
     if origin in _UNMAINTAINED:
@@ -194,75 +209,131 @@ def _join(
         symbol_id, reason = resolve_location(location, by_file)
     if symbol_id is None and not optional:
         return None, reason, path
-    return _ROW_BUILDERS[kind](entry, symbol_id), reason, path
+    if kind == "profile" and entry.get("drivers"):
+        entry = {
+            **entry,
+            "drivers": _joined_drivers(entry["drivers"], by_file, origins, changed),
+        }
+    return spec.row(entry, symbol_id), reason, path
 
 
-def _profile_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
-    return {
-        "symbol_id": symbol_id,
-        "line": entry["line"],
-        "self_value": entry["self_value"],
-        "total_value": entry["total_value"],
-        "self_samples": entry["self_samples"],
-        "total_samples": entry["total_samples"],
-        "call_count": entry["call_count"],
-        "resolution": "declared",
-    }
+def _joined_drivers(
+    drivers: Iterable[Mapping[str, Any]],
+    by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
+    origins: Mapping[str, str],
+    changed: frozenset[str],
+) -> list[dict[str, Any]]:
+    """A profile entry's ``drivers`` as stored: ``name`` and ``share``, plus the
+    caller's ``symbol`` when its location joins exactly (:func:`resolve_location`),
+    else its ``path`` when it named one. A caller in a file that differs from the
+    commit measured, or that nobody here maintains, keeps its path only, as an
+    entry there would not join."""
+    out: list[dict[str, Any]] = []
+    for driver in drivers:
+        item: dict[str, Any] = {"name": driver["function"], "share": driver["share"]}
+        path = driver.get("path")
+        if path is not None:
+            joins = path not in changed and origins.get(path) not in _UNMAINTAINED
+            symbol_id = resolve_location(driver, by_file)[0] if joins else None
+            if symbol_id is not None:
+                item["symbol"] = symbol_id
+            else:
+                item["path"] = driver["path"]
+        out.append(item)
+    return out
 
 
-def _benchmark_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
-    return {
-        "benchmark_key": entry["name"],
-        "symbol_id": symbol_id,
-        **{
-            k: entry[k]
-            for k in (
-                "unit", "lower_is_better", "median", "mean", "min", "max", "stddev",
-                "rounds", "iterations", "allocs_per_op", "bytes_per_op",
-            )
-        },
-    }
+def run_class(
+    kind: str, given: str | None, *, verified: bool = False
+) -> tuple[str | None, str | None]:
+    """``(class, None)``: the workload class a run of *kind* is stored with,
+    or ``(None, why)`` when *given* cannot be.
+
+    ``production`` is never typed: it is refused unless *verified*. A
+    production-only kind (``route_latency``, ``statement_stats``) is
+    production by what it measures, so it takes no class. Any other kind is production only when
+    *verified* (a source on the evidence-source seam, or an upload the host
+    verified, such as CI with OIDC) and the kind allows it. Every other class
+    must be named and allowed for the kind.
+    """
+    spec = evidence_kinds[kind]
+    if given == "production" and not verified:
+        return None, PRODUCTION_FLAG_REFUSAL
+    if spec.production_only:
+        if given in (None, "production"):
+            return "production", None
+        return None, f"a {kind} run is production by what it measures; leave --class out."
+    if given is None:
+        return None, "name the workload class: one of " + ", ".join(FLAG_WORKLOAD_CLASSES) + "."
+    if given not in spec.classes:
+        allowed = ", ".join(c for c in spec.classes if c != "production")
+        return None, f"{given!r} does not apply to a {kind} run; use one of {allowed}."
+    return given, None
 
 
-def _test_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
-    return {
-        "test_id": entry["test_id"],
-        "test_file": entry["test_file"],
-        "symbol_id": symbol_id,
-        "duration_s": entry["duration_s"],
-        "outcome": entry["outcome"],
-    }
+def rebase_test_entries(
+    doc: EvidenceDocument, files: Collection[str], base: str
+) -> EvidenceDocument:
+    """*doc* with each test file the index does not hold read from *base*, when the index holds that.
+
+    *base* is the repo-relative directory the report was read from. A runner in a
+    package below the repository root names test files from where it ran and writes
+    its report there (Vitest, which has no option to prefix them). The joined path wins
+    when the index holds it, even beside a root file of the same name; a path that is
+    already repo-relative (``web/src/x.test.ts``) joins to none and is kept.
+    """
+    if doc.kind != "test_timing" or not base:
+        return doc
+    entries = []
+    for entry in doc.entries:
+        path = entry.get("test_file")
+        moved = f"{base}/{path}" if path else None
+        test_id = entry["test_id"]
+        # The id names the file first (``path::name``); one that does not is left whole.
+        if moved in files and test_id.startswith(f"{path}::"):
+            location = entry.get("location")
+            entry = {
+                **entry,
+                "test_id": moved + test_id[len(path) :],
+                "test_file": moved,
+                "location": {**location, "path": moved} if location else None,
+            }
+        entries.append(entry)
+    return replace(doc, entries=tuple(entries))
 
 
-def _query_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
-    return {
-        "scope_kind": entry["scope_kind"],
-        "scope_id": entry["scope_id"],
-        "site_symbol_id": symbol_id,
-        "statement_fp": entry["statement_fp"],
-        "site_line": entry["line"],
-        "query_count": entry["query_count"],
-        "identical_max": entry["identical_max"],
-        "total_ms": entry["total_ms"],
-    }
+def place_test_entries(doc: EvidenceDocument, files: Collection[str]) -> EvidenceDocument:
+    """*doc* with each test named only by a dotted ``classname`` placed on its file.
 
-
-_ROW_BUILDERS = {
-    "profile": _profile_row,
-    "benchmark": _benchmark_row,
-    "test_timing": _test_row,
-    "query_count": _query_row,
-}
-
-#: The stored key of a row within its run (see the evidence tables' keys).
-_ROW_KEY = {
-    "profile": lambda r: r["symbol_id"],
-    "benchmark": lambda r: r["benchmark_key"],
-    "test_timing": lambda r: r["test_id"],
-    "query_count": lambda r: (
-        r["scope_kind"], r["scope_id"], r["site_symbol_id"], r["statement_fp"]
-    ),
-}
+    A JUnit report that does not say a test's file names its class
+    (``tests.unit.test_x.TestC``, ``com.acme.CartTest``); the indexed file
+    that name leads to (:func:`~repowise.core.test_paths.dotted_name_file`,
+    one of *files* or none) gives the test its ``path::qualname`` id and its
+    function. A name that leads to no file, or to two, stays unplaced.
+    """
+    if doc.kind != "test_timing" or not any(e.get("classname") for e in doc.entries):
+        return doc
+    by_stem = files_by_stem(files)
+    entries = []
+    for entry in doc.entries:
+        classname = entry.get("classname")
+        found = dotted_name_file(classname, by_stem) if classname else None
+        if found is not None:
+            path, rest = found
+            name = entry["test_id"].removeprefix(f"{classname}::")
+            test_id = f"{path}::{'::'.join((*rest, name))}"
+            function = nodeid_function(test_id)
+            entry = {
+                **entry,
+                "test_id": test_id,
+                "test_file": path,
+                "classname": None,
+                "location": {"path": path, "function": function, "line": None, "exact": True}
+                if function
+                else None,
+            }
+        entries.append(entry)
+    return replace(doc, entries=tuple(entries))
 
 
 def cap_rows(
@@ -270,25 +341,30 @@ def cap_rows(
 ) -> tuple[list[dict[str, Any]], int]:
     """The rows kept under the cap, and how many were dropped.
 
-    A profile keeps its costliest symbols (inclusive, then self, then id, so
-    the cut is stable); other kinds keep the document's order.
+    The kind's ``cap_order`` (``evidence.kinds``) says which rows a cut keeps:
+    a profile its costliest symbols, so a leaf that does the work outlives the
+    frames that only call it; a test run its slowest tests, after what every
+    test adds up to is folded (``suite_cost.timing_summary``); route and
+    statement runs their costliest by total time. Other kinds keep the
+    document's order.
     """
-    if kind == "profile":
-        limit = caps.max_symbols_per_run
-        rows = sorted(
-            rows,
-            key=lambda r: (-(r["total_value"] or 0.0), -(r["self_value"] or 0.0), r["symbol_id"]),
-        )
-    else:
-        limit = caps.max_rows_per_run
+    spec = evidence_kinds[kind]
+    limit = getattr(caps, spec.cap)
+    if spec.cap_order is not None:
+        rows = sorted(rows, key=spec.cap_order)
     return rows[:limit], max(len(rows) - limit, 0)
 
 
 def run_key(
-    text: str, provenance: RunProvenance, kind: str, index_commit: str | None = None
+    text: str,
+    provenance: RunProvenance,
+    kind: str,
+    index_commit: str | None = None,
+    report_dir: str = "",
 ) -> str:
     """One measurement's identity: its content, everything the run row records,
-    and the index it was joined against (a later index joins it afresh)."""
+    the index it was joined against (a later index joins it afresh), and the
+    directory its test paths were read from (:func:`rebase_test_entries`)."""
     digest = hashlib.blake2b(digest_size=16)
     for part in (
         kind,
@@ -299,6 +375,10 @@ def run_key(
         provenance.checkout_root,
         str(provenance.dirty),
         provenance.source,
+        # Only when known, so a run that never reports it keeps its key.
+        *(() if provenance.tests_failed is None else (f"tests_failed={provenance.tests_failed}",)),
+        # Only test paths are read from it (rebase_test_entries), so other kinds keep their key.
+        *((f"report_dir={report_dir}",) if report_dir and kind == "test_timing" else ()),
         text,
     ):
         digest.update(part.encode("utf-8", "replace"))
@@ -344,9 +424,28 @@ def run_fields(
         "unmatched_sample_json": json.dumps(joined.unmatched_sample),
         "total_value": doc.total,
         "explained_value": doc.explained,
+        "repo_self_value": doc.repo_self,
+        "wait_value": doc.waits,
+        "library_value": doc.libraries,
         "total_samples": doc.total_samples,
         "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,
+        "tests_failed": provenance.tests_failed,
+        "timing_summary_json": (
+            json.dumps(timing_summary(joined.rows), separators=(",", ":"))
+            if doc.kind == "test_timing"
+            else None
+        ),
+        # Only when the file says, so a run without them keeps its fields.
+        **{
+            name: value
+            for name, value in (
+                ("window_start", doc.window_start),
+                ("window_end", doc.window_end),
+                ("base_commit_sha", doc.base_commit_sha),
+            )
+            if value is not None
+        },
     }
 
 
@@ -358,12 +457,14 @@ def unlisted_count(rows: Iterable[Mapping[str, Any]], origins: Mapping[str, str]
 
 
 def entry_paths(doc: EvidenceDocument) -> set[str]:
-    """Every file the document's entries name."""
+    """Every file the document's entries name, a profile entry's drivers included."""
     out: set[str] = set()
+    spec = evidence_kinds[doc.kind]
     for entry in doc.entries:
-        location = entry.get("location") if doc.kind in ("benchmark", "test_timing") else entry
+        location = spec.location(entry)
         if location is not None:
             out.add(location["path"])
+        out.update(d["path"] for d in entry.get("drivers") or () if d.get("path"))
     return out
 
 
@@ -474,6 +575,7 @@ def uncommitted_paths(checkout_root: str | Path) -> frozenset[str] | None:
 
 __all__ = [
     "FLAG_WORKLOAD_CLASSES",
+    "PRODUCTION_FLAG_REFUSAL",
     "WORKLOAD_CLASSES",
     "EvidenceCaps",
     "IndexedSymbol",
@@ -484,7 +586,10 @@ __all__ = [
     "join_entries",
     "load_origins",
     "load_symbols",
+    "place_test_entries",
+    "rebase_test_entries",
     "resolve_location",
+    "run_class",
     "run_fields",
     "run_key",
     "stamp_bodies",

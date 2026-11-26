@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from collections.abc import Iterable
 from typing import Any
 
 # ``_state`` is the one submodule that stays eager: every other module in this
@@ -84,6 +85,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
 }
 
 _surface_applied = False
+#: Every tool module imported and in the selection snapshot (a narrowed boot is not).
+_surface_complete = False
 
 
 def tool_middleware(fn: Any) -> Any:
@@ -261,18 +264,18 @@ def wire_result(payload: Any) -> Any:
     FastMCP renders the text with ``indent=2`` beside a structured copy that is
     already compact. The same ``fallback=str`` keeps a value JSON cannot hold
     rendering as before, and the structured copy is converted exactly as
-    FastMCP converts it. Anything but a dict, or ``REPOWISE_MCP_PRETTY_JSON=1``,
-    is left to FastMCP's own conversion.
+    FastMCP converts it. ``REPOWISE_MCP_PRETTY_JSON=1`` indents the text again.
+    Anything but a dict is left to FastMCP's own conversion.
     """
     import os
 
-    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-    if pretty or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
         return payload
     import pydantic_core
     from mcp.types import CallToolResult, TextContent
 
-    text = pydantic_core.to_json(payload, fallback=str).decode()
+    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    text = pydantic_core.to_json(payload, fallback=str, indent=2 if pretty else None).decode()
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
         structuredContent={"result": pydantic_core.to_jsonable_python(payload)},
@@ -296,43 +299,138 @@ def registered_tool(fn: Any) -> Any:
     return wrapped
 
 
+#: Parameters a tool still accepts but does not advertise: aliases and knobs
+#: agents do not reach for, and no skill, prompt or tool reply tells them to
+#: pass. Every name costs schema bytes on each turn of a host that re-sends
+#: the tool list. docs/agent/MCP_TOOLS.md still documents them.
+_UNADVERTISED_PARAMS: dict[str, frozenset[str]] = {
+    "get_context": frozenset({"compact"}),
+    # get_symbol's ``id`` stays listed: get_answer hints say ``get_symbol id='...'``.
+    "get_symbol": frozenset({"reference", "context_lines"}),
+    "get_why": frozenset({"reference"}),
+    "search_codebase": frozenset({"page_type", "pattern"}),
+}
+
+
+def _args_block(lines: list[str], start: int) -> tuple[dict[str, list[str]], int]:
+    """The ``Args:`` entries after line *start*, by parameter, and where they end.
+
+    ``a, b: text`` documents both names; a deeper-indented line continues the
+    entry above it.
+    """
+    import re
+
+    docs: dict[str, list[str]] = {}
+    text: list[str] = []
+    end = start + 1
+    while end < len(lines) and (lines[end].startswith("    ") or not lines[end].strip()):
+        entry = re.match(r"    (\w+(?:, \w+)*): (.*)", lines[end])
+        if entry:
+            text = [entry[2].strip()]
+            docs.update(dict.fromkeys(entry[1].split(", "), text))
+        elif lines[end].strip():
+            text.append(lines[end].strip())
+        end += 1
+    return docs, end
+
+
+def _lift_args(description: str, properties: dict[str, Any]) -> str:
+    """*description* without its ``Args:`` block, each entry moved onto its property.
+
+    The block restates the schema in prose; on the property the text sits where
+    a host shows it, once. An entry for a parameter the schema does not list is
+    dropped.
+    """
+    import inspect
+
+    lines = inspect.cleandoc(description).split("\n")
+    if "Args:" not in lines:
+        return description
+    start = lines.index("Args:")
+    docs, end = _args_block(lines, start)
+    for name, text in docs.items():
+        if name in properties:
+            properties[name].setdefault("description", " ".join(text))
+    return "\n".join(lines[:start] + lines[end:]).strip()
+
+
+def _collapse_optional(prop: dict[str, Any]) -> None:
+    """``anyOf: [T, null]`` as plain ``T``: the parameter's absence from
+    ``required`` already says it is optional."""
+    variants = prop.get("anyOf")
+    if not isinstance(variants, list) or {"type": "null"} not in variants:
+        return
+    rest = [v for v in variants if v != {"type": "null"}]
+    if len(rest) == 1:
+        del prop["anyOf"]
+        prop.update(rest[0])
+    else:
+        prop["anyOf"] = rest
+
+
 def _slim_input_schemas(server: Any) -> None:
-    """Drop pydantic's ``title`` keys and ``default: null`` from advertised schemas.
-
-    They restate each parameter's name and optionality, and hosts re-send the
-    tool list on every turn. Arguments are still validated against the
-    function signature, not this dict.
-    """
+    """Slim every tool registered on *server* (see :func:`_slim_tool`)."""
     for tool in server._tool_manager._tools.values():
-        params = tool.parameters
-        params.pop("title", None)
-        for prop in params.get("properties", {}).values():
-            prop.pop("title", None)
-            if "default" in prop and prop["default"] is None:
-                del prop["default"]
+        _slim_tool(tool)
 
 
-def ensure_full_surface() -> Any:
-    """Import every tool module and attach the registry to the FastMCP server.
+def _slim_tool(tool: Any) -> None:
+    """Advertise *tool*'s schema without what restates it.
 
-    This is the work that used to happen at package import. It is what makes
-    ``mcp`` a *populated* server rather than a bare instance, so every caller
-    that reads the advertised tool set has to go through here first:
-    ``create_mcp_server`` / ``run_mcp``, the ``mcp`` attribute itself, and the
-    selection layer (``apply_tool_selection`` / ``describe_tool_surface``,
-    which the dashboard's ``/mcp`` routes import directly).
+    Drops pydantic's ``title`` keys, ``default: null`` and the null branch of
+    an optional parameter, unlists :data:`_UNADVERTISED_PARAMS`, and moves a
+    core tool's ``Args:`` block onto its properties. Hosts re-send the tool
+    list on every turn. Arguments are still validated against the function
+    signature, not this dict, so an unlisted parameter keeps working.
 
-    Idempotent, and returns the server instance so callers need not re-import
-    it. Note that ``mcp_tool_registry.apply`` is itself a no-op on a repeat
-    call for the same server.
+    Also drops the output schema FastMCP derives from the return annotation:
+    every tool's says only "an object under ``result``". Without one the spec
+    makes ``structuredContent`` optional, and :func:`wire_result` still sends it.
     """
-    global _surface_applied
-    from repowise.server.mcp_server._server import mcp as _mcp
+    from repowise.core.registry.tool_selection import CORE_TOOLS
 
-    if _surface_applied:
-        return _mcp
+    tool.fn_metadata.output_schema = None
+    params = tool.parameters
+    params.pop("title", None)
+    properties = params.get("properties", {})
+    for name in _UNADVERTISED_PARAMS.get(tool.name, ()):
+        properties.pop(name, None)
+    for prop in properties.values():
+        prop.pop("title", None)
+        if "default" in prop and prop["default"] is None:
+            del prop["default"]
+        _collapse_optional(prop)
+    # Only the core profile's docstrings are written one entry per
+    # parameter; other tools pack several into one entry, so lifting
+    # theirs would hang one entry's text on the wrong parameter.
+    if tool.description and tool.name in CORE_TOOLS:
+        tool.description = _lift_args(tool.description, properties)
 
+
+def _annotations(safety: str) -> Any:
+    """The ``ToolAnnotations`` a tool of this safety kind is listed with.
+
+    The mcp SDK lives above packages/core, so the registry stores plain hint
+    dicts and this surface materialises them.
+    """
+    from mcp.types import ToolAnnotations
+
+    from repowise.core.registry.mcp_tool_registry import SAFETY_TO_ANNOTATION_HINTS
+
+    return ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety])
+
+
+def _register_tools(names: Iterable[str] | None = None) -> None:
+    """Import the tool modules and load plugins, so the registry holds those tools.
+
+    Every tool module when *names* is ``None``, else only the modules serving
+    those names (a module may register more tools than the ones asked for).
+    Imported in :data:`_TOOL_MODULES` order.
+    """
+    wanted = None if names is None else set(names)
     for name, module in _TOOL_MODULES.items():
+        if wanted is not None and name not in wanted:
+            continue
         try:
             # Read the name, not just the module: a tool package re-exports its
             # tool lazily, and that read is what imports and registers it.
@@ -347,29 +445,150 @@ def ensure_full_surface() -> Any:
                 exc,
             )
 
-    # The mcp SDK lives above packages/core, so the registry stores plain
-    # hint dicts and this surface materialises them into ToolAnnotations.
-    from mcp.types import ToolAnnotations
-
-    from repowise.core.registry import mcp_tool_registry
-    from repowise.core.registry.mcp_tool_registry import SAFETY_TO_ANNOTATION_HINTS
     from repowise.core.registry.plugins import load_plugins
-    from repowise.server.mcp_server._tool_selection import snapshot_full_surface
 
     load_plugins()  # plugin tools register before the surface is attached
-    mcp_tool_registry.apply(
-        _mcp,
-        middleware=registered_tool,
-        annotations_for=lambda safety: ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety]),
-    )
+
+
+def _registered(names: Iterable[str]) -> bool:
+    """Whether every tool module serving *names* has registered its tools."""
+    from repowise.core.registry import mcp_tool_registry
+
+    have = {entry.name for entry in mcp_tool_registry.entries()}
+    return all(name in have for name in names if name in _TOOL_MODULES)
+
+
+def _tool_definition(entry: Any) -> Any:
+    """A FastMCP ``Tool`` for one registry entry, wrapped and slimmed as the server lists it."""
+    from mcp.server.fastmcp.tools import Tool
+
+    tool = Tool.from_function(registered_tool(entry.fn), annotations=_annotations(entry.safety))
+    _slim_tool(tool)
+    return tool
+
+
+def tool_definitions(
+    names: Iterable[str], *, workspace: bool = True, no_checkout: bool = False
+) -> list[dict[str, Any]]:
+    """The ``tools/list`` entries for *names*, byte for byte as the server lists them.
+
+    Built from the tool registry with the server's own wrapping and schema
+    slimming, without creating or starting a server. Sorted by name, as the
+    server lists them; a name with no registered tool is skipped. The
+    ``mcp.always_load`` hint is a per-repository setting, so it is not here;
+    a server that honours it adds it per session (``mark_always_loaded``).
+    ``workspace=False`` lists them as a single-repo server does, with no
+    ``repo="all"`` offer. ``no_checkout=True`` words them for a server that
+    answers from a stored index with no checkout of the repository: phrases
+    promising live files, verified source or uncommitted work are replaced
+    (``_no_checkout.NO_CHECKOUT_WORDING``).
+    """
+    from mcp.types import Tool as MCPTool
+
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server._tool_selection import without_repo_all
+
+    _register_tools()
+    wanted = set(names)
+    tools: dict[str, Any] = {}
+    for entry in mcp_tool_registry.entries():
+        # The server keeps the first tool registered under a name.
+        if entry.name in wanted and entry.name not in tools:
+            tools[entry.name] = _tool_definition(entry)
+    listed = [
+        MCPTool(
+            name=tool.name,
+            title=tool.title,
+            description=tool.description,
+            inputSchema=tool.parameters,
+            outputSchema=tool.output_schema,
+            annotations=tool.annotations,
+            icons=tool.icons,
+            _meta=tool.meta,
+        )
+        for _, tool in sorted(tools.items())
+    ]
+    if not workspace:
+        listed = [without_repo_all(tool) for tool in listed]
+    dumped = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in listed]
+    if no_checkout:
+        from repowise.server.mcp_server._no_checkout import without_checkout
+
+        dumped = [without_checkout(tool) for tool in dumped]
+    return dumped
+
+
+def ensure_full_surface() -> Any:
+    """Import every tool module and attach the registry to the FastMCP server.
+
+    This is the work that used to happen at package import. It is what makes
+    ``mcp`` a *populated* server rather than a bare instance, so every caller
+    that reads the advertised tool set has to go through here first:
+    ``create_mcp_server``, the ``mcp`` attribute itself, and the selection
+    layer (``describe_tool_surface``, which the dashboard's ``/mcp`` routes
+    import directly).
+
+    After a narrowed boot (:func:`ensure_surface`) the remaining tools join the
+    registry and the selection snapshot only: the server keeps listing the
+    surface it booted with.
+
+    Idempotent, and returns the server instance so callers need not re-import
+    it. Note that ``mcp_tool_registry.apply`` is itself a no-op on a repeat
+    call for the same server.
+    """
+    global _surface_complete
+    from repowise.server.mcp_server._server import mcp as _mcp
+
+    if _surface_complete:
+        return _mcp
+    if not _surface_applied:
+        ensure_surface(None)
+        return _mcp
+
+    _register_tools()
+
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server._tool_selection import extend_full_surface
+
+    extend_full_surface(_tool_definition, mcp_tool_registry.entries())
+    _surface_complete = True
+    return _mcp
+
+
+def ensure_surface(names: Iterable[str] | None) -> Any:
+    """Attach the tools *names* can enable to the FastMCP server; every tool when ``None``.
+
+    The stdio server boots through here with the names its selection can
+    enable (``core.registry.tool_selection.candidate_tools``), so a narrowed
+    surface imports only those tool modules: each pulls in its own analysis
+    stack, and the full set was most of a server's start-up time. A no-op once
+    a surface is attached; :func:`ensure_full_surface` completes a narrowed one.
+    """
+    global _surface_applied, _surface_complete
+    from repowise.server.mcp_server._server import mcp as _mcp
+
+    if _surface_applied:
+        # A later request for more than the boot attached (every tool, or a
+        # tool it did not import) completes the registry and the snapshot.
+        if not _surface_complete and (names is None or not _registered(names)):
+            ensure_full_surface()
+        return _mcp
+
+    _register_tools(names)
+
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server._tool_selection import snapshot_full_surface
+
+    mcp_tool_registry.apply(_mcp, middleware=registered_tool, annotations_for=_annotations)
     _slim_input_schemas(_mcp)
 
-    # Snapshot the full registered surface so per-server tool selection
+    # Snapshot the registered surface so per-server tool selection
     # (single-repo vs workspace, config/CLI overrides) can rebuild from it.
     # Selection itself runs later, once the repo path is known.
     snapshot_full_surface(_mcp)
 
     _surface_applied = True
+    _surface_complete = names is None
     return _mcp
 
 
@@ -460,6 +679,7 @@ __all__ = [
     "_is_path",
     "create_mcp_server",
     "ensure_full_surface",
+    "ensure_surface",
     "generate_refactoring_code",
     "get_answer",
     "get_architecture",
@@ -479,4 +699,5 @@ __all__ = [
     "mcp",
     "run_mcp",
     "search_codebase",
+    "tool_definitions",
 ]

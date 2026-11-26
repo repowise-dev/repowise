@@ -244,22 +244,144 @@ def _is_type_checking_branch(node: Node, child: Node, src: str) -> bool:
     return _is_type_checking_flag(node.child_by_field_name("condition"), src)
 
 
-def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bool]:
-    """``(type_only, deferred)`` for an import, from the statement and where it sits.
+def python_import_scope(stmt_node: Node) -> tuple[tuple[int, int], ...] | None:
+    """The 1-based line span of the function a Python import sits in, else None.
+
+    An import in a function body binds its names as locals of that function
+    (and of functions nested in it), so the rest of the file never sees them.
+    """
+    node = stmt_node.parent
+    while node is not None:
+        if node.type == "function_definition":
+            return ((node.start_point[0] + 1, node.end_point[0] + 1),)
+        node = node.parent
+    return None
+
+
+def python_bound_module_name(module_node: Node, src: str) -> str:
+    """The name ``import a.b`` binds (``a``), or its alias (``import a.b as c``)."""
+    parent = module_node.parent
+    if parent is not None and parent.type == "aliased_import":
+        alias = parent.child_by_field_name("alias")
+        if alias is not None:
+            return node_text(alias, src)
+    # ``dotted_name`` holds one identifier per segment; the first is bound.
+    first = module_node.named_children[0] if module_node.named_children else module_node
+    return node_text(first, src)
+
+
+_PY_IMPORT_STATEMENTS = frozenset(
+    {"import_statement", "import_from_statement", "future_import_statement"}
+)
+
+
+def python_load_time_names(root: Node, src: str) -> frozenset[str]:
+    """Every identifier a Python module mentions while it loads.
+
+    Module and class bodies, decorators, default values, annotations and base
+    classes run at import; function and lambda bodies do not, so they are
+    skipped, as are import statements, the ``.attr`` half of an attribute and
+    a keyword argument's name. Ceiling: any load-time mention counts, an
+    assignment or an ``if __name__ == "__main__":`` body included, so an
+    import stays in the ordinary cycle tier when in doubt.
+    """
+    names: set[str] = set()
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        kind = node.type
+        if kind == "identifier":
+            names.add(node_text(node, src))
+        elif kind == "attribute":
+            stack.extend(c for c in (node.child_by_field_name("object"),) if c is not None)
+        elif kind == "keyword_argument":
+            stack.extend(c for c in (node.child_by_field_name("value"),) if c is not None)
+        elif kind not in _PY_IMPORT_STATEMENTS:
+            body = (
+                node.child_by_field_name("body")
+                if kind in ("function_definition", "lambda")
+                else None
+            )
+            stack.extend(c for c in node.children if body is None or c != body)
+    return frozenset(names)
+
+
+# Handlers that let a module survive its import failing. A broader handler
+# (``Exception``, ``BaseException``, bare ``except:``) usually guards the code
+# after the import too, so it is not read as an import guard.
+_IMPORT_FAILURES = frozenset({"ImportError", "ModuleNotFoundError"})
+
+
+def _catches_import_failure(expr: Node | None, src: str) -> bool:
+    """An ``except`` value naming ``ImportError`` / ``ModuleNotFoundError``,
+    alone, in a tuple, as ``builtins.X``, or with ``as name``."""
+    if expr is None:
+        return False
+    if expr.type in ("as_pattern", "parenthesized_expression"):
+        return bool(expr.named_children) and _catches_import_failure(expr.named_children[0], src)
+    if expr.type == "tuple":
+        return any(_catches_import_failure(item, src) for item in expr.named_children)
+    if expr.type == "attribute":
+        expr = expr.child_by_field_name("attribute")
+    return (
+        expr is not None and expr.type == "identifier" and node_text(expr, src) in _IMPORT_FAILURES
+    )
+
+
+_EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "os._exit"})
+
+
+def _ends_the_module(stmt: Node, src: str) -> bool:
+    """``raise ...`` or a ``sys.exit(...)``-style call statement."""
+    if stmt.type == "raise_statement":
+        return True
+    call = stmt.named_children[0] if stmt.type == "expression_statement" else None
+    function = call.child_by_field_name("function") if call and call.type == "call" else None
+    return function is not None and node_text(function, src) in _EXIT_CALLS
+
+
+def _handler_lets_the_module_go_on(clause: Node, src: str) -> bool:
+    """None of the handler's own statements re-raises or exits. A ``raise``
+    under a nested ``if`` is not followed: the module may still survive."""
+    block = next((c for c in clause.named_children if c.type == "block"), None)
+    return block is None or not any(_ends_the_module(s, src) for s in block.named_children)
+
+
+def _is_import_guard_body(node: Node, child: Node, src: str) -> bool:
+    """``child`` is the body of a ``try`` whose import-failure handlers all let
+    the module go on, not its handlers, ``else`` or ``finally``. One fatal
+    handler is enough to leave it runtime: a cycle can raise the exception it
+    catches (``from b import B`` on a half-built ``b`` raises ``ImportError``,
+    not ``ModuleNotFoundError``)."""
+    if node.type != "try_statement" or child != node.child_by_field_name("body"):
+        return False
+    handlers = [
+        clause
+        for clause in node.children
+        if clause.type == "except_clause"
+        and _catches_import_failure(clause.child_by_field_name("value"), src)
+    ]
+    return bool(handlers) and all(_handler_lets_the_module_go_on(h, src) for h in handlers)
+
+
+def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bool, bool]:
+    """``(type_only, deferred, guarded)`` for an import, from the statement and where it sits.
 
     Type-only: ``import type`` / ``export type`` (TS), under ``if
     TYPE_CHECKING:`` (Python), or in a type position such as ``typeof
     import()`` (TS), so it never runs. Deferred: inside a function or lambda
     body, so it runs on first call rather than at module load, the usual way to
-    break an import cycle on purpose. Type-only wins when both hold. Reads the
-    statement and its ancestor chain only.
+    break an import cycle on purpose. Guarded (Python): in the body of a ``try``
+    whose handlers catch ``ImportError``, so it runs at load but the module
+    already survives it failing. Type-only wins over both, deferred over
+    guarded. Reads the statement and its ancestor chain only.
     """
     scopes = _LOAD_DEFERRING_SCOPES.get(language)
     if scopes is None:
-        return False, False
+        return False, False, False
     if stmt_node.type in _TS_TYPE_STATEMENTS and is_type_only_ts_js_import(stmt_node, src):
-        return True, False
-    deferred = False
+        return True, False, False
+    deferred = guarded = False
     child, node = stmt_node, stmt_node.parent
     while node is not None:
         if node.type in scopes:
@@ -269,9 +391,11 @@ def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bo
             if language == "python"
             else node.type in _TS_TYPE_POSITIONS
         ):
-            return True, False
+            return True, False, False
+        elif language == "python" and _is_import_guard_body(node, child, src):
+            guarded = True
         child, node = node, node.parent
-    return False, deferred
+    return False, deferred, guarded and not deferred
 
 
 def _has_missing_scope_separator(qualified: Node) -> bool:

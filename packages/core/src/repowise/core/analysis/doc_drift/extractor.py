@@ -157,7 +157,9 @@ _PLACEHOLDER_SEGMENTS = frozenset(
 )
 
 # Shell or templating metacharacters mean the token is a pattern, not a path.
-_TEMPLATED_RE = re.compile(r"[{}$<>*?|\\\[\]()]|\.\.\.|\bTODO\b")
+# An ellipsis elides part of a name whether it is typed as ``...`` or as the
+# single character U+2026 that editors substitute for it.
+_TEMPLATED_RE = re.compile(r"[{}$<>*?|\\\[\]()]|\.\.\.|\u2026|\bTODO\b")
 
 # Extensions that make a slashed token a path assertion rather than prose.
 #

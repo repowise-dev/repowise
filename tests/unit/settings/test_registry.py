@@ -104,6 +104,7 @@ SETTING_KEYS = {
     "type": str,
     "default": object,
     "default_note": (str, type(None)),
+    "cost_note": (str, type(None)),
     "description": str,
     "area": str,
     "scope": str,

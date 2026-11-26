@@ -97,14 +97,20 @@ def _parsed_package_jsons(ctx: ResolverContext) -> list[tuple[str, dict]]:
     cached = getattr(ctx, "_ts_parsed_package_jsons", None)
     if cached is not None:
         return cached
+    parsed = _read_package_json_objects(ctx.repo_path, _get_repo_scan(ctx).package_jsons)
+    ctx._ts_parsed_package_jsons = parsed  # type: ignore[attr-defined]
+    return parsed
+
+
+def _read_package_json_objects(repo_path: Path, files: list[Path]) -> list[tuple[str, dict]]:
+    """``(repo-relative dir, data)`` for each of *files* that parses as a JSON object."""
     parsed: list[tuple[str, dict]] = []
-    for pkg_file in _get_repo_scan(ctx).package_jsons:
+    for pkg_file in files:
         try:
-            pkg_dir = pkg_file.parent.relative_to(ctx.repo_path).as_posix()
+            pkg_dir = pkg_file.parent.relative_to(repo_path).as_posix()
             data = json.loads(pkg_file.read_text(encoding="utf-8", errors="ignore"))
         except (ValueError, OSError, json.JSONDecodeError):
             continue
         if isinstance(data, dict):
             parsed.append((pkg_dir, data))
-    ctx._ts_parsed_package_jsons = parsed  # type: ignore[attr-defined]
     return parsed

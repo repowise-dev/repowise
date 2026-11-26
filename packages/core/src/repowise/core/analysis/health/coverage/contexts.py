@@ -68,10 +68,14 @@ def read_report_text(path: str | Path) -> str:
 
     Windows PowerShell 5.1 ``>`` redirection writes UTF-16. Raises like ``read_text``.
     """
-    data = Path(path).read_bytes()
+    return decode_report(Path(path).read_bytes())
+
+
+def decode_report(data: bytes, errors: str = "strict") -> str:
+    """Report bytes as text: UTF-16 when they open with a UTF-16 BOM, else UTF-8."""
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        return data.decode("utf-16")
-    return data.decode("utf-8")
+        return data.decode("utf-16", errors)
+    return data.decode("utf-8", errors)
 
 
 def parse_lcov_contexts(text: str) -> ContextCoverageReport:

@@ -16,15 +16,22 @@ describe("ReleaseNotice", () => {
     expect(screen.getByRole("link", { name: "See what changed" })).toBeInTheDocument();
   });
 
-  it("keeps the explanation behind a toggle", async () => {
-    const { container } = render(
-      <ReleaseNotice id="t" version="1.0.0" detail="Scores are not comparable.">
+  it("keeps the explanation behind a toggle on the same line", async () => {
+    render(
+      <ReleaseNotice id="t" version="1.0.0" detail="Scores are not comparable." action={<a href="/x">Docs</a>}>
         Health scores changed in this release.
       </ReleaseNotice>,
     );
     expect(await screen.findByText(/Health scores changed in this release/)).toBeTruthy();
-    expect(container.querySelector("details")!.open).toBe(false);
-    expect(screen.getByText("What changed")).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "What changed" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Scores are not comparable.")).not.toBeVisible();
+    // The link sits in the line itself, not on a row of its own.
+    expect(screen.getByRole("link", { name: "Docs" }).parentElement!.tagName).toBe("SPAN");
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Hide" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Scores are not comparable.")).toBeVisible();
   });
 
   it("remembers dismissal per version", () => {

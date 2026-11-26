@@ -22,7 +22,8 @@ responses carry a `stale_warning` when a file they served has changed.
 ## 1. Post-Commit Git Hook (Recommended)
 
 Runs `repowise update` in the background after every local commit. Your
-terminal is never blocked.
+terminal is never blocked. This hook is what updates the index; the agent
+hooks check freshness and flag stale results, and do not update it.
 
 `repowise init` installs the hook by default (interactive runs ask first;
 `--no-hook` skips it). To manage it yourself:
@@ -161,8 +162,8 @@ Without the secret, only local callers are accepted and every other caller gets
 `403 Forbidden`, as with GitHub and GitLab.
 
 Gitea and Forgejo also send GitHub's `X-Hub-Signature-256` for compatibility,
-so an existing hook pointed at `/api/webhooks/github` keeps working — it is
-just recorded as a GitHub event. Use this endpoint to have the delivery
+so an existing hook pointed at `/api/webhooks/github` keeps working; it is
+recorded as a GitHub event. Use this endpoint to have the delivery
 attributed to the forge that sent it, and to give it its own secret.
 
 All three endpoints match the payload's repository to a registered one by a
@@ -261,9 +262,14 @@ uses its own docs setting; `--docs` / `--no-docs` override it for the run.
 
 ### Server sync
 
-`POST /api/repos/{id}/sync` re-parses the repo, re-indexes git metadata, and
-rescans dead code and decisions. It does not regenerate wiki pages, so it has no
-LLM cost. `POST /api/repos/{id}/full-resync` also regenerates every page.
+`POST /api/repos/{id}/sync`, a webhook push and the poller all run the same
+sync job. It re-parses the repo, re-indexes git metadata, and rescans dead code
+and decisions, then re-renders the pages of the changed files from structure,
+with no model call; pages a model wrote stay as they are. With a provider
+configured, decision extraction can call the model during a sync; set
+`decisions.llm: false` to keep sync model-free. With no provider configured a
+sync makes no model calls. `POST /api/repos/{id}/full-resync` regenerates every
+page.
 
 ---
 

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from repowise.core.analysis.health.perf.serving import parse_query
 from repowise.core.analysis.health.refactoring.serving import parse_query as parse_refactoring_query
 from repowise.core.analysis.next_call import ActionCommand
-from repowise.core.evidence.setup import SETUP_COMMAND
-from repowise.core.persistence.crud import measured_costs, unranked_reason
+from repowise.core.persistence.crud import measured_costs, unranked_command, unranked_reason
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.services.performance_health import (
@@ -48,12 +48,13 @@ _PERFORMANCE_EVIDENCE_PAGE_CAP = 20
 including ``limit=0`` for the totals and no rows."""
 
 _MEASURED_CAP = 3
-"""Measured functions per group when no ``limit`` is passed."""
+"""Measured functions per run when no ``limit`` is passed."""
 
 _MEASURED_PAGE_CAP = 10
-"""Ceiling on measured functions per group: the reader ranks at most ten per run."""
+"""Ceiling on measured functions per run: the reader ranks at most ten per run."""
 
-#: Run fields a measured block carries: its basis, age and sample size.
+#: Run fields a measured block carries: its basis, age, sample size and where
+#: its time went (production repo code itself, waits, libraries).
 _MEASURED_RUN_FIELDS = (
     "run_id",
     "workload_class",
@@ -61,13 +62,16 @@ _MEASURED_RUN_FIELDS = (
     "commit",
     "age_days",
     "samples",
-    "explained_share",
+    "repo_self_share",
+    "wait_share",
+    "library_share",
     "outside_production",
     "value_kind",
     "ordering_only",
 )
 
-#: Row fields: callers, owner and tests are one ``get_context`` call away.
+#: Row fields: ``share`` is self time (the cost ranked by), ``inclusive``
+#: context. Callers, owner and tests are one ``get_context`` call away.
 _MEASURED_ROW_FIELDS = (
     "symbol_id",
     "lines",
@@ -76,7 +80,7 @@ _MEASURED_ROW_FIELDS = (
     "share",
     "share_low",
     "share_high",
-    "self_share",
+    "inclusive",
     "samples",
     "freshness",
     "callers_total",
@@ -97,22 +101,29 @@ class _PerformanceBlocks:
 async def _measured_block(session: Any, repository_id: str, req: HealthRequest) -> dict[str, Any]:
     """The ``performance_measured`` block: ranked functions with their runs.
 
-    Each group (``rows`` from workload classes that may lead, ``in_tests``
-    from unit-test runs) lists :data:`_MEASURED_CAP` rows, or ``limit`` up to
-    :data:`_MEASURED_PAGE_CAP`, beside its total. Without ranked evidence it
-    is one ``status`` token (``no_runtime_data``, ``stale``, ``not_ranked``):
-    unknown, never zero.
+    One run per workload, its newest. Each group (``rows`` from workload
+    classes that may lead, ``in_tests`` from unit-test runs, ``benchmarks``
+    from benchmark results with the function each measures) lists
+    :data:`_MEASURED_CAP` rows per run, or ``limit`` up to
+    :data:`_MEASURED_PAGE_CAP`, beside its total. A row an open static cause
+    with production evidence sits on names it in ``on_static_findings``.
+    Without ranked evidence it is one ``status`` token (``no_runtime_data``,
+    ``stale``, ``not_ranked``): unknown, never zero.
     """
     cap = min(req.limit, _MEASURED_PAGE_CAP) if req.limit_explicit else _MEASURED_CAP
     # At least one row, so a group still reports its total with ``limit=0``.
     view = await measured_costs(session, repository_id, limit=max(cap, 1))
-    # ``None`` means nothing ranked: every ranked row is in a leading class
-    # or ``unit_test``, so no ranked row is left unshown.
+    # ``None`` means no workload's newest run ranks a function in a class that
+    # leads or in ``unit_test``.
+    slower = await _slower_lines(session, repository_id)
     if view is None:
         status = await unranked_reason(session, repository_id)
         block: dict[str, Any] = {"basis": "unknown", "status": status}
-        if status != "not_ranked":
-            block["command"] = SETUP_COMMAND
+        command = unranked_command(status)
+        if command:
+            block["command"] = command
+        if slower:
+            block["slower"] = slower
         return block
     block = {"basis": "measured", "runs": []}
     runs: dict[str, dict[str, Any]] = {}
@@ -120,24 +131,79 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
         found = view.get(group)
         if not found:
             continue
-        rows = found["rows"][:cap]
+        # Cut per run by the reader; ``limit=0`` keeps the totals and no rows.
+        rows = found["rows"] if cap else []
         block[key] = [_measured_row(row) for row in rows]
         # The nested stamping in ``paging`` adds ``_emitted`` and ``_reduced_reason``.
         block[f"{key}_total"] = found["total"]
         shown = {row["run_id"] for row in rows}
         for run in found["runs"]:
             if run["run_id"] in shown:
-                runs.setdefault(run["run_id"], {f: run[f] for f in _MEASURED_RUN_FIELDS})
+                runs.setdefault(run["run_id"], _measured_run(run))
+    benchmarks = view.get("benchmarks")
+    if benchmarks:
+        rows = benchmarks["rows"] if cap else []
+        block["benchmarks"] = [_benchmark_row(row) for row in rows]
+        block["benchmarks_total"] = benchmarks["total"]
+        # Each row's run, as for ranked rows: which workload it came from.
+        shown = {row["run_id"] for row in rows}
+        for run in benchmarks["runs"]:
+            if run["run_id"] in shown:
+                runs.setdefault(run["run_id"], _benchmark_run(run))
     block["runs"] = list(runs.values())
-    linked = view.get("on_static_findings") or []
-    if linked:
-        # The static cause keeps its own row; this names which ones were measured.
-        block["on_static_findings"] = [
-            {k: link[k] for k in ("symbol_id", "opportunity_ids", "rank", "workload_class")}
-            for link in linked[:cap]
-        ]
-        block["on_static_findings_total"] = len(linked)
+    if slower:
+        block["slower"] = slower
     return block
+
+
+def _benchmark_row(row: dict[str, Any]) -> dict[str, Any]:
+    """``benchmark``, the function it ``measures`` and its numbers per op; unset ones left out."""
+    keys = ("benchmark", "measures", "run_id", "time", "unit", "allocs_per_op")
+    return {k: row[k] for k in keys if row.get(k) is not None}
+
+
+def _benchmark_run(run: dict[str, Any]) -> dict[str, Any]:
+    out = {f: run[f] for f in ("run_id", "workload_class", "workload_name", "commit", "age_days")}
+    if out["commit"]:
+        out["commit"] = out["commit"][:12]
+    return out
+
+
+async def _slower_lines(session: Any, repository_id: str) -> list[str]:
+    """One line per workload whose newest run is slower than its band, naming the
+    commits that changed what it ran (``evidence.compare``). Empty, and so left
+    out of the block, when nothing got slower."""
+    from repowise.core.evidence.compare import comparison_line
+    from repowise.core.evidence.compare_history import load_comparisons
+    from repowise.core.persistence.models import Repository
+
+    try:
+        repository = await session.get(Repository, repository_id)
+        # A savepoint, so a failed read leaves the request's transaction usable.
+        async with session.begin_nested():
+            found = await load_comparisons(
+                session, repository_id, getattr(repository, "local_path", None) or None
+            )
+    except Exception:  # the measured block stands without it
+        logging.getLogger(__name__).warning("Could not compare evidence runs.", exc_info=True)
+        return []
+    return [comparison_line(c) for c in found if c.verdict == "slower"]
+
+
+def _measured_run(run: dict[str, Any]) -> dict[str, Any]:
+    out = {f: run[f] for f in _MEASURED_RUN_FIELDS}
+    # Twelve characters name a commit for git; the full SHA is the CLI's JSON.
+    if out["commit"]:
+        out["commit"] = out["commit"][:12]
+    # Only a tracer's run says so: every other run gives shares.
+    if not out["ordering_only"]:
+        del out["ordering_only"]
+    # Only a run listed in place of a newer one that ranks nothing says so.
+    newer = run.get("newer_run")
+    if newer:
+        commit = newer["commit"]
+        out["newer_run"] = {"commit": commit[:12] if commit else None, "reason": newer["reason"]}
+    return out
 
 
 def _measured_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -145,6 +211,9 @@ def _measured_row(row: dict[str, Any]) -> dict[str, Any]:
     # ``"start-end"``: a list here would be stamped with counts like a collection.
     lines = row["lines"]
     out["lines"] = f"{lines[0]}-{lines[1]}" if lines else None
+    if row.get("on_static_findings"):
+        # Open with ``get_health(opportunity_id=...)``.
+        out["on_static_findings"] = row["on_static_findings"]
     return out
 
 

@@ -9,7 +9,25 @@ or measure time, so a finding means "this shape is slow when the data grows", no
 It is high precision and low recall: it skips a case instead of guessing.
 Performance risk is one of the three signals in [Code Health](CODE_HEALTH.md).
 
-## What it finds
+## Quick start
+
+Nothing to turn on: `repowise init` and `repowise update` run the detectors.
+
+```bash
+repowise health          # performance work appears inside Fix first
+```
+
+```python
+get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_measured"])
+get_health(opportunity_id="perf...")
+```
+
+In the dashboard, open **Code Health** and its **Performance** tab.
+
+## Reading the results
+
+### What it finds
 
 | Kind | Examples |
 |---|---|
@@ -19,9 +37,12 @@ Performance risk is one of the three signals in [Code Health](CODE_HEALTH.md).
 | Quadratic or wasteful data work | `string_concat_in_loop`, `nested_loop_quadratic`, `membership_test_against_list_in_loop`, `list_insert_zero_in_loop`, `array_spread_in_reduce`, `pd_concat_in_loop`, `pandas_iterrows_in_loop` |
 | Over-fetch | `unbounded_read_reduced_in_memory`, `sql_cartesian_join` |
 
-That is 21 performance detectors plus `sql_cartesian_join`. They never move the
-defect score, and six of them are listed without moving any score: `io_in_loop`, `nested_loop_with_io`, `lock_in_loop`, `string_concat_in_loop`,
-`membership_test_against_list_in_loop` and `list_insert_zero_in_loop`. In a blind
+That is 22 performance detectors, `sql_cartesian_join` included
+([what moves which score](CODE_HEALTH.md#what-moves-the-score)). They score the
+performance pillar and never the defect score, and six of them are listed there at
+zero weight: `io_in_loop`, `nested_loop_with_io`, `lock_in_loop`,
+`string_concat_in_loop`, `membership_test_against_list_in_loop` and
+`list_insert_zero_in_loop`. In a blind
 review of 705 findings on 64 repositories, 1 in 10 or fewer of each marker's
 findings were worth acting on:
 the code was real but sat on a cold path (setup, once per connection, the error
@@ -43,7 +64,7 @@ A few shapes are deliberately quiet:
 - An awaited call on a line that an ESLint `no-await-in-loop` suppression covers
   is not reported: the comment states that the sequential await is intended.
 
-### Across functions
+#### Across functions
 
 The loop and the I/O call do not have to be in the same function. Repowise
 follows the resolved call graph up to three hops and attaches the
@@ -59,13 +80,13 @@ loop counts as a database call, whatever the method is named. The receiver's
 declared type decides: an interface that extends a Spring Data repository, carries
 `@Mapper`, or sits in a `@MapperScan` package.
 
-### Languages
+#### Languages
 
 Performance analysis covers Python, TypeScript/JavaScript (including Vue and
 Svelte scripts), Java, Go, C# (including Razor), Rust, Kotlin, Scala, Ruby, C++,
 Dart, Pascal and Apex. A language without support emits no performance findings.
 
-## From findings to a plan
+### From findings to a plan
 
 Several findings often share one cause. Repowise groups them into an
 **opportunity**: one place you would edit, such as the function that holds the
@@ -80,6 +101,12 @@ Each opportunity gets one state:
 | `advisory` | A strategy with a prerequisite Repowise cannot prove, such as bounded concurrency before parallelizing awaits against a database |
 | `investigate` | No supported strategy; a person has to decide |
 | `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`), or its loop runs a fixed number of times (reason `bounded_loop`) or grows only by reading tables that do not grow with the repository (reason `small_table`) |
+
+An opportunity whose marker has no fix strategy at all (such as
+`hot_path_sync_io` or `list_insert_zero_in_loop`) is an **observation**: no
+proof about the code would give it one, so it is no unit of any queue. It stays
+in the Performance view in the `investigate` state, and its rows store the queue
+reason `observation`, but no queue counts it, as left out or otherwise.
 
 A plan lists its edits, one step per call site and loop, each naming the call it
 repeats and the kind of I/O that call does (database, network, file system or
@@ -104,16 +131,22 @@ such a key (or a foreign key to one) grows with the repository and one without
 names the tables (`loop_small_tables`). Elsewhere, a registry table name alone
 leaves the loop unknown.
 
-## The default queue
+### The default queue
 
 The default queue holds production opportunities in the `plan_ready` and
 `advisory` states. They are ranked by cost first; state only breaks ties. Only
 opportunities with `cost_proof = proven` are in it: the code shows how the cost
 scales (a loop that grows with the data or is bounded, a cost paid once per call,
 or a shape that grows by itself, such as an unbounded goroutine loop or a
-cartesian join). A loop whose size the code does not show is
-`cost_proof = unproven`, never leads, and shows only with the `proof=unproven`
-filter.
+cartesian join), or a run measured the loop. A loop whose size the code does not
+show and no run measured is `cost_proof = unproven`, never leads, and shows only
+with the `proof=unproven` filter.
+
+`static_cost` is the code's part alone, never what a run measured:
+`grows_with_data`, `grows_by_shape`, `per_call_reached`, `per_call_unreached`,
+`bounded` or `size_unknown`. The dashboard counts it as the Loop size facet, and
+the REST list narrows by it with `static_cost=<value>`. What a run showed is the
+row's `runtime_evidence`.
 
 Each opportunity also says what runs its loop (`execution_role`: request, event
 consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run
@@ -137,9 +170,52 @@ Everything else is counted by reason, not hidden:
 | `expected` | The repetition is intended |
 | `gated_off` | The function is switched off by a constant flag; see [dormant functions](CODE_HEALTH.md#fix-first) |
 | `cold_path` | The function is named for a migration, startup, shutdown or crash recovery, so it runs rarely |
-| `no_strategy` | The state is `investigate`: there is no supported fix to offer |
+| `no_strategy` | The state is `investigate`: a fix strategy exists for the marker, but a fact it needs is not proven |
 | `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
 | `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
+
+Runtime evidence overrides `cold_path` and `cold_role`. When the newest run of an
+entry point, load test or production workload ranks a cause's loop owner
+among its costliest functions, the cause stays in the queue and its `measured` facet
+names that workload. A unit-test run never does this, and neither does a
+benchmark profile: a benchmark run gives each benchmark about the same time, so a
+function's share of it tracks how many benchmarks target it, not what it costs.
+Such a cause is still never
+the one Fix first, Do next or the queue's lead name.
+
+Query counts are exact, so they can confirm or contradict a database cause. The
+`queries` facet reads the newest complete `query_count` run of each workload at the
+cause's loop owner and along its call path. Sizes are compared only within one run
+and one scope kind (tests or requests):
+
+| `queries` | Meaning |
+|---|---|
+| `grows` | Two tests or requests ran over different numbers of items, and the larger one issued more statements. The cause is confirmed |
+| `flat` | They ran over at least two different numbers of items, and every one issued the same count. This is counter-evidence |
+| `ran` | Anything else. It reports "ran with `query_statements` statements at `query_items` items" and confirms nothing |
+
+Telling `grows` from `flat` needs the scope's `items` in the evidence document
+([Runtime Evidence](RUNTIME_EVIDENCE.md)). The cause stays listed in every case.
+
+A cause carries `confirmed` when runtime evidence backs it. The value is
+`query_count` when its query counts grow with the items, or `measured` when an
+entry point, load test or production workload measured its loop owner
+above the lead bar. That bar is a share of the run that clears the
+`evidence.lead_min_share` and `evidence.lead_min_lower_bound` settings, or a rank in
+`evidence.lead_min_runs` runs. A function that is only ranked confirms nothing.
+
+With runtime evidence, the queue orders causes in three tiers: confirmed first,
+then causes a leading workload measured (the `measured` facet), then the rest in
+their static order. Nothing is hidden: a cause with flat query counts, and a
+cause measured against its cold name, stay among the rest in their static order.
+Each row of the Performance tab carries `runtime_evidence`, what the evidence
+says about it: `confirmed`, `measured` (with the workload), `counter_evidence`
+(flat query counts), `ran` (query counts that settle nothing), or
+`not_exercised`, with the leading workloads that ran and never reached it ("not
+exercised in `<workload>`"). A unit-test run is never one of those workloads. A
+function a run sampled too rarely to rank reads as not exercised. The marks
+reflect the evidence of the last index or update. With no runtime evidence the
+order is the static one and rows carry no mark.
 
 To see them, widen the filter (below). Each performance finding also stores the
 reason its cause is in or out of the queue. Code in a package path that only looks
@@ -161,7 +237,30 @@ detector ran on). The generated CLAUDE.md and AGENTS.md, `get_health` `kpis`,
 lead with `now`. The map's performance lens colours a file by its causes in the
 default queue.
 
-## Reading it
+## Tuning
+
+Performance detectors take the same `.repowise/health-rules.json` rules as every
+other detector ([Configuration](CODE_HEALTH.md#configuration)).
+
+### Runtime evidence
+
+The findings above come from structure. To add what a real run showed (a
+profile, benchmark results, test timings or query counts), follow
+[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md): `repowise evidence setup` prints
+what to run here, `repowise evidence add` joins the result to the indexed
+functions, and `repowise evidence status` shows what is stored and how fresh it
+is.
+
+## Accuracy and limits
+
+- Dynamic dispatch, monkeypatching and callbacks passed as values leave no call
+  edge, so those cases are missed.
+- Chains longer than three hops are not followed.
+- ORM lazy loads are reported only where the loop's rows resolve to one model.
+- JPA lazy associations read in a loop are not reported.
+- A library Repowise does not model has no classified I/O calls.
+
+## Where it shows up
 
 | Surface | How |
 |---|---|
@@ -175,36 +274,21 @@ MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 `performance_sort`. Parameters are listed in
 [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_health).
 
-```python
-get_health(include=["performance"], only=["performance_summary"])
-get_health(include=["performance"], only=["performance_measured"])
-get_health(opportunity_id="perf...")
-```
+`performance_measured` lists, for each workload's newest run, the functions
+ranked by self time (waits excluded), each with its workload class, age, sample
+size, interval and where the run's time went (repo code itself, waits,
+libraries)
+([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). Benchmarks are listed
+apart under `benchmarks`: each result with the production function it measures
+and its time and allocations per operation. A benchmark profile ranks nothing.
+With no profile stored it says `no_runtime_data` and names `repowise evidence setup`.
 
-`performance_measured` lists the functions stored runs ranked, each with its
-workload class, age, sample size, explained share and interval
-([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). With no profile
-stored it says `no_runtime_data` and names `repowise evidence setup`.
+## See also
 
-## Runtime evidence
-
-The findings above come from structure. To add what a real run showed (a
-profile, benchmark results, test timings or query counts), follow
-[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md): `repowise evidence setup` prints
-what to run here, `repowise evidence add` joins the result to the indexed
-functions, and `repowise evidence status` shows what is stored and how fresh it
-is.
-
-## Limits
-
-- Dynamic dispatch, monkeypatching and callbacks passed as values leave no call
-  edge, so those cases are missed.
-- Chains longer than three hops are not followed.
-- ORM lazy loads are reported only where the loop's rows resolve to one model.
-- JPA lazy associations read in a loop are not reported.
-- A library Repowise does not model has no classified I/O calls.
-
-Internals (sinks, gates, dialects, weights):
-[architecture/code-health.md](../architecture/code-health.md#64-performance-opportunities-perf).
-Linter comparison and ranking quality:
-[repowise-bench/perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection).
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
+- [architecture/code-health.md](../architecture/code-health.md#64-performance-opportunities-perf):
+  sinks, gates, dialects and weights.
+- [repowise-bench/perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection):
+  linter comparison and ranking quality.
+- [CODE_HEALTH.md](CODE_HEALTH.md), [RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md),
+  [REFACTORING.md](REFACTORING.md): the score, measured runs and `performance_fix` plans.

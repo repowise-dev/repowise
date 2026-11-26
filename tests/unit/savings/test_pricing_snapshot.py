@@ -9,6 +9,7 @@ rather than trusted.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from pathlib import Path
@@ -40,15 +41,16 @@ def _count_scans(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Replace the transcript scan with a counter, so a scan is observable."""
     calls: list[int] = []
 
-    def fake(repo_root: Path) -> PricingSnapshot:
+    def fake(repo_root: Path) -> pricing._Snapshots:
         calls.append(1)
-        return PricingSnapshot(
+        snapshot = PricingSnapshot(
             model="claude-opus-5",
             pricing_source="session_model:claude_code",
             pricing_version="pricing:test",
             input_rate_usd_per_million=5.0,
             output_rate_usd_per_million=25.0,
         )
+        return pricing._Snapshots(newest=snapshot, agents={"claude_code": snapshot})
 
     monkeypatch.setattr(pricing, "_scan", fake)
     return calls
@@ -190,19 +192,41 @@ def test_a_stale_cache_is_rescanned(repo: Path, monkeypatch: pytest.MonkeyPatch)
     assert len(calls) == 2
 
 
+def _cache_snapshot(model: str = "claude-opus-5") -> dict:
+    return {
+        "model": model,
+        "pricing_source": "session_model:claude_code",
+        "pricing_version": "pricing:test",
+        "input_rate_usd_per_million": 5.0,
+        "output_rate_usd_per_million": 25.0,
+    }
+
+
 @pytest.mark.parametrize(
     "content",
     [
         "not json at all",
         json.dumps({"version": 999, "resolved_at": 0}),
-        json.dumps({"version": 1, "resolved_at": "yesterday", "model": "m"}),
-        json.dumps({"version": 1, "resolved_at": True, "model": "m"}),
-        json.dumps({"version": 1, "resolved_at": 0}),  # epoch: older than any TTL
+        json.dumps({"version": 2, "resolved_at": "yesterday", "newest": _cache_snapshot()}),
+        json.dumps({"version": 2, "resolved_at": True, "newest": _cache_snapshot()}),
+        # epoch: older than any TTL
+        json.dumps({"version": 2, "resolved_at": 0, "newest": _cache_snapshot()}),
         # A fixed id: the timestamp differs per process, and xdist workers
         # must collect identical test ids.
         pytest.param(
-            json.dumps({"version": 1, "resolved_at": time.time(), "model": "m" * 129}),
+            json.dumps(
+                {"version": 2, "resolved_at": time.time(), "newest": _cache_snapshot("m" * 129)}
+            ),
             id="overlong-model",
+        ),
+        # The single-snapshot shape before per-agent keying.
+        pytest.param(
+            json.dumps({"version": 1, "resolved_at": time.time(), **_cache_snapshot()}),
+            id="version-1",
+        ),
+        pytest.param(
+            json.dumps({"version": 2, "resolved_at": time.time(), "agents": {"x": [1]}}),
+            id="malformed-agents",
         ),
         json.dumps([1, 2, 3]),
     ],
@@ -227,7 +251,7 @@ def test_a_missing_repository_is_unpriced_rather_than_an_error() -> None:
 
 
 def test_a_failing_scan_never_raises(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(repo_root: Path) -> PricingSnapshot:
+    def boom(repo_root: Path) -> pricing._Snapshots:
         raise RuntimeError("transcripts exploded")
 
     monkeypatch.setattr(pricing, "_scan", boom)
@@ -327,7 +351,7 @@ def test_a_scan_whose_cache_write_fails_is_still_used(
     """A six-second scan must not be thrown away because the disk said no."""
     calls = _count_scans(monkeypatch)
 
-    def refuse(path: Path, snapshot: PricingSnapshot) -> None:
+    def refuse(path: Path, snapshots: pricing._Snapshots) -> None:
         raise OSError("read-only file system")
 
     monkeypatch.setattr(pricing, "_write_cache", refuse)
@@ -491,7 +515,7 @@ def test_the_background_warm_fills_the_cache_off_the_calling_thread(
     calls = _count_scans(monkeypatch)
     scan = pricing._scan
 
-    def record_thread(repo_root: Path) -> PricingSnapshot:
+    def record_thread(repo_root: Path) -> pricing._Snapshots:
         callers.append(threading.current_thread().name)
         return scan(repo_root)
 
@@ -554,3 +578,62 @@ def test_a_warm_whose_thread_never_started_is_retried(
     pricing.warm_pricing_snapshot(repo)
     _join_warm_threads()
     assert calls == [1]
+
+
+# -- keyed by agent -----------------------------------------------------------
+
+
+def _sighted(monkeypatch: pytest.MonkeyPatch, **models: str) -> None:
+    """Make the detector report *models* per agent; the first one is the newest."""
+    from repowise.core.distill import session_model
+
+    per_agent = {
+        agent: session_model.ResolvedModel(
+            model=model, raw=model, agent=agent, source="detected"
+        )
+        for agent, model in models.items()
+    }
+    newest = next(iter(per_agent.values()), session_model._DEFAULT)
+    resolved = dataclasses.replace(newest, per_agent=per_agent)
+    monkeypatch.setattr(session_model, "resolve_session_model", lambda *a, **k: resolved)
+
+
+def test_each_agent_is_priced_at_its_own_model(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Codex run that happened last must not price a Claude Code event."""
+    _sighted(monkeypatch, codex="gpt-5.6-sol", claude_code="claude-opus-5")
+
+    claude = resolve_pricing_snapshot(repo, agent="claude_code")
+    codex = resolve_pricing_snapshot(repo, agent="codex")
+    assert claude is not None and claude.model == "claude-opus-5"
+    assert codex is not None and codex.model == "gpt-5.6-sol"
+    # No agent named: the newest, as before.
+    assert resolve_pricing_snapshot(repo).model == "gpt-5.6-sol"
+    # An agent with no detector of its own keeps the newest, as before.
+    assert resolve_pricing_snapshot(repo, agent="cursor").model == "gpt-5.6-sol"
+    # And the cache a hook reads carries every agent.
+    clear_pricing_cache()
+    hooked = resolve_pricing_snapshot(repo, allow_scan=False, agent="claude_code")
+    assert hooked is not None and hooked.model == "claude-opus-5"
+
+
+def test_a_detected_agent_never_borrows_another_agents_model(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _sighted(monkeypatch, codex="gpt-5.6-sol")
+
+    assert resolve_pricing_snapshot(repo, agent="claude_code") is None
+    assert resolve_pricing_snapshot(repo, agent="codex").model == "gpt-5.6-sol"
+
+
+def test_with_nothing_sighted_every_agent_shares_the_default(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.distill.session_model import DEFAULT_MODEL
+
+    _sighted(monkeypatch)
+
+    for agent in (None, "claude_code", "codex", "unknown"):
+        snapshot = resolve_pricing_snapshot(repo, agent=agent)
+        assert snapshot is not None and snapshot.model == DEFAULT_MODEL

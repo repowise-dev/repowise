@@ -36,6 +36,9 @@ _BASIS_LIMIT = 10
 #: Share of the suite past which a selection made on a lagging index is
 #: labelled ``degraded``: the files the index has not seen filled it, not the change.
 _DEGRADED_SHARE = 0.5
+#: Below this many test files a subset still reads as targeted, however much of
+#: the suite it holds: running all of it costs little either way.
+_RUN_ALL_SHARE_MIN_SUITE = 10
 #: Past this the agent is told to run the CLI instead of waiting. Ceiling: the
 #: call walk is per-level SQL; loading call edges once is the upgrade.
 SELECTION_TIMEOUT_SECONDS = 30.0
@@ -168,6 +171,10 @@ def _change_identity(change: Any) -> str:
 
 def _tree_stamp(root: str) -> str | None:
     """What the checkout's dirty paths are and when each last changed; ``None`` when git fails."""
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     try:
         out = subprocess.run(
             # .repowise is excluded: the server writes there on every call.
@@ -410,14 +417,16 @@ def selection_block(
         rest = run_list[limit:]
     else:
         shown, rest = agent_head(selection, run_list, direct, limit)
-    known = set(selection.known_tests)
-    held = len(known & set(selection.test_files))
-    broad = held > len(known) * _DEGRADED_SHARE
+    held, suite = suite_share(selection)
+    broad = covers_most_of_suite(selection)
     degraded = broad and not selection.run_all and bool(result.get("index_gap"))
+    # A lagging index explains a broad selection better, so it keeps its verdict.
+    share = None if degraded else share_run_all_reason(selection)
+    run_all = selection.run_all or share is not None
     # Most of the suite under a verdict to run all of it: the tail restores nothing to act on.
-    if rest and not (broad and (selection.run_all or degraded)):
+    if rest and not (broad and (run_all or degraded)):
         collector.add(f"{label}.tests_to_run not listed ({len(rest)})", rest)
-    reasons = list(selection.reasons)
+    reasons = [share] if share else list(selection.reasons)
     if len(reasons) > _REASONS_LIMIT:
         collector.add(
             f"{label}.reasons beyond cap={_REASONS_LIMIT} "
@@ -426,10 +435,10 @@ def selection_block(
         )
     basis_rows = sorted(selection.basis.items())
     always = sum(not selected_by_change(selection, t) for t in selection.test_files)
-    status = "run_all" if selection.run_all else "degraded" if degraded else "selected"
+    status = "run_all" if run_all else "degraded" if degraded else "selected"
     block: dict[str, Any] = {
         "status": status,
-        "run_all": selection.run_all,
+        "run_all": run_all,
         "reasons": reasons[:_REASONS_LIMIT],
         "reasons_total": len(reasons),
         "basis": basis_of(selection),
@@ -441,11 +450,11 @@ def selection_block(
         "always_run_total": always,
         "summary": (
             f"the index predates files changed outside this change, so {held} of "
-            f"{len(known)} test files were selected{ORDER if shown else ''}; "
+            f"{suite} test files were selected{ORDER if shown else ''}; "
             "run the whole suite, or `repowise update` to narrow it."
             if degraded
             else _summary(
-                selection, len(run_list), always, len(shown), len(broadcast), len(closure)
+                selection, len(run_list), always, len(shown), len(broadcast), len(closure), share
             )
         ),
     }
@@ -468,6 +477,31 @@ def selection_block(
             dict(basis_rows[_BASIS_LIMIT:]),
         )
     return block
+
+
+def suite_share(selection: Selection) -> tuple[int, int]:
+    """``(selected test files, runnable test files in the checkout)``; ``(n, 0)`` when unread."""
+    known = set(selection.known_tests)
+    return len(known & set(selection.test_files)), len(known)
+
+
+def covers_most_of_suite(selection: Selection) -> bool:
+    """Whether the selection holds over half the suite, so it is no targeted subset."""
+    held, suite = suite_share(selection)
+    return bool(suite) and held > suite * _DEGRADED_SHARE
+
+
+def share_run_all_reason(selection: Selection) -> str | None:
+    """The run-all reason for a subset holding most of a suite of
+    :data:`_RUN_ALL_SHARE_MIN_SUITE` or more test files; None otherwise.
+
+    One rule for every surface that renders a selection, so ``get_risk`` and
+    ``get_change_risk`` never disagree on whether a change runs everything.
+    """
+    held, suite = suite_share(selection)
+    if selection.run_all or suite < _RUN_ALL_SHARE_MIN_SUITE or not covers_most_of_suite(selection):
+        return None
+    return f"selection_covers_most_of_suite: {held} of {suite} test files."
 
 
 def of_the_change(selection: Selection, test: str) -> bool:
@@ -510,6 +544,15 @@ NO_TESTS = "No test needs to run for this change."
 ORDER = ", listed likeliest to fail first"
 
 
+def _first_reason(selection: Selection) -> str:
+    return selection.reasons[0] if selection.reasons else "the selection could not vouch"
+
+
+def _run_all_summary(lead: str, total: int, shown: str) -> str:
+    named = f" Run these {total} first{shown}." if total else ""
+    return f"Run every test: {lead}{named}"
+
+
 def _summary(
     selection: Selection,
     total: int,
@@ -517,12 +560,11 @@ def _summary(
     listed: int,
     broadcast: int = 0,
     closure: int = 0,
+    share: str | None = None,
 ) -> str:
     shown = f"; showing {listed}" if 0 < listed < total else ""
-    if selection.run_all:
-        lead = selection.reasons[0] if selection.reasons else "the selection could not vouch"
-        named = f" Run these {total} first{shown}." if total else ""
-        return f"Run every test: {lead}{named}"
+    if selection.run_all or share:
+        return _run_all_summary(share or _first_reason(selection), total, shown)
     spread = apart_sentence(broadcast, closure, APART_KEYS)
     if not total:
         return f"No test the change reaches directly.{spread}" if spread else NO_TESTS
