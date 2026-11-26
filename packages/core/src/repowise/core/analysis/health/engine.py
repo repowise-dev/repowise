@@ -138,9 +138,17 @@ log = structlog.get_logger(__name__)
 # third-party import no longer contradicts a test named for a file (#5958), and
 # coverage names the indexed production files a report leaves out (#5917).
 #
+# v47 (0.63): benchmark runs stop confirming, admitting, ordering and minting
+# measured hotspots in the perf queue (#6317), and a measured hotspot carries
+# its function's measured row onto Fix first (#6390).
+# ``PERFORMANCE_MODEL_VERSION`` moved with it. A build folder inside source code
+# is shipped code, not tooling (#6228), and a large repo that overruns the
+# duplication window budget still gets clones found in its production code
+# (#6357).
+#
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
-HEALTH_ANALYZER_VERSION = 46
+HEALTH_ANALYZER_VERSION = 47
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
