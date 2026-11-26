@@ -9,9 +9,9 @@ A node counts for a package in one of two ways, and every row says which:
   declaration (``graph_nodes.external_system_id``): the import module is the
   declared name or starts with it (``requests.adapters``, ``lodash/merge``).
 * ``inferred``: no link; the import module starts with the asked name but no
-  manifest declaration was matched to it. A Python distribution whose import
-  name differs (``PyYAML`` / ``yaml``) is found only by asking for the import
-  name, and then only as inferred.
+  manifest declaration was matched to it. A PyPI distribution also matches the
+  modules it is imported under (``Pillow`` / ``PIL``, see
+  :mod:`repowise.core.analysis.external_systems.pypi_imports`).
 
 Reachability per importing file, from the stored graph: ``reachable`` when a
 stored root (:mod:`.roots`: an entry point or other reachability root, a file a
@@ -44,6 +44,11 @@ from repowise.core.analysis.external_systems import (
     IMPORT_EDGE_TYPE,
     declaration_name_candidates,
     package_key,
+)
+from repowise.core.analysis.external_systems.pypi_imports import (
+    PYPI_IMPORT_NAMES,
+    pypi_dist_key,
+    pypi_import_names,
 )
 from repowise.core.ids import SYMBOL_SEP
 
@@ -100,9 +105,8 @@ METHOD = {
 }
 
 
-def dist_key(name: str) -> str:
-    """PEP 503 spelling, so ``PyYAML`` and ``pyyaml`` compare equal."""
-    return re.sub(r"[-_.]+", "-", name).casefold()
+#: PEP 503 spelling, so ``PyYAML`` and ``pyyaml`` compare equal.
+dist_key = pypi_dist_key
 
 
 def _name_keys(ecosystem: str, name: str) -> tuple[str, ...]:
@@ -186,9 +190,24 @@ class UsageIndex:
         for decl_id in found:
             for node_id in self._nodes_by_decl.get(decl_id, ()):
                 mapped[node_id] = "declared"
-        for node_id in self._unlinked_by_name.get(name.casefold(), ()):
-            mapped[node_id] = "inferred"
+        for key in _inferred_keys(name, ecosystem):
+            for node_id in self._unlinked_by_name.get(key, ()):
+                mapped[node_id] = "inferred"
         return list(found.values()), mapped
+
+
+def _inferred_keys(name: str, ecosystem: str | None) -> tuple[str, ...]:
+    """Unlinked import names that stand for *name*: itself and, for a PyPI
+    distribution, the modules it is imported under (``pillow`` as ``PIL``).
+
+    An unscoped query takes only the curated names: the default spelling rule
+    would turn any name into a module (npm ``date-fns`` into ``date_fns``)."""
+    keys = [name]
+    if ecosystem == "pypi":
+        keys.extend(pypi_import_names(name))
+    elif ecosystem is None:
+        keys.extend(PYPI_IMPORT_NAMES.get(pypi_dist_key(name), ()))
+    return tuple(dict.fromkeys(key.casefold() for key in keys))
 
 
 def lookup_key(ecosystem: str, name: str) -> str:
