@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from repowise.core.analysis.dead_code import (
     DeadCodeAnalyzer,
     DeadCodeKind,
 )
 from repowise.core.analysis.dead_code.name_occurrences import UNVERIFIED_INTERNAL_CONFIDENCE
 from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from tests.unit.dead_code._helpers import _build_graph
 
 
@@ -484,6 +489,37 @@ def test_ts_module_const_read_in_the_same_file_is_not_reported():
     )
     assert "RETRY_LIMIT" not in found
     assert "STRANDED" in found  # the control: a const nothing reads
+
+
+@pytest.mark.parametrize("extension", ["js", "ts"])
+def test_short_and_dollar_bindings_read_in_the_same_file_are_not_reported(
+    tmp_path: Path, extension: str
+) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    # Comma expressions read the bindings without a reference edge in the graph.
+    (src / f"a.{extension}").write_text(
+        "const currentUser$ = makeStore();\n"
+        "const ws = makeStore();\n"
+        "const $ = makeStore();\n"
+        "const currentUser = makeStore();\n"
+        "function makeStore() { return {}; }\n"
+        "export function run(cb) { cb((0, currentUser$), (0, ws), (0, $)); }\n",
+        encoding="utf-8",
+    )
+    (src / f"b.{extension}").write_text(
+        "import { run } from './a';\nrun(console.log);\n", encoding="utf-8"
+    )
+    parser, builder = ASTParser(), GraphBuilder(repo_path=tmp_path)
+    sources = {}
+    for file in FileTraverser(tmp_path).traverse():
+        sources[file.path] = Path(file.abs_path).read_bytes()
+        builder.add_file(parser.parse_file(file, sources[file.path]))
+
+    report = DeadCodeAnalyzer(builder.build(), source_map=sources).analyze({"min_confidence": 0.0})
+    assert {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL} == {
+        "currentUser"
+    }
 
 
 def test_python_callback_passed_as_target_is_not_reported():

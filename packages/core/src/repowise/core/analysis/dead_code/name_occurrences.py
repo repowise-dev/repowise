@@ -79,6 +79,9 @@ from .token_cache import scanned
 #: only under-suppress, which is the safe direction.
 IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
 
+# Keep short names whole, including next to digits, dollar signs or non-ASCII bytes.
+_JS_IDENTIFIER_RE = re.compile(rb"(?<![\w$\x80-\xff])[A-Za-z_$][\w$]*(?![\w$\x80-\xff])")
+
 #: Shortest name this check can answer for. :data:`IDENTIFIER_RE` needs three
 #: characters, so a two-character name matches nowhere — including on its own
 #: declaration. Reading that as "the name appears nowhere" would turn the
@@ -157,6 +160,8 @@ def _uses_in_own_file(
     source_map: dict[str, bytes],
     path: str,
     findings: list[DeadCodeFindingData],
+    *,
+    identifier_re: re.Pattern[bytes] = IDENTIFIER_RE,
 ) -> dict[int, _Verdict]:
     """Where each of *findings* is named in its own file outside its own span.
 
@@ -193,12 +198,15 @@ def _uses_in_own_file(
     wanted: dict[bytes, list[DeadCodeFindingData]] = {}
     headers: dict[bytes, set[int]] = {}
     for finding in spanned:
-        token = searchable_token(finding.symbol_name)
+        token = searchable_token(finding.symbol_name, identifier_re=identifier_re)
+        if not token:
+            out[id(finding)] = _NOT_SEARCHABLE
+            continue
         wanted.setdefault(token, []).append(finding)
         headers.setdefault(token, set()).add(finding.start_line)
 
     for lineno, line in enumerate(blob.split(b"\n"), start=1):
-        for match in IDENTIFIER_RE.finditer(line):
+        for match in identifier_re.finditer(line):
             token = match.group()
             for finding in wanted.get(token, ()):
                 if out[id(finding)].answer is _Answer.USED:
@@ -294,26 +302,28 @@ def _blank(match: re.Match[str]) -> str:
 _NOT_NEWLINE = re.compile(r"[^\n]")
 
 
-def searchable_token(name: str) -> bytes:
+def searchable_token(name: str, *, identifier_re: re.Pattern[bytes] = IDENTIFIER_RE) -> bytes:
     """The searchable form of *name*, or empty when the scan cannot find it.
 
-    The one rule is that the result must be something :data:`IDENTIFIER_RE`
-    would actually match, because a token the scan cannot produce is absent
-    from every file including the one that declares it — and reading that as
-    "the name appears nowhere" would turn the strongest verdict into the least
-    reliable one. Two shapes fail it, for different reasons:
+    The one rule is that the result must be something *identifier_re* (by
+    default :data:`IDENTIFIER_RE`) would actually match, because a token the
+    scan cannot produce is absent from every file including the one that
+    declares it — and reading that as "the name appears nowhere" would turn the
+    strongest verdict into the least reliable one. Two shapes fail it, for
+    different reasons:
 
     * a non-ASCII name, since ``encode(errors="ignore")`` drops characters
       rather than failing and would search for ``caf`` on behalf of ``café``,
       letting an unrelated ``caf`` elsewhere read as a use;
     * a name carrying a character the identifier shape does not admit, such as
-      the ``$`` in a JVM or JavaScript synthetic name, which the scan would
-      only ever see as two shorter tokens.
+      the ``$`` in a JVM synthetic name, which the default scan would only ever
+      see as two shorter tokens. The JavaScript/TypeScript scan admits ``$``
+      and one- or two-character names.
     """
     encoded = name.encode("ascii", "ignore")
     if encoded.decode("ascii") != name:
         return b""
-    if len(encoded) < MIN_ANSWERABLE_NAME_LEN or not IDENTIFIER_RE.fullmatch(encoded):
+    if not identifier_re.fullmatch(encoded):
         return b""
     return encoded
 
@@ -540,7 +550,10 @@ def drop_internals_used_in_own_file(
 
     verdicts: dict[int, _Verdict] = {}
     for path, pending in by_file.items():
-        verdicts.update(_uses_in_own_file(source_map, path, pending))
+        identifier_re = (
+            _JS_IDENTIFIER_RE if _language(path) in ("javascript", "typescript") else IDENTIFIER_RE
+        )
+        verdicts.update(_uses_in_own_file(source_map, path, pending, identifier_re=identifier_re))
 
     kept: list[DeadCodeFindingData] = []
     for finding in findings:
@@ -548,7 +561,7 @@ def drop_internals_used_in_own_file(
         if verdict is not None:
             if verdict.answer is _Answer.USED:
                 continue
-            if verdict.answer is _Answer.SPAN_UNKNOWN or not searchable_token(finding.symbol_name):
+            if verdict.answer in (_Answer.SPAN_UNKNOWN, _Answer.NOT_SEARCHABLE):
                 finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
                 finding.evidence.append(
                     f"'{finding.symbol_name}' could not be checked against the rest of "
