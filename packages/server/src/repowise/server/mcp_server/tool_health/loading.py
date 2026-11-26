@@ -329,7 +329,7 @@ async def _read_perf_headline(
         repository.id,
         covered_nloc=coverage.covered_nloc,
         include_unverified=req.include_unverified,
-        # No runtime evidence on the agent surface (``without_sources``).
+        # Measured hotspots only when they lead with a next step (``crud.agent_hidden``).
         include_measured_hotspots=False,
     )
     return coverage, causes
@@ -370,7 +370,7 @@ async def _read_pillars(
         repository.id,
         reference_repository,
         include_unverified=req.include_unverified,
-        # No runtime evidence on the agent surface (``without_sources``).
+        # Measured hotspots only when they lead with a next step (``crud.agent_hidden``).
         include_measured_hotspots=False,
     )
     refactoring_service = RefactoringHealthService(
@@ -568,9 +568,9 @@ async def _read_fix_first(
         return None, None
     full = await load_fix_first(session, repository.id, limit=None)
     # A measured item with a next step and verify command is work an agent can
-    # do, so Fix first keeps it. Deliberate: get_overview's Do next, the perf
-    # page and headline counts and the generated agent files (a push, which
-    # waits on the agent-push decision) still leave every measured item out.
+    # do, so it stays (``crud.agent_hidden``), as on the perf page, the
+    # headline counts and get_overview's Do next. The generated agent files (a
+    # push, waiting on the agent-push decision) still leave every one out.
     full = without_sources(
         full, await measured_hotspot_ids(session, repository.id, without_step=True)
     )

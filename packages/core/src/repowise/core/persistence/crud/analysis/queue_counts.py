@@ -15,7 +15,6 @@ from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.finding_registry import GateLayer
-from repowise.core.analysis.health.perf.actionability import MEASURED_HOTSPOT
 from repowise.core.analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
 from repowise.core.analysis.health.queue.counts import (
     NOT_JUDGED,
@@ -32,6 +31,7 @@ from .fix_first import (
     stored_item_counts,
     unjudged,
 )
+from .performance import agent_hidden
 from .shown import gated_counts, ungated
 
 Unit = Literal["findings", "causes", "plans", "items"]
@@ -102,8 +102,8 @@ async def unit_counts(
     model, population = _population(unit, repo_id)
     scoped = model.file_path.in_(list(file_paths)) if file_paths is not None else true()
     if unit == "causes" and not include_measured_hotspots:
-        # The agent surface counts no cause runtime evidence alone minted.
-        scoped = scoped & (model.biomarker_type != MEASURED_HOTSPOT)
+        # The agent surface counts no measured hotspot it leaves out.
+        scoped = scoped & ~agent_hidden(model)
     layer, kind = _GATE_LAYERS[unit]
     kind_col = getattr(model, kind)
     served = ungated(layer, model.file_path, kind_col, include_unverified=include_unverified)

@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import and_, delete, func, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...batches import chunked
@@ -34,7 +34,7 @@ from ...models import (
     _new_uuid,
     _now_utc,
 )
-from ...sql import order_by, rule_predicate
+from ...sql import json_text, order_by, rule_predicate
 from .refactoring import _refactoring_row_kwargs
 from .shown import gated_counts, ungated
 
@@ -114,7 +114,36 @@ def opportunity_details(
             if opportunity.measured_row is not None
             else {}
         ),
+        # Top level, so SQL can tell a measured item that leads (``agent_hidden``).
+        **({LEADS_WITH_STEP: step["rule"]} if (step := _lead_step(opportunity)) else {}),
     }
+
+
+#: The ``details_json`` key a measured hotspot that may lead stores its next
+#: step's rule under; absent on every other cause.
+LEADS_WITH_STEP = "measured_step"
+
+
+def _lead_step(opportunity: OpportunityModel) -> dict[str, Any] | None:
+    """A measured hotspot's next step when the item may lead with it."""
+    if not opportunity.may_lead or opportunity.measured_row is None:
+        return None
+    return opportunity.measured_row.get("next_step") or None
+
+
+def agent_hidden(model: Any = PerformanceOpportunity) -> Any:
+    """SQL: a cause the agent surfaces leave out, a measured hotspot with no
+    next step to lead with (``perf.opportunities._measured_hotspot``). One that
+    leads Fix first with a next step and a verify command is work an agent can
+    do, so ``get_health`` (Fix first, the perf page, the headline counts) and
+    ``get_overview``'s Do next keep it. A hotspot stored before hotspots
+    carried a row reads as hidden until the next update."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    return and_(
+        model.biomarker_type == MEASURED_HOTSPOT,
+        json_text(model.details_json, LEADS_WITH_STEP).is_(None),
+    )
 
 
 def _row_kwargs(
@@ -696,10 +725,9 @@ def _predicates(
 
     Opportunities on a file of a language the registry gates for performance
     are left out unless ``include_unverified``; causes minted from runtime
-    evidence alone (:func:`measured_hotspot_ids`) unless
-    ``include_measured_hotspots``.
+    evidence alone with no next step to lead with (:func:`agent_hidden`)
+    unless ``include_measured_hotspots``.
     """
-    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....analysis.health.perf.serving import FILTERS
     from ....analysis.health.queue_rules import active_filters
 
@@ -708,7 +736,7 @@ def _predicates(
         *(
             ()
             if include_measured_hotspots
-            else (PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,)
+            else (not_(agent_hidden()),)
         ),
         ungated(
             "performance",
@@ -848,51 +876,34 @@ async def measured_hotspot_ids(
     (``perf.opportunities.measured_hotspots``), for a surface that shows no
     evidence. One indexed lookup.
 
-    ``without_step=True`` keeps only those that may not lead: no rule fired on
-    what their run measured, so their one step is "profile it". An agent
-    reading Fix first gets the measured items that carry a concrete next step
-    and verify command; the others stay on the people's surfaces.
+    ``without_step=True`` keeps only those an agent surface leaves out
+    (:func:`agent_hidden`): no rule fired on what their run measured, so
+    their one step is "profile it". The generated agent files, a push, leave
+    out every one.
     """
     from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
 
+    which = (
+        agent_hidden()
+        if without_step
+        else PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT
+    )
     result = await session.execute(
-        select(PerformanceOpportunity.opportunity_id, PerformanceOpportunity.details_json).where(
+        select(PerformanceOpportunity.opportunity_id).where(
             PerformanceOpportunity.repository_id == repository_id,
             PerformanceOpportunity.status == "open",
-            PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+            which,
         )
     )
-    return frozenset(
-        oid
-        for oid, details_json in result.all()
-        if not without_step or not _leads_with_step(_details(details_json))
-    )
-
-
-def _details(details_json: str | None) -> dict[str, Any]:
-    """A stored ``details_json``; an unreadable one reads as empty."""
-    try:
-        details = json.loads(details_json or "{}")
-    except ValueError:
-        return {}
-    return details if isinstance(details, dict) else {}
-
-
-def _leads_with_step(details: dict[str, Any]) -> bool:
-    """A measured hotspot that may lead with its row's next step. A row stored
-    before hotspots carried one reads as without, until the next update."""
-    return details.get("may_lead") is True and bool(
-        (details.get("measured_row") or {}).get("next_step")
-    )
+    return frozenset(result.scalars().all())
 
 
 async def measured_hotspot_counts(
     session: AsyncSession, repository_id: str, *, include_unverified: bool = False
 ) -> tuple[int, int]:
-    """``(open, in the default queue)`` over the causes runtime evidence alone
-    minted that a language gate does not hold back, for a surface that shows
-    no evidence to take out of a stored rollup. One aggregate."""
-    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+    """``(open, in the default queue)`` over the causes an agent surface
+    leaves out (:func:`agent_hidden`) that a language gate does not hold
+    back, to take out of a stored rollup. One aggregate."""
 
     row = (
         await session.execute(
@@ -901,7 +912,7 @@ async def measured_hotspot_counts(
                 func.count().filter(PerformanceOpportunity.queue_eligible.is_(True)),
             ).where(
                 *_predicates(repository_id, include_unverified=include_unverified),
-                PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+                agent_hidden(),
             )
         )
     ).one()
@@ -921,8 +932,8 @@ async def performance_headline(
     The scope sizes the Performance view's scope control shows, from the same
     grouped aggregate, so a headline never states a number that view
     contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
-    ``include_measured_hotspots=False`` leaves out the causes runtime evidence alone
-    minted, for a surface that shows no evidence.
+    ``include_measured_hotspots=False`` leaves out the causes an agent surface
+    does not show (:func:`agent_hidden`).
     """
     from ....analysis.health.perf.serving import scope_counts
     from .queue_counts import any_unjudged
@@ -1854,7 +1865,9 @@ def _measured_row(
 
 
 __all__ = [
+    "LEADS_WITH_STEP",
     "PerformanceHeadline",
+    "agent_hidden",
     "fill_static_costs",
     "finalize_performance_opportunities",
     "gated_performance_counts",

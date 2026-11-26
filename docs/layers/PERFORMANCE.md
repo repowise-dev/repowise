@@ -240,8 +240,9 @@ verify command. A measured hotspot whose row has a next step leads Fix first:
 of several, the one with the largest self share. Without a next step (no rule
 names what the time is) it keeps the generic "find the repeated work" step and
 never leads. Unit-test and benchmark runs never make a measured hotspot. The
-agent surfaces (`get_health`'s Fix first) list only the measured hotspots with
-a next step; the generated agent files list none.
+agent surfaces (`get_health`'s Fix first, performance list and counts, and
+`get_overview`'s Do next) carry only the measured hotspots that lead with a next
+step; the generated CLAUDE.md and AGENTS.md list none.
 
 Every headline counts causes the same way, in the three scopes of the Performance
 tab: `now` (the default queue, worth fixing now), `production` (every open
