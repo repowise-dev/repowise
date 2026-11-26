@@ -715,6 +715,13 @@ publishing: [PLUGINS.md](../reference/PLUGINS.md#seams).
 
 Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 
+### Adding a language
+
+A profile joins frames of a language only once the frame resolver has a join
+for it, and a unit gets test timings only once its stack names a JUnit report.
+The recipe for both, with the fixtures and the acceptance bar:
+[runtime-evidence-languages.md](../architecture/runtime-evidence-languages.md).
+
 ## See also
 
 - [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance
