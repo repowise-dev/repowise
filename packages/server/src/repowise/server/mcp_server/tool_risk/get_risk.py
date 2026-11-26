@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, NamedTuple
 
 from sqlalchemy import func, select
@@ -55,6 +57,7 @@ from repowise.server.mcp_server._workspace_routing import (
 )
 
 from .assessment import (
+    CoChangeWindow,
     _assess_one_target,
     _get_active_contributor_count,
     fix_annotation,
@@ -118,6 +121,39 @@ _INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | {
     "changes",
     "hotspots",
 }
+#: ``since`` spellings: a calendar date, or a number of days before the indexed commit.
+_SINCE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_SINCE_DAYS_RE = re.compile(r"^(\d{1,5})d$")
+
+
+def _valid_since(since: str) -> bool:
+    """Whether *since* is ``YYYY-MM-DD`` (a real date) or ``<N>d``."""
+    value = since.strip().lower()
+    if _SINCE_DAYS_RE.match(value):
+        return True
+    if not _SINCE_DATE_RE.match(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _since_date(since: str, as_of: datetime | None) -> str:
+    """The ``YYYY-MM-DD`` a valid *since* names.
+
+    ``<N>d`` counts back from the indexed commit, not the wall clock, so a
+    window means the same on a checkout pinned in the past.
+    """
+    value = since.strip().lower()
+    days = _SINCE_DAYS_RE.match(value)
+    if days is None:
+        return value
+    anchor = as_of or datetime.now(UTC)
+    return (anchor - timedelta(days=int(days.group(1)))).date().isoformat()
+
+
 #: Blocks only the PR directive builds: without ``changed_files`` they hold nothing.
 _PR_ONLY_INCLUDES = ("tests", "blast")
 
@@ -292,6 +328,7 @@ async def _gather_evidence(
     exclude_spec: Any,
     collector: OmissionCollector,
     include_set: set[str],
+    since: str | None = None,
 ) -> _RiskEvidence:
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
@@ -311,6 +348,14 @@ async def _gather_evidence(
                 )
             )
         ).scalar()
+        window = None
+        if since:
+            indexed = await session.execute(
+                select(GitMetadata.file_path).where(GitMetadata.repository_id == repo_id)
+            )
+            window = CoChangeWindow(
+                _since_date(since, as_of_ts), frozenset(indexed.scalars().all())
+            )
 
         results = await asyncio.gather(
             *[
@@ -328,6 +373,7 @@ async def _gather_evidence(
                     "graph" in include_set,
                     as_of_ts=as_of_ts,
                     repo_root=repo_root,
+                    window=window,
                 )
                 for t in targets
             ]
@@ -464,6 +510,7 @@ async def get_risk(
     repo: str | None = None,
     changed_files: list[str] | None = None,
     include: list[str] | None = None,
+    since: str | None = None,
 ) -> dict:
     """What history says about touching these files — bug fixes, churn, owners.
 
@@ -480,6 +527,8 @@ async def get_risk(
         changed_files: PR-changed files for PR mode.
         include: "graph", "owners"; with changed_files only: "tests" (typed
             test rows), "blast".
+        since: "YYYY-MM-DD" or "90d": count co_change_partners over commits
+            since then (all indexed history, recency-weighted, by default).
         repo: usually omitted.
     """
     if repo == "all":
@@ -490,6 +539,16 @@ async def get_risk(
         return error_reply(
             "invalid_args",
             {"error": "targets or changed_files is required", "_meta": _build_meta()},
+        )
+    if since is not None and not _valid_since(since):
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "invalid_args",
+            {
+                "error": f"since must be YYYY-MM-DD or <N>d (days), got {since!r}",
+                "_meta": _build_meta(),
+            },
         )
     routes = (
         await route_targets([*(targets or []), *(changed_files or [])], paths_only=True)
@@ -508,6 +567,7 @@ async def get_risk(
             repo=alias,
             changed_files=[local[t] for t in changed_files] if changed_files else None,
             include=include,
+            since=since,
         )
         rekey_targets(routed, routes)
         if any(r.routed for r in routes):
@@ -527,7 +587,7 @@ async def get_risk(
     targets = filter_path_list(targets or changed_files, exclude_spec)
     changed_files = filter_path_list(changed_files, exclude_spec)
     evidence = await _gather_evidence(
-        ctx, targets, changed_files, exclude_spec, collector, include_set
+        ctx, targets, changed_files, exclude_spec, collector, include_set, since
     )
     await _enrich_cards(
         evidence.results, ctx, evidence.repository.id, collector, "graph" in include_set

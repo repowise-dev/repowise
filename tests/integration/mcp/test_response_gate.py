@@ -85,6 +85,12 @@ _CALLS: list[tuple[str, str, dict[str, Any], tuple[str, ...]]] = [
     ),
     ("search_path", "search_codebase", {"query": "python_pkg/models.py"}, ("results",)),
     ("risk", "get_risk", {"targets": ["python_pkg/calculator.py"]}, ("targets",)),
+    (
+        "risk_since",
+        "get_risk",
+        {"targets": ["python_pkg/calculator.py"], "since": "3650d"},
+        ("targets",),
+    ),
     ("change_risk", "get_change_risk", {"revspec": "HEAD"}, ("directive",)),
     (
         "change_risk_per_commit",
@@ -253,6 +259,15 @@ def test_routine_response_is_lean(served, case_id) -> None:
     debug = {"contract_version", "timing_ms", *_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS}
     assert not debug & set(payload["_meta"]), f"{case_id} leaks {debug & set(payload['_meta'])}"
     assert lean_response(copy.deepcopy(payload)) == payload
+
+
+def test_risk_since_counts_the_files_commits_in_the_window(served) -> None:
+    """A ``since`` window walks the checkout: both sample commits touched the file."""
+    (card,) = served["risk_since"]["targets"].values()
+    window = card["co_change_window"]
+    assert window["target_commits"] == 2
+    assert "since" in window
+    assert "co_change_window" not in next(iter(served["risk"]["targets"].values()))
 
 
 def test_why_with_no_decision_is_a_compact_verdict(served) -> None:

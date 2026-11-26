@@ -273,6 +273,7 @@ What history says about touching a file: hotspot, bug-fix record, owners, co-cha
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
 | `include` | list[string] | none | `graph`, `owners`, `tests`, `blast` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)). Accepted, not advertised: `churn`, `scales`, `changes` (the same block as `get_context` `changes`), `hotspots` (the repository's hotspots outside the targets) |
+| `since` | string | none | `YYYY-MM-DD`, or `<N>d` counted back from the indexed commit. `co_change_partners` then count the commits since that date (a walk of the checkout), and each card carries `co_change_window`. Without it, partners span the indexed history, weighted toward recent commits |
 | `repo` | string | default repo | `"all"` not supported |
 
 **Returns** per-file `hotspot_score`, `health_score`, `dependents_count`, `co_change_partners`, `primary_owner`, `security_signals`; in PR mode `directive` with `may_break`, `tests_to_run`, `tests_to_update`, `reach` ([fields](../reference/MCP_RESPONSE_FIELDS.md#pr-mode-directive)). Dependent counts are a floor; `reach` is an uncalibrated band, not a probability.
@@ -280,6 +281,7 @@ What history says about touching a file: hotspot, bug-fix record, owners, co-cha
 ```
 get_risk(targets=["src/auth/middleware.ts"])
 get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])
+get_risk(targets=["src/auth/middleware.ts"], since="90d")
 ```
 
 ---
