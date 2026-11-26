@@ -445,9 +445,37 @@ production window spans deploys. A file that names the window (`window`) and
 the commits deployed in it (`commit_sha` the newest, `base_commit_sha` the
 oldest) keeps them on the run; one that names no commit is stored with a
 "deployed commit unknown" warning, and its rows never rank against code
-changed since. Until the route table and the statement-site index link them,
-their rows are stored without a function. Joins come next; nothing ranks by
-them yet.
+changed since. A route row is stored without a function until the route table
+joins it; nothing ranks by either kind yet.
+
+A statement row names the function that issues it. Every index stores the
+repo's statement sites (`statement_sites`): each PostgREST client call
+(`client.table("events").insert(...)`, `.delete().eq("id", ...)`,
+`client.rpc("search", {...})`), SQLAlchemy model or `Table` use, and literal SQL
+string in its Python code, with the table or database function, the verb, the
+columns or arguments it sends and the columns it filters on. A table name held
+in a constant, passed through a helper (the caller that names it holds the
+site) or read from a constant table a loop walks is followed; a name only known
+at run time is kept as a site with no name. `cron.schedule(...)` jobs in SQL or
+Python files are sites with no function. Test, docs-example, vendored and build
+files issue nothing.
+
+The join reads the statement's whole text (the stored text is cut short) and
+keeps a site only when nothing it says contradicts the statement: the same
+channel (PostgREST's `WITH pgrst_source AS (...)` against a client call, plain
+SQL against literal SQL, a model or a schedule), table or function, verb, and
+columns and filter columns as far as each side knows them. The row's `issuer`
+says what it found:
+
+| `issuer` | Meaning |
+|---|---|
+| `function` | Every matching site sits in one function; `symbol_id` names it |
+| `ambiguous` | Sites in more than one function could issue it, or one whose table is only known at run time; no function is named |
+| `database_schedule` | Only a `cron.schedule` job runs it, no code does |
+| empty | No site matches (a statement from another language, a tool or the database itself) |
+
+Ceiling: only Python code issues sites so far; a statement another language
+sends stays unjoined, never joined wrong.
 
 A Postgres database's statement statistics are one SELECT away, run by whoever
 may read the database, with no connector:
@@ -508,7 +536,7 @@ they are joined.
 | `profile` | location (`function` `<module>` with no `line` is the file's import time); `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only; optional `inside` (up to 3 of `{name, kind, share}`, each with an optional `leaf` of the same shape) and `drivers` (up to 3 of `{function, share}`, plus `path` and `line` for a repo caller), shares of `total` |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required); optional `classname` (a dotted name, placed on its file at ingest, when there is no `path`) and `first_in_class` |
-| `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
+| `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location, or no `site` and the statement's `query` text, which joins to the one function the statement sites name (else the entry is skipped as `ambiguous_statement` or `no_statement_site`); `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
 | `route_latency` | `method` (one word, stored upper case); `route` (the template the framework routes by, starting with `/`; one with a query string, a fragment or a segment that reads as a value (a number, an `@` handle, a long hex id or UUID) is skipped as `not_a_route_template`, so name such a segment `:id`); `count`; optional `p50_ms`, `p95_ms`, `total_ms`, `errors` |
 | `statement_stats` | `statement_fp` (a hex id or digest, 8 to 32 characters); `calls`; optional `query` (stored short and with every value masked, as above), `total_ms`, `mean_ms`, `rows` |
 

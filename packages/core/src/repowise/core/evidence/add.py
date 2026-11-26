@@ -484,6 +484,18 @@ def _measured_commit(
     return measured
 
 
+async def _statement_sites(session: Any, repo_id: str, doc: Any) -> list[Any]:
+    """The stored statement sites, when *doc* has entries that join through them."""
+    spec = evidence_kinds[doc.kind]
+    if spec.join != "statement" and not (
+        doc.kind == "query_count" and any(e.get("path") is None for e in doc.entries)
+    ):
+        return []
+    from repowise.core.persistence.crud.statement_sites import list_statement_sites
+
+    return await list_statement_sites(session, repo_id)
+
+
 async def store_evidence(
     session: Any,
     repo: Any,
@@ -551,6 +563,7 @@ async def store_evidence(
         await load_symbols(session, repo.id, paths),
         origins,
         changed or frozenset(),
+        await _statement_sites(session, repo.id, doc),
     )
     # A benchmark or test keeps its row without its function, and a route or
     # statement names none, so only the kinds that need the join can be

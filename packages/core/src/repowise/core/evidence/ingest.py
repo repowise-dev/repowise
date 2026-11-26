@@ -14,7 +14,7 @@ import hashlib
 import json
 import re
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_fun
 
 from .format_v1 import EVIDENCE_FORMAT, MODULE_FUNCTION, EvidenceDocument
 from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, WORKLOAD_CLASSES, evidence_kinds
+from .statement_join import StatementSite, match_statement, statement_shape
 from .suite_cost import timing_summary
 
 #: Why ``--class production`` is refused, as ``evidence add`` prints it.
@@ -185,17 +186,20 @@ def join_entries(
     by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
     origins: Mapping[str, str],
     changed: frozenset[str],
+    sites: Sequence[StatementSite] = (),
 ) -> Joined:
     """Every entry of *doc* as a row of its kind's table, or a counted skip.
 
     *by_file* holds the indexed symbols of the files the entries name,
     *origins* their ``code_origin``, *changed* the files that differ from the
-    commit measured (empty when that is not known).
+    commit measured (empty when that is not known), *sites* the repository's
+    statement sites (``crud.list_statement_sites``), which a statement entry
+    and a query count with no call site join through.
     """
     joined = Joined(rows=[], matched=0)
     seen: set[Any] = set()
     for entry in doc.entries:
-        row, reason, path = _join(doc.kind, entry, by_file, origins, changed)
+        row, reason, path = _join(doc.kind, entry, by_file, origins, changed, sites)
         if row is not None and reason is not None:
             # Kept without its function: a benchmark or test is a series anyway.
             joined.unlinked[reason] += 1
@@ -222,20 +226,28 @@ def _join(
     by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
     origins: Mapping[str, str],
     changed: frozenset[str],
+    sites: Sequence[StatementSite] = (),
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
     """(row, reason, path) for one entry.
 
     A profile or query entry without its function is skipped for *reason*. A
     benchmark or test is a series of its own, so it keeps its row and
-    *reason* says why its function was not linked. A route or statement entry
-    names no function: its row is kept, and the route table and the
-    statement-site index link it to code once they are built (ceiling: until
-    then its symbol stays NULL and nothing ranks by it).
+    *reason* says why its function was not linked. A statement entry keeps
+    its row and names the function the statement-site join finds, with what
+    the join found (*reason* when it is not one function). A query count
+    with no call site takes the one function the join finds, else it is
+    skipped. A route entry's row is kept with no function (ceiling: the route
+    table join comes with the evidence-source seam).
     """
     spec = evidence_kinds[kind]
     optional = spec.keeps_unlinked
+    if spec.join == "statement":
+        match = match_statement(statement_shape(entry.get("shape_text")), sites)
+        return spec.row({**entry, "issuer": match.issuer}, match.symbol_id), match.reason, None
     if spec.join not in LOCATION_JOINS:
         return spec.row(entry, None), None, None
+    if kind == "query_count" and entry.get("path") is None:
+        return _query_by_statement(spec, entry, sites, changed)
     location = spec.location(entry)
     if location is None:
         # A test named by a classname no indexed file matched (place_test_entries).
@@ -264,6 +276,24 @@ def _join(
             "drivers": _joined_drivers(entry["drivers"], by_file, origins, changed),
         }
     return spec.row(entry, symbol_id), reason, path
+
+
+def _query_by_statement(
+    spec: Any,
+    entry: Mapping[str, Any],
+    sites: Sequence[StatementSite],
+    changed: frozenset[str],
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """A query count that names its statement, not its call site: the one
+    function that issues it, or skipped by why there is none."""
+    match = match_statement(statement_shape(entry.get("shape_text")), sites)
+    if match.issuer != "function":
+        return None, match.reason, None
+    held = [s for s in match.sites if s.symbol_id == match.symbol_id]
+    site = min(held, key=lambda s: (s.file_path, s.line))
+    if site.file_path in changed:
+        return None, "dirty_file", site.file_path
+    return spec.row({**entry, "line": site.line}, match.symbol_id), None, site.file_path
 
 
 def _joined_drivers(
@@ -511,7 +541,7 @@ def entry_paths(doc: EvidenceDocument) -> set[str]:
     spec = evidence_kinds[doc.kind]
     for entry in doc.entries:
         location = spec.location(entry)
-        if location is not None:
+        if location is not None and location["path"] is not None:
             out.add(location["path"])
         out.update(d["path"] for d in entry.get("drivers") or () if d.get("path"))
     return out
