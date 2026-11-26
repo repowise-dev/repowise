@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from repowise.core.persistence.models import SymbolHotness
+from repowise.core.persistence.models import GraphEdge, SymbolHotness
 from repowise.server.mcp_server.tool_context import measured
 from repowise.server.mcp_server.tool_context.measured import file_line, symbol_line
 
@@ -245,3 +245,146 @@ async def test_class_target_and_missed_symbol(setup_mcp, session, populated_db):
     # A missed name degrades to the file's card, which carries the file's line.
     assert cards[miss]["resolved_to"] == FILE
     assert cards[miss]["measured"].endswith("login rank 3 (12% self, 10-14%)")
+
+
+# -- why and drivers -----------------------------------------------------------
+
+#: What a run measured inside ``login``: stat calls per entry of a directory walk.
+INSIDE = [
+    {
+        "name": "is_file",
+        "kind": "library",
+        "share": 0.57,
+        "leaf": {"name": "stat", "kind": "native", "share": 0.57},
+    },
+    {"name": "select_recursive", "kind": "library", "share": 0.25},
+    {"name": "stat", "kind": "library", "share": 0.15},
+]
+MIDDLEWARE = "src/auth/middleware.py::require_user"
+TEST_CALLER = "tests/test_service.py::test_login"
+#: Measured callers: one production caller in the graph, one test caller in the
+#: graph, one production name the graph does not list as a caller.
+DRIVERS = [
+    {"name": "require_user", "share": 0.6, "symbol": MIDDLEWARE},
+    {"name": "test_login", "share": 0.3, "symbol": TEST_CALLER},
+    {"name": "ghost", "share": 0.1, "symbol": "src/auth/other.py::ghost"},
+]
+
+
+async def _callers(session, repo_id: str) -> None:
+    for source in (MIDDLEWARE, TEST_CALLER):
+        session.add(
+            GraphEdge(
+                repository_id=repo_id,
+                source_node_id=source,
+                target_node_id=LOGIN,
+                edge_type="calls",
+            )
+        )
+    await session.flush()
+
+
+def test_symbol_line_appends_why_and_drivers_after_the_measurement():
+    line = symbol_line(_row(), NOW, ["why: w", "driven by: d 60%"])
+    assert line == (
+        'rank 3 of repo code in entry_point "cli build" '
+        "(12% self, 10-14%; repo code itself 40%), 2d old; why: w; driven by: d 60%"
+    )
+    assert symbol_line(_row(), NOW, []) == symbol_line(_row(), NOW)
+
+
+@pytest.mark.asyncio
+async def test_a_measured_function_names_why_and_its_production_drivers(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    cards = (await get_context([LOGIN, FILE]))["targets"]
+    line = cards[LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in entry_point "cli build"')
+    assert "; why: " in line and "directory walk" in line
+    # Only the production caller the graph lists: no test caller, no unlisted name.
+    assert line.endswith(f"; driven by: {MIDDLEWARE} 60%")
+    assert "test_login" not in line and "ghost" not in line
+    # A file's line never takes a function's why or drivers.
+    assert "why:" not in cards[FILE]["measured"]
+    assert "driven by" not in cards[FILE]["measured"]
+
+
+@pytest.mark.asyncio
+async def test_why_and_drivers_only_with_their_data(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    # A unit-test run gets no step; its measured production caller still drives it.
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        workload_class="unit_test",
+        workload_name="pytest",
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert "why:" not in line and line.endswith(f"; driven by: {MIDDLEWARE} 60%")
+
+
+@pytest.mark.asyncio
+async def test_stale_or_bare_rows_keep_the_plain_line(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        freshness="stale",
+        rank=None,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('stale: measured in entry_point "cli build" before the body changed, ')
+    assert line.endswith("d old")
+    # Only a test caller measured, and no rule fires: the plain line.
+    row = await session.get(SymbolHotness, (populated_db, LOGIN))
+    row.freshness, row.rank = "current", 3
+    row.inside_json = json.dumps([{"name": "helper", "kind": "repo", "share": 0.2}])
+    row.drivers_json = json.dumps(DRIVERS[1:2])
+    await session.flush()
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.endswith("d old")
+    assert "why" not in line and "driven" not in line
+
+
+@pytest.mark.asyncio
+async def test_a_failure_behind_why_or_drivers_keeps_the_plain_line(
+    setup_mcp, session, populated_db, monkeypatch
+):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+
+    async def _broken(*args, **kwargs):
+        raise ValueError("a stored finding that does not parse")
+
+    monkeypatch.setattr(measured, "step_findings", _broken)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in entry_point "cli build"')
+    assert "why" not in line and "driven" not in line

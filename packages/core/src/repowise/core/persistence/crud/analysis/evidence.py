@@ -428,6 +428,49 @@ async def hotness_for_symbols(
     return out
 
 
+async def measured_callers(
+    session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
+) -> dict[str, list[str]]:
+    """Each row's production callers that its run measured calling it
+    (``drivers``), best first by the call graph: the *callers* that
+    :func:`~repowise.core.evidence.action_row.action_row` weighs by share.
+
+    A caller counts when the call graph lists it as a caller and its file is
+    production code (``code_origin``), as on the measured rows. The graph read
+    is ``_callers_of``'s (every caller edge of each function); only the callers
+    a run measured have their files judged. A row with no such caller is left
+    out; rows that stored no ``drivers`` cost no read.
+    """
+    from ....evidence.ingest import load_origins
+    from ....evidence.payloads import json_list
+    from ....ingestion.symbol_identity import file_of_symbol
+    from .performance import _callers_of
+
+    measured: dict[str, set[str]] = {}
+    for row in rows:
+        named = {
+            d["symbol"]
+            for d in json_list(getattr(row, "drivers_json", None)) or ()
+            if isinstance(d, dict) and isinstance(d.get("symbol"), str)
+        }
+        if named:
+            measured[row.symbol_id] = named
+    if not measured:
+        return {}
+    sources = await _callers_of(session, repository_id, sorted(measured))
+    graph = {
+        sid: [s for s in sources.get(sid, ()) if s in named] for sid, named in measured.items()
+    }
+    origins = await load_origins(
+        session, repository_id, {file_of_symbol(s) for found in graph.values() for s in found}
+    )
+    out = {
+        sid: [s for s in found if origins.get(file_of_symbol(s)) == "production"]
+        for sid, found in graph.items()
+    }
+    return {sid: found for sid, found in out.items() if found}
+
+
 async def step_findings(
     session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
 ) -> list[dict[str, Any]]:

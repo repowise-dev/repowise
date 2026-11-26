@@ -32,7 +32,7 @@ dominant callee, no owner or last change without the function's own blame row
 from __future__ import annotations
 
 import posixpath
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -367,15 +367,40 @@ def row_text(row: Mapping[str, Any]) -> list[str]:
     if step:
         lines.append(f"next: {step['next']}")
         lines.append(f"why: {step['why']}")
-    shares = row.get("caller_shares") or {}
-    if shares:
-        lines.append("driven by: " + ", ".join(f"{_short(c)} {_pct(s)}" for c, s in shares.items()))
+    driven = _driven_by(row, _short)
+    if driven:
+        lines.append(driven)
     if row.get("slower"):
         lines.append(f"slower: {_slower_words(row['slower'])}")
     lines.append(_facts(row))
     if row.get("verify"):
         lines.append(f"verify: {row['verify']}")
     return lines
+
+
+def _driven_by(row: Mapping[str, Any], name: Callable[[str], str]) -> str | None:
+    """``driven by: <caller> 60%, ...``: each caller the run measured with the
+    share of the function's time it drove; ``None`` without one."""
+    shares = row.get("caller_shares") or {}
+    if not shares:
+        return None
+    return "driven by: " + ", ".join(f"{name(c)} {_pct(s)}" for c, s in shares.items())
+
+
+def row_why_drivers(row: Mapping[str, Any]) -> list[str]:
+    """What ``get_context`` adds to a measured function's line, from a
+    JSON-form *row*: ``why: ...`` when its next step fired, and
+    ``driven by: ...`` with up to :data:`ROW_CALLERS` production callers the
+    run measured, by full symbol id so each opens as a ``get_context``
+    target. Empty when the row has neither: no part without data."""
+    parts = []
+    step = row.get("next_step")
+    if step and step.get("why"):
+        parts.append(f"why: {step['why']}")
+    driven = _driven_by(row, str)
+    if driven:
+        parts.append(driven)
+    return parts
 
 
 def row_compact(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -425,5 +450,6 @@ __all__ = [
     "row_step",
     "row_text",
     "row_verify",
+    "row_why_drivers",
     "run_verify",
 ]

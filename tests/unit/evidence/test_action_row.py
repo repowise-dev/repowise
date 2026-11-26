@@ -12,6 +12,7 @@ from repowise.core.evidence.action_row import (
     row_step,
     row_text,
     row_verify,
+    row_why_drivers,
     run_verify,
 )
 from repowise.core.evidence.compare import Cause, ChangedCommit, Comparison, Slower
@@ -198,3 +199,15 @@ def test_the_mcp_form_is_the_action_with_no_bookkeeping() -> None:
         "share": 0.09,
         "on_static_findings": ["perf3_a", "perf3_b"],
     }
+
+
+def test_why_and_drivers_for_get_context_name_full_ids_and_only_what_is_held() -> None:
+    parts = row_why_drivers(_row().as_dict())
+    assert parts[0].startswith("why: ") and "directory walk" in parts[0]
+    # A full symbol id, so the caller opens as a get_context target.
+    assert parts[1] == f"driven by: {DRIVER} 100%"
+    # No step and no measured caller: nothing at all, never a placeholder.
+    assert row_why_drivers(_row(next_step=None, drivers_json=None).as_dict()) == []
+    assert row_why_drivers(_row(next_step=None).as_dict()) == [f"driven by: {DRIVER} 100%"]
+    # The CLI text keeps its short names.
+    assert "driven by: status_cmd.py::_workspace_rows 100%" in row_text(_row().as_dict())
