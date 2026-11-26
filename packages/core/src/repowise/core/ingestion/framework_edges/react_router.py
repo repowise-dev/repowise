@@ -28,6 +28,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from ..framework_facts import REACT_ROUTER
+from ..languages.js_config_values import strip_comments
 from ..resolvers import ResolverContext
 from ..resolvers.ts_workspace import _parsed_package_jsons
 from .base import (
@@ -56,8 +57,6 @@ _ROUTE_FILE_RE = re.compile(
     r"""(?<![\w.$])(?:(?:index|layout)\s*\(\s*|route\s*\(\s*(["'`])[^"'`]*\1\s*,\s*)"""
     r"""(["'`])(?P<file>[^"'`]+)\2"""
 )
-_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
-_LINE_COMMENT_RE = re.compile(r"^\s*//.*$", re.MULTILINE)
 
 
 def _depends_on_dev_package(data: dict) -> bool:
@@ -83,17 +82,19 @@ def _app_roots(ctx: ResolverContext, path_set: set[str]) -> dict[str, str | None
 def _app_directory(
     root: str, config: str | None, parsed_files: dict[str, Any], ctx: ResolverContext
 ) -> str:
-    """The app directory, repo-relative: ``appDirectory`` from the config, else ``app``."""
+    """The app directory, repo-relative (``""`` for the repo root): ``appDirectory``
+    from the config, else ``app``."""
     app_dir = "app"
     if config is not None and config in parsed_files:
         text = read_text_from(config, parsed_files[config], ctx.source_map)
         if m := _APP_DIRECTORY_RE.search(_strip_comments(text)):
             app_dir = m.group(2)
-    return posixpath.normpath(posixpath.join(root, app_dir))
+    app_dir = posixpath.normpath(posixpath.join(root, app_dir))
+    return "" if app_dir == "." else app_dir
 
 
 def _strip_comments(text: str) -> str:
-    return _LINE_COMMENT_RE.sub("", _BLOCK_COMMENT_RE.sub("", text))
+    return strip_comments(text.encode("utf-8")).decode("utf-8", errors="replace")
 
 
 def _first_present(stem: str, exts: tuple[str, ...], path_set: set[str]) -> str | None:
@@ -118,10 +119,10 @@ def _add_react_router_edges(
     count = 0
     for root, config in sorted(_app_roots(ctx, path_set).items()):
         app_dir = _app_directory(root, config, parsed_files, ctx)
-        root_module = _first_present(f"{app_dir}/root", _ROOT_EXTS, path_set)
+        root_module = _first_present(posixpath.join(app_dir, "root"), _ROOT_EXTS, path_set)
         if root_module is not None:
             count += anchor_edge(graph, REACT_ROUTER, root_module)
-        routes = _first_present(f"{app_dir}/routes", _ROUTES_EXTS, path_set)
+        routes = _first_present(posixpath.join(app_dir, "routes"), _ROUTES_EXTS, path_set)
         if routes is None or routes not in parsed_files:
             continue
         count += anchor_edge(graph, REACT_ROUTER, routes)

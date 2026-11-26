@@ -233,6 +233,51 @@ class TestReactRouterFrameworkMode:
         assert graph.has_edge("framework:react-router", "src/routes.ts")
         assert graph.has_edge("src/routes.ts", "src/routes/home.tsx")
 
+    def test_splat_path_does_not_open_a_block_comment(self, tmp_path: Path) -> None:
+        self._write_app(tmp_path)
+        (tmp_path / "react-router.config.ts").write_text("export default {};\n")
+        for name in ("docs", "about"):
+            (tmp_path / "app" / "routes" / f"{name}.tsx").write_text(
+                "export default function Page() { return null; }\n"
+            )
+        (tmp_path / "app" / "routes.ts").write_text(
+            "import { index, route } from '@react-router/dev/routes';\n"
+            "export default [\n"
+            '  index("routes/home.tsx"),\n'
+            '  route("docs/*", "routes/docs.tsx"),\n'
+            '  route("about", "routes/about.tsx"),\n'
+            "  /* more routes later */\n"
+            "];\n"
+        )
+        graph = self._edges(tmp_path)
+        for name in ("home", "docs", "about"):
+            assert graph.has_edge("app/routes.ts", f"app/routes/{name}.tsx")
+
+    def test_trailing_line_comment_names_no_route(self, tmp_path: Path) -> None:
+        self._write_app(tmp_path)
+        (tmp_path / "react-router.config.ts").write_text("export default {};\n")
+        (tmp_path / "app" / "routes" / "old.tsx").write_text(
+            "export default function Old() { return null; }\n"
+        )
+        (tmp_path / "app" / "routes.ts").write_text(
+            "import { index } from '@react-router/dev/routes';\n"
+            'export default [index("routes/home.tsx"), // route("old", "routes/old.tsx")\n'
+            "];\n"
+        )
+        graph = self._edges(tmp_path)
+        assert graph.has_edge("app/routes.ts", "app/routes/home.tsx")
+        assert not graph.has_edge("app/routes.ts", "app/routes/old.tsx")
+
+    def test_app_directory_at_the_repo_root(self, tmp_path: Path) -> None:
+        self._write_app(tmp_path, app_dir="")
+        (tmp_path / "react-router.config.ts").write_text(
+            'export default { appDirectory: "." } satisfies Config;\n'
+        )
+        graph = self._edges(tmp_path)
+        assert graph.has_edge("framework:react-router", "root.tsx")
+        assert graph.has_edge("framework:react-router", "routes.ts")
+        assert graph.has_edge("routes.ts", "routes/home.tsx")
+
     def test_same_files_without_the_framework_get_no_edges(self, tmp_path: Path) -> None:
         # A Remix app (or any repo) with a root.tsx but no React Router config
         # or dev dependency is left alone.
