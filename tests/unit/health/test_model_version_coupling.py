@@ -81,6 +81,7 @@ _RECOMPUTE_ALONE = frozenset(
         ("CONTRACTS_VERSION", "core/workspace/contracts.py"),
         ("ROUTE_TABLE_VERSION", "core/workspace/repo_routes.py"),
         ("STATEMENT_SITES_VERSION", "core/workspace/statement_sites.py"),
+        ("EXTERNAL_CALL_SITES_VERSION", "core/ingestion/external_calls.py"),
         ("KG_BUILDER_VERSION", "core/analysis/knowledge_graph.py"),
         ("SNAPSHOT_FACTS_VERSION", "core/events/snapshot.py"),
         ("ACTIONS_MODEL_VERSION", "core/analysis/actions/model.py"),
