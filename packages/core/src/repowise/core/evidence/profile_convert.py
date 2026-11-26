@@ -169,7 +169,7 @@ TOP_SPLIT = MAX_SPLIT_ITEMS
 #: Where a Python package's top-level name starts in a library path: after an
 #: installer's directory, else after the standard library's.
 _INSTALLED_RE = re.compile(r"(?:^|/)(?:site|dist)-packages/(?P<top>[^/]+)")
-_STDLIB_RE = re.compile(r"(?:^|/)(?:Lib|lib/python\d+(?:\.\d+)?)/(?P<top>[^/]+)")
+_STDLIB_RE = re.compile(r"(?:^|/)(?:Lib|lib(?:64)?/python\d+(?:\.\d+)?)/(?P<top>[^/]+)")
 #: Import machinery, by path fragment: CPython's frozen importlib, Node's module loader.
 _IMPORT_PATHS = ("importlib._bootstrap", "node:internal/modules/")
 _IMPORT_FUNCTIONS = frozenset({"__import__", "importlib.import_module", "import_module"})

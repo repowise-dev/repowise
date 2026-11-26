@@ -134,6 +134,7 @@ def test_package_name_is_the_top_level_import_name() -> None:
     assert package_name("/usr/lib/python3/dist-packages/yaml/loader.py") == "yaml"
     assert package_name("C:\\Python\\Lib\\json\\decoder.py") == "json"
     assert package_name("/usr/lib/python3.12/typing.py") == "typing"
+    assert package_name("/usr/lib64/python3.12/json/decoder.py") == "json"
     assert package_name("<frozen posixpath>") == "posixpath"
     assert package_name("/opt/tools/helpers/__init__.py") == "helpers"
     assert package_name("/opt/tools/six.py") == "six"
