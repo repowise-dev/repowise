@@ -1424,6 +1424,7 @@ repowise evidence add bench.json --workload "go bench" --class benchmark --forma
 repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)   # every file in the directory
 repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
+repowise evidence add statements.csv --workload "prod db"   # psql --csv over pg_stat_statements: production
 repowise evidence status --format json   # newest run of each workload
 repowise evidence tests                  # groups of tests that make the suite slow, and the slowest tests
 repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
@@ -1441,12 +1442,12 @@ writes nothing.
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--workload` | What ran, e.g. `cli build`. Required. | |
-| `--class` | `unit_test`, `benchmark`, `entry_point` or `load_test`. Required. `production` is refused: only a verified source sets it. | |
-| `--commit` | The full SHA measured. Required when the file has no `commit_sha` and for a converted file; must agree with the file's commit otherwise. | the file's `commit_sha` |
+| `--class` | `unit_test`, `benchmark`, `entry_point` or `load_test`. Required, except for a `route_latency` or `statement_stats` file, which is production by its kind and refuses a class. `production` is refused: only a verified source or a production kind sets it. | |
+| `--commit` | The full SHA measured. Required when the file has no `commit_sha` and for a converted file, except a production file (its window spans deploys); must agree with the file's commit otherwise. | the file's `commit_sha` |
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
-| `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local`; `production` for a production file |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `junit`, `pg-stat-statements`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--path` | Repo path. | cwd, or the workspace primary |

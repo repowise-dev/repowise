@@ -271,7 +271,7 @@ they reach.
 | `benchmark` | A benchmark run | One series per benchmark, named by the benchmark; never the cost of the production functions it calls. A benchmark profile ranks no function and never leads: each benchmark gets about the same time, so a function's share tracks how many benchmarks target it. Benchmark results list per benchmark, with the function it measures (a function it calls directly whose name its own name carries) and its time and allocations per operation |
 | `entry_point` | A real command or a request replay, profiled | Where time goes on that path |
 | `load_test` | A load test, profiled | Where time goes under that load |
-| `production` | Not accepted from the CLI | Reserved for a verified source; `--class production` is refused |
+| `production` | Production traffic, from a [production file](#production-files) or a verified source | Where time goes for real users over a window; `--class production` is refused |
 
 `setup` ranks its targets `entry_point`, then `benchmark`, then `unit_test`, so
 the first profile it asks for is the one closest to real use.
@@ -287,10 +287,25 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 | `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, `go test -bench` output, hyperfine JSON, or a v1 document |
 | `test_timing` | Per test: duration and outcome | JUnit XML, `go test -json`, or a v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
+| `route_latency` | Per method and route template: requests, p50, p95, total time, errors | A v1 document |
+| `statement_stats` | Per normalized statement: calls, total and mean time, rows | A `pg_stat_statements` CSV, or a v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
+`pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`,
+`junit`, `pg-stat-statements`, `collapsed`, or one a plugin registers).
+
+Every kind is one entry of the kind registry (`repowise.core.evidence.kinds`):
+its entry validator, the join it needs, the table its rows go to, its
+retention and the workload classes it takes. Two more names are reserved,
+with a shape and no reader yet, so a document of either kind is refused:
+`error_event` (production errors: per error group its stack `frames` as
+locations leaf first, `count`, `users`, `first_seen` and `last_seen` in
+ISO 8601, and the `release` or `commit_sha` it was first seen in) and
+`executed_set` (production coverage: the `symbols` or `files` executed at
+least once over the run's `window`). A plugin kind stores into one of the
+built-in row tables; a kind with a table of its own waits for a core
+migration.
 
 #### Profiles as the profiler wrote them
 
@@ -400,6 +415,42 @@ The format is detected from the content, never the file name;
 - `--commit` is required; the report records none. Captured output,
   properties and failure messages are not read.
 
+#### Production files
+
+`route_latency` and `statement_stats` are production kinds: every run of them
+is stored as `production`, so `evidence add` takes no `--class` for them (a
+typed class, `production` included, is refused). `--commit` is optional: a
+production window spans deploys. A file that names the window (`window`) and
+the commits deployed in it (`commit_sha` the newest, `base_commit_sha` the
+oldest) keeps them on the run; one that names no commit is stored with a
+"deployed commit unknown" warning, and its rows never rank against code
+changed since. Until the route table and the statement-site index link them,
+their rows are stored without a function. Joins come next; nothing ranks by
+them yet.
+
+A Postgres database's statement statistics are one SELECT away, run by whoever
+may read the database, with no connector:
+
+```bash
+psql "$DATABASE_URL" --csv -c "select now() as captured_at, queryid, query, calls,
+  total_exec_time, mean_exec_time, rows, stats_since from pg_stat_statements" > statements.csv
+repowise evidence add statements.csv --workload "prod db"
+```
+
+| Format | Written by | What a statement carries |
+|---|---|---|
+| `pg-stat-statements` | `psql --csv` over `pg_stat_statements` (any column order, extra columns ignored, `select *` works) | `calls` and `total_exec_time` (`total_time` before PostgreSQL 13), plus `queryid` or `query`; `mean_exec_time` (`mean_time`), `rows`, `stats_since` (PostgreSQL 17) and `captured_at` when present |
+
+- The statement's id is `queryid` as 16 hex digits, or a digest of the text
+  when the export leaves `queryid` out. Rows of one statement for several
+  users or databases add up to one entry; their mean is the summed time over
+  the summed calls. Planning time is not read.
+- The window starts at the earliest `stats_since` and ends at `captured_at`;
+  without them it is unknown, as the counters run since their last reset.
+- The text is stored short (200 characters) with comments dropped and every
+  quoted string (a backslash escapes only in `E'...'`) and number outside a `$n` parameter replaced by `?`, so no
+  value reaches the index, whatever wrote the file.
+
 ### The `repowise-evidence-v1` document
 
 Any tool can write this shape directly; converted formats become it before
@@ -418,13 +469,15 @@ they are joined.
 | Field | Required | Meaning |
 |---|---|---|
 | `format` | yes | `repowise-evidence-v1` |
-| `kind` | yes | `profile`, `benchmark`, `test_timing` or `query_count` |
-| entry list | yes | `symbols`, `benchmarks`, `tests` or `queries`, by kind |
+| `kind` | yes | `profile`, `benchmark`, `test_timing`, `query_count`, `route_latency` or `statement_stats` |
+| entry list | yes | `symbols`, `benchmarks`, `tests`, `queries`, `routes` or `statements`, by kind |
 | `value_kind` | profile | `cpu` or `wall` |
 | `unit` | profile | One word naming what every value counts: `samples`, `ns`, `ms`, `s` |
 | `total`, `explained` | no | The whole run's value, and the part with a production frame anywhere on the stack |
 | `repo_self`, `waits`, `libraries` | no | Where the run's value went: production repo code itself, blocked waiting, in dependencies (see below) |
-| `commit_sha` | no | The full commit measured, from `git rev-parse HEAD` at measurement |
+| `commit_sha` | no | The full commit measured, from `git rev-parse HEAD` at measurement; for a production window, the newest commit deployed in it |
+| `base_commit_sha` | no | The oldest commit deployed in a production window |
+| `window` | no | `{"start", "end"}`, ISO 8601 times with their offset: what a production run's counters cover |
 | `dirty` | no | Uncommitted changes at measurement |
 | `tool` | no | `name` and `version`, one word each |
 | `skipped` | no | Entries the writer dropped, by reason (lowercase words; anything else counts as `other`) |
@@ -435,6 +488,8 @@ they are joined.
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required); optional `classname` (a dotted name, placed on its file at ingest, when there is no `path`) and `first_in_class` |
 | `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
+| `route_latency` | `method` (one word, stored upper case); `route` (the template the framework routes by, starting with `/`; one with a query string, a fragment or a segment that reads as a value (a number, an `@` handle, a long hex id or UUID) is skipped as `not_a_route_template`, so name such a segment `:id`); `count`; optional `p50_ms`, `p95_ms`, `total_ms`, `errors` |
+| `statement_stats` | `statement_fp` (a hex id or digest, 8 to 32 characters); `calls`; optional `query` (stored short and with every value masked, as above), `total_ms`, `mean_ms`, `rows` |
 
 - A **location** is `path` (repo-relative, forward slashes), `function` (the
   qualified name, or the symbol's id after its file as a test runner names it,
@@ -442,7 +497,8 @@ they are joined.
   says `function` is the symbol's own name, so a bare name never links to a
   method that shares it.
 - **Units.** A test timing is in seconds (`wall`) and a query count in
-  statements, whatever the document says. Benchmarks carry a `unit` per entry.
+  statements, route and statement times in milliseconds (`wall`), whatever the
+  document says. Benchmarks carry a `unit` per entry.
 - **Values** are finite and non-negative. A missing value is unknown, never
   zero.
 - **Refused whole:** not a JSON object, another `format`, an unknown `kind`, a
@@ -619,7 +675,7 @@ answer is served at `GET /api/repos/{repo_id}/evidence/tests`.
 
 Evidence lives in the local index (`evidence_runs` and one table per kind:
 `evidence_symbol_costs`, `evidence_benchmark_results`, `evidence_test_timings`,
-`evidence_query_counts`).
+`evidence_query_counts`, `evidence_route_latency`, `evidence_statement_stats`).
 
 | Stored | Never stored |
 |---|---|
@@ -628,6 +684,9 @@ Evidence lives in the local index (`evidence_runs` and one table per kind:
 | Per benchmark: its name, unit, `lower_is_better` and the statistics the tool gave | Machine details, benchmark parameters, `extra_info` |
 | Per test: test id, test file, duration, outcome | |
 | Per query site: scope, digest of the normalized statement, counts | Statement text |
+| Per route: method, route template, counts, p50, p95, total time | Requested URLs, query strings |
+| Per statement: its id, the text cut short with every value masked, calls, total and mean time, rows | Literal values, comments |
+| Per production run: its window and the commits deployed in it | |
 
 Entry paths are repo-relative; the checkout root is stored as given. Retention is by kind: each workload and environment
 keeps its newest `history_runs` runs, and the kind keeps `max_runs` overall,

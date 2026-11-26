@@ -34,7 +34,8 @@ from typing import Any
 from repowise.core.git_sha import is_full_sha
 
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument, EvidenceFormatError, parse_evidence
-from .ingest import FLAG_WORKLOAD_CLASSES, EvidenceCaps, RunProvenance
+from .ingest import PRODUCTION_FLAG_REFUSAL, EvidenceCaps, RunProvenance
+from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, evidence_kinds
 
 
 class EvidenceRefusedError(Exception):
@@ -65,8 +66,9 @@ class PreparedEvidence:
     format: str
     #: The checkout the run used; frames are placed on its source.
     checkout_root: Path
-    #: The commit the run measured.
-    commit: str
+    #: The commit the run measured; None only for a production-only kind
+    #: whose file names none (its window spans deploys).
+    commit: str | None
     #: ``--value-kind`` as given: the clock of a profile still to convert.
     value_kind: str | None
     #: Whether the tree was dirty, as given or as the v1 file says; None when unknown.
@@ -91,16 +93,27 @@ class StoredEvidence:
     rows_kept: int = 0
 
 
-def check_options(workload: str, workload_class: str, environment: str, commit: str | None) -> None:
-    """Refuse a usage error in the options before anything is read."""
-    if workload_class == "production":
-        raise _bad_option(
-            "--class",
-            "production is set only by a verified source (a request-log or "
-            "statement ingest, a connector), never by a flag. Use entry_point for a "
-            "profiled command or request replay, load_test for a load test.",
-        )
-    if workload_class not in FLAG_WORKLOAD_CLASSES:
+def check_options(
+    workload: str,
+    workload_class: str | None,
+    environment: str,
+    commit: str | None,
+    *,
+    verified: bool = False,
+) -> None:
+    """Refuse a usage error in the options before anything is read.
+
+    *workload_class* None leaves the class to the file's kind (a production
+    kind needs none; any other kind is refused once read,
+    :func:`~.ingest.run_class`). ``production`` passes only when *verified*:
+    a host that checked who sent the run (CI with OIDC), never a flag.
+    """
+    if workload_class == "production" and not verified:
+        raise _bad_option("--class", PRODUCTION_FLAG_REFUSAL)
+    if workload_class is not None and workload_class not in (
+        *FLAG_WORKLOAD_CLASSES,
+        *(("production",) if verified else ()),
+    ):
         raise _bad_option(
             "--class", f"{workload_class!r} is not one of {', '.join(FLAG_WORKLOAD_CLASSES)}."
         )
@@ -439,11 +452,15 @@ def _check_value_kind(
         )
 
 
-def _measured_commit(commit: str | None, fmt: str, doc: EvidenceDocument | None) -> str:
+def _measured_commit(
+    commit: str | None, fmt: str, doc: EvidenceDocument | None
+) -> str | None:
     """The commit the run measured: *commit* or the file's, which must agree.
 
     A converted file's commit is what its tool recorded, never taken on its
-    own: *commit* is required and the recorded one only cross-checks it.
+    own: *commit* is required and the recorded one only cross-checks it. A
+    production-only kind needs none: its window spans deploys, and a run that
+    does not say which commit ran reads "deployed commit unknown".
     """
     in_file = doc.commit_sha if doc is not None else None
     converted = fmt != EVIDENCE_FORMAT
@@ -456,6 +473,8 @@ def _measured_commit(commit: str | None, fmt: str, doc: EvidenceDocument | None)
             else f"the file says it measured {in_file}; pass the same commit or none.",
         )
     measured = commit or (None if converted else in_file)
+    if measured is None and doc is not None and evidence_kinds[doc.kind].production_only:
+        return None
     if measured is None:
         raise _bad_option(
             "--commit",
@@ -472,18 +491,22 @@ async def store_evidence(
     *,
     repo_path: Path,
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     environment: str = "unknown",
     allow_partial: bool = False,
     caps: EvidenceCaps,
     source: str = "cli",
+    verified: bool = False,
 ) -> StoredEvidence:
     """Join *prepared* to the index of *repo* (a repository row) and store the run.
 
     *repo_path* is the indexed checkout: its HEAD says whether the run is
-    stale, and its settings rank the refreshed read model. Raises
+    stale, and its settings rank the refreshed read model. *workload_class*
+    None takes the class from the kind; *verified* lets a host that verified
+    the sender store ``production`` (:func:`~.ingest.run_class`). Raises
     :class:`EvidenceRefusedError`, before anything is written, for a profile
-    that ran bundled or compiled code of the checkout.
+    that ran bundled or compiled code of the checkout or a class the kind
+    does not take.
     """
     from repowise.core.analysis.health.coverage import live_head_commit
     from repowise.core.analysis.health.coverage.discovery import mostly_unmapped
@@ -496,6 +519,7 @@ async def store_evidence(
         join_entries,
         load_origins,
         load_symbols,
+        run_class,
         run_fields,
         run_key,
         stamp_bodies,
@@ -515,6 +539,10 @@ async def store_evidence(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
 
+    stored_class, why = run_class(doc.kind, workload_class, verified=verified)
+    if stored_class is None:
+        raise _bad_option("--class", why or "")
+    spec = evidence_kinds[doc.kind]
     doc = await _placed_tests(session, repo.id, doc, prepared.report_dir)
     paths = entry_paths(doc)
     origins = await load_origins(session, repo.id, paths)
@@ -524,14 +552,17 @@ async def store_evidence(
         origins,
         changed or frozenset(),
     )
-    # A benchmark or test keeps its row without its function, so only the
-    # kinds that need the join can be mostly unmapped.
-    partial = doc.kind in ("profile", "query_count") and mostly_unmapped(
-        joined.matched, len(doc.entries)
+    # A benchmark or test keeps its row without its function, and a route or
+    # statement names none, so only the kinds that need the join can be
+    # mostly unmapped.
+    partial = (
+        spec.join in LOCATION_JOINS
+        and not spec.keeps_unlinked
+        and mostly_unmapped(joined.matched, len(doc.entries))
     )
     provenance = RunProvenance(
         workload_name=workload,
-        workload_class=workload_class,
+        workload_class=stored_class,
         commit_sha=prepared.commit,
         checkout_root=str(root),
         dirty=dirty,
@@ -542,11 +573,18 @@ async def store_evidence(
     summary = _summary(doc, provenance, joined, partial, index_commit, head_sha)
     summary["input_format"] = prepared.format
     summary["profiles"] = prepared.profiles
+    warnings: list[dict[str, Any]] = []
     if conversion is not None:
         summary["conversion"] = conversion.summary()
         warning = _unprofiled_children(summary["conversion"], prepared.profiles)
         if warning is not None:
-            summary["warnings"] = [warning]
+            warnings.append(warning)
+    if stored_class == "production":
+        summary["window"] = _window(doc)
+        if prepared.commit is None:
+            warnings.append(_DEPLOYED_COMMIT_UNKNOWN)
+    if warnings:
+        summary["warnings"] = warnings
     if partial and not allow_partial:
         return StoredEvidence({**summary, "stored": False, "reason": "mostly_unmapped"})
     if not joined.rows:
@@ -592,6 +630,29 @@ async def store_evidence(
         "runs_pruned": write.runs_pruned,
     }
     return StoredEvidence(payload, rows_kept=len(rows))
+
+
+#: The warning a production run with no deployed commit gets.
+_DEPLOYED_COMMIT_UNKNOWN = {
+    "code": "deployed_commit_unknown",
+    "message": (
+        "The file does not say which commit was deployed, so its rows read as "
+        "measured at an unknown commit and never rank against code that changed since."
+    ),
+    "remedy": (
+        "Pass --commit with the deployed commit, or set commit_sha (the newest "
+        "deployed) and base_commit_sha (the oldest) in the file."
+    ),
+}
+
+
+def _window(doc: EvidenceDocument) -> dict[str, Any]:
+    """The window a production run covers, as the add result names it."""
+    return {
+        "start": doc.window_start.isoformat() if doc.window_start else None,
+        "end": doc.window_end.isoformat() if doc.window_end else None,
+        "base_commit_sha": doc.base_commit_sha,
+    }
 
 
 def _unprofiled_children(conversion: Mapping[str, Any], profiles: int) -> dict[str, Any] | None:
@@ -647,7 +708,7 @@ async def ingest_evidence(
     *,
     repo_path: Path,
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     name: str = "the evidence file",
     checkout_root: Path | None = None,
     commit: str | None = None,
@@ -659,6 +720,7 @@ async def ingest_evidence(
     max_file_mb: float | None = None,
     caps: EvidenceCaps | None = None,
     source: str = "cli",
+    verified: bool = False,
 ) -> dict[str, Any]:
     """Read *data*, join it to the index of *repo* and store the run; what ``evidence add`` does.
 
@@ -674,7 +736,7 @@ async def ingest_evidence(
     option it will not take.
     """
     commit = commit.lower() if commit is not None else None
-    check_options(workload, workload_class, environment, commit)
+    check_options(workload, workload_class, environment, commit, verified=verified)
     root = (checkout_root or repo_path).resolve()
     if not root.is_dir():
         raise _bad_option("--checkout-root", f"{root} is not a directory.")
@@ -707,6 +769,7 @@ async def ingest_evidence(
         allow_partial=allow_partial,
         caps=caps,
         source=source,
+        verified=verified,
     )
     return stored.payload
 
@@ -744,7 +807,7 @@ async def _convert(
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
 
 
-def _tree_state(root: Path, commit: str, dirty: bool | None) -> tuple[Any, bool | None]:
+def _tree_state(root: Path, commit: str | None, dirty: bool | None) -> tuple[Any, bool | None]:
     """Files that differ from *commit*, and *dirty* filled in from them.
 
     Files that differ from the commit are skipped: their lines are not the
@@ -755,7 +818,7 @@ def _tree_state(root: Path, commit: str, dirty: bool | None) -> tuple[Any, bool 
 
     from .ingest import uncommitted_paths
 
-    at_head = live_head_commit(root, None) == commit
+    at_head = commit is not None and live_head_commit(root, None) == commit
     changed = uncommitted_paths(root) if at_head else None
     if dirty is None and changed is not None:
         dirty = bool(changed)
@@ -783,7 +846,7 @@ def _summary(
         "commit_sha": commit,
         "environment": provenance.environment,
         "index_commit": index_commit,
-        "stale": head_sha is not None and commit != head_sha,
+        "stale": head_sha is not None and commit is not None and commit != head_sha,
         "dirty": provenance.dirty,
         "entries": len(doc.entries),
         "matched": joined.matched,
