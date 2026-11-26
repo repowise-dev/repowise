@@ -89,6 +89,28 @@ def test_webpack_sources_join_the_original_file(bundle, source):
     assert [s["path"] for s in result.document["symbols"]] == ["src/app.ts"]
 
 
+def test_a_nested_next_bundle_joins_the_apps_source(tmp_path):
+    (tmp_path / "apps/web/src").mkdir(parents=True)
+    (tmp_path / "apps/web/src/app.ts").write_text("function original() {}\n", encoding="utf-8")
+    chunks = tmp_path / "apps/web/.next/static/chunks"
+    chunks.mkdir(parents=True)
+    (chunks / "bundle.js").write_text(
+        "function a() {}\n//# sourceMappingURL=bundle.js.map\n", encoding="utf-8"
+    )
+    (chunks / "bundle.js.map").write_text(json.dumps(
+        {"version": 3, "names": ["original"], "mappings": "AAASA",
+         "sources": ["webpack://_N_E/./src/app.ts", "webpack://_N_E/?3f2a"]}))
+    data = _profile([(1, "(root)", "", -1, -1, [2]),
+                     (2, "a", (chunks / "bundle.js").as_uri(), 0, 9, [])], [2])
+    rel = "apps/web/src/app.ts"
+    result = convert_profile(
+        profile_formats.get("cpuprofile").read(data), root=str(tmp_path), value_kind="cpu",
+        symbols_by_file={rel: [_sym(rel, "original", 1, 1, "function")]},
+        read_lines=checkout_reader(tmp_path),
+    )
+    assert [s["path"] for s in result.document["symbols"]] == [rel]
+
+
 @pytest.mark.parametrize(("source", "found"), [
     # Next.js: relative to the app's build context, not to the chunk's map.
     ("webpack://_N_E/./src/x.ts", "apps/web/src/x.ts"),
@@ -96,6 +118,9 @@ def test_webpack_sources_join_the_original_file(bundle, source):
     ("webpack://_N_E/../../packages/ui/b.ts", "packages/ui/b.ts"),
     # A module that is not a checkout file reads from the map's directory.
     ("webpack://_N_E/webpack/runtime/load", "apps/web/.next/static/webpack/runtime/load"),
+    # A module that names no file never becomes one.
+    ("webpack://_N_E/?3f2a", "apps/web/.next/static/<webpack module>"),
+    ("webpack://ns/C:/x.ts", "apps/web/.next/static/<webpack module>"),
 ])
 def test_webpack_sources_resolve_against_the_build_context(source, found):
     from repowise.core.evidence.source_maps import _decode
@@ -106,8 +131,8 @@ def test_webpack_sources_resolve_against_the_build_context(source, found):
     assert lines[0][0].source == found
 
 
-@pytest.mark.parametrize("source", ["webpack:///../outside.ts", "webpack://ns/C:/x.ts",
-                                    "https://example.com/src/x.ts"])
+@pytest.mark.parametrize("source", ["webpack:///../outside.ts", "https://example.com/src/x.ts",
+                                    "webpack-internal:///./src/x.ts"])
 def test_webpack_paths_stay_inside_the_checkout(source):
     from repowise.core.evidence.source_maps import _decode
 

@@ -327,7 +327,8 @@ migration.
   applies the usual position, dirty-file and code-origin checks. Map sources
   are checkout-relative paths or webpack's `webpack://<namespace>/<path>`
   form (Next.js writes `webpack://_N_E/./src/page.tsx`), read from the
-  deepest directory above the map where the file exists. Generated bundles
+  deepest directory above the map where the file exists; a webpack module
+  that names no file (`webpack://_N_E/?3f2a`) stays unjoined. Generated bundles
   with usable maps can resolve to maintained sources; vendored files remain
   libraries. A bundle with no `sourceMappingURL` comment joins at its own
   positions. When a bundle's comment points at a map that cannot be used

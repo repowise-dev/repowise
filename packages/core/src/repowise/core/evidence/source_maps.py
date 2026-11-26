@@ -60,15 +60,18 @@ def _webpack_source(
     sits under (the project root, or a package root in a monorepo), not to the
     map. The deepest ancestor of the map where the file exists wins; with none,
     the path reads from the map's directory like a plain relative source.
+    A module that names no file (``webpack://_N_E/?abc`` for CSS, a path with
+    a drive letter) gets a path that is never a checkout file, so a frame in
+    it stays unjoined instead of refusing every other source in the map.
     """
     parsed = urlsplit(reference)
     if parsed.scheme != "webpack" or parsed.fragment:
         return None
     decoded = unquote(parsed.path).lstrip("/").replace("\\", "/")
-    if not decoded or ":" in decoded:
-        raise _refuse("an absolute path is outside the map's checkout")
-    candidates: list[str] = []
     base = posixpath.dirname(map_path)
+    if not decoded or ":" in decoded:
+        return posixpath.join(base, "<webpack module>")
+    candidates: list[str] = []
     while True:
         path = posixpath.normpath(posixpath.join(base, decoded))
         if path != ".." and not path.startswith("../"):
@@ -171,9 +174,10 @@ def _load_map(
     rel: str,
     read_lines: Callable[[str], Sequence[str] | None],
     generated: bool,
+    exists: Callable[[str], bool],
 ) -> tuple[str, list[list[_Position]]] | None:
     try:
-        return _read_map(rel, read_lines)
+        return _read_map(rel, read_lines, exists)
     except EvidenceFormatError as exc:
         if generated:
             return None  # Unusable build output stays a library frame, as before.
@@ -182,6 +186,7 @@ def _load_map(
 
 def _read_map(
     rel: str, read_lines: Callable[[str], Sequence[str] | None],
+    exists: Callable[[str], bool],
 ) -> tuple[str, list[list[_Position]]] | None:
     lines = read_lines(rel)
     tail = [line for line in reversed(lines or ()) if line.strip()][:5]
@@ -192,7 +197,7 @@ def _read_map(
     map_lines = read_lines(map_path)
     if map_lines is None:
         raise _refuse(f"{map_path} is missing")
-    return map_path, _decode("\n".join(map_lines), map_path)
+    return map_path, _decode("\n".join(map_lines), map_path, exists)
 
 
 def _position(frame: ProfileFrame, lines: list[list[_Position]]) -> _Position:
@@ -225,6 +230,15 @@ def remap_profile(
     if read_lines is None:
         return run
     cache: dict[str, tuple[str, list[list[_Position]]] | None] = {}
+    known: dict[str, bool] = {}
+
+    def exists(path: str) -> bool:
+        # Ceiling: read_lines reads the whole file; a stat-only probe would be
+        # cheaper for maps with many sources. Each path is probed once per run.
+        if path not in known:
+            known[path] = read_lines(path) is not None
+        return known[path]
+
     is_dirty = dirty_path_checker(root, dirty_paths)
     frames: list[ProfileFrame] = []
     for frame in run.frames:
@@ -235,7 +249,7 @@ def remap_profile(
             frames.append(frame)
             continue
         if rel not in cache:
-            cache[rel] = _load_map(rel, read_lines, origin == "generated")
+            cache[rel] = _load_map(rel, read_lines, origin == "generated", exists)
         mapping = cache[rel]
         if mapping is None:
             frames.append(frame)
