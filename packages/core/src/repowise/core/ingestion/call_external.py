@@ -7,17 +7,34 @@ binding itself, read as the resolver reads it: a function-local import binds
 its name only inside that function, a name a parameter or local rebinds is not
 the import's, and a binding the import maps only guess at is refused. Nothing is
 inferred through barrels, star imports or dynamic loads.
+
+A module a test runner swaps for a mock is not the package either: in a file
+that calls ``jest.mock("m")`` (or ``vi.mock``, ``doMock``,
+``unstable_mockModule``), and in a test file when the repo holds a manual mock
+``__mocks__/m.js``, a call on ``m`` runs the mock.
 """
 
 from __future__ import annotations
 
+import re
+
+from ..code_origin import path_origin
 from .call_inheritance import _EXTERNAL_PREFIX
 from .external_calls import EXTERNAL_CALL_ECOSYSTEMS, ExternalCallSite, package_root
 from .models import CallSite, NamedBinding
+from .source_text import source_bytes
 
 _CONTAINER_KINDS = frozenset({"function", "method"})
 #: Specifier prefixes that are path aliases, never an npm package name.
 _ALIAS_PREFIXES = ("~", "#", "$", "/")
+#: ``<runner>.<method>(spec, ...)`` calls that replace *spec* for the whole file
+#: (Jest and Vitest hoist them above the imports).
+_MOCK_RUNNERS = frozenset({"jest", "vi"})
+_MOCK_METHODS = frozenset({"mock", "doMock", "unstable_mockModule"})
+#: The method name at a call's ``start_byte``, then a plain string first argument.
+_MOCK_SPEC = re.compile(rb"[\w$]+\s*\(\s*(['\"`])([^'\"`\\\r\n]+)\1")
+_MOCKS_DIR = "__mocks__"
+_JS_SUFFIXES = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
 
 
 class ExternalCallsMixin:
@@ -67,7 +84,10 @@ class ExternalCallsMixin:
     ) -> bool:
         """Whether the binding may not be the package at this call, cheapest test first."""
         ecosystem = EXTERNAL_CALL_ECOSYSTEMS[language]
-        if self._names_repo_code(ecosystem, (binding.source_file or "")[len(_EXTERNAL_PREFIX) :]):
+        module = (binding.source_file or "")[len(_EXTERNAL_PREFIX) :]
+        if self._names_repo_code(ecosystem, module):
+            return True
+        if ecosystem == "npm" and self._mocked_away(file_path, module):
             return True
         head = binding.local_name.split(".", 1)[0]
         # The file itself rebinds the name (``requests = Session()``), or two
@@ -80,6 +100,58 @@ class ExternalCallsMixin:
         if self._binds_locally(file_path, caller_id, language, head, line):  # type: ignore[attr-defined]
             return True
         return not self._binding_reaches(file_path, binding, caller_id)
+
+    def _mocked_away(self, file_path: str, module: str) -> bool:
+        """Whether a test runner replaces *module* with a mock in *file_path*."""
+        if module in self._mocked_specs(file_path):
+            return True
+        # A manual mock applies only under the runner, so production callers keep the package.
+        return module in self._manual_mocks() and path_origin(file_path) == "test"
+
+    def _mocked_specs(self, file_path: str) -> frozenset[str]:
+        """Specifiers *file_path* mocks with ``jest.mock("m")`` and its kin."""
+        cache: dict[str, frozenset[str]] | None = getattr(self, "_mocked_specs_by_file", None)
+        if cache is None:
+            cache = self._mocked_specs_by_file = {}
+        specs = cache.get(file_path)
+        if specs is None:
+            parsed = self._parsed_files.get(file_path)  # type: ignore[attr-defined]
+            starts = [
+                c.start_byte
+                for c in (parsed.calls if parsed else ())
+                if c.receiver_name in _MOCK_RUNNERS and c.target_name in _MOCK_METHODS
+            ]
+            found: set[str] = set()
+            if starts:
+                data = source_bytes(file_path, parsed.file_info.abs_path, self._source_map)  # type: ignore[attr-defined]
+                for start in starts:
+                    if m := _MOCK_SPEC.match(data, start):
+                        found.add(m.group(2).decode("utf-8", "replace"))
+            specs = cache[file_path] = frozenset(found)
+        return specs
+
+    def _manual_mocks(self) -> frozenset[str]:
+        """Modules a ``__mocks__/`` file of the repo stands in for (``@scope/pkg``).
+
+        Ceiling: Jest applies a package's manual mock only from a ``roots``
+        directory; any ``__mocks__/`` here counts, which can refuse a real call
+        only in a test file.
+        """
+        mocks = getattr(self, "_manual_mock_names", None)
+        if mocks is None:
+            names: set[str] = set()
+            for path in self._parsed_files:  # type: ignore[attr-defined]
+                parts = path.split("/")
+                if _MOCKS_DIR not in parts[:-1] or not path.endswith(_JS_SUFFIXES):
+                    continue
+                at = len(parts) - 1 - parts[::-1].index(_MOCKS_DIR)
+                rest = parts[at + 1 :]
+                rest[-1] = rest[-1].rsplit(".", 1)[0]
+                if len(rest) > 1 and rest[-1] == "index":
+                    rest.pop()
+                names.add("/".join(rest))
+            mocks = self._manual_mock_names = frozenset(names)
+        return mocks
 
     def _bound_twice(self, file_path: str, local_name: str) -> bool:
         """Whether two imports of *file_path* bind *local_name* to different modules."""
