@@ -331,18 +331,27 @@ def reaches_own_origin(consumer: Contract) -> bool:
     return is_relative(consumer) and consumer.meta.get("client") == "fetch"
 
 
+# A base that is the page's own origin (``${window.location.origin}/x``), as the
+# dialects record it: the whole expression or its last name.
+_PAGE_ORIGIN_RE = re.compile(r"(?:^|\.)location\.(?:origin|host)$|^origin$")
+
+
 def aims_elsewhere(consumer: Contract) -> bool:
     """Whether *consumer*'s base or host points at a service nothing in the workspace places.
 
     An unresolved env var or SDK ``baseURL`` (``${RAG_API_URL}/health``) or an
-    unmapped hostname may name another program entirely. The local machine is
-    no such evidence, and a target the host or base resolved settles it.
+    unmapped hostname may name another program entirely. The local machine and
+    the page's own origin are no such evidence, and a target the host or base
+    resolved settles it.
     """
     meta = consumer.meta
     if meta.get("target_repo"):
         return False
     host = meta.get("host")
-    return bool(meta.get("base_token")) or (bool(host) and host not in LOCALHOST_HOSTS)
+    token = (meta.get("base_token") or "").strip().lower()
+    if token and not _PAGE_ORIGIN_RE.search(token):
+        return True
+    return bool(host) and host not in LOCALHOST_HOSTS
 
 
 def accepts(provider: Contract, consumer: Contract) -> bool:

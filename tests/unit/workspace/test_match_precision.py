@@ -58,6 +58,13 @@ def test_a_call_whose_base_points_elsewhere_takes_no_weak_link(consumer_path, pr
         ("/files", "/{param}/files", {"host": "localhost"}, LinkStrategy.PREFIX_STRIPPED),
         ("/bridge/pairings", "/{param}/pairings", {}, LinkStrategy.PARAM_SEGMENT),
         ("/health", "/health", {"base_stripped": True}, LinkStrategy.UNIQUE_PATH),
+        (
+            "/files",
+            "/{param}/files",
+            {"base_stripped": True, "base_token": "window.location.origin"},
+            LinkStrategy.PREFIX_STRIPPED,
+        ),
+        ("/files", "/{param}/files", {"base_stripped": True, "base_token": "origin"}, LinkStrategy.PREFIX_STRIPPED),
     ],
 )
 def test_a_call_with_no_base_or_a_local_host_keeps_its_weak_link(consumer_path, provider_path, meta, strategy) -> None:
