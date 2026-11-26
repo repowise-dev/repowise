@@ -34,6 +34,15 @@ _MIN_REFERENCE_CONFIDENCE = 0.85
 _BARE_REFERENCE_KINDS = frozenset({"function", "class"})
 _QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method", "class"})
 
+#: Languages where a bare name may also land on a module-level binding
+#: (``const OP = ...``, ``let cache = ...``). Their symbol tables hold only
+#: top-level bindings, the shadow scan drops a name a parameter or local
+#: binds, and their queries capture read positions (``OP.equals``, ``x === GT``,
+#: ``{ id }``, ``typeof x``). Ceiling: other languages keep functions and
+#: classes only until their read positions and shadow scan are checked the same way.
+_BINDING_REFERENCE_LANGUAGES = frozenset({"typescript", "javascript"})
+_BINDING_REFERENCE_KINDS = _BARE_REFERENCE_KINDS | {"variable", "constant"}
+
 #: Languages that share the MSBuild project graph, so the namespace and
 #: partial-class passes below serve both. Call resolution and receiver typing
 #: stay per-language and are deliberately not gated on this.
@@ -772,7 +781,10 @@ class ResolveMixin:
         collision rather than a reference, and C++ names its getters exactly
         like the locals that feed them. Measured on leveldb, admitting methods
         there turned ``value``, ``status``, ``level``, ``key`` and ``offset``
-        into fifteen edges, every one of them wrong.
+        into fifteen edges, every one of them wrong. TS/JS also let a bare name
+        reach a module-level ``const``/``let`` (``_BINDING_REFERENCE_LANGUAGES``):
+        their symbol tables hold only top-level bindings and the shadow scan
+        drops a name a parameter or local binds, so a bare read of one is a use.
 
         A name that arrived with a receiver went through an operator only a
         callable accepts — ``Foo::bar``, ``pkg.Handler`` in argument position —
@@ -796,8 +808,13 @@ class ResolveMixin:
                 continue
             bare = [r for r in parsed.references if not r.receiver_name]
             qualified = [r for r in parsed.references if r.receiver_name]
+            bare_kinds = (
+                _BINDING_REFERENCE_KINDS
+                if parsed.file_info.language in _BINDING_REFERENCE_LANGUAGES
+                else _BARE_REFERENCE_KINDS
+            )
             batches = (
-                (bare, _BARE_REFERENCE_KINDS),
+                (bare, bare_kinds),
                 (qualified, _QUALIFIED_REFERENCE_KINDS),
             )
             for sites, allowed_kinds in batches:
