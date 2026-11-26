@@ -91,9 +91,11 @@ def test_an_import_and_the_repo_modules_it_imports_are_one_row_of_self_time() ->
     assert ("_find_and_load", "import", 0.5) in [
         (c["name"], c["kind"], c["share"]) for c in run["inside"]
     ]
-    # Import time is now charged to rows; the run split is unchanged.
+    # Import time is now charged to rows; the run split is unchanged: the
+    # standard library App.run imports (json) counts as libraries, not repo code.
     assert conv.self_unattributed == {}
-    assert conv.repo_self == 7
+    assert conv.repo_self == 5
+    assert conv.libraries == 9
 
 
 def test_import_rows_rank_with_functions_by_self_time() -> None:
