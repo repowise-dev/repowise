@@ -488,34 +488,48 @@ def _add_windows(
     meta["avg_commit_size"] = total_churn / c90 if c90 > 0 else 0.0
 
 
-_BACKPORT_MARKER_RE = re.compile(r"\bbackport\b", re.IGNORECASE)
+_BACKPORT_TAG_RE = re.compile(
+    r"\[(?:PR\s*#(\d+)[^\]]*backport|[^\]]*\bbackport\b[^\]]*)\]", re.IGNORECASE
+)
+_BACKPORT_PREFIX_RE = re.compile(r"^backport\b", re.IGNORECASE)
 _PR_PAREN_RE = re.compile(r"\(#(\d+)\)")
 _PR_TAG_RE = re.compile(r"#(\d+)")
 
 
-def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool]:
-    """Return ``(change_id, is_backport)`` for *subject*.
+def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool, str | None]:
+    """Return ``(change_id, is_backport, pr_number)`` for *subject*.
 
     A backport subject carries the original PR number alongside the backport PR,
     e.g. ``[PR #13930/b1f6c87b backport][3.14] ... (#13942)`` or
     ``... (#13833) (#13836)``.
     """
-    is_backport = bool(_BACKPORT_MARKER_RE.search(subject))
     parens = _PR_PAREN_RE.findall(subject)
-    if len(parens) >= 2:
-        is_backport = True
-        return f"pr:{parens[0]}", is_backport
+    tag_match = _BACKPORT_TAG_RE.search(subject)
+    prefix_match = _BACKPORT_PREFIX_RE.search(subject)
+
+    is_backport = len(parens) >= 2 or bool(tag_match) or bool(prefix_match)
 
     if is_backport:
-        all_prs = _PR_TAG_RE.findall(subject)
-        if all_prs:
-            return f"pr:{all_prs[0]}", True
-        return f"backport:{subject}", True
+        original_pr: str | None = None
+        if len(parens) >= 2:
+            original_pr = parens[0]
+        elif tag_match and tag_match.group(1):
+            original_pr = tag_match.group(1)
+        elif parens:
+            original_pr = parens[0]
+        else:
+            all_prs = _PR_TAG_RE.findall(subject)
+            if all_prs:
+                original_pr = all_prs[0]
 
-    if len(parens) == 1:
-        return f"pr:{parens[0]}", False
+        ckey = f"pr:{original_pr}" if original_pr else f"backport:{sha}"
+        return ckey, True, original_pr
 
-    return f"sha:{sha}", False
+    # Ordinary non-backport commits are keyed by sha so distinct commits
+    # sharing a PR suffix (e.g. from GitHub rebase-and-merge) count individually.
+    ckey = f"sha:{sha}"
+    pr_num = parens[0] if parens else None
+    return ckey, False, pr_num
 
 
 @dataclass
@@ -557,11 +571,34 @@ class _Authors:
         # Count one commit per change: backports to release branches of the same
         # change/fix must not count as multiple commits for the author.
         by_author_change: dict[tuple[str, str], list[_CommitRec]] = {}
+        author_pr_change_key: dict[tuple[str, str], str] = {}
+
+        parsed: list[tuple[_CommitRec, str, str, bool, str | None]] = []
         for c, (name, email) in zip(authored, credited, strict=True):
             key = resolve(name, email)
             authors.seen_names.setdefault(key, name)
-            ckey, _ = _commit_change_key(c.subject, c.sha)
-            by_author_change.setdefault((key, ckey), []).append(c)
+            ckey, is_backport, pr_num = _commit_change_key(c.subject, c.sha)
+            parsed.append((c, key, ckey, is_backport, pr_num))
+
+        # First pass: register ordinary commits by sha so distinct commits from the
+        # same PR (e.g. GitHub rebase-and-merge) count individually.
+        for c, key, ckey, is_backport, pr_num in parsed:
+            if not is_backport:
+                by_author_change.setdefault((key, ckey), []).append(c)
+                if pr_num and (key, pr_num) not in author_pr_change_key:
+                    author_pr_change_key[(key, pr_num)] = ckey
+
+        # Second pass: group backports with the original commit for that PR if present,
+        # or with other backports of the same PR.
+        for c, key, ckey, is_backport, pr_num in parsed:
+            if is_backport:
+                if pr_num and (key, pr_num) in author_pr_change_key:
+                    target_ckey = author_pr_change_key[(key, pr_num)]
+                    by_author_change[(key, target_ckey)].append(c)
+                else:
+                    if pr_num:
+                        author_pr_change_key[(key, pr_num)] = ckey
+                    by_author_change.setdefault((key, ckey), []).append(c)
 
         for (key, _ckey), group in by_author_change.items():
             authors.counts[key] += 1

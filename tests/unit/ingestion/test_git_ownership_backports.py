@@ -123,3 +123,65 @@ def test_churn_and_last_modified_fields_remain_unchanged() -> None:
     assert meta["lines_deleted_90d"] == 4
     # last_commit_at is the newest commit's timestamp (_NOW - 100)
     assert meta["last_commit_at"] == datetime.fromtimestamp(_NOW - 100, tz=UTC)
+
+
+def test_ordinary_rebase_merge_commits_sharing_pr_count_individually() -> None:
+    # Multiple ordinary commits sharing one PR suffix from rebase-merge count individually
+    c1 = _make_commit("a" * 40, _AUTHOR, "Add parser (#500)", _NOW - 200)
+    c2 = _make_commit("b" * 40, _AUTHOR, "Fix parser tests (#500)", _NOW - 100)
+
+    authors = _Authors.tally([c1, c2], _NOW - 1000)
+    meta: dict = {}
+    _add_ownership(meta, authors)
+
+    top = {a["name"]: a["commit_count"] for a in json.loads(meta["top_authors_json"])}
+    assert top["Sam Bull"] == 2
+
+
+def test_identical_backport_subjects_without_pr_count_individually() -> None:
+    # Identical backport subjects without PR numbers have distinct shas and count individually
+    c1 = _make_commit("1" * 40, _AUTHOR, "[backport] Fix merge", _NOW - 200)
+    c2 = _make_commit("2" * 40, _AUTHOR, "[backport] Fix merge", _NOW - 100)
+
+    authors = _Authors.tally([c1, c2], _NOW - 1000)
+    meta: dict = {}
+    _add_ownership(meta, authors)
+
+    top = {a["name"]: a["commit_count"] for a in json.loads(meta["top_authors_json"])}
+    assert top["Sam Bull"] == 2
+
+
+def test_commit_with_earlier_hash_mention_not_merged_into_wrong_pr() -> None:
+    # A commit with an issue reference like #3 in the subject does not merge with PR #3
+    c1 = _make_commit("1" * 40, _AUTHOR, "Fix #3 backport notes (#120)", _NOW - 200)
+    c2 = _make_commit("2" * 40, _AUTHOR, "Fix issue in PR 3 (#3)", _NOW - 100)
+
+    authors = _Authors.tally([c1, c2], _NOW - 1000)
+    meta: dict = {}
+    _add_ownership(meta, authors)
+
+    top = {a["name"]: a["commit_count"] for a in json.loads(meta["top_authors_json"])}
+    assert top["Sam Bull"] == 2
+
+
+def test_backports_without_original_commit_collapse_to_one() -> None:
+    # Backports to multiple release branches without the original commit collapse to 1
+    c1 = _make_commit(
+        "1" * 40,
+        _AUTHOR,
+        "[PR #13833/b1f6c87b backport][3.13] Fix cookiejar (#13941)",
+        _NOW - 200,
+    )
+    c2 = _make_commit(
+        "2" * 40,
+        _AUTHOR,
+        "[PR #13833/b1f6c87b backport][3.14] Fix cookiejar (#13942)",
+        _NOW - 100,
+    )
+
+    authors = _Authors.tally([c1, c2], _NOW - 1000)
+    meta: dict = {}
+    _add_ownership(meta, authors)
+
+    top = {a["name"]: a["commit_count"] for a in json.loads(meta["top_authors_json"])}
+    assert top["Sam Bull"] == 1
