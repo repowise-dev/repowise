@@ -245,8 +245,15 @@ def input_format(given: str | None, data: bytes) -> str:
             raise _bad_option("--input-format", f"{given!r} is not one of {', '.join(names)}.")
         return given
     head = data[:SNIFF_BYTES]
-    if EVIDENCE_FORMAT.encode() in head:
-        return EVIDENCE_FORMAT
+    if head.lstrip().startswith(b"{"):
+        tag = rb'[{,]\s*"format"\s*:\s*"' + EVIDENCE_FORMAT.encode() + rb'"'
+        for match in re.finditer(tag, head):
+            # Close the prefix to check that the tag belongs to the outer object.
+            try:
+                json.loads(head[:match.end()] + b"}")
+            except (ValueError, RecursionError):
+                continue
+            return EVIDENCE_FORMAT
     return detect_profile_format(head) or EVIDENCE_FORMAT
 
 

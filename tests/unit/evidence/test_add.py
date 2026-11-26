@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from repowise.core.evidence.add import EvidenceRefusedError, ingest_evidence
+from repowise.core.evidence.add import EvidenceRefusedError, ingest_evidence, input_format
 from repowise.core.persistence import create_session_factory, get_session
 from repowise.core.persistence.database import create_engine
 from repowise.core.persistence.models import (
@@ -148,6 +148,25 @@ def test_a_junit_report_is_stored_as_test_timings_on_its_test_functions(indexed)
          "tests/test_app.py::TestBuild::test_builds", 2.5, True),
         ("tests/test_app.py::TestBuild::test_gone", "tests/test_app.py", None, 0.1, False),
     ]
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (
+            b'<testsuites><testsuite name="pytest"><testcase classname="tests.test_a" '
+            b'name="test_sniff[repowise-evidence-v1]" time="0.1"/></testsuite></testsuites>',
+            "junit",
+        ),
+        (b'{"machine_info": {"format": "repowise-evidence-v1"}}', "pytest-benchmark"),
+        (b'{"format": "repowise-evidence-v1", "kind": "benchmark"}', "repowise-evidence-v1"),
+        (b'{"machine_info": {}, "format" : "repowise-evidence-v1"}', "repowise-evidence-v1"),
+        (b"unrecognized report", "repowise-evidence-v1"),
+    ],
+    ids=["junit-test-name", "nested-format", "format-first", "format-later", "fallback"],
+)
+def test_evidence_input_format_sniffs_the_document(data: bytes, expected: str) -> None:
+    assert input_format(None, data) == expected
 
 
 # ---------------------------------------------------------------------------
