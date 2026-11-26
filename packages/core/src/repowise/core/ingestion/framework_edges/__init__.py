@@ -40,6 +40,7 @@ from . import (
     gtest,
     hono,
     jakarta,
+    js_conventions,
     laravel,
     lwc,
     mainframe,
@@ -99,6 +100,8 @@ _HANDLERS: list[FrameworkHandler] = [
     *next_app.HANDLERS,
     *hono.HANDLERS,
     *remix.HANDLERS,
+    # Files a JS framework declared in a package.json loads from where they sit.
+    *js_conventions.HANDLERS,
     *trpc.HANDLERS,
     *go.HANDLERS,
     # `class_name Foo` registers a project-global identifier other scripts use

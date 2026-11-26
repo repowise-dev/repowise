@@ -181,8 +181,9 @@ def _opened_unindexed(path: str, language: str | None) -> bool:
 
 # --- what the build reads from the manifests it does open --------------------
 
-# Top-level package.json fields no graph step reads. ``dependencies`` and
-# ``devDependencies`` feed only the tech stack, which is compared on its own.
+# Top-level package.json fields no graph step reads. The dependency fields'
+# versions feed only the tech stack, which is compared on its own; their names
+# also say which JS framework loads files by convention, so those are kept.
 _NPM_UNREAD = frozenset(
     {
         "version", "description", "keywords", "author", "contributors", "maintainers",
@@ -217,13 +218,15 @@ def _package_json(text: str, _path: Path, _root: Path) -> object:
         leaves_its_directory,
         setup_specs,
     )
+    from repowise.core.ingestion.framework_facts import npm_dependency_names
 
     data = json.loads(text)
+    dependency_names = sorted(npm_dependency_names(data))
     if isinstance(data, dict):
         data = {k: v for k, v in data.items() if k not in _NPM_UNREAD}
     # The test-runner handler scans the raw text, at any depth.
     raw = text.encode()
-    return [data, setup_specs(raw), leaves_its_directory(raw)]
+    return [data, setup_specs(raw), leaves_its_directory(raw), dependency_names]
 
 
 def _without(table: object, unread: frozenset[str]) -> object:

@@ -209,10 +209,11 @@ def test_edits_no_graph_step_reads_are_patched(
         pytest.param(
             {"package.json": _package(exports={".": "./src/fmt.ts"})}, "package.json: a field", id="package-exports"
         ),
-        # A framework dependency changes the tech stack and so the framework edges.
+        # A new dependency name can mark a framework that loads files by
+        # convention, so the digest moves before the tech stack is compared.
         pytest.param(
             {"package.json": _package(dependencies={"express": "^4.0.0"})},
-            "tech stack changed",
+            "package.json: a field",
             id="framework-dependency",
         ),
         pytest.param(
@@ -379,6 +380,16 @@ def test_digest_tracks_only_what_readers_read(tmp_path: Path) -> None:
     (tmp_path / "package.json").write_text(_package(scripts={"build": "tsc"}))
     assert _digest(tmp_path, "package.json") != before
     assert _digest(tmp_path, "missing/package.json") is None
+
+
+def test_digest_tracks_dependency_names_not_versions(tmp_path: Path) -> None:
+    """A dependency's name says which JS framework loads files by convention."""
+    (tmp_path / "package.json").write_text(_package())
+    before = _digest(tmp_path, "package.json")
+    (tmp_path / "package.json").write_text(_package(dependencies={"left-pad": "^2.0.0"}))
+    assert _digest(tmp_path, "package.json") == before
+    (tmp_path / "package.json").write_text(_package(devDependencies={"react-email": "6.0.0"}))
+    assert _digest(tmp_path, "package.json") != before
 
 
 def test_manifest_edit_the_diff_missed_falls_back(
