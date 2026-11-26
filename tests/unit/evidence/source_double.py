@@ -31,7 +31,7 @@ class Credentials:
 
 class DoubleSource:
     name = "double"
-    kinds = ("profile", "statement_stats", "test_timing")
+    kinds = ("profile", "statement_stats", "test_timing", "benchmark")
 
     def __init__(self) -> None:
         self.batches: list[SourceBatch] = []

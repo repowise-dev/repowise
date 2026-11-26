@@ -732,6 +732,7 @@ async def ingest_evidence(
     source: str = "cli",
     verified: bool = False,
     measured_at: datetime | None = None,
+    expect_kind: str | None = None,
 ) -> dict[str, Any]:
     """Read *data*, join it to the index of *repo* and store the run; what ``evidence add`` does.
 
@@ -744,7 +745,7 @@ async def ingest_evidence(
     are ``evidence add``'s; *max_file_mb* and *caps* default to the
     repository's ``evidence`` settings. Returns the result ``evidence add
     --format json`` prints. Raises :class:`EvidenceRefusedError` for a file or
-    option it will not take.
+    option it will not take, and for a file that is not of *expect_kind* when given.
     """
     commit = commit.lower() if commit is not None else None
     check_options(workload, workload_class, environment, commit, verified=verified)
@@ -769,6 +770,11 @@ async def ingest_evidence(
         value_kind=value_kind,
         max_file_mb=max_file_mb,
     )
+    read_kind = prepared.doc.kind if prepared.doc is not None else "profile"
+    if expect_kind is not None and read_kind != expect_kind:
+        raise EvidenceRefusedError(
+            "invalid_evidence", f"{name} holds a {read_kind} run, not a {expect_kind} run"
+        )
     stored = await store_evidence(
         session,
         repo,
@@ -817,6 +823,10 @@ async def ingest_batch(
             "the repository has no index to join the batch to",
             "run `repowise init`, then fetch again",
         )
+    if (batch.entries is None) == (batch.data is None):
+        raise EvidenceRefusedError(
+            "invalid_evidence", "a batch carries exactly one of entries and data"
+        )
     if batch.data is not None:
         data, input_format_name = batch.data, batch.format
     else:
@@ -844,6 +854,7 @@ async def ingest_batch(
                 source=SOURCE_COLUMN,
                 verified=True,
                 measured_at=batch.measured_at,
+                expect_kind=batch.kind,
             )
     except EvidenceRefusedError as exc:
         field = _BATCH_FIELDS.get(exc.option or "")

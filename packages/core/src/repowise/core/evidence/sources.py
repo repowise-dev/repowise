@@ -29,7 +29,8 @@ The contract:
   limits (retry later from the same cursor), :class:`SourceRefused` when it
   refuses the credentials or settings (the host shows the message to the
   user). Anything else marks the fetch failed. Each batch is stored whole or
-  not at all; the cursor only moves past a stored batch.
+  not at all, and the cursor only moves past a batch once it has been read
+  and stored (or found to join to nothing, as an upload would be).
 
 Ceiling: ``evidence_runs.source`` is 16 characters, so a run records that it
 came from a source (:data:`SOURCE_COLUMN`), not which one; a column for the
@@ -38,6 +39,7 @@ source name comes with the first migration that needs it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -94,8 +96,8 @@ class SourceBatch:
     #: ``production`` is allowed here for any kind that takes it: a source is
     #: verified by the host that registered it, unlike a typed ``--class``.
     workload_class: str | None
-    #: The full commit SHA measured. A production run whose deployed commit is
-    #: unknown leaves it None and reads "deployed commit unknown".
+    #: The full commit SHA measured. Only a production-only kind may leave it
+    #: None when the deployed commit is unknown; it reads "deployed commit unknown".
     commit: str | None
     environment: str = "unknown"
     #: When the run was measured (for a window, its end).
@@ -108,7 +110,7 @@ class SourceBatch:
     format: str | None = None
     #: The clock of a profile in *data* that does not record one.
     value_kind: str | None = None
-    #: Where the next fetch resumes once this batch is stored.
+    #: Where the next fetch resumes once this batch is stored; None keeps the cursor as it was.
     next_cursor: str | None = None
 
 
@@ -178,13 +180,23 @@ async def run_fetch(
 
     *store* stores one batch whole or not at all (in OSS, :func:`~.add.ingest_batch`
     in a savepoint) and returns what it did; a host with its own store passes
-    its own. The cursor moves past a batch only once *store* returns. A batch of
-    a kind the source did not declare, or one *store* refuses, fails the fetch
-    with the batches before it kept.
+    its own. The cursor moves past a batch only once *store* returns, also when
+    the batch joined to nothing (its result says ``stored: false`` and why): a
+    batch is read once, as a file is added once. A batch of a kind the source
+    did not declare, or one *store* refuses, fails the fetch with the batches
+    before it kept. Whatever the status, the host commits what was stored
+    together with :attr:`FetchOutcome.cursor`.
+
+    Ceiling: ``fetch`` is a plain iterable, so a source that blocks on the
+    network blocks this event loop for the fetch; a host serving requests on the
+    same loop runs ``run_fetch`` in its own task or worker. An async protocol
+    would come with a seam revision.
     """
     outcome = FetchOutcome(status="ok", cursor=request.cursor)
+    batches: Any = None
     try:
-        for batch in source.fetch(request):
+        batches = iter(source.fetch(request))
+        for batch in batches:
             if batch.kind not in source.kinds:
                 raise ValueError(
                     f"source {source.name!r} returned a {batch.kind} batch; it declares "
@@ -193,13 +205,20 @@ async def run_fetch(
             if (batch.entries is None) == (batch.data is None):
                 raise ValueError("a batch carries exactly one of entries and data")
             outcome.stored.append(await store(batch))
-            outcome.cursor = batch.next_cursor
+            if batch.next_cursor is not None:
+                outcome.cursor = batch.next_cursor
     except SourceUnavailable as exc:
         outcome.status, outcome.error = "unavailable", str(exc) or "the source is unavailable"
     except SourceRefused as exc:
         outcome.status, outcome.error = "refused", str(exc) or "the source refused the request"
     except Exception as exc:
         outcome.status, outcome.error = "failed", f"{type(exc).__name__}: {exc}"
+    finally:
+        # Let a generator's ``with`` blocks (a connection) close now, not at collection.
+        close = getattr(batches, "close", None)
+        if close is not None:
+            with contextlib.suppress(Exception):
+                close()
     return outcome
 
 

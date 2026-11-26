@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from repowise.cli.commands import evidence_cmd
 from repowise.core.evidence.add import ingest_batch
+from repowise.core.evidence.kinds import evidence_kinds
 from repowise.core.evidence.payloads import functions_payload
 from repowise.core.evidence.sources import (
     SOURCE_COLUMN,
@@ -37,6 +38,7 @@ from repowise.core.registry import plugins
 from tests.unit.cli.test_evidence_cmd import _add, _indexed_copy, _json, _stored
 from tests.unit.evidence import source_double
 from tests.unit.evidence.source_double import SECRET, Credentials
+from tests.unit.evidence.test_add import _index_test_file
 
 _REPO = Path(__file__).resolve().parents[3]
 
@@ -186,6 +188,11 @@ def _tables(root: Path) -> dict[str, list[dict[str, Any]]]:
                 "AND (name LIKE 'evidence_%' OR name LIKE '%hotness%') ORDER BY name"
             )
         ]
+        # A row's run, by what identifies it on both sides, so a row on the wrong run differs.
+        runs = {
+            r["id"]: f"{r['kind']}/{r['workload_name']}"
+            for r in db.execute("SELECT id, kind, workload_name FROM evidence_runs")
+        }
         out = {}
         for name in names:
             rows = []
@@ -196,6 +203,7 @@ def _tables(root: Path) -> dict[str, list[dict[str, Any]]]:
                         for k in row.keys()  # noqa: SIM118 - a Row iterates values
                         if k not in volatile
                     }
+                    | ({"run": runs.get(row["run_id"])} if "run_id" in row.keys() else {})  # noqa: SIM118
                 )
             out[name] = sorted(rows, key=lambda r: json.dumps(r, sort_keys=True, default=str))
         return out
@@ -237,97 +245,138 @@ def _speedscope(root: Path) -> bytes:
 # --- Gate: a source's runs are an upload's runs ---------------------------------------
 
 
+_TESTS = [
+    {
+        "id": "tests/test_app.py::TestBuild::test_builds",
+        "path": "tests/test_app.py",
+        "function": "TestBuild::test_builds",
+        "line": 2,
+        "duration_s": 1.25,
+        "outcome": "passed",
+    },
+    {
+        "id": "tests.test_app.TestBuild::test_gone",
+        "classname": "tests.test_app.TestBuild",
+        "duration_s": 0.5,
+        "outcome": "failed",
+    },
+]
+_BENCHMARKS = [
+    {
+        "name": "test_build[small]",
+        "path": "src/app.py",
+        "function": "build",
+        "exact": True,
+        "unit": "s",
+        "median": 0.012,
+        "mean": 0.013,
+        "min": 0.011,
+        "max": 0.02,
+        "rounds": 50,
+    },
+    {"name": "BenchmarkParse-8", "unit": "ns", "mean": 120.5, "allocs_per_op": 3},
+]
+
+
+def _gate_batches(root: Path, head: str) -> list[tuple[SourceBatch, list[str]]]:
+    """Each batch, with the ``evidence add`` options that upload the same run as a file."""
+    run = ["--commit", head, "--environment", "ci"]
+    return [
+        (_profile_batch(head), ["--workload", "app", "--class", "entry_point", *run]),
+        (_statement_batch(), ["--workload", "prod db"]),
+        (
+            SourceBatch(
+                kind="test_timing",
+                workload="suite",
+                workload_class="unit_test",
+                commit=head,
+                environment="ci",
+                entries=_TESTS,
+                document={"tool": {"name": "junit"}},
+            ),
+            ["--workload", "suite", "--class", "unit_test", *run],
+        ),
+        (
+            SourceBatch(
+                kind="benchmark",
+                workload="bench",
+                workload_class="benchmark",
+                commit=head,
+                environment="ci",
+                entries=_BENCHMARKS,
+                document={"unit": "s", "tool": {"name": "pytest-benchmark"}},
+            ),
+            ["--workload", "bench", "--class", "benchmark", *run],
+        ),
+        (
+            SourceBatch(
+                kind="profile",
+                workload="cli",
+                workload_class="load_test",
+                commit=head,
+                environment="ci",
+                data=_speedscope(root),
+                format="speedscope",
+            ),
+            ["--workload", "cli", "--class", "load_test", *run],
+        ),
+    ]
+
+
+def _upload_file(root: Path, batch: SourceBatch, i: int) -> Path:
+    """*batch* written as the file a user would upload, in their own key order."""
+    path = root / f"upload{i}.json"
+    if batch.data is not None:
+        path.write_bytes(batch.data)
+    else:
+        entries = evidence_kinds[batch.kind].entries
+        doc = {"format": "repowise-evidence-v1", "kind": batch.kind, entries: list(batch.entries)}
+        path.write_text(json.dumps({**doc, **batch.document}, indent=2))
+    return path
+
+
 def test_a_source_batch_stores_what_uploading_its_entries_as_a_file_stores(
     double, indexed, tmp_path, tmp_path_factory, monkeypatch
 ) -> None:
     root, head = indexed
     upload = tmp_path / "upload"
     _indexed_copy(upload, tmp_path_factory)
+    for checkout in (root, upload):
+        _index_test_file(checkout)
     monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: upload)
     monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
     monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
 
-    uploaded = []
-    profile = upload / "prof.json"
-    profile.write_text(
-        json.dumps(
-            {
-                "format": "repowise-evidence-v1",
-                "kind": "profile",
-                **_PROFILE_DOC,
-                "symbols": _PROFILE_ENTRIES,
-            }
-        )
-    )
-    uploaded.append(
-        _json(
-            _add(
-                str(profile),
-                "--workload",
-                "app",
-                "--class",
-                "entry_point",
-                "--commit",
-                head,
-                "--environment",
-                "ci",
-                "--format",
-                "json",
-            )
-        )
-    )
-    statements = upload / "statements.json"
-    statements.write_text(
-        json.dumps(
-            {
-                "format": "repowise-evidence-v1",
-                "kind": "statement_stats",
-                **_STATEMENT_DOC,
-                "statements": _STATEMENTS,
-            }
-        )
-    )
-    uploaded.append(_json(_add(str(statements), "--workload", "prod db", "--format", "json")))
-    speedscope = upload / "speedscope.json"
-    speedscope.write_bytes(_speedscope(upload))
-    uploaded.append(
-        _json(
-            _add(
-                str(speedscope),
-                "--workload",
-                "cli",
-                "--class",
-                "load_test",
-                "--commit",
-                head,
-                "--environment",
-                "ci",
-                "--format",
-                "json",
-            )
-        )
-    )
-
-    double.batches = [
-        _profile_batch(head),
-        _statement_batch(),
-        SourceBatch(
-            kind="profile",
-            workload="cli",
-            workload_class="load_test",
-            commit=head,
-            environment="ci",
-            data=_speedscope(root),
-            format="speedscope",
-        ),
+    uploaded = [
+        _json(_add(str(_upload_file(upload, batch, i)), *options, "--format", "json"))
+        for i, (batch, options) in enumerate(_gate_batches(upload, head))
     ]
+    double.batches = [batch for batch, _ in _gate_batches(root, head)]
     outcome = _fetch(root, double, _request())
 
-    assert (outcome.status, outcome.cursor, outcome.error) == ("ok", "3", None)
+    assert (outcome.status, outcome.cursor, outcome.error) == ("ok", "5", None)
+    assert [p["kind"] for p in outcome.stored] == [
+        "profile",
+        "statement_stats",
+        "test_timing",
+        "benchmark",
+        "profile",
+    ]
+    assert all(p["stored"] for p in outcome.stored)
     for got, want in zip(outcome.stored, uploaded, strict=True):
         assert {**got, "run_id": None} == {**want, "run_id": None}
-    assert all(p["stored"] for p in outcome.stored)
-    assert _tables(root) == _tables(upload)
+    tables = _tables(root)
+    assert all(
+        tables[t]
+        for t in (
+            "evidence_symbol_costs",
+            "evidence_statement_stats",
+            "evidence_test_timings",
+            "evidence_benchmark_results",
+            "symbol_hotness",
+        )
+    ), {t: len(rows) for t, rows in tables.items()}
+    assert tables == _tables(upload)
     functions = _functions(root)
     assert [f["symbol_id"] for f in functions["functions"]] == [
         "src/app.py::build",
@@ -416,11 +465,11 @@ def test_a_batch_that_fails_while_storing_leaves_nothing_of_it(
 
 def test_a_batch_of_a_kind_the_source_does_not_declare_fails_the_fetch(double, indexed) -> None:
     root, head = indexed
-    double.batches = [_profile_batch(head, kind="benchmark")]
+    double.batches = [_profile_batch(head, kind="query_count")]
 
     outcome = _fetch(root, double, _request())
 
-    assert outcome.status == "failed" and "benchmark" in outcome.error
+    assert outcome.status == "failed" and "query_count" in outcome.error
     assert _stored(root) == ([], [])
 
 
@@ -555,23 +604,116 @@ def test_a_batch_records_when_it_was_measured(double, indexed) -> None:
 # --- Boundary: no fold knows where a run came from -----------------------------------
 
 
+def _imports_sources(node: ast.AST, package: str) -> bool:
+    """Whether *node*, in a module of *package*, imports ``repowise.core.evidence.sources``."""
+    seam = "repowise.core.evidence.sources"
+    if isinstance(node, ast.Import):
+        return any(a.name == seam or a.name.startswith(seam + ".") for a in node.names)
+    if not isinstance(node, ast.ImportFrom):
+        return False
+    base = package.split(".")
+    if node.level:
+        base = base[: len(base) - node.level + 1]
+    module = ".".join([*(base if node.level else []), *([node.module] if node.module else [])])
+    return module == seam or any(f"{module}.{a.name}" == seam for a in node.names)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from repowise.core.evidence.sources import SourceBatch",
+        "from repowise.core.evidence import sources",
+        "from . import sources",
+        "from .sources import run_fetch",
+        "from ..evidence import sources",
+        "import repowise.core.evidence.sources",
+    ],
+)
+def test_the_import_check_sees_every_form(line: str) -> None:
+    (node,) = ast.parse(line).body
+    assert _imports_sources(node, "repowise.core.evidence")
+    assert not _imports_sources(
+        ast.parse("from .kinds import evidence_kinds").body[0], "repowise.core.evidence"
+    )
+
+
 def test_only_the_runner_imports_the_source_seam() -> None:
     importers = set()
     for path in (_REPO / "packages").glob("*/src/**/*.py"):
+        parts = path.relative_to(_REPO / "packages").parts
+        package = ".".join(parts[2:-1])  # <package>/src/<dotted package>/<module>.py
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                if module.endswith("evidence.sources") or (
-                    node.level and module == "sources" and path.parent.name == "evidence"
-                ):
-                    importers.add(path.relative_to(_REPO).as_posix())
-            elif isinstance(node, ast.Import) and any(
-                a.name.endswith("evidence.sources") for a in node.names
-            ):
-                importers.add(path.relative_to(_REPO).as_posix())
+        if any(_imports_sources(node, package) for node in ast.walk(tree)):
+            importers.add(path.relative_to(_REPO).as_posix())
 
     assert importers == {"packages/core/src/repowise/core/evidence/add.py"}
+
+
+def test_a_data_batch_must_hold_the_kind_it_names(double, indexed) -> None:
+    root, _head = indexed
+    raw = json.dumps(
+        {"format": "repowise-evidence-v1", "kind": "statement_stats", "statements": _STATEMENTS}
+    ).encode()
+    double.batches = [
+        SourceBatch(
+            kind="profile",
+            workload="w",
+            workload_class="entry_point",
+            commit=None,
+            data=raw,
+            format="repowise-evidence-v1",
+        )
+    ]
+
+    outcome = _fetch(root, double, _request())
+
+    assert outcome.status == "failed" and "not a profile run" in outcome.error
+    assert _stored(root) == ([], [])
+
+
+def test_a_batch_with_no_cursor_keeps_the_last_one(double, indexed) -> None:
+    root, head = indexed
+    double.batches = [_profile_batch(head)]
+    plain = source_double.DoubleSource.fetch
+
+    def without_cursor(self, request):
+        for batch in plain(self, request):
+            yield replace(batch, next_cursor=None)
+
+    double.fetch = without_cursor.__get__(double)
+
+    outcome = _fetch(root, double, _request(cursor="0"))
+
+    assert (outcome.status, outcome.cursor) == ("ok", "0")
+
+
+def test_a_production_profile_still_names_its_commit(double, indexed) -> None:
+    root, _head = indexed
+    double.batches = [_profile_batch(None, workload_class="production")]
+
+    outcome = _fetch(root, double, _request())
+
+    assert outcome.status == "failed" and "batch commit" in outcome.error
+    assert _stored(root) == ([], [])
+
+
+def test_a_fetch_that_stops_early_closes_the_source(double, indexed) -> None:
+    root, _head = indexed
+    double.batches = [_profile_batch(None), _statement_batch()]
+    closed = []
+    plain = source_double.DoubleSource.fetch
+
+    def tracked(self, request):
+        try:
+            yield from plain(self, request)
+        finally:
+            closed.append(True)
+
+    double.fetch = tracked.__get__(double)
+
+    outcome = _fetch(root, double, _request())
+
+    assert (outcome.status, closed) == ("failed", [True])
 
 
 def test_a_batch_for_a_repository_with_no_index_keeps_the_cursor(double, tmp_path) -> None:

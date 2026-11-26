@@ -350,11 +350,11 @@ def register():
 | `SourceBatch` field | Meaning |
 |---------------------|---------|
 | `kind`, `workload`, `workload_class`, `environment` | The run header, as `evidence add` takes it |
-| `commit` | The full commit SHA measured; `None` only for a production run whose deployed commit is unknown |
+| `commit` | The full commit SHA measured; `None` only for a production-only kind (`route_latency`, `statement_stats`) whose deployed commit is unknown |
 | `measured_at` | When the run was measured (for a window, its end) |
 | `entries` and `document` | `repowise-evidence-v1` entries of `kind`, and the document's other fields (`value_kind`, `unit`, totals, `tool`, `window`, `base_commit_sha`) |
-| `data` and `format` | Or a file's bytes in a registered `profile-format`, such as pprof bytes a profiler service returns; `value_kind` names the clock when the bytes do not |
-| `next_cursor` | Where the next fetch resumes once this batch is stored |
+| `data` and `format` | Or a file's bytes in a registered `profile-format`, such as pprof bytes a profiler service returns; `value_kind` names the clock when the bytes do not. The bytes must read as a run of `kind` |
+| `next_cursor` | Where the next fetch resumes once this batch is stored; `None` keeps the cursor as it was |
 
 The rules a source follows, which the contract tests in
 `tests/unit/evidence/test_sources.py` check against a test double:
@@ -364,12 +364,15 @@ The rules a source follows, which the contract tests in
   from it, into a batch or an exception message.
 - **Cursor.** The cursor is opaque to repowise and only moves past a batch
   once that batch is stored, so return batches oldest first, each with the
-  cursor that resumes after it. Fetching again from an old cursor is safe: a
-  batch whose entries, header and index are unchanged is the same run, and
-  storing it again writes nothing new.
-- **Commit.** A measured run names the full commit it measured. A
-  production run whose deployed commit is unknown leaves `commit` as `None`
-  and is stored as measured at an unknown commit.
+  cursor that resumes after it. A batch that joins to no function is still
+  read (its result says `stored: false` and why), as a file is added once.
+  Fetching again from an old cursor is safe: a batch whose entries, header
+  and index are unchanged is the same run, and storing it again writes
+  nothing new.
+- **Commit.** A measured run names the full commit it measured, including a
+  `production` profile. Only a production-only kind whose deployed commit is
+  unknown leaves `commit` as `None`; it is stored as measured at an unknown
+  commit.
 - **Class.** A source is trusted by the host that installed it, so its
   batches may carry `production` where the kind allows it. A production-only
   kind (`route_latency`, `statement_stats`) needs no class. `evidence add
@@ -378,14 +381,20 @@ The rules a source follows, which the contract tests in
   or rate limits: the fetch stops, keeps what it stored and returns the
   cursor to retry from. Raise `SourceRefused` when it refuses the credentials
   or settings: the host shows its message to the user. Anything else fails
-  that fetch. A batch is stored whole or not at all.
+  that fetch, as does a batch repowise refuses (a missing commit, a class
+  the kind does not take). A batch is stored whole or not at all, and the
+  batches stored before a failure stay: the host commits them together with
+  the cursor the fetch returns.
 
 A host runs a fetch with `run_fetch(source, request, store)`, where `store`
 stores one batch. Against a repowise index, `store` is
 `repowise.core.evidence.add.ingest_batch`, which reads the batch the way
 `evidence add` reads a file of the same entries, so the stored rows,
-hotness and payloads are the same. `repowise plugins` lists each registered
-source under `evidence-source`; repowise has no command that fetches.
+hotness and payloads are the same. `fetch` is a plain iterable, so a source
+that waits on the network holds the caller's event loop while it reads; a
+server runs `run_fetch` in its own task or worker. `repowise plugins` lists
+each registered source under `evidence-source`; repowise has no command that
+fetches.
 
 ### Authenticator and authorizer
 
