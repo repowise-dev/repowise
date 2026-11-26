@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .context import ResolverContext
 from .lwc import lwc_bundle_dir, resolve_lwc_module
+from .nuxt import resolve_nuxt_alias
 from .subpath_imports import resolve_subpath_import
 from .svelte_kit import resolve_lib_alias
 from .ts_workspace import resolve_via_workspaces
@@ -164,6 +165,13 @@ def _resolve_in_repo(module_path: str, importer_path: str, ctx: ResolverContext)
         alias_resolved = ctx.tsconfig_resolver.resolve(module_path, importer_abs)
         if alias_resolved is not None:
             return alias_resolved
+
+    # Nuxt's ``~/`` / ``@/`` aliases, declared only in the generated and
+    # gitignored ``.nuxt/tsconfig.json``. After tsconfig, so paths a repo does
+    # check in keep the last word.
+    nuxt_resolved = resolve_nuxt_alias(module_path, importer_path, ctx)
+    if nuxt_resolved is not None:
+        return nuxt_resolved
 
     # Workspace package (npm/yarn/pnpm ``workspaces``): turn ``@myorg/foo``
     # into the sibling package's entry point rather than an external node.
