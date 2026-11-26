@@ -73,7 +73,8 @@ def _is_object(question: str, name: str) -> bool:
     # Case-sensitive: "Session" names the class, "session" is a word.
     n = rf"`?(?-i:{re.escape(name)})`?"
     # A sentence-final period ends the name; "x.py" or "a.b" continues it.
-    active = rf"\b{_VERB}\s+{_ARTICLE}{n}(?!\w|\.\w)"
+    # "X's retry logic" is a behaviour inside X.
+    active = rf"\b{_VERB}\s+{_ARTICLE}{n}(?!\w|\.\w|['’]s\b)"
     passive = rf"(?<![\w.]){n}\s+{_ADVERB}{_VERB}\b"
     return bool(re.search(f"{active}|{passive}", question, re.IGNORECASE))
 
@@ -94,22 +95,21 @@ async def origin_reply(ask: Any) -> dict | None:
         subject = await _subject(session, ask, question, files, idents)
         if subject is None:
             named = (files or idents)[0]
-            defined = [] if files else await _defining_files(session, ask, named)
+            defined = files[:1] or await _defining_files(session, ask, named)
             return _cannot(
                 ask,
                 named,
                 defined,
                 f"the question asks about a change inside `{named}`, not when `{named}` itself was added",
+                kind="file" if files else "symbol",
                 inside=True,
             )
         name, paths, kind = subject
         if not paths:
-            return _cannot(ask, name, [], f"no indexed file defines `{name}`")
-        commit = await _first_commit(repo_path, name, paths, kind)
+            return _cannot(ask, name, [], f"no indexed file defines `{name}`", kind=kind)
+        commit, reason = await _first_commit(repo_path, name, paths, kind)
         if commit is None:
-            return _cannot(ask, name, paths, "no commit in this checkout's history adds it")
-        if commit.get("cut"):
-            return _cannot(ask, name, paths, "it predates the oldest commit in this shallow clone")
+            return _cannot(ask, name, paths, reason, kind=kind)
         found = await find_changes(session, ask.repo_id, commit["sha"], limit=1)
     return _answer(ask, name, paths, kind, commit, found[0] if found else None)
 
@@ -170,22 +170,33 @@ async def _defining_files(session, ask: Any, ident: str) -> list[str]:
     return paths if len(paths) <= _MAX_DEF_FILES else []
 
 
+_NO_COMMIT = "no commit in this checkout's history adds it"
+_TIMED_OUT = f"reading its git history took longer than {_GIT_TIMEOUT} s"
+
+
 async def _first_commit(
     repo_path: str | None, name: str, paths: list[str], kind: str
-) -> dict | None:
+) -> tuple[dict | None, str]:
+    """``(commit, "")``, or ``(None, why no commit is named)``."""
     if not repo_path or not (Path(repo_path) / ".git").exists():
-        return None
+        return None, "this checkout has no git history"
     try:
-        return await asyncio.wait_for(
+        commit = await asyncio.wait_for(
             asyncio.to_thread(_oldest_adding_commit, str(repo_path), name, paths, kind),
             timeout=_GIT_TIMEOUT + 1,
         )
     except TimeoutError:
-        return None
+        return None, _TIMED_OUT
+    if isinstance(commit, str):
+        return None, commit
+    if commit["cut"]:
+        return None, "it predates the oldest commit in this shallow clone"
+    return commit, ""
 
 
-def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str) -> dict | None:
-    """The oldest commit whose diff adds *name* to *paths* (or adds the file)."""
+def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str) -> dict | str:
+    """The oldest commit whose diff adds *name* to *paths* (or adds the file),
+    or why there is none."""
     if kind == "file":
         args = ["--diff-filter=A", "--follow"]
     else:
@@ -209,11 +220,15 @@ def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str
             # A git child inheriting the JSON-RPC stdin can wedge the session.
             stdin=subprocess.DEVNULL,
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    except subprocess.TimeoutExpired:
+        return _TIMED_OUT
+    except OSError:
+        return "git could not be run"
     lines = [ln for ln in proc.stdout.splitlines() if ln.count("\t") >= 3]
-    if proc.returncode != 0 or not lines:
-        return None
+    if proc.returncode != 0:
+        return "git could not read this checkout's history"
+    if not lines:
+        return _NO_COMMIT
     sha, author, date, subject = lines[-1].split("\t", 3)
     return {
         "sha": sha,
@@ -264,11 +279,15 @@ def _answer(ask: Any, name: str, paths: list[str], kind: str, commit: dict, chan
     }
 
 
-def _cannot(ask: Any, name: str, paths: list[str], reason: str, *, inside: bool = False) -> dict:
+def _cannot(
+    ask: Any, name: str, paths: list[str], reason: str, *, kind: str, inside: bool = False
+) -> dict:
     """Says plainly the origin is not known, and names the git command that can tell."""
     one = paths[0] if len(paths) == 1 else None
     leaf = name.rsplit(".", 1)[-1]
-    if inside:
+    if kind == "file":
+        command = f"git log --follow {'-p' if inside else '--diff-filter=A'} -- {name}"
+    elif inside:
         command = f"git log -L:{leaf}:{one or '<file>'}"
     else:
         command = f"git log -S{json.dumps(leaf)} --reverse" + (f" -- {one}" if one else "")

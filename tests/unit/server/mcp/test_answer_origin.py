@@ -46,6 +46,7 @@ def test_origin_questions(question, origin):
         # Present tense asks about behaviour; a lowercase word is not the class.
         ("Which commit changed how Session is created?", "Session", False),
         ("Which PR added session handling?", "Session", False),
+        ("Which PR introduced AuthService's retry logic?", "AuthService", False),
     ],
 )
 def test_the_verb_must_take_the_name(question, name, expected):
@@ -157,7 +158,7 @@ async def test_without_git_history_it_says_so(setup_mcp):
 
     result = await get_answer("Which commit introduced AuthService?")
     assert result["confidence"] == "low"
-    assert "no commit in this checkout's history adds it" in result["answer"]
+    assert "this checkout has no git history" in result["answer"]
     assert 'git log -S"AuthService" --reverse -- src/auth/service.py' in result["next_action_hint"]
 
 
@@ -171,3 +172,26 @@ async def test_a_file_is_dated_by_the_commit_that_added_it(setup_mcp, history, t
     assert result["answer"].startswith(
         f'`src/auth/service.py` was introduced by commit {seed[:12]} "seed"'
     )
+
+
+@pytest.mark.asyncio
+async def test_a_slow_history_walk_is_said_to_time_out(setup_mcp, history, monkeypatch):
+    from repowise.server.mcp_server import get_answer
+    from repowise.server.mcp_server.tool_answer import origin
+
+    def slow(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 10)
+
+    monkeypatch.setattr(origin.subprocess, "run", slow)
+    result = await get_answer("Who added AuthService?")
+    assert result["confidence"] == "low"
+    assert "took longer than" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_without_history_gets_a_file_command(setup_mcp):
+    from repowise.server.mcp_server import get_answer
+
+    result = await get_answer("When was src/auth/service.py added?")
+    assert result["confidence"] == "low"
+    assert "git log --follow --diff-filter=A -- src/auth/service.py" in result["next_action_hint"]
