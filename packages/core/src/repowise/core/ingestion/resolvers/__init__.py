@@ -23,6 +23,7 @@ from .html import resolve_html_asset
 from .java import resolve_java_import
 from .kotlin import resolve_kotlin_import
 from .lean import resolve_lean_import
+from .lpc import resolve_lpc_import
 from .luau import resolve_luau_import
 from .pascal import resolve_pascal_import
 from .perl import resolve_perl_import
@@ -95,6 +96,7 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "vbnet": resolve_vbnet_import,
     # COPY / EXEC SQL INCLUDE members, matched to copybooks by stem.
     "cobol": resolve_cobol_import,
+    "lpc": resolve_lpc_import,
     # uses units through .dpr in-paths and .dproj/.lpi search paths.
     "pascal": resolve_pascal_import,
 }

@@ -119,6 +119,18 @@ SETTINGS: tuple[Setting, ...] = (
         suggest_when=_suggest_commit_limit,
     ),
     _s("follow_renames", "bool", False, "Follow files across renames in git history."),
+    _e(
+        "REPOWISE_LPC_CONFIG",
+        "str",
+        None,
+        "Path to the JSON file defining LPC mudlib roots and include directories.",
+    ),
+    _e(
+        "REPOWISE_LPC_ROOTS",
+        "str",
+        "",
+        "Additional LPC mudlib roots, separated by the platform path separator.",
+    ),
     _s(
         "sql_dialect",
         "str",

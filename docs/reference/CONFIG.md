@@ -1450,6 +1450,8 @@ Keys resolve in order:
 <!-- BEGIN GENERATED settings:env-indexing (python scripts/gen_config_docs.py) -->
 | Variable | Default | Values | What it does |
 |----------|---------|--------|--------------|
+| `REPOWISE_LPC_CONFIG` | unset |  | Path to the JSON file defining LPC mudlib roots and include directories. |
+| `REPOWISE_LPC_ROOTS` | unset |  | Additional LPC mudlib roots, separated by the platform path separator. |
 | `REPOWISE_FORGE_HOSTS` | unset |  | Comma-separated host=forge pairs, added to forges.hosts. |
 | `REPOWISE_PARSE_WORKERS` | unset | > 0 | Parallel parse workers for init and update. Unset sizes to the machine. |
 | `REPOWISE_PARSE_TIMEOUT_S` | `60` | >= 0 | Seconds one file may take to parse; 0 turns the limit off. |

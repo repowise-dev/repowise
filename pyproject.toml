@@ -127,6 +127,11 @@ graph-extra = [
 local-embed = [
     "fastembed>=0.7,<1; python_version < '3.13'",
 ]
+# LPC (LDMud) mudlibs: grammar for `.c`/`.h` under configured mudlib roots.
+# Without it those files stay C/C++. See docs/reference/LPC.md.
+lpc = [
+    "tree-sitter-lpc>=0.1,<0.2",
+]
 dev = [
     "pytest>=9.0.3,<10",
     "pytest-asyncio>=1.3,<2",
