@@ -11,3 +11,7 @@ REMIX = FrameworkFacts(
     npm_packages=("@remix-run/dev", "@remix-run/react", "@react-router/dev"),
     entry_globs=_js("app/root", "app/routes", "app/routes/*"),
 )
+
+#: React Router v7 framework mode, which loads ``root`` and ``routes`` from the
+#: app directory and every route module ``routes`` names.
+REACT_ROUTER = FrameworkFacts(name="React Router", anchor="framework:react-router")

@@ -50,6 +50,7 @@ from . import (
     python_job_roots,
     quarkus,
     rails,
+    react_router,
     remix,
     rust,
     salesforce_metadata,
@@ -100,6 +101,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *next_app.HANDLERS,
     *hono.HANDLERS,
     *remix.HANDLERS,
+    *react_router.HANDLERS,
     # Files a JS framework declared in a package.json loads from where they sit.
     *js_conventions.HANDLERS,
     *trpc.HANDLERS,

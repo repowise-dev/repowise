@@ -90,6 +90,12 @@ class TestCodegenAndConvention:
         assert _matches("app/entry.client.tsx")
         assert _matches("app/entry.server.ts")
 
+    def test_react_router_root_and_routes_stay_flaggable(self):
+        # Framework mode is recognised per repo by framework_edges.react_router,
+        # so these names are not exempt in a repo without React Router.
+        assert not _matches("app/root.tsx")
+        assert not _matches("app/routes.ts")
+
     def test_sveltekit_conventions(self):
         assert _matches("src/routes/+page.svelte")
         assert _matches("src/routes/+layout.ts")

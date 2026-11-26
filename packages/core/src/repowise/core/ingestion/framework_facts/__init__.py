@@ -34,7 +34,7 @@ from .nuxt import NUXT, NUXT_CONFIGS, NUXT_I18N, nuxt_src_dir
 from .php import LARAVEL, PHP_FRAMEWORKS, SYMFONY, TYPO3, detect_php_framework
 from .platforms import ANDROID, LWC, SALESFORCE
 from .react_email import REACT_EMAIL
-from .remix import REMIX
+from .remix import REACT_ROUTER, REMIX
 from .sveltekit import SVELTE_CONFIGS, SVELTEKIT, KitFiles, kit_files, sveltekit_lib_dir
 
 __all__ = [
@@ -53,6 +53,7 @@ __all__ = [
     "NUXT_I18N",
     "PHP_FRAMEWORKS",
     "REACT_EMAIL",
+    "REACT_ROUTER",
     "REMIX",
     "SALESFORCE",
     "SVELTEKIT",
