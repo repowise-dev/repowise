@@ -59,42 +59,64 @@ SVELTEKIT = FrameworkFacts(
     entry_globs=_kit_globs(KitFiles()),
 )
 
+_KIT_RE = re.compile(r"\bkit\s*:\s*\{")
 _FILES_RE = re.compile(r"\bfiles\s*:\s*\{")
-_HOOKS_RE = re.compile(r"\bhooks\s*:\s*\{([^{}]*)\}")
+_HOOKS_RE = re.compile(r"\bhooks\s*:\s*\{")
+# Block and line comments; ``//`` after ``:`` or a word character is a URL.
+_COMMENT_RE = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.S)
+_INNER_OBJECT_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _object_after(pattern: re.Pattern[str], text: str, *, top_only: bool = True) -> str:
+    """The body of the first ``key: { ... }`` *pattern* finds in *text*, braces balanced.
+
+    With *top_only*, a key inside a nested object of *text* is skipped.
+    """
+    for match in pattern.finditer(text):
+        if top_only and text.count("{", 0, match.start()) != text.count("}", 0, match.start()):
+            continue
+        level, start = 1, match.end()
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                level += 1
+            elif text[i] == "}":
+                level -= 1
+                if level == 0:
+                    return text[start:i]
+        return ""
+    return ""
+
+
+def _top_level(text: str) -> str:
+    """*text* with every nested object removed, so only its own keys remain."""
+    while (flat := _INNER_OBJECT_RE.sub("", text)) != text:
+        text = flat
+    return text
 
 
 def _literal(key: str, text: str) -> str | None:
-    match = re.search(rf"""\b{key}\s*:\s*["'`]([^"'`\n]+)["'`]""", text)
-    return _inside(match.group(1).strip().rstrip("/")) if match else None
-
-
-def _files_block(config: str) -> str:
-    """The text of the ``files: { ... }`` object in *config*, braces balanced, else ''."""
-    match = _FILES_RE.search(config)
-    if match is None:
-        return ""
-    depth, start = 1, match.end()
-    for i in range(start, len(config)):
-        if config[i] == "{":
-            depth += 1
-        elif config[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return config[start:i]
-    return ""
+    """The string *key* is set to in *text*, when written as a plain literal inside the app."""
+    match = re.search(rf"""\b{key}\s*:\s*(["'`])([^"'`\n]+)\1""", text)
+    # ``$``: a template placeholder (``${base}/lib``), whose braces _top_level dropped.
+    if match is None or "$" in match.group(2):
+        return None
+    return _inside(match.group(2).strip().rstrip("/"))
 
 
 def kit_files(manifest: NpmManifest) -> KitFiles:
     """The ``kit.files`` directories of the SvelteKit app *manifest* declares.
 
-    A literal that leaves the app is ignored, keeping the default.
+    Only ``files`` directly under ``kit`` counts, and only its own keys (and
+    those of ``hooks``). A literal that leaves the app, or one built from a
+    template, is ignored, keeping the default.
     """
-    block = _files_block(SVELTEKIT.config(manifest) or "")
+    config = _COMMENT_RE.sub("", SVELTEKIT.config(manifest) or "")
+    kit = _object_after(_KIT_RE, config, top_only=False)
+    block = _object_after(_FILES_RE, kit) if kit else ""
     if not block:
         return KitFiles()
-    hooks_match = _HOOKS_RE.search(block)
-    hooks = hooks_match.group(1) if hooks_match else ""
-    flat = _HOOKS_RE.sub("", block)
+    hooks = _top_level(_object_after(_HOOKS_RE, block))
+    flat = _top_level(block)
     found = {
         "lib": _literal("lib", flat),
         "routes": _literal("routes", flat),

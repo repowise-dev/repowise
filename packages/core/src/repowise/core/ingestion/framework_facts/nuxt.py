@@ -36,12 +36,13 @@ def _nuxt_globs(srcs: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]
     """``(entry_globs, review_globs)`` for an app whose source directory is one of *srcs*.
 
     ``server/`` sits at the root on Nuxt 4 and in the source directory on
-    Nuxt 3, so both are anchored.
+    Nuxt 3, so a known source directory anchors both.
     """
+    servers = ("",) if srcs == _NUXT_SRC else tuple(dict.fromkeys(("", *srcs)))
     entry = (
         *_under(srcs, "pages/*", "layouts/*", "middleware/*", "plugins/*"),
         *_under(srcs, "app.vue", "error.vue", *_js("app.config", "router.options")),
-        *dict.fromkeys(("server/*", *_under(srcs, "server/*"))),
+        *_under(servers, "server/*"),
     )
     review = (*_under(srcs, "components/*", "composables/*", "utils/*"), "shared/*")
     return entry, review
@@ -132,8 +133,14 @@ def nuxt_facts(manifest: NpmManifest, paths: Collection[str] | None = None) -> F
     if src is None:
         srcs = _NUXT_SRC
     else:
-        rel = posixpath.relpath(src, manifest.rel_dir or ".")
-        srcs = ("",) if rel == "." else (f"{glob.escape(rel)}/",)
+        root = manifest.rel_dir
+        rel = src[len(root) + 1 :] if root and src.startswith(root + "/") else src
+        if src == root:
+            srcs = ("",)
+        elif root and rel == src:
+            srcs = _NUXT_SRC  # a srcDir outside the package: nothing of ours to root at
+        else:
+            srcs = (f"{glob.escape(rel)}/",)
     entry, review = _nuxt_globs(srcs)
     if NUXT_I18N in manifest.dependencies:
         entry += _nuxt_i18n_globs(manifest, srcs)

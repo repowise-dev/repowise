@@ -273,6 +273,37 @@ def test_sveltekit_kit_files_move_the_convention_dirs(tmp_path: Path) -> None:
     assert not graph.has_edge("framework:sveltekit", "src/routes/+page.ts")
 
 
+def test_a_root_nuxt_3_app_roots_at_the_repo_root() -> None:
+    manifest = parse_npm_manifest({"dependencies": {"nuxt": "^3.12.0"}})
+    assert manifest is not None
+    ((facts, _pkg),) = js_frameworks(manifest, ["pages/index.vue", "app/x.ts"])
+    paths = ["layouts/default.vue", "app/layouts/default.vue", "server/api/a.ts"]
+    assert facts.entry_files("", paths) == ["layouts/default.vue", "server/api/a.ts"]
+
+
+@pytest.mark.parametrize(
+    ("config", "lib"),
+    [
+        ("export default { kit: { files: { lib: 'app/lib' } } };", "app/lib"),
+        # A comment, a template literal, a path out of the app: the default stays.
+        ("export default { kit: { files: { // lib: 'x'\n routes: 'r' } } };", "src/lib"),
+        ("export default { kit: { files: { lib: `${base}/lib` } } };", "src/lib"),
+        ("export default { kit: { files: { lib: '../shared' } } };", "src/lib"),
+        # Only kit.files counts, and only its own keys.
+        ("export default { files: { lib: 'no' }, kit: { files: { lib: 'yes' } } };", "yes"),
+        ("export default { kit: { files: { other: { lib: 'no' } } } };", "src/lib"),
+    ],
+)
+def test_kit_files_reads_only_plain_literals_under_kit(config: str, lib: str) -> None:
+    from dataclasses import replace
+
+    from repowise.core.ingestion.framework_facts import kit_files
+
+    manifest = parse_npm_manifest({"devDependencies": {"@sveltejs/kit": "2"}})
+    assert manifest is not None
+    assert kit_files(replace(manifest, configs={"svelte.config.js": config})).lib == lib
+
+
 def test_nuxt_locales_need_the_i18n_module(tmp_path: Path) -> None:
     repo = _write(tmp_path, {"package.json": _pkg({"nuxt": "4"})})
     assert convention_load_reasons(repo, ["i18n/locales/en.ts"]) == {}

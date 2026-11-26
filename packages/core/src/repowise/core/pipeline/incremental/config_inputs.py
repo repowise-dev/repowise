@@ -119,11 +119,14 @@ DATA_LANGUAGES = frozenset({"json", "yaml", "toml"})
 
 @cache
 def _registry_names() -> frozenset[str]:
-    """Every manifest or descriptor name a language spec declares, lowercased."""
+    """Every manifest or descriptor name a language spec declares, and every
+    framework config ``framework_facts`` reads beside a ``package.json``, lowercased."""
+    from repowise.core.ingestion.framework_facts import JS_FRAMEWORKS
     from repowise.core.ingestion.languages.registry import REGISTRY
 
     names = REGISTRY.manifest_filenames() | REGISTRY.descriptor_filenames()
-    return frozenset(name.lower() for name in names)
+    configs = {name for facts in JS_FRAMEWORKS for name in facts.config_files}
+    return frozenset(name.lower() for name in names | configs)
 
 
 @cache

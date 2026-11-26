@@ -103,7 +103,8 @@ export with strong evidence".
   its `package.json` depends on loads files from (React Email `emails/`,
   Next.js `pages/`, Remix `app/routes/`, Nuxt pages, layouts, plugins,
   middleware, `server/`, `@nuxtjs/i18n` locale files (its `langDir`) and
-  auto-imported `components/`, `composables/` and `utils/`, SvelteKit hooks and routes,
+  auto-imported `components/`, `composables/` and `utils/` under its `srcDir`,
+  SvelteKit hooks and routes where its `kit.files` puts them,
   Astro `src/pages/`, Expo Router `app/`).
 - **Weak resolution for the language in this repository:** the language is
   unknown to the graph, its import support is not full, none of its call edges

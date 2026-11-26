@@ -316,6 +316,9 @@ def test_chained_updates_keep_the_record_current(
         ("native/CMakeLists.txt", True),
         ("app/Package.swift", True),
         ("src/Shop/Shop.CSPROJ", True),
+        # Framework configs framework_facts reads (Nuxt srcDir, SvelteKit kit.files).
+        ("web/nuxt.config.mjs", True),
+        ("svelte.config.ts", True),
         (".github/workflows/ci.yml", False),
         ("src/locales/en.json", False),
         (".gitattributes", False),
