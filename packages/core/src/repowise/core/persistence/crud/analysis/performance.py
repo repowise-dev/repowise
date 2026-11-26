@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import and_, delete, func, not_, or_, select, text, update
+from sqlalchemy import case, delete, false, func, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...batches import chunked
@@ -140,9 +140,13 @@ def agent_hidden(model: Any = PerformanceOpportunity) -> Any:
     carried a row reads as hidden until the next update."""
     from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
 
-    return and_(
-        model.biomarker_type == MEASURED_HOTSPOT,
-        json_text(model.details_json, LEADS_WITH_STEP).is_(None),
+    # CASE, so PostgreSQL parses the details of measured hotspots only.
+    return case(
+        (
+            model.biomarker_type == MEASURED_HOTSPOT,
+            json_text(model.details_json, LEADS_WITH_STEP).is_(None),
+        ),
+        else_=false(),
     )
 
 
