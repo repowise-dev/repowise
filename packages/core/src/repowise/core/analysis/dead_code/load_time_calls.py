@@ -19,8 +19,9 @@ from .models import DeadCodeFindingData, DeadCodeKind
 _VALUE_KINDS = frozenset({"constant", "variable"})
 
 #: The assignment of a declaration: one ``=`` that is not part of ``==``,
-#: ``=>``, ``<=``, ``>=`` or ``!=``.
-_ASSIGN_RE = re.compile(r"(?<![=!<>:])=(?![=>])")
+#: ``=>``, ``<=``, ``!=`` or ``:=``. A ``>=`` is kept: ``Map<K, V>=new Map()``
+#: closes a type argument right before its ``=``.
+_ASSIGN_RE = re.compile(r"(?<![=!<:])=(?![=>])")
 
 #: An initializer that starts by calling something: ``f(``, ``a.b(``,
 #: ``Lazy::new(``, ``a?.b(``, ``new X(``, ``await f(``, ``f<T>(``. Function and
@@ -31,6 +32,13 @@ _CALL_RE = re.compile(
     r"(?!(?:function|async|func|fun|lambda)\b)"
     r"[A-Za-z_$][\w$]*(?:\s*(?:\.|::|\?\.)\s*[A-Za-z_$][\w$]*)*\s*(?:<[^()=;]*>)?\s*\("
 )
+
+#: A function literal's head (``function (``, ``async function* name(``,
+#: Go's ``func(``). Its body runs only when the literal is called right away.
+_FUNCTION_HEAD_RE = re.compile(r"(?:async\s+)?(?:function|func)\b")
+
+#: Comments between the ``=`` and the initializer (``/* @__PURE__ */ make()``).
+_LEADING_COMMENT_RE = re.compile(r"\s*(?:/\*.*?\*/|//[^\n]*)", re.DOTALL)
 
 #: What follows a parenthesized head when the head is called: ``(...)(`` (an
 #: IIFE) or ``(...).name(``.
@@ -78,32 +86,43 @@ def _initialized_by_call(
     except OSError:
         return True
     lines = source.splitlines()
-    head = "\n".join(lines[finding.start_line - 1 : finding.end_line])[:_HEAD_CHARS]
+    declaration = "\n".join(lines[finding.start_line - 1 : finding.end_line])
+    head = declaration[:_HEAD_CHARS]
     name = re.search(rf"(?<![\w$]){re.escape(finding.symbol_name or '')}(?![\w$])", head)
     if name is None:
         return False
     assign = _top_level_assignment(head, name.end())
     if assign is None:
         return False
-    value = head[assign:].lstrip()
+    value = _skip_leading_comments(declaration[assign:])
     if value.startswith("("):
-        return _parenthesized_head_is_called(value)
+        return _group_is_called(value, 0, "(", ")")
+    if _FUNCTION_HEAD_RE.match(value):
+        body = value.find("{")
+        return body != -1 and _group_is_called(value, body, "{", "}")
     return _CALL_RE.match(value) is not None
 
 
-def _parenthesized_head_is_called(value: str) -> bool:
-    """Whether ``(...)`` at the start of *value* is called (``(() => {...})()``).
+def _skip_leading_comments(value: str) -> str:
+    while (match := _LEADING_COMMENT_RE.match(value)) is not None:
+        value = value[match.end() :]
+    return value.lstrip()
 
-    An arrow head (``(a) =>``) or a grouped expression (``(60 * 1000)``) is
-    not. A group that does not close within the head read is a long body, most
-    likely an IIFE, and wrongly withholding one costs a deletion-ready row
-    where wrongly passing one costs a broken program.
+
+def _group_is_called(value: str, start: int, opener: str, closer: str) -> bool:
+    """Whether the group opening at *start* is called once it closes.
+
+    ``(() => {...})()`` and ``function () {...}()`` are; an arrow head
+    (``(a) =>``), a grouped expression (``(60 * 1000)``) and a function literal
+    that is only stored are not. A group that does not close within the
+    declaration is read as called: wrongly withholding one costs a
+    deletion-ready row, wrongly passing one costs a broken program.
     """
     depth = 0
-    for i, char in enumerate(value):
-        if char == "(":
+    for i in range(start, len(value)):
+        if value[i] == opener:
             depth += 1
-        elif char == ")":
+        elif value[i] == closer:
             depth -= 1
             if depth == 0:
                 return _CALLED_AFTER_PAREN_RE.match(value, i + 1) is not None

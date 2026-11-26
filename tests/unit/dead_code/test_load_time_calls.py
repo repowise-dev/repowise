@@ -48,6 +48,10 @@ def _marked(source: str, name: str, path: str = "src/actions.ts", kind: str = "c
         ("export const boot = (() => {\n  install();\n})();\n", "boot"),
         ("export const deep = (function () {\n  return f(g(h(1)));\n})();\n", "deep"),
         ("export const picked = (a || b).register({ id: 1 });\n", "picked"),
+        ("export const bare = function () {\n  install();\n}();\n", "bare"),
+        ("var setup = func() int {\n\treturn boot()\n}()\n", "setup"),
+        ("export const m: Map<string, number>=new Map();\n", "m"),
+        ("export const lazy = /* @__PURE__ */ createStore();\n", "lazy"),
         ("pub static CACHE: Lazy<Cache> = Lazy::new(Cache::default);\n", "CACHE"),
         ("export const m = registry?.add({ id: 1 });\n", "m"),
         ("export const box: Box<T = string> = make();\n", "box"),
@@ -70,6 +74,8 @@ def test_a_value_initialized_by_a_call_runs_at_load(source: str, name: str) -> N
         ("export const box: Box<T = string> = [];\n", "box"),
         ("export const TIMEOUT = (60 * 1000);\n", "TIMEOUT"),
         ("export const MASK = (1 << 20) - 1;\n", "MASK"),
+        ("export const g = function (n) {\n  return f(n);\n};\n", "g"),
+        ("var handler = func(w int) int {\n\treturn w\n}\n", "handler"),
     ],
 )
 def test_a_literal_or_function_value_does_not(source: str, name: str) -> None:
