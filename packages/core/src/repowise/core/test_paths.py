@@ -131,6 +131,33 @@ _REPO_METADATA_DIR = ".github"
 _SOURCE_TREE = "src"
 _FEATURE_NAMED_TESTS_DIR = "tests"
 
+# A file-system router turns each folder under its root into a URL segment, so
+# a ``test/`` folder there is the page or endpoint served at ``/test``
+# (``app/api/email/[id]/test/route.ts``), not a suite. Below a root, a
+# ``test``/``tests`` folder makes no test tree for a file the router serves; a
+# ``.test.``/``.spec.`` name and ``__tests__/`` still do, and a ``test/`` above
+# the root (a fixture app inside a suite) still counts. Each row is a root and
+# what a served file looks like beneath it:
+#   Next.js App Router ``app/``: the convention basenames (route, page, ...)
+#   Remix ``app/routes/``: any script file
+#   SvelteKit ``src/routes/``: the ``+`` files (``+page.svelte``, ``+server.ts``)
+#   Next.js, Nuxt and Astro ``pages/``: any script, component or Markdown page
+#   Nuxt/Nitro ``server/api/`` and ``server/routes/``: any script file
+# Which framework a repo runs is read from package.json in
+# ``ingestion/framework_facts.py``; this classifier is path-only and memoized,
+# so it keys on the root plus a served-file shape instead. Ceiling: a repo with
+# no router that keeps plainly named suites under ``pages/test/`` or
+# ``app/test/route.ts`` reads as production; passing framework facts in as
+# context would settle that case.
+_ROUTER_URL_TEST_SEGMENTS: frozenset[str] = frozenset({"test", "tests"})
+_NEXT_APP_ROUTE_STEMS: frozenset[str] = frozenset(
+    {
+        "page", "layout", "route", "template", "default", "error", "loading",
+        "not-found", "global-error", "forbidden", "unauthorized",
+    }
+)  # fmt: skip
+_PAGE_EXTS: frozenset[str] = frozenset({".vue", ".svelte", ".astro", ".md", ".mdx"})
+
 # The separators a directory segment splits into words on.
 _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 
@@ -431,21 +458,48 @@ def _is_test_dir(
 def _tree_segments(
     segments: list[str], original: list[str], filename: str
 ) -> tuple[list[str], list[str]]:
-    """*segments* with the ``src/**/tests/`` folders a JS-family file ignores blanked.
+    """*segments* with the folders that make no test tree for this file blanked.
 
-    Blanked rather than dropped, so the layout rules keep their positions.
+    Those are the ``src/**/tests/`` folders a JS-family file ignores and the
+    ``test/`` URL segments under a file-system router root. Blanked rather
+    than dropped, so the layout rules keep their positions.
     """
-    if (
-        PurePosixPath(filename.lower()).suffix not in _conventions().js_family_exts
-        or _SOURCE_TREE not in segments
-    ):
+    ext = PurePosixPath(filename.lower()).suffix
+    js_family = ext in _conventions().js_family_exts
+    src = segments.index(_SOURCE_TREE) if js_family and _SOURCE_TREE in segments else None
+    router = _router_root_end(segments, filename, ext, js_family)
+    if src is None and router is None:
         return segments, original
-    src = segments.index(_SOURCE_TREE)
-    keep = [i < src or seg != _FEATURE_NAMED_TESTS_DIR for i, seg in enumerate(segments)]
+    keep = [
+        not (src is not None and i > src and seg == _FEATURE_NAMED_TESTS_DIR)
+        and not (router is not None and i >= router and seg in _ROUTER_URL_TEST_SEGMENTS)
+        for i, seg in enumerate(segments)
+    ]
     return (
         [seg if k else "" for seg, k in zip(segments, keep, strict=True)],
         [seg if k else "" for seg, k in zip(original, keep, strict=True)],
     )
+
+
+def _router_root_end(segments: list[str], filename: str, ext: str, js_family: bool) -> int | None:
+    """Where the URL segments start under the nearest router root that serves this file."""
+    for i in range(len(segments) - 1, -1, -1):
+        seg, above = segments[i], segments[i - 1] if i else ""
+        if seg == "routes" and above == "src":
+            served = filename.startswith("+")
+        elif (seg == "routes" and above == "app") or (
+            seg in ("api", "routes") and above == "server"
+        ):
+            served = js_family
+        elif seg == "pages":
+            served = js_family or ext in _PAGE_EXTS
+        elif seg == "app":
+            served = js_family and PurePosixPath(filename.lower()).stem in _NEXT_APP_ROUTE_STEMS
+        else:
+            continue
+        if served:
+            return i + 1
+    return None
 
 
 def _has_test_segment(
