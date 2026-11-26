@@ -771,6 +771,21 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/benchmark/*.dart",
     # build_runner wires lib/builder.dart in via build.yaml, not imports.
     "*/lib/builder.dart",
+    # ---- Elixir / Mix conventions -----------------------------------------
+    # Read by path, never imported: the formatter and Credo read their config
+    # files, Mix evaluates ``config/*.exs`` at boot, and data files under
+    # ``priv/`` are loaded with ``Code.eval_file`` or ``File.read!``. A
+    # ``*/x/*`` glob misses a root-level ``x/``, so root and nested (umbrella
+    # ``apps/<app>/``) forms both need an entry. ``priv/repo/seeds.exs`` and
+    # migrations are already covered by ``*seed*`` and ``*migrations*``.
+    ".formatter.exs",
+    "*/.formatter.exs",
+    ".credo.exs",
+    "*/.credo.exs",
+    "config/*.exs",
+    "*/config/*.exs",
+    "priv/*.exs",
+    "*/priv/*.exs",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)

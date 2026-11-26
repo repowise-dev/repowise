@@ -242,3 +242,39 @@ def test_swiftpm_version_specific_manifests_not_reported_unreachable(tmp_path):
     assert "Package@swift-6.0.swift" not in unreachable
     assert "Package@swift-5.10.swift" not in unreachable
 
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # The formatter and Credo read their config files by name.
+        ".formatter.exs",
+        "apps/web/.formatter.exs",
+        ".credo.exs",
+        "apps/web/.credo.exs",
+        # Mix evaluates config/*.exs at boot.
+        "config/config.exs",
+        "config/runtime.exs",
+        "apps/web/config/dev.exs",
+        # Data files under priv/ are loaded by Code.eval_file or File.read!.
+        "priv/data/langs.exs",
+        "apps/web/priv/data/langs.exs",
+    ],
+)
+def test_elixir_tool_loaded_files_are_never_flagged(path):
+    assert never_flag_match(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "lib/demo.ex",
+        "lib/demo/langs.ex",
+        "apps/web/lib/web.ex",
+        "lib/demo/script.exs",
+        "mix_tasks/formatter.exs",
+    ],
+)
+def test_elixir_near_misses_stay_flaggable(path):
+    assert not never_flag_match(path)
