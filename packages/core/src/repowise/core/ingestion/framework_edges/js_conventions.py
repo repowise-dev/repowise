@@ -40,7 +40,7 @@ class _JsConventionHandler:
         js_paths = [p for p, parsed in parsed_files.items() if parsed.file_info.language in TS_JS_LANGUAGES]
         count = 0
         for manifest in npm_manifests(ctx.repo_path, js_paths):
-            for facts, _pkg in js_frameworks(manifest):
+            for facts, _pkg in js_frameworks(manifest, path_set):
                 count += add_entry_edges(graph, facts, manifest.rel_dir, path_set)
         return count
 
