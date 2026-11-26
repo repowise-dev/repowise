@@ -243,7 +243,6 @@ def test_swiftpm_version_specific_manifests_not_reported_unreachable(tmp_path):
     assert "Package@swift-5.10.swift" not in unreachable
 
 
-
 @pytest.mark.parametrize(
     "path",
     [
