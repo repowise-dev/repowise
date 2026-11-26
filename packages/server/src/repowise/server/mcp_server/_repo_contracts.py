@@ -45,6 +45,11 @@ _HEAD_FILES_LIMIT = 100
 _EXACT = "exact"
 
 
+def _is_http(link: dict) -> bool:
+    """Lines and comparisons speak of routes; gRPC, socket and topic links are not ones."""
+    return link.get("contract_type") == "http"
+
+
 @dataclass(frozen=True)
 class RepoContracts:
     """The repo's own contract store and the alias its rows were written under."""
@@ -62,7 +67,7 @@ class RepoContracts:
             links = [lk for lk in links if lk.get("provider_repo") == self.repo]
         else:
             links = self.enricher.get_contract_links_as_provider(self.repo, path)
-        return [lk for lk in links if lk.get("consumer_repo") == self.repo]
+        return [lk for lk in links if lk.get("consumer_repo") == self.repo and _is_http(lk)]
 
     def consumed(self, target: str) -> list[dict]:
         """In-repo links whose consumer is *target* (a file, or ``path::Symbol``)."""
@@ -70,7 +75,7 @@ class RepoContracts:
         links = [
             lk
             for lk in self.enricher.get_contract_links_as_consumer(self.repo, path)
-            if lk.get("provider_repo") == self.repo
+            if lk.get("provider_repo") == self.repo and _is_http(lk)
         ]
         if symbol:
             links = [lk for lk in links if lk.get("consumer_symbol_id") == target]
@@ -117,6 +122,7 @@ def load_repo_contracts(repo_path: Any) -> RepoContracts | None:
                 lk.get("provider_file") or ""
                 for lk in enricher.contract_links
                 if lk.get("match_type") == _EXACT
+                and _is_http(lk)
                 and lk.get("provider_repo") == repo
                 and lk.get("consumer_repo") == repo
             )
@@ -173,6 +179,14 @@ def _sites(store: RepoContracts, links: list[dict], side: str) -> list[dict]:
     return sorted(rows.values(), key=lambda r: (r["file"], r.get("line") or 0, r["route"]))
 
 
+def _places(rows: list[dict]) -> list[dict]:
+    """*rows* with one row per (file, line), first route kept."""
+    seen: dict[tuple[str, Any], dict] = {}
+    for row in rows:
+        seen.setdefault((row["file"], row.get("line")), row)
+    return list(seen.values())
+
+
 def _by_file(rows: list[dict]) -> list[tuple[str, list[dict]]]:
     """*rows* grouped by file, the file with the most rows first."""
     groups: dict[str, list[dict]] = {}
@@ -214,7 +228,8 @@ def _caller_line(
     exact = _exact(links)
     if not exact:
         return None
-    sites = _sites(store, exact, "consumer")
+    # A place is a (file, line): one line calling two routes is one place.
+    sites = _places(_sites(store, exact, "consumer"))
     routes = len({lk.get("contract_id") for lk in exact})
     named, shown = _named_sites(sites)
     text = (
@@ -469,7 +484,9 @@ def _compare(root: Path, store: RepoContracts, revspec: str | None) -> list[_Bre
         # beside a kept `/users/{id}`) means the callers' route may be served.
         if not cid or cid in breaks or any(_ends_with(k, cid) for k in head_keys):
             continue
-        sites = _sites(store, [lk for lk in links if lk.get("contract_id") == cid], "consumer")
+        sites = _places(
+            _sites(store, [lk for lk in links if lk.get("contract_id") == cid], "consumer")
+        )
         callers = [r for r in sites if r["file"] not in edited]
         if callers:
             breaks[cid] = _Break(cid, route.file_path, callers, len(sites) - len(callers))

@@ -357,3 +357,12 @@ def test_deleting_a_short_route_beside_a_kept_linked_one_breaks_nothing(repo: Pa
     _git(repo, "commit", "-q", "-am", "mount elsewhere, add a short route")
     _write(repo, ROUTES_FILE, mounted)
     assert _breaks(repo) == []
+
+
+def test_a_topic_link_is_not_called_a_route(repo: Path) -> None:
+    store_path = repo / ".repowise" / "contracts.json"
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    for link in data["contract_links"]:
+        link["contract_type"] = "topic"
+    store_path.write_text(json.dumps(data), encoding="utf-8")
+    assert _card(repo, ROUTES_FILE)[ROUTES_FILE] == {"target": ROUTES_FILE}
