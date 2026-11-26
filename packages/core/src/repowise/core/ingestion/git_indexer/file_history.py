@@ -496,6 +496,21 @@ _PR_PAREN_RE = re.compile(r"\(#(\d+)\)")
 _PR_TAG_RE = re.compile(r"#(\d+)")
 
 
+def _extract_backport_pr(
+    subject: str,
+    parens: list[str],
+    tag_match: re.Match[str] | None,
+) -> str | None:
+    if len(parens) >= 2:
+        return parens[0]
+    if tag_match and tag_match.group(1):
+        return tag_match.group(1)
+    if parens:
+        return parens[0]
+    all_prs = _PR_TAG_RE.findall(subject)
+    return all_prs[0] if all_prs else None
+
+
 def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool, str | None]:
     """Return ``(change_id, is_backport, pr_number)`` for *subject*.
 
@@ -510,18 +525,7 @@ def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool, str | No
     is_backport = len(parens) >= 2 or bool(tag_match) or bool(prefix_match)
 
     if is_backport:
-        original_pr: str | None = None
-        if len(parens) >= 2:
-            original_pr = parens[0]
-        elif tag_match and tag_match.group(1):
-            original_pr = tag_match.group(1)
-        elif parens:
-            original_pr = parens[0]
-        else:
-            all_prs = _PR_TAG_RE.findall(subject)
-            if all_prs:
-                original_pr = all_prs[0]
-
+        original_pr = _extract_backport_pr(subject, parens, tag_match)
         ckey = f"pr:{original_pr}" if original_pr else f"backport:{sha}"
         return ckey, True, original_pr
 
@@ -530,6 +534,42 @@ def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool, str | No
     ckey = f"sha:{sha}"
     pr_num = parens[0] if parens else None
     return ckey, False, pr_num
+
+
+def _group_by_author_change(
+    authored: list[_CommitRec],
+    credited: list[tuple[str, str]],
+    resolve: IdentityResolver,
+    seen_names: dict[str, str],
+) -> dict[tuple[str, str], list[_CommitRec]]:
+    by_change: dict[tuple[str, str], list[_CommitRec]] = {}
+    pr_keys: dict[tuple[str, str], str] = {}
+    parsed: list[tuple[_CommitRec, str, str, bool, str | None]] = []
+
+    for c, (name, email) in zip(authored, credited, strict=True):
+        key = resolve(name, email)
+        seen_names.setdefault(key, name)
+        ckey, is_bp, pr_num = _commit_change_key(c.subject, c.sha)
+        parsed.append((c, key, ckey, is_bp, pr_num))
+
+    for c, key, ckey, is_bp, pr_num in parsed:
+        if not is_bp:
+            by_change.setdefault((key, ckey), []).append(c)
+            if pr_num and (key, pr_num) not in pr_keys:
+                pr_keys[(key, pr_num)] = ckey
+
+    for c, key, ckey, is_bp, pr_num in parsed:
+        if not is_bp:
+            continue
+        target = pr_keys.get((key, pr_num)) if pr_num else None
+        if target:
+            by_change[(key, target)].append(c)
+        else:
+            if pr_num:
+                pr_keys[(key, pr_num)] = ckey
+            by_change.setdefault((key, ckey), []).append(c)
+
+    return by_change
 
 
 @dataclass
@@ -570,35 +610,9 @@ class _Authors:
 
         # Count one commit per change: backports to release branches of the same
         # change/fix must not count as multiple commits for the author.
-        by_author_change: dict[tuple[str, str], list[_CommitRec]] = {}
-        author_pr_change_key: dict[tuple[str, str], str] = {}
-
-        parsed: list[tuple[_CommitRec, str, str, bool, str | None]] = []
-        for c, (name, email) in zip(authored, credited, strict=True):
-            key = resolve(name, email)
-            authors.seen_names.setdefault(key, name)
-            ckey, is_backport, pr_num = _commit_change_key(c.subject, c.sha)
-            parsed.append((c, key, ckey, is_backport, pr_num))
-
-        # First pass: register ordinary commits by sha so distinct commits from the
-        # same PR (e.g. GitHub rebase-and-merge) count individually.
-        for c, key, ckey, is_backport, pr_num in parsed:
-            if not is_backport:
-                by_author_change.setdefault((key, ckey), []).append(c)
-                if pr_num and (key, pr_num) not in author_pr_change_key:
-                    author_pr_change_key[(key, pr_num)] = ckey
-
-        # Second pass: group backports with the original commit for that PR if present,
-        # or with other backports of the same PR.
-        for c, key, ckey, is_backport, pr_num in parsed:
-            if is_backport:
-                if pr_num and (key, pr_num) in author_pr_change_key:
-                    target_ckey = author_pr_change_key[(key, pr_num)]
-                    by_author_change[(key, target_ckey)].append(c)
-                else:
-                    if pr_num:
-                        author_pr_change_key[(key, pr_num)] = ckey
-                    by_author_change.setdefault((key, ckey), []).append(c)
+        by_author_change = _group_by_author_change(
+            authored, credited, resolve, authors.seen_names
+        )
 
         for (key, _ckey), group in by_author_change.items():
             authors.counts[key] += 1
