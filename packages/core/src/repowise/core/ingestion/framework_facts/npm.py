@@ -7,11 +7,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .astro import ASTRO
 from .nuxt import NUXT
 from .sveltekit import SVELTEKIT
 
 #: Frameworks whose config file beside the manifest the rules read.
-_CONFIGURED = (NUXT, SVELTEKIT)
+_CONFIGURED = (ASTRO, NUXT, SVELTEKIT)
 
 #: The ``package.json`` fields that name dependencies.
 NPM_DEP_FIELDS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
