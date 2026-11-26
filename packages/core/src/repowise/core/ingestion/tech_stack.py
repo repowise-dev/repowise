@@ -4,7 +4,7 @@ The one answer to "which frameworks does this repo use": the framework-edge
 handlers ask it (through ``DetectionContext.uses``), and the persisted tech
 list and the editor files show it. A JS framework is recognised from every
 production ``package.json``, nested ones included, through
-:mod:`.framework_facts`, so a Next.js or Nuxt app in a monorepo folder counts
+:mod:`.framework_facts.presence`, so a Next.js or Nuxt app in a monorepo folder counts
 the same as one at the root.
 
 No DB or network dependencies: reads manifest files at and near the repo root.
@@ -19,20 +19,17 @@ from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 
-from repowise.core.code_origin import path_origin
-from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.core.repo_formatters import declares_ruff_format
 
 from .composer import COMPOSER_JSON, read_composer
 from .framework_facts import (
-    NpmManifest,
+    NPM_STACK_NAMES,
+    convention_framework_names,
     detect_php_framework,
-    js_frameworks,
-    npm_manifests,
+    nested_frameworks,
     parse_npm_manifest,
 )
 from .languages.registry import REGISTRY as _LANG_REGISTRY
-from .package_roots import scan_package_manifests
 
 
 @dataclass(frozen=True)
@@ -41,31 +38,6 @@ class TechStackItem:
     version: str | None
     category: str  # "language" | "framework" | "database" | "infra"
 
-
-# package.json dependency -> (display name, category).
-_NODE_FRAMEWORKS: dict[str, tuple[str, str]] = {
-    "next": ("Next.js", "framework"),
-    "react": ("React", "framework"),
-    "vue": ("Vue.js", "framework"),
-    "svelte": ("Svelte", "framework"),
-    "astro": ("Astro", "framework"),
-    "@angular/core": ("Angular", "framework"),
-    "express": ("Express", "framework"),
-    "fastify": ("Fastify", "framework"),
-    "hono": ("Hono", "framework"),
-    "nestjs": ("NestJS", "framework"),
-    "@nestjs/core": ("NestJS", "framework"),
-    "prisma": ("Prisma", "database"),
-    "@prisma/client": ("Prisma", "database"),
-    "drizzle-orm": ("Drizzle ORM", "database"),
-    "typeorm": ("TypeORM", "database"),
-    "mongoose": ("Mongoose", "database"),
-    "sequelize": ("Sequelize", "database"),
-    "tailwindcss": ("Tailwind CSS", "framework"),
-    "vite": ("Vite", "infra"),
-    "webpack": ("Webpack", "infra"),
-    "turbo": ("Turborepo", "infra"),
-}
 
 # Keyword searched for in pyproject.toml -> (display name, category).
 _PYTHON_FRAMEWORKS: dict[str, tuple[str, str]] = {
@@ -318,50 +290,19 @@ def _node_items(repo_path: Path) -> Iterator[_Item]:
             yield "Node.js", _node_engine(pkg), "language"
             yield from _node_framework_items(all_deps)
         if (root := parse_npm_manifest(pkg)) is not None:
-            yield from _convention_framework_items(root)
+            for name in convention_framework_names(root):
+                yield name, None, "framework"
         # TypeScript stands on its own: many repos use it through tsconfig.json alone.
         if "typescript" in all_deps or _has_tsconfig(repo_path):
             yield "TypeScript", _dep_version(all_deps, "typescript"), "language"
-    for manifest in _nested_npm_manifests(repo_path):
-        # Frameworks only: a nested package's build tools and ORM are its own.
-        nested = _node_framework_items(dict.fromkeys(manifest.dependencies))
-        yield from (item for item in nested if item[2] == "framework")
-        yield from _convention_framework_items(manifest)
+    for name in nested_frameworks(repo_path):
+        yield name, None, "framework"
 
 
 def _node_framework_items(all_deps: dict) -> Iterator[_Item]:
-    for dep_key, (display, cat) in _NODE_FRAMEWORKS.items():
+    for dep_key, (display, cat) in NPM_STACK_NAMES.items():
         if dep_key in all_deps:
             yield display, _dep_version(all_deps, dep_key), cat
-
-
-def _convention_framework_items(manifest: NpmManifest) -> Iterator[_Item]:
-    """The frameworks :mod:`.framework_facts` recognises in *manifest* (Nuxt, Remix, ...)."""
-    for facts, _pkg in js_frameworks(manifest):
-        yield facts.name, None, "framework"
-
-
-def _nested_npm_manifests(repo_path: Path) -> list[NpmManifest]:
-    """Every production ``package.json`` below the root, as :mod:`.framework_facts` reads it.
-
-    The package-root scan already skips vendored trees, nested checkouts and
-    ignored directories, and the repo's ``exclude_patterns`` drop what the
-    index leaves out. A manifest in a test fixture, an example or a tooling
-    folder is not the repo's stack, so only production origins count.
-    """
-    spec = build_exclude_spec(repo_path)
-    dirs = {
-        rel
-        for rel, names in scan_package_manifests(repo_path).items()
-        if "package.json" in names
-        and path_origin(f"{rel}/package.json") == "production"
-        and not is_excluded(f"{rel}/package.json", spec)
-    }
-    if not dirs:
-        return []
-    # npm_manifests also reads every ancestor directory; keep only the chosen ones.
-    paths = [f"{rel}/package.json" for rel in sorted(dirs)]
-    return [m for m in npm_manifests(repo_path, paths) if m.rel_dir in dirs]
 
 
 def _dep_table(pkg: dict, field: str) -> dict:
@@ -385,7 +326,7 @@ def _is_node_app(pkg: dict, all_deps: dict) -> bool:
     return bool(
         any(pkg.get(field) for field in _NODE_RUNTIME_FIELDS)
         or _node_engine(pkg)
-        or any(dep_key in all_deps for dep_key in _NODE_FRAMEWORKS)
+        or any(dep_key in all_deps for dep_key in NPM_STACK_NAMES)
     )
 
 
