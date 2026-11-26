@@ -239,9 +239,10 @@ def packages_vulns(min_tier: str | None, fail_on: str, repo: str | None, fmt: st
     if rows is None:
         click.echo(_NO_DOCUMENT, err=True)
         raise SystemExit(2)
+    # The gate reads every stored advisory; --tier only narrows the listing.
+    failing = fail_on != "never" and any(r.rank <= _TIER_RANK[fail_on] for r in rows)
     if min_tier is not None:
         rows = [r for r in rows if r.rank <= _TIER_RANK[min_tier]]
-    failing = fail_on != "never" and any(r.rank <= _TIER_RANK[fail_on] for r in rows)
     if fmt == "json":
         emit_json({"advisories": [r.as_dict() for r in rows], "fail_on": fail_on, "failed": failing})
     elif fmt == "sarif":

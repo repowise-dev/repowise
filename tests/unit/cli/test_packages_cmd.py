@@ -102,6 +102,12 @@ def test_vulns_lists_tiers_and_gates(repo):
         ["packages", "vulns", "--path", str(repo), "--tier", "package_called", "--format", "json"]
     )
     assert json.loads(called.output)["advisories"] == []
+    # --tier narrows the listing only: the gate still sees the imported advisory.
+    hidden = CliRunner().invoke(
+        cli,
+        ["packages", "vulns", "--path", str(repo), "--tier", "package_called", "--fail-on", "imported"],
+    )
+    assert hidden.exit_code == 1
 
     sarif = _invoke(["packages", "vulns", "--path", str(repo), "--format", "sarif"])
     log = json.loads(sarif.output)
