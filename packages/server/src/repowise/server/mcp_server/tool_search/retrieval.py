@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 
 from repowise.core.persistence.database import get_session
@@ -45,6 +46,7 @@ from repowise.server.mcp_server._query_shape import (
 from repowise.server.mcp_server._retrieval_rank import boost_named_paths
 from repowise.server.mcp_server.tool_search_symbols import file_path_index
 
+from .concept_lift import definition_lifts, lift_named_rows
 from .ordering import _collapse_by_file
 from .ranking import (
     _dedup_decisions,
@@ -58,6 +60,7 @@ from .ranking import (
 from .serve import (
     _assign_confidence,
     _attach_paths,
+    _drop_internal_ranking_fields,
     _load_page_info,
     _page_language,
     _serve_snippets,
@@ -124,6 +127,24 @@ def _symbol_leg_target(fused: dict[str, dict], page_id: str) -> str:
         if best is None or entry["_rrf"] > fused[best]["_rrf"]:
             best = pid
     return best or page_id
+
+
+def _apply_lifts(fused: dict[str, dict], lifts: dict[str, float], entry_rows: list[dict]) -> None:
+    """Credit each concept lift to its file's best fused page, seeding one no leg made."""
+    for page_id, lift in lifts.items():
+        target = _symbol_leg_target(fused, page_id)
+        if target in fused:
+            fused[target]["_rrf"] += lift / _RRF_SCORE_SCALE
+            fused[target]["_named"] = True
+    for row in entry_rows:
+        target = _symbol_leg_target(fused, row["page_id"])
+        if target not in fused:
+            hit = SimpleNamespace(**row, snippet=(row.get("summary") or "")[:200])
+            fused[target] = _fused_entry(hit)
+            # No leg reached it: the index's curated entry points did.
+            fused[target]["_sources"].add("entry_point")
+        fused[target]["_rrf"] += row["lift"] / _RRF_SCORE_SCALE
+        fused[target]["_named"] = True
 
 
 def _fused_entry(r) -> dict:
@@ -206,8 +227,8 @@ async def _fused_retrieve(
     ``semantic=False`` runs without the vector leg, for a caller whose
     question an exact identifier hit already answers.
     """
-    vec_results, fts_results, sym_results, name_results = await _run_legs(
-        ctx, query, fetch_limit, semantic=semantic
+    (vec_results, fts_results, sym_results, name_results), entry_rows = await asyncio.gather(
+        _run_legs(ctx, query, fetch_limit, semantic=semantic), _pkg.entry_point_rows(ctx, query)
     )
 
     fused: dict[str, dict] = {}
@@ -229,6 +250,8 @@ async def _fused_retrieve(
         entry = fused.setdefault(_symbol_leg_target(fused, r.page_id), _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + _SYMBOL_LEG_RRF_K)
         entry["_sources"].add("symbol")
+        # Coverage reranking judges the page on the names that earned it, as in get_answer.
+        entry["_symbol_names"] = getattr(r, "symbol_names", ())
     # Files whose file name the query's words spell, weighted as a name match.
     # It adds files the other legs missed and never reorders a page they found.
     # A name of three or more words the query spells in full weighs like a page hit.
@@ -239,6 +262,7 @@ async def _fused_retrieve(
         entry = fused.setdefault(target, _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + (_RRF_K if full else _FILENAME_LEG_RRF_K))
         entry["_sources"].add("filename")
+    _apply_lifts(fused, definition_lifts(query, sym_results), entry_rows)
 
     output: list[dict] = []
     for entry in fused.values():
@@ -302,12 +326,14 @@ async def _search_single_repo(
             len(path_index.paths),
             score_key="relevance_score",
         )
+        lift_named_rows(output, score_key="relevance_score")
 
     _downweight_test_pages(output, query, origins)
     _sort_demoting_noise(output, query, minor, origins)
     output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
+    _drop_internal_ranking_fields(output)
     return _collapse_by_file(output)[:limit]
 
 
