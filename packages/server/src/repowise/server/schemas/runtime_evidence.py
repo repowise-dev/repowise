@@ -224,6 +224,43 @@ class MeasuredGroup(_Strict):
     total: int
 
 
+class BenchmarkRun(_Strict):
+    """A workload's newest benchmark run."""
+
+    run_id: str
+    workload_class: str
+    workload_name: str
+    commit: str | None
+    measured_at: str | None
+    age_days: int | None
+
+
+class BenchmarkRow(_Strict):
+    """One benchmark's result: what it measures and its numbers per operation."""
+
+    run_id: str
+    #: The benchmark as the tool names it, from its own name on.
+    benchmark: str
+    #: The benchmark function; null when it did not resolve to an indexed symbol.
+    benchmark_symbol_id: str | None
+    #: The production function it measures; null when its name and calls do not say.
+    measures: str | None
+    #: Time per operation (the median the tool gave), in ``unit``.
+    time: float | None
+    unit: str | None
+    #: Exact where the tool reports them.
+    allocs_per_op: float | None
+    bytes_per_op: float | None
+
+
+class BenchmarkGroup(_Strict):
+    runs: list[BenchmarkRun]
+    #: At most ``limit`` rows per run, those naming a function first.
+    rows: list[BenchmarkRow]
+    #: Results across the group's runs before the ``limit`` cut.
+    total: int
+
+
 class MeasuredResponse(_Strict):
     """What each workload's newest run that ranks anything ranks, grouped by workload class."""
 
@@ -231,11 +268,13 @@ class MeasuredResponse(_Strict):
     basis: Literal["measured", "unknown"]
     status: EvidenceStatusToken
     command: str | None
-    #: Runs in a workload class that may lead (benchmark, entry point, load
-    #: test, production).
+    #: Runs in a workload class that may lead (entry point, load test,
+    #: production).
     measured: MeasuredGroup | None
     #: ``unit_test`` runs, listed apart.
     measured_in_tests: MeasuredGroup | None
+    #: Benchmark results, per benchmark: a benchmark profile never ranks.
+    benchmarks: BenchmarkGroup | None = None
 
 
 InsideKind = Literal["own", "repo", "wait", "import", "native", "library"]

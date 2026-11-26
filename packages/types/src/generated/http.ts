@@ -432,6 +432,34 @@ export interface ArtifactUpdateRequest {
   pinned: boolean;
 }
 
+export interface BenchmarkGroup {
+  runs: BenchmarkRun[];
+  rows: BenchmarkRow[];
+  total: number;
+}
+
+/** One benchmark's result: what it measures and its numbers per operation. */
+export interface BenchmarkRow {
+  run_id: string;
+  benchmark: string;
+  benchmark_symbol_id: string | null;
+  measures: string | null;
+  time: number | null;
+  unit: string | null;
+  allocs_per_op: number | null;
+  bytes_per_op: number | null;
+}
+
+/** A workload's newest benchmark run. */
+export interface BenchmarkRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+}
+
 export interface BlastRadiusRequest {
   changed_files: string[];
   max_depth?: number;
@@ -3307,6 +3335,7 @@ export interface MeasuredResponse {
   command: string | null;
   measured: MeasuredGroup | null;
   measured_in_tests: MeasuredGroup | null;
+  benchmarks?: BenchmarkGroup | null;
 }
 
 /** One ranked production function of one run. */

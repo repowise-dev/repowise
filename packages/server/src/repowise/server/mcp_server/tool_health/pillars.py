@@ -101,7 +101,8 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     """The ``performance_measured`` block: ranked functions with their runs.
 
     One run per workload, its newest. Each group (``rows`` from workload
-    classes that may lead, ``in_tests`` from unit-test runs) lists
+    classes that may lead, ``in_tests`` from unit-test runs, ``benchmarks``
+    from benchmark results with the function each measures) lists
     :data:`_MEASURED_CAP` rows per run, or ``limit`` up to
     :data:`_MEASURED_PAGE_CAP`, beside its total. A row an open static cause
     with production evidence sits on names it in ``on_static_findings``.
@@ -135,8 +136,31 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
         for run in found["runs"]:
             if run["run_id"] in shown:
                 runs.setdefault(run["run_id"], _measured_run(run))
+    benchmarks = view.get("benchmarks")
+    if benchmarks:
+        rows = benchmarks["rows"] if cap else []
+        block["benchmarks"] = [_benchmark_row(row) for row in rows]
+        block["benchmarks_total"] = benchmarks["total"]
+        # Each row's run, as for ranked rows: which workload it came from.
+        shown = {row["run_id"] for row in rows}
+        for run in benchmarks["runs"]:
+            if run["run_id"] in shown:
+                runs.setdefault(run["run_id"], _benchmark_run(run))
     block["runs"] = list(runs.values())
     return block
+
+
+def _benchmark_row(row: dict[str, Any]) -> dict[str, Any]:
+    """``benchmark``, the function it ``measures`` and its numbers per op; unset ones left out."""
+    keys = ("benchmark", "measures", "run_id", "time", "unit", "allocs_per_op")
+    return {k: row[k] for k in keys if row.get(k) is not None}
+
+
+def _benchmark_run(run: dict[str, Any]) -> dict[str, Any]:
+    out = {f: run[f] for f in ("run_id", "workload_class", "workload_name", "commit", "age_days")}
+    if out["commit"]:
+        out["commit"] = out["commit"][:12]
+    return out
 
 
 def _measured_run(run: dict[str, Any]) -> dict[str, Any]:

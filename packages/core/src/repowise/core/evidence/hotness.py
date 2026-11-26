@@ -40,6 +40,11 @@ Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
   ranked. A row measured under another symbol id follows its lineage to the
   current id; evidence is never re-mapped by line or name.
 
+A ``benchmark`` run gets no rows at all: a run gives each benchmark about the
+same time, so a function's share of it tracks how many benchmarks target the
+function, not what it costs the product. Benchmarks speak through their own
+results (``evidence.benchmarks``).
+
 Only ``production`` code (``code_origin``) gets rows: test, tooling and
 generated code stays in the evidence tables and is never listed; each row
 counts how many such functions its run measured (``run_unlisted``). A
@@ -77,7 +82,9 @@ from .status import run_share, time_split
 #: Tier values, weakest first. None is user copy: a surface words its own claim.
 TIERS = ("measured", "ranked", "lead_candidate")
 #: Workload classes whose evidence may lead the queue (``unit_test`` never does).
-LEAD_CLASSES = frozenset({"benchmark", "entry_point", "load_test", "production"})
+LEAD_CLASSES = frozenset({"entry_point", "load_test", "production"})
+#: The class whose profiles never rank: what it measured is benchmark results.
+BENCHMARK_CLASS = "benchmark"
 
 
 @dataclass(frozen=True)
@@ -218,10 +225,13 @@ def derive_hotness(
 
     *costs* holds each run's cost rows by run id, *origins* the
     ``code_origin`` of every current symbol's file and *head_commit* the
-    indexed commit. Pure, so the rules are tested without a store.
+    indexed commit. A ``benchmark`` run is skipped. Pure, so the rules are
+    tested without a store.
     """
     rows_by_symbol: dict[str, list[_Row]] = {}
     for run in runs:
+        if run.workload_class == BENCHMARK_CLASS:
+            continue
         for row in _run_rows(run, costs.get(run.id, ()), current, origins, head_commit, rules):
             rows_by_symbol.setdefault(row.symbol_id, []).append(row)
 
@@ -632,6 +642,7 @@ async def refresh_symbol_hotness(
 
 
 __all__ = [
+    "BENCHMARK_CLASS",
     "LEAD_CLASSES",
     "TIERS",
     "CostFacts",

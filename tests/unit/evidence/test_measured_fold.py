@@ -26,7 +26,8 @@ def test_fold_measured_keeps_leading_and_test_runs_apart() -> None:
     fold = fold_measured(
         [
             (_run("api", "entry_point"), [_row("a", 1, "lead_candidate"), _row("b", 3)]),
-            (_run("bench", "benchmark"), [_row("b", 2), _row("c", 1)]),
+            # A benchmark run never leads, even from rows stored before it stopped ranking.
+            (_run("bench", "benchmark"), [_row("b", 2, "lead_candidate"), _row("c", 1)]),
             (_run("tests", "unit_test"), [_row("a", 1), _row("t", 2, "lead_candidate")]),
             # Neither a leading class nor unit_test: never read.
             (_run("other", "integration_test"), [_row("x", 1, "lead_candidate")]),
@@ -35,12 +36,12 @@ def test_fold_measured_keeps_leading_and_test_runs_apart() -> None:
         ]
     )
     assert fold == MeasuredFold(
-        measured={"a": "api", "b": "bench", "c": "bench"},
+        measured={"a": "api", "b": "api"},
         hot=frozenset({"a"}),
-        workloads=("api", "bench"),
+        workloads=("api",),
         in_tests={"a": "tests", "t": "tests"},
         hot_in_tests=frozenset({"t"}),
-        ranks={"a": 1, "b": 2, "c": 1},
+        ranks={"a": 1, "b": 3},
     )
 
 

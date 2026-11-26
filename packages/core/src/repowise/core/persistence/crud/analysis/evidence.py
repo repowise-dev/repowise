@@ -246,6 +246,50 @@ async def benchmark_results(
     return out
 
 
+async def benchmark_runs(session: AsyncSession, repository_id: str) -> list[EvidenceRun]:
+    """The repository's ``benchmark`` kind runs (results, not profiles)."""
+    result = await session.execute(
+        select(EvidenceRun).where(
+            EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "benchmark"
+        )
+    )
+    return list(result.scalars())
+
+
+async def benchmark_callees(
+    session: AsyncSession, repository_id: str, benchmarks: Iterable[str | None]
+) -> dict[str, list[str]]:
+    """The production functions each of *benchmarks* calls directly, by
+    benchmark symbol id: graph ``calls`` edges whose target sits in a file
+    whose ``code_origin`` is ``production``. One statement per chunk."""
+    from ....evidence.ingest import load_origins
+    from ....ingestion.symbol_identity import file_of_symbol
+    from ...models import GraphEdge
+
+    wanted = sorted({b for b in benchmarks if b})
+    out: dict[str, list[str]] = {}
+    for i in range(0, len(wanted), _BATCH_SIZE):
+        result = await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id)
+            .where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.source_node_id.in_(wanted[i : i + _BATCH_SIZE]),
+                GraphEdge.edge_type == "calls",
+            )
+            .order_by(GraphEdge.source_node_id, GraphEdge.target_node_id)
+        )
+        for source, target in result:
+            out.setdefault(source, []).append(target)
+    origins = await load_origins(
+        session, repository_id, {file_of_symbol(t) for found in out.values() for t in found}
+    )
+    return {
+        source: kept
+        for source, found in out.items()
+        if (kept := [t for t in found if origins.get(file_of_symbol(t)) == "production"])
+    }
+
+
 async def hotness_inputs(
     session: AsyncSession, repository_id: str
 ) -> tuple[list[RunFacts], dict[str, list[CostFacts]]] | None:
@@ -411,7 +455,8 @@ async def ranked_by_workload(
 async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     """Why :func:`ranked_by_workload` has no row, as one token.
 
-    ``no_runtime_data``: no profile run is stored. ``ahead_of_index``: every
+    ``no_runtime_data``: no profile run is stored outside the ``benchmark``
+    class. ``ahead_of_index``: every
     function the stored runs mapped is stale, and a workload's newest run was
     added after the newest run at the indexed commit
     (``evidence.hotness.commit_position``): it ranks once the index reaches
@@ -424,7 +469,10 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     few samples in production code, or no production frame).
     """
     has_profile = select(EvidenceRun.id).where(
-        EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "profile"
+        EvidenceRun.repository_id == repository_id,
+        EvidenceRun.kind == "profile",
+        # A benchmark profile never ranks (``evidence.hotness``).
+        EvidenceRun.workload_class != "benchmark",
     )
     if (await session.execute(has_profile.limit(1))).first() is None:
         return "no_runtime_data"
@@ -508,6 +556,7 @@ async def _run_marks(session: AsyncSession, repository_id: str) -> tuple[list[An
             EvidenceRun.id,
             EvidenceRun.kind,
             EvidenceRun.workload_name,
+            EvidenceRun.workload_class,
             EvidenceRun.environment,
             EvidenceRun.commit_sha,
             EvidenceRun.measured_at,
@@ -519,11 +568,16 @@ async def _run_marks(session: AsyncSession, repository_id: str) -> tuple[list[An
 
 
 async def _newest_ahead_of_index(session: AsyncSession, repository_id: str) -> bool:
-    """A profile workload's newest complete run is ahead of the index."""
-    from ....evidence.hotness import commit_position, newest_runs
+    """A profile workload's newest complete run is ahead of the index (a
+    benchmark profile never ranks, so it is not one)."""
+    from ....evidence.hotness import BENCHMARK_CLASS, commit_position, newest_runs
 
     runs, head = await _run_marks(session, repository_id)
-    newest = newest_runs(r for r in runs if r.kind == "profile" and not r.mapping_partial)
+    newest = newest_runs(
+        r
+        for r in runs
+        if r.kind == "profile" and r.workload_class != BENCHMARK_CLASS and not r.mapping_partial
+    )
     return any(commit_position(r, runs, head) == "ahead" for r in runs if r.id in newest)
 
 
@@ -601,6 +655,9 @@ def _full_row(table: Table, row: Mapping[str, Any]) -> dict[str, Any]:
 __all__ = [
     "EVIDENCE_ROW_TABLES",
     "EvidenceWrite",
+    "benchmark_callees",
+    "benchmark_results",
+    "benchmark_runs",
     "delete_evidence_runs",
     "hotness_for_symbols",
     "hotness_inputs",

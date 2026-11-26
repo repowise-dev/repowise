@@ -27,7 +27,7 @@ materialized = test_performance_levels.materialized
 
 
 #: Run id -> workload class of the runs the tests store.
-RUNS = {"r1": "entry_point", "r2": "benchmark", "r3": "unit_test"}
+RUNS = {"r1": "entry_point", "r2": "load_test", "r3": "unit_test"}
 
 
 def _hot(symbol_id: str, *, run: str = "r1", rank: int = 1, **over) -> dict:
@@ -119,14 +119,14 @@ async def test_rows_carry_their_basis_and_cap(setup_mcp, session, materialized):
     rows = [_hot(LOGIN)]
     rows += [_hot(f"src/app.py::f{i}", rank=i + 2) for i in range(3)]
     rows += [_hot(SHARED, rank=5)]
-    # A benchmark ranks the same function: it keeps its own row there.
+    # A load test ranks the same function: it keeps its own row there.
     rows += [_hot(LOGIN, run="r2")]
     rows += [_hot("src/app.py::t", run="r3")]
     await _seed(session, materialized, rows)
 
     block = await _measured()
     assert block["basis"] == "measured"
-    # Three per run, so the benchmark's row is not cut away by the other run's.
+    # Three per run, so the load test's row is not cut away by the other run's.
     # Runs measured at the same time come in a stable order (newest, then id).
     assert [(r["run_id"], r["rank"]) for r in block["rows"]] == [
         ("r2", 1), ("r1", 1), ("r1", 2), ("r1", 3),
@@ -317,4 +317,41 @@ def test_a_run_names_its_newer_unranked_run_only_when_it_has_one() -> None:
     newer = {"run_id": "r2", "commit": "d" * 40, "measured_at": None, "reason": "ahead_of_index"}
     assert _measured_run({**run, "newer_run": newer})["newer_run"] == {
         "commit": "d" * 12, "reason": "ahead_of_index",
+    }
+
+
+async def test_benchmarks_list_compact_with_the_function_each_measures(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_health import pillars
+
+    row = {
+        "run_id": "b1", "benchmark": "BenchmarkGetMapFromFormData/Small",
+        "benchmark_symbol_id": "context_test.go::BenchmarkGetMapFromFormData",
+        "measures": "context.go::getMapFromFormData", "time": 105.1, "unit": "ns",
+        "allocs_per_op": 1.0, "bytes_per_op": 48.0,
+    }
+    unnamed = {**row, "benchmark": "Benchmark404", "measures": None, "allocs_per_op": None}
+    run = {"run_id": "b1", "workload_class": "benchmark", "workload_name": "go bench results .",
+           "commit": "c" * 40, "measured_at": None, "age_days": 2}
+    other = {**run, "run_id": "b0"}
+    view = {"benchmarks": {"runs": [run, other], "rows": [row, unnamed], "total": 7}}
+
+    async def fake(*_a, **_k):
+        return view
+
+    monkeypatch.setattr(pillars, "measured_costs", fake)
+    block = await pillars._measured_block(None, "repo", SimpleNamespace(limit=10, limit_explicit=False))
+    assert block == {
+        "basis": "measured",
+        # Only the run a shown row came from.
+        "runs": [{"run_id": "b1", "workload_class": "benchmark",
+                  "workload_name": "go bench results .", "commit": "c" * 12, "age_days": 2}],
+        "benchmarks": [
+            {"benchmark": "BenchmarkGetMapFromFormData/Small",
+             "measures": "context.go::getMapFromFormData", "run_id": "b1", "time": 105.1,
+             "unit": "ns", "allocs_per_op": 1.0},
+            {"benchmark": "Benchmark404", "run_id": "b1", "time": 105.1, "unit": "ns"},
+        ],
+        "benchmarks_total": 7,
     }

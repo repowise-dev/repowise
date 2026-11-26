@@ -3,6 +3,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import type {
+  BenchmarkRun,
   EvidenceRunSummary,
   EvidenceRunsResponse,
   MeasuredResponse,
@@ -88,6 +89,8 @@ export interface RuntimeEvidenceView {
   testRun: MeasuredRun | null;
   /** Ranked functions in that run, when it is the only one; else 0. */
   testsTotal: number;
+  /** Each workload's newest benchmark run, listed apart: a benchmark never ranks. */
+  benchmarkRuns: BenchmarkRun[];
   /** Every stored run, newest first, once read; empty when the read failed. */
   runs: EvidenceRunSummary[] | undefined;
   /** The commit the index is at, as the runs route names it. */
@@ -109,10 +112,10 @@ export interface TestsView {
 }
 
 /**
- * Which workload the tab opens on: real work before a benchmark of a piece
- * of it, newest first within a class (the server's order).
+ * Which workload the tab opens on: production before a load test before an
+ * entry point, newest first within a class (the server's order).
  */
-const OPENS_ON = ["production", "load_test", "entry_point", "benchmark"];
+const OPENS_ON = ["production", "load_test", "entry_point"];
 const opensOn = (runs: MeasuredRun[]) =>
   [...runs].sort(
     (a, b) => OPENS_ON.indexOf(a.workload_class) - OPENS_ON.indexOf(b.workload_class),
@@ -147,6 +150,7 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
     pick: setPicked,
     testRun: tests?.runs[0] ?? null,
     testsTotal: tests && tests.runs.length === 1 ? tests.total : 0,
+    benchmarkRuns: overview?.benchmarks?.runs ?? [],
     // A failed read, or a host that cannot list runs, is no runs, so the
     // notices fall back to the status alone.
     runs: runs?.runs ?? (runsError || !adapter.listEvidenceRuns ? [] : undefined),

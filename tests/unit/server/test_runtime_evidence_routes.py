@@ -149,6 +149,7 @@ async def test_no_evidence_reads_unknown_with_the_setup_command(
         "command": "repowise evidence setup --format json",
         "measured": None,
         "measured_in_tests": None,
+        "benchmarks": None,
     }
     assert (await ev_client.get(f"/api/repos/{repo_id}/evidence/runs")).json() == {
         "reference_commit": HEAD,

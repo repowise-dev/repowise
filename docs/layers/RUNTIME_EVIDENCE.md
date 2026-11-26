@@ -250,7 +250,7 @@ they reach.
 | Class | The run | What its numbers stand for |
 |---|---|---|
 | `unit_test` | The test suite, profiled or timed | Where time goes while tests run; test-shaped, not production-shaped |
-| `benchmark` | A benchmark run | One series per benchmark, named by the benchmark; never the cost of the production functions it calls |
+| `benchmark` | A benchmark run | One series per benchmark, named by the benchmark; never the cost of the production functions it calls. A benchmark profile ranks no function and never leads: each benchmark gets about the same time, so a function's share tracks how many benchmarks target it. Benchmark results list per benchmark, with the function it measures (a function it calls directly whose name its own name carries) and its time and allocations per operation |
 | `entry_point` | A real command or a request replay, profiled | Where time goes on that path |
 | `load_test` | A load test, profiled | Where time goes under that load |
 | `production` | Not accepted from the CLI | Reserved for a verified source; `--class production` is refused |

@@ -1,8 +1,9 @@
 """Runtime targets for ``evidence setup``: what to profile in each unit, and how.
 
 A target is a real entry point, a benchmark or the unit-test suite, in that
-order: a claim may not exceed its workload class, and only the first two may
-lead. Entry points come from their owners: console scripts from the unit's
+order: a claim may not exceed its workload class, and only an entry point may
+lead (a benchmark speaks through its own results, ``evidence.benchmarks``).
+Entry points come from their owners: console scripts from the unit's
 ``pyproject.toml`` (:func:`~repowise.core.generation.flow_entries.console_scripts`),
 the stored entry-point flag ranked by
 :func:`~repowise.core.generation.entry_points.rank_entry_point_paths`, Go

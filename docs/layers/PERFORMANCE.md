@@ -174,10 +174,13 @@ Everything else is counted by reason, not hidden:
 | `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
 | `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
 
-Runtime evidence overrides `cold_path` and `cold_role`. When the newest run of a
-benchmark, entry point, load test or production workload ranks a cause's loop owner
+Runtime evidence overrides `cold_path` and `cold_role`. When the newest run of an
+entry point, load test or production workload ranks a cause's loop owner
 among its costliest functions, the cause stays in the queue and its `measured` facet
-names that workload. A unit-test run never does this. Such a cause is still never
+names that workload. A unit-test run never does this, and neither does a
+benchmark profile: a benchmark run gives each benchmark about the same time, so a
+function's share of it tracks how many benchmarks target it, not what it costs.
+Such a cause is still never
 the one Fix first, Do next or the queue's lead name.
 
 Query counts are exact, so they can confirm or contradict a database cause. The
@@ -195,8 +198,8 @@ Telling `grows` from `flat` needs the scope's `items` in the evidence document
 ([Runtime Evidence](RUNTIME_EVIDENCE.md)). The cause stays listed in every case.
 
 A cause carries `confirmed` when runtime evidence backs it. The value is
-`query_count` when its query counts grow with the items, or `measured` when a
-benchmark, entry point, load test or production workload measured its loop owner
+`query_count` when its query counts grow with the items, or `measured` when an
+entry point, load test or production workload measured its loop owner
 above the lead bar. That bar is a share of the run that clears the
 `evidence.lead_min_share` and `evidence.lead_min_lower_bound` settings, or a rank in
 `evidence.lead_min_runs` runs. A function that is only ranked confirms nothing.
@@ -275,8 +278,10 @@ MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 ranked by self time (waits excluded), each with its workload class, age, sample
 size, interval and where the run's time went (repo code itself, waits,
 libraries)
-([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). With no profile
-stored it says `no_runtime_data` and names `repowise evidence setup`.
+([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). Benchmarks are listed
+apart under `benchmarks`: each result with the production function it measures
+and its time and allocations per operation. A benchmark profile ranks nothing.
+With no profile stored it says `no_runtime_data` and names `repowise evidence setup`.
 
 ## See also
 

@@ -157,7 +157,7 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     async_session.add_all(
         [
             _run(repo.id, "r1"),
-            _run(repo.id, "r2", cls="benchmark", day=16),
+            _run(repo.id, "r2", cls="load_test", day=16),
             _run(repo.id, "r3", cls="unit_test"),
             # On ``load``, with production evidence: linked on its row.
             _finding(repo.id, 35, "perf3_load"),
@@ -178,7 +178,7 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
         [
             _hot("serve"),
             _hot("load", rank=2, tier="lead_candidate"),
-            # The benchmark ranks ``serve`` too: listed under both workloads.
+            # The load test ranks ``serve`` too: listed under both workloads.
             _hot("helper", run="r2"),
             _hot("serve", run="r2", rank=2),
             _hot("thin", run="r3"),
@@ -371,7 +371,7 @@ async def test_a_finding_with_no_cause_id_links_nothing(async_session) -> None:
 async def test_the_limit_applies_per_run_so_no_workload_is_cut_away(async_session) -> None:
     repo = await insert_repo(async_session)
     await _seed_code(async_session, repo.id)
-    async_session.add_all([_run(repo.id, "r1"), _run(repo.id, "r2", cls="benchmark", day=16)])
+    async_session.add_all([_run(repo.id, "r1"), _run(repo.id, "r2", cls="load_test", day=16)])
     await async_session.flush()
     await replace_workload_hotness(
         async_session,
@@ -773,3 +773,85 @@ async def test_a_stored_benchmark_among_the_nearest_tests_is_never_listed(async_
     row = (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"][0]
 
     assert (row["tests"], row["tests_basis"]) == (["tests/test_load.py::test_load"], "call_graph")
+
+
+async def test_benchmarks_list_each_result_with_the_function_it_measures(async_session) -> None:
+    from repowise.core.persistence.crud import unranked_reason
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    bench = "benchmarks/test_app.py::test_load"
+    # A benchmark-class profile is stored too: it never ranks, so it is no runtime data.
+    async_session.add(_run(repo.id, "p1", cls="benchmark"))
+    run = _run(repo.id, "b1", cls="benchmark")
+    run.kind = "benchmark"
+    async_session.add(run)
+    async_session.add_all(
+        [
+            GraphEdge(repository_id=repo.id, source_node_id=bench, target_node_id=target,
+                      edge_type="calls")
+            # The fixture's helper is no production code, so it measures nothing.
+            for target in (f"{APP}::load", "benchmarks/conftest.py::load")
+        ]
+    )
+    await async_session.flush()
+    async_session.add_all(
+        [
+            EvidenceBenchmarkResult(
+                run_id="b1", repository_id=repo.id, benchmark_key=f"{bench}[small]",
+                symbol_id=bench, unit="s", median=0.002, allocs_per_op=None,
+            ),
+            EvidenceBenchmarkResult(
+                run_id="b1", repository_id=repo.id, benchmark_key="other", symbol_id=None,
+                unit="s", median=0.5,
+            ),
+        ]
+    )
+    await async_session.flush()
+    view = await measured_costs(async_session, repo.id, now=NOW, limit=5)
+    assert set(view) == {"benchmarks"}
+    group = view["benchmarks"]
+    assert group["total"] == 2
+    assert [r["run_id"] for r in group["runs"]] == ["b1"]
+    assert [(r["benchmark"], r["measures"], r["time"]) for r in group["rows"]] == [
+        ("test_load[small]", f"{APP}::load", 0.002),
+        ("other", None, 0.5),
+    ]
+    assert await unranked_reason(async_session, repo.id) == "no_runtime_data"
+    # Another run's id keeps nothing.
+    assert await measured_costs(async_session, repo.id, now=NOW, run_id="r1") is None
+
+
+async def test_a_benchmark_profile_never_reads_as_evidence_ahead_of_the_index(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.evidence import _newest_ahead_of_index
+
+    repo = await insert_repo(async_session)
+    repo.head_commit = "c" * 40
+    at_head = _run(repo.id, "p1", day=1)
+    at_head.ingested_at = datetime(2026, 11, 1, tzinfo=UTC)
+    bench = _run(repo.id, "p2", cls="benchmark", day=2)
+    bench.workload_name = at_head.workload_name
+    bench.commit_sha = "d" * 40
+    bench.ingested_at = datetime(2026, 11, 2, tzinfo=UTC)
+    async_session.add_all([at_head, bench])
+    await async_session.flush()
+    assert await _newest_ahead_of_index(async_session, repo.id) is False
+
+
+async def test_an_older_benchmark_run_id_keeps_nothing(async_session) -> None:
+    from repowise.core.persistence.models import EvidenceBenchmarkResult
+
+    repo = await insert_repo(async_session)
+    for rid, day in (("b0", 1), ("b1", 2)):
+        run = _run(repo.id, rid, cls="benchmark", day=day)
+        run.kind, run.workload_name = "benchmark", "go bench"
+        async_session.add(run)
+    await async_session.flush()
+    async_session.add_all(
+        EvidenceBenchmarkResult(run_id=rid, repository_id=repo.id, benchmark_key="k", median=1.0)
+        for rid in ("b0", "b1")
+    )
+    await async_session.flush()
+    assert await measured_costs(async_session, repo.id, now=NOW, run_id="b0") is None
+    view = await measured_costs(async_session, repo.id, now=NOW, run_id="b1")
+    assert [r["run_id"] for r in view["benchmarks"]["rows"]] == ["b1"]
