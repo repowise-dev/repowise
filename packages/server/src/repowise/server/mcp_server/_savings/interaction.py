@@ -171,6 +171,7 @@ STAGES = frozenset(
         "prior_fixes",
         "measured",
         "cross_repo",
+        "in_repo_contracts",
         "branch_overlap",
     }
 )

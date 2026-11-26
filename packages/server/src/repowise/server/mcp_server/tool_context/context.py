@@ -12,8 +12,10 @@ The split keeps the cached prompt prefix small on multi-turn agent sessions:
 Optional ``include`` parameter widens the response:
   - include=["full_doc"]  -> full wiki markdown content, plus the page's agent
                             digest (questions, identifiers, git signals)
-  - include=["callers"]   → who calls this symbol (symbol targets only)
-  - include=["callees"]   → what this symbol calls (symbol targets only)
+  - include=["callers"]   → who calls this symbol (symbol targets only); on a
+                            route file or handler, its in-repo HTTP callers
+  - include=["callees"]   → what this symbol calls (symbol targets only); on a
+                            client file or function, the in-repo routes it calls
   - include=["references"]→ every live edit site of a symbol (definition,
                             imports, calls, other mentions) as line numbers
                             by kind per file, and whether the list is
@@ -93,6 +95,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
 from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._packages import is_package_target, package_cards
+from repowise.server.mcp_server._repo_contracts import attach_contract_lines
 from repowise.server.mcp_server._why_pointer import attach_why_pointer
 from repowise.server.mcp_server._workspace_routing import (
     needs_routing,
@@ -240,6 +243,7 @@ async def get_context(
         await attach_why_pointer(response, ctx, targets)
     _attach_whole_files(response, results)
     _attach_cross_repo(response, ctx.alias)
+    await asyncio.to_thread(attach_contract_lines, response, ctx.path, include_set)
     drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)

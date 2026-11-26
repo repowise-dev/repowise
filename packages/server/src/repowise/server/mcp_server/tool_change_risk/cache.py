@@ -115,8 +115,21 @@ async def cache_key(
         repr(include_paths),
         str(baseline),
         await _index_inputs(ctx),
+        # The in-repo contract block reads this store; a rewrite is a new answer.
+        _contracts_stamp(root),
     )
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
+def _contracts_stamp(root: str) -> str:
+    """``.repowise/contracts.json``'s mtime and size, or ``-`` without one."""
+    from repowise.core.workspace.repo_contracts import repo_contracts_path
+
+    try:
+        stat = repo_contracts_path(Path(root)).stat()
+    except OSError:
+        return "-"
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
 def _live_inputs(root: str, revspec: str) -> tuple[str, ...] | None:
@@ -154,7 +167,13 @@ def branch_inputs(root: str) -> str | None:
     ``origin/HEAD`` or a trunk among them, and names the checked-out branch.
     """
     tips = _git_out(
-        root, ["for-each-ref", "--format=%(objectname) %(refname) %(symref)", "refs/heads", "refs/remotes"]
+        root,
+        [
+            "for-each-ref",
+            "--format=%(objectname) %(refname) %(symref)",
+            "refs/heads",
+            "refs/remotes",
+        ],
     )
     # Exit 1 is a detached HEAD, which is an answer, not a failure.
     branch = _git_out(root, ["symbolic-ref", "-q", "HEAD"], ok=(0, 1))

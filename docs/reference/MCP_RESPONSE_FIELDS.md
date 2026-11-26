@@ -42,7 +42,7 @@ Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
 |-------|---------|
 | `contract_version` | Response contract version (currently 4); the version of record even when not emitted |
 | `timing_ms` | Tool wall time |
-| `block_timing_ms` | `get_change_risk` only: wall ms per block (`score`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `measured`, `cross_repo`, `branch_overlap`, `health_delta`). Some blocks overlap, so they need not sum to `timing_ms` |
+| `block_timing_ms` | `get_change_risk` only: wall ms per block (`score`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `measured`, `cross_repo`, `in_repo_contracts`, `branch_overlap`, `health_delta`). Some blocks overlap, so they need not sum to `timing_ms` |
 | `index_age_days` | Whole days since the index last synced, the same time `repowise status` reports |
 | `indexed_commit`, `live_head` | Short SHAs of the index and of the checkout. A lean reply keeps `indexed_commit` when the index is behind HEAD or more than 7 days old and no `stale_warning` names it |
 | `index_behind` | `true` if HEAD moved, `false` if not; absent if the comparison could not run |
@@ -206,6 +206,7 @@ Per target, under `targets`:
 | `resolved_to`, `note` | A `path::Name` miss answered with the file's card |
 | `did_you_mean` | Symbol miss: up to 5 closest ids, in that file or repo-wide |
 | `cross_repo` | Workspace: `co_changes_with` in other repos, contract `consumers` / `providers` |
+| `in_repo_contracts` | With `contracts.in_repo` on: one line. On a file or handler serving routes, how many routes are called from how many places in this repo, naming up to 3 as `file:line`; on a client file or function, the routes it calls and the handler file and line of up to 3. Exact links only, and absent when a file has none; a candidate link shows only in the rows, labelled. `include=["callers"]` adds `in_repo_callers` (route, `file`, `line`, `symbol_id`, the far end's `origin`, `match_type` when not exact), `include=["callees"]` adds `in_repo_routes`, each up to 20 with `_total`. Absent on a card with workspace contract rows |
 | `*_basis` | Beside an empty `callers`, `callees` or `used_by`: language, resolved call edges, guess share |
 
 Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `dropped_targets` with `recovery` when the budget dropped targets.
@@ -499,6 +500,7 @@ In workspace mode the directive adds `will_break_consumers` (structural reach on
 | `branch_overlap` | Other branches editing the same files |
 | `independent_changes` | The diff is several unrelated changes |
 | `cross_repo` | Workspace: consumers and breaking changes |
+| `in_repo_contracts` | With `contracts.in_repo` on, only when the change stops serving a route that callers in this repo call (removed, or its path or method changed): one line naming the route and up to 3 callers as `file:line`. Callers in files the change also edits are not counted. `include=["findings"]` adds `in_repo_breaks` (up to 5 routes: `contract_id`, `provider_file`, up to 5 `callers`, `callers_total`, `callers_edited_in_change`) |
 | `status` | `"nothing_to_score"` on an empty diff |
 
 - **`next_actions`** names only what the diff needs: inspect a finding at `path:line`, run the selected tests, cover changed lines. Skipped files read in `reasons` and `health_delta.skipped`, a missing test map in `impacted_tests.status`, and coverage measured before the change in `patch_coverage.freshness` with `file_counts.stale_file`.
