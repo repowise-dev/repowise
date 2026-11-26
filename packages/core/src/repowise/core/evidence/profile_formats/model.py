@@ -70,17 +70,24 @@ class StackTally:
         )
 
 
-def frame_language(path: str) -> FrameLanguage:
+def frame_language(path: str, function: str = "") -> FrameLanguage:
     """The language a frame's file is written in, from its extension.
 
     Answered by the language registry; ``unknown`` for a file with no
-    extension (a runtime frame such as ``<built-in>``). Any language but the
-    three :func:`~repowise.core.frame_resolver.resolve_frames` checks is
-    skipped there as ``unsupported_language``.
+    extension (a runtime frame such as ``<built-in>``). A frame with no such
+    file whose *function* reads as a JVM ``class.method``
+    (:func:`~repowise.core.frame_resolver.parse_jvm_frame`) is ``java``: a JVM
+    profile names classes, not files. Any language but the five
+    :func:`~repowise.core.frame_resolver.resolve_frames` checks (Go, Python,
+    JavaScript, Java, Kotlin) is skipped there as ``unsupported_language``.
     """
+    from repowise.core.frame_resolver import parse_jvm_frame
+
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     dot = name.rfind(".")
     tag = REGISTRY.from_extension(name[dot:].lower()) if dot > 0 else "unknown"
+    if tag == "unknown" and function and parse_jvm_frame(function) is not None:
+        tag = "java"
     return cast("FrameLanguage", tag)
 
 

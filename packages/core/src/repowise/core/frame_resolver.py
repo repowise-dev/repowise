@@ -19,7 +19,7 @@ from __future__ import annotations
 import posixpath
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote
@@ -33,7 +33,12 @@ if TYPE_CHECKING:
 
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-FrameLanguage = Literal["go", "python", "javascript"]
+FrameLanguage = Literal["go", "python", "javascript", "java", "kotlin"]
+
+#: JVM frames: no file of their own, placed by class name (:func:`place_jvm_frames`).
+_JVM = frozenset({"java", "kotlin"})
+#: Source files a JVM class may be compiled from, as its frames are placed on them.
+JVM_SOURCE_SUFFIXES = (".java", ".kt")
 
 #: Why a frame was not joined. A frame is counted under exactly one.
 SkipReason = Literal[
@@ -45,7 +50,7 @@ SkipReason = Literal[
     "vendored",  # a dependency installed inside the checkout (node_modules, a venv)
     "not_indexed",  # under the root, but the index has no such file
     "no_span",  # no indexed symbol holds (JavaScript: starts at) the line
-    "ambiguous",  # JavaScript: more than one indexed function starts on the line
+    "ambiguous",  # several indexed functions fit and nothing in the frame picks one
     "no_second_signal",  # the frame lacks the field its language is checked on
     "no_source",  # JavaScript: the start line could not be read to check the column
     "second_signal_mismatch",
@@ -64,12 +69,14 @@ _JS_HEAD_RE = re.compile(r"[\w$.\s=:*#\[\]\ufeff]*")
 class ProfileFrame:
     """One frame as the profiler wrote it.
 
-    *line* is 1-based: the executing line for Go and Python, the function's
-    start line for JavaScript (V8 records no executing line). *column* is the
-    1-based column V8 gives for a function's start. *start_line* is the
-    function's start line where the format records it (Go ``s=``). *function*
-    is the name the profiler gave: Python's ``co_qualname`` (or ``co_name``),
-    Go's function name, V8's ``functionName``.
+    *line* is 1-based: the executing line for Go, Python and the JVM, the
+    function's start line for JavaScript (V8 records no executing line); 0
+    when the profiler wrote none. *column* is the 1-based column V8 gives for
+    a function's start. *start_line* is the function's start line where the
+    format records it (Go ``s=``). *function* is the name the profiler gave:
+    Python's ``co_qualname`` (or ``co_name``), Go's function name, V8's
+    ``functionName``, a JVM ``class.method`` with its parameter types or
+    descriptor when the profiler wrote them (:func:`parse_jvm_frame`).
     """
 
     path: str
@@ -135,7 +142,12 @@ def resolve_frames(
     to be a dotted tail of the symbol's; JavaScript joins by position only:
     exactly one indexed function starts on the frame's line, and nothing but
     names, keywords, ``=`` and ``:`` stands before the frame's column, so it is
-    the first function the line can start.
+    the first function the line can start. A JVM frame (Java, Kotlin) needs
+    the method name and class to agree with the innermost method at its line;
+    with no line it joins by name (:func:`_name_join`): the one method of that
+    name in that class, else the one whose parameter count (and types) match
+    the frame's, else ``ambiguous``. A frame is never put on one overload of
+    several by name alone.
 
     Folding, when the frame's own function has no symbol: a Go closure
     (``Outer.func1``) whose start line lies inside ``Outer``; a Python frame
@@ -143,8 +155,12 @@ def resolve_frames(
     ``<genexpr>`` or a comprehension, charged to the symbol its enclosing name
     matches; a JavaScript function that starts on a body line of an indexed
     function. Module bodies (Python ``<module>``, the Go package initializer,
-    the CommonJS wrapper at 1:1) resolve to the file, and a Python frame on a
-    decorator line resolves to the function it decorates.
+    the CommonJS wrapper at 1:1, a JVM static initializer) resolve to the
+    file, and a Python frame on a decorator line resolves to the function it
+    decorates. A JVM lambda (``lambda$name$0``, Kotlin ``name$lambda$0``) and a
+    method of an anonymous class (``Outer$1``) fold into the method at their
+    line; compiler-made accessors and bridges (``access$000``, ``$default``,
+    ``$$Lambda``, ``$$`` proxies) are ``generated``.
     """
     paths = _PathMap(root, symbols_by_file, dirty_paths)
     reader = _read_once(read_lines) if read_lines is not None else None
@@ -267,9 +283,10 @@ def _resolve(
     rel = paths.relative(frame.path)
     if rel is None:
         return "outside_root"
-    if frame.language not in ("go", "python", "javascript"):
+    if frame.language not in ("go", "python", "javascript", *_JVM):
         return "unsupported_language"
-    if frame.line < 1:
+    # A JVM frame without a line still has its class, method and parameters.
+    if frame.line < 1 and frame.language not in _JVM:
         return "bad_line"
     indexed = paths.indexed(rel)
     if indexed is not None:
@@ -293,6 +310,8 @@ def _resolve(
         outcome = _javascript(frame, symbols, lines)
     elif frame.language == "go":
         outcome = _go(frame, symbols)
+    elif frame.language in _JVM:
+        outcome = _jvm(frame, symbols, kotlin=rel.endswith(".kt"))
     else:
         outcome = _python(frame, symbols, lines)
     return (rel, outcome) if isinstance(outcome, tuple) else outcome
@@ -415,6 +434,261 @@ def _decorated(
 def _qualname_tail(frame_name: str, qualified_name: str) -> bool:
     """Whether *frame_name* (``Flask.__init__``) ends *qualified_name* at a dot."""
     return qualified_name == frame_name or qualified_name.endswith("." + frame_name)
+
+
+# -- JVM (Java, Kotlin) ----------------------------------------------------------
+
+# ``pkg.Outer$Inner.method`` (``jfr print``, jfrconv ``--dot``) or
+# ``pkg/Outer$Inner.method`` (async-profiler), then parameter types
+# ``(Object, int[])`` or a descriptor ``(Ljava/lang/Object;[I)V``, then a line
+# ``:42`` and async-profiler's frame-type mark ``_[j]`` in either order. The
+# outermost class name starts upper case, as Java and Kotlin classes do; that
+# keeps Go's ``main.main`` and a bare ``runtime.mallocgc`` out.
+_JVM_FRAME_RE = re.compile(
+    r"(?P<package>(?:[A-Za-z_$][\w$]*[./])*?)"
+    r"(?P<cls>[A-Z$][\w$]*)\."
+    r"(?P<method>[A-Za-z_$][\w$]*|<init>|<clinit>)"
+    r"(?P<params>\([^()]*\)\S*?)?"
+    r"(?::(?P<line>\d+))?(?:_\[\w+\])?(?::(?P<line2>\d+))?"
+)
+_JVM_PRIMITIVES = {
+    "B": "byte", "C": "char", "D": "double", "F": "float",
+    "I": "int", "J": "long", "S": "short", "Z": "boolean", "V": "void",
+}
+_JVM_DESCRIPTOR_TYPE_RE = re.compile(r"\[*(?:[BCDFIJSZ]|L[^;]+;)")
+# javac's ``lambda$name$0`` and Kotlin's ``name$lambda$0`` (or ``name$lambda-0``).
+_JVM_LAMBDA_RE = re.compile(r"lambda\$(?P<a>\w+?)\$\d+|(?P<b>\w+?)\$lambda[$-]\d+")
+
+
+@dataclass(frozen=True)
+class JvmFrameName:
+    """A JVM frame's name, split: ``com.acme`` / ``Outer$1`` / ``read`` / ``("JsonReader",)``."""
+
+    package: tuple[str, ...]
+    #: The class as the JVM names it, nested classes after ``$``: ``Outer$Inner``, ``Outer$1``.
+    cls: str
+    method: str
+    #: Erased simple parameter types (``int[]``, ``Object``); None when the frame has none.
+    params: tuple[str, ...] | None = None
+    #: The line written into the name (``:42``); 0 when there is none.
+    line: int = 0
+
+
+def parse_jvm_frame(text: str) -> JvmFrameName | None:
+    """*text* as a JVM frame name, or None when it is not one."""
+    m = _JVM_FRAME_RE.fullmatch(text.strip())
+    if m is None:
+        return None
+    package = tuple(p for p in re.split(r"[./]", m["package"]) if p)
+    params = _jvm_params(m["params"]) if m["params"] else None
+    return JvmFrameName(package, m["cls"], m["method"], params, int(m["line"] or m["line2"] or 0))
+
+
+def _jvm_params(text: str) -> tuple[str, ...]:
+    """``(Object, int[])`` or ``(Ljava/lang/Object;[I)V`` -> ``("Object", "int[]")``."""
+    inner, _, returns = text[1:].partition(")")
+    if returns:
+        # A descriptor: the return type follows the parameters.
+        out = []
+        for t in _JVM_DESCRIPTOR_TYPE_RE.findall(inner):
+            dims = len(t) - len(t.lstrip("["))
+            t = t[dims:]
+            base = _JVM_PRIMITIVES.get(t) or re.split(r"[/$]", t[1:-1])[-1]
+            out.append(base + "[]" * dims)
+        return tuple(out)
+    return tuple(
+        re.split(r"[.$]", p.strip().replace("...", "[]"))[-1] for p in inner.split(",") if p.strip()
+    )
+
+
+def place_jvm_frames(
+    frames: Sequence[ProfileFrame], *, root: str, files: Collection[str]
+) -> tuple[ProfileFrame, ...]:
+    """*frames* with each JVM frame put on the indexed source file of its class.
+
+    A JVM profile names classes, not files. A JVM frame whose path is empty or
+    a bare file name (``Gson.java``) gets the one file in *files*
+    (repo-relative) whose path ends in its package directories and outermost
+    class: ``com.acme.Cache$Entry.get`` -> ``.../com/acme/Cache.java`` or
+    ``.kt``, and a Kotlin file class ``UtilKt`` -> ``.../Util.kt``. A line
+    written into the name (``:42``) becomes the frame's line. With no such
+    file, or more than one (two modules declaring one class), the frame keeps
+    its path and stays outside the checkout. Ceiling: a Kotlin class in a file
+    named otherwise, or outside its package directories, is not found.
+    """
+    by_name: dict[str, list[str]] = {}
+    for rel in files:
+        by_name.setdefault(rel.rsplit("/", 1)[-1], []).append(rel)
+    base = posixpath.normpath(root.replace("\\", "/")).rstrip("/")
+    placed: dict[tuple[str, ...], str | None] = {}
+    out: list[ProfileFrame] = []
+    for frame in frames:
+        name = parse_jvm_frame(frame.function) if frame.language in _JVM else None
+        if name is None or "/" in frame.path.replace("\\", "/"):
+            out.append(frame)
+            continue
+        outer = name.cls.split("$", 1)[0]
+        key = (*name.package, outer)
+        if key not in placed:
+            stems = [outer, outer[:-2]] if outer.endswith("Kt") and len(outer) > 2 else [outer]
+            tails = ["/".join((*name.package, stem + ext)) for stem in stems for ext in JVM_SOURCE_SUFFIXES]
+            found = {
+                rel
+                for tail in tails
+                for rel in by_name.get(tail.rsplit("/", 1)[-1], ())
+                if rel == tail or rel.endswith("/" + tail)
+            }
+            placed[key] = found.pop() if len(found) == 1 else None
+        rel = placed[key]
+        if rel is None:
+            out.append(frame)
+            continue
+        language: FrameLanguage = "kotlin" if rel.endswith(".kt") else "java"
+        out.append(replace(frame, path=f"{base}/{rel}", language=language, line=frame.line or name.line))
+    return tuple(out)
+
+
+async def load_jvm_source_paths(session: Any, repository_id: str) -> list[str]:
+    """The indexed ``.java`` and ``.kt`` files, for :func:`place_jvm_frames`."""
+    from sqlalchemy import or_, select
+
+    from repowise.core.persistence.models import HealthFileMetric, WikiSymbol
+
+    paths: set[str] = set()
+    for model in (WikiSymbol, HealthFileMetric):
+        rows = await session.execute(
+            select(model.file_path).distinct().where(
+                model.repository_id == repository_id,
+                or_(*(model.file_path.like(f"%{suffix}") for suffix in JVM_SOURCE_SUFFIXES)),
+            )
+        )
+        paths.update(r[0] for r in rows)
+    return sorted(paths)
+
+
+def _jvm(frame: ProfileFrame, symbols: Sequence[IndexedSymbol], *, kotlin: bool) -> _Hit | SkipReason:
+    name = parse_jvm_frame(frame.function)
+    if name is None:
+        return "no_second_signal"
+    method, segments = name.method, name.cls.split("$")
+    # Compiler-made trampolines with no source of their own: the caller keeps the time.
+    if (
+        method.startswith("access$")
+        or method.endswith("$default")
+        or method == "$values"
+        or "" in segments  # ``Outer$$Lambda``, ``Outer$$EnhancerBySpringCGLIB$$1a2b``
+    ):
+        return "generated"
+    if method == "<clinit>":
+        return (None, False)
+    named = [s for s in segments if not s.isdigit()]
+    anonymous = segments[-1].isdigit()
+    lam = _JVM_LAMBDA_RE.fullmatch(method)
+    enclosing = (lam["a"] or lam["b"]) if lam else None
+    owner = segments[-1]
+    if kotlin and len(segments) == 1 and owner.endswith("Kt"):
+        owner = ""  # a top-level function: the index nests it in no class
+    init = method == "<init>"
+    wanted = named[-1] if init else method
+    callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+    # A compiled parameter count is the source's for a Java method, and for a
+    # top-level class's constructor; not for a nested class's (its outer
+    # instance), an enum's (name and ordinal) or Kotlin's (an extension's receiver).
+    by_count = not kotlin and (not init or (len(segments) == 1 and any(
+        s.name == wanted and s.kind == "class" for s in symbols
+    )))
+    if frame.line < 1:
+        if lam is not None or anonymous:
+            return "no_second_signal"  # only a line tells which lambda or anonymous class
+        return _name_join(callables, owner=owner, name=wanted, params=name.params, by_count=by_count)
+    symbol = symbol_at(callables, frame.line)
+    if symbol is None:
+        if enclosing == "static" or (anonymous and init):
+            # A lambda or anonymous class in a static field: load-time code, the file's.
+            return (None, True)
+        if init and not anonymous:
+            # A field initializer runs in the constructor, on the field's line.
+            return _name_join(callables, owner=owner, name=wanted, params=name.params, by_count=by_count)
+        if lam is None and (anonymous or any(
+            s.start_line == frame.line and s.name == named[-1] for s in symbols
+        )):
+            # javac puts a bridge method (a generic override's erased twin) on its class's line.
+            return "generated"
+        return "no_span"
+    if lam is None and not anonymous and symbol.name == wanted and _id_parent(symbol) == owner:
+        return (symbol, False)
+    if enclosing is not None:
+        parent = named[-1] if enclosing == "new" else enclosing
+        if symbol.name == parent and _jvm_in_class(named, symbol):
+            return (symbol, True)
+        return "second_signal_mismatch"
+    if anonymous and _jvm_in_class(named, symbol):
+        # The index holds an anonymous class's methods under the method or field
+        # that declares it (``create::TypeAdapter::read``). Its constructor runs
+        # where it is declared, and a Kotlin lambda class (``Foo$bar$1``) is
+        # named after its function: both fold into the method at the line.
+        if not init and symbol.name == method:
+            return (symbol, False)
+        if init or (len(segments) > 1 and segments[-2] == symbol.name):
+            return (symbol, True)
+        # On the declaring line: a bridge javac wrote, called through the interface.
+        return "generated"
+    return "second_signal_mismatch"
+
+
+def _id_parent(symbol: IndexedSymbol) -> str:
+    """The scope an id nests *symbol* in: ``A.java::Adapter::write#1`` -> ``Adapter``; ``""`` for none."""
+    from repowise.core.ingestion.symbol_identity import id_segment_name, local_symbol_id
+
+    segments = local_symbol_id(symbol.symbol_id).split("::")
+    return id_segment_name(segments[-2]) if len(segments) > 1 else ""
+
+
+def _jvm_in_class(named: Sequence[str], symbol: IndexedSymbol) -> bool:
+    """Whether the frame's named classes appear, in order, in *symbol*'s qualified name."""
+    parts = iter(symbol.qualified_name.split("."))
+    return all(any(p == n for p in parts) for n in named)
+
+
+def _name_join(
+    callables: Sequence[IndexedSymbol],
+    *,
+    owner: str,
+    name: str,
+    params: Sequence[str] | None,
+    by_count: bool,
+) -> _Hit | SkipReason:
+    """The one callable named *name* directly in *owner*, for a frame its line does not join.
+
+    The seam for any language whose frames carry a type and a method (a JVM
+    collapsed stack without lines, a .NET trace): *owner* is the innermost
+    type as the id spells it (``""`` for a top-level function), *params* the
+    frame's erased simple parameter types when it has them. Several
+    candidates narrow by the parameter count in the id (``#2``) only with
+    *by_count*, since a compiled count can differ from the source's (an inner
+    class's constructor takes its outer instance, an enum's its name and
+    ordinal, a Kotlin extension its receiver); then by the types the id spells
+    when a count is shared (``#2(Object,Type)``), which must equal the
+    frame's. Still several: ``ambiguous``; none: ``no_span``. One of several
+    overloads is never picked by name alone.
+    """
+    from repowise.core.ingestion.symbol_identity import split_symbol_id
+
+    found = [s for s in callables if s.name == name and _id_parent(s) == owner]
+    if len(found) == 1:
+        return (found[0], False)
+    if not found:
+        return "no_span"
+    if params is None:
+        return "ambiguous"
+    payloads = {s.symbol_id: split_symbol_id(s.symbol_id)[1] or "" for s in found}
+    if by_count:
+        found = [s for s in found if payloads[s.symbol_id].partition("(")[0] == str(len(params))]
+        if len(found) == 1:
+            return (found[0], False)
+    types = ",".join(params) + ")"
+    typed = [s for s in found if payloads[s.symbol_id].partition("(")[1:] == ("(", types)]
+    return (typed[0], False) if len(typed) == 1 else "ambiguous"
 
 
 # -- JavaScript ----------------------------------------------------------------
@@ -557,8 +831,10 @@ class _PathMap:
 
 
 __all__ = [
+    "JVM_SOURCE_SUFFIXES",
     "FrameLanguage",
     "FrameResolution",
+    "JvmFrameName",
     "ProfileFrame",
     "ResolvedFrame",
     "SkipReason",
@@ -566,5 +842,8 @@ __all__ = [
     "dirty_path_checker",
     "frame_paths",
     "load_frame_symbols",
+    "load_jvm_source_paths",
+    "parse_jvm_frame",
+    "place_jvm_frames",
     "resolve_frames",
 ]

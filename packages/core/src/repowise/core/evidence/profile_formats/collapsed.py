@@ -8,6 +8,11 @@ tool put in the frame text. Two spellings carry them:
 - the Python perf trampoline (``perf script`` folded): ``py::name:path``,
   with no line.
 
+A JVM frame (async-profiler ``-o collapsed``, jfrconv) names a class and a
+method, ``com/acme/Cache.get:42_[j]`` with ``lines`` or ``(Ljava/lang/String;)V``
+with ``sig``: it is tagged ``java`` and placed on its class's file at
+conversion (:func:`repowise.core.frame_resolver.place_jvm_frames`).
+
 A frame with a path and line is resolved on its qualified name, the second
 signal for Python. A frame with a path but no line has nothing to check
 the name against, so it is skipped (``bad_line``), and a frame with no path
@@ -71,7 +76,7 @@ def read(data: bytes) -> ProfileRun:
             malformed += 1
             continue
         stack: list[int] = []
-        for part in match["stack"].split(";"):
+        for part in _split_stack(match["stack"]):
             if part not in index:
                 index[part] = len(frames)
                 frames.append(_frame(part))
@@ -91,6 +96,41 @@ def read(data: bytes) -> ProfileRun:
     )
 
 
+# A JVM descriptor's return type after ``)``: ``V``, ``[I``, ``Ljava/lang/String;``.
+_RETURN_RE = re.compile(r"\[*(?:L[^;()]*;|[BCDFIJSZV])")
+
+
+def _split_stack(stack: str) -> list[str]:
+    """*stack* split at the ``;`` between frames.
+
+    A JVM signature (async-profiler ``sig``) holds ``;`` inside its descriptor,
+    ``Cache.get(Ljava/lang/String;)Ljava/lang/Object;``: a ``;`` inside the
+    parentheses, or closing the return type right after them, is the frame's.
+    """
+    if "(" not in stack:
+        return stack.split(";")
+    parts: list[str] = []
+    start = depth = i = 0
+    while i < len(stack):
+        c = stack[i]
+        if c == "(":
+            depth += 1
+        elif c == ")" and depth:
+            depth -= 1
+            if (
+                depth == 0
+                and (m := _RETURN_RE.match(stack, i + 1)) is not None
+                and (m.end() == len(stack) or stack[m.end() - 1] == ";" or stack[m.end()] == ";")
+            ):
+                i = m.end() - 1
+        elif c == ";" and depth == 0:
+            parts.append(stack[start:i])
+            start = i + 1
+        i += 1
+    parts.append(stack[start:])
+    return parts
+
+
 def _frame(text: str) -> ProfileFrame:
     """One frame's name, path and line, as far as its text carries them."""
     name, path, line = text, "", 0
@@ -101,7 +141,7 @@ def _frame(text: str) -> ProfileFrame:
     return ProfileFrame(
         path=path,
         line=line,
-        language=frame_language(path),
+        language=frame_language(path, name),
         function=name,
     )
 

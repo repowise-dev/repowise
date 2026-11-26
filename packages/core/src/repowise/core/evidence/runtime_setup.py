@@ -18,7 +18,9 @@ Every recipe needs no elevated privileges: pyinstrument in process for
 Python, ``go test -cpuprofile`` for Go, ``node --cpu-prof`` for JavaScript
 (a ``bin`` file, or the test runner's own script for the suite). Profiles
 land in ``.repowise/``. TypeScript is refused: its positions are in the
-compiled JavaScript.
+compiled JavaScript. A Maven or Gradle unit gets one JVM target the agent
+finishes (:func:`_jvm_target`): JDK Flight Recorder through
+``JAVA_TOOL_OPTIONS`` on the run it chooses, then ``jfr print``.
 """
 
 from __future__ import annotations
@@ -765,6 +767,48 @@ def _node_targets(
     return [*out, suite] if suite else out
 
 
+# ---------------------------------------------------------------------------
+# JVM (Maven, Gradle)
+# ---------------------------------------------------------------------------
+
+
+def _jvm_target(stack: Stack, repo_root: Path, commit: str | None) -> dict[str, Any]:
+    """A JVM run under JDK Flight Recorder, for the agent to start: never a step.
+
+    Which JVM to measure is the agent's call: a unit-test run mostly samples
+    JUnit and reflection, so a benchmark or the service under load is asked
+    for. The recorder goes in through ``JAVA_TOOL_OPTIONS``, which every JVM
+    the build starts reads, since a pom's surefire ``argLine`` is often
+    pinned. The command prints the recording's CPU samples as text
+    ``evidence add`` reads (``jfr``); the ingest line is in the reason, so
+    the target is shown but not offered (no ``ingest``) until the run exists.
+    Ceiling: a checkout path with a space splits ``JAVA_TOOL_OPTIONS``.
+    """
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    name, profile = _named(root, "jvm run", ".jfr.txt")
+    recording = profile.removesuffix(".txt")
+    command = (
+        "jfr print --events jdk.ExecutionSample --stack-depth 64 "
+        f"{_from(root, recording)} > {_from(root, profile)}"
+    )
+    options = (
+        "-XX:StartFlightRecording=filename="
+        f"{(repo_root / recording).as_posix()},settings=profile"
+    )
+    ingest = evidence_ingest_line(profile, name, "load_test", commit) if commit else None
+    reason = (
+        f"Start the JVM to measure (a benchmark, or the service under load: unit tests mostly "
+        f"measure JUnit) with JAVA_TOOL_OPTIONS={options} in its environment; surefire's argLine "
+        "is often pinned, and every JVM reads the variable. When it exits, run this command"
+        + (f", then: {ingest}" if ingest else "; evidence needs a git checkout for the commit.")
+    )
+    target = _target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                     input_format="jfr", reason=reason)
+    # Takes no arguments: the run it converts is the one the agent started.
+    return {**target, "serves": True}
+
+
 def runtime_targets(
     stack: Stack,
     repo_root: Path,
@@ -783,7 +827,7 @@ def runtime_targets(
 
 
 #: Target keys for the callers in this package, never printed. ``serves``: a
-#: server, run with no arguments and driven by requests instead.
+#: server driven by requests, or a JVM run the agent starts: no arguments either way.
 _INTERNAL = frozenset({"timed", "format", "serves"})
 
 
@@ -832,6 +876,8 @@ def _unit_targets(
         found = _go_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
     elif stack.language == "node":
         found = _node_targets(stack, repo_root, inputs, commit, unit_roots)
+    elif stack.language == "java":
+        found = [_jvm_target(stack, repo_root, commit)]
     else:
         found = []
     return sorted(found, key=lambda t: CLASS_ORDER.index(t["class"]))

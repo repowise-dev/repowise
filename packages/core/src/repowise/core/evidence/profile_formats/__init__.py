@@ -42,6 +42,7 @@ from . import (
     go_test_json,
     google_benchmark,
     hyperfine,
+    jfr,
     junit,
     pg_stat_statements,
     pprof,
@@ -118,6 +119,7 @@ profile_formats.register(
     "pg-stat-statements",
     ProfileFormat(pg_stat_statements.sniff, to_v1=pg_stat_statements.to_v1),
 )
+profile_formats.register("jfr", ProfileFormat(jfr.sniff, jfr.read))
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 profile_formats.register(
     "google-benchmark",
