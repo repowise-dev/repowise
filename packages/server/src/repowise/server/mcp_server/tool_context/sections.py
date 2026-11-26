@@ -48,7 +48,12 @@ from repowise.server.mcp_server._changes import (
 )
 from repowise.server.mcp_server._directory import _git_rows_under
 from repowise.server.mcp_server._edit_sites import edit_set_block
-from repowise.server.mcp_server._helpers import _decision_body, no_source_field, serves_no_source
+from repowise.server.mcp_server._helpers import (
+    _decision_body,
+    filter_edge_rows,
+    no_source_field,
+    serves_no_source,
+)
 from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
@@ -743,7 +748,8 @@ async def _layer_block(card: CardState, file_path: str, kg_layers: list) -> None
             GraphEdge.edge_type == "imports",
         )
     )
-    incoming_edges = list(edge_res.scalars())
+    # An importer the repo rules exclude does not make this file a connector.
+    incoming_edges = filter_edge_rows(edge_res.scalars(), card.query.exclude_spec)
     card.data["architectural_layer"] = {
         "name": file_layer.name,
         "description": (file_layer.description or "")[:200],
@@ -810,7 +816,13 @@ async def _references_section(card: CardState) -> None:
     root = served_root(card.query.repository, card.query.repo_root)
     if ref_node is not None and root:
         card.data["references"] = await edit_set_block(
-            card.session, card.repo_id, root, ref_node, card.query.collector, prose=prose
+            card.session,
+            card.repo_id,
+            root,
+            ref_node,
+            card.query.collector,
+            prose=prose,
+            exclude_spec=card.query.exclude_spec,
         )
     elif ref_node is not None and serves_no_source():
         card.data["references"] = no_source_field()
@@ -825,6 +837,7 @@ async def _metrics_section(card: CardState) -> None:
             card.query.repository,
             card.resolved.symbol_node_id or card.target,
             card.data,
+            exclude_spec=card.query.exclude_spec,
         )
 
 
@@ -847,6 +860,7 @@ async def _health_section(card: CardState) -> None:
             card.target,
             card.resolved.target_type,
             card.data,
+            exclude_spec=card.query.exclude_spec,
         )
 
 

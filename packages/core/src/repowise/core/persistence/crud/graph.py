@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -921,11 +922,16 @@ async def get_cross_community_edges(
     session: AsyncSession,
     repository_id: str,
     community_id: int,
+    *,
+    exclude_spec: Any = None,
 ) -> list[dict]:
     """Count edges crossing from *community_id* to other communities.
 
     Returns a list of ``{"target_community_id": int, "edge_count": int}``.
-    Uses a join through ``graph_nodes`` to resolve target community.
+    Uses a join through ``graph_nodes`` to resolve target community. With
+    *exclude_spec*, an edge with an endpoint in an excluded file is not
+    counted: the rows are read and counted here, since the rules are path
+    globs SQL cannot match.
     """
     from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
 
@@ -964,6 +970,24 @@ async def get_cross_community_edges(
         .group_by(target_node.c.community_id)
         .order_by(func.count().desc())
     )
+    if exclude_spec:
+        from repowise.core.exclusion import edge_is_excluded
+
+        rows = await session.execute(
+            q.with_only_columns(
+                target_node.c.community_id,
+                GraphEdge.__table__.c.source_node_id,
+                GraphEdge.__table__.c.target_node_id,
+            )
+            .group_by(None)
+            .order_by(None)
+        )
+        counts: dict[int, int] = {}
+        for cid, src, dst in rows.all():
+            if not edge_is_excluded(src, dst, exclude_spec):
+                counts[cid] = counts.get(cid, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return [{"target_community_id": c, "edge_count": n} for c, n in ranked]
     result = await session.execute(q)
     return [
         {"target_community_id": row.target_community_id, "edge_count": row.edge_count}

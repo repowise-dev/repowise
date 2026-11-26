@@ -36,6 +36,7 @@ from repowise.core.ingestion.models import (
 )
 from repowise.core.ingestion.symbol_identity import file_of_symbol, module_symbol_id
 from repowise.core.persistence.models import FunctionFact, GraphEdge, GraphNode, HealthFileMetric
+from repowise.server.mcp_server._helpers import node_is_excluded
 from repowise.server.mcp_server._references import symbol_identity
 
 if TYPE_CHECKING:
@@ -104,11 +105,14 @@ def _assigned_fields(value: str | None) -> list[str]:
     return sorted(f for f in fields if isinstance(f, str)) if isinstance(fields, list) else []
 
 
-async def _caller_fact(session: AsyncSession, repo_id: str, symbol_id: str) -> str | None:
+async def _caller_fact(
+    session: AsyncSession, repo_id: str, symbol_id: str, exclude_spec: Any = None
+) -> str | None:
     """``"N resolved callers, M in tests"`` over strong-origin ``calls`` edges.
 
     Test callers are judged by the caller file's stored code origin, read in the
-    same query, and by its path where the file has no stored row.
+    same query, and by its path where the file has no stored row. A caller in a
+    file the repo rules exclude is not counted.
     """
     rows = await session.execute(
         select(GraphEdge.source_node_id, HealthFileMetric.code_origin, HealthFileMetric.is_test)
@@ -133,7 +137,7 @@ async def _caller_fact(session: AsyncSession, repo_id: str, symbol_id: str) -> s
 
     origins: dict[str, str] = {}
     for source, code_origin, is_test in rows.all():
-        if source == symbol_id:
+        if source == symbol_id or node_is_excluded(source, exclude_spec):
             continue
         has_row = code_origin is not None or is_test is not None
         origins[source] = (
@@ -153,7 +157,11 @@ def _test_node(selector: str) -> str:
 
 
 async def _via_symbols(
-    session: AsyncSession, repo_id: str, symbol_id: str, two_hop: list[MappedTest]
+    session: AsyncSession,
+    repo_id: str,
+    symbol_id: str,
+    two_hop: list[MappedTest],
+    exclude_spec: Any = None,
 ) -> dict[str, str]:
     """``{selector: X}`` for tests that run *symbol_id* through one function X.
 
@@ -173,7 +181,9 @@ async def _via_symbols(
     middles = {
         source
         for source, edge_type, origin in inbound.all()
-        if source != symbol_id and is_reliable_execution_edge(edge_type, origin)
+        if source != symbol_id
+        and is_reliable_execution_edge(edge_type, origin)
+        and not node_is_excluded(source, exclude_spec)
     }
     if not middles:
         return {}
@@ -200,12 +210,18 @@ async def _via_symbols(
 
 
 async def _test_links(
-    session: AsyncSession, repo_id: str, symbol_id: str, fact: FunctionFact | None
+    session: AsyncSession,
+    repo_id: str,
+    symbol_id: str,
+    fact: FunctionFact | None,
+    exclude_spec: Any = None,
 ) -> list[dict[str, str]]:
     """Runnable selectors of the tests that call the symbol, or call it through one function."""
     from repowise.core.analysis.function_test_map import decode_tests
 
     mapped = decode_tests(fact.tests_json if fact is not None else None) or ()
+    # A test in a file the repo rules exclude is not one to run.
+    mapped = [t for t in mapped if not node_is_excluded(t.selector, exclude_spec)]
     direct = [t for t in mapped if t.hops == 1]
     links = [{"run": t.selector} for t in direct[:MAX_TEST_LINKS]]
     if len(links) == MAX_TEST_LINKS:
@@ -213,7 +229,7 @@ async def _test_links(
     # Every two-hop test is looked up, so one with no chain found never takes
     # the slot of a later one that has it. At most k=5 are stored.
     two_hop = [t for t in mapped if t.hops == 2]
-    via = await _via_symbols(session, repo_id, symbol_id, two_hop)
+    via = await _via_symbols(session, repo_id, symbol_id, two_hop, exclude_spec)
     links += [
         {"run": t.selector, "via": _short_via(via[t.selector], t.selector, symbol_id)}
         for t in two_hop
@@ -230,17 +246,23 @@ def _short_via(via: str, selector: str, symbol_id: str) -> str:
     return via
 
 
-async def symbol_card_facts(session: AsyncSession, repo_id: str, symbol_id: str) -> dict[str, Any]:
-    """``facts`` (one line) and ``tests`` for *symbol_id*; keys absent when there is nothing true to say."""
+async def symbol_card_facts(
+    session: AsyncSession, repo_id: str, symbol_id: str, exclude_spec: Any = None
+) -> dict[str, Any]:
+    """``facts`` (one line) and ``tests`` for *symbol_id*; keys absent when there is nothing true to say.
+
+    *exclude_spec* leaves out callers, tests and middle functions in files the
+    repo rules exclude.
+    """
     fact = await session.get(FunctionFact, (repo_id, symbol_id))
     parts = _body_facts(fact)
-    callers = await _caller_fact(session, repo_id, symbol_id)
+    callers = await _caller_fact(session, repo_id, symbol_id, exclude_spec)
     if callers:
         parts.append(callers)
     out: dict[str, Any] = {}
     if parts:
         out["facts"] = "; ".join(parts)
-    tests = await _test_links(session, repo_id, symbol_id, fact)
+    tests = await _test_links(session, repo_id, symbol_id, fact, exclude_spec)
     if tests:
         out["tests"] = tests
     return out

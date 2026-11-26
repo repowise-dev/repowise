@@ -7,7 +7,7 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import Collection
+from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -902,6 +902,84 @@ def filter_path_list(paths: list | None, spec: Any) -> list:
     if not spec:
         return list(paths)
     return [p for p in paths if not is_excluded(p, spec)]
+
+
+def node_is_excluded(node_id: str | None, spec: Any) -> bool:
+    """True if the file a graph node id (file or ``path::Name``) names is excluded."""
+    from repowise.core.exclusion import node_is_excluded as _core_node_is_excluded
+
+    return _core_node_is_excluded(node_id, spec)
+
+
+def edge_is_excluded(source_id: str | None, target_id: str | None, spec: Any) -> bool:
+    """True if either end of a graph edge is excluded."""
+    from repowise.core.exclusion import edge_is_excluded as _core_edge_is_excluded
+
+    return _core_edge_is_excluded(source_id, target_id, spec)
+
+
+def _edge_endpoints(row: Any) -> tuple[str | None, str | None]:
+    return row.source_node_id, row.target_node_id
+
+
+def filter_edge_rows(
+    rows: Any, spec: Any, endpoints: Callable[[Any], Iterable[str | None]] = _edge_endpoints
+) -> list:
+    """Shape F: drop edge rows with an excluded endpoint.
+
+    *endpoints* names the node ids a row carries; the default reads
+    ``source_node_id`` and ``target_node_id``. A row is kept only when none of
+    them is excluded, so a hop through an excluded file never reaches a walk.
+    """
+    if not spec:
+        return list(rows)
+    return [r for r in rows if not any(node_is_excluded(n, spec) for n in endpoints(r))]
+
+
+async def fetch_allowed_edges(
+    session: AsyncSession,
+    stmt: Any,
+    spec: Any,
+    *,
+    limit: int,
+    endpoints: Callable[[Any], Iterable[str | None]] = _edge_endpoints,
+    keep_excluded: bool = False,
+) -> list:
+    """Shape G: the first *limit* rows of an edge query with no excluded endpoint.
+
+    The exclusion runs before the cap, so excluded rows never take the place of
+    allowed ones. It is one query with ``LIMIT``, as before, unless that page
+    was full and held an excluded row; then the same ordering is read on in
+    bounded pages until the cap is filled or the rows run out. Stale excluded
+    rows are rare, so the extra reads almost never run. *stmt* must be fully
+    ordered for the pages to be disjoint.
+
+    With *keep_excluded*, the excluded rows read before the last allowed one
+    stay in the result, in order, for a caller that reports what it skipped;
+    only allowed rows count toward *limit*.
+    """
+    page = (await session.execute(stmt.limit(limit))).all()
+    if not spec:
+        return list(page)
+    out: list = []
+    allowed = 0
+    offset = 0
+    size = limit
+    while True:
+        for row in page:
+            if allowed >= limit:
+                break
+            if any(node_is_excluded(n, spec) for n in endpoints(row)):
+                if keep_excluded:
+                    out.append(row)
+                continue
+            out.append(row)
+            allowed += 1
+        if allowed >= limit or len(page) < size:
+            return out
+        offset += size
+        size = limit * 4
+        page = (await session.execute(stmt.limit(size).offset(offset))).all()
 
 
 def filter_embedded_path_ids(ids: list, spec: Any) -> list:

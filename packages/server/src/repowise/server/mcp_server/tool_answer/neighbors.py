@@ -21,7 +21,11 @@ from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line, import_sites
-from repowise.server.mcp_server._helpers import filter_dicts_by_key
+from repowise.server.mcp_server._helpers import (
+    fetch_allowed_edges,
+    filter_dicts_by_key,
+    is_excluded,
+)
 from repowise.server.mcp_server._wrapper_callers import (
     MIN_CALL_CONFIDENCE,
     forwarding_wrapper_callers,
@@ -74,12 +78,16 @@ def _focus(symbols: dict[str, GraphNode], edges: list[GraphEdge], relevance: dic
 
 
 async def _inbound(
-    session: AsyncSession, repo_id: str, targets: list[str], limit: int
+    session: AsyncSession, repo_id: str, targets: list[str], limit: int, exclude_spec: Any = None
 ) -> list[GraphEdge]:
-    """Calls and value references into *targets*, best confidence first."""
+    """Calls and value references into *targets*, best confidence first.
+
+    Sources in excluded files are dropped before the cap, so they never take
+    the place of allowed users or steer focus and wrapper discovery.
+    """
     if not targets:
         return []
-    res = await session.execute(
+    stmt = (
         select(GraphEdge)
         .where(
             GraphEdge.repository_id == repo_id,
@@ -87,10 +95,12 @@ async def _inbound(
             GraphEdge.edge_type.in_(("calls", "references")),
             GraphEdge.confidence >= MIN_CALL_CONFIDENCE,
         )
-        .order_by(GraphEdge.confidence.desc(), GraphEdge.source_node_id)
-        .limit(limit)
+        .order_by(GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.id)
     )
-    return list(res.scalars().all())
+    found = await fetch_allowed_edges(
+        session, stmt, exclude_spec, limit=limit, endpoints=lambda row: (row[0].source_node_id,)
+    )
+    return [e for (e,) in found]
 
 
 async def neighbor_evidence(
@@ -102,7 +112,7 @@ async def neighbor_evidence(
     repo_root: str | Path | None = None,
 ) -> list[dict]:
     """Rows for the files that call, import, load or reference *lead*, production first."""
-    if not lead or is_test_path(lead):
+    if not lead or is_test_path(lead) or is_excluded(lead, exclude_spec):
         return []
     res = await session.execute(
         select(GraphNode).where(
@@ -120,7 +130,7 @@ async def neighbor_evidence(
     edges: list[GraphEdge] = []
     seen_edges: set[tuple[str, str, str]] = set()
     for targets, limit in ((relevant, _MAX_RELEVANT_EDGES), (list(symbols), _MAX_EDGES)):
-        for e in await _inbound(session, repo_id, targets, limit):
+        for e in await _inbound(session, repo_id, targets, limit, exclude_spec):
             key = (e.source_node_id, e.target_node_id, e.edge_type)
             if key not in seen_edges and file_of_symbol(e.source_node_id) != lead:
                 seen_edges.add(key)
@@ -152,7 +162,12 @@ async def neighbor_evidence(
     for target_id in sorted(focus, key=focus.get)[:_MAX_FOCUS]:
         direct = [e.source_node_id for e in edges if e.target_node_id == target_id]
         for h in await forwarding_wrapper_callers(
-            session, repo_id, symbols[target_id], direct, known_nodes=nodes
+            session,
+            repo_id,
+            symbols[target_id],
+            direct,
+            known_nodes=nodes,
+            exclude_spec=exclude_spec,
         ):
             if h["file"] == lead:
                 continue

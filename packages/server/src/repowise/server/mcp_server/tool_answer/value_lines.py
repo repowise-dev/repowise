@@ -27,7 +27,7 @@ from repowise.core.symbol_spans import symbol_at
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._code_rationale import _salient_numbers
 from repowise.server.mcp_server._flow_path import file_adjacency
-from repowise.server.mcp_server._helpers import source_for
+from repowise.server.mcp_server._helpers import is_excluded, source_for
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server.tool_answer.confidence import _is_value_question
 from repowise.server.mcp_server.tool_answer.hydration import _stem_hit, _text_stems
@@ -81,7 +81,9 @@ def _evidence(nouns: list[str], text: str) -> set[str]:
     return {n for n in nouns if _stem_hit(n, stems)}
 
 
-async def _reach(session, repo_id: str, question_ids: set[str]) -> set[str] | None:
+async def _reach(
+    session, repo_id: str, question_ids: set[str], exclude_spec: Any = None
+) -> set[str] | None:
     """Files the question's named code lives in plus their direct neighbours, or None."""
     if not question_ids:
         return None
@@ -92,10 +94,14 @@ async def _reach(session, repo_id: str, question_ids: set[str]) -> set[str] | No
             WikiSymbol.kind.in_(("function", "method", "class")),
         )
     )
-    owners = {p for (p,) in res.all() if p and not is_test_related_path(p)}
+    owners = {
+        p
+        for (p,) in res.all()
+        if p and not is_test_related_path(p) and not is_excluded(p, exclude_spec)
+    }
     if not owners:
         return None
-    adj = await file_adjacency(session, repo_id)
+    adj = await file_adjacency(session, repo_id, exclude_spec)
     return owners | {n for o in owners for n in adj.get(o, ()) if not is_test_related_path(n)}
 
 
@@ -161,7 +167,13 @@ def _scored(nouns: list[str], holders: dict[_Line, Any]) -> list[tuple[int, int,
 
 
 async def value_line_anchor_hits(
-    ctx: Any, session, repo_id: str, question: str, question_ids: set[str], hits: list[dict]
+    ctx: Any,
+    session,
+    repo_id: str,
+    question: str,
+    question_ids: set[str],
+    hits: list[dict],
+    exclude_spec: Any = None,
 ) -> list[dict]:
     """Anchor the symbol that sets the value the question asks for.
 
@@ -173,7 +185,8 @@ async def value_line_anchor_hits(
     if root is None or not words:
         return hits
     lines = await asyncio.to_thread(_grep_value_lines, Path(str(root)), words)
-    reach = await _reach(session, repo_id, question_ids)
+    lines = [ln for ln in lines if not is_excluded(ln.path, exclude_spec)]
+    reach = await _reach(session, repo_id, question_ids, exclude_spec)
     if reach is not None:
         lines = [ln for ln in lines if ln.path in reach]
     if not lines:

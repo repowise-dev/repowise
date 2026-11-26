@@ -129,6 +129,39 @@ def is_excluded(path: str | None, spec: Any) -> bool:
     return cached
 
 
+def spec_key(spec: Any) -> tuple[str, ...] | None:
+    """The rules *spec* was compiled from: equal rules give equal keys.
+
+    For caches of anything filtered by a spec, so a rules edit is a new entry.
+    """
+    if spec is None:
+        return None
+    return tuple(str(p.pattern) for p in spec.patterns)
+
+
+def node_is_excluded(node_id: str | None, spec: Any) -> bool:
+    """True if the file a graph node id names is excluded.
+
+    A file id is its path and a symbol id (``path::Name``) is judged by its
+    file. ``external:`` and other prefixed ids name no repository file, so they
+    are never excluded here.
+    """
+    if spec is None or not node_id:
+        return False
+    from repowise.core.ids import file_path_of
+
+    return is_excluded(file_path_of(node_id), spec)
+
+
+def edge_is_excluded(source_id: str | None, target_id: str | None, spec: Any) -> bool:
+    """True if either endpoint of a graph edge is excluded.
+
+    An edge with an excluded end is a hop through a file the user asked to
+    leave out, so read paths drop it before ranking, capping or walking.
+    """
+    return node_is_excluded(source_id, spec) or node_is_excluded(target_id, spec)
+
+
 def decision_is_excluded(decision_row: Any, spec: Any) -> bool:
     """True when a DecisionRecord is anchored entirely in excluded paths.
 
