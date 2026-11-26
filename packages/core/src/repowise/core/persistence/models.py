@@ -3596,6 +3596,49 @@ class StatementSitesStamp(Base):
     inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class PackageAdvisory(Base):
+    """One advisory on one package from the last imported advisory document.
+
+    Replaced whole by every ``repowise packages import`` (``crud.package_advisories``),
+    each row stamped with that document's format, file hash and import time. A
+    package the document names with no advisory has one row with an empty
+    ``advisory_id``, so "scanned, nothing found" differs from "never scanned".
+    ``ecosystem`` is empty when the document gave none. The list columns are
+    JSON: ``affected_json`` ``[{path, symbols}]``, ``ranges_json`` OSV ranges as
+    ``[[[kind, version], ...], ...]``, ``versions_affected_json`` the record's
+    explicit affected versions. ``direct`` comes from the document's dependency
+    graph (CycloneDX); NULL when it has none.
+    """
+
+    __tablename__ = "package_advisories"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    ecosystem: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    advisory_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    versions_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    # True direct, False transitive, NULL when the document does not say.
+    direct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    aliases_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    affected_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    fixed_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    ranges_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    versions_affected_json: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="[]"
+    )
+    source_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
 class BuildUnitDep(Base):
     """One in-repo dependency of a build unit on another."""
 

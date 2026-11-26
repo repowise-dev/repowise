@@ -91,6 +91,8 @@ dependencies = [
     "gitpython>=3.2.1,<4",
     # YAML parsing
     "pyyaml>=6.0,<7",
+    # Version ordering (PEP 440) for advisory ranges
+    "packaging>=23",
     # Vector search (LanceDB — pure Python wheel)
     "lancedb>=0.12,<1",
     # CLI
