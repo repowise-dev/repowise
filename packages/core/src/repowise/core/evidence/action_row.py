@@ -316,6 +316,16 @@ def _slower_words(slower: Mapping[str, Any]) -> str:
     return "; ".join(parts)
 
 
+def _tests_words(row: Mapping[str, Any]) -> str:
+    tests = row.get("tests")
+    ran = row.get("tests_basis") == PER_TEST_MAP
+    if tests is None:
+        return "tests not mapped"
+    if tests:
+        return f"{'test that ran it' if ran else 'nearest test by call graph'} {tests[0]}"
+    return "no test ran it" if ran else "no test reaches it"
+
+
 def _facts(row: Mapping[str, Any]) -> str:
     """The measurement and who and what stands behind it, on one line."""
     parts = []
@@ -335,14 +345,7 @@ def _facts(row: Mapping[str, Any]) -> str:
         parts.append(f"owner {row['owner']['name']}")
     if row.get("last_change"):
         parts.append(f"last changed {_changed(row['last_change'])}")
-    tests = row.get("tests")
-    ran = row.get("tests_basis") == PER_TEST_MAP
-    if tests is None:
-        parts.append("tests not mapped")
-    elif tests:
-        parts.append(f"{'test that ran it' if ran else 'nearest test by call graph'} {tests[0]}")
-    else:
-        parts.append("no test ran it" if ran else "no test reaches it")
+    parts.append(_tests_words(row))
     if row.get("on_static_findings"):
         parts.append(f"static cause {', '.join(row['on_static_findings'])}")
     return " · ".join(parts)
