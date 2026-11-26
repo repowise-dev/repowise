@@ -94,7 +94,6 @@ def _statement_batch(**changes: Any) -> SourceBatch:
         workload="prod db",
         workload_class=None,
         commit=None,
-        environment="production",
         entries=_STATEMENTS,
         document=_STATEMENT_DOC,
     )
@@ -755,3 +754,32 @@ def test_a_batch_over_the_file_size_setting_is_still_stored(double, indexed) -> 
 
     assert (outcome.status, outcome.cursor) == ("ok", "1")
     assert [r.kind for r in _stored(root)[0]] == ["statement_stats"]
+
+
+def test_a_production_batch_with_no_environment_ran_in_production(double, indexed) -> None:
+    root, head = indexed
+    double.batches = [_statement_batch(), _profile_batch(head, environment=None)]
+
+    assert _fetch(root, double, _request()).status == "ok"
+
+    runs, _ = _stored(root)
+    assert sorted((r.kind, r.environment) for r in runs) == [
+        ("profile", "unknown"),
+        ("statement_stats", "production"),
+    ]
+
+
+def test_a_refetch_corrects_when_the_run_was_measured(double, indexed) -> None:
+    from datetime import UTC, datetime
+
+    root, head = indexed
+    at = datetime(2026, 11, 1, 12, tzinfo=UTC)
+    double.batches = [_profile_batch(head)]
+    _fetch(root, double, _request())
+    double.batches = [_profile_batch(head, measured_at=at)]
+
+    (payload,) = _fetch(root, double, _request()).stored
+
+    assert payload["restamped"] is True
+    (run,), _ = _stored(root)
+    assert run.measured_at.replace(tzinfo=UTC) == at

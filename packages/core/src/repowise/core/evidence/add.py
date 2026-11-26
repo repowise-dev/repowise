@@ -852,7 +852,7 @@ async def ingest_batch(
                 name=f"the {batch.kind} batch",
                 checkout_root=checkout_root,
                 commit=batch.commit,
-                environment=batch.environment,
+                environment=batch.environment or _batch_environment(batch),
                 input_format_name=input_format_name,
                 value_kind=batch.value_kind,
                 # ``evidence.max_file_mb`` bounds a file someone hands over; a
@@ -871,6 +871,15 @@ async def ingest_batch(
             raise
         # Name the batch field at fault, not the ``evidence add`` option it stands in for.
         raise EvidenceRefusedError(exc.code, f"batch {field}: {exc}", exc.hint) from None
+
+
+def _batch_environment(batch: SourceBatch) -> str:
+    """Where a batch that names no environment ran: production ran where users are."""
+    spec = evidence_kinds.get(batch.kind)
+    production = batch.workload_class == "production" or (
+        spec is not None and spec.production_only and batch.workload_class is None
+    )
+    return "production" if production else "unknown"
 
 
 #: ``evidence add`` options and the :class:`~.sources.SourceBatch` field each one is.

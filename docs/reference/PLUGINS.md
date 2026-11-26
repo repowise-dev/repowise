@@ -349,7 +349,7 @@ def register():
 
 | `SourceBatch` field | Meaning |
 |---------------------|---------|
-| `kind`, `workload`, `workload_class`, `environment` | The run header, as `evidence add` takes it |
+| `kind`, `workload`, `workload_class`, `environment` | The run header, as `evidence add` takes it; with no `environment`, a production run reads as `production` and any other as `unknown` |
 | `commit` | The full commit SHA measured; `None` only for a production-only kind (`route_latency`, `statement_stats`) whose deployed commit is unknown |
 | `measured_at` | When the run was measured (for a window, its end) |
 | `entries` and `document` | `repowise-evidence-v1` entries of `kind`, and the document's other fields (`value_kind`, `unit`, totals, `tool`, `window`, `base_commit_sha`) |

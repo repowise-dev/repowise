@@ -99,7 +99,9 @@ class SourceBatch:
     #: The full commit SHA measured. Only a production-only kind may leave it
     #: None when the deployed commit is unknown; it reads "deployed commit unknown".
     commit: str | None
-    environment: str = "unknown"
+    #: Where it ran. None reads as ``production`` for a production run and
+    #: ``unknown`` otherwise, as ``evidence add`` does without ``--environment``.
+    environment: str | None = None
     #: When the run was measured (for a window, its end).
     measured_at: datetime | None = None
     entries: Sequence[Mapping[str, Any]] | None = None

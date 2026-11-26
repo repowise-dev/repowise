@@ -115,6 +115,9 @@ async def save_evidence_run(
     ).scalar_one_or_none()
     if same is not None:
         same.ingested_at = at
+        # A sender that says when the run was measured corrects the time (a source re-fetch).
+        if run.get("measured_at") is not None:
+            same.measured_at = run["measured_at"]
         # A run stored before the fold existed gets it from the same file.
         if same.timing_summary_json is None and run.get("timing_summary_json"):
             same.timing_summary_json = run["timing_summary_json"]
