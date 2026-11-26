@@ -1287,7 +1287,22 @@ def test_rust_with_nextest_config_runs_llvm_cov_nextest_and_sets_junit_report():
     (stack,) = detect_stacks(sorted(files), files)
     assert stack.test == "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info"
     assert stack.junit_report == "target/nextest/ci/junit.xml"
+    assert stack.prepare == (
+        "- uses: taiki-e/install-action@cargo-llvm-cov",
+        "- uses: taiki-e/install-action@cargo-nextest",
+    )
+    assert stack.requires == ("cargo install cargo-llvm-cov", "cargo install cargo-nextest")
     assert stack.notes == ()
+
+
+def test_rust_with_nextest_target_prefixed_path():
+    files = {
+        "Cargo.toml": '[package]\nname = "my_app"\n',
+        "src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.ci.junit]\npath = "target/junit.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.junit_report == "target/nextest/ci/target/junit.xml"
 
 
 def test_rust_with_nextest_workspace_and_custom_profile():

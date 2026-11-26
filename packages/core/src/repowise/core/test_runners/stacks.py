@@ -1159,18 +1159,21 @@ def _rust(root: set[str], files: dict[str, str]) -> Stack:
     nextest = _nextest_junit(files.get(_NEXTEST_CONFIG, ""))
     if nextest is not None:
         profile, path = nextest
-        report = path if path.startswith("target/") else f"target/nextest/{profile}/{path}"
         test = f"cargo llvm-cov nextest --profile {profile}{workspace} --lcov --output-path lcov.info"
-        junit_report = report
+        junit_report = f"target/nextest/{profile}/{path}"
+        prepare = (*_LLVM_COV, "- uses: taiki-e/install-action@cargo-nextest")
+        requires = ("cargo install cargo-llvm-cov", "cargo install cargo-nextest")
         notes = ()
     else:
         test = f"cargo llvm-cov{workspace} --lcov --output-path lcov.info"
         junit_report = ""
+        prepare = _LLVM_COV
+        requires = ("cargo install cargo-llvm-cov",)
         notes = (_NEXTEST_NOTE,)
     return Stack(
         "rust", "cargo test", "cargo", "lcov.info", setup=setup,
-        test=test, prepare=_LLVM_COV, notes=notes,
-        requires=("cargo install cargo-llvm-cov",), pattern=_CARGO, editor=_edit_cargo,
+        test=test, prepare=prepare, notes=notes,
+        requires=requires, pattern=_CARGO, editor=_edit_cargo,
         junit_report=junit_report,
     )
 
