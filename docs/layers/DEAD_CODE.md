@@ -99,6 +99,11 @@ export with strong evidence".
   range.
 - **Export only:** the symbol's own file uses it, so only the `export` is
   unneeded.
+- **Loaded by a JS framework's convention:** the file sits where a framework
+  its `package.json` depends on loads files from (React Email `emails/`,
+  Next.js `pages/`, Remix `app/routes/`, Nuxt pages, plugins and auto-imported
+  `components/`, `composables/` and `utils/`, SvelteKit hooks and routes,
+  Astro `src/pages/`, Expo Router `app/`).
 - **Weak resolution for the language in this repository:** the language is
   unknown to the graph, its import support is not full, none of its call edges
   has a recorded resolution, or more than half of them are name matches.
@@ -109,7 +114,9 @@ Some files and symbols are never reported, because static reachability is the
 wrong tool for them. This covers entry points and programs (`__main__.py`,
 `main.go`, files with a shebang), build and CI files and anything they name by
 path, test files, generated code, vendored trees, framework routes such as
-Next.js `page.tsx`, and symbols registered by a framework decorator or
+Next.js `page.tsx`, files a JS framework declared in a `package.json` loads
+from where they sit (the paths above, apart from Nuxt's auto-imported
+directories), and symbols registered by a framework decorator or
 annotation (pytest fixtures, Flask and FastAPI routes, Celery tasks, Spring
 stereotypes, and similar). Names that follow dynamic-dispatch conventions
 (`*Handler`, `*Plugin`, `register_*`, `on_*` and others) are treated as used.

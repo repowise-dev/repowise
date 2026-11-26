@@ -381,6 +381,16 @@ def test_digest_tracks_only_what_readers_read(tmp_path: Path) -> None:
     assert _digest(tmp_path, "missing/package.json") is None
 
 
+def test_digest_tracks_dependency_names_not_versions(tmp_path: Path) -> None:
+    """A dependency's name says which JS framework loads files by convention."""
+    (tmp_path / "package.json").write_text(_package())
+    before = _digest(tmp_path, "package.json")
+    (tmp_path / "package.json").write_text(_package(dependencies={"left-pad": "^2.0.0"}))
+    assert _digest(tmp_path, "package.json") == before
+    (tmp_path / "package.json").write_text(_package(devDependencies={"react-email": "6.0.0"}))
+    assert _digest(tmp_path, "package.json") != before
+
+
 def test_manifest_edit_the_diff_missed_falls_back(
     indexed: tuple[Path, dict[str, list]], tmp_path: Path
 ) -> None:

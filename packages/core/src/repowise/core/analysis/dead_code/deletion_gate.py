@@ -56,6 +56,8 @@ class GateFacts:
     file_languages: Mapping[str, str] | None = None
     #: ``{language: why its resolution is weak in this repo}``.
     weak_languages: Mapping[str, str] = field(default_factory=dict)
+    #: ``{file path: why a framework may load it by convention}``.
+    convention_loaded: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_graph(
@@ -66,10 +68,16 @@ class GateFacts:
             path: (graph.nodes[path].get("language") or "") if graph.has_node(path) else ""
             for path in paths
         }
+        # Deferred: the ingestion package imports analysis modules at load time.
+        from ...ingestion.framework_facts import convention_load_reasons
+
         return cls(
             repo_root=repo_root,
             file_languages=file_languages,
             weak_languages=weak_resolution_languages(graph, set(file_languages.values())),
+            convention_loaded=(
+                convention_load_reasons(repo_root, file_languages) if repo_root is not None else {}
+            ),
         )
 
 
@@ -132,12 +140,24 @@ def _weak_language_reason(view: FindingView, facts: GateFacts) -> str | None:
     return facts.weak_languages.get(language)
 
 
+#: The kinds that claim a file or a public name is unused. A private symbol's
+#: use is decided inside its file, whatever loads the file.
+_CONVENTION_KINDS = frozenset({"unreachable_file", "unused_export"})
+
+
+def _convention_load_reason(view: FindingView, facts: GateFacts) -> str | None:
+    if view.kind not in _CONVENTION_KINDS:
+        return None
+    return facts.convention_loaded.get(view.file_path)
+
+
 #: Every reason a finding is never deletion-ready, in evidence order.
 _BLOCKERS: tuple[Blocker, ...] = (
     _base_reason,
     _docs_example_reason,
     _export_only_reason,
     _load_time_reason,
+    _convention_load_reason,
     _weak_language_reason,
 )
 

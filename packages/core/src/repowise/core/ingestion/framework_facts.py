@@ -5,17 +5,24 @@ detection reads :func:`detect_php_framework`, and the framework-edge handlers
 anchor :attr:`FrameworkFacts.entry_globs` to a ``framework:`` node so dead-code
 liveness sees the files the runtime loads without any importer. Angular names
 its entry files in its workspace config instead (:func:`angular_entry_files`).
+A JS framework is read from the ``package.json`` that depends on it
+(:func:`js_frameworks`), and the dead-code deletion gate asks
+:func:`convention_load_reasons`, so a file such a framework may load is never
+deletion-ready on "no importer" alone.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import json
 import posixpath
 import re
-from collections.abc import Iterable
+import shlex
+from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from functools import cache
+from pathlib import Path
 
 from .composer import ComposerManifest
 
@@ -29,12 +36,22 @@ class FrameworkFacts:
     #: Files the runtime loads with no importer, relative to the app (or
     #: extension) root. ``*`` spans ``/``, as in the dead-code never-flag globs.
     entry_globs: tuple[str, ...] = ()
+    #: npm packages whose presence in a ``package.json`` marks the framework.
+    npm_packages: tuple[str, ...] = ()
+    #: Files the framework imports by name when a template uses them (Nuxt
+    #: auto-imports). Not entries, since an unused one is never loaded, but no
+    #: importer is not proof of disuse either, so none is deletion-ready.
+    review_globs: tuple[str, ...] = ()
 
     def matches(self, manifest: ComposerManifest) -> bool:
         if manifest.type in self.composer_types:
             return True
         requires = manifest.requires
         return any(pkg in requires for pkg in self.composer_packages)
+
+    def matches_npm(self, manifest: NpmManifest) -> str | None:
+        """The first of :attr:`npm_packages` *manifest* depends on, or None."""
+        return next((pkg for pkg in self.npm_packages if pkg in manifest.dependencies), None)
 
     def entry_files(self, root: str, paths: Iterable[str]) -> list[str]:
         """The members of *paths* that match an entry glob under *root*, sorted.
@@ -199,3 +216,220 @@ def angular_entry_files(config_path: str, config: object, paths: AbstractSet[str
         posixpath.normpath(posixpath.join(base, v)) for v in values if isinstance(v, str) and v
     }
     return sorted(found & paths)
+
+
+# --- JavaScript frameworks, read from package.json ---------------------------
+
+_JS_EXTS = ("tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts")
+
+
+def _js(*stems: str, exts: tuple[str, ...] = _JS_EXTS) -> tuple[str, ...]:
+    """Each glob stem with every JS/TS extension (``*`` spans ``/``)."""
+    return tuple(f"{stem}.{ext}" for stem in stems for ext in exts)
+
+
+def _under(prefixes: tuple[str, ...], *globs: str) -> tuple[str, ...]:
+    return tuple(f"{prefix}{glob}" for prefix in prefixes for glob in globs)
+
+
+#: The React Email preview server (``email dev``) renders the default export of
+#: every file in its emails directory; nothing imports a preview component.
+REACT_EMAIL = FrameworkFacts(
+    name="React Email",
+    anchor="framework:react-email",
+    npm_packages=("react-email", "@react-email/preview-server"),
+    entry_globs=_js("emails/*"),  # re-rooted at a ``--dir`` (:func:`js_frameworks`)
+)
+
+NEXT_PAGES = FrameworkFacts(
+    name="Next.js",
+    anchor="framework:nextjs",
+    npm_packages=("next",),
+    # The Pages Router: every file under ``pages/`` is a route or API handler.
+    # App Router files are named by basename in the dead-code never-flag globs.
+    entry_globs=_js("pages/*", "src/pages/*", exts=(*_JS_EXTS, "mdx")),
+)
+
+REMIX = FrameworkFacts(
+    name="Remix",
+    anchor="framework:remix",
+    # React Router v7's framework mode is Remix renamed.
+    npm_packages=("@remix-run/dev", "@remix-run/react", "@react-router/dev"),
+    entry_globs=_js("app/root", "app/routes", "app/routes/*"),
+)
+
+#: Nuxt 3 keeps app code at the root; Nuxt 4's default ``srcDir`` is ``app/``.
+_NUXT_SRC = ("", "app/")
+NUXT = FrameworkFacts(
+    name="Nuxt",
+    anchor="framework:nuxt",
+    npm_packages=("nuxt", "nuxt3"),
+    entry_globs=(
+        *_under(_NUXT_SRC, "pages/*", "layouts/*", "middleware/*", "plugins/*"),
+        *_under(_NUXT_SRC, "app.vue", "error.vue", *_js("app.config", "router.options")),
+        "server/*",
+    ),
+    review_globs=(*_under(_NUXT_SRC, "components/*", "composables/*", "utils/*"), "shared/*"),
+)
+
+SVELTEKIT = FrameworkFacts(
+    name="SvelteKit",
+    anchor="framework:sveltekit",
+    npm_packages=("@sveltejs/kit",),
+    entry_globs=(
+        "src/routes/+*",
+        "src/routes/*/+*",
+        "src/params/*",
+        *_js("src/hooks", "src/hooks.server", "src/hooks.client", "src/service-worker"),
+        "src/service-worker/*",
+    ),
+)
+
+ASTRO = FrameworkFacts(
+    name="Astro",
+    anchor="framework:astro",
+    npm_packages=("astro",),
+    entry_globs=(
+        "src/pages/*",
+        *_js("src/middleware", "src/middleware/index", "src/content/config"),
+        *_js("src/content.config", "src/actions/index"),
+    ),
+)
+
+#: Expo Router: every file under ``app/`` is a route, layout or API route.
+EXPO_ROUTER = FrameworkFacts(
+    name="Expo Router",
+    anchor="framework:expo-router",
+    npm_packages=("expo-router",),
+    entry_globs=("app/*", "src/app/*"),
+)
+
+JS_FRAMEWORKS: tuple[FrameworkFacts, ...] = (
+    REACT_EMAIL, NEXT_PAGES, REMIX, NUXT, SVELTEKIT, ASTRO, EXPO_ROUTER,
+)
+
+#: The ``package.json`` fields that name dependencies.
+NPM_DEP_FIELDS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+
+
+@dataclass(frozen=True, slots=True)
+class NpmManifest:
+    """The fields of one ``package.json`` the convention rules read."""
+
+    rel_dir: str  # directory holding the manifest, '' for the repo root
+    dependencies: frozenset[str] = frozenset()
+    scripts: Mapping[str, str] = field(default_factory=dict)
+
+
+def npm_dependency_names(data: object) -> frozenset[str]:
+    """Every package a decoded ``package.json`` depends on, in any dependency field."""
+    if not isinstance(data, dict):
+        return frozenset()
+    return frozenset(
+        name
+        for key in NPM_DEP_FIELDS
+        if isinstance(block := data.get(key), dict)
+        for name in block
+        if isinstance(name, str)
+    )
+
+
+def parse_npm_manifest(data: object, rel_dir: str = "") -> NpmManifest | None:
+    """A manifest from decoded ``package.json`` JSON, or None when it is not an object."""
+    if not isinstance(data, dict):
+        return None
+    scripts = data.get("scripts")
+    return NpmManifest(
+        rel_dir=rel_dir,
+        dependencies=npm_dependency_names(data),
+        scripts={k: v for k, v in scripts.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(scripts, dict)
+        else {},
+    )
+
+
+def npm_manifests(repo_root: str | Path, paths: Iterable[str]) -> list[NpmManifest]:
+    """The readable ``package.json`` in the repo root and every directory above *paths*.
+
+    Only directories holding an indexed file are asked, so the cost follows
+    the paths, and a ``node_modules`` tree the walk pruned is never read.
+    """
+    root = Path(repo_root)
+    dirs = {""}
+    for path in paths:
+        parts = path.split("/")[:-1]
+        dirs.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+    found: list[NpmManifest] = []
+    for rel in sorted(dirs):
+        try:
+            data = json.loads((root / rel / "package.json").read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, ValueError):
+            continue
+        if (manifest := parse_npm_manifest(data, rel)) is not None:
+            found.append(manifest)
+    return found
+
+
+_EMAIL_COMMANDS = frozenset({"dev", "build", "export"})
+
+
+def _react_email_dir(manifest: NpmManifest) -> str:
+    """The directory an ``email dev|build|export`` script names with ``--dir``, else ``emails``."""
+    for script in manifest.scripts.values():
+        try:
+            words = shlex.split(script)
+        except ValueError:
+            continue
+        for i in range(len(words) - 1):
+            if words[i] != "email" or words[i + 1] not in _EMAIL_COMMANDS:
+                continue
+            args = words[i + 2 :]
+            for j, arg in enumerate(args):
+                if arg in ("--dir", "-d") and j + 1 < len(args):
+                    return posixpath.normpath(args[j + 1])
+                if arg.startswith("--dir="):
+                    return posixpath.normpath(arg.removeprefix("--dir="))
+    return "emails"
+
+
+def js_frameworks(manifest: NpmManifest) -> list[tuple[FrameworkFacts, str]]:
+    """``(facts, the dependency that marks it)`` for each JS framework *manifest* uses.
+
+    The facts' globs are relative to the manifest's directory. A React Email
+    project's are re-rooted at the directory its ``email`` script names; one
+    outside the package anchors nothing.
+    """
+    out: list[tuple[FrameworkFacts, str]] = []
+    for facts in JS_FRAMEWORKS:
+        pkg = facts.matches_npm(manifest)
+        if pkg is None:
+            continue
+        if facts is REACT_EMAIL and (emails := _react_email_dir(manifest)) != "emails":
+            if emails == "." or emails.startswith(("..", "/")):
+                continue
+            facts = replace(facts, entry_globs=_js(f"{emails.removeprefix('./')}/*"))
+        out.append((facts, pkg))
+    return out
+
+
+def convention_load_reasons(repo_root: str | Path, paths: Iterable[str]) -> dict[str, str]:
+    """For each of *paths* a JS framework may load by convention, why.
+
+    A file a framework declared in a ``package.json`` at or above it anchors
+    (an entry glob) or imports by name when used (a review glob). The dead-code
+    deletion gate reads this: the framework, not an importer, decides whether
+    such a file runs.
+    """
+    wanted = sorted(set(paths))
+    reasons: dict[str, str] = {}
+    for manifest in npm_manifests(repo_root, wanted):
+        for facts, pkg in js_frameworks(manifest):
+            loaded = replace(facts, entry_globs=facts.entry_globs + facts.review_globs)
+            for path in loaded.entry_files(manifest.rel_dir, wanted):
+                reasons.setdefault(
+                    path,
+                    f"{facts.name} loads files at this path by convention "
+                    f"({manifest.rel_dir or '.'}/package.json depends on {pkg}), "
+                    "so no importer is not proof of disuse",
+                )
+    return reasons
