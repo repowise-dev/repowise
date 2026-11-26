@@ -66,6 +66,7 @@ class RepoContractsResult:
 
     extracted: bool
     contracts: int
+    #: Call-to-route links inside the repo (``contract_links``).
     links: int
     path: Path
     #: The rows a re-extraction replaced, when they were read the same way (same
@@ -74,6 +75,8 @@ class RepoContractsResult:
     previous: ContractStore | None = None
     #: The rows a re-extraction wrote; None when the stored rows were kept.
     current: ContractStore | None = None
+    #: Host-only edges to another repo whose route is unread (``service_links``).
+    service_links: int = 0
 
 
 async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
@@ -110,7 +113,11 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
         assert head is not None
         if stamped["head"] == head:
             return RepoContractsResult(
-                False, len(prior.contracts), len(prior.contract_links), out_path
+                False,
+                len(prior.contracts),
+                len(prior.contract_links),
+                out_path,
+                service_links=len(prior.service_links),
             )
         if await asyncio.to_thread(
             _commits_leave_contracts_alone, repo_path, stamped["head"], head, wanted
@@ -120,7 +127,11 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
             prior.repo_provenance[alias] = {**stamped, "head": head}
             write_contract_store(prior, out_path)
             return RepoContractsResult(
-                False, len(prior.contracts), len(prior.contract_links), out_path
+                False,
+                len(prior.contracts),
+                len(prior.contract_links),
+                out_path,
+                service_links=len(prior.service_links),
             )
 
     store, indexed = await _extract(repo_path, alias, contract_config, head, excludes)
@@ -148,6 +159,7 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
         out_path,
         previous=prior if comparable else None,
         current=store,
+        service_links=len(store.service_links),
     )
 
 
