@@ -160,10 +160,8 @@ def component_name(rel: str, path_prefix: bool) -> str | None:
     file_parts = _split(stem)
     file_content = "/".join(file_parts).lower()
     keep = len(prefix)
-    matched: list[str] = []
     for index in range(len(prefix) - 1, -1, -1):
-        matched.insert(0, prefix[index].lower())
-        suffix = "/".join(matched)
+        suffix = "/".join(part.lower() for part in prefix[index:])
         if file_content == suffix or file_content.startswith(suffix + "/"):
             keep = index
     name = _pascal(prefix[:keep] + file_parts)
@@ -248,7 +246,7 @@ def nuxt_projects(ctx: ResolverContext) -> tuple[NuxtProject, ...]:
         )
     projects.sort(key=lambda p: len(p.root), reverse=True)
     result = tuple(projects)
-    setattr(ctx, "_nuxt_projects", result)  # noqa: B010 - per-context cache, not a field
+    ctx._nuxt_projects = result  # type: ignore[attr-defined]
     return result
 
 
