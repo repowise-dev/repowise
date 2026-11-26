@@ -318,8 +318,8 @@ def _line_log(
 
 # -- last_change on a symbol: the newest commit that edited its lines ----------
 
-#: The newest-commit walk runs on default symbol cards, so it gets a tighter
-#: bound than the full history walk; past it the card serves the file's.
+#: The newest-commit walk (include=["last_change"] on a symbol) is bounded
+#: tighter than the full history walk; past it the card serves the file's.
 _NEWEST_LINE_TIMEOUT_SECONDS = 5
 
 
