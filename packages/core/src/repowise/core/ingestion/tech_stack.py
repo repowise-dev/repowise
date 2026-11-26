@@ -1,5 +1,12 @@
 """Filesystem-based tech stack and build command detection.
 
+The one answer to "which frameworks does this repo use": the framework-edge
+handlers ask it (through ``DetectionContext.uses``), and the persisted tech
+list and the editor files show it. A JS framework is recognised from every
+production ``package.json``, nested ones included, through
+:mod:`.framework_facts`, so a Next.js or Nuxt app in a monorepo folder counts
+the same as one at the root.
+
 No DB or network dependencies: reads manifest files at and near the repo root.
 """
 
@@ -8,15 +15,31 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Container, Iterator
+from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 
+from repowise.core.code_origin import path_origin
 from repowise.core.repo_formatters import declares_ruff_format
 
-from ...ingestion.composer import COMPOSER_JSON, read_composer
-from ...ingestion.framework_facts import detect_php_framework
-from ...ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
-from .data import TechStackItem
+from .composer import COMPOSER_JSON, read_composer
+from .framework_facts import (
+    NpmManifest,
+    detect_php_framework,
+    js_frameworks,
+    npm_manifests,
+    parse_npm_manifest,
+)
+from .languages.registry import REGISTRY as _LANG_REGISTRY
+from .package_roots import scan_package_manifests
+
+
+@dataclass(frozen=True)
+class TechStackItem:
+    name: str
+    version: str | None
+    category: str  # "language" | "framework" | "database" | "infra"
+
 
 # package.json dependency -> (display name, category).
 _NODE_FRAMEWORKS: dict[str, tuple[str, str]] = {
@@ -123,7 +146,13 @@ def _find_dotnet_projects(repo_path: Path) -> list[Path]:
 _MANIFEST_FILES = tuple(
     sorted(
         _LANG_REGISTRY.manifest_filenames()
-        | {"tsconfig.json", "Dockerfile", "docker-compose.yml", "docker-compose.yaml"}
+        | {
+            "tsconfig.json",
+            "Dockerfile",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "config/application.rb",
+        }
     )
 )
 
@@ -140,7 +169,8 @@ def _manifest_fingerprint(repo_path: Path) -> tuple:
     mechanism: Windows timestamps are quantized to the ~15.6ms timer tick.
 
     CEILING: a nested change (a new ``.csproj`` in an existing subdirectory, a
-    workspace ``tsconfig.json`` one or two levels down) does not move the key, so
+    workspace ``tsconfig.json`` one or two levels down, a nested
+    ``package.json``) does not move the key, so
     a long-lived process re-indexing the same repo can be served a stale stack.
     The stack is contextual metadata only. To close it, key on a traversal
     snapshot instead of the root.
@@ -166,14 +196,18 @@ def _manifest_fingerprint(repo_path: Path) -> tuple:
 def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
     """Detect languages, frameworks, and infra tools from manifest files.
 
-    Reads root manifests, looks for tsconfig.json up to two levels down, and
-    walks up to five levels for .csproj files. A malformed manifest contributes
-    what it can and never raises. Returns items sorted by category then name.
+    Reads root manifests, every production ``package.json`` below the root
+    (for the frameworks it declares), looks for tsconfig.json up to two levels
+    down, and walks up to five levels for .csproj files. A malformed manifest
+    contributes what it can and never raises. Returns items sorted by category
+    then name.
 
     Memoized on the root inputs' stat signature: a single ``repowise update``
     asks twice (the graph's framework edges, then the knowledge-graph refresh)
     and gets the same answer both times off an unchanged tree. See
-    :func:`_manifest_fingerprint` for what the key does and does not cover.
+    :func:`_manifest_fingerprint` for what the key does and does not cover:
+    a nested ``package.json`` is read again only when the root key moves, and
+    the package-root scan behind it is cached per HEAD commit.
     """
     key = str(Path(repo_path).resolve())
     fingerprint = _manifest_fingerprint(Path(repo_path))
@@ -195,6 +229,8 @@ _NODE_RUNTIME_FIELDS = ("dependencies", "main", "bin", "module", "exports")
 _ROOT_MARKERS: tuple[tuple[tuple[str, ...], _Item], ...] = (
     (("Cargo.toml",), ("Rust", None, "language")),
     (("Gemfile",), ("Ruby", None, "language")),
+    # Every Rails app boots from this file; the Rails edge handler reads it as presence.
+    (("config/application.rb",), ("Rails", None, "framework")),
     (("Dockerfile",), ("Docker", None, "infra")),
     (("docker-compose.yml", "docker-compose.yaml"), ("Docker Compose", None, "infra")),
 )
@@ -271,21 +307,50 @@ def _read_manifest_text(path: Path) -> str | None:
 
 def _node_items(repo_path: Path) -> Iterator[_Item]:
     pkg = _read_package_json(repo_path)
-    if not isinstance(pkg, dict):
-        return
-    all_deps = {**_dep_table(pkg, "dependencies"), **_dep_table(pkg, "devDependencies")}
-    if _is_node_app(pkg, all_deps):
-        yield "Node.js", _node_engine(pkg), "language"
-        yield from _node_framework_items(all_deps)
-    # TypeScript stands on its own: many repos use it through tsconfig.json alone.
-    if "typescript" in all_deps or _has_tsconfig(repo_path):
-        yield "TypeScript", _dep_version(all_deps, "typescript"), "language"
+    if isinstance(pkg, dict):
+        all_deps = {**_dep_table(pkg, "dependencies"), **_dep_table(pkg, "devDependencies")}
+        if _is_node_app(pkg, all_deps):
+            yield "Node.js", _node_engine(pkg), "language"
+            yield from _node_framework_items(all_deps)
+        if (root := parse_npm_manifest(pkg)) is not None:
+            yield from _convention_framework_items(root)
+        # TypeScript stands on its own: many repos use it through tsconfig.json alone.
+        if "typescript" in all_deps or _has_tsconfig(repo_path):
+            yield "TypeScript", _dep_version(all_deps, "typescript"), "language"
+    for manifest in _nested_npm_manifests(repo_path):
+        # Frameworks only: a nested package's build tools and ORM are its own.
+        nested = _node_framework_items(dict.fromkeys(manifest.dependencies))
+        yield from (item for item in nested if item[2] == "framework")
+        yield from _convention_framework_items(manifest)
 
 
 def _node_framework_items(all_deps: dict) -> Iterator[_Item]:
     for dep_key, (display, cat) in _NODE_FRAMEWORKS.items():
         if dep_key in all_deps:
             yield display, _dep_version(all_deps, dep_key), cat
+
+
+def _convention_framework_items(manifest: NpmManifest) -> Iterator[_Item]:
+    """The frameworks :mod:`.framework_facts` recognises in *manifest* (Nuxt, Remix, ...)."""
+    for facts, _pkg in js_frameworks(manifest):
+        yield facts.name, None, "framework"
+
+
+def _nested_npm_manifests(repo_path: Path) -> list[NpmManifest]:
+    """Every production ``package.json`` below the root, as :mod:`.framework_facts` reads it.
+
+    The package-root scan already skips vendored trees, nested checkouts and
+    ignored directories; a manifest in a test fixture, an example or a tooling
+    folder is not the repo's stack, so only production origins count.
+    """
+    paths = [
+        f"{rel}/package.json"
+        for rel, names in scan_package_manifests(repo_path).items()
+        if "package.json" in names and path_origin(f"{rel}/package.json") == "production"
+    ]
+    if not paths:
+        return []
+    return [m for m in npm_manifests(repo_path, paths) if m.rel_dir]
 
 
 def _dep_table(pkg: dict, field: str) -> dict:

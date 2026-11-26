@@ -360,7 +360,7 @@ def _add_laravel_edges(
 class _LaravelHandler:
     def detect(self, dctx: DetectionContext) -> bool:
         return (
-            "laravel" in dctx.stack_lower
+            dctx.uses("Laravel")
             or "routes/web.php" in dctx.path_set
             or "routes/api.php" in dctx.path_set
             or bool(_manifest_roots(dctx.ctx))

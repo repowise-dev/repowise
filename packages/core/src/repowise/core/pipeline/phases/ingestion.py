@@ -904,7 +904,7 @@ def _detect_tech_items(
 ) -> list:
     """Detect the repo's tech stack; a failure warns and yields ``[]``."""
     try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+        from repowise.core.ingestion.tech_stack import detect_tech_stack
 
         return detect_tech_stack(repo_path)
     except Exception as tech_exc:

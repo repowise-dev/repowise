@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 
 from repowise.core.agent_steer import AGENT_STEER, AGENT_STEER_DEFERRED
+from repowise.core.ingestion.tech_stack import TechStackItem
 
 from .sections import DEFAULT_SECTIONS
 
@@ -25,13 +26,6 @@ def _render_tool_table(*, keyless: bool = False, listed: frozenset[str] | None =
     from .tool_table import render_tool_table
 
     return render_tool_table(keyless=keyless, listed=listed)
-
-
-@dataclass(frozen=True)
-class TechStackItem:
-    name: str
-    version: str | None
-    category: str  # "language" | "framework" | "database" | "infra"
 
 
 @dataclass(frozen=True)

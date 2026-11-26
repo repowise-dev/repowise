@@ -149,7 +149,7 @@ def _add_synthetic_edges(
     # init path reports, or an index degrades differently depending on how it
     # was built and nothing says which.
     try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+        from repowise.core.ingestion.tech_stack import detect_tech_stack
 
         with timed(timings, "rebuild.framework"):
             tech_items = detect_tech_stack(repo_path)

@@ -46,7 +46,7 @@ def _is_convention_route(path: str) -> bool:
 
 class _ConventionRouteHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        if any(tok in dctx.stack_lower for tok in ("remix", "sveltekit", "astro")):
+        if dctx.uses("Remix", "SvelteKit", "Astro"):
             return True
         for path, parsed in dctx.parsed_files.items():
             if parsed.file_info.language not in _ROUTE_LANGUAGES:

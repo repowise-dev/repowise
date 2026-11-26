@@ -314,7 +314,7 @@ def _digest(root: Path, path: str) -> str | None:
 
 def stack_names(root: Path) -> list[str]:
     """The tech stack names that pick the framework-edge handlers."""
-    from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+    from repowise.core.ingestion.tech_stack import detect_tech_stack
 
     return sorted(item.name for item in detect_tech_stack(root))
 
