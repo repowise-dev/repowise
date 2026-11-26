@@ -10,6 +10,13 @@ so a symbol (and a file older than the indexed window) walks git: ``git log
 -S`` over the files that define it, ``--diff-filter=A`` for a file. Walks are
 kept per repository head, so a repeat costs nothing. An origin question this cannot answer says so and
 names the git command that can, instead of falling through to retrieval.
+
+"When did we start limiting the number of content codings" names a behaviour,
+not code. It resolves to a symbol only when one production symbol's whole name
+is spelled by the question's words (``MAX_CONTENT_CODINGS``: "limiting",
+"content", "codings") and no other name matches as well; the answer says which
+symbol it read. Anything weaker goes to retrieval, with a hint naming the git
+command (:func:`origin_hint`).
 """
 
 from __future__ import annotations
@@ -24,15 +31,17 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from repowise.core.analysis.changed_lines import shallow_roots
+from repowise.core.code_origin import path_origin
 from repowise.core.persistence.crud.changes import find_changes
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitCommit, GitCommitFile, GitMetadata, WikiSymbol
 from repowise.server.mcp_server._helpers import is_excluded
 from repowise.server.mcp_server._meta import build_meta, read_live_head
 from repowise.server.mcp_server._query_shape import path_tokens
+from repowise.server.mcp_server._query_terms import STOPWORDS
 from repowise.server.mcp_server.tool_answer.symbols import _extract_question_identifiers
 
 # A question about where something came from: "which PR/commit ...", "who
@@ -40,7 +49,7 @@ from repowise.server.mcp_server.tool_answer.symbols import _extract_question_ide
 _ORIGIN_RE = re.compile(
     r"\b(?:which|what)\s+(?:pull\s+request|merge\s+request|pr|mr|commit|change|patch)\b"
     r"|\bwho\s+(?:first\s+|originally\s+|initially\s+)?(?:introduc|add|creat|wr[io]t|author)\w*"
-    r"|\bwhen\s+(?:was|were|did)\b"
+    r"|\bwhen\s+(?:and\s+why\s+)?(?:was|were|did)\b"
     r"|\b(?:first|originally|initially)\s+(?:introduc|add|creat|land)\w*",
     re.IGNORECASE,
 )
@@ -67,11 +76,30 @@ _WALKS: OrderedDict[tuple, dict | str] = OrderedDict()
 _WALKS_MAX = 256
 
 
+# "start limiting" / "started refusing": when a behaviour began. A failure
+# gerund asks when a regression began, which the code's origin does not answer.
+_STARTED_BEHAVIOUR = re.compile(
+    r"\bstart(?:ed|s)?\s+(?!(?:fail|break|crash|hang|error|leak|flak|regress|misbehav"
+    r"|time|timing|throw|stall|slow)\w*)([a-z]+ing)\b",
+    re.IGNORECASE,
+)
+
+
 def asks_origin(question: str) -> bool:
     """Whether *question* asks which change introduced something, or when or by whom."""
     if not _ORIGIN_RE.search(question):
         return False
     return bool(re.search(rf"\b{_VERB}\b", question, re.IGNORECASE))
+
+
+def asks_behaviour_origin(question: str) -> bool:
+    """Whether *question* asks when a behaviour began ("when did we start limiting X")."""
+    return bool(_ORIGIN_RE.search(question) and _STARTED_BEHAVIOUR.search(question))
+
+
+def wants_origin(question: str) -> bool:
+    """Whether *question* asks for an origin at all: of named code or of a behaviour."""
+    return asks_origin(question) or asks_behaviour_origin(question)
 
 
 def _is_object(question: str, name: str) -> bool:
@@ -96,17 +124,24 @@ async def origin_reply(ask: Any, scope: str | None = None) -> dict | None:
     With *scope*, only files under its prefixes count, as for retrieval.
     """
     question = ask.question
-    if not asks_origin(question):
+    named = asks_origin(question)
+    behaviour = asks_behaviour_origin(question)
+    if not named and not behaviour:
         return None
     files = [t.replace("\\", "/").removeprefix("./") for t in path_tokens(question)]
     idents = sorted(_extract_question_identifiers(question) - _stems(files), key=len, reverse=True)
-    if not files and not idents:
-        # Prose subject ("when did we start caching"): retrieval may still
-        # find the commit-free part of the answer.
-        return None
     repo_path = getattr(ask.ctx, "path", None)
+    resolved = False
     async with get_session(ask.ctx.session_factory) as session:
-        subject = await _subject(session, ask, question, files, idents)
+        subject = await _subject(session, ask, question, files, idents) if named else None
+        if subject is None and (behaviour or not (files or idents)):
+            # A described behaviour ("when did we start caching"): the one
+            # symbol whose name the question spells.
+            subject = await _behaviour_subject(session, ask, question, idents, scope)
+            resolved = subject is not None
+            if subject is None and not (named and (files or idents)):
+                # Retrieval answers, with the git command as the next step.
+                return None
         if subject is None:
             named = (files or idents)[0]
             defined = files[:1] or _in_scope(await _defining_files(session, ask, named), scope)
@@ -130,7 +165,164 @@ async def origin_reply(ask: Any, scope: str | None = None) -> dict | None:
         if commit is None:
             return _cannot(ask, name, paths, reason, kind=kind)
         found = await find_changes(session, ask.repo_id, commit["sha"], limit=1)
-    return _answer(ask, name, paths, kind, commit, found[0] if found else None)
+    return _answer(ask, name, paths, kind, commit, found[0] if found else None, resolved=resolved)
+
+
+# Question words that ask about history and never name the code.
+_HISTORY_WORDS = frozenset(
+    [
+        "when",
+        "which",
+        "what",
+        "who",
+        "why",
+        "did",
+        "pull",
+        "request",
+        "requests",
+        "merge",
+        "commit",
+        "commits",
+        "change",
+        "changes",
+        "patch",
+        "first",
+        "originally",
+        "initially",
+        "start",
+        "started",
+        "starts",
+        "introduced",
+        "introduce",
+        "added",
+        "add",
+        "created",
+        "landed",
+    ]
+)
+# A limit the question describes ("limiting", "capping", "more than") is the
+# MAX or LIMIT part of the name that holds it.
+_LIMIT_CUE = re.compile(
+    r"\b(?:limit\w*|cap|caps|capp\w*|bound\w*|maxim\w*|max|at\s+most|more\s+than"
+    r"|too\s+many|exceed\w*)\b",
+    re.IGNORECASE,
+)
+_LIMIT_PARTS = frozenset({"max", "maximum", "limit", "limits", "cap", "bound"})
+# Name parts that carry no meaning of their own ("_MAX_COOKIES_PER_RESPONSE").
+_FREE_PARTS = frozenset({"per", "of", "to", "by", "in", "on", "for", "the", "a", "an", "is"})
+_NAME_PART_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+#: Content words read from the question, at most: the symbol query stays small.
+_MAX_BEHAVIOUR_WORDS = 12
+#: Name parts the question must spell, at least, besides a limit part: one
+#: word ("Response") names too much to be the code a behaviour lives in.
+_MIN_CONTENT_PARTS = 2
+#: Symbol rows the behaviour scan reads, at most.
+_MAX_SCANNED_NAMES = 5000
+
+
+def _behaviour_words(question: str) -> list[str]:
+    words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9]*", question)]
+    kept = [w for w in words if len(w) >= 3 and w not in STOPWORDS and w not in _HISTORY_WORDS]
+    return list(dict.fromkeys(kept))[:_MAX_BEHAVIOUR_WORDS]
+
+
+# Endings that inflect a word without changing it: "codings" is "coding".
+_ENDINGS = ("s", "es", "d", "ed", "ing")
+
+
+def _same_word(part: str, word: str) -> bool:
+    """A name *part* and a question *word* are one word, give or take an ending
+    ("limit"/"limiting", "decompress"/"decompresses"; never "time"/"timeout")."""
+    if part == word:
+        return True
+    short, long_ = sorted((part, word), key=len)
+    if len(short) < 4:
+        return False
+    stems = (short, short[:-1]) if short.endswith("e") else (short,)
+    return any(long_ == stem + end for stem in stems for end in _ENDINGS)
+
+
+def _name_cover(name: str, words: list[str], limit: bool, action: str | None = None) -> int:
+    """How many parts of *name* the question spells; 0 unless it spells every
+    one, with at least ``_MIN_CONTENT_PARTS`` that are not a limit.
+
+    With *action*, the behaviour that started ("limiting", "validating"), the
+    name must also name it, by that verb or by a limit part: ``ConfigParser``
+    names nothing of "when did the config parser start returning None".
+    """
+    parts = [p.lower() for p in _NAME_PART_RE.findall(name)]
+    if action and not any(_same_word(p, action) or (limit and p in _LIMIT_PARTS) for p in parts):
+        return 0
+    content = 0
+    for part in parts:
+        if part in _FREE_PARTS:
+            continue
+        if any(_same_word(part, w) for w in words):
+            content += 1
+        elif not (limit and part in _LIMIT_PARTS):
+            return 0
+    return len(parts) if content >= _MIN_CONTENT_PARTS else 0
+
+
+async def _behaviour_subject(
+    session, ask: Any, question: str, idents: list[str], scope: str | None
+) -> tuple[str, list[str], str] | None:
+    """``(symbol, defining paths, "symbol")`` for the one production symbol whose
+    whole name *question* spells, or ``None``.
+
+    Precision first: every part of the name must be a question word (or the
+    MAX of a limit the question describes), and no other name may match with
+    as many parts. Ceiling: a behaviour whose code carries none of the words
+    used to describe it does not resolve; retrieval answers it instead. A
+    symbol the question types is what the behaviour happens in ("when did
+    parse_config start returning None"), not the behaviour, so it never counts.
+    """
+    words = _behaviour_words(question)
+    stems = list(dict.fromkeys(w[:4] for w in words if len(w) >= 4))
+    if len(words) < _MIN_CONTENT_PARTS or not stems:
+        return None
+    typed = {i.rsplit(".", 1)[-1] for i in idents}
+    # Ceiling: a substring scan of the symbol names, capped, run only for
+    # behaviour origin questions. An index of name parts would make it a lookup.
+    rows = (
+        await session.execute(
+            select(WikiSymbol.name, WikiSymbol.file_path)
+            .where(
+                WikiSymbol.repository_id == ask.repo_id,
+                or_(*(WikiSymbol.name.ilike(f"%{s}%") for s in stems)),
+            )
+            .distinct()
+            .limit(_MAX_SCANNED_NAMES)
+        )
+    ).all()
+    limit = bool(_LIMIT_CUE.search(question))
+    started = _STARTED_BEHAVIOUR.search(question)
+    action = started.group(1).lower() if started else None
+    covers: dict[str, int] = {}
+    defined: dict[str, set[str]] = {}
+    for name, path in rows:
+        if name not in covers:
+            covers[name] = 0 if name in typed else _name_cover(name, words, limit, action)
+        if not covers[name] or not path or not _in_scope([path], scope):
+            continue
+        if is_excluded(path, ask.exclude_spec) or path_origin(path) != "production":
+            continue
+        defined.setdefault(name, set()).add(path)
+    if not defined:
+        return None
+    ranked = sorted(defined, key=lambda n: covers[n], reverse=True)
+    if len(ranked) > 1 and covers[ranked[1]] == covers[ranked[0]]:
+        return None
+    return ranked[0], sorted(defined[ranked[0]]), "symbol"
+
+
+def origin_hint(top_file: str | None) -> str:
+    """The next step for an origin question the index could not pin to code."""
+    where = f" -- {json.dumps(top_file) if ' ' in top_file else top_file}" if top_file else ""
+    return (
+        f"Run `git log -S'<identifier>' --reverse{where}` with the identifier that "
+        "implements it: the first commit listed introduced it."
+    )
 
 
 def _in_scope(paths: list[str], scope: str | None) -> list[str]:
@@ -363,7 +555,16 @@ def _walk(repo_path: str, args: list[str], paths: list[str], timeout: int) -> di
     }
 
 
-def _answer(ask: Any, name: str, paths: list[str], kind: str, commit: dict, change: Any) -> dict:
+def _answer(
+    ask: Any,
+    name: str,
+    paths: list[str],
+    kind: str,
+    commit: dict,
+    change: Any,
+    *,
+    resolved: bool = False,
+) -> dict:
     short = commit["sha"][:12]
     by = f"{commit['author']}, {commit['date']}"
     if change is not None and change.forge_ref:
@@ -373,6 +574,8 @@ def _answer(ask: Any, name: str, paths: list[str], kind: str, commit: dict, chan
         what = f'commit {short} "{commit["subject"]}" (by {by})'
     where = "" if kind == "file" else f", in {', '.join(paths)}"
     answer = f"`{name}` was introduced by {what}{where}."
+    if resolved:
+        answer = f"The question describes `{name}`, the code whose name it spells. {answer}"
     origin: dict = {
         "subject": name,
         "commit": commit["sha"],
@@ -380,6 +583,8 @@ def _answer(ask: Any, name: str, paths: list[str], kind: str, commit: dict, chan
         "date": commit["date"],
     }
     hint = f"Use the answer directly; it rests on git history of {paths[0]}."
+    if resolved:
+        origin["resolved_from"] = "question"
     if change is not None:
         origin["change"] = change.change_id
         hint = f'get_context(targets=["change:{change.change_id}"]) for the whole change.'
