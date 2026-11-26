@@ -287,7 +287,7 @@ def test_function_exported_under_two_names_at_two_prefixes(tmp_path: Path) -> No
     ) == {("/users", "users.js")}
 
 
-def test_spread_arguments_hand_nothing(tmp_path: Path) -> None:
+def test_spread_arguments_hand_no_prefix(tmp_path: Path) -> None:
     assert _routes(
         tmp_path,
         {
@@ -303,3 +303,48 @@ def test_spread_arguments_hand_nothing(tmp_path: Path) -> None:
             """,
         },
     ) == {("/users", "users.js")}
+
+
+def test_module_mount_under_an_ambiguous_handed_router_keeps_its_prefix(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "app.js": """
+                const express = require('express');
+                const app = express();
+                const a = express.Router();
+                const b = express.Router();
+                require('./routes/index')(a);
+                require('./routes/index')(b);
+                app.use('/a', a);
+                app.use('/b', b);
+            """,
+            "routes/index.js": """
+                module.exports = function (app) { app.use('/x', require('./users')); };
+            """,
+            "routes/users.js": """
+                const router = require('express').Router();
+                router.get('/list', h);
+                module.exports = router;
+            """,
+        },
+    ) == {("/x/list", "routes/users.js")}
+
+
+def test_a_spread_call_beside_a_readable_one_keeps_the_in_function_path(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "app.js": """
+                const express = require('express');
+                const app = express();
+                const x = express.Router();
+                require('./u')(x);
+                require('./u')(...[y]);
+                app.use('/x', x);
+            """,
+            "u.js": """
+                module.exports = function (router) { router.get('/u', h); };
+            """,
+        },
+    ) == {("/u", "u.js")}

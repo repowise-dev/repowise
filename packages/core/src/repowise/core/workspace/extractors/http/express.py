@@ -44,6 +44,7 @@ from ..calls import code_matches, outside_comments
 from ..langs import JS_TS
 from .dialect import build_provider_contract
 from .express_handed import (
+    SPREAD,
     HandedFunctions,
     declare_handed,
     handed_calls,
@@ -157,7 +158,7 @@ class _File:
         """The mount key of router *root*, which a mount or call at *offset*
         hangs off: the parameter of the exported function around it that
         *root* names, else a router of this module."""
-        handed = self.handed.keys(root, offset)
+        handed = [k for k in self.handed.keys(root, offset) if not k.endswith("(*)")]
         # A function exported under two names has no one key to hang off.
         return handed[0] if len(handed) == 1 else self.key(root)
 
@@ -210,7 +211,8 @@ def _imported_router(target: str, imports: dict[str, tuple[str, str]]) -> tuple[
 
 
 def _named_exports(content: str) -> set[str]:
-    """Every name :func:`_named_export_re` would find exported, read in one pass."""
+    """The names the file exports by name (as :func:`_named_export_re` reads
+    them, a comparison such as ``exports.x == y`` aside), read in one pass."""
     out: set[str] = set()
     for m in _NAMED_EXPORTS_RE.finditer(content):
         if m.group(3) is not None:
@@ -317,7 +319,7 @@ def _handed_mounts(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
     for module, exported, index, arg, offset in calls:
         if module == f.module:
             continue
-        placed = f.placed(arg)
+        placed = f.placed(arg) if index != SPREAD else None
         if placed is None:
             prefix, parent = None, ""
         else:

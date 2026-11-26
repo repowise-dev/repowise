@@ -72,13 +72,22 @@ _LEAD_SPAN = 120
 _MAX_HEADS = 2000
 
 
+# The argument index of a call whose arguments a spread hides.
+SPREAD = -1
+
+
 def handed_key(module: str, exported: str, index: int) -> str:
     """The mount key of argument *index* of *module*'s export *exported*."""
-    return f"{module}:{exported}({index})"
+    return f"{module}:{exported}({'*' if index == SPREAD else index})"
 
 
 def _is_handed_key(key: str) -> bool:
     return key.endswith(")")
+
+
+def _spread_twin(key: str) -> str:
+    """The key a spread call of *key*'s function declares."""
+    return key.rsplit("(", 1)[0] + "(*)"
 
 
 def _marker(module: str) -> str:
@@ -127,7 +136,9 @@ class HandedFunctions:
         if best is None or var not in best.params or var in best.shadowed:
             return []
         index = best.params.index(var)
-        return [handed_key(self._module, name, index) for name in best.exported]
+        return [
+            handed_key(self._module, name, i) for name in best.exported for i in (index, SPREAD)
+        ]
 
     def _functions(self) -> list[_Fn]:
         if self._fns is None:
@@ -236,7 +247,10 @@ def handed_calls(
             continue
         args = call_arguments(ctx.content, m.end() - 1) or []
         if any(a.startswith("...") for a in args):
-            continue  # a spread hides each argument's position
+            # A spread hides each argument's position: the call may hand a
+            # router anywhere, so the function's handed routers are unreadable.
+            yield module, target[1], SPREAD, "", m.start()
+            continue
         for i, arg in enumerate(args):
             if _BARE_NAME_RE.fullmatch(arg):
                 yield module, target[1], i, arg, m.start()
@@ -273,10 +287,12 @@ def served_prefix(mounts: Mapping[str, str], key: str, depth: int = 0) -> tuple[
     if not parent:
         return True, value
     mounted, outer = served_prefix(mounts, parent, depth + 1)
-    if not mounted and _is_handed_key(parent):
-        # A handed router whose own router nobody hands is unplaced; a router
-        # module mounted on such a parameter reads as served at the root, as
-        # it always has.
+    if _is_handed_key(parent) and declared_mount(mounts, f"{_NAMESPACE}:{_spread_twin(parent)}")[0]:
+        outer = None  # a spread call may hand the parent a router anywhere
+    if _is_handed_key(parent) and (not mounted or outer is None):
+        # A handed router whose own router is unplaced or ambiguous is
+        # unplaced; a router module mounted on such a parameter keeps the
+        # prefix it is mounted at there, as it always has.
         return True, None if _is_handed_key(key) else value
     if outer is None:
         return True, None
