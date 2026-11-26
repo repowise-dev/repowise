@@ -348,7 +348,8 @@ def aims_elsewhere(consumer: Contract) -> bool:
     if meta.get("target_repo"):
         return False
     host = meta.get("host")
-    token = (meta.get("base_token") or "").strip().lower()
+    # ``${env.API_URL || location.origin}``: the configured name comes first.
+    token = re.split(r"\|\||\?\?", meta.get("base_token") or "")[0].strip().lower()
     if token and not _PAGE_ORIGIN_RE.search(token):
         return True
     return bool(host) and host not in LOCALHOST_HOSTS

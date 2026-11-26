@@ -44,6 +44,7 @@ ELSEWHERE = {"base_stripped": True, "base_token": "RAG_API_URL"}
         ("/bridge/pairings", "/{param}/pairings", {"base_stripped": True, "base_token": "trim"}),  # param_segment
         ("/files/{param}", "/{param}/files/{param}", {"host": "rag_api"}),  # unmapped host
         ("/health", "/health", {"host": "rag_api"}),  # exact pass, generic path
+        ("/health", "/health", {"base_stripped": True, "base_token": "env.API_URL || window.location.origin"}),
     ],
 )
 def test_a_call_whose_base_points_elsewhere_takes_no_weak_link(consumer_path, provider_path, meta) -> None:
