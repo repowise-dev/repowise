@@ -8,13 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
 from repowise.core.analysis.execution_graph import is_walkable_execution_edge
+from repowise.core.exclusion import build_exclude_spec, node_is_excluded
 from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.deps import cross_repo_cut_inputs, get_db_session
 from repowise.server.mcp_server._graph_utils import _node_id_is_excluded
+from repowise.server.mcp_server._helpers import filter_edge_rows
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import GraphExportResponse, NodeSearchResult
 from repowise.server.services.graph_views import edge_response
@@ -126,7 +128,7 @@ async def export_graph(
         description="Maximum nodes to return. Stepped up by the client.",
     ),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> GraphExportResponse:
     """Export the full dependency graph in D3 force-directed format.
 
@@ -145,6 +147,10 @@ async def export_graph(
     fills the rest by PageRank, so signal overlays always have their nodes in
     view. ``dead_total``/``hot_total`` vs ``*_in_view`` let clients say
     "showing 12 of 37" instead of rendering silently-empty overlays.
+
+
+    Files the repo rules exclude are left out before anything is counted or
+    capped, and so is every edge with an end in one, including the flow walk's.
     """
     # Load only the columns this endpoint actually serializes. The row carries
     # several large text columns (signature, qualified_name, file_path,
@@ -178,7 +184,10 @@ async def export_graph(
         .where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file")
         .order_by(GraphNode.pagerank.desc())
     )
-    all_nodes = node_result.scalars().all()
+    exclude_spec = build_exclude_spec(repo.local_path)
+    all_nodes = [
+        n for n in node_result.scalars().all() if not node_is_excluded(n.node_id, exclude_spec)
+    ]
     total_node_count = len(all_nodes)
     truncated = total_node_count > limit
 
@@ -189,7 +198,7 @@ async def export_graph(
             GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
-    edges = list(edge_result.scalars().all())
+    edges = filter_edge_rows(edge_result.scalars().all(), exclude_spec)
 
     # Repo-wide signals: needed for the *_total counts and, when truncating,
     # for reserved-slot selection (flagged nodes are known before the cut).

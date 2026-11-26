@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.communities import has_community
@@ -26,45 +26,16 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
-    GraphEdge,
     HealthFileMetric,
     HealthFinding,
     Repository,
 )
-from repowise.server.mcp_server._helpers import edge_is_excluded, filter_path_list
+from repowise.server.mcp_server._helpers import filter_path_list
 from repowise.server.mcp_server.tool_context.call_graph import _SYMBOL_USE_EDGE_TYPES
 
 # Degree reported for a FILE: "N files depend on this", counted over file
 # dependencies rather than one edge per symbol the file declares.
 _FILE_DEPENDENCY_EDGE_TYPES = sorted(FILE_DEPENDENCY_EDGE_TYPES)
-
-
-async def _degree_counts(
-    session: AsyncSession, repo_id: str, node_id: str, edge_types: list[str], exclude_spec: Any
-) -> dict[str, int]:
-    """``get_node_degree_counts``, leaving out edges with an endpoint the repo rules exclude.
-
-    With rules the node's edges are read and counted here, since the rules are
-    path globs SQL cannot match; the read is bounded by this one node's degree.
-    """
-    if not exclude_spec:
-        return await get_node_degree_counts(session, repo_id, node_id, edge_types=edge_types)
-    res = await session.execute(
-        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
-            GraphEdge.repository_id == repo_id,
-            or_(GraphEdge.source_node_id == node_id, GraphEdge.target_node_id == node_id),
-            GraphEdge.edge_type.in_(edge_types),
-        )
-    )
-    counts = {"in_degree": 0, "out_degree": 0}
-    for src, dst in res.all():
-        if edge_is_excluded(src, dst, exclude_spec):
-            continue
-        if dst == node_id:
-            counts["in_degree"] += 1
-        if src == node_id:
-            counts["out_degree"] += 1
-    return counts
 
 
 async def _resolve_metrics(
@@ -89,13 +60,15 @@ async def _resolve_metrics(
         meta = {}
 
     # Scoped by layer: a file's neighbours are files, a symbol's are symbols.
-    degrees = await _degree_counts(
+    degrees = await get_node_degree_counts(
         session,
         repo_id,
         node.node_id,
         # Every use edge type, as `routers/graph/intelligence.py` reports it.
-        _SYMBOL_USE_EDGE_TYPES if node.node_type == "symbol" else _FILE_DEPENDENCY_EDGE_TYPES,
-        exclude_spec,
+        edge_types=(
+            _SYMBOL_USE_EDGE_TYPES if node.node_type == "symbol" else _FILE_DEPENDENCY_EDGE_TYPES
+        ),
+        exclude_spec=exclude_spec,
     )
 
     # Percentile computation against same-type peers
@@ -284,7 +257,13 @@ async def _resolve_health(
     git_meta = await get_git_metadata(session, repo_id, file_path)
     node = await get_graph_node(session, repo_id, file_path)
     degrees = (
-        await _degree_counts(session, repo_id, file_path, _FILE_DEPENDENCY_EDGE_TYPES, exclude_spec)
+        await get_node_degree_counts(
+            session,
+            repo_id,
+            file_path,
+            edge_types=_FILE_DEPENDENCY_EDGE_TYPES,
+            exclude_spec=exclude_spec,
+        )
         if node is not None
         else None
     )

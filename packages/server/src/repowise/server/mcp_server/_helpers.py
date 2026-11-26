@@ -947,39 +947,14 @@ async def fetch_allowed_edges(
 ) -> list:
     """Shape G: the first *limit* rows of an edge query with no excluded endpoint.
 
-    The exclusion runs before the cap, so excluded rows never take the place of
-    allowed ones. It is one query with ``LIMIT``, as before, unless that page
-    was full and held an excluded row; then the same ordering is read on in
-    bounded pages until the cap is filled or the rows run out. Stale excluded
-    rows are rare, so the extra reads almost never run. *stmt* must be fully
-    ordered for the pages to be disjoint.
-
-    With *keep_excluded*, the excluded rows read before the last allowed one
-    stay in the result, in order, for a caller that reports what it skipped;
-    only allowed rows count toward *limit*.
+    Delegates to :func:`repowise.core.exclusion.fetch_allowed_edges`, which
+    reads on in bounded pages so excluded rows never take an allowed row's place.
     """
-    page = (await session.execute(stmt.limit(limit))).all()
-    if not spec:
-        return list(page)
-    out: list = []
-    allowed = 0
-    offset = 0
-    size = limit
-    while True:
-        for row in page:
-            if allowed >= limit:
-                break
-            if any(node_is_excluded(n, spec) for n in endpoints(row)):
-                if keep_excluded:
-                    out.append(row)
-                continue
-            out.append(row)
-            allowed += 1
-        if allowed >= limit or len(page) < size:
-            return out
-        offset += size
-        size = limit * 4
-        page = (await session.execute(stmt.limit(size).offset(offset))).all()
+    from repowise.core.exclusion import fetch_allowed_edges as _core_fetch_allowed_edges
+
+    return await _core_fetch_allowed_edges(
+        session, stmt, spec, limit=limit, endpoints=endpoints, keep_excluded=keep_excluded
+    )
 
 
 def filter_embedded_path_ids(ids: list, spec: Any) -> list:

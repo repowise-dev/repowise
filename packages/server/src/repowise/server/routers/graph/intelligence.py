@@ -9,12 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.exclusion import build_exclude_spec
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.models import GraphNode, Repository
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._graph_utils import (
     bfs_trace,
@@ -44,7 +45,7 @@ async def get_graph_metrics(
     repo_id: str,
     node_id: str = Query(..., description="File path or symbol_id"),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> GraphMetricsResponse:
     """Return importance metrics for a file or symbol with percentile ranks."""
     node = await crud.get_graph_node(session, repo_id, node_id)
@@ -58,7 +59,7 @@ async def get_graph_metrics(
         session, repo_id, pagerank, betweenness
     )
 
-    degrees = await _layer_degrees(session, repo_id, node)
+    degrees = await _layer_degrees(session, repo_id, node, build_exclude_spec(repo.local_path))
     meta = parse_community_meta(node)
 
     return GraphMetricsResponse(
@@ -80,8 +81,12 @@ async def get_graph_metrics(
     )
 
 
-async def _layer_degrees(session: AsyncSession, repo_id: str, node: GraphNode) -> dict[str, int]:
+async def _layer_degrees(
+    session: AsyncSession, repo_id: str, node: GraphNode, exclude_spec: Any
+) -> dict[str, int]:
     """In/out degree over the node's own layer: symbol-use or file-dependency edges.
+
+    An edge with an end in a file the repo rules exclude is not counted.
 
     Same scope as /api/symbols/detail, which renders the same symbol component,
     so a symbol reports one degree whichever of the two surfaces is open.
@@ -92,6 +97,7 @@ async def _layer_degrees(session: AsyncSession, repo_id: str, node: GraphNode) -
         repo_id,
         node.node_id,
         edge_types=sorted(SYMBOL_USE_EDGE_TYPES if is_symbol else FILE_DEPENDENCY_EDGE_TYPES),
+        exclude_spec=exclude_spec,
     )
 
 
@@ -116,7 +122,7 @@ async def get_callers_callees(
     ),
     limit: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> CallersCalleesResponse:
     """Who calls a symbol, what it calls, and every other relation it has.
 
@@ -143,7 +149,12 @@ async def get_callers_callees(
 
     node = await _resolve_symbol(session, repo_id, symbol_id)
     relations = await load_symbol_relations(
-        session, repo_id, node.node_id, present=True, call_row_cap=limit
+        session,
+        repo_id,
+        node.node_id,
+        present=True,
+        call_row_cap=limit,
+        exclude_spec=build_exclude_spec(repo.local_path),
     )
     groups = [g for g in relations.groups if _wants_group(g, et_filter, direction)]
 
