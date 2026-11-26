@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import subprocess
 import time
 from collections import defaultdict
 from collections.abc import Callable
@@ -25,6 +26,7 @@ from typing import Any
 
 import structlog
 
+from ...analysis.git_cli import run_git
 from ...co_change import canonical_pair
 from ._constants import (
     _CO_CHANGE_COMMIT_DECAY_TAU,
@@ -39,7 +41,7 @@ from .records import RenameTrail, name_status_path
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["CoChangeWalk", "compute_co_changes_and_entropy"]
+__all__ = ["CoChangeWalk", "compute_co_changes_and_entropy", "windowed_partners"]
 
 
 @dataclass
@@ -357,3 +359,82 @@ def compute_co_changes_and_entropy(
         partner_count=dict(partner_count),
         partner_mass={fp: round(mass, 6) for fp, mass in partner_mass.items()},
     )
+
+
+# A query-time walk serves one tool call: a git that takes longer than this is
+# stuck, not slow, on any repository this has been run against.
+_WINDOW_GIT_TIMEOUT_SECONDS = 20.0
+
+
+def windowed_partners(
+    repo_root: str, target: str, since: str, all_files: set[str]
+) -> tuple[list[dict], int] | None:
+    """Co-change partners of *target* over the commits since *since*, counted plainly.
+
+    The stored partners are a recency-decayed mass over the whole indexed walk,
+    which cannot be cut back to a window. This walks only the commits that
+    touched *target* since the git date *since*, with every file each one
+    changed (``--full-diff``), under the indexer's rules: merges skipped,
+    renamed paths filed under HEAD's name, mass-edit commits dropped, and pairs
+    below ``MIN_CO_CHANGE_SUPPORT`` shared commits left out.
+
+    Records have the persisted shape, so :func:`~repowise.core.co_change.parse_partners`
+    reads them. ``co_change_count`` and ``frequency`` are both the plain number
+    of shared commits in the window, so the strongest partner is the one that
+    changed with *target* most often there; ties go to the more recent pair.
+    ``partner_commits`` is left out: this walk sees only *target*'s commits.
+
+    Returns ``(records, target_commits)``, or ``None`` when git cannot walk
+    (no checkout, no git binary, a bad date, a timeout).
+
+    The pathspec names *target* at HEAD, so commits from before a rename of
+    *target* itself inside the window are not walked. ``--follow`` would add
+    them at the cost of a second walk; a window is usually shorter than a
+    file's last rename.
+    """
+    try:
+        proc = run_git(
+            [
+                "log",
+                f"--since={since}",
+                "-M",
+                "--name-status",
+                "--no-merges",
+                "--full-diff",
+                "--format=%x00%ct",
+                "--",
+                target,
+            ],
+            repo_root,
+            timeout=_WINDOW_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    tally = _WalkTally(now_ts=0.0)
+    _walk_commits(proc.stdout, all_files | {target}, tally, None)
+    target_commits = tally.file_commits.get(target, 0)
+
+    ranked: list[tuple[int, int, str, dict]] = []
+    for pair, support in tally.pair_support.items():
+        if target not in pair or support < _MIN_CO_CHANGE_SUPPORT:
+            continue
+        other = pair[1] if pair[0] == target else pair[0]
+        last_ts = tally.pair_last_date.get(pair, 0)
+        record = {
+            "file_path": other,
+            "co_change_count": float(support),
+            "frequency": support,
+            "focused_frequency": tally.pair_focused.get(pair, 0),
+            "self_commits": target_commits,
+            "last_co_change": (
+                datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d")
+                if last_ts > 0
+                else None
+            ),
+        }
+        ranked.append((-support, -last_ts, other, record))
+    ranked.sort(key=lambda r: r[:3])
+    return [r[3] for r in ranked], target_commits

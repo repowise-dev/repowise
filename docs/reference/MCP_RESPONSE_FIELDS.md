@@ -420,7 +420,8 @@ Per file:
 | `hotspot_score` | 0 to 1 churn percentile |
 | `health_score` | 0 to 10 |
 | `dependents_count` | Direct structural dependents; a floor |
-| `co_change_partners` | `file_path`, `support` (shared commits, when known), `conf_ab` (share of the target's commits touching the partner, when known), `has_import_link`; by recency-decayed weight. Correlation only |
+| `co_change_partners` | `file_path`, `support` (shared commits, when known), `conf_ab` (share of the target's commits touching the partner, when known), `has_import_link`. Shipped code first (`code_origin`), then other non-test files, then tests; within each, by recency-decayed weight. Correlation only |
+| `co_change_window` | Only with `since`: `since` (the date counted from) and `target_commits` (the file's commits since then), and `support` is then the shared commits in that window, by count. `applied: false` with a `reason` when no checkout could be walked; the partners then span the indexed history |
 | `primary_owner` | Always, with the owner clause in `risk_summary` |
 | `cross_repo_impact` | Workspace, only when another repo has a concrete link to the file: a contract on either side, or a package import that reaches it (the imported module or subpath, or a file its re-exports forward to). `affected_repos`, the overlay's `status` (and `reason` when not available), and contract consumer and provider rows. Co-change alone is history, not a link: it stays in `cross_repo_links` |
 | test gaps, `security_signals` | Coverage gaps and security findings |

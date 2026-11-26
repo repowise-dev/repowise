@@ -297,11 +297,13 @@ def risk_summary(
     defect_profile: dict | None,
     dep_count: int,
     co_changes_total: int,
+    co_change_since: str | None = None,
 ) -> str:
     """One-line ``risk_summary`` for a scored card.
 
     Leads with counted bug fixes, the better grounded defect signal, so the
     first clause agrees with ``risk_type``; churn follows for hotspot files.
+    *co_change_since* is the date a ``since`` window counted partners from.
     """
     capped_note = (
         " (history truncated — actual count may be higher)" if card["commit_count_capped"] else ""
@@ -314,7 +316,8 @@ def risk_summary(
         f"{target} — {_fix_clause(defect_profile)}"
         f"{_churn_clause(card['hotspot_score'], card['is_hotspot'], card['trend'])}"
         f"{dep_count} direct dependents, {card['risk_type']}, {card['change_pattern']}, "
-        f"{co_changes_total} co-change partners, "
+        f"{co_changes_total} co-change partners"
+        f"{f' since {co_change_since}' if co_change_since else ''}, "
         f"{_owner_clause(owner, card['owner_pct'], card['owner_line_pct'])}"
         f"{bus_note}{capped_note}"
     )
