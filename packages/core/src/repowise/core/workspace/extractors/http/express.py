@@ -106,6 +106,7 @@ class _File:
         self._read_mounts(ctx)
         self.default = self._default_export(ctx.content)
         # The exported functions routers are handed to, read when first asked.
+        self._named: set[str] | None = None
         self.handed = HandedFunctions(ctx, self.module, self._exported_as)
 
     @property
@@ -145,25 +146,20 @@ class _File:
         """The mount key of router *var*: its module and the name it is imported by."""
         return _key(self.module, "default" if var == self.default else var)
 
-    def _exported_as(self, name: str) -> str | None:
-        """The name a module-level *name* is exported under, None when it is not."""
-        if name == self.default:
-            return "default"
-        return name if _named_export_re(name).search(self.content) else None
+    def _exported_as(self, name: str) -> list[str]:
+        """The names a module-level *name* is exported under."""
+        if self._named is None:
+            self._named = _named_exports(self.content)
+        out = ["default"] if name == self.default else []
+        return [*out, name] if name in self._named else out
 
     def root_key(self, root: str, offset: int) -> str:
         """The mount key of router *root*, which a mount or call at *offset*
         hangs off: the parameter of the exported function around it that
-        *root* names, an imported router, or a router of this module."""
-        handed = self.handed.key(root, offset)
-        if handed is not None:
-            return handed
-        source = _imported_router(root, self.imports)
-        if source is not None:
-            module = resolve_module(self.rel_path, source[0])
-            if module is not None and module != self.module:
-                return _key(module, source[1])
-        return self.key(root)
+        *root* names, else a router of this module."""
+        handed = self.handed.keys(root, offset)
+        # A function exported under two names has no one key to hang off.
+        return handed[0] if len(handed) == 1 else self.key(root)
 
     def placed(self, var: str, depth: int = 0) -> tuple[str, str] | None:
         """``(root router, prefix within the file)`` for router *var*.
@@ -211,6 +207,24 @@ def _imported_router(target: str, imports: dict[str, tuple[str, str]]) -> tuple[
         return spec, exported
     # A member of a whole module; a member of a named import is not followed.
     return (spec, member.split(".")[0]) if exported == "default" else None
+
+
+def _named_exports(content: str) -> set[str]:
+    """Every name :func:`_named_export_re` would find exported, read in one pass."""
+    out: set[str] = set()
+    for m in _NAMED_EXPORTS_RE.finditer(content):
+        if m.group(3) is not None:
+            out.update(_IDENT_RE.findall(m.group(3)))
+        else:
+            out.add(m.group(1) or m.group(2))
+    return out
+
+
+_NAMED_EXPORTS_RE = re.compile(
+    r"\bexport\s+(?:const|let|var)\s+([\w$]+)|\bexports\.([\w$]+)\s*=(?!=)"
+    r"|\b(?:module\.exports\s*=|export)\s*\{([^}]*)"
+)
+_IDENT_RE = re.compile(r"[\w$]+")
 
 
 def _named_export_re(var: str) -> re.Pattern[str]:
@@ -329,12 +343,16 @@ def _mount_of(ctx: ScanContext, f: _File, var: str, offset: int) -> str:
     root, within = placed
     if is_handed(ctx.mounts, f.module):
         # A router handed to the exported function the route sits in serves
-        # wherever its call sites put it.
-        handed = f.handed.key(root, offset)
-        if handed is not None:
-            mounted, outer = served_prefix(ctx.mounts, handed)
-            if mounted and outer is not None:
-                return compose_prefix(outer, within)
+        # wherever its call sites put it; call sites that disagree, or one
+        # that cannot be read, keep the in-function path.
+        served = [served_prefix(ctx.mounts, k) for k in f.handed.keys(root, offset)]
+        outers = {outer for mounted, outer in served if mounted}
+        if outers:
+            return (
+                compose_prefix(outers.pop(), within)
+                if len(outers) == 1 and None not in outers
+                else within
+            )
     mounted, outer = served_prefix(ctx.mounts, f.key(root))
     if not mounted:
         _mounted, outer = served_prefix(ctx.mounts, _key(f.module, root))

@@ -240,3 +240,66 @@ def test_cycle_adds_nothing(tmp_path: Path) -> None:
             """,
         },
     ) == {("/x", "b.js")}
+
+
+def test_module_mount_inside_an_unhanded_function_keeps_its_prefix(tmp_path: Path) -> None:
+    # A loader the extractor cannot read calls routes/index; the router module
+    # it mounts still serves under its own mount, as before.
+    assert _routes(
+        tmp_path,
+        {
+            "app.js": """
+                const app = require('express')();
+                fs.readdirSync('./routes').forEach(f => require('./routes/' + f)(app));
+            """,
+            "routes/index.js": """
+                module.exports = function (app) { app.use('/users', require('./users')); };
+            """,
+            "routes/users.js": """
+                const router = require('express').Router();
+                router.get('/list', h);
+                module.exports = router;
+            """,
+        },
+    ) == {("/users/list", "routes/users.js")}
+
+
+def test_function_exported_under_two_names_at_two_prefixes(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "app.js": """
+                const express = require('express');
+                const app = express();
+                const a = express.Router();
+                const b = express.Router();
+                require('./users')(a);
+                require('./users').register(b);
+                app.use('/a', a);
+                app.use('/b', b);
+            """,
+            "users.js": """
+                function register(router) { router.get('/users', h); }
+                module.exports = register;
+                module.exports.register = register;
+            """,
+        },
+    ) == {("/users", "users.js")}
+
+
+def test_spread_arguments_hand_nothing(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "app.js": """
+                const express = require('express');
+                const app = express();
+                const api = express.Router();
+                require('./users')(...deps, api);
+                app.use('/api', api);
+            """,
+            "users.js": """
+                module.exports = function (router, deps) { router.get('/users', h); };
+            """,
+        },
+    ) == {("/users", "users.js")}

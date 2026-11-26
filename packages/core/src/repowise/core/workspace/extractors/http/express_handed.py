@@ -53,7 +53,8 @@ _FN_HEAD_RE = re.compile(
 _PARAM_RE = re.compile(r"\s*(?:\.\.\.)?([A-Za-z_$][\w$]*)\s*(?:[?:=]|$)")
 # What a head's leading text says it is exported as.
 _DEFAULT_LEAD_RE = re.compile(r"(?:\bmodule\.exports\s*=|\bexport\s+default)\s*(?:async\s+)?$")
-_NAMED_LEAD_RE = re.compile(r"\b(?:module\.)?exports\.([\w$]+)\s*=\s*(?:async\s+)?$")
+_NAMED_LEAD_RE = re.compile(r"(?:\b(?:module\.)?exports\.[\w$]+\s*=\s*)+(?:async\s+)?$")
+_NAMED_NAME_RE = re.compile(r"exports\.([\w$]+)")
 _EXPORT_FN_LEAD_RE = re.compile(r"\bexport\s+(?:async\s+)?$")
 _VAR_LEAD_RE = re.compile(r"\b(?:const|let|var)\s+([\w$]+)\s*(?::[^=;]*)?=\s*(?:async\s+)?$")
 _ASYNC_TAIL_RE = re.compile(r"\basync$")
@@ -66,6 +67,9 @@ _CALL_RE = re.compile(
 _BARE_NAME_RE = re.compile(r"[\w$]+")
 # How far back a head's export lead is read.
 _LEAD_SPAN = 120
+# A file with more function heads than this is bundled or generated, and not
+# read for handed routers.
+_MAX_HEADS = 2000
 
 
 def handed_key(module: str, exported: str, index: int) -> str:
@@ -93,7 +97,7 @@ def is_handed(mounts: Mapping[str, str], module: str) -> bool:
 
 @dataclass(frozen=True)
 class _Fn:
-    exported: str
+    exported: tuple[str, ...]
     params: tuple[str | None, ...]
     start: int
     end: int
@@ -105,23 +109,25 @@ class HandedFunctions:
     parameters are handed."""
 
     def __init__(
-        self, ctx: ScanContext, module: str, exported_as: Callable[[str], str | None]
+        self, ctx: ScanContext, module: str, exported_as: Callable[[str], list[str]]
     ) -> None:
         self._ctx = ctx
         self._module = module
         self._exported_as = exported_as
         self._fns: list[_Fn] | None = None
 
-    def key(self, var: str, offset: int) -> str | None:
-        """The handed key of parameter *var* of the innermost exported function
-        around *offset*, None when *var* is no such parameter there."""
+    def keys(self, var: str, offset: int) -> list[str]:
+        """The handed keys of parameter *var* of the innermost exported function
+        around *offset*, one per name it is exported under; empty when *var*
+        is no such parameter there."""
         best: _Fn | None = None
         for fn in self._functions():
             if fn.start < offset < fn.end and (best is None or fn.start > best.start):
                 best = fn
         if best is None or var not in best.params or var in best.shadowed:
-            return None
-        return handed_key(self._module, best.exported, best.params.index(var))
+            return []
+        index = best.params.index(var)
+        return [handed_key(self._module, name, index) for name in best.exported]
 
     def _functions(self) -> list[_Fn]:
         if self._fns is None:
@@ -132,41 +138,40 @@ class HandedFunctions:
         code = self._ctx._mask(strings=True)
         if code is None:
             return
-        heads = [
-            (m, _params(m), m.end() - 1, _block_end(code, m.end() - 1))
-            for m in _FN_HEAD_RE.finditer(code)
-        ]
-        for m, params, start, end in heads:
+        heads = [(m, _params(m), m.end() - 1) for m in _FN_HEAD_RE.finditer(code)]
+        if len(heads) > _MAX_HEADS:
+            return  # a bundled or generated file: every route keeps its path
+        for m, params, start in heads:
+            exported = self._export_of(code, m)
+            end = _block_end(code, start) if exported else -1
             if end < 0:
                 continue
-            exported = self._export_of(code, m)
-            if exported is None:
-                continue
             body = code[start:end]
-            inner = {p for _m, ps, s, _e in heads if start < s < end for p in ps if p}
+            inner = {p for _m, ps, s in heads if start < s < end for p in ps if p}
             shadowed = frozenset(p for p in params if p and (p in inner or _rebinds(body, p)))
             yield _Fn(exported, params, start, end, shadowed)
 
-    def _export_of(self, code: str, m: re.Match[str]) -> str | None:
-        """The name the function at *m* is exported under, None when it is not."""
+    def _export_of(self, code: str, m: re.Match[str]) -> tuple[str, ...]:
+        """The names the function at *m* is exported under; empty when none."""
         lead = code[max(0, m.start() - _LEAD_SPAN) : m.start()]
         if _DEFAULT_LEAD_RE.search(lead):
-            return "default"
+            return ("default",)
         named = _NAMED_LEAD_RE.search(lead)
         if named:
-            return named.group(1)
+            # `exports.a = exports.b = function`: exported under each.
+            return tuple(_NAMED_NAME_RE.findall(named.group(0)))
         fname = m.group("fname")
         if fname and _EXPORT_FN_LEAD_RE.search(lead):
-            return fname
+            return (fname,)
         var = _VAR_LEAD_RE.search(lead)
         if var:
-            return self._exported_as(var.group(1))
+            return tuple(self._exported_as(var.group(1)))
         # A declaration `function name(` starts a statement; anything else
         # (a callback argument, an expression) is not exported by its name.
         before = _ASYNC_TAIL_RE.sub("", lead.rstrip()).rstrip()
         if not fname or (before and before[-1] not in ";{}"):
-            return None
-        return self._exported_as(fname)
+            return ()
+        return tuple(self._exported_as(fname))
 
 
 def _params(m: re.Match[str]) -> tuple[str | None, ...]:
@@ -229,8 +234,10 @@ def handed_calls(
         module = resolve(target[0])
         if module is None:
             continue
-        args = call_arguments(ctx.content, m.end() - 1)
-        for i, arg in enumerate(args or ()):
+        args = call_arguments(ctx.content, m.end() - 1) or []
+        if any(a.startswith("...") for a in args):
+            continue  # a spread hides each argument's position
+        for i, arg in enumerate(args):
             if _BARE_NAME_RE.fullmatch(arg):
                 yield module, target[1], i, arg, m.start()
 
@@ -253,9 +260,9 @@ def served_prefix(mounts: Mapping[str, str], key: str, depth: int = 0) -> tuple[
     """``(declared, full prefix)`` of the Express mount *key*; the prefix is
     None when unreadable.
 
-    :func:`.mounts.module_prefix` with one rule more: a parent that is a
-    handed parameter no readable call site hands a router makes the chain
-    unreadable, where an unmounted router module reads as served at the root.
+    :func:`.mounts.module_prefix` with one rule more: a handed key whose
+    parent is a handed parameter no readable call site hands a router is
+    unreadable, where an unmounted router reads as served at the root.
     """
     declared, value = declared_mount(mounts, f"{_NAMESPACE}:{key}")
     if not declared:
@@ -266,6 +273,11 @@ def served_prefix(mounts: Mapping[str, str], key: str, depth: int = 0) -> tuple[
     if not parent:
         return True, value
     mounted, outer = served_prefix(mounts, parent, depth + 1)
-    if outer is None or (not mounted and _is_handed_key(parent)):
+    if not mounted and _is_handed_key(parent):
+        # A handed router whose own router nobody hands is unplaced; a router
+        # module mounted on such a parameter reads as served at the root, as
+        # it always has.
+        return True, None if _is_handed_key(key) else value
+    if outer is None:
         return True, None
     return True, compose_prefix(outer, value)
