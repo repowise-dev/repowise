@@ -136,7 +136,11 @@ async def _symbol_records(
     blame = await _rows(
         session,
         select(GitFunctionBlame.function_name, GitFunctionBlame.file_path, GitFunctionBlame.mod_count)
-        .where(GitFunctionBlame.repository_id == repo_id)
+        .where(
+            GitFunctionBlame.repository_id == repo_id,
+            # The churn the biomarkers scored, as before rows kept for owners only.
+            GitFunctionBlame.history_only.is_(False),
+        )
         .order_by(GitFunctionBlame.mod_count.desc())
         .limit(_BLAME_CANDIDATES),
     )

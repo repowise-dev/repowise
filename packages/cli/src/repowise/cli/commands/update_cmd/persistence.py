@@ -1099,6 +1099,13 @@ def _run_full_health_rescore(
     with contextlib.suppress(Exception):
         run_async(graph_builder.compute_metrics_parallel())
 
+    # The re-score rewrites the graph node rows from this graph, which has no
+    # co-change edges, and saves no snapshot: the stored metric memo no longer
+    # stands for those rows, so the next update computes and writes them.
+    from repowise.core.pipeline.incremental.graph_seed import discard_snapshot_metrics
+
+    discard_snapshot_metrics(repo_path)
+
     try:
         with timed(timings, "rescore"):
             run_async(

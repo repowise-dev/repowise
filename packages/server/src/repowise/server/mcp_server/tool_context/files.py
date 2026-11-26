@@ -36,7 +36,7 @@ _MAX_TESTS_PER_ROW = 2
 
 _BASIS = (
     "has_test is true when a test file has its file name (named_tests, nearest "
-    "directory first, possibly elsewhere in the repo), a test reaches it through "
+    "directory first; elsewhere only if no same-named file is nearer), a test reaches it through "
     "calls or imports (reached_by), or a per-test coverage row exists "
     "(covered_by); false when none does. type_only (only types or re-exports) and "
     "test files need no test; test_owed false marks generated, vendored, build, tooling, "
@@ -58,7 +58,8 @@ async def files_section(card: CardState) -> None:
     block: dict[str, Any] = {
         "total": len(paths),
         "complete": len(rows) == len(paths),
-        "counts": _counts(found[row["path"]] for row in rows),
+        # Over the listed rows only: a capped listing names the rest in `omitted`.
+        "listed_counts": _counts(found[row["path"]] for row in rows),
         "rows": rows,
         "basis": _BASIS,
     }

@@ -339,26 +339,30 @@ def detect_clones(
     # merge/finalize so freed arenas can be reused.
     del windows_by_grammar
 
+    # The streams take no part in merge/finalize/aggregation. Drop them
+    # before those stages allocate their output lists so freed arenas can be
+    # reused inside this phase rather than growing the process again.
+    survivors = list(per_file_streams)
+    del per_file_streams
+
+    merged = _merge_adjacent_pairs(raw_pairs)
     if cache is not None and cache_dir is not None:
         _persist_pair_index(
             cache_dir,
             window_tokens,
             lim,
             diag,
-            per_file_streams,
+            survivors,
             per_file_hash,
             raw_pairs,
+            merged,
             [pf.file_info.path for pf in parsed_list],
             content_keys,
         )
-
-    # Neither structure participates in merge/finalize/aggregation. Drop
-    # them before those stages allocate their output lists so freed arenas
-    # can be reused inside this phase rather than growing the process again.
-    del per_file_streams
+    del raw_pairs
 
     final = _finalize_pairs(
-        _merge_adjacent_pairs(raw_pairs),
+        merged,
         min_lines,
         meta_map,
         {pf.file_info.path: pf for pf in parsed_list},
@@ -870,6 +874,12 @@ def _detect_clones_incremental(
             old_streams_map[p] = (kinds, names)
             new_streams_map[p] = (kinds, names)
         cache.retain(h)
+    # A full run reads gated files too and keeps their entries (a file too
+    # short to window still tokenizes); keep them here so a splice saves the
+    # entries a full run would, and the token cache's delta stays small.
+    if index.nonsurvivor_keys is not None:
+        for p in (index.nonsurvivors & current.keys()) - changed:
+            cache.retain(index.nonsurvivor_keys.get(p, ""))
 
     for p, (stream, window_tuples) in old_aff.items():
         g = path_grammar[p]
@@ -893,49 +903,65 @@ def _detect_clones_incremental(
     old_contrib = _bucket_contributions(old_rows, old_streams_map, window_tokens, lim, None)
     new_contrib = _bucket_contributions(new_rows, new_streams_map, window_tokens, lim, diag)
 
-    # 7. Splice the multiset. A negative count means the persisted state
-    #    disagrees with the recomputed old contribution — fall back.
+    # 7. Splice the multiset, one file pair at a time. A raw pair changes
+    #    only inside a touched bucket, so only the file pairs a contribution
+    #    names can move; every other group keeps its stored raw rows and its
+    #    stored merge output. A negative count means the persisted state
+    #    disagrees with the recomputed old contribution: fall back.
     paths_table: list[str] = index.paths
     if not persist:
         # Read-only wants only the read files' pairs. A pair between two other
         # files is spliced independently of these, so leaving it out changes
-        # nothing kept and skips counting the whole repository's pairs.
-        read = {i for i, path in enumerate(paths_table) if path in current}
-        rows = [r for r in index.pairs if r[0] in read or r[1] in read]
+        # nothing kept.
         old_contrib = [p for p in old_contrib if p.file_a in current or p.file_b in current]
         new_contrib = [p for p in new_contrib if p.file_a in current or p.file_b in current]
-    else:
-        rows = index.pairs
-    pair_counter: Counter[_PairKey] = Counter()
-    for pid_a, pid_b, a_sl, a_el, b_sl, b_el, count in rows:
-        pair_counter[(paths_table[pid_a], paths_table[pid_b], a_sl, a_el, b_sl, b_el)] += count
-    pair_counter.subtract(Counter(_pair_key(p) for p in old_contrib))
-    if -pair_counter:  # truthy when any count went negative
-        return None
-    pair_counter.update(_pair_key(p) for p in new_contrib)
-
-    # One ClonePair per distinct key carrying the multiplicity in its
-    # token_count: identical raw pairs are guaranteed to merge with each
-    # other (same files, same starts), and merging sums token_count, so
-    # this is exactly what expanding the multiset would produce.
-    raw_pairs = [
-        ClonePair(
-            file_a=key[0],
-            file_b=key[1],
-            a_start_line=key[2],
-            a_end_line=key[3],
-            b_start_line=key[4],
-            b_end_line=key[5],
-            token_count=window_tokens * count,
+    old_by_pair = _contrib_by_file_pair(old_contrib)
+    new_by_pair = _contrib_by_file_pair(new_contrib)
+    pid = {p: i for i, p in enumerate(paths_table)}
+    spliced_rows: dict[tuple[str, str], list[tuple[int, int, int, int, int]]] = {}
+    spliced_merged: dict[tuple[str, str], list[ClonePair]] = {}
+    for fp in old_by_pair.keys() | new_by_pair.keys():
+        ids = (pid.get(fp[0]), pid.get(fp[1]))
+        stored = index.pairs.get(ids, ()) if None not in ids else ()
+        counts: Counter[tuple[int, int, int, int]] = Counter({row[:4]: row[4] for row in stored})
+        counts.subtract(old_by_pair.get(fp, Counter()))
+        if -counts:  # truthy when any count went negative
+            return None
+        counts.update(new_by_pair.get(fp, Counter()))
+        rows = [(*geo, count) for geo, count in counts.items() if count > 0]
+        spliced_rows[fp] = rows
+        # One ClonePair per distinct key carrying the multiplicity in its
+        # token_count: identical raw pairs are guaranteed to merge with each
+        # other (same files, same starts), and merging sums token_count, so
+        # this is exactly what expanding the multiset would produce.
+        spliced_merged[fp] = _merge_adjacent_pairs(
+            [
+                ClonePair(fp[0], fp[1], a_sl, a_el, b_sl, b_el, window_tokens * count)
+                for a_sl, a_el, b_sl, b_el, count in rows
+            ]
         )
-        for key, count in pair_counter.items()
-        if count > 0
-    ]
+
+    # The merged pairs in full-run order: by file pair, then as merged.
+    kept: dict[tuple[str, str], tuple[int, int]] = {}
+    for ids in index.merged:
+        fp = (paths_table[ids[0]], paths_table[ids[1]])
+        if fp in spliced_merged:
+            continue
+        if not persist and fp[0] not in current and fp[1] not in current:
+            continue
+        kept[fp] = ids
+    merged_pairs: list[ClonePair] = []
+    for fp in sorted(kept.keys() | spliced_merged.keys()):
+        if fp in spliced_merged:
+            merged_pairs.extend(spliced_merged[fp])
+        else:
+            merged_pairs.extend(
+                ClonePair(fp[0], fp[1], a_sl, a_el, b_sl, b_el, tokens)
+                for a_sl, a_el, b_sl, b_el, tokens in index.merged[kept[fp]]
+            )
 
     if not persist:
-        final = _finalize_pairs(
-            _merge_adjacent_pairs(raw_pairs), min_lines, meta_map, current, read_source
-        )
+        final = _finalize_pairs(merged_pairs, min_lines, meta_map, current, read_source)
         pairs_by_file, duplication_pct = _aggregate(final, per_file_nloc)
         return DuplicationReport(
             pairs=final,
@@ -945,13 +971,30 @@ def _detect_clones_incremental(
         )
 
     # 8. Persist the spliced state and the retained token cache before
-    #    finalizing, mirroring the full path's ordering.
+    #    finalizing, mirroring the full path's ordering. Path ids stay
+    #    stable: new paths are appended, and a deleted path's id is left
+    #    unreferenced until the next full run rebuilds the table.
     from .pair_index import DuplicationPairIndex, limits_fingerprint, save_pair_index
 
     new_files = {p: old_files[p] for p in unchanged}
     new_files.update(new_hash)
-    new_paths_table = sorted(new_files)
-    pid = {p: i for i, p in enumerate(new_paths_table)}
+    new_paths_table = paths_table + sorted(set(new_files) - pid.keys())
+    pid.update((p, i) for i, p in enumerate(new_paths_table) if i >= len(paths_table))
+    new_pairs = dict(index.pairs)
+    new_merged = dict(index.merged)
+    for fp, rows in spliced_rows.items():
+        if rows and not (fp[0] in new_files and fp[1] in new_files):
+            return None  # a pair outlived a file that left the state
+        ids = (pid.get(fp[0]), pid.get(fp[1]))
+        if rows:
+            new_pairs[ids] = rows
+            new_merged[ids] = [
+                (p.a_start_line, p.a_end_line, p.b_start_line, p.b_end_line, p.token_count)
+                for p in spliced_merged[fp]
+            ]
+        else:
+            new_pairs.pop(ids, None)
+            new_merged.pop(ids, None)
     save_pair_index(
         cache_dir,
         DuplicationPairIndex(
@@ -966,11 +1009,8 @@ def _detect_clones_incremental(
                 live_keys,
             ),
             paths=new_paths_table,
-            pairs=[
-                (pid[key[0]], pid[key[1]], key[2], key[3], key[4], key[5], count)
-                for key, count in pair_counter.items()
-                if count > 0
-            ],
+            pairs=new_pairs,
+            merged=new_merged,
             total_windows=new_total,
             **persisted_cut(cut),
         ),
@@ -981,12 +1021,11 @@ def _detect_clones_incremental(
         changed=len(changed),
         deleted=len(deleted),
         touched_buckets=len(touched),
-        pairs=len(raw_pairs),
+        file_pairs=len(spliced_rows),
+        pairs=len(merged_pairs),
     )
 
-    final = _finalize_pairs(
-        _merge_adjacent_pairs(raw_pairs), min_lines, meta_map, current, read_source
-    )
+    final = _finalize_pairs(merged_pairs, min_lines, meta_map, current, read_source)
     pairs_by_file, duplication_pct = _aggregate(final, per_file_nloc)
 
     diagnostics = diag.as_log_fields()
@@ -1022,6 +1061,44 @@ def _budget_allows(
 
 def _pair_key(p: ClonePair) -> _PairKey:
     return (p.file_a, p.file_b, p.a_start_line, p.a_end_line, p.b_start_line, p.b_end_line)
+
+
+def _grouped_rows(
+    counts: Iterable[tuple[_PairKey, int]], pid: dict[str, int]
+) -> dict[tuple[int, int], list[tuple[int, int, int, int, int]]]:
+    """Raw pair counts as the pair index stores them: rows per file pair."""
+    groups: dict[tuple[int, int], list[tuple[int, int, int, int, int]]] = defaultdict(list)
+    for key, count in counts:
+        groups[(pid[key[0]], pid[key[1]])].append((key[2], key[3], key[4], key[5], count))
+    return dict(groups)
+
+
+def _grouped_merged(
+    merged: Iterable[ClonePair], pid: dict[str, int]
+) -> dict[tuple[int, int], list[tuple[int, int, int, int, int]]]:
+    """Merged pairs as the pair index stores them: rows per file pair, in merge order.
+
+    Merged pairs carry no co-change weight yet, so the token count is all
+    a row needs beyond its geometry.
+    """
+    groups: dict[tuple[int, int], list[tuple[int, int, int, int, int]]] = defaultdict(list)
+    for p in merged:
+        groups[(pid[p.file_a], pid[p.file_b])].append(
+            (p.a_start_line, p.a_end_line, p.b_start_line, p.b_end_line, p.token_count)
+        )
+    return dict(groups)
+
+
+def _contrib_by_file_pair(contrib: list[ClonePair]) -> dict[tuple[str, str], Any]:
+    """Bucket contributions as raw pair counts per file pair."""
+    from collections import Counter
+
+    groups: dict[tuple[str, str], Counter] = defaultdict(Counter)
+    for p in contrib:
+        groups[(p.file_a, p.file_b)][
+            (p.a_start_line, p.a_end_line, p.b_start_line, p.b_end_line)
+        ] += 1
+    return groups
 
 
 def _grammar_tag_for_path(path: str, current: dict[str, Any]) -> str:
@@ -1066,24 +1143,26 @@ def _persist_pair_index(
     window_tokens: int,
     lim: DuplicationLimits,
     diag: DuplicationDiagnostics,
-    per_file_streams: dict[str, _Stream],
+    survivors: list[str],
     per_file_hash: dict[str, str],
     raw_pairs: list[ClonePair],
+    merged: list[ClonePair],
     paths: list[str],
     content_keys: dict[str, str],
 ) -> None:
-    """Persist the full run's raw pairs for the next incremental splice.
+    """Persist the full run's raw and merged pairs for the next incremental splice.
 
-    *paths* are every file the run was given, in collection order;
-    *content_keys* the content key of every file it read.
+    *survivors* are the files that contributed windows; *paths* every file
+    the run was given, in collection order; *content_keys* the content key of
+    every file it read.
     """
     from collections import Counter
 
     from .budget_cut import cut_of_run
     from .pair_index import DuplicationPairIndex, limits_fingerprint, save_pair_index
 
-    files = {p: per_file_hash[p] for p in per_file_streams if p in per_file_hash}
-    if len(files) != len(per_file_streams):
+    files = {p: per_file_hash[p] for p in survivors if p in per_file_hash}
+    if len(files) != len(survivors):
         # A gate survivor without a content hash should be impossible
         # when the cache is active; don't persist a state we can't trust.
         return
@@ -1100,10 +1179,8 @@ def _persist_pair_index(
             nonsurvivors=set(paths) - set(files),
             nonsurvivor_keys=_nonsurvivor_keys(set(paths) - set(files), content_keys),
             paths=paths_table,
-            pairs=[
-                (pid[key[0]], pid[key[1]], key[2], key[3], key[4], key[5], count)
-                for key, count in pair_counter.items()
-            ],
+            pairs=_grouped_rows(pair_counter.items(), pid),
+            merged=_grouped_merged(merged, pid),
             total_windows=diag.total_windows,
             window_budget_hit=diag.window_budget_hit,
             timed_out=diag.timed_out,
@@ -1135,6 +1212,7 @@ class _SiblingSkeleton:
         self._files = files
         self._read_source = read_source
         self._lines: dict[str, frozenset[int] | None] = {}
+        self._tests: dict[str, bool] = {}
 
     def matches(self, p: ClonePair) -> bool:
         if p.is_intra_file or posixpath.dirname(p.file_a) != posixpath.dirname(p.file_b):
@@ -1151,9 +1229,12 @@ class _SiblingSkeleton:
         return lines is not None and not any(start <= line <= end for line in lines)
 
     def _is_test(self, path: str) -> bool:
-        pf = self._files.get(path)
-        stored = getattr(pf.file_info, "is_test", None) if pf is not None else None
-        return code_origin(path, is_test=stored) == "test"
+        # A file sits in many pairs; its origin is asked once.
+        if path not in self._tests:
+            pf = self._files.get(path)
+            stored = getattr(pf.file_info, "is_test", None) if pf is not None else None
+            self._tests[path] = code_origin(path, is_test=stored) == "test"
+        return self._tests[path]
 
     def _decision_lines(self, path: str) -> frozenset[int] | None:
         if path not in self._lines:

@@ -139,6 +139,7 @@ def expand_bare_relative_imports(imports: list[Import]) -> list[Import]:
                     type_only=imp.type_only,
                     deferred=imp.deferred,
                     guarded=imp.guarded,
+                    module_form=imp.module_form,
                     scopes=imp.scopes,
                 )
             )

@@ -183,6 +183,11 @@ def checkout_reader(root: str | Path) -> Callable[[str], list[str] | None]:
     return read_lines
 
 
+def dirty_path_checker(root: str, dirty_paths: Collection[str]) -> Callable[[str], bool]:
+    """Check repo-relative dirty paths using the resolver's platform rules."""
+    return _PathMap(root, {}, dirty_paths).is_dirty
+
+
 async def load_frame_symbols(
     session: Any, repository_id: str, paths: Collection[str], *, fold_case: bool = False
 ) -> tuple[dict[str, list[IndexedSymbol]], dict[str, str]]:
@@ -547,7 +552,7 @@ class _PathMap:
         return self._folded.get(rel.casefold()) if self._fold else None
 
     def is_dirty(self, rel: str) -> bool:
-        return self._key(rel) in self._dirty
+        return self._key(posixpath.normpath(rel.replace("\\", "/"))) in self._dirty
 
 
 __all__ = [
@@ -557,6 +562,7 @@ __all__ = [
     "ResolvedFrame",
     "SkipReason",
     "checkout_reader",
+    "dirty_path_checker",
     "frame_paths",
     "load_frame_symbols",
     "resolve_frames",

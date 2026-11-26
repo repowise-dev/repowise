@@ -106,6 +106,19 @@ def _community_meta(
     return community_meta
 
 
+async def _stored_node_count(session: Any, repo_id: str) -> int:
+    from sqlalchemy import func, select
+
+    from repowise.core.persistence.models import GraphNode
+
+    return int(
+        await session.scalar(
+            select(func.count()).select_from(GraphNode).where(GraphNode.repository_id == repo_id)
+        )
+        or 0
+    )
+
+
 async def persist_graph_nodes(
     session: Any,
     repo_id: str,
@@ -119,6 +132,12 @@ async def persist_graph_nodes(
     Lifted out of :func:`persist_pipeline_result` so the incremental
     update path can refresh ``graph_nodes`` (including symbol-level
     PageRank / betweenness) without constructing a full ``PipelineResult``.
+
+    A builder that replayed the last run's metrics onto an unchanged graph
+    (``graph_metrics_reused``) writes nothing: the stored rows are the ones
+    that run wrote from the same graph and values. ``graph_nodes_written``
+    records whether the stored rows now follow from the builder alone, which
+    the graph snapshot needs before it may carry the metrics forward.
     """
     from repowise.core.analysis.communities import stored_community_id
     from repowise.core.persistence import (
@@ -129,6 +148,16 @@ async def persist_graph_nodes(
     from repowise.core.pipeline.phase_timing import timed
 
     graph = graph_builder.graph()
+    if getattr(graph_builder, "graph_metrics_reused", False) is True:
+        # The one cheap check that the rows are still there; a store that
+        # lost some is written in full below, from the same values.
+        if await _stored_node_count(session, repo_id) == graph.number_of_nodes():
+            logger.info("graph_nodes_unchanged", reason="graph and metrics match the last run")
+            graph_builder.graph_nodes_written = True
+            return
+        logger.info("graph_nodes_rewritten", reason="stored node rows do not match the graph")
+    graph_builder.graph_nodes_written = False
+
     with timed(timings, "persist.graph_nodes.metrics"):
         pr = graph_builder.pagerank()
         bc = graph_builder.betweenness_centrality()
@@ -142,9 +171,12 @@ async def persist_graph_nodes(
     # untouched. Without this, every ``update`` re-upserted symbol nodes with
     # empty community_meta and wiped the entry_point_scores written at init,
     # leaving get_execution_flows / the dashboard panel permanently empty.
+    with timed(timings, "persist.graph_nodes.entry_points"):
+        derived = _derive_entry_point_scores(graph_builder)
+    # Rows a later run can rebuild from the builder alone; see the docstring.
+    from_builder = ep_scores is None or ep_scores == derived
     if ep_scores is None:
-        with timed(timings, "persist.graph_nodes.entry_points"):
-            ep_scores = _derive_entry_point_scores(graph_builder)
+        ep_scores = derived
 
     bt_commits = _betweenness_commits(graph_builder)
 
@@ -210,6 +242,7 @@ async def persist_graph_nodes(
             )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
+        from_builder = False
 
     # Materialize file-level SCCs (import cycles) + symbol communities as
     # queryable rows (graph_node_membership). Feeds the break-cycle /
@@ -221,6 +254,8 @@ async def persist_graph_nodes(
             )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_node_membership_materialize_skipped", error=str(exc))
+        from_builder = False
+    graph_builder.graph_nodes_written = from_builder
 
 
 def _changed_file_symbols(
@@ -409,6 +444,7 @@ def _edge_row(source: str, target: str, data: dict) -> dict:
         "type_only": bool(data.get("type_only", False)),
         "deferred": bool(data.get("deferred", False)),
         "guarded": bool(data.get("guarded", False)),
+        "module_form": bool(data.get("module_form", False)),
     }
 
 
@@ -682,6 +718,7 @@ _EDGE_ROW_FIELDS = (
     "type_only",
     "deferred",
     "guarded",
+    "module_form",
 )
 
 

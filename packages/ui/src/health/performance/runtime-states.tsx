@@ -35,13 +35,17 @@ type RuntimeNotice =
 
 const sha7 = (sha: string) => sha.slice(0, 7);
 
+/** A profile that can rank functions: a benchmark profile never does. */
+const ranksFunctions = (r: { kind: string; class: string }) =>
+  r.kind === "profile" && r.class !== "benchmark";
+
 /**
  * Where the newest profile run sits against the index, when it is not at it.
  * Null until the runs are read, so a status notice it would correct waits.
  */
 function newestProfile(view: RuntimeEvidenceView) {
   const runs = view.runs ?? [];
-  const newest = runs.find((r) => r.kind === "profile");
+  const newest = runs.find(ranksFunctions);
   const indexed = view.referenceCommit;
   if (!newest?.commit_sha || !indexed) return null;
   const position = commitPosition(newest, runs, indexed);
@@ -53,7 +57,7 @@ function newestProfile(view: RuntimeEvidenceView) {
 export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
   const out: RuntimeNotice[] = [];
   const status = view.overview?.status;
-  const unranked = status === "stale" || status === "not_ranked";
+  const unranked = status === "stale" || status === "not_ranked" || status === "ahead_of_index";
   if (!view.run && view.testRun) out.push({ kind: "tests_only", workload: view.testRun.workload_name });
   // An unranked status is explained by the runs; say no more until they are read.
   if (unranked && view.runs === undefined) return out;
@@ -81,7 +85,7 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
   if (status === "needs_update") out.push({ kind: status, command: view.overview?.command ?? null });
   if (status === "not_ranked" && !newest) {
     const indexed = view.referenceCommit;
-    const latest = view.runs?.find((r) => r.kind === "profile");
+    const latest = view.runs?.find(ranksFunctions);
     out.push({
       kind: status,
       command: view.overview?.command ?? null,

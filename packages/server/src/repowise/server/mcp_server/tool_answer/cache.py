@@ -17,7 +17,7 @@ from collections import OrderedDict
 from sqlalchemy import delete, select
 
 from repowise.core.persistence.crud.repository import index_synced_at
-from repowise.core.persistence.database import get_session
+from repowise.core.persistence.database import get_session, is_read_only
 from repowise.core.persistence.models import AnswerCache
 from repowise.server.mcp_server._helpers import is_excluded
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
@@ -192,6 +192,9 @@ async def _write_answer_cache(
     The row is a shallow copy taken here, so anything the caller attaches to the
     payload after this point reaches the caller and never the cache.
     """
+    bind = getattr(ctx.session_factory, "kw", {}).get("bind")
+    if bind is not None and is_read_only(bind):
+        return  # a host serving a published store: the write could only fail
     cache_payload = dict(payload)
     cache_payload["_schema_version"] = _ANSWER_SCHEMA_VERSION
     commit_now = getattr(repository, "head_commit", None)

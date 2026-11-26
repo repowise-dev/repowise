@@ -82,6 +82,7 @@ from .persist_index import (
 from .prune import (
     prune_deleted_files,
 )
+from .routes import refresh_routes
 
 __all__ = [
     "DocDriftUpdate",
@@ -118,6 +119,7 @@ __all__ = [
     "reconcile_commit_offsets",
     "refresh_external_systems",
     "refresh_knowledge_graph",
+    "refresh_routes",
     "refresh_unchanged_history",
     "run_doc_drift_partial",
     "run_partial_analysis",

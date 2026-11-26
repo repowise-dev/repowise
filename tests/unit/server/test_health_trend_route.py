@@ -304,3 +304,34 @@ async def test_a_narrowed_trend_still_lists_movement(client, session, tmp_path) 
         {"file_path": "src/a.py", "before": 8.0, "after": 6.0, "delta": -2.0}
     ]
     assert body["file_deltas_worse"] == 1
+
+
+async def test_two_snapshots_on_one_day_are_one_point(client, session, tmp_path) -> None:
+    """The chart draws one point per day, the day's newest snapshot, while the
+    movement list still compares the two newest runs."""
+    repo_id = await _repo(client, session, tmp_path)
+    base = datetime(2026, 11, 22, 9, tzinfo=UTC)
+    for taken, avg, score in (
+        (base, 8.0, 8.0),
+        (base + timedelta(days=1), 8.8, 8.8),
+        (base + timedelta(days=1, hours=8), 8.6, 7.0),
+    ):
+        await save_health_snapshot(
+            session,
+            repo_id,
+            hotspot_health=avg,
+            average_health=avg,
+            worst_performer_path=None,
+            worst_performer_score=None,
+            per_file_scores={"a.py": score},
+            taken_at=taken,
+        )
+    await session.commit()
+
+    body = (await client.get(f"/api/repos/{repo_id}/health/trend")).json()
+
+    assert [(h["taken_at"][:10], h["average_health"]) for h in body["history"]] == [
+        ("2026-11-23", 8.6),
+        ("2026-11-22", 8.0),
+    ]
+    assert [d["delta"] for d in body["file_deltas"]] == [-1.8]

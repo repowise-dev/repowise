@@ -17,6 +17,8 @@ def test_public_names_are_the_engine_objects():
     assert embed.request_context is _state.request_context
     assert set(embed.__all__) == {
         "embedded_context",
+        "open_store",
+        "publishable",
         "release",
         "request_context",
         "serving",

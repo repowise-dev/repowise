@@ -178,8 +178,22 @@ def test_a_profile_keeps_its_costliest_symbols_under_the_cap() -> None:
     kept, dropped = cap_rows("profile", rows, caps)
     assert dropped == 5
     assert [r["symbol_id"] for r in kept] == ["a::3", "a::7", "a::2"]
-    kept, dropped = cap_rows("test_timing", [{"test_id": str(i)} for i in range(5)], caps)
+    tests = [{"test_id": str(i), "duration_s": None if i == 1 else float(i % 3)} for i in range(5)]
+    kept, dropped = cap_rows("test_timing", tests, caps)
     assert (len(kept), dropped) == (5, 0)
+
+
+def test_a_test_run_keeps_its_slowest_tests_under_the_cap() -> None:
+    """Cut by duration, not by the report's order: the slow tail is what matters."""
+    durations = [0.1, None, 4.0, 0.2, 4.0, 9.0, 0.3]
+    rows = [{"test_id": f"t{i}", "duration_s": d} for i, d in enumerate(durations)]
+    caps = EvidenceCaps(max_symbols_per_run=100, max_rows_per_run=4, history_runs=1, max_runs=1)
+    kept, dropped = cap_rows("test_timing", rows, caps)
+    assert dropped == 3
+    # Ties keep the report's order; an untimed test goes last.
+    assert [r["test_id"] for r in kept] == ["t5", "t2", "t4", "t6"]
+    kept, _ = cap_rows("test_timing", rows, EvidenceCaps(100, 100, 1, 1))
+    assert kept[-1]["test_id"] == "t1"
 
 
 def test_the_run_key_covers_the_provenance() -> None:
