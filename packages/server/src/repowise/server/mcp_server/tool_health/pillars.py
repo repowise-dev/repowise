@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -101,7 +102,8 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     """The ``performance_measured`` block: ranked functions with their runs.
 
     One run per workload, its newest. Each group (``rows`` from workload
-    classes that may lead, ``in_tests`` from unit-test runs) lists
+    classes that may lead, ``in_tests`` from unit-test runs, ``benchmarks``
+    from benchmark results with the function each measures) lists
     :data:`_MEASURED_CAP` rows per run, or ``limit`` up to
     :data:`_MEASURED_PAGE_CAP`, beside its total. A row an open static cause
     with production evidence sits on names it in ``on_static_findings``.
@@ -113,12 +115,15 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     view = await measured_costs(session, repository_id, limit=max(cap, 1))
     # ``None`` means no workload's newest run ranks a function in a class that
     # leads or in ``unit_test``.
+    slower = await _slower_lines(session, repository_id)
     if view is None:
         status = await unranked_reason(session, repository_id)
         block: dict[str, Any] = {"basis": "unknown", "status": status}
         command = unranked_command(status)
         if command:
             block["command"] = command
+        if slower:
+            block["slower"] = slower
         return block
     block = {"basis": "measured", "runs": []}
     runs: dict[str, dict[str, Any]] = {}
@@ -135,8 +140,54 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
         for run in found["runs"]:
             if run["run_id"] in shown:
                 runs.setdefault(run["run_id"], _measured_run(run))
+    benchmarks = view.get("benchmarks")
+    if benchmarks:
+        rows = benchmarks["rows"] if cap else []
+        block["benchmarks"] = [_benchmark_row(row) for row in rows]
+        block["benchmarks_total"] = benchmarks["total"]
+        # Each row's run, as for ranked rows: which workload it came from.
+        shown = {row["run_id"] for row in rows}
+        for run in benchmarks["runs"]:
+            if run["run_id"] in shown:
+                runs.setdefault(run["run_id"], _benchmark_run(run))
     block["runs"] = list(runs.values())
+    if slower:
+        block["slower"] = slower
     return block
+
+
+def _benchmark_row(row: dict[str, Any]) -> dict[str, Any]:
+    """``benchmark``, the function it ``measures`` and its numbers per op; unset ones left out."""
+    keys = ("benchmark", "measures", "run_id", "time", "unit", "allocs_per_op")
+    return {k: row[k] for k in keys if row.get(k) is not None}
+
+
+def _benchmark_run(run: dict[str, Any]) -> dict[str, Any]:
+    out = {f: run[f] for f in ("run_id", "workload_class", "workload_name", "commit", "age_days")}
+    if out["commit"]:
+        out["commit"] = out["commit"][:12]
+    return out
+
+
+async def _slower_lines(session: Any, repository_id: str) -> list[str]:
+    """One line per workload whose newest run is slower than its band, naming the
+    commits that changed what it ran (``evidence.compare``). Empty, and so left
+    out of the block, when nothing got slower."""
+    from repowise.core.evidence.compare import comparison_line
+    from repowise.core.evidence.compare_history import load_comparisons
+    from repowise.core.persistence.models import Repository
+
+    try:
+        repository = await session.get(Repository, repository_id)
+        # A savepoint, so a failed read leaves the request's transaction usable.
+        async with session.begin_nested():
+            found = await load_comparisons(
+                session, repository_id, getattr(repository, "local_path", None) or None
+            )
+    except Exception:  # the measured block stands without it
+        logging.getLogger(__name__).warning("Could not compare evidence runs.", exc_info=True)
+        return []
+    return [comparison_line(c) for c in found if c.verdict == "slower"]
 
 
 def _measured_run(run: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +198,11 @@ def _measured_run(run: dict[str, Any]) -> dict[str, Any]:
     # Only a tracer's run says so: every other run gives shares.
     if not out["ordering_only"]:
         del out["ordering_only"]
+    # Only a run listed in place of a newer one that ranks nothing says so.
+    newer = run.get("newer_run")
+    if newer:
+        commit = newer["commit"]
+        out["newer_run"] = {"commit": commit[:12] if commit else None, "reason": newer["reason"]}
     return out
 
 

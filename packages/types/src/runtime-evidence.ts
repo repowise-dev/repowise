@@ -11,6 +11,15 @@
  * means unknown, never zero.
  */
 export type {
+  BenchmarkGroup,
+  BenchmarkRow,
+  BenchmarkRun,
+  CostCluster,
+  CostClusterTest,
+  CostConcentration,
+  CostFixture,
+  CostGroup,
+  DurationBucket,
   EvidenceRunSummary,
   EvidenceRunsResponse,
   EvidenceStatusResponse,
@@ -23,7 +32,10 @@ export type {
   MeasuredRow,
   MeasuredRun,
   SlowTest,
+  SuiteCost,
   SuiteCostResponse,
+  SuiteFileTime,
+  SuiteSummary,
 } from "./generated/http.js";
 
 import type { EvidenceStatusResponse } from "./generated/http.js";

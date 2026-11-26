@@ -231,3 +231,20 @@ def test_stored_prose_keeps_its_text_and_gaps_read_the_template() -> None:
     assert prose["writer"] == "m1"
     assert prose["summary"] == template_prose(report)["summary"]
     assert prose["items"][item.id] == item_text(item)
+
+
+def test_a_static_only_cycle_is_labelled_in_its_text_and_the_section_count() -> None:
+    import dataclasses
+
+    plain = _item("hygiene", "import_cycle", "src/a.py")
+    static = dataclasses.replace(
+        _item("hygiene", "import_cycle", "src/b.py"),
+        title_facts={"files": 2, "static_only": True},
+    )
+    assert "static only" not in item_text(plain)
+    assert item_text(static).startswith(
+        "Import cycle between 2 files, static only: unlikely to fail at import."
+    )
+    intro = template_prose(_report([plain, static]))["sections"]["hygiene"]
+    assert intro == "2 static import cycles, 1 of them static only."
+    assert template_prose(_report([plain]))["sections"]["hygiene"] == "1 static import cycle."

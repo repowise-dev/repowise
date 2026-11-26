@@ -29,6 +29,57 @@ def time_split(run: Any) -> dict[str, float | None]:
     }
 
 
+def unattributed_share(run: Any) -> float | None:
+    """The share of a stored profile run's time in none of :func:`time_split`'s
+    buckets: test or tooling code, module bodies, unresolved frames, and
+    stacks that run only the runtime (``evidence.profile_convert``). ``None``
+    when the run did not record the split."""
+    parts = (run.repo_self_value, run.wait_value, run.library_value)
+    if run.total_value is None or any(v is None for v in parts):
+        return None
+    return run_share(run.total_value, max(run.total_value - sum(parts), 0.0))
+
+
+#: Exporters whose speedscope file holds no samples because it was pruned:
+#: pyinstrument's ``-r speedscope`` renderer drops frames under 1% of the run
+#: and leaves their time on the caller. The sampled profile the ``evidence
+#: setup`` recipe writes from pyinstrument counts its samples, so it is never
+#: read as pruned.
+_PRUNING_EXPORTERS = frozenset({"pyinstrument"})
+
+
+def low_signal(run: Any) -> str | None:
+    """Why a profile run (stored, or an ingested document) cannot rank with
+    confidence, as one token; ``None`` for a run that counted its samples and
+    for every other kind.
+
+    ``pruned_1pct``: no sample counts, from an exporter that prunes small
+    frames, so self times are inflated and small functions are missing.
+    ``no_samples``: no sample counts otherwise, so no share has an interval.
+    A deterministic tracer counts calls, not samples, and also reads
+    ``no_samples``; its measured rows say ``ordering_only``.
+    """
+    if run.kind != "profile" or run.total_samples is not None:
+        return None
+    if (run.tool_name or "").lower() in _PRUNING_EXPORTERS:
+        return "pruned_1pct"
+    return "no_samples"
+
+
+#: What fixes each :func:`low_signal` token, as ``evidence status`` and ``add`` print it.
+LOW_SIGNAL_FIX = {
+    "pruned_1pct": (
+        "no sample counts, and frames under 1% of the run were pruned by the "
+        "speedscope export; profile with the recipe `repowise evidence setup` prints "
+        "(or py-spy) for counted samples"
+    ),
+    "no_samples": (
+        "no sample counts, so no share has an interval; a sampling profiler "
+        "(the recipe `repowise evidence setup` prints) records them"
+    ),
+}
+
+
 def split_words(shares: Mapping[str, float | None]) -> str | None:
     """The split in words, repo code first: ``repo code itself 47%, waits 30%,
     libraries 12%``. ``None`` when the run did not record it."""
@@ -77,6 +128,9 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         "skipped": json.loads(run.skipped_json) if run.skipped_json else None,
         "total_value": run.total_value,
         **time_split(run),
+        "unattributed_share": unattributed_share(run),
+        "total_samples": run.total_samples,
+        "low_signal": low_signal(run),
         "mapping_partial": bool(run.mapping_partial),
         "tests_failed": run.tests_failed,
     }
@@ -177,11 +231,14 @@ async def load_evidence_freshness(
 
 __all__ = [
     "ABSENT",
+    "LOW_SIGNAL_FIX",
     "evidence_status",
     "freshness_entry",
     "load_evidence_freshness",
+    "low_signal",
     "run_share",
     "run_status",
     "split_words",
     "time_split",
+    "unattributed_share",
 ]

@@ -42,6 +42,7 @@ from .coverage_map import (
     save_test_coverage,
     tests_covering,
     tests_covering_files,
+    tests_running_spans,
 )
 from .dead_code import (
     finding_data_from_row,
@@ -82,6 +83,7 @@ from .evidence import (
     replace_symbol_hotness,
     replace_workload_hotness,
     save_evidence_run,
+    step_findings,
     unranked_command,
     unranked_reason,
 )
@@ -268,6 +270,7 @@ __all__ = [
     "serialize_doc_drift_reference_row",
     "serialize_doc_drift_row",
     "sort_metrics_worst_first",
+    "step_findings",
     "store_plan_ranks",
     "stored_bodies",
     "summarize_confidence_rows",
@@ -275,6 +278,7 @@ __all__ = [
     "tests_covering",
     "tests_covering_files",
     "tests_for_functions",
+    "tests_running_spans",
     "unranked_command",
     "unranked_reason",
     "update_dead_code_status",

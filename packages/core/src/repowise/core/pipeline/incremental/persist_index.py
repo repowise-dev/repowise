@@ -27,6 +27,7 @@ from .commits import persist_incremental_commits
 from .external_systems import refresh_external_systems
 from .health import persist_partial_health
 from .prune import prune_deleted_files
+from .routes import refresh_routes
 
 
 @dataclass(kw_only=True)
@@ -309,7 +310,11 @@ async def persist_nodes(ctx: IncrementalPersist) -> None:
 async def persist_health(ctx: IncrementalPersist) -> None:
     with timed(ctx.timings, "persist.health"):
         await persist_partial_health(
-            ctx.session, ctx.repo_id, ctx.partial_health_report, ctx.repo_path
+            ctx.session,
+            ctx.repo_id,
+            ctx.partial_health_report,
+            ctx.repo_path,
+            timings=ctx.timings,
         )
 
 
@@ -392,6 +397,13 @@ async def refresh_externals(ctx: IncrementalPersist) -> None:
         await refresh_external_systems(
             ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs, log=ctx.log
         )
+
+
+async def refresh_route_table(ctx: IncrementalPersist) -> None:
+    # Handlers bind to the stored symbols and the code_origin rule reads the
+    # stored origins, so this follows both. Gated inside on the diff.
+    with timed(ctx.timings, "persist.routes"):
+        await refresh_routes(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs, log=ctx.log)
 
 
 async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
@@ -565,6 +577,8 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    # After the prune, so a handler never binds to a deleted file's symbol.
+    Step("Route table refresh", refresh_route_table),
     Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step(
         "Deferred page staleness",
@@ -783,13 +797,15 @@ async def save_graph_snapshot(ctx: IncrementalPersist) -> None:
     from repowise.core.pipeline.persist.graph import _graph_is_complete
 
     from .feature import incremental_graph_enabled
+    from .graph_seed import discard_set_aside_seed, save_seed_edge_cache
 
-    if not incremental_graph_enabled() or ctx.graph_builder is None:
+    if (
+        not incremental_graph_enabled()
+        or ctx.graph_builder is None
+        or not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or [])
+    ):
+        discard_set_aside_seed(ctx.repo_path)
         return
-    if not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or []):
-        return
-    from .graph_seed import save_seed_edge_cache
-
     with timed(ctx.timings, "persist.graph_seed_cache"):
         await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
 
@@ -870,5 +886,9 @@ async def _write(ctx: IncrementalPersist) -> None:
 
     if persisted:
         await save_graph_snapshot(ctx)
+    else:
+        from .graph_seed import discard_set_aside_seed
+
+        discard_set_aside_seed(ctx.repo_path)
 
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))

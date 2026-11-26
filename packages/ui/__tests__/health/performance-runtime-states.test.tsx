@@ -1,4 +1,4 @@
-import { configure, fireEvent, render, screen, within } from "@testing-library/react";
+import { configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { MeasuredFunction, MeasuredResponse } from "@repowise-dev/types/runtime-evidence";
 
@@ -219,6 +219,25 @@ describe("Runtime evidence notices", () => {
   it("says when stored runs rank no production function", async () => {
     render(<PerformanceView adapter={adapter({ getMeasured: async () => unranked("not_ranked", null) })} />);
     expect(await screen.findByText("The stored runs rank no production function.")).toBeTruthy();
+    // Without the runs, where the newest run sits is unknown: no sample-count claim alone.
+    expect(screen.getByText(/They may be measured at a commit other than the indexed one/)).toBeTruthy();
+  });
+
+  it("never places a benchmark profile, which ranks nothing, as the run short of samples", async () => {
+    const runs = {
+      ...RUNS,
+      runs: [runSummary({ run_id: "run-bench", workload: "go bench", class: "benchmark" })],
+    };
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: async () => unranked("not_ranked", null),
+          listEvidenceRuns: async () => runs,
+        })}
+      />,
+    );
+    expect(await screen.findByText("The stored runs rank no production function.")).toBeTruthy();
+    expect(screen.queryByText(/Profile a workload that runs more repo code/)).toBeNull();
   });
 
   it("keeps the code-shape order when only a unit-test run is measured", async () => {
@@ -230,6 +249,25 @@ describe("Runtime evidence notices", () => {
     expect(await screen.findByText("Measured in tests only.")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: /Measured cost in/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Measured in tests/ })).toBeTruthy();
+  });
+
+  it("copies the host's connect prompt from the tests-only notice", async () => {
+    const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
+      const view = await measured(opts);
+      return { ...view, measured: null };
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+      />,
+    );
+    expect(await screen.findByText("Measured in tests only.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
   });
 
   it("counts what a partly mapped run skipped, by reason", async () => {

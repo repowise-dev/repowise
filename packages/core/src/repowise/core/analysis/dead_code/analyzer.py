@@ -404,7 +404,9 @@ class DeadCodeAnalyzer:
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)
-        findings = drop_program_entries(findings, self._source_map)
+        findings = drop_program_entries(
+            findings, self._source_map, self._public_top_level_names(findings), self._repo_root
+        )
         type_names = self._public_top_level_names(findings, kinds=_TYPE_DECLARATION_KINDS)
         findings = drop_reference_assembly_api(findings, self._source_map, type_names)
         findings = clamp_named_types(findings, self._source_map, type_names)

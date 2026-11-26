@@ -15,19 +15,23 @@ from sqlalchemy import Integer, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement, Select
 
+from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS
 from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import GitMetadata, HealthFileMetric
 
 __all__ = [
+    "DEFAULT_HELD",
     "FILTERS",
     "SORTS",
     "HotspotListing",
     "HotspotQuery",
     "accelerating_clause",
     "clear_hotspot_cache",
+    "count_hotspots",
     "is_accelerating",
     "list_hotspots",
     "origin_clause",
+    "shown_hotspot",
 ]
 
 HotspotFilter = Literal["all", "bus_factor_1", "accelerating", "bug_magnet"]
@@ -37,6 +41,11 @@ SORTS: tuple[str, ...] = ("score", "commits", "fixes", "churn")
 #: The trailing window the commit counts describe, and its recent slice.
 WINDOW_DAYS = 90
 RECENT_DAYS = 30
+
+#: The origins the Code Health hotspot list holds out until the reader brings
+#: one back. Every hotspot count a page quotes uses this scope, so the number on
+#: a card is the number of rows its link opens.
+DEFAULT_HELD: frozenset[str] = frozenset(MAP_HELD_ORIGINS)
 
 #: Facets per (database, repository, index stamp, held set, search).
 _facets = IndexStampCache(64)
@@ -116,12 +125,33 @@ def _scope(repo_id: str, held: frozenset[str]) -> Select[Any]:
     stmt = select(g.id.label("id"), rank.label("rank")).where(
         g.repository_id == repo_id, g.is_hotspot.is_(True)
     )
-    if held:
-        h = HealthFileMetric
-        stmt = stmt.outerjoin(
-            h, and_(h.repository_id == g.repository_id, h.file_path == g.file_path)
-        ).where(origin_clause(h).not_in(sorted(held)))
-    return stmt
+    return _held_out(stmt, held)
+
+
+def _held_out(stmt: Select[Any], held: frozenset[str]) -> Select[Any]:
+    """*stmt* over git rows, less the files whose origin is in *held*."""
+    if not held:
+        return stmt
+    g, h = GitMetadata, HealthFileMetric
+    return stmt.outerjoin(
+        h, and_(h.repository_id == g.repository_id, h.file_path == g.file_path)
+    ).where(origin_clause(h).not_in(sorted(held)))
+
+
+async def count_hotspots(
+    session: AsyncSession, repo_id: str, held: frozenset[str] = DEFAULT_HELD
+) -> int:
+    """How many hotspots the list shows in *held*'s scope: the one hotspot count."""
+    g = GitMetadata
+    stmt = select(func.count(g.id)).where(g.repository_id == repo_id, g.is_hotspot.is_(True))
+    return int(await session.scalar(_held_out(stmt, held)) or 0)
+
+
+def shown_hotspot(
+    held: frozenset[str] = DEFAULT_HELD, h: Any = HealthFileMetric
+) -> ColumnElement[bool]:
+    """:func:`count_hotspots`'s row test for a grouped query that outer-joins *h*."""
+    return and_(GitMetadata.is_hotspot.is_(True), origin_clause(h).not_in(sorted(held)))
 
 
 def _search_clause(q: str) -> ColumnElement[bool]:

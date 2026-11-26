@@ -272,6 +272,9 @@ its own package: call `register_provider(name, factory)` from a plugin's
 
 Adding a new language has a dedicated recipe, see
 [docs/architecture/language-support.md](../docs/architecture/language-support.md).
+Joining a language's profile frames to functions, or giving its test runner test
+timings in `evidence setup`, has its own, see
+[docs/architecture/runtime-evidence-languages.md](../docs/architecture/runtime-evidence-languages.md).
 Adding an agent integration or an agent CLI indexing backend has its own recipe, see
 [docs/architecture/agent-platform.md](../docs/architecture/agent-platform.md).
 

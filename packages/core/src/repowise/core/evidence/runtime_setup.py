@@ -1,8 +1,9 @@
 """Runtime targets for ``evidence setup``: what to profile in each unit, and how.
 
 A target is a real entry point, a benchmark or the unit-test suite, in that
-order: a claim may not exceed its workload class, and only the first two may
-lead. Entry points come from their owners: console scripts from the unit's
+order: a claim may not exceed its workload class, and only an entry point may
+lead (a benchmark speaks through its own results, ``evidence.benchmarks``).
+Entry points come from their owners: console scripts from the unit's
 ``pyproject.toml`` (:func:`~repowise.core.generation.flow_entries.console_scripts`),
 the stored entry-point flag ranked by
 :func:`~repowise.core.generation.entry_points.rank_entry_point_paths`, Go
@@ -14,9 +15,10 @@ Benchmarks are the stored functions :func:`~repowise.core.code_origin.is_benchma
 accepts.
 
 Every recipe needs no elevated privileges: pyinstrument in process for
-Python, ``go test -cpuprofile`` for Go, ``node --cpu-prof`` for JavaScript.
-Profiles land in ``.repowise/``. TypeScript is refused: its positions are in
-the compiled JavaScript.
+Python, ``go test -cpuprofile`` for Go, ``node --cpu-prof`` for JavaScript
+(a ``bin`` file, or the test runner's own script for the suite). Profiles
+land in ``.repowise/``. TypeScript is refused: its positions are in the
+compiled JavaScript.
 """
 
 from __future__ import annotations
@@ -686,8 +688,47 @@ def _go_targets(
 # ---------------------------------------------------------------------------
 
 
+#: Why a TypeScript program or suite gets no profile.
+_TS_REASON = ("A TypeScript profile's positions are in the compiled JavaScript; "
+              "repowise does not map them back yet.")
+#: Each JavaScript test runner's own script, which ``node`` runs with the profiler flags.
+_RUNNER_SCRIPTS = {
+    "mocha": "node_modules/mocha/bin/mocha.js",
+    "jest": "node_modules/jest/bin/jest.js",
+    "vitest": "node_modules/vitest/vitest.mjs",
+}
+
+
+def _node_suite(
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
+) -> dict[str, Any] | None:
+    """The unit's test suite under ``node --cpu-prof``, from the runner's own command line
+    (:attr:`~repowise.core.test_runners.stacks.Stack.suite`); None without one.
+
+    ``node`` runs the runner's script from the unit's ``node_modules``, so the
+    profile holds the tests, not the package manager. Worker processes the
+    runner forks inherit the flags and write their own profiles into the
+    directory, which ``evidence add`` merges. Refused when most of the unit's
+    test files are TypeScript. Ceiling: a workspace that hoists the runner to
+    the root's ``node_modules`` has no script at the unit's path.
+    """
+    head, *args = stack.suite.split() or [""]
+    script = _RUNNER_SCRIPTS.get(head)
+    if script is None:
+        return None
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    name, profile = _named(root, "node tests", "")
+    tests = [p for p in inputs.test_files if _owned(root, roots, p) is not None and p.endswith((*_TS, *_JS))]
+    if sum(p.endswith(_TS) for p in tests) * 2 > len(tests):
+        return _target("unit_test", name, cwd=cwd, command=None, profile=None, commit=commit, reason=_TS_REASON)
+    command = " ".join(["node --cpu-prof", f"--cpu-prof-dir={_from(root, profile)}", script, *args])
+    return _target("unit_test", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                   input_format="cpuprofile", prerequisites=[*stack.requires, _fresh(_from(root, profile))])
+
+
 def _node_targets(
-    stack: Stack, repo_root: Path, commit: str | None, roots: Collection[str]
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
 ) -> list[dict[str, Any]]:
     from ..ingestion.always_run import own_code
 
@@ -713,15 +754,15 @@ def _node_targets(
         name, profile = _named(root, f"node {rel}", "")
         if path.endswith(_TS):
             out.append(_target("entry_point", name, cwd=cwd, command=None, profile=None, commit=commit,
-                               reason="A TypeScript profile's positions are in the compiled JavaScript; "
-                                      "repowise does not map them back yet."))
+                               reason=_TS_REASON))
             continue
         if not path.endswith(_JS):
             continue
         command = f"node --cpu-prof --cpu-prof-dir={_from(root, profile)} {rel}"
         out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
                            input_format="cpuprofile", prerequisites=[_fresh(_from(root, profile))]))
-    return out
+    suite = _node_suite(stack, repo_root, inputs, commit, roots)
+    return [*out, suite] if suite else out
 
 
 def runtime_targets(
@@ -790,7 +831,7 @@ def _unit_targets(
     elif stack.language == "go":
         found = _go_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
     elif stack.language == "node":
-        found = _node_targets(stack, repo_root, commit, unit_roots)
+        found = _node_targets(stack, repo_root, inputs, commit, unit_roots)
     else:
         found = []
     return sorted(found, key=lambda t: CLASS_ORDER.index(t["class"]))

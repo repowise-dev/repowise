@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
+from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS
 from repowise.core.docs_mode import resolve_docs_mode
 
 _log = logging.getLogger("repowise.workspace.repo_stats")
@@ -126,11 +127,35 @@ def _read_counts(c: sqlite3.Cursor, result: dict[str, Any]) -> None:
     # of the codebase (module_health, extract-demo-data). The earlier
     # churn_percentile >= 90 predicate never matched: churn_percentile is
     # stored on a 0.0-1.0 scale and only scaled to 0-100 at the API layer.
-    try:
-        row = c.execute("SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1").fetchone()
-        result["hotspot_count"] = row[0] if row else 0
-    except sqlite3.OperationalError:
-        _log.debug("No hotspot flags in this index")  # table or column may not exist
+    hotspots = _hotspot_count(c)
+    if hotspots is not None:
+        result["hotspot_count"] = hotspots
+
+
+#: Hotspots in the Code Health list's scope (its held origins left out), the
+#: count every other surface quotes: ``services.hotspots.count_hotspots`` in SQL.
+_HOTSPOTS_SHOWN = (
+    "SELECT COUNT(*) FROM git_metadata g LEFT JOIN health_file_metrics h"
+    " ON h.repository_id = g.repository_id AND h.file_path = g.file_path"
+    " WHERE g.is_hotspot = 1 AND CASE"
+    " WHEN h.code_origin IS NOT NULL AND h.code_origin != '' THEN h.code_origin"
+    " WHEN h.is_test = 1 THEN 'test' ELSE 'production' END"
+    f" NOT IN ({','.join('?' * len(MAP_HELD_ORIGINS))})"
+)
+_HOTSPOT_FLAGS = "SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1"
+
+
+def _hotspot_count(c: sqlite3.Cursor) -> int | None:
+    """The shown hotspot count; the flag count on a store from before health
+    rows carried an origin; ``None`` with no hotspot flags at all."""
+    for sql, params in ((_HOTSPOTS_SHOWN, MAP_HELD_ORIGINS), (_HOTSPOT_FLAGS, ())):
+        try:
+            row = c.execute(sql, params).fetchone()
+        except sqlite3.OperationalError:
+            continue
+        return row[0] if row else 0
+    _log.debug("No hotspot flags in this index")  # table or column may not exist
+    return None
 
 
 def read_repo_health_score(db_path: Path) -> float | None:

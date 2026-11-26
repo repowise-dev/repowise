@@ -271,12 +271,13 @@ def build_blame_index(
     *,
     repo_path: Path | None = None,
     commit_count_total: int = 0,
+    max_size_bytes: int = _MAX_BLAME_SIZE_BYTES,
 ) -> BlameIndex:
     """Build a :class:`BlameIndex` for *file_path*.
 
     Skip / no-op rules (the same ones that gate ownership blame):
 
-    * file size exceeds :data:`_MAX_BLAME_SIZE_BYTES`
+    * file size exceeds *max_size_bytes* (:data:`_MAX_BLAME_SIZE_BYTES`)
     * ``commit_count_total < _MIN_COMMITS_FOR_BLAME`` — too sparse for signal
     * any subprocess error — returns an empty index, never raises
 
@@ -288,7 +289,7 @@ def build_blame_index(
     if repo_path is not None:
         try:
             size = (repo_path / file_path).stat().st_size
-            if size > _MAX_BLAME_SIZE_BYTES:
+            if size > max_size_bytes:
                 return BlameIndex()
         except OSError:
             return BlameIndex()

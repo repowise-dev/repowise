@@ -149,6 +149,7 @@ async def test_no_evidence_reads_unknown_with_the_setup_command(
         "command": "repowise evidence setup --format json",
         "measured": None,
         "measured_in_tests": None,
+        "benchmarks": None,
     }
     assert (await ev_client.get(f"/api/repos/{repo_id}/evidence/runs")).json() == {
         "reference_commit": HEAD,
@@ -241,6 +242,49 @@ async def test_functions_by_symbol_and_by_file(ev_client: AsyncClient, session_f
     ]
 
 
+@pytest.mark.asyncio
+async def test_functions_carry_the_next_step_with_a_production_loop_only(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    import json
+
+    from repowise.core.persistence.models import HealthFinding
+
+    repo_id = await _repo(ev_client, session_factory)
+    await _seed(session_factory, repo_id)
+    inside = [{"name": "Session.execute", "kind": "library", "share": 0.9}]
+    drivers = [{"name": "list_users", "share": 1.0, "symbol": "src/api.py::list_users"}]
+
+    def finding(path: str, loop_path: list[str]) -> HealthFinding:
+        return HealthFinding(
+            repository_id=repo_id, file_path=path, biomarker_type="io_in_loop", severity="medium",
+            function_name=loop_path[0].rsplit("::", 1)[-1], dimension="performance", status="open",
+            reason="a database call is reached once per loop iteration",
+            details_json=json.dumps({"boundary_kind": "db", "cross_function": True, "path": loop_path}),
+        )
+
+    async with session_factory() as session:
+        await replace_symbol_hotness(session, repo_id, [{
+            "symbol_id": LOAD, "tier": "ranked", "run_id": "r1", "freshness": "current",
+            "workload_name": "w-r1", "workload_class": "entry_point",
+            "inside_json": json.dumps(inside), "drivers_json": json.dumps(drivers),
+        }])
+        # A loop in a test calls the driver: never an N+1 in the product.
+        session.add(finding("tests/test_api.py", ["tests/test_api.py::test_many", "src/api.py::list_users"]))
+        await session.commit()
+    base = f"/api/repos/{repo_id}/evidence/functions"
+    load = (await ev_client.get(base, params={"symbol_id": LOAD})).json()["functions"][0]
+    assert load["next_step"]["rule"] == "db_read"
+    assert "N+1" not in load["next_step"]["next"]
+    assert load["next_step"]["verify"].startswith("repowise perf measure --save before -- w-r1")
+
+    async with session_factory() as session:
+        session.add(finding("src/jobs.py", ["src/jobs.py::sync_all", "src/api.py::list_users"]))
+        await session.commit()
+    load = (await ev_client.get(base, params={"symbol_id": LOAD})).json()["functions"][0]
+    assert "loop in sync_all (N+1)" in load["next_step"]["next"]
+
+
 @pytest.mark.parametrize(
     ("status", "command"),
     [
@@ -331,4 +375,65 @@ async def test_tests_lists_slow_tests_with_their_basis_run(
     assert out["status"] == "measured"
     assert [t["test_id"] for t in out["slow_tests"]] == ["tests/test_a.py::test_2", "tests/test_a.py::test_1"]
     assert out["runs"][0]["freshness"] == "current"
-    assert out["file_costs"] == {"basis": "inferred", "files": [], "files_total": 0, "not_production": 0, "every_test": 0}
+    assert out["cost"] == {
+        "verdict": "small_suite", "seconds": 3.0, "timed": 3,
+        "concentration": {"tests": 1, "share": round(2 / 3, 4)}, "clusters": [], "command": None,
+    }
+
+
+def test_the_suite_cost_model_serves_clusters_with_their_fixture() -> None:
+    from repowise.core.evidence.suite_cost import Fixture, cost_fold
+    from repowise.server.schemas.runtime_evidence import SuiteCost
+
+    slow = {f"tests/test_s.py::t{i}": 10.0 for i in range(5)}
+    rest = {f"tests/test_r.py::t{i}": 1.0 for i in range(20)}
+    reach = {t: {"src/app.py", "src/store.py"} for t in slow} | {t: {"src/app.py"} for t in rest}
+    fixtures = {t: {Fixture("indexed", "tests/test_s.py", 48)} for t in slow}
+
+    cost = cost_fold(slow | rest, reach, fixtures)
+
+    served = SuiteCost.model_validate(cost).model_dump()
+    assert served == cost
+    assert served["clusters"][0]["fixture"]["name"] == "indexed"
+
+
+@pytest.mark.asyncio
+async def test_routes_return_what_the_payload_builders_make_from_the_same_rows(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    """A host that reads the same rows elsewhere returns the same payloads."""
+    from repowise.core.evidence.payloads import (
+        functions_payload,
+        measured_payload,
+        runs_payload,
+        status_payload,
+    )
+    from repowise.core.persistence import crud
+    from repowise.server.schemas.runtime_evidence import (
+        EvidenceRunsResponse,
+        EvidenceStatusResponse,
+        MeasuredFunctionsResponse,
+        MeasuredResponse,
+    )
+
+    repo_id = await _repo(ev_client, session_factory)
+    await _seed(session_factory, repo_id)
+    async with session_factory() as session:
+        runs = await crud.list_evidence_runs(session, repo_id)
+        status = await crud.measured_status(session, repo_id)
+        view = await crud.measured_costs(session, repo_id, limit=10)
+        none = await crud.measured_costs(session, repo_id, limit=10, run_id="nope")
+        rows = await crud.hotness_for_symbols(session, repo_id, [], files=["src/auth/service.py"])
+        findings = await crud.step_findings(session, repo_id, rows.values())
+        built = {
+            "status": EvidenceStatusResponse(**status_payload(runs, status, HEAD)),
+            "runs": EvidenceRunsResponse(**runs_payload(runs, HEAD)),
+            "measured": MeasuredResponse(**measured_payload(view, status)),
+            "measured?run_id=nope": MeasuredResponse(**measured_payload(none, status)),
+            "functions?file=src/auth/service.py": MeasuredFunctionsResponse(
+                **functions_payload(rows, findings)
+            ),
+        }
+    for path, model in built.items():
+        served = (await ev_client.get(f"/api/repos/{repo_id}/evidence/{path}")).json()
+        assert served == model.model_dump(mode="json", by_alias=True), path

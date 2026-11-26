@@ -111,6 +111,8 @@
         "is_module_declaration": false,
         "type_only": false,
         "deferred": false,
+        "guarded": false,
+        "module_form": false,
         "scopes": null
       }
     ],
@@ -1314,6 +1316,8 @@
         "is_module_declaration": false,
         "type_only": false,
         "deferred": false,
+        "guarded": false,
+        "module_form": false,
         "scopes": null
       }
     ],

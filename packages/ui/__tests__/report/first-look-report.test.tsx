@@ -137,6 +137,32 @@ function renderReport(props: Partial<Parameters<typeof FirstLookReport>[0]> = {}
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("FirstLookReport, sections it could not collect", () => {
+  const unavailable = { ownership: "No checkout to read history from.", coverage: "No coverage report stored." };
+
+  it("names each one with its reason and links the ones the shell has a page for", () => {
+    renderReport({ report: report({ unavailable }) });
+    const block = screen.getByRole("heading", { name: "Not in this report" }).closest("section")!;
+    expect(within(block).getByText("No checkout to read history from.")).toBeInTheDocument();
+    expect(within(block).getByText("No coverage report stored.")).toBeInTheDocument();
+    expect(within(block).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/r/ownership"]);
+  });
+
+  it("takes the host's page for a section", () => {
+    renderReport({
+      report: report({ unavailable }),
+      unavailableHref: (section) => (section === "coverage" ? "/host/coverage" : null),
+    });
+    const block = screen.getByRole("heading", { name: "Not in this report" }).closest("section")!;
+    expect(within(block).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/host/coverage"]);
+  });
+
+  it("adds nothing when every section was read", () => {
+    renderReport();
+    expect(screen.queryByRole("heading", { name: "Not in this report" })).toBeNull();
+  });
+});
+
 describe("FirstLookReport", () => {
   it("reads as one document: strip, Start here, then sections in report order", () => {
     const { container } = renderReport();

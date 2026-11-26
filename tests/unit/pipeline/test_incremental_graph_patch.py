@@ -134,6 +134,8 @@ def _edges(graph_builder: Any) -> set[tuple]:
             tuple(d.get("call_lines", [])),
             bool(d.get("type_only", False)),
             bool(d.get("deferred", False)),
+            bool(d.get("guarded", False)),
+            bool(d.get("module_form", False)),
         )
         for u, v, d in graph_builder.graph().edges(data=True)
     }
@@ -375,16 +377,16 @@ def test_surface_changes_fall_back_to_a_full_rebuild(
 
 def test_unsupported_language_falls_back(tmp_path: Path) -> None:
     tree = tmp_path / "repo"
-    helper = "#!/bin/sh\nf() { echo one; }\n"
-    _write(tree, {**_FILES, "tools/helper.sh": helper})
+    helper = "sub f { return 'one'; }\nf();\n"
+    _write(tree, {**_FILES, "tools/helper.pl": helper})
     first = build_repo_graph(tree, [], collect_sources=True)[2]
     seed = _seed_rows(first)
-    (tree / "tools/helper.sh").write_text(helper.replace("echo one", "echo two"))
+    (tree / "tools/helper.pl").write_text(helper.replace("'one'", "'two'"))
 
     patched = _patched(tree, seed)
 
     assert not patched.patch_plan.eligible
-    assert "shell edits are not patched" in (patched.patch_plan.reason or "")
+    assert "perl edits are not patched" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 
@@ -415,6 +417,48 @@ def test_module_level_call_edit_matches_full_build(tmp_path: Path) -> None:
     }
     assert patched_module_calls == {("service.py::__module__", "util.py::second")}
     _assert_equals_full(tree, patched, tmp_path / "module-calls-oracle")
+
+
+def test_a_handler_edit_that_unguards_an_import_matches_full_build(tmp_path: Path) -> None:
+    """``except ImportError`` -> ``except Exception`` moves no line and changes
+    nothing another file resolves against, so it is a body patch; the edited
+    file is re-resolved, so its edge loses the stale mark and closes the cycle."""
+    tree = tmp_path / "guarded"
+    files = {
+        "a.py": "try:\n    from b import B\nexcept ImportError:\n    B = None\nA = 1\n",
+        "b.py": "from a import A\nB = 2\n",
+    }
+    _write(tree, files)
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert original.graph()["a.py"]["b.py"]["guarded"] is True
+
+    (tree / "a.py").write_text(files["a.py"].replace("ImportError", "Exception"))
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == ("a.py",)
+    assert not patched.graph()["a.py"]["b.py"].get("guarded")
+    _assert_equals_full(tree, patched, tmp_path / "guarded-oracle")
+
+
+def test_a_top_level_read_of_a_module_form_import_matches_full_build(tmp_path: Path) -> None:
+    """Adding ``X = b.B`` at the top level moves no import, yet the ``import b``
+    edge now reads ``b`` at load: the patched edge must lose ``module_form`` so
+    the cycle stops reading as static only."""
+    tree = tmp_path / "module-form"
+    files = {"a.py": "import b\nA = 1\n", "b.py": "import a\nB = 2\n"}
+    _write(tree, files)
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert original.graph()["a.py"]["b.py"]["module_form"] is True
+
+    (tree / "a.py").write_text("import b\nA = b.B\n")
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert not patched.graph()["a.py"]["b.py"].get("module_form")
+    _assert_equals_full(tree, patched, tmp_path / "module-form-oracle")
 
 
 def test_go_package_clause_change_falls_back(

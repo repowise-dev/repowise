@@ -9,7 +9,11 @@ from typing import Any
 
 import structlog
 
-from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
+from repowise.cli.commands._index_outcome import (
+    record_index_outcome,
+    refresh_read_snapshots,
+    refresh_repo_contracts,
+)
 from repowise.cli.editor_setup import (
     is_editor_setup_disabled,
     register_editor_clients,
@@ -430,6 +434,8 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
     # Before the editor files, which quote Fix first from these views.
     with steps.step("views"):
         refresh_read_snapshots(repo_path)
+    # Opt-in; off, it reads one setting and writes nothing.
+    refresh_repo_contracts(repo_path)
     if not editor_setup:
         return write_editor_project_files(
             console, repo_path, options=run.editor_options, no_editor_setup=True

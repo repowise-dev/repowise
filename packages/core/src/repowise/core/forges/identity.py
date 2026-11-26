@@ -30,6 +30,13 @@ _BOT_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 _BOT_EMAIL_RE = re.compile(r"\[bot\]@", re.IGNORECASE)
+# A forge committing as itself from its web UI or merge button, on any host
+# (a self-hosted GitLab, Gitea or Forgejo, Codeberg): the forge's own name
+# with a bare no-reply address. Both must match, so a person's address stays one.
+_FORGE_SYSTEM_NAME_RE = re.compile(
+    r"^(github|gitlab|gitea|forgejo|codeberg|bitbucket)$", re.IGNORECASE
+)
+_SYSTEM_EMAIL_RE = re.compile(r"^no-?reply@", re.IGNORECASE)
 
 
 # Git history repeats a few hundred addresses over every commit and file, so
@@ -61,7 +68,14 @@ def is_bot(name: str | None, email: str | None) -> bool:
     checks = [(_BOT_NAME_RE, name), (_BOT_EMAIL_RE, email)]
     for forge in all_forges():
         checks += [(forge.bot_name_re, name), (forge.bot_email_re, email)]
-    return any(pattern and value and pattern.search(value) for pattern, value in checks)
+    if any(pattern and value and pattern.search(value) for pattern, value in checks):
+        return True
+    return bool(
+        name
+        and email
+        and _FORGE_SYSTEM_NAME_RE.match(name.strip())
+        and _SYSTEM_EMAIL_RE.match(email.strip())
+    )
 
 
 def clear_caches() -> None:

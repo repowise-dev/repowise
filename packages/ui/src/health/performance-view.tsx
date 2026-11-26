@@ -60,6 +60,7 @@ import {
 import { usePerformanceFilters } from "./performance/use-filters";
 import { usePerformanceQueue } from "./performance/use-queue";
 import { useRuntimeEvidenceView } from "./performance/runtime";
+import type { LowSignalPromptBuilder } from "./performance/run-overview";
 import { PerformanceVerdict, verdictOf } from "./performance/verdict";
 import { formatNumber } from "../lib/format";
 
@@ -92,6 +93,9 @@ export function PerformanceView({
   openOpportunityId,
   onOpenOpportunityChange,
   runtimeEvidence = null,
+  connectEvidencePrompt,
+  connectEvidenceHint,
+  lowSignalPrompt,
 }: {
   adapter: PerformanceViewAdapter;
   /** The tab's URL parameters (or a pre-flat `perf` blob), so a shared link opens the same view. */
@@ -113,6 +117,23 @@ export function PerformanceView({
    * Omitted, the view never mentions runtime evidence.
    */
   runtimeEvidence?: { connected: boolean; found?: readonly string[] | null } | null;
+  /**
+   * The prompt the no-evidence states and the tests-only notice copy, for a
+   * host whose evidence arrives another way (a CI upload, say). Omitted, they
+   * copy the prompt that runs `repowise evidence setup` locally.
+   */
+  connectEvidencePrompt?: (() => string) | undefined;
+  /**
+   * The line under the empty state's prompt button. Omitted, it names
+   * `repowise evidence setup`; null drops it.
+   */
+  connectEvidenceHint?: React.ReactNode;
+  /**
+   * The prompt a low-signal run copies to collect a profile that ranks, for a
+   * host whose profiles arrive another way. Omitted, a prompt that changes the
+   * profiling step wherever it runs.
+   */
+  lowSignalPrompt?: LowSignalPromptBuilder | undefined;
 }) {
   const { filters, current, apply } = usePerformanceFilters(initialFilters, onFiltersChange);
 
@@ -297,6 +318,8 @@ export function PerformanceView({
         onOpenCause={openById}
         canOpenCause={detailById}
         onPrompt={openPrompt}
+        connectPrompt={connectEvidencePrompt}
+        lowSignalPrompt={lowSignalPrompt}
       />
 
       <section aria-label="Performance causes" className="space-y-4">
@@ -304,7 +327,11 @@ export function PerformanceView({
         {data.ignored_arguments ? (
           <IgnoredArgumentsNotice ignored={data.ignored_arguments} />
         ) : null}
-        <ConnectEvidenceRow runtimeEvidence={runtimeEvidence} hasCauses={items.length > 0} />
+        <ConnectEvidenceRow
+          runtimeEvidence={runtimeEvidence}
+          hasCauses={items.length > 0}
+          prompt={connectEvidencePrompt}
+        />
 
         <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <ScopeControl value={filters.scope} counts={scopes} onChange={toScope} />
@@ -336,7 +363,11 @@ export function PerformanceView({
           narrowingCount(filters) > 0 && repositoryTotal > 0 ? (
             <FilteredEmpty onClear={() => apply(clearNarrowing(filters))} />
           ) : runtimeEvidence && !runtimeEvidence.connected ? (
-            <ConnectEvidenceState found={runtimeEvidence.found} />
+            <ConnectEvidenceState
+              found={runtimeEvidence.found}
+              prompt={connectEvidencePrompt}
+              hint={connectEvidenceHint}
+            />
           ) : (
             <GoodState
               scope={GOOD_STATE_SCOPE[filters.scope]}

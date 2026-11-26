@@ -40,6 +40,20 @@ def reset_cache() -> None:
     _CACHE.clear()
 
 
+def drop_repo(repo_id: str) -> None:
+    """Drop every resolution cached for *repo_id*."""
+    for key in [k for k in _CACHE if k[0] == repo_id]:
+        del _CACHE[key]
+
+
+def set_limit(entries: int) -> None:
+    """Keep at most *entries* resolutions; like a full cache, an over-full one clears."""
+    global _CACHE_LIMIT
+    _CACHE_LIMIT = entries
+    if len(_CACHE) > entries:
+        _CACHE.clear()
+
+
 def is_component_target(target: str) -> bool:
     return target.startswith(COMPONENT_PREFIX)
 

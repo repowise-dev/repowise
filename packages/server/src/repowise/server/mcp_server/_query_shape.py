@@ -135,7 +135,7 @@ def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
 
 def _has_code_extension(token: str) -> bool:
     """``plugin.go``, ``x.py``: a file name, not a dotted symbol name."""
-    return os.path.splitext(token)[1] in _code_exts()
+    return os.path.splitext(token)[1].lower() in _code_exts()
 
 
 def _names_indexed_segments(token: str, paths: Sequence[str]) -> bool:
@@ -221,10 +221,15 @@ def _folds_case(token: str) -> bool:
 
 def _names_symbol(token: str, names: Container[str]) -> bool:
     """Case-sensitive first, then case-insensitive where ``_folds_case`` allows;
-    a dotted token also counts when its last part names a symbol."""
+    a dotted token also counts when its last part names a symbol. A file name
+    (``call_resolver.py``) names a file: its extension is never a symbol."""
     if token in names or (_folds_case(token) and token.lower() in names):
         return True
-    return "." in token and _names_symbol(token.rsplit(".", 1)[1], names)
+    return (
+        "." in token
+        and not _has_code_extension(token)
+        and _names_symbol(token.rsplit(".", 1)[1], names)
+    )
 
 
 def _embedded_identifiers(query: str, names: Container[str] | None = None) -> list[str]:
@@ -342,7 +347,9 @@ def _in_code_context(query: str, m: re.Match[str]) -> bool:
 def _name_lookup_keys(query: str) -> set[str]:
     """Lowered names ``_embedded_identifiers`` may test for ``query``, so a
     caller loads only these rows of the symbol table."""
-    return {t.rsplit(".", 1)[-1].lower() for t in _name_tokens(query)}
+    return {
+        t.rsplit(".", 1)[-1].lower() for t in _name_tokens(query) if not _has_code_extension(t)
+    }
 
 
 _CAMEL_HUMP_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")

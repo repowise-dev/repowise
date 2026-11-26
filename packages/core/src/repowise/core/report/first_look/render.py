@@ -24,6 +24,7 @@ from urllib.parse import quote
 from repowise.core.report.render import _code, html_page, report_renderers
 
 from .model import SECTION_CAP
+from .text import top_items_summary
 
 #: Renderer names on the ``report-renderer`` seam. They read a first-look
 #: document, so the assessment-style commands leave them out of ``--format``.
@@ -244,19 +245,21 @@ def _top(doc: Mapping[str, Any]) -> list[tuple[Mapping[str, Any], Mapping[str, A
 
 
 def _md_top(doc: Mapping[str, Any]) -> list[str]:
-    top = _top(doc)
+    top = top_items_summary(doc)
     if not top:
         return []
     out = ["", "## Do these first", ""]
-    for n, (section, item) in enumerate(top, 1):
-        open_link = _item_href(doc, item)
+    for n, line in enumerate(top, 1):
+        open_link = _item_href(doc, line["item"])
         # Each line names its place, so this list reads on its own as a summary.
-        chips, hidden = _chips(item)
-        places = [f"{p}:{ln}" if ln else p for p, ln, _ in chips[:1]]
-        more = len(chips) - 1 + hidden
-        where = f" ({_code(places[0])}{f' and {more:,} more' if more > 0 else ''})" if places else ""
+        more = line["more"]
+        where = (
+            f" ({_code(line['where'])}{f' and {more:,} more' if more > 0 else ''})"
+            if line["where"]
+            else ""
+        )
         out.append(
-            f"{n}. {_title(doc, section['key']).split(':')[0]}: {_one(_text(doc, item))}{where}"
+            f"{n}. {line['title']}: {line['text']}{where}"
             + (f" [Open]({open_link})" if open_link else "")
         )
     return out
