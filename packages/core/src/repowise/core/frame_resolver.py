@@ -582,80 +582,138 @@ async def load_jvm_source_paths(session: Any, repository_id: str) -> list[str]:
     return sorted(paths)
 
 
+@dataclass(frozen=True)
+class _JvmCall:
+    """What a JVM frame claims ran, in the index's terms."""
+
+    name: JvmFrameName
+    #: The class chain, local classes (``1Local``) named as the index names them.
+    segments: tuple[str, ...]
+    #: ``segments`` without anonymous classes (``1``, ``2``).
+    named: tuple[str, ...]
+    #: The id parent segment the method must sit under (``""``: a Kotlin top-level function).
+    owner: str
+    #: The method name to find: the class name for a constructor.
+    wanted: str
+    #: ``name`` in ``lambda$name$0`` (``static``, ``new`` included), or None.
+    enclosing: str | None
+    #: Whether the compiled parameter count is the source's (see :func:`_name_join`).
+    by_count: bool
+
+    @property
+    def anonymous(self) -> bool:
+        return self.segments[-1].isdigit()
+
+    @property
+    def init(self) -> bool:
+        return self.name.method == "<init>"
+
+
 def _jvm(frame: ProfileFrame, symbols: Sequence[IndexedSymbol], *, kotlin: bool) -> _Hit | SkipReason:
     name = parse_jvm_frame(frame.function)
     if name is None:
         return "no_second_signal"
-    method, segments = name.method, name.cls.split("$")
-    # Compiler-made trampolines with no source of their own: the caller keeps the time.
-    if (
+    if _jvm_synthetic(name):
+        # Compiler-made trampolines with no source of their own: the caller keeps the time.
+        return "generated"
+    if name.method == "<clinit>":
+        return (None, False)
+    call = _jvm_call(name, symbols, kotlin=kotlin)
+    callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+    if frame.line < 1:
+        if call.enclosing is not None or call.anonymous:
+            return "no_second_signal"  # only a line tells which lambda or anonymous class
+        return _name_join(callables, owner=call.owner, name=call.wanted, params=name.params, by_count=call.by_count)
+    symbol = symbol_at(callables, frame.line)
+    if symbol is None:
+        return _jvm_off_method(call, frame.line, symbols, callables)
+    if call.enclosing is None and not call.anonymous:
+        if symbol.name == call.wanted and _id_parent(symbol) == call.owner:
+            # The line found the method; the frame's parameters, where it has them, must
+            # agree, or a line that drifted onto a neighbouring overload would join it.
+            agree = _params_agree(symbol, name.params, call.by_count)
+            return (symbol, False) if agree else "second_signal_mismatch"
+        return "second_signal_mismatch"
+    return _jvm_nested(call, symbol)
+
+
+def _jvm_synthetic(name: JvmFrameName) -> bool:
+    """``access$000``, ``foo$default``, ``$values``, ``Outer$$Lambda``, a CGLIB proxy, and
+    javac's access constructor ``Main(Main$1)`` (Java 10 and older), whose parameter is a marker class."""
+    method = name.method
+    return (
         method.startswith("access$")
         or method.endswith("$default")
         or method == "$values"
-        or "" in segments  # ``Outer$$Lambda``, ``Outer$$EnhancerBySpringCGLIB$$1a2b``
-        # javac's access constructor ``Main(Main$1)`` (Java 10 and older) takes a marker class.
+        or "" in name.cls.split("$")
         or any(p.isdigit() for p in name.params or ())
-    ):
-        return "generated"
-    if method == "<clinit>":
-        return (None, False)
+    )
+
+
+def _jvm_call(name: JvmFrameName, symbols: Sequence[IndexedSymbol], *, kotlin: bool) -> _JvmCall:
     # A local class is ``Outer$1Local``: the index names it ``Local``.
-    segments = [s if s.isdigit() else s.lstrip("0123456789") for s in segments]
-    named = [s for s in segments if not s.isdigit()]
-    anonymous = segments[-1].isdigit()
-    lam = _JVM_LAMBDA_RE.fullmatch(method)
-    enclosing = (lam["a"] or lam["b"]) if lam else None
+    segments = tuple(s if s.isdigit() else s.lstrip("0123456789") for s in name.cls.split("$"))
+    named = tuple(s for s in segments if not s.isdigit())
+    lam = _JVM_LAMBDA_RE.fullmatch(name.method)
     owner = segments[-1]
     if kotlin and len(segments) == 1 and owner.endswith("Kt"):
         owner = ""  # a top-level function: the index nests it in no class
-    init = method == "<init>"
-    wanted = named[-1] if init else method
-    callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+    init = name.method == "<init>"
+    wanted = named[-1] if init and named else name.method
     # A compiled parameter count is the source's for a Java method, and for a
     # top-level class's constructor; not for a nested class's (its outer
     # instance), an enum's (name and ordinal) or Kotlin's (an extension's receiver).
-    by_count = not kotlin and (not init or (len(segments) == 1 and any(
-        s.name == wanted and s.kind == "class" for s in symbols
-    )))
-    if frame.line < 1:
-        if lam is not None or anonymous:
-            return "no_second_signal"  # only a line tells which lambda or anonymous class
-        return _name_join(callables, owner=owner, name=wanted, params=name.params, by_count=by_count)
-    symbol = symbol_at(callables, frame.line)
-    if symbol is None:
-        if enclosing == "static" or (anonymous and init):
-            # A lambda or anonymous class in a static field: load-time code, the file's.
-            return (None, True)
-        if init and not anonymous:
-            # A field initializer runs in the constructor, on the field's line.
-            return _name_join(callables, owner=owner, name=wanted, params=name.params, by_count=by_count)
-        if lam is None and (anonymous or any(
-            s.start_line == frame.line and s.name == named[-1] for s in symbols
-        )):
-            # javac puts a bridge method (a generic override's erased twin) on its class's line.
-            return "generated"
-        return "no_span"
-    if lam is None and not anonymous and symbol.name == wanted and _id_parent(symbol) == owner:
-        # The line found the method; the frame's parameters, where it has them, must agree,
-        # or a line that drifted onto a neighbouring overload would join it.
-        return (symbol, False) if _params_agree(symbol, name.params, by_count) else "second_signal_mismatch"
-    if enclosing is not None:
-        parent = named[-1] if enclosing == "new" else enclosing
-        if symbol.name == parent and _jvm_in_class(named, symbol):
+    top_class = len(segments) == 1 and any(s.name == wanted and s.kind == "class" for s in symbols)
+    return _JvmCall(
+        name=name,
+        segments=segments,
+        named=named,
+        owner=owner,
+        wanted=wanted,
+        enclosing=(lam["a"] or lam["b"]) if lam else None,
+        by_count=not kotlin and (not init or top_class),
+    )
+
+
+def _jvm_off_method(
+    call: _JvmCall, line: int, symbols: Sequence[IndexedSymbol], callables: Sequence[IndexedSymbol]
+) -> _Hit | SkipReason:
+    """A JVM frame whose line no indexed method holds."""
+    if call.enclosing == "static" or (call.anonymous and call.init):
+        # A lambda or anonymous class in a static field: load-time code, the file's.
+        return (None, True)
+    if call.init:
+        # A field initializer runs in the constructor, on the field's line.
+        return _name_join(
+            callables, owner=call.owner, name=call.wanted, params=call.name.params, by_count=call.by_count
+        )
+    if call.enclosing is None and (
+        call.anonymous or any(s.start_line == line and s.name == call.named[-1] for s in symbols)
+    ):
+        # javac puts a bridge method (a generic override's erased twin) on its class's line.
+        return "generated"
+    return "no_span"
+
+
+def _jvm_nested(call: _JvmCall, symbol: IndexedSymbol) -> _Hit | SkipReason:
+    """A lambda or an anonymous class's member, at a line *symbol* holds."""
+    if call.enclosing is not None:
+        parent = call.named[-1] if call.enclosing == "new" else call.enclosing
+        if symbol.name == parent and _jvm_in_class(call.named, symbol):
             return (symbol, True)
         return "second_signal_mismatch"
-    if anonymous and _jvm_in_class(named, symbol):
-        # The index holds an anonymous class's methods under the method or field
-        # that declares it (``create::TypeAdapter::read``). Its constructor runs
-        # where it is declared, and a Kotlin lambda class (``Foo$bar$1``) is
-        # named after its function: both fold into the method at the line.
-        if not init and symbol.name == method:
-            return (symbol, False)
-        if init or (len(segments) > 1 and segments[-2] == symbol.name):
-            return (symbol, True)
-        # On the declaring line: a bridge javac wrote, called through the interface.
-        return "generated"
-    return "second_signal_mismatch"
+    if not _jvm_in_class(call.named, symbol):
+        return "second_signal_mismatch"
+    # The index holds an anonymous class's methods under the method or field that
+    # declares it (``create::TypeAdapter::read``). Its constructor runs where it is
+    # declared, and a Kotlin lambda class (``Foo$bar$1``) is named after its
+    # function: both fold into the method at the line.
+    if not call.init and symbol.name == call.name.method:
+        return (symbol, False)
+    if call.init or (len(call.segments) > 1 and call.segments[-2] == symbol.name):
+        return (symbol, True)
+    # On the declaring line: a bridge javac wrote, called through the interface.
+    return "generated"
 
 
 def _id_parent(symbol: IndexedSymbol) -> str:
