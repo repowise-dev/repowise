@@ -68,6 +68,10 @@ def _bad_option(option: str, message: str) -> EvidenceRefusedError:
     return EvidenceRefusedError("invalid_option", message, option=option)
 
 
+#: Why a file in a profile format is refused with no checkout.
+_NEEDS_CHECKOUT = "a profile file is read against the checkout's source; name an existing checkout."
+
+
 @dataclass(frozen=True)
 class PreparedEvidence:
     """The file as read and checked: a v1 document (written or converted), or a profile run still to convert."""
@@ -288,6 +292,8 @@ def prepare_evidence(
             text = data.decode("utf-8", errors="replace")
             doc = parse_evidence(text)
         else:
+            if checkout_root is None:
+                raise _bad_option("--checkout-root", _NEEDS_CHECKOUT)
             reader = profile_formats.get(fmt)
             if reader.to_v1 is not None:
                 text = json.dumps(reader.convert_to_v1(data, name, checkout_root), sort_keys=True)
@@ -557,8 +563,8 @@ async def store_evidence(
 
     text, doc, conversion = prepared.text, prepared.doc, None
     if prepared.run is not None:
-        # Profile bytes always come with a checkout: ingest_evidence requires one for them.
-        assert root is not None
+        if root is None:  # prepare_evidence refuses this first; kept for the type
+            raise _bad_option("--checkout-root", _NEEDS_CHECKOUT)
         conversion = await _convert(
             session, repo.id, prepared.run, root, changed, prepared.value_kind
         )

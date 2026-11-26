@@ -904,6 +904,29 @@ def test_a_batch_of_profile_bytes_still_needs_its_checkout(double, indexed, tmp_
     assert _stored(root) == ([], [])
 
 
+def test_profile_bytes_are_refused_with_no_checkout_whoever_waives_it(indexed, tmp_path) -> None:
+    from repowise.core.evidence.add import EvidenceRefusedError, ingest_evidence
+
+    root, head = indexed
+
+    async def run() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await session.get(Repository, "r1")
+                await ingest_evidence(
+                    session, repo, _speedscope(root), repo_path=tmp_path / "no-checkout",
+                    workload="cli", workload_class="load_test", commit=head,
+                    require_checkout=False,
+                )
+        finally:
+            await engine.dispose()
+
+    with pytest.raises(EvidenceRefusedError, match="checkout's source"):
+        asyncio.run(run())
+    assert _stored(root) == ([], [])
+
+
 # --- A production run names its window ------------------------------------------------
 
 
