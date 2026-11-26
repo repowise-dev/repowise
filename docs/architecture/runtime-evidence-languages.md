@@ -38,10 +38,12 @@ frame on its class's indexed file before symbols load (`place_jvm_frames`, from
 `load_jvm_source_paths`): the one `.java` or `.kt` file whose path ends in the
 package directories and the outermost class, or none, which leaves the frame
 outside the checkout. Bundled JavaScript goes through `source_maps.remap_profile`
-at the same place, after placement. A language whose frames name a type and not
-a file (C# in a `dotnet-trace` export) adds its own placement there; for C#,
-where namespaces need not follow directories, place by the indexed symbols'
-qualified names instead of by path.
+at the same place, after placement. C# frames from a `dotnet-trace` export
+(`Module!Namespace.Type+Nested.Method(params)`, which `parse_clr_frame` reads)
+are placed there too (`place_clr_frames`, from `load_clr_symbols`): namespaces
+need not follow directories, so the type's file is the one whose namespace and
+type symbols, nested by span, spell the frame's type. Another language whose
+frames name a type and not a file adds its own placement at the same place.
 
 ### What to change in `frame_resolver.py`
 

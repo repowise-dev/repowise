@@ -251,7 +251,7 @@ Coverage reports and profiles add measured runtime to the static graph.
 coverage and the commands that profile it; `coverage add` and `evidence add`
 read what they write. A coverage report in lcov, Cobertura, JaCoCo, Clover or
 Go cover profile format is read for any language, from any tool. A profile
-joins to code only for Python, Go, JavaScript, Java and Kotlin frames.
+joins to code only for Python, Go, JavaScript, Java, Kotlin and C# frames.
 
 | Language | Coverage command from setup | Profiles and benchmarks read |
 |----------|-----------------------------|------------------------------|
@@ -261,7 +261,7 @@ joins to code only for Python, Go, JavaScript, Java and Kotlin frames.
 | Go | `go test -coverprofile` | pprof (`go test -cpuprofile`) |
 | Java / Kotlin | Maven or Gradle with JaCoCo | JDK Flight Recorder (`jfr print` text), async-profiler collapsed stacks |
 | Rust | `cargo llvm-cov` | no |
-| C# | `dotnet test` with coverlet | no |
+| C# | `dotnet test` with coverlet | Speedscope (`dotnet-trace collect --format speedscope`) |
 | Ruby | RSpec, Rails or Rake tests with SimpleCov | no |
 | PHP | PHPUnit or Pest | no |
 | Apex | none; the Salesforce CLI test-run JSON is read | no |
