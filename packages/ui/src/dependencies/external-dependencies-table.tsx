@@ -203,7 +203,7 @@ function AdvisoryList({
           const site = advisory.sites[0];
           const where = site ? (site.line ? `${site.path}:${site.line}` : site.path) : null;
           return (
-            <li key={advisory.id} className="text-xs">
+            <li key={`${advisory.ecosystem ?? ""}:${advisory.package}:${advisory.id}`} className="text-xs">
               <p className="font-mono text-[var(--color-text-primary)]">
                 {advisory.id}
                 {advisory.severity ? (

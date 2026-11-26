@@ -293,7 +293,9 @@ def _vulns_sarif(rows: list[Any]) -> dict[str, Any]:
     rules: dict[str, dict] = {}
     results = []
     for r in rows:
-        if not r.tier.sites:
+        if not r.shown_sites:
+            # Code scanning needs a location; an advisory without one is in
+            # the text and JSON output.
             continue
         tier = r.shown_tier
         rule_id = f"advisory/{tier}"
@@ -306,7 +308,7 @@ def _vulns_sarif(rows: list[Any]) -> dict[str, Any]:
                 "A package advisory and the closest production code comes to it.",
             ),
         )
-        site = r.tier.sites[0]
+        site = r.shown_sites[0]
         fix = f"; fixed in {r.fix}" if r.fix else ""
         results.append(
             sarif.result(

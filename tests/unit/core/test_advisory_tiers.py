@@ -91,7 +91,12 @@ async def test_a_reached_call_makes_the_package_called(session, tmp_path):  # no
     # unknown, never as a tier below imported.
     assert by_pkg["jinja2"].tier.tier == "indirect_unknown"
     assert by_pkg["jinja2"].shown_tier == "unknown"
-    assert by_pkg["jinja2"].as_dict()["tier"] == "unknown"
+    jinja2 = by_pkg["jinja2"].as_dict()
+    assert (jinja2["tier"], jinja2["basis"], jinja2["sites"]) == (
+        "unknown",
+        "no_shipping_import",
+        [],
+    )
     assert by_pkg["jinja2"].rank == 1
     assert rows[0].package == "requests"  # strongest tier first
 

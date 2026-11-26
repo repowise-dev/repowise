@@ -99,6 +99,20 @@ class TieredAdvisory:
         return "imported" if self.tier.tier == "imported" else "unknown"
 
     @property
+    def shown_basis(self) -> str:
+        """The rule behind :attr:`shown_tier`. An ``unknown`` row keeps none of the
+        fold's below-``imported`` reasons, which would read as a discount."""
+        if self.shown_tier == "unknown":
+            return "no_shipping_import"
+        return "call" if self.shown_tier == "package_called" else self.tier.basis
+
+    @property
+    def shown_sites(self) -> tuple[Any, ...]:
+        """Evidence sites; none on an ``unknown`` row, whose only sites are
+        test or tooling imports and would read as "only tests use it"."""
+        return () if self.shown_tier == "unknown" else self.tier.sites
+
+    @property
     def rank(self) -> int:
         return _RANK[self.shown_tier]
 
@@ -108,7 +122,7 @@ class TieredAdvisory:
 
     def sites(self) -> list[str]:
         """``path:line`` of each evidence site (``path`` when it has no line)."""
-        return [f"{s.path}:{s.line}" if s.line else s.path for s in self.tier.sites]
+        return [f"{s.path}:{s.line}" if s.line else s.path for s in self.shown_sites]
 
     def as_dict(self) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -116,7 +130,7 @@ class TieredAdvisory:
             "ecosystem": self.ecosystem,
             "id": self.advisory.id,
             "tier": self.shown_tier,
-            "basis": self.tier.basis,
+            "basis": self.shown_basis,
         }
         if self.advisory.aliases:
             row["aliases"] = list(self.advisory.aliases)
@@ -133,7 +147,7 @@ class TieredAdvisory:
             row["summary"] = self.advisory.summary
         row["sites"] = [
             {k: v for k, v in (("path", s.path), ("line", s.line), ("symbol", s.symbol)) if v}
-            for s in self.tier.sites
+            for s in self.shown_sites
         ]
         return row
 
@@ -186,7 +200,9 @@ async def _cli_commands(session: Any, repository_id: str) -> list[str]:
     """CLI command functions, seeded over the stored import, framework and reference edges.
 
     Ceiling: decorators are not stored, so a CLI declared only by a decorator
-    is missed; its entry-point file still roots it.
+    is missed; its entry-point file still roots it. Read per call, about a
+    second on a 680-route Django index; cache per index stamp if a surface
+    starts calling it in a loop.
     """
     import networkx as nx
     from sqlalchemy import select
