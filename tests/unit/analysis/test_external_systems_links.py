@@ -517,7 +517,21 @@ def test_import_names_are_offered_only_for_pypi_declarations() -> None:
     assert _links([_Declaration("Pillow", ecosystem="npm")], [_Node("external:PIL")]) == []
 
 
-def test_an_import_name_two_ecosystems_answer_to_stays_unlinked() -> None:
-    declarations = [_pypi("PyYAML"), _Declaration("yaml", ecosystem="npm")]
+def test_a_declared_name_outranks_another_distributions_import_name() -> None:
+    # An npm ``yaml`` keeps its link beside a PyPI ``PyYAML``, in either order.
+    for declarations in (
+        [_pypi("PyYAML"), _Declaration("yaml", ecosystem="npm")],
+        [_Declaration("yaml", ecosystem="npm"), _pypi("PyYAML")],
+    ):
+        assert _links(declarations, [_Node("external:yaml")]) == [("external:yaml", "npm", "yaml")]
+    assert _links(
+        [_pypi("PyYAML"), _Declaration("yaml", ecosystem="npm")], [_Node("external:PyYAML")]
+    ) == [("external:PyYAML", "pypi", "PyYAML")]
 
-    assert _links(declarations, [_Node("external:yaml")]) == []
+
+def test_a_scoped_npm_subpath_still_resolves_to_its_package() -> None:
+    declarations = [_Declaration("@scope/pkg")]
+
+    assert _links(declarations, [_Node("external:@scope/pkg/a/b")]) == [
+        ("external:@scope/pkg/a/b", "npm", "@scope/pkg")
+    ]

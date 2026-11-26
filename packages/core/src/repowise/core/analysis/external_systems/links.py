@@ -99,18 +99,6 @@ def declaration_name_candidates(external_name: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
-def _index_names(name: str, ecosystem: str) -> tuple[str, ...]:
-    """The names one declaration answers to as an import target.
-
-    A PyPI distribution is imported under a module name (``Pillow`` as
-    ``PIL``, ``Django`` as ``django``), so it answers to those as well as its
-    own; see :mod:`.pypi_imports`.
-    """
-    if ecosystem == "pypi":
-        return tuple(dict.fromkeys((name, *pypi_import_names(name))))
-    return (name,)
-
-
 def build_declaration_index(
     declarations: Iterable[Any],
 ) -> dict[str, tuple[str, str] | None]:
@@ -128,6 +116,7 @@ def build_declaration_index(
     """
     index: dict[str, tuple[str, str] | None] = {}
     ecosystem_of: dict[str, str] = {}
+    import_names: list[tuple[str, tuple[str, str]]] = []
     for declaration in declarations:
         name = field(declaration, "name", "") or ""
         ecosystem = field(declaration, "ecosystem", "") or ""
@@ -136,13 +125,21 @@ def build_declaration_index(
         identity = (ecosystem, name)
         if ecosystem:
             index.setdefault(package_key(ecosystem, name), identity)
-        for key in _index_names(name, ecosystem):
-            previous = ecosystem_of.get(key)
-            if previous is None:
-                ecosystem_of[key] = ecosystem
-                index[key] = identity
-            elif previous != ecosystem:
-                index[key] = None
+        if ecosystem == "pypi":
+            import_names.extend((module, identity) for module in pypi_import_names(name))
+        previous = ecosystem_of.get(name)
+        if previous is None:
+            ecosystem_of[name] = ecosystem
+            index[name] = identity
+        elif previous != ecosystem:
+            index[name] = None
+    # A PyPI distribution also answers to the module it is imported under
+    # (``Pillow`` as ``PIL``, ``Django`` as ``django``; see :mod:`.pypi_imports`),
+    # but only where no declaration claims that name itself: an npm ``yaml``
+    # keeps its link when a ``PyYAML`` sits beside it. Only PyPI adds these, so
+    # two of them never come from different ecosystems; the first one wins.
+    for module, identity in import_names:
+        index.setdefault(module, identity)
     return index
 
 
