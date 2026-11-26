@@ -59,7 +59,12 @@ function entry(row: MeasuredRow, index: number, orderingOnly: boolean): string {
     lines.push(`   - Total time, with what it calls: ${shareText(row.inclusive)} of the run`);
   }
   if (row.callers.length > 0) {
-    lines.push(`   - Callers outside tests: ${row.callers.map((c) => `\`${c}\``).join(", ")}`);
+    const shares = row.caller_shares ?? {};
+    const callers = row.callers.map((c) => {
+      const share = shares[c];
+      return share != null ? `\`${c}\` (drove ${shareText(share)} of its time)` : `\`${c}\``;
+    });
+    lines.push(`   - Production callers: ${callers.join(", ")}`);
   }
   if (row.tests && row.tests.length > 0) {
     const label = row.tests_basis === "per_test_map" ? "Tests that ran it" : "Nearest tests by call graph";

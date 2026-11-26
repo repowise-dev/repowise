@@ -225,8 +225,16 @@ def coverage_add(
             get_session,
         )
         from repowise.core.persistence.crud import save_coverage_files, save_test_coverage
-
         url = get_db_url_for_repo(repo_path)
+        from repowise.core.persistence.database import has_db_store
+
+        # A configured database counts as existing (see has_db_store); only the
+        # repo-local default must already be on disk, so none is created here.
+        if not has_db_store(repo_path):
+            console.print(
+                "[yellow]No index yet. Run `repowise init` once before adding coverage.[/yellow]"
+            )
+            return "no_index", None
         # An index from an older repowise lacks newer columns; back-fill them.
         await reconcile_schema_best_effort(url)
         engine = create_engine(url)
@@ -474,8 +482,16 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             get_repository_by_path,
             get_test_coverage_summary,
         )
-
         url = get_db_url_for_repo(repo_path)
+        from repowise.core.persistence.database import has_db_store
+
+        # A configured database counts as existing (see has_db_store); only the
+        # repo-local default must already be on disk, so none is created here.
+        if not has_db_store(repo_path):
+            notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
+            if fmt == "json":
+                emit_json({"repo": str(repo_path), "indexed": False})
+            return
         # An index from an older repowise lacks newer columns; back-fill them.
         await reconcile_schema_best_effort(url)
         engine = create_engine(url)
