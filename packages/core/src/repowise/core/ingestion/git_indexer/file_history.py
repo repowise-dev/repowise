@@ -491,7 +491,10 @@ def _add_windows(
 _BACKPORT_TAG_RE = re.compile(
     r"\[(?:PR\s*#(\d+)[^\]]*backport|[^\]]*\bbackport\b[^\]]*)\]", re.IGNORECASE
 )
-_BACKPORT_PREFIX_RE = re.compile(r"^backport\b", re.IGNORECASE)
+_BACKPORT_PREFIX_RE = re.compile(
+    r"^backport\s+(?:of\s+)?(?:#\d+|v?\d+\.\d+|to\s+)", re.IGNORECASE
+)
+_REVERT_RE = re.compile(r"^revert\b", re.IGNORECASE)
 _PR_PAREN_RE = re.compile(r"\(#(\d+)\)")
 _PR_TAG_RE = re.compile(r"#(\d+)")
 
@@ -519,10 +522,14 @@ def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool, str | No
     ``... (#13833) (#13836)``.
     """
     parens = _PR_PAREN_RE.findall(subject)
+    is_revert = bool(_REVERT_RE.search(subject))
     tag_match = _BACKPORT_TAG_RE.search(subject)
     prefix_match = _BACKPORT_PREFIX_RE.search(subject)
 
-    is_backport = len(parens) >= 2 or bool(tag_match) or bool(prefix_match)
+    is_backport = (
+        not is_revert
+        and (len(parens) >= 2 or bool(tag_match) or bool(prefix_match))
+    )
 
     if is_backport:
         original_pr = _extract_backport_pr(subject, parens, tag_match)
@@ -532,7 +539,7 @@ def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool, str | No
     # Ordinary non-backport commits are keyed by sha so distinct commits
     # sharing a PR suffix (e.g. from GitHub rebase-and-merge) count individually.
     ckey = f"sha:{sha}"
-    pr_num = parens[0] if parens else None
+    pr_num = parens[-1] if parens else None
     return ckey, False, pr_num
 
 

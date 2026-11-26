@@ -185,3 +185,29 @@ def test_backports_without_original_commit_collapse_to_one() -> None:
 
     top = {a["name"]: a["commit_count"] for a in json.loads(meta["top_authors_json"])}
     assert top["Sam Bull"] == 1
+
+
+def test_revert_commit_with_two_prs_is_not_treated_as_backport() -> None:
+    # A revert commit referencing the original PR and its own PR is not a backport
+    c1 = _make_commit("1" * 40, _AUTHOR, "Add parser (#500)", _NOW - 200)
+    c2 = _make_commit("2" * 40, _AUTHOR, 'Revert "Add parser (#500)" (#501)', _NOW - 100)
+
+    authors = _Authors.tally([c1, c2], _NOW - 1000)
+    meta: dict = {}
+    _add_ownership(meta, authors)
+
+    top = {a["name"]: a["commit_count"] for a in json.loads(meta["top_authors_json"])}
+    assert top["Sam Bull"] == 2
+
+
+def test_feature_commit_named_backport_is_not_treated_as_backport() -> None:
+    # Feature commits starting with 'Backport' without PR/version reference count separately
+    c1 = _make_commit("1" * 40, _AUTHOR, "Add parser (#50)", _NOW - 200)
+    c2 = _make_commit("2" * 40, _AUTHOR, "Backport detection logic (#50)", _NOW - 100)
+
+    authors = _Authors.tally([c1, c2], _NOW - 1000)
+    meta: dict = {}
+    _add_ownership(meta, authors)
+
+    top = {a["name"]: a["commit_count"] for a in json.loads(meta["top_authors_json"])}
+    assert top["Sam Bull"] == 2
