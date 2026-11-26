@@ -32,11 +32,9 @@ _CALL_RE = re.compile(
     r"[A-Za-z_$][\w$]*(?:\s*(?:\.|::|\?\.)\s*[A-Za-z_$][\w$]*)*\s*(?:<[^()=;]*>)?\s*\("
 )
 
-#: An arrow function's head: ``(a, b) =>``, ``(a: T): R =>``. Any other
-#: initializer that opens a parenthesis (``(() => {...})()``, ``(f)(x)``) is
-#: read as a call: wrongly withholding one costs a deletion-ready row, wrongly
-#: passing one costs a broken program.
-_ARROW_HEAD_RE = re.compile(r"\((?:[^()]|\([^()]*\))*\)\s*(?::[^=;{]*)?=>")
+#: What follows a parenthesized head when the head is called: ``(...)(`` (an
+#: IIFE) or ``(...).name(``.
+_CALLED_AFTER_PAREN_RE = re.compile(r"\s*(?:\(|\.\s*[A-Za-z_$][\w$]*\s*\()")
 
 #: How much of the declaration to read: the initializer starts on its first lines.
 _HEAD_CHARS = 600
@@ -89,8 +87,27 @@ def _initialized_by_call(
         return False
     value = head[assign:].lstrip()
     if value.startswith("("):
-        return _ARROW_HEAD_RE.match(value) is None
+        return _parenthesized_head_is_called(value)
     return _CALL_RE.match(value) is not None
+
+
+def _parenthesized_head_is_called(value: str) -> bool:
+    """Whether ``(...)`` at the start of *value* is called (``(() => {...})()``).
+
+    An arrow head (``(a) =>``) or a grouped expression (``(60 * 1000)``) is
+    not. A group that does not close within the head read is a long body, most
+    likely an IIFE, and wrongly withholding one costs a deletion-ready row
+    where wrongly passing one costs a broken program.
+    """
+    depth = 0
+    for i, char in enumerate(value):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return _CALLED_AFTER_PAREN_RE.match(value, i + 1) is not None
+    return True
 
 
 def _top_level_assignment(head: str, start: int) -> int | None:
