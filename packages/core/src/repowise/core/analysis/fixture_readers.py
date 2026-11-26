@@ -22,6 +22,7 @@ the file or the tree, or when no test code does (a glob or a computed path).
 
 from __future__ import annotations
 
+import functools
 import io
 import posixpath
 import re
@@ -261,8 +262,13 @@ def _names_helper(
         target = path.parts if word == path.name else module
         for m in re.finditer(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", text):
             before = text[max(0, m.start() - _WINDOW) : m.start()]
-            named = word == path.name and "." in word
-            if _refers(before, text, word, target, reader, named, at):
+            if before.endswith(("/", "\\")):
+                found = _path_refers(before, word, target, at)
+            elif before.endswith("."):
+                found = _module_refers(before, text, word, target, reader)
+            else:  # a bare word, or a file name in a config
+                found = reader is not None or (word == path.name and "." in word)
+            if found:
                 return True
     return False
 
@@ -271,11 +277,12 @@ def _names_helper(
 _WINDOW = 256
 
 
+@functools.lru_cache(maxsize=64)
 def _join_dots(text: str) -> str:
     """Python text :func:`code_text` tokenized, with its dotted names joined again.
 
     ``aiohttp . client`` reads ``aiohttp.client``; ``from . . client`` reads
-    ``from ..client``, a relative import.
+    ``from ..client``, a relative import. Cached: each test file is read once per helper.
     """
     pieces = _STRING.split(text)
     for i in range(0, len(pieces), 2):  # the code between string literals, which stay as written
@@ -291,35 +298,35 @@ def _join_dots(text: str) -> str:
 _STRING = re.compile(r"""("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')""")
 
 
-def _refers(
-    before: str,
-    text: str,
-    word: str,
-    target: tuple[str, ...],
-    reader: str | None,
-    file_name: bool,
-    at: PurePosixPath | None = None,
-) -> bool:
-    """Whether *word*, written after *before* in *text*, refers to the file at *target*.
+@functools.lru_cache(maxsize=64)
+def _aliases(text: str) -> frozenset[str]:
+    """The names *text* binds with ``as``."""
+    return frozenset(re.findall(r"\bas\s+(\w+)", text))
 
-    *target* is the file's path parts, ending in *word*; *file_name* is whether
-    *word* is the whole file name, which counts bare in a config too.
+
+def _path_refers(
+    before: str, word: str, target: tuple[str, ...], at: PurePosixPath | None
+) -> bool:
+    """Whether *word*, ending the path written at the end of *before*, is the file at *target*.
+
+    In a config in directory *at*, a relative path resolves from there.
     """
-    if before.endswith(("/", "\\")):
-        written = _PATH_TAIL.search(before).group()  # type: ignore[union-attr]
-        if at is not None and written.startswith("."):
-            return posixpath.normpath(f"{at}/{written}{word}".lower()) == "/".join(target)
-        return _tail_matches((*_path_parts(written), word), target)
-    if not before.endswith("."):
-        return reader is not None or file_name
-    chain = _MODULE_TAIL.search(before).group()  # type: ignore[union-attr]
+    written = _PATH_TAIL.findall(before)[0].replace("\\", "/")
+    if at is not None and written.startswith("."):
+        return posixpath.normpath(f"{at}/{written}{word}".lower()) == "/".join(target)
+    return _tail_matches((*_path_parts(written), word), target)
+
+
+def _module_refers(
+    before: str, text: str, word: str, target: tuple[str, ...], reader: str | None
+) -> bool:
+    """Whether *word*, ending the dotted name at the end of *before*, is the module at *target*."""
+    chain = _MODULE_TAIL.findall(before)[0]
     names = [n for n in chain.split(".") if n]
     dots = len(chain) - len(chain.lstrip("."))
     if not dots:
-        if _tail_matches((*names, word), target):
-            return True
         # ``h.client`` after ``import tests.autobahn.client as h``: an alias may be the package.
-        return re.search(rf"\bas\s+{re.escape(names[0])}\b", text) is not None
+        return _tail_matches((*names, word), target) or names[0] in _aliases(text)
     start = before[: len(before) - len(chain)]
     if start and not start[-1].isspace() and start[-1] not in "\"'`(":
         return False  # ``f().client``, ``x?.client``: an attribute, not a module path
@@ -349,8 +356,9 @@ def _spells_dir(text: str, folder: PurePosixPath, at: PurePosixPath) -> bool:
     """Whether lowercased *text*, a config in directory *at*, writes *folder* as a path.
 
     ``src/test/helpers``, or a relative ``./test/helpers`` resolving to it from *at*
-    (an alias target), does. A lone
-    ``tests/`` in a glob or a test path list does not: it names where tests live.
+    (an alias target), does. A lone ``tests/`` in a glob or a test path list does
+    not: it names where tests live. A path shorter than *folder* matches on its
+    trailing names, as it may be written from a root config or a base directory.
     Ceiling: an alias target written as a lone name (tsconfig ``"helpers/*"``) is not
     read, so a test importing through that alias by another name stays unseen.
     """

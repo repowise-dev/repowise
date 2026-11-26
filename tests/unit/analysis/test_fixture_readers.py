@@ -458,8 +458,9 @@ def test_a_config_word_relative_path_or_module_elsewhere_does_not_name_the_helpe
     for text in ("alias = ./client", "plugins = .client"):
         sources["setup.cfg"] = text
         assert _CLIENT in helper_readers([_CLIENT], _tests(sources), sources.get)
-    sources["setup.cfg"] = "alias = ./tests/autobahn/client/"
-    assert helper_readers([_CLIENT], _tests(sources), sources.get) == {}
+    for text in ("alias = ./tests/autobahn/client/", r"alias = .\tests\autobahn\client\client.py"):
+        sources["setup.cfg"] = text
+        assert helper_readers([_CLIENT], _tests(sources), sources.get) == {}
 
 
 def test_a_bare_name_in_a_string_after_a_period_still_counts() -> None:
