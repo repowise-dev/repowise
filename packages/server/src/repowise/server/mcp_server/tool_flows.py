@@ -143,7 +143,9 @@ async def get_execution_flows(
             entry_nodes = [(node, _ep_score(node))]
         else:
             # Top-N scored entry points from DB
-            top_nodes = await get_top_entry_points(session, repo_id, min_score=0.0, limit=top_n)
+            top_nodes = await get_top_entry_points(
+                session, repo_id, min_score=0.0, limit=top_n, exclude_spec=exclude_spec
+            )
             for n in top_nodes:
                 entry_nodes.append((n, _ep_score(n)))
 

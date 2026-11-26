@@ -8,6 +8,7 @@ there, whichever side it is on.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,10 @@ async def _seed(session_factory, repo_id: str) -> None:
                     kind="function",
                     pagerank=0.01,
                     community_id=_FILES[path][0],
+                    # The stale caller out-scores the real entry point.
+                    community_meta_json=json.dumps(
+                        {"entry_point_score": {_RUN: 0.5, _STALE_CALLER: 0.9}.get(symbol_id, 0.0)}
+                    ),
                 )
             )
         for src, dst, edge_type in _EDGES:
@@ -241,3 +246,17 @@ async def test_community_views_count_no_excluded_member_or_edge(
     boundary = {n["node_id"] for n in slice_["nodes"] if n.get("is_boundary")}
     # The slice draws co-change ties like the canvas does; archive/ takes no stub slot.
     assert boundary == {_OTHER, _UNUSED}
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_take_no_excluded_entry_point_or_hop(
+    client: AsyncClient, repo_id: str
+) -> None:
+    body = (await client.get(f"/api/graph/{repo_id}/execution-flows", params={"top_n": 1})).json()
+    _no_archive(body)
+    assert [(f["entry_point"], f["trace"]) for f in body["flows"]] == [(_RUN, [_RUN, _HELPER])]
+
+    resp = await client.get(
+        f"/api/graph/{repo_id}/execution-flows", params={"entry_point": _STALE_CALLER}
+    )
+    assert resp.status_code == 404

@@ -1038,12 +1038,17 @@ async def get_top_entry_points(
     *,
     min_score: float = 0.3,
     limit: int = 20,
+    exclude_spec: Any = None,
 ) -> list[GraphNode]:
     """Return symbol nodes with stored entry_point_score >= *min_score*.
 
     Scores are stored inside ``community_meta_json``. Since the count of
     symbol nodes is typically < 5000, an in-memory filter is acceptable.
+    A symbol in a file *exclude_spec* matches is skipped before the *limit*
+    cut, so it never takes an allowed entry point's place.
     """
+    from repowise.core.exclusion import node_is_excluded
+
     result = await session.execute(
         select(GraphNode).where(
             GraphNode.repository_id == repository_id,
@@ -1060,6 +1065,8 @@ async def get_top_entry_points(
             continue
         score = meta.get("entry_point_score")
         if score is not None and score >= min_score:
+            if node_is_excluded(node.node_id, exclude_spec):
+                continue
             scored.append((score, node))
 
     scored.sort(key=lambda x: x[0], reverse=True)

@@ -214,7 +214,11 @@ async def export_graph(
 
     if truncated:
         entry_nodes = await crud.get_top_entry_points(
-            session, repo_id, min_score=0.0, limit=_FLOW_ENTRY_POINTS
+            session,
+            repo_id,
+            min_score=0.0,
+            limit=_FLOW_ENTRY_POINTS,
+            exclude_spec=exclude_spec,
         )
         flow_ids = _flow_member_ids(edges, [n.node_id for n in entry_nodes])
 

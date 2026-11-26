@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.exclusion import build_exclude_spec
+from repowise.core.exclusion import build_exclude_spec, node_is_excluded
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
@@ -230,23 +230,29 @@ async def get_execution_flows(
     max_depth: int = Query(5, ge=1, le=12),
     entry_point: str | None = Query(None, description="Specific symbol to trace from"),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> ExecutionFlowsResponse:
-    """Return top entry points with BFS call-path traces."""
+    """Return top entry points with BFS call-path traces.
+
+    No entry point or hop is taken from a file the repo rules exclude.
+    """
+    exclude_spec = build_exclude_spec(repo.local_path)
     if entry_point:
         node = await crud.get_graph_node(session, repo_id, entry_point)
-        if node is None:
+        if node is None or node_is_excluded(node.node_id, exclude_spec):
             raise HTTPException(status_code=404, detail=f"Entry point not found: {entry_point}")
         entry_nodes = [node]
     else:
-        entry_nodes = await crud.get_top_entry_points(session, repo_id, min_score=0.0, limit=top_n)
+        entry_nodes = await crud.get_top_entry_points(
+            session, repo_id, min_score=0.0, limit=top_n, exclude_spec=exclude_spec
+        )
 
     if not entry_nodes:
         return ExecutionFlowsResponse(total_entry_points=0, flows=[])
 
     node_cache: dict[str, GraphNode] = {}
     flows = [
-        await _trace_flow(session, repo_id, ep_node, max_depth, node_cache)
+        await _trace_flow(session, repo_id, ep_node, max_depth, node_cache, exclude_spec)
         for ep_node in entry_nodes
     ]
     flows.sort(key=lambda f: -f.entry_point_score)
@@ -263,6 +269,7 @@ async def _trace_flow(
     ep_node: GraphNode,
     max_depth: int,
     node_cache: dict[str, GraphNode],
+    exclude_spec: Any = None,
 ) -> ExecutionFlowEntry:
     """BFS the call path from one entry point, with per-hop origins."""
     hop_origins: dict[tuple[str, str], str] = {}
@@ -275,6 +282,7 @@ async def _trace_flow(
         node_cache,
         hop_origins,
         termination,
+        exclude_spec,
     )
     communities_visited, crosses = await resolve_trace_communities(
         session, repo_id, trace, node_cache
