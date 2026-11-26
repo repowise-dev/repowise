@@ -1,16 +1,41 @@
 """Splicing a duplication state the repo-wide window budget cut short.
 
-A full run collects files in order and stops at the first one whose windows
-would overrun the budget; it never reads the files after it. A splice
-reproduces that run only when the cut falls on the same file: every unchanged
-file keeps its side of the cut, the stop file is unchanged, and the edited
-prefix still leaves too little room for the stop file's windows.
+A full run collects files in :func:`collection_order` and stops at the first
+one whose windows would overrun the budget; it never reads the files after it.
+A splice reproduces that run only when the cut falls on the same file: every
+unchanged file keeps its side of the cut, the stop file is unchanged, and the
+edited prefix still leaves too little room for the stop file's windows.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
+from repowise.core.code_origin import code_origin
+
+
+def collection_order(parsed_files: list[Any]) -> list[Any]:
+    """*parsed_files* in the order a run collects them: production code first.
+
+    A budget cut then lands on tests, tooling and other non-production files
+    before it drops any production file. Each group keeps the given order. The
+    full run, the splice and the persisted cut all read this one order.
+
+    The origin comes from the path and the stored test flag only, the same
+    form the sibling-skeleton filter uses. A splice must rebuild this order
+    without reading every file, so the content rules (a generated banner at a
+    plain path) do not apply here: such a file sorts with production. Reading
+    each file's head would let them apply, at the cost of a full read pass on
+    every incremental update.
+    """
+    production: list[Any] = []
+    rest: list[Any] = []
+    for pf in parsed_files:
+        info = pf.file_info
+        origin = code_origin(info.path, is_test=getattr(info, "is_test", None))
+        (production if origin == "production" else rest).append(pf)
+    return production + rest
 
 
 @dataclass(frozen=True)
@@ -46,6 +71,7 @@ def splice_scope(
         return parsed_files, None
     if not persist:
         return None
+    parsed_files = collection_order(parsed_files)
     paths = [pf.file_info.path for pf in parsed_files]
     if stop_path not in paths or stop_path in changed:
         return None

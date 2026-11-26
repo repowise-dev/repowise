@@ -16,17 +16,32 @@ its own change:
 
 Each reader under `packages/core/src/repowise/core/evidence/profile_formats/`
 builds a `ProfileFrame` (in `packages/core/src/repowise/core/frame_resolver.py`)
-with `language=frame_language(path)`. `frame_language` (`profile_formats/model.py`)
+with `language=frame_language(path, function)`. `frame_language` (`profile_formats/model.py`)
 asks the language registry for the file extension's tag, so `.rs` frames already
-arrive as `rust`, `.rb` as `ruby`, `.php` as `php` and `.pas` as `pascal`. The
-readers fill different fields, which decides what your second signal can be:
+arrive as `rust`, `.rb` as `ruby`, `.php` as `php` and `.pas` as `pascal`. A frame
+with no file whose name reads as a JVM `class.method` (`parse_jvm_frame`) is
+`java`. The readers fill different fields, which decides what your second signal
+can be:
 
 | Reader | `function` | `line` | Also |
 |---|---|---|---|
 | `pprof.py` | the pprof function name | the sampled line | `start_line` from the pprof function, `None` when the profiler wrote 0 |
 | `speedscope.py` | the frame's `name` | the frame's `line` | `column` from `col` |
-| `collapsed.py` | the frame text | only for py-spy spellings | a path only for py-spy and perf-Python spellings |
+| `collapsed.py` | the frame text | only for py-spy spellings; a JVM `:42` stays in the name | a path only for py-spy and perf-Python spellings; a JVM signature's `;` stays in its frame |
 | `cpuprofile.py` | V8's `functionName` | the function's start line | `column` |
+| `jfr.py` | `pkg.Class.method(Type, Type)` as `jfr print` writes it | the executing line, 0 for a native method | no path; `language="java"` |
+
+### Frames that name a type, not a file
+
+A JVM profile has no file per frame. `evidence/add.py::_convert` puts each JVM
+frame on its class's indexed file before symbols load (`place_jvm_frames`, from
+`load_jvm_source_paths`): the one `.java` or `.kt` file whose path ends in the
+package directories and the outermost class, or none, which leaves the frame
+outside the checkout. Bundled JavaScript goes through `source_maps.remap_profile`
+at the same place, after placement. A language whose frames name a type and not
+a file (C# in a `dotnet-trace` export) adds its own placement there; for C#,
+where namespaces need not follow directories, place by the indexed symbols'
+qualified names instead of by path.
 
 ### What to change in `frame_resolver.py`
 
@@ -37,12 +52,13 @@ readers fill different fields, which decides what your second signal can be:
    `symbol=None` meaning the file's module body, or a `SkipReason`. Take the
    `lines` reader only if the join needs source text, as `_javascript` does.
 4. Add the language to the "Second signals" and "Folding" paragraphs of the
-   `resolve_frames` docstring, and to the "three" languages the
+   `resolve_frames` docstring, and to the five languages the
    `frame_language` docstring names.
 
 Everything before the dispatch is shared and already ran: the checkout-root
-check, `bad_line`, `dirty`, the origin check and `not_indexed`. Your function
-sees only frames in indexed, clean, maintained files of the checkout.
+check, `bad_line` (skipped for `_JVM` languages, whose frames may carry no
+line), `dirty`, the origin check and `not_indexed`. Your function sees only
+frames in indexed, clean, maintained files of the checkout.
 
 ### The join, in the order `_go` does it
 
@@ -78,6 +94,34 @@ executing line per frame follows Go.
    returns `None`.
 5. **Nothing found.** No span is `no_span`.
 
+### The join by name: `_name_join`
+
+`_jvm` joins by line first: the innermost method at the line, whose name is the
+frame's method (the class name for `<init>`) and whose id nests it in the
+frame's innermost class (`_id_parent`); where the frame carries parameter
+types, they must fit the id (`_params_agree`), so a line a few rows off onto a
+neighbouring overload is a mismatch, not a join. A JVM frame with no line, and a
+constructor whose line is a field initializer, join by name instead, through
+`_name_join(callables, owner=, name=, params=, by_count=)`. It is the seam for
+any frame that names a type and a method:
+
+1. The callables named `name` that are direct members of `owner` (`""` for a
+   top-level function): an anonymous class's method, ided under the method that
+   declares it, never stands in for a named class. One, and its id agrees with
+   the frame's parameters: joined.
+2. Several, and the frame has parameter types: with `by_count`, and when every
+   candidate's id carries a count, keep those whose count (`#2`) is the frame's;
+   one left: joined.
+3. Then the id's types (`#2(Object,Type)`, written only when two overloads share
+   a count) must equal the frame's erased simple types. One: joined.
+4. Otherwise `ambiguous`: a name never picks one of several overloads.
+
+Pass `by_count=False` where the compiled count differs from the source's: a
+nested class's constructor (its outer instance), an enum's (name and ordinal),
+a Kotlin extension (its receiver). For C#, `dotnet-trace` writes
+`Namespace.Type.Method(int32, class System.String)`: map the CLR types to the
+names `symbol_identity.clr_parameter_type` writes into ids before calling it.
+
 ### Skip reasons
 
 A skipped frame is counted under exactly one `SkipReason`. Use the existing
@@ -90,10 +134,10 @@ ones; a new reason also needs the list in
 | `unsupported_language` | `_resolve` | the tag is not in the language check |
 | `bad_line` | `_resolve` | no 1-based line |
 | `dirty` | `_resolve` | the file differs from the indexed commit |
-| `generated`, `vendored` | `_resolve` | the file's code origin |
+| `generated`, `vendored` | `_resolve`, `_jvm` | the file's code origin; a compiler-made JVM frame (`access$000`, `$default`, `$$Lambda`, a bridge on its class's line) |
 | `not_indexed` | `_resolve` | under the root, but the index has no such file |
 | `no_span` | your join | no indexed function holds the line |
-| `ambiguous` | `_javascript` | two indexed functions start on the line |
+| `ambiguous` | `_javascript`, `_name_join` | two indexed functions start on the line, or several fit the name and nothing picks one |
 | `no_second_signal` | your join | the frame lacks the field the join checks |
 | `no_source` | `_javascript` | the source line could not be read |
 | `second_signal_mismatch` | your join | the field disagrees with the symbol |
@@ -133,9 +177,9 @@ ran in; that directory is the `root` the test passes.
 - `conv.skip_rate <= 0.05` on the fixture: at least 95% of repo frame time
   joins, each frame to exactly one function.
 - Closures and blocks land on their parent's samples.
-- Go, Python and JavaScript joins unchanged: the four test files above plus
-  `tests/unit/evidence/test_cpuprofile.py` pass without edits to their
-  assertions.
+- Go, Python, JavaScript and JVM joins unchanged: the four test files above plus
+  `tests/unit/evidence/test_cpuprofile.py` and `tests/unit/evidence/test_jvm_profile.py`
+  pass without edits to their assertions.
 
 ## Test timings from `evidence setup`
 
@@ -219,8 +263,8 @@ and assert each entry's `test_id` and `test_file` after `place_test_entries`.
 - One PR per issue, scoped to its "Done looks like" and tested against its
   "Must not change" line.
 - Run the test files named above locally; CI runs the full suite on the PR.
-- Update `docs/`: the sentences naming the joined languages (Python, Go and
-  JavaScript) in [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md#accuracy-and-limits)
+- Update `docs/`: the sentences naming the joined languages (Python, Go,
+  JavaScript, Java and Kotlin) in [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md#accuracy-and-limits)
   and [LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md#runtime-evidence),
   and that page's table.
   The maintainers update the docs site.

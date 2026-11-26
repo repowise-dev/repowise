@@ -1608,6 +1608,7 @@ def _measured_row(
     drivers_json: str | None,
 ) -> dict[str, Any]:
     """One ranked row; *drivers_json* is its run's measured callers of the function."""
+    from ....evidence.format_v1 import IMPORT_TIME, is_import_row
     from ....evidence.payloads import weighted_callers
     from ....ingestion.symbol_identity import file_of_symbol
 
@@ -1648,6 +1649,9 @@ def _measured_row(
     }
     if symbol_id in covered:
         out["on_static_findings"] = sorted(covered[symbol_id])
+    if is_import_row(symbol_id):
+        # A module body's row: the time to import the file, not a function's.
+        out["label"] = IMPORT_TIME
     return out
 
 

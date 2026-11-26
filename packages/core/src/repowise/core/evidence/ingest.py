@@ -22,7 +22,7 @@ from typing import Any
 from repowise.core.ingestion.symbol_identity import local_symbol_id
 from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_function
 
-from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
+from .format_v1 import EVIDENCE_FORMAT, MODULE_FUNCTION, EvidenceDocument
 from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, WORKLOAD_CLASSES, evidence_kinds
 from .suite_cost import timing_summary
 
@@ -248,6 +248,12 @@ def _join(
         symbol_id = None
     elif path in changed:
         reason, symbol_id = "dirty_file", None
+    elif kind == "profile" and location["function"] == MODULE_FUNCTION:
+        # A module body's row: the reserved id, no symbol to look up.
+        if path in by_file:
+            symbol_id, reason = f"{path}::{MODULE_FUNCTION}", None
+        else:
+            symbol_id, reason = None, "unknown_file"
     else:
         symbol_id, reason = resolve_location(location, by_file)
     if symbol_id is None and not optional:
@@ -521,7 +527,7 @@ async def load_symbols(
     """
     from sqlalchemy import select
 
-    from repowise.core.persistence.models import WikiSymbol
+    from repowise.core.persistence.models import HealthFileMetric, WikiSymbol
 
     wanted = sorted(set(paths))
     per_file: dict[str, list[IndexedSymbol]] = {}
@@ -542,6 +548,16 @@ async def load_symbols(
             per_file.setdefault(row.file_path, []).append(
                 IndexedSymbol(row.symbol_id, row.qualified_name, row.name, row.start_line)
             )
+        # Indexed with no symbols (an ``__init__.py`` of imports): known by its
+        # health row, as ``frame_resolver.load_frame_symbols`` knows it.
+        known = await session.execute(
+            select(HealthFileMetric.file_path).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.file_path.in_(wanted[i : i + 400]),
+            )
+        )
+        for (path,) in known:
+            per_file.setdefault(path, [])
     return {path: symbol_lookup(symbols) for path, symbols in per_file.items()}
 
 

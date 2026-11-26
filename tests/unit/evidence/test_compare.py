@@ -8,11 +8,13 @@ from types import SimpleNamespace as NS  # noqa: N814
 from repowise.core.evidence.compare import (
     Cause,
     History,
+    benchmark_reach,
     cause_words,
     compare_runs,
     comparison_line,
     comparison_pairs,
     comparison_payload,
+    reached_functions,
     runs_to_read,
 )
 
@@ -201,7 +203,7 @@ def test_the_cause_names_the_commit_that_changed_a_function_the_benchmark_reache
     history = History(
         ranges={(BASE, HEAD): [(HEAD, "tree: walk the path again (#9001)"), (other, "docs: typo")]},
         touched={HEAD: {GET_VALUE}, other: {"README.md::x"}},
-        callees={BENCH_FN: {"gin.go::Engine::ServeHTTP", GET_VALUE}},
+        callees={BENCH_FN: ("gin.go::Engine::ServeHTTP", GET_VALUE)},
     )
     [found] = compare_runs(runs, rows, history)
     assert found.cause is not None
@@ -223,6 +225,72 @@ def test_a_benchmark_profile_says_what_the_benchmarks_ran() -> None:
     history = History(ranges={(BASE, HEAD): [(HEAD, "plant")]}, touched={HEAD: {GET_VALUE}})
     found = next(c for c in compare_runs(runs, rows, history) if c.kind == "benchmark")
     assert found.cause.commits[0].functions == (GET_VALUE,)
+
+
+def _with_bench_profile(runs: list, rows: dict, *functions: str) -> None:
+    profile = _run(7, HEAD, kind="profile", workload="go bench profile")
+    runs.append(profile)
+    rows[profile.id] = [NS(symbol_id=f, self_value=5.0) for f in functions]
+
+
+def test_a_noisy_benchmark_is_never_blamed_on_a_function_only_the_profile_ran() -> None:
+    """The profile measured every benchmark: ``getValue`` ran under others, not this one."""
+    runs, rows = _series([100, 101, 99], [160])
+    _with_bench_profile(runs, rows, GET_VALUE)
+    history = History(
+        ranges={(BASE, HEAD): [(HEAD, "tree: walk the path again (#9001)")]},
+        touched={HEAD: {GET_VALUE}},
+        callees={BENCH_FN: ("context.go::Context::JSON",)},
+    )
+    found = next(c for c in compare_runs(runs, rows, history) if c.kind == "benchmark")
+    assert found.cause.commits == ()
+
+
+def test_the_profile_fills_a_benchmark_the_graph_knows_no_calls_from() -> None:
+    runs, rows = _series([100, 101, 99], [160])
+    _with_bench_profile(runs, rows, GET_VALUE)
+    history = History(ranges={(BASE, HEAD): [(HEAD, "plant")]}, touched={HEAD: {GET_VALUE}})
+    found = next(c for c in compare_runs(runs, rows, history) if c.kind == "benchmark")
+    assert found.cause.commits[0].functions == (GET_VALUE,)
+
+
+def test_the_profile_fills_a_benchmark_with_no_production_callee_known() -> None:
+    runs, rows = _series([100, 101, 99], [160])
+    _with_bench_profile(runs, rows, GET_VALUE)
+    history = History(
+        ranges={(BASE, HEAD): [(HEAD, "plant")]},
+        touched={HEAD: {GET_VALUE}},
+        callees={BENCH_FN: ()},
+    )
+    found = next(c for c in compare_runs(runs, rows, history) if c.kind == "benchmark")
+    assert found.cause.commits[0].functions == (GET_VALUE,)
+
+
+def test_a_reached_benchmark_takes_no_profile_fill_from_an_unreached_one() -> None:
+    """A noisy reached benchmark slower beside one the graph does not reach."""
+    other = "bench_test.go::BenchmarkOther"
+    history = History(callees={BENCH_FN: ("context.go::Context::JSON",)})
+    profile = [[NS(symbol_id=GET_VALUE, self_value=5.0)]]
+    assert GET_VALUE not in benchmark_reach([BENCH_FN, other, None], history, profile)
+    assert GET_VALUE in benchmark_reach([other, None], history, profile)
+
+
+def test_unordered_callees_rank_by_name() -> None:
+    history = History(callees={"a": {"a2", "a1"}})
+    assert reached_functions(["a"], history, ()) == ["a", "a1", "a2"]
+
+
+def test_reach_ranks_each_benchmarks_nearest_callees_first() -> None:
+    history = History(callees={"a": ("a1", "a2", "a3"), "b": ("b1",)})
+    assert reached_functions(["a", "b"], history, [[NS(symbol_id="p", self_value=1.0)]]) == [
+        "a",
+        "b",
+        "a1",
+        "b1",
+        "a2",
+        "a3",
+        "p",
+    ]
 
 
 def test_without_a_changed_reached_function_only_the_range_is_said() -> None:

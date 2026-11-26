@@ -214,6 +214,8 @@ def _measured_row(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("on_static_findings"):
         # Open with ``get_health(opportunity_id=...)``.
         out["on_static_findings"] = row["on_static_findings"]
+    if row.get("label"):
+        out["label"] = row["label"]  # "import time": a module body's row
     return out
 
 

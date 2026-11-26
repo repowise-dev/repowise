@@ -394,7 +394,9 @@ def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) 
         parsed_files, graph_builder._source_map, [p for p in paths if p not in c_paths], resolutions
     )
     if names is None or others is None:
-        return PatchPlan(False, reason="an edited file has no field record to compare")
+        return PatchPlan(
+            False, reason="an edited file's field record cannot be compared or scoped by name"
+        )
     if not names and not others:
         return patch_plan
     # A C/C++ file's fields and facts are read through source text only by

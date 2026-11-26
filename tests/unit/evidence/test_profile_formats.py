@@ -476,17 +476,17 @@ def test_one_stack_longer_than_the_sniff_window_is_still_collapsed() -> None:
     assert detect_profile_format(deep.encode()) == "collapsed"
 
 
-def test_module_body_self_time_is_reported_unattributed_not_dropped() -> None:
+def test_module_body_self_time_is_its_import_row_not_dropped() -> None:
     doc = {**PYSPY, "shared": {"frames": [
         {"name": "<module>", "file": _f("pkg\\app.py"), "line": 35},
         {"name": "loads", "file": "C:\\Python\\json.py", "line": 3},
     ]}, "profiles": [{"type": "sampled", "unit": "none", "samples": [[0, 1], [0]],
                       "weights": [2, 1]}]}
     conv = _convert(profile_formats.get("speedscope").read(_bytes(doc)))
-    assert conv.document["symbols"] == []
+    [row] = conv.document["symbols"]
+    assert (row["path"], row["function"], row["self"]) == ("pkg/app.py", "<module>", 3.0)
     assert conv.explained == 3.0
-    assert conv.self_unattributed == {"module_body": 3.0}
-    assert conv.summary()["self_unattributed"] == {"module_body": 1.0}
+    assert conv.self_unattributed == {}
 
 
 def test_unit_none_weights_are_sample_counts() -> None:

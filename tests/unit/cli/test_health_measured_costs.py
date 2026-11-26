@@ -166,3 +166,10 @@ def test_benchmarks_show_the_function_each_measures_and_numbers_per_op() -> None
     assert "10,244 ns/op, 11 allocs/op, 5,456 B/op" in out
     assert "Benchmark404\n" in out and "62.6 ns/op, 0 allocs/op" in out
     assert "of the run" not in out
+
+
+def test_an_import_row_reads_as_the_file_and_import_time() -> None:
+    row = {**ROW, "symbol_id": "src/app.py::<module>", "lines": None, "label": "import time"}
+    out = _rendered({"measured": {"runs": [RUN], "rows": [row]}})
+    assert "1. src/app.py import time" in out
+    assert "<module>" not in out

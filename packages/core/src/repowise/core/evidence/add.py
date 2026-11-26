@@ -783,12 +783,22 @@ async def _convert(
     value_kind: str | None,
 ) -> Any:
     """*run*'s frames joined to the index at *root*, as a v1 document (or a refusal)."""
-    from repowise.core.frame_resolver import checkout_reader, frame_paths, load_frame_symbols
+    from repowise.core.frame_resolver import (
+        checkout_reader,
+        frame_paths,
+        load_frame_symbols,
+        load_jvm_source_paths,
+        place_jvm_frames,
+    )
 
     from .profile_convert import convert_profile
     from .source_maps import remap_profile
 
     reader = checkout_reader(root)
+    if any(f.language in ("java", "kotlin") for f in run.frames):
+        # A JVM profile names classes, not files: put each frame on its class's file.
+        files = await load_jvm_source_paths(session, repo_id)
+        run = replace(run, frames=place_jvm_frames(run.frames, root=str(root), files=files))
     symbols, origins = await load_frame_symbols(
         session,
         repo_id,

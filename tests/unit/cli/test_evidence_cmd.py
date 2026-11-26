@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -67,6 +69,33 @@ def _index(root: Path) -> None:
     asyncio.run(build())
 
 
+#: One repo and index per test process, built by the first :func:`_indexed_copy`.
+_TEMPLATE: list[tuple[Path, str]] = []
+
+
+def _indexed_copy(root: Path, factory: pytest.TempPathFactory) -> str:
+    """Put a copy of the :func:`_git_repo` + :func:`_index` checkout at *root*; return its head.
+
+    Building the repo and index cost each test that took them about 0.7 s; the
+    copy costs a few milliseconds. Every test still gets its own files and
+    ``wiki.db``, so tests that write to them stay independent.
+    """
+    if not _TEMPLATE:
+        template = factory.mktemp("indexed-template")
+        head = _git_repo(template)
+        _index(template)
+        _TEMPLATE.append((template, head))
+    template, head = _TEMPLATE[0]
+    shutil.copytree(template, root, dirs_exist_ok=True)
+    db = sqlite3.connect(root / ".repowise" / "wiki.db")
+    try:
+        with db:
+            db.execute("UPDATE repositories SET local_path = ?", (str(root),))
+    finally:
+        db.close()
+    return head
+
+
 def _stored(root: Path) -> tuple[list, list]:
     async def read() -> tuple[list, list]:
         engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
@@ -82,9 +111,10 @@ def _stored(root: Path) -> tuple[list, list]:
 
 
 @pytest.fixture
-def indexed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
-    head = _git_repo(tmp_path)
-    _index(tmp_path)
+def indexed(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, str]:
+    head = _indexed_copy(tmp_path, tmp_path_factory)
     monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: tmp_path)
     monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
     monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
@@ -492,7 +522,7 @@ def test_input_format_is_checked_against_the_registry(indexed) -> None:
     root, head = indexed
     result = _add(
         str(_write(root)), "--workload", "w", "--class", "entry_point", "--commit", head,
-        "--input-format", "jfr",
+        "--input-format", "nosuch",
     )
     assert result.exit_code == 2
     assert all(name in result.stderr for name in ("speedscope", "pprof", "pytest-benchmark", "collapsed"))

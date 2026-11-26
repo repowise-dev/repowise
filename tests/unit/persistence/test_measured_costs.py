@@ -901,3 +901,25 @@ async def test_an_older_benchmark_run_id_keeps_nothing(async_session) -> None:
     assert await measured_costs(async_session, repo.id, now=NOW, run_id="b0") is None
     view = await measured_costs(async_session, repo.id, now=NOW, run_id="b1")
     assert [r["run_id"] for r in view["benchmarks"]["rows"]] == ["b1"]
+
+
+async def test_an_import_row_is_listed_as_import_time_with_no_lines(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    module = f"{APP}::<module>"
+    await replace_workload_hotness(
+        async_session, repo.id, [{**_hot("serve", rank=2), "symbol_id": module}, _hot("serve")]
+    )
+
+    rows = {r["symbol_id"]: r for r in (await measured_costs(async_session, repo.id, now=NOW))[
+        "measured"]["rows"]}
+
+    imported = rows[module]
+    assert (imported["label"], imported["file_path"], imported["lines"]) == (
+        "import time", APP, None,
+    )
+    assert imported["callers"] == [] and imported["owner"] is None
+    # A function's row carries no label: its name says what it is.
+    assert "label" not in rows[f"{APP}::serve"]
