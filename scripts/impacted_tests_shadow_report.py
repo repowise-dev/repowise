@@ -74,42 +74,60 @@ def _elsewhere(records: Iterable[Mapping[str, Any]]) -> dict[str, set[Any]]:
     return out
 
 
-def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The report's numbers, from :func:`load`'s records."""
-    selected = [r for r in records if r.get("run_all") is not None]
-    total = sum(r.get("total_seconds") or 0 for r in selected)
-    saved = sum(r.get("estimated_seconds_saved") or 0 for r in selected)
-    failing = [r for r in selected if r.get("failing_files")]
-    seen = _elsewhere(records)
-    misses = []
+def _misses(
+    failing: Iterable[Mapping[str, Any]], seen: Mapping[str, set[Any]]
+) -> list[dict[str, Any]]:
+    """Each failing file left out of a selection, with the other changes it failed on."""
+    out = []
     for r in failing:
+        own = r.get("pr") or r.get("sha")
         for path in r.get("missed") or ():
-            others = sorted(map(str, seen.get(path, set()) - {r.get("pr") or r.get("sha")}))
-            misses.append(
+            others = sorted(map(str, seen.get(path, set()) - {own}))
+            out.append(
                 {"pr": r.get("pr"), "sha": r.get("sha"), "file": path, "also_failed_on": others}
             )
+    return out
+
+
+def _ordering(failing: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Where the first failing file sat in the prioritized order, over the failing runs."""
     ranked = [r for r in failing if r.get("first_failing_rank") and r.get("order_length")]
-    positions = [r["first_failing_rank"] / r["order_length"] for r in ranked]
-    ranks = [r["first_failing_rank"] for r in ranked]
-    return {
-        "runs": len(selected),
-        "run_all": sum(bool(r["run_all"]) for r in selected),
-        "total_seconds": round(total, 1),
-        "seconds_saved": round(saved, 1),
-        "failing_runs": len(failing),
-        "failing_runs_selective": sum(not r["run_all"] for r in failing),
-        "failing_runs_caught": sum(not r.get("missed") for r in failing),
-        "misses": misses,
+    out: dict[str, Any] = {
         "ordered_runs": len(ranked),
         # Failing runs whose failing files the prioritized order never lists:
         # left out of the rank statistics, so counted here instead.
         "unordered_runs": len(failing) - len(ranked),
-        "first_failure_rank_median": statistics.median(ranks) if ranks else None,
-        "first_failure_position_median": statistics.median(positions) if positions else None,
-        "first_failure_position_p75": _quantile(positions, 0.75) if positions else None,
-        "order_length_median": statistics.median(r["order_length"] for r in ranked)
-        if ranked
-        else None,
+        "first_failure_rank_median": None,
+        "first_failure_position_median": None,
+        "first_failure_position_p75": None,
+        "order_length_median": None,
+    }
+    if not ranked:
+        return out
+    positions = [r["first_failing_rank"] / r["order_length"] for r in ranked]
+    out.update(
+        first_failure_rank_median=statistics.median(r["first_failing_rank"] for r in ranked),
+        first_failure_position_median=statistics.median(positions),
+        first_failure_position_p75=_quantile(positions, 0.75),
+        order_length_median=statistics.median(r["order_length"] for r in ranked),
+    )
+    return out
+
+
+def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The report's numbers, from :func:`load`'s records."""
+    selected = [r for r in records if r.get("run_all") is not None]
+    failing = [r for r in selected if r.get("failing_files")]
+    return {
+        "runs": len(selected),
+        "run_all": sum(bool(r["run_all"]) for r in selected),
+        "total_seconds": round(sum(r.get("total_seconds") or 0 for r in selected), 1),
+        "seconds_saved": round(sum(r.get("estimated_seconds_saved") or 0 for r in selected), 1),
+        "failing_runs": len(failing),
+        "failing_runs_selective": sum(not r["run_all"] for r in failing),
+        "failing_runs_caught": sum(not r.get("missed") for r in failing),
+        "misses": _misses(failing, _elsewhere(records)),
+        **_ordering(failing),
     }
 
 
