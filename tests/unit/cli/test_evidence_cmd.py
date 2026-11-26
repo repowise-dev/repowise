@@ -492,7 +492,7 @@ def test_input_format_is_checked_against_the_registry(indexed) -> None:
     root, head = indexed
     result = _add(
         str(_write(root)), "--workload", "w", "--class", "entry_point", "--commit", head,
-        "--input-format", "jfr",
+        "--input-format", "nosuch",
     )
     assert result.exit_code == 2
     assert all(name in result.stderr for name in ("speedscope", "pprof", "pytest-benchmark", "collapsed"))

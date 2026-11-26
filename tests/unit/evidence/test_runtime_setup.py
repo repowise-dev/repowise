@@ -993,3 +993,26 @@ def test_a_javascript_suite_is_profiled_through_its_runners_own_script(tmp_path:
     assert suite["ingest"].startswith('repowise evidence add .repowise/node-tests --workload "node tests" --class unit_test')
     (ts,) = _targets(tmp_path, RuntimeInputs(test_files=("test/a.ts", "test/b.ts", "test/c.js")))
     assert ts["command"] is None and "TypeScript" in ts["reason"]
+
+
+def test_a_maven_unit_is_told_how_to_record_a_jvm_run_but_never_led_to_one(tmp_path: Path) -> None:
+    (tmp_path / "pom.xml").write_text("<project><artifactId>fx</artifactId></project>")
+
+    (jvm,) = _targets(tmp_path)
+
+    assert jvm["class"] == "entry_point"
+    assert jvm["command"] == (
+        "jfr print --events jdk.ExecutionSample --stack-depth 64 "
+        ".repowise/jvm-run.jfr > .repowise/jvm-run.jfr.txt"
+    )
+    # The recorder goes in through JAVA_TOOL_OPTIONS: surefire's argLine is often pinned.
+    recording = (tmp_path / ".repowise/jvm-run.jfr").as_posix()
+    assert f"JAVA_TOOL_OPTIONS=-XX:StartFlightRecording=filename={recording},settings=profile" in jvm["reason"]
+    assert "unit tests mostly measure JUnit" in jvm["reason"]
+    assert jvm["reason"].endswith(
+        f'repowise evidence add .repowise/jvm-run.jfr.txt --workload "jvm run" --class load_test --commit {SHA}'
+    )
+    # Shown, not offered: the agent picks and starts the run, so no step and no <args>.
+    assert jvm["ingest"] is None and ARGS_PLACEHOLDER not in jvm["command"]
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+    assert all("jfr" not in s["run"] for s in (plan["next_call"] or {}).get("steps", ()))
