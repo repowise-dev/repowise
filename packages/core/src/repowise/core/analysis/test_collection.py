@@ -21,6 +21,7 @@ and the gap as inputs is the upgrade.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -217,7 +218,9 @@ def plan_scopes(
     scopes = trigger_scopes(paths, checkout.tracked, namers, config, dirs)
     if change.head is None:
         scopes.update(_empty_new_files(change.files, checkout))
-    groups = _package_groups(scopes, set(paths))
+    added, sibling_groups = _new_file_scopes(change, checkout, scopes, config, dirs)
+    scopes.update(added)
+    groups = {**_package_groups(scopes, set(paths)), **sibling_groups}
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
     return Plan(namers, scopes, routes, groups, dirs)
 
@@ -265,6 +268,125 @@ def _empty_new_files(paths: Collection[str], checkout: Checkout) -> dict[str, An
         text = checkout.read(path)
         if text is not None and not text.strip():
             out[path] = Scope(EMPTY_NEW_FILE, NO_TESTS_NEEDED)
+    return out
+
+
+# File stems that name their directory, not themselves: ``pkg/index.ts`` is
+# imported as ``pkg``.
+_DIRECTORY_STEMS = frozenset({"index", "__init__", "main", "mod", "page", "route", "layout"})
+# Code a tool loads by its file name, which no import names: a runner, bundler
+# or framework config (``playwright.config.ts``, ``jest.setup.js``,
+# ``setupTests.ts``), a dotfile, ``sitecustomize.py``, a Cargo ``build.rs``. A
+# new one keeps its rule: it can change any test.
+_TOOL_LOADED = re.compile(
+    r"\.(config|setup)\.|^setup|^\.|^(sitecustomize|usercustomize)\.py$|^build\.rs$", re.I
+)
+# A line that loads a module by name: an import-like keyword, or the word
+# written as a path or a dotted name (``"./fresh"``, ``plugins.fresh``).
+_LOADS = re.compile(r"\b(import|from|require|use|mod|include|load|extends)\b")
+_COMMENT = re.compile(r"\s*(#|//|/?\*|--)")
+
+
+def _new_file_scopes(
+    change, checkout: Checkout, taken: Mapping[str, Any], config, dirs: Collection[str]
+) -> tuple[dict[str, Any], dict[str, tuple[str, ...]]]:
+    """A :func:`~.selection_scopes.new_file_scope` for each code file the change
+    adds that no other scope took, and the sibling routes, as :func:`_package_groups`.
+
+    The unchanged code beside each file is walked as one ``<dir>/*`` route; a
+    changed sibling is looked up as itself. Test code is left to the test rules.
+    """
+    from ..test_paths import is_test_related_path
+    from .selection_scopes import new_file_scope
+    from .test_selection import full_run_reason, is_code_file
+
+    tracked = set(checkout.tracked)
+    new = set(change.added) & set(change.files)
+    if change.head is None:  # uncommitted work: an untracked file is new too
+        new |= {p for p in change.files if p not in tracked}
+    asked = sorted(
+        p
+        for p in new
+        if p not in taken
+        and is_code_file(p)
+        and not is_test_related_path(p)
+        and not _TOOL_LOADED.search(PurePosixPath(p).name)
+        and full_run_reason(p, config.full_run_on, dirs) is None
+    )
+    if not asked:
+        return {}, {}
+    namers = _changed_namers(asked, change.files)
+    wanted = {str(PurePosixPath(p).parent) for p in asked}
+    by_dir: dict[str, list[str]] = {}
+    for p in checkout.tracked:
+        parent = str(PurePosixPath(p).parent)
+        if parent in wanted and p not in new and is_code_file(p) and not is_test_related_path(p):
+            by_dir.setdefault(parent, []).append(p)
+    scopes: dict[str, Any] = {}
+    groups: dict[str, tuple[str, ...]] = {}
+    for path in asked:
+        parent = str(PurePosixPath(path).parent)
+        siblings = by_dir.get(parent, [])
+        beside = [s for s in siblings if s in change.files]
+        if rest := tuple(s for s in siblings if s not in change.files):
+            label = f"{parent}/*"
+            groups[label] = rest
+            beside.append(label)
+        scopes[path] = new_file_scope(path, namers.get(path, ()), tuple(beside), len(siblings))
+    return scopes, groups
+
+
+def _changed_namers(new: Collection[str], files: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    """``{new file: the changed code loading it}``: its module word in a line the change adds.
+
+    The word is the file's stem, and its directory's name for a stem that
+    names the directory (``pkg/index.ts``). It counts in a line that is not a
+    comment and loads by name (:data:`_LOADS`), or written as a path or
+    dotted name (``"./fresh"``, ``plugins.fresh``). A file naming a new file
+    that is named in turn stands for it too, so a chain of added modules
+    reaches the changed file at its top. Ceiling: a word match can still
+    over-claim (a common stem in an unrelated import line), which replaces the
+    full run for a file nothing beside it stands for; an import resolved per
+    language is the upgrade.
+    """
+    from .test_selection import is_code_file
+
+    words: dict[str, set[str]] = {}
+    for p in new:
+        pure = PurePosixPath(p)
+        for word in {pure.stem, pure.parent.name} if pure.stem in _DIRECTORY_STEMS else {pure.stem}:
+            if word:
+                words.setdefault(word, set()).add(p)
+    if not words:
+        return {}
+    alternatives = "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True))
+    pattern = re.compile(rf"(?<![\w$])({alternatives})(?![\w$])")
+    direct: dict[str, set[str]] = {}
+    for path, diff in files.items():
+        lines = getattr(diff, "added", None)
+        if not lines or not is_code_file(path):
+            continue
+        for line in lines:
+            if _COMMENT.match(line):
+                continue
+            loads = _LOADS.search(line) is not None
+            for m in pattern.finditer(line):
+                around = line[m.start() - 1 : m.start()] + line[m.end() : m.end() + 1]
+                if loads or any(c in "./\\'\"`" for c in around):
+                    for target in words[m.group(1)] - {path}:
+                        direct.setdefault(target, set()).add(path)
+    out: dict[str, tuple[str, ...]] = {}
+    for p in new:
+        seen: set[str] = set()
+        stack = list(direct.get(p, ()))
+        while stack:
+            namer = stack.pop()
+            if namer in seen or namer == p:
+                continue
+            seen.add(namer)
+            stack.extend(direct.get(namer, ()))
+        if seen:
+            out[p] = tuple(sorted(seen))
     return out
 
 
