@@ -61,10 +61,10 @@ async def drop_unmounted_providers(
     and how many were left out. *files* are the walked ``(path, suffix, content)``."""
     if repo_index is None or repo_index.session is None:
         return contracts, 0
-    registering = _registering_symbols(contracts, repo_index)
+    go_files = {path: content for path, suffix, content in files if suffix in GO}
+    registering = _registering_symbols(contracts, repo_index, go_files)
     if not registering:
         return contracts, 0
-    go_files = {path: content for path, suffix, content in files if suffix in GO}
     graph = await _read_graph(repo_index, {s.symbol_id for s in registering.values()})
     if graph is None:
         return contracts, 0
@@ -77,9 +77,14 @@ async def drop_unmounted_providers(
 
 
 def _registering_symbols(
-    contracts: Sequence[Contract], repo_index: RepoIndex
+    contracts: Sequence[Contract], repo_index: RepoIndex, go_files: dict[str, str]
 ) -> dict[int, IndexedSymbol]:
-    """``id(contract) -> the function whose body registers it``, Go HTTP providers only."""
+    """``id(contract) -> the function whose body registers it``, Go HTTP providers only.
+
+    The span is the index's and the line the live file's: a symbol is taken
+    only when the live file still declares it on its first line, so an edit
+    since indexing never pins a route on a neighbouring function.
+    """
     out: dict[int, IndexedSymbol] = {}
     for c in contracts:
         if c.contract_type != "http" or c.role != "provider" or not c.line:
@@ -92,6 +97,7 @@ def _registering_symbols(
             and sym.kind in _REGISTERING_KINDS
             and sym.start_line < c.line
             and sym.name not in _ENTRY_POINTS
+            and _declares(go_files.get(c.file_path), sym)
         ):
             out[id(c)] = sym
     return out
@@ -139,7 +145,9 @@ async def _read_graph(
 
 
 class _Reach:
-    """Which files can reach a Go package: the package's own, and every importer up the chain."""
+    """Which files can reach a Go package: the package's own, and every importer up
+    the chain. An importer brings its whole package: a sibling file can use what
+    the importing file holds."""
 
     def __init__(self, importers: dict[str, set[str]], go_files: Collection[str]) -> None:
         self._importers = importers
@@ -154,11 +162,20 @@ class _Reach:
             stack = list(seen)
             while stack:
                 for source in self._importers.get(stack.pop(), ()):
-                    if source not in seen:
-                        seen.add(source)
-                        stack.append(source)
+                    for path in self._by_dir.get(posixpath.dirname(source), (source,)):
+                        if path not in seen:
+                            seen.add(path)
+                            stack.append(path)
             self._memo[directory] = frozenset(seen)
         return self._memo[directory]
+
+
+def _declares(content: str | None, sym: IndexedSymbol) -> bool:
+    """Whether line ``sym.start_line`` of *content* declares ``func ... sym.name``."""
+    lines = content.splitlines() if content is not None else []
+    if not 0 < sym.start_line <= len(lines):
+        return False
+    return _declaration_re(sym.name).search(lines[sym.start_line - 1]) is not None
 
 
 def _declaration_re(name: str) -> re.Pattern[str]:
@@ -205,9 +222,16 @@ async def _unmounted(
     from .extractors.base import _comment_mask
 
     names = {s.name for s in registering.values()}
-    candidates = [p for p, text in go_files.items() if any(n in text for n in names)]
-    origins = await stored_origins(candidates, repo_index) if candidates else {}
-    production = {p for p in candidates if origins.get(p) not in _NOT_CONTRACT_ORIGINS}
+    candidates = {p for p, text in go_files.items() if any(n in text for n in names)}
+    declared = {
+        s.file_path
+        for n in names
+        for s in repo_index.symbols_named(n)
+        if posixpath.splitext(s.file_path)[1].lower() in GO
+    }
+    judged = candidates | declared
+    origins = await stored_origins(judged, repo_index) if judged else {}
+    production = {p for p in judged if origins.get(p) not in _NOT_CONTRACT_ORIGINS}
     # A test calling a register function does not mount it.
     caller_files = {file_of_symbol(source) for source, _ in called}
     caller_origins = await stored_origins(caller_files, repo_index) if caller_files else {}
@@ -216,14 +240,17 @@ async def _unmounted(
         for source, target in called
         if caller_origins.get(file_of_symbol(source)) not in _NOT_CONTRACT_ORIGINS
     }
-    masked = {p: _comment_mask(".go", go_files[p], strings=True) or go_files[p] for p in production}
+    masked = {
+        p: _comment_mask(".go", go_files[p], strings=True) or go_files[p]
+        for p in production & candidates
+    }
     reach = _Reach(importers, go_files)
     verdicts: dict[str, bool] = {}
     dead: set[int] = set()
     for key, sym in registering.items():
         if sym.symbol_id not in verdicts:
             verdicts[sym.symbol_id] = sym.symbol_id not in called_targets and _is_dead_copy(
-                sym, repo_index, masked, reach
+                sym, repo_index, masked, reach, production
             )
         if verdicts[sym.symbol_id]:
             dead.add(key)
@@ -231,9 +258,14 @@ async def _unmounted(
 
 
 def _is_dead_copy(
-    sym: IndexedSymbol, repo_index: RepoIndex, masked: dict[str, str], reach: _Reach
+    sym: IndexedSymbol,
+    repo_index: RepoIndex,
+    masked: dict[str, str],
+    reach: _Reach,
+    production: Collection[str],
 ) -> bool:
-    """Whether *sym*'s name is called only from where another declaration of it is reached."""
+    """Whether *sym*'s name is called only from where another production
+    declaration of it is reached."""
     mentions = _mentions(sym.name, masked)
     own = reach.reachers(posixpath.dirname(sym.file_path))
     if not mentions or mentions & own or _interface_method(sym.name, repo_index):
@@ -243,7 +275,7 @@ def _is_dead_copy(
         for s in repo_index.symbols_named(sym.name)
         if s.symbol_id != sym.symbol_id
         and s.kind in _REGISTERING_KINDS
-        and posixpath.splitext(s.file_path)[1].lower() in GO
+        and s.file_path in production
     }
     return any(mentions & reach.reachers(d) for d in others)
 

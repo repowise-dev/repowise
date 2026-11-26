@@ -444,9 +444,14 @@ def go_routes(content: str) -> Iterator[RouteMatch]:
 
 def go_groups(content: str) -> Iterator[GroupMatch]:
     """``Group`` prefix bindings in *content*, and ``Use`` bindings with no prefix of their own."""
-    yield from _groups(_GO_GROUP_RE, content)
+    groups = list(_groups(_GO_GROUP_RE, content))
+    yield from groups
+    bound = {g.var for g in groups}
     for m in _GO_USE_RE.finditer(content):
-        yield GroupMatch(var=m.group("var"), parent=m.group("parent"), prefix="")
+        var, parent = m.group("var"), m.group("parent")
+        # `v1 = v1.Use(mw)` keeps v1's own Group binding; a second one would erase it.
+        if var != parent and var not in bound:
+            yield GroupMatch(var=var, parent=parent, prefix="")
 
 
 # ---------------------------------------------------------------------------

@@ -311,3 +311,43 @@ async def test_a_caller_reaching_the_copy_keeps_it(tmp_path, session) -> None:
     files = {**FILES, "main.go": MAIN.replace("plugin.Mount(g)", "router.App.InitSkillsRouter(g)")}
     _kept, dropped = await _providers(tmp_path, session, files)
     assert dropped == 0
+
+
+async def test_a_span_the_file_has_moved_past_binds_nothing(tmp_path, session) -> None:
+    """The index's span names a line the edited file no longer declares the function on."""
+    await _add_edges(session, IMPORTS, "imports")
+    edited = SYSTEM_SKILLS.replace("package system\n", "package system\n\n\n")
+    indexed = _symbols(FILES)
+    for rel, text in {**FILES, "system/skills.go": edited}.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    walked = list(iter_source_files(tmp_path, frozenset({".go"})))
+    contracts = [c for c in HttpExtractor().extract(tmp_path, "app") if c.role == "provider"]
+    index = RepoIndex.from_symbols("app", indexed, repo_id=REPO, session=session)
+    _kept, dropped = await drop_unmounted_providers(contracts, index, walked)
+    assert dropped == 0
+
+
+async def test_another_copy_in_test_code_does_not_make_this_one_dead(tmp_path, session) -> None:
+    files = {k: v for k, v in FILES.items() if k != "plugin/router/skills.go"}
+    files["plugin/router/skills_test.go"] = PLUGIN_SKILLS
+    edges = [e for e in IMPORTS if e[1] != "plugin/router/skills.go"]
+    await _add_edges(
+        session, [*edges, ("plugin/mount.go", "plugin/router/skills_test.go")], "imports"
+    )
+    _kept, dropped = await _providers(tmp_path, session, files)
+    assert dropped == 0
+
+
+async def test_a_sibling_of_an_importer_reaches_the_package(tmp_path, session) -> None:
+    """``wire.go`` imports system; ``mount.go`` beside it calls system's copy through it."""
+    wire = 'package plugin\n\nimport "example.com/app/system"\n\nvar Sys = system.App\n'
+    mount = PLUGIN_MOUNT.replace("router.App.InitSkillsRouter(g)", "Sys.InitSkillsRouter(g)")
+    files = {**FILES, "plugin/wire.go": wire, "plugin/mount.go": mount}
+    await _add_edges(
+        session,
+        [*IMPORTS, ("plugin/wire.go", "system/base.go"), ("plugin/wire.go", "system/skills.go")],
+        "imports",
+    )
+    _kept, dropped = await _providers(tmp_path, session, files)
+    assert dropped == 0

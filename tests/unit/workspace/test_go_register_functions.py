@@ -422,3 +422,20 @@ func UsersRegister(router *gin.RouterGroup) {{
 """
     _write(tmp_path, {"hello.go": MAIN, "articles/routers.go": ARTICLES, "users/routers.go": users})
     assert ("http::POST::/api/users/logout", "users/routers.go", 7) in _routes(tmp_path)
+
+
+def test_a_group_rebound_from_its_own_use_keeps_its_prefix(tmp_path: Path) -> None:
+    main = f"""\
+package main
+
+import {GIN}
+
+func main() {{
+	r := gin.Default()
+	v1 := r.Group("/v1")
+	v1 = v1.Use(Auth())
+	v1.GET("/ping", Ping)
+}}
+"""
+    _write(tmp_path, {"main.go": main})
+    assert _routes(tmp_path) == [("http::GET::/v1/ping", "main.go", 9)]
