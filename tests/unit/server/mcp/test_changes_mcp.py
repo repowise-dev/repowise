@@ -221,11 +221,13 @@ async def _symbol_history(session, root: Path) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_symbol_card_lists_only_the_changes_that_edited_its_lines(
-    setup_mcp, session, tmp_path
+    setup_mcp, session, tmp_path, monkeypatch
 ):
-    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server import _changes, get_context
 
     await _symbol_history(session, tmp_path)
+    # The file scan's cap would keep only pr-12; the symbol's edit is older.
+    monkeypatch.setattr(_changes, "_FILE_SCAN_CAP", 1)
     target = "src/auth/service.py::login"
     card = (await get_context(targets=[target], include=["changes"]))["targets"][target]
     assert card["changes_scope"] == "symbol"

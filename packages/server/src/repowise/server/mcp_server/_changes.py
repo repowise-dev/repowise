@@ -183,8 +183,11 @@ def _changes_block(matched: list[Any], attribution: bool) -> dict[str, Any]:
     return block
 
 
-async def _rows_touching(session: Any, repository: Any, paths: list[str]) -> dict[str, list[Any]]:
-    """Per path, the stored changes whose file list names it, newest first."""
+async def _rows_touching(
+    session: Any, repository: Any, paths: list[str], *, scan_all: bool = False
+) -> dict[str, list[Any]]:
+    """Per path, the stored changes whose file list names it, newest first:
+    the newest ``_FILE_SCAN_CAP`` candidate rows, or every one with *scan_all*."""
     wanted = list(dict.fromkeys(paths))
     if not wanted:
         return {}
@@ -192,7 +195,7 @@ async def _rows_touching(session: Any, repository: Any, paths: list[str]) -> dic
         select(Change)
         .where(Change.repository_id == repository.id, or_(*(_touches(p) for p in wanted)))
         .order_by(Change.merged_at.desc().nulls_last(), Change.change_id)
-        .limit(_FILE_SCAN_CAP)
+        .limit(None if scan_all else _FILE_SCAN_CAP)
     )
     rows = result.scalars().all()
     hits: dict[str, list[Any]] = {p: [] for p in wanted}
@@ -231,29 +234,35 @@ async def symbol_changes(
     failed walk, the file's changes are served with ``changes_scope: "file"``
     and the reason, never passed off as the symbol's.
     """
-    matched = (await _rows_touching(session, repository, [file_path])).get(file_path, [])
     reason = None
     if lines is None:
         reason = "no_line_range"
     elif not repository.head_commit:
         # The lines are the indexed ones; walking live HEAD could name other code.
         reason = "no_indexed_commit"
-    elif matched:
+    else:
         shas = await asyncio.to_thread(
             _line_log_shas, repo_root, repository.head_commit, file_path, lines
         )
         if shas is None:
             reason = "git_history_unavailable"
         else:
+            # Every stored change touching the file, not the newest few hundred:
+            # an older edit of the symbol must not drop out of a complete list.
+            rows = (
+                await _rows_touching(session, repository, [file_path], scan_all=True)
+                if shas
+                else {}
+            )
             # A merge change lists its branch commits; a squash or lone commit is its head.
-            matched = [r for r in matched if shas & _change_shas(r)]
-    if reason is not None:
-        return {
-            **_changes_block(matched, attribution),
-            "changes_scope": "file",
-            "changes_scope_reason": reason,
-        }
-    return {**_changes_block(matched, attribution), "changes_scope": "symbol"}
+            matched = [r for r in rows.get(file_path, []) if shas & _change_shas(r)]
+            return {**_changes_block(matched, attribution), "changes_scope": "symbol"}
+    matched = (await _rows_touching(session, repository, [file_path])).get(file_path, [])
+    return {
+        **_changes_block(matched, attribution),
+        "changes_scope": "file",
+        "changes_scope_reason": reason,
+    }
 
 
 def _change_shas(row: Any) -> set[str]:
