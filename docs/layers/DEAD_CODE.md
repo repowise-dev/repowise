@@ -45,7 +45,7 @@ In the dashboard, open the **Dead code** view of a repository.
 Methods, fields, properties and enum members are never reported as unused
 exports: they are reached through their container. `unused_internal` is
 withheld from the dashboard and default MCP responses because its precision is
-very low ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
+below the publishing bar ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
 
 ### Confidence
 
@@ -219,9 +219,10 @@ There is no allowlist file for dead-code findings; use the dashboard status.
 
 ## Accuracy and limits
 
-- `unused_internal` precision is under 1% on 1,511 hand-labelled findings from
-  one TypeScript/Python monorepo, so it is withheld by default. Private symbols
-  used within their own file are often invisible to the graph.
+- `unused_internal` is withheld by default: its precision on held-out
+  repositories is below the publishing bar. Some uses of a private symbol
+  inside its own file (object shorthand, `typeof`, reads of a module-level
+  constant) still leave no edge in the graph.
 - Precision on whole unreachable files is well below the deletion-ready bar
   (build scripts, manifests and runtime loaders read files by path), so they
   are never marked `safe_to_delete`.
