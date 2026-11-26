@@ -55,7 +55,8 @@ holds and no code sits beside, that no code names is skipped without a test.
 A file whose reach is known runs a scope (:mod:`.selection_scopes`) in place of
 everything: a manifest or lockfile its ecosystem's tests, a production
 ``__init__.py`` the tests reaching the modules under it, an asset the tests
-reaching the code naming it or else its package's tests.
+reaching the code naming it or else its package's tests, and a code file the
+change adds the tests of the changed files naming it and of the code beside it.
 
 :func:`runner_args` renders a selection as arguments for one test runner; a
 full run renders as the :data:`RUN_ALL` sentinel. pytest and go reject it as a
