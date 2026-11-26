@@ -22,8 +22,12 @@ DRIVER = "packages/cli/status_cmd.py::_workspace_rows"
 BENCH = "pytest benches/test_status.py::test_storage --benchmark-only"
 #: A run's ``inside`` for ``FN``: stat calls per entry of a directory walk.
 INSIDE = [
-    {"name": "is_file", "kind": "library", "share": 0.569,
-     "leaf": {"name": "stat", "kind": "native", "share": 0.569}},
+    {
+        "name": "is_file",
+        "kind": "library",
+        "share": 0.569,
+        "leaf": {"name": "stat", "kind": "native", "share": 0.569},
+    },
     {"name": "select_recursive", "kind": "library", "share": 0.249},
     {"name": "stat", "kind": "library", "share": 0.146},
 ]
@@ -32,8 +36,15 @@ DRIVERS = [{"name": "_workspace_rows", "share": 1.0, "symbol": DRIVER}]
 
 def _measured(**over) -> NS:
     fields = {
-        "symbol_id": FN, "run_id": "r1", "rank": 1, "self_share": 0.09, "share_low": 0.07,
-        "share_high": 0.11, "total_share": 0.12, "samples": 63, "freshness": "current",
+        "symbol_id": FN,
+        "run_id": "r1",
+        "rank": 1,
+        "self_share": 0.09,
+        "share_low": 0.07,
+        "share_high": 0.11,
+        "total_share": 0.12,
+        "samples": 63,
+        "freshness": "current",
     }
     return NS(**{**fields, **over})
 
@@ -98,7 +109,10 @@ def test_silence_without_a_source() -> None:
     # No blame row: no owner, no last change, never a file's; no step, no verify.
     assert (row["owner"], row["last_change"], row["next_step"]) == (None, None, None)
     assert (row["tests"], row["tests_basis"], row["verify"], row["verify_basis"]) == (
-        None, None, None, None,
+        None,
+        None,
+        None,
+        None,
     )
     assert row["callers_total"] is None and row["callers"] == []
     assert row["sources"] == {"share": "workload_hotness"}
@@ -106,9 +120,15 @@ def test_silence_without_a_source() -> None:
 
 def _comparison(verdict: str = "slower", **over) -> Comparison:
     fields = {
-        "kind": "profile", "workload": "repowise status", "environment": "local",
-        "verdict": verdict, "band_runs": 4, "head_run_id": "r9", "current_runs": 1,
-        "base_commit": "a" * 40, "head_commit": "b" * 40,
+        "kind": "profile",
+        "workload": "repowise status",
+        "environment": "local",
+        "verdict": verdict,
+        "band_runs": 4,
+        "head_run_id": "r9",
+        "current_runs": 1,
+        "base_commit": "a" * 40,
+        "head_commit": "b" * 40,
     }
     return Comparison(**{**fields, **over})
 
@@ -132,12 +152,19 @@ def test_a_slower_comparison_names_the_function_and_the_commit_that_changed_it()
     only_commit = row_slower(FN, [_comparison(slower=(), cause=cause)])
     assert only_commit["changed_in"] == [{"sha": "c" * 40, "pr": 12}] and "ratio" not in only_commit
     # A comparison that names other functions says nothing about this one.
-    assert row_slower(FN, [_comparison(slower=(Slower("self_seconds", "x.py::y", 1, 2, 2),))]) is None
+    assert (
+        row_slower(FN, [_comparison(slower=(Slower("self_seconds", "x.py::y", 1, 2, 2),))]) is None
+    )
+
+    # Another workload's comparison never marks this row's run slower.
+    assert row_slower(FN, [found], workload="api replay") is None
+    assert "slower" not in _row(compare=[found], workload_name="api replay").as_dict()
 
     row = _row(compare=[found]).as_dict()
     assert row["sources"]["slower"] == "compare"
-    assert 'slower: 1.40x self_seconds in "repowise status" (0.2 to 0.28 s); changed in ccccccc (#12)' in (
-        row_text(row)
+    assert (
+        'slower: 1.40x self_seconds in "repowise status" (0.2 to 0.28 s); changed in ccccccc (#12)'
+        in (row_text(row))
     )
 
 
@@ -164,9 +191,10 @@ def test_the_mcp_form_is_the_action_with_no_bookkeeping() -> None:
     assert compact["next"] == row["next_step"]["next"]
     # A benchmark's command is the row's own; a workload rerun sits on the run.
     assert row_compact(_row(benchmark=BENCH).as_dict())["verify"] == BENCH
-    silent = row_compact(
-        action_row(_measured(), static_causes={"perf3_b", "perf3_a"}).as_dict()
-    )
+    silent = row_compact(action_row(_measured(), static_causes={"perf3_b", "perf3_a"}).as_dict())
     assert silent == {
-        "symbol_id": FN, "run_id": "r1", "share": 0.09, "on_static_findings": ["perf3_a", "perf3_b"],
+        "symbol_id": FN,
+        "run_id": "r1",
+        "share": 0.09,
+        "on_static_findings": ["perf3_a", "perf3_b"],
     }

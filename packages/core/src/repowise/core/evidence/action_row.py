@@ -90,13 +90,18 @@ def row_step(
     return next_step(row, file_language(file_of_symbol(symbol_id)), findings)
 
 
-def row_slower(symbol_id: str, comparisons: Iterable[Any]) -> dict[str, Any] | None:
+def row_slower(
+    symbol_id: str, comparisons: Iterable[Any], workload: str | None = None
+) -> dict[str, Any] | None:
     """What got slower about *symbol_id*, from the first ``slower`` comparison
-    (:class:`.compare.Comparison`) that names it: its own measure that got
-    worse (a profile's self seconds, a benchmark measuring it) and the commits
-    in the range that changed it. ``None`` when no comparison names it."""
+    (:class:`.compare.Comparison`) of *workload* (the row's own run's) that
+    names it: its own measure that got worse (a profile's self seconds) and
+    the commits in the range that changed it. ``None`` when no comparison of
+    that workload names it, so a row never reads slower for another workload."""
     for c in comparisons:
-        if getattr(c, "verdict", None) != "slower":
+        if getattr(c, "verdict", None) != "slower" or (
+            workload is not None and c.workload != workload
+        ):
             continue
         own = next((s for s in c.slower if s.symbol_id == symbol_id), None)
         commits = [
@@ -190,7 +195,7 @@ class ActionRow:
 
     def _sources(self) -> dict[str, str]:
         held = {
-            "share": ("workload_hotness", True),
+            "share": ("workload_hotness", self.share is not None),
             "lines": ("symbols", self.lines is not None),
             "callers": ("call_graph", self.callers_total is not None),
             "caller_shares": ("run_drivers", bool(self.caller_shares)),
@@ -238,7 +243,8 @@ def action_row(
     (``None`` without one: no owner, never the file's). *benchmark* is the
     command rerunning the benchmarks that measure it; :func:`row_verify` picks
     the one verify command. *compare* are the workloads'
-    :class:`.compare.Comparison` (:func:`row_slower`); *static_causes* the
+    :class:`.compare.Comparison`; only the row's own workload's can mark it
+    slower (:func:`row_slower`). *static_causes* the
     open static performance causes on it.
     """
     symbol_id = measured.symbol_id
@@ -267,7 +273,7 @@ def action_row(
         verify=verify,
         verify_basis=basis,
         on_static_findings=sorted(static_causes),
-        slower=row_slower(symbol_id, compare),
+        slower=row_slower(symbol_id, compare, workload_name),
     )
 
 
