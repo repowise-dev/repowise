@@ -152,7 +152,7 @@ def test_line_below_one_is_bad() -> None:
 
 
 def test_unknown_language_is_unsupported() -> None:
-    frame = ProfileFrame(f"{ROOT}/pkg/app.py", 5, "ruby", function="x")  # type: ignore[arg-type]
+    frame = ProfileFrame(f"{ROOT}/pkg/app.py", 5, "php", function="x")  # type: ignore[arg-type]
     assert _resolve(frame).skipped == {"unsupported_language": 1}
 
 
@@ -360,3 +360,55 @@ def test_frame_paths_lists_only_files_under_the_root() -> None:
         ProfileFrame("<built-in>", 0, "python"),
     ]
     assert frame_paths(frames, root=ROOT) == {"pkg/app.py"}
+
+
+# -- Ruby ----------------------------------------------------------------
+
+RB_CLASS = _sym("lib/cart.rb", "lib.cart.Cart", 1, 30, "class")
+RB_TOTAL = _sym("lib/cart.rb", "lib.cart.Cart.total", 3, 10, "method")
+RB_EMPTY = _sym("lib/cart.rb", "lib.cart.Cart.empty", 12, 20, "method")
+RB_HELPER = _sym("lib/cart.rb", "lib.cart.helper", 22, 28, "function")
+RB_STORE_CART_TOTAL = _sym("lib/store.rb", "lib.store.Store.Cart.total", 5, 15, "method")
+RB_SYMBOLS = {
+    "lib/cart.rb": [RB_CLASS, RB_TOTAL, RB_EMPTY, RB_HELPER],
+    "lib/store.rb": [RB_STORE_CART_TOTAL],
+}
+
+
+def _rb(line: int, name: str, path: str = "lib/cart.rb") -> ProfileFrame:
+    return ProfileFrame(f"{ROOT}/{path}", line, "ruby", function=name)
+
+
+def _rb_resolve(*frames: ProfileFrame, **kw):
+    kw.setdefault("symbols_by_file", RB_SYMBOLS)
+    return _resolve(*frames, **kw)
+
+
+def test_ruby_joins_instance_method_by_hash_separator() -> None:
+    assert _one(_rb_resolve(_rb(5, "Cart#total"))) is RB_TOTAL
+
+
+def test_ruby_joins_singleton_method_by_dot_separator() -> None:
+    assert _one(_rb_resolve(_rb(15, "Cart.empty"))) is RB_EMPTY
+
+
+def test_ruby_joins_namespaced_method() -> None:
+    assert _one(_rb_resolve(_rb(10, "Store::Cart#total", path="lib/store.rb"))) is RB_STORE_CART_TOTAL
+
+
+def test_ruby_joins_top_level_function() -> None:
+    assert _one(_rb_resolve(_rb(25, "helper"))) is RB_HELPER
+
+
+def test_ruby_method_mismatch_is_caught() -> None:
+    res = _rb_resolve(_rb(5, "Cart#other"), _rb(5, "Other#total"))
+    assert res.skipped == {"second_signal_mismatch": 2}
+
+
+def test_ruby_frame_without_name_has_no_second_signal() -> None:
+    assert _rb_resolve(_rb(5, "")).skipped == {"no_second_signal": 1}
+
+
+def test_ruby_frame_outside_any_symbol_has_no_span() -> None:
+    assert _rb_resolve(_rb(40, "Cart#total")).skipped == {"no_span": 1}
+

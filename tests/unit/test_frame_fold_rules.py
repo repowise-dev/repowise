@@ -235,3 +235,39 @@ def test_javascript_reads_each_file_once() -> None:
     frames = [_js(6, 15), _js(6, 15, "x"), _js(5, 23, "handle")]
     resolve_frames(frames, root=ROOT, symbols_by_file={"lib/app.js": JS}, read_lines=read)
     assert calls == ["lib/app.js"]
+
+
+# -- Ruby ----------------------------------------------------------------------------
+
+RB = [
+    _sym("cart.rb", "cart.Cart", 1, 30, "class"),
+    _sym("cart.rb", "cart.Cart.total", 5, 20, "method"),
+]
+
+
+def _rb(line: int, name: str) -> ProfileFrame:
+    return ProfileFrame(f"{ROOT}/cart.rb", line, "ruby", function=name)
+
+
+def test_ruby_block_folds_into_its_method() -> None:
+    assert _hit(_run(_rb(8, "block in Cart#total"), RB)) == (RB[1], True)
+
+
+def test_ruby_nested_block_folds_into_its_method() -> None:
+    assert _hit(_run(_rb(8, "block in block in Cart#total"), RB)) == (RB[1], True)
+    assert _hit(_run(_rb(8, "block (2 levels) in Cart#total"), RB)) == (RB[1], True)
+
+
+def test_ruby_rescue_folds_into_its_method() -> None:
+    assert _hit(_run(_rb(15, "rescue in Cart#total"), RB)) == (RB[1], True)
+
+
+def test_ruby_class_body_attributes_to_the_file() -> None:
+    assert _hit(_run(_rb(2, "<class:Cart>"), RB)) == (None, False)
+    assert _hit(_run(_rb(2, "Cart"), RB)) == (None, False)
+
+
+def test_ruby_main_attributes_to_the_file() -> None:
+    assert _hit(_run(_rb(35, "<main>"), RB)) == (None, False)
+    assert _hit(_run(_rb(35, "block in <main>"), RB)) == (None, True)
+

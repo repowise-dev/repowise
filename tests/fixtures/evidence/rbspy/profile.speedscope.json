@@ -1,0 +1,38 @@
+{
+  "$schema": "https://www.speedscope.app/file-format-schema.json",
+  "exporter": "rbspy@0.14.0",
+  "name": "rbspy profile",
+  "activeProfileIndex": 0,
+  "shared": {
+    "frames": [
+      {"name": "<main>", "file": "lib/cart.rb", "line": 23},
+      {"name": "<class:Cart>", "file": "lib/cart.rb", "line": 1},
+      {"name": "Cart#initialize", "file": "lib/cart.rb", "line": 3},
+      {"name": "Cart.empty", "file": "lib/cart.rb", "line": 19},
+      {"name": "Cart#add", "file": "lib/cart.rb", "line": 7},
+      {"name": "Cart#total", "file": "lib/cart.rb", "line": 11},
+      {"name": "block in Cart#total", "file": "lib/cart.rb", "line": 12},
+      {"name": "rescue in Cart#total", "file": "lib/cart.rb", "line": 15}
+    ]
+  },
+  "profiles": [
+    {
+      "type": "sampled",
+      "name": "rbspy-cpu",
+      "unit": "seconds",
+      "startValue": 0,
+      "endValue": 10,
+      "samples": [
+        [0],
+        [0, 1],
+        [0, 3],
+        [0, 4],
+        [0, 5],
+        [0, 5, 6],
+        [0, 5, 6],
+        [0, 5, 7]
+      ],
+      "weights": [1.0, 1.0, 1.0, 1.0, 2.0, 3.0, 3.0, 1.0]
+    }
+  ]
+}

@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-FrameLanguage = Literal["go", "python", "javascript", "java", "kotlin"]
+FrameLanguage = Literal["go", "python", "javascript", "ruby", "java", "kotlin"]
 
 #: JVM frames: no file of their own, placed by class name (:func:`place_jvm_frames`).
 _JVM = frozenset({"java", "kotlin"})
@@ -143,24 +143,28 @@ def resolve_frames(
     exactly one indexed function starts on the frame's line, and nothing but
     names, keywords, ``=`` and ``:`` stands before the frame's column, so it is
     the first function the line can start. A JVM frame (Java, Kotlin) needs
-    the method name and class to agree with the innermost method at its line;
-    with no line it joins by name (:func:`_name_join`): the one method of that
-    name in that class, else the one whose parameter count (and types) match
-    the frame's, else ``ambiguous``. A frame is never put on one overload of
-    several by name alone.
+    the innermost method at its line; with no line it joins by name
+    (:func:`_name_join`): the one method of that name in that class, else the
+    one whose parameter count (and types) match the frame's, else
+    ``ambiguous``. Ruby needs the frame's method name (instance ``#`` or
+    singleton ``.``) to agree with the innermost method at its line. A frame
+    is never put on one overload of several by name alone.
 
     Folding, when the frame's own function has no symbol: a Go closure
     (``Outer.func1``) whose start line lies inside ``Outer``; a Python frame
     whose qualified name runs through ``<locals>`` or ends in ``<lambda>``,
     ``<genexpr>`` or a comprehension, charged to the symbol its enclosing name
     matches; a JavaScript function that starts on a body line of an indexed
-    function. Module bodies (Python ``<module>``, the Go package initializer,
-    the CommonJS wrapper at 1:1, a JVM static initializer) resolve to the
-    file, and a Python frame on a decorator line resolves to the function it
-    decorates. A JVM lambda (``lambda$name$0``, Kotlin ``name$lambda$0``) and a
-    method of an anonymous class (``Outer$1``) fold into the method at their
-    line; compiler-made accessors and bridges (``access$000``, ``$default``,
-    ``$$Lambda``, ``$$`` proxies) are ``generated``.
+    function; a Ruby ``block in X`` or ``rescue in X`` frame folded into the
+    method ``X`` it runs inside, and frames on class/module body lines or
+    ``<main>`` attributed to the file. Module bodies (Python ``<module>``, the
+    Go package initializer, the CommonJS wrapper at 1:1, a JVM static
+    initializer) resolve to the file, and a Python frame on a decorator line
+    resolves to the function it decorates. A JVM lambda (``lambda$name$0``,
+    Kotlin ``name$lambda$0``) and a method of an anonymous class
+    (``Outer$1``) fold into the method at their line; compiler-made accessors
+    and bridges (``access$000``, ``$default``, ``$$Lambda``, ``$$`` proxies)
+    are ``generated``.
     """
     paths = _PathMap(root, symbols_by_file, dirty_paths)
     reader = _read_once(read_lines) if read_lines is not None else None
@@ -283,7 +287,7 @@ def _resolve(
     rel = paths.relative(frame.path)
     if rel is None:
         return "outside_root"
-    if frame.language not in ("go", "python", "javascript", *_JVM):
+    if frame.language not in ("go", "python", "javascript", "ruby", *_JVM):
         return "unsupported_language"
     # A JVM frame without a line still has its class, method and parameters.
     if frame.line < 1 and frame.language not in _JVM:
@@ -312,6 +316,8 @@ def _resolve(
         outcome = _go(frame, symbols)
     elif frame.language in _JVM:
         outcome = _jvm(frame, symbols, kotlin=rel.endswith(".kt"))
+    elif frame.language == "ruby":
+        outcome = _ruby(frame, symbols)
     else:
         outcome = _python(frame, symbols, lines)
     return (rel, outcome) if isinstance(outcome, tuple) else outcome
@@ -434,6 +440,60 @@ def _decorated(
 def _qualname_tail(frame_name: str, qualified_name: str) -> bool:
     """Whether *frame_name* (``Flask.__init__``) ends *qualified_name* at a dot."""
     return qualified_name == frame_name or qualified_name.endswith("." + frame_name)
+
+
+# -- Ruby ----------------------------------------------------------------------
+
+# Chains of "block in" or "rescue in", with optional level info like "block (2 levels) in".
+_RUBY_BLOCK_PREFIX_RE = re.compile(r"^(?:(?:block(?:\s*\([^)]*\))?|rescue)\s+in\s+)+")
+_RUBY_BODY_NAMES = frozenset({"<main>", "<top (required)>"})
+
+
+def _ruby(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipReason:
+    raw_name = frame.function
+    if not raw_name:
+        return "no_second_signal"
+
+    fold_match = _RUBY_BLOCK_PREFIX_RE.match(raw_name)
+    folded = fold_match is not None
+    base_name = raw_name[fold_match.end() :] if fold_match else raw_name
+
+    # Check for script or class/module body execution: "<main>", "<top (required)>", "<class:X>", "<module:X>"
+    if base_name in _RUBY_BODY_NAMES or base_name.startswith(("<class:", "<module:")):
+        return (None, folded)
+
+    # Find the innermost callable symbol holding the line
+    symbol = symbol_at((s for s in symbols if s.kind in _CALLABLE_KINDS), frame.line)
+
+    if symbol is None:
+        # A frame on a class or module body line resolves to the file, like Python's <module>
+        container = symbol_at((s for s in symbols if s.kind in ("class", "module")), frame.line)
+        if container is not None:
+            clean_base = base_name.replace("::", ".").replace("#", ".")
+            if clean_base == container.name or clean_base.endswith("." + container.name):
+                return (None, folded)
+            if base_name.startswith(f"<class:{container.name}>") or base_name.startswith(
+                f"<module:{container.name}>"
+            ):
+                return (None, folded)
+        return "no_span"
+
+    normalized = base_name.replace("::", ".").replace("#", ".")
+
+    qual_parts = symbol.qualified_name.split(".")
+    if len(qual_parts) >= 2 and symbol.kind == "method":
+        parent = qual_parts[-2]
+        expected_suffix = f"{parent}.{symbol.name}"
+        if normalized == expected_suffix or symbol.qualified_name.endswith("." + normalized):
+            return (symbol, folded)
+    elif (
+        normalized == symbol.name
+        or symbol.qualified_name == normalized
+        or symbol.qualified_name.endswith("." + normalized)
+    ):
+        return (symbol, folded)
+
+    return "second_signal_mismatch"
 
 
 # -- JVM (Java, Kotlin) ----------------------------------------------------------
