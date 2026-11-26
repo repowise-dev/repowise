@@ -31,6 +31,8 @@ from repowise.core.workspace.origins import LinkStrategy, legacy_strategy
 from repowise.core.workspace.signature_schema import attach_signature_schemas
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from repowise.core.workspace.code_api import CodeSurface
     from repowise.core.workspace.extractors.masstransit import MessageTypeIndex
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
@@ -96,10 +98,11 @@ CONTRACTS_FILENAME = "contracts.json"
 # vendored code out (#6005, #6012, #6014, #6015, #6089, #6104, #6113, #6119).
 # Version 18 serves Go routes under the group prefix a register function is
 # handed (#6347), and Express routes on a router handed to a module's exported
-# function under that router's mount (#6362), and puts the base a JS client
-# factory's call sites pass before the requests it builds (#6415).
-# ``routes_fingerprint`` includes this version, so stored HTTP routes and
-# ``contracts.json`` refresh with it.
+# function under that router's mount (#6362), puts the base a JS client
+# factory's call sites pass before the requests it builds (#6415), follows a Go
+# group taken from ``Use``, and drops the routes of a Go register function only
+# another copy's callers name. ``routes_fingerprint`` includes this version, so
+# stored HTTP routes and ``contracts.json`` refresh with it.
 CONTRACTS_VERSION = 18
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
@@ -915,6 +918,30 @@ _NOT_CONTRACT_ORIGINS = frozenset(
 )
 
 
+async def stored_origins(paths: Collection[str], repo_index: RepoIndex | None) -> dict[str, str]:
+    """``code_origin`` of each of *paths*: the stored one when the repo's index
+    has it (handed to :meth:`RepoIndex.from_symbols`, else read through its
+    session), else :func:`~repowise.core.code_origin.path_origin`."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.code_origin import path_origin
+    from repowise.core.evidence.ingest import load_origins
+
+    origins: dict[str, str] = {}
+    session = repo_index.session if repo_index is not None else None
+    held = getattr(repo_index, "origins", None)
+    if isinstance(held, Mapping):
+        # Handed in by a caller with no health rows to read (load_origins' rule).
+        origins = {p: held.get(p) or path_origin(p) for p in paths}
+    elif session is not None:
+        try:
+            origins = await load_origins(session, repo_index.repo_id, paths)
+        except (SQLAlchemyError, AttributeError, TypeError):
+            # An index without health rows, or a stand-in session: the path decides.
+            origins = {}
+    return origins or {p: path_origin(p) for p in paths}
+
+
 async def _production_ends(
     contracts: list[Contract], repo_index: RepoIndex | None
 ) -> tuple[list[Contract], int]:
@@ -926,8 +953,7 @@ async def _production_ends(
     judged: a schema document (an OpenAPI spec under ``docs/``, a ``.proto``,
     SQL) and a schema migration describe the contract wherever they sit.
     """
-    from repowise.core.code_origin import is_migration_path, path_origin
-    from repowise.core.evidence.ingest import load_origins
+    from repowise.core.code_origin import is_migration_path
     from repowise.core.ingestion.languages.registry import REGISTRY
 
     code = REGISTRY.all_code_extensions()
@@ -938,21 +964,7 @@ async def _production_ends(
     }
     if not judged:
         return contracts, 0
-    from sqlalchemy.exc import SQLAlchemyError
-
-    origins: dict[str, str] = {}
-    session = repo_index.session if repo_index is not None else None
-    held = getattr(repo_index, "origins", None)
-    if isinstance(held, Mapping):
-        # Handed in by a caller with no health rows to read (load_origins' rule).
-        origins = {p: held.get(p) or path_origin(p) for p in judged}
-    elif session is not None:
-        try:
-            origins = await load_origins(session, repo_index.repo_id, judged)
-        except (SQLAlchemyError, AttributeError, TypeError):
-            # An index without health rows, or a stand-in session: the path decides.
-            origins = {}
-    origins = origins or {p: path_origin(p) for p in judged}
+    origins = await stored_origins(judged, repo_index)
     left_out = {p for p in judged if origins.get(p) in _NOT_CONTRACT_ORIGINS}
     kept = [c for c in contracts if c.file_path not in left_out]
     return kept, len(contracts) - len(kept)
@@ -969,6 +981,7 @@ async def _extract_one_repo(
     from .extractors import assign_service, detect_service_boundaries, merge_openapi_providers
     from .extractors.base import iter_source_files
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+    from .unmounted_routes import UNMOUNTED_PROVIDERS_STAT, drop_unmounted_providers
 
     code_surface = extraction.code_surface
     contracts: list[Contract] = []
@@ -1025,6 +1038,10 @@ async def _extract_one_repo(
     contracts, dropped = await _production_ends(contracts, repo_index)
     if dropped:
         stats[NON_PRODUCTION_ENDS_STAT] = dropped
+    # A route only a never-mounted copy of a register function declares is not served.
+    contracts, unmounted = await drop_unmounted_providers(contracts, repo_index, files)
+    if unmounted:
+        stats[UNMOUNTED_PROVIDERS_STAT] = unmounted
 
     # The OpenAPI document and a framework route describe one provider: keep the
     # code-backed identity, enriched with the spec's wire shape.

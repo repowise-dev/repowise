@@ -109,7 +109,9 @@ A Fastify, Koa or hapi prefix that does not resolve to a string, or a plugin mou
 different prefixes, leaves those routes out rather than at a guessed path. A Go route group
 handed to a package-level register function (`articles.Register(v1.Group("/articles"))`) serves
 that function's routes under the group, and a function registered under two groups serves its
-routes at both. Laravel's `routes/api.php` is
+routes at both; a group taken from `g.Use(mw)` serves under `g`. Once the repo is indexed, a Go
+register function whose name is called only where another copy of it is imported (a duplicate
+router package nothing mounts) registers no routes. Laravel's `routes/api.php` is
 served under `/api` unless `bootstrap/app.php` (`apiPrefix`) or a route provider says
 otherwise, and `Route::resource` / `apiResource` expand into the routes they register. An
 Express router handed to a module's exported function (`require('./routes/users')(api)`) serves

@@ -18,6 +18,7 @@ the other way round.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
@@ -352,6 +353,9 @@ _GO_ROUTE_RE = go_route_pattern(_GO_VERBS, f"{GO_PATH_LITERAL}|{_GO_PATH_CONCAT}
 _GO_GROUP_RE = re.compile(
     r"""(?P<var>\w+)\s*:?=\s*(?P<parent>\w+)\s*\.\s*Group\s*\(\s*["'](?P<prefix>[^"']+)["']"""
 )
+# r := g.Use(mw) — gin's Use returns the group it is called on, so routes on
+# `r` serve under `g`'s prefix.
+_GO_USE_RE = re.compile(r"(?P<var>\w+)\s*:?=\s*(?P<parent>\w+)\s*\.\s*Use\s*\(")
 
 # Go 1.22 net/http patterns: `"GET /items/{id}"`, `"POST api.example.com/x"`.
 _GO_METHOD_PATTERN_RE = re.compile(
@@ -440,8 +444,17 @@ def go_routes(content: str) -> Iterator[RouteMatch]:
 
 
 def go_groups(content: str) -> Iterator[GroupMatch]:
-    """``Group`` prefix bindings in *content*."""
-    return _groups(_GO_GROUP_RE, content)
+    """``Group`` prefix bindings in *content*, and ``Use`` bindings with no prefix of their own."""
+    groups = list(_groups(_GO_GROUP_RE, content))
+    yield from groups
+    bound = {g.var for g in groups}
+    uses = [(m.group("var"), m.group("parent")) for m in _GO_USE_RE.finditer(content)]
+    names = Counter(var for var, _parent in uses)
+    for var, parent in uses:
+        # Bindings are file-wide by name: `v1 = v1.Use(mw)` would erase v1's own
+        # Group binding, and a name two functions bind from Use is neither's.
+        if var != parent and var not in bound and names[var] == 1:
+            yield GroupMatch(var=var, parent=parent, prefix="")
 
 
 # ---------------------------------------------------------------------------
