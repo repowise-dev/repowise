@@ -818,25 +818,48 @@ async def older_map_functions(
         if lines is not None and p in change.files and is_python_source(p)
     ]
     gap = _traceable_gap(repo_path, measured, base) if paths else None
-    if gap is None:
+    found = _found_at(repo_path, change, paths, measured, gap) if gap is not None else None
+    if not found or gap is None:
         return None
+    functions, edited, then = found
+    sorted_gap = _sort_gap(repo_path, measured, base, gap, edited, then)
+    if sorted_gap is None:
+        return None
+    return await _clear_of_run_once(session, repo_id, repo_path, functions, *sorted_gap)
+
+
+def _found_at(
+    repo_path, change, paths: list[str], measured: str, gap: Mapping[str, str]
+) -> tuple[dict[str, FileFunctions], list[str], dict[str, str]] | None:
+    """The changed files' touched functions, numbered at *measured*; the gap's
+    edited Python files; and the texts read at *measured*. ``None`` when none qualify."""
     texts = read_sides(repo_path, change, paths)
     found = {
         p: f
         for p in paths
         if (f := touched_functions(p, change.files[p].hunks, "old", *texts[p])) is not None
     }
+    if not found:
+        return None
     edited = sorted(p for p, s in gap.items() if s == "M" and is_python_source(p))
-    then = _texts_at(repo_path, measured, {*found, *edited}) if found else {}
+    then = _texts_at(repo_path, measured, {*found, *edited})
     functions = {
         p: moved
         for p, f in found.items()
         if (moved := _bodies_at(f, texts[p][0], then.get(p))) is not None
     }
-    sorted_gap = _sort_gap(repo_path, measured, base, gap, edited, then) if functions else None
-    if sorted_gap is None:
-        return None
-    bodies, reach = sorted_gap
+    return (functions, edited, then) if functions else None
+
+
+async def _clear_of_run_once(
+    session,
+    repo_id: str,
+    repo_path,
+    functions: dict[str, FileFunctions],
+    bodies: dict[str, FileFunctions],
+    reach: set[str],
+) -> OlderMap | None:
+    """:class:`OlderMap` with the run-once code (:func:`run_once_symbols`) set aside."""
     once = await run_once_symbols(session, repo_id, repo_path)
     if once is None:
         return None
