@@ -1490,6 +1490,10 @@ _KNOWN_COPIES: dict[tuple[str, str], str] = {
     ): "full-run patterns: lockfiles and manifests no ecosystem scope covers, beside globs",
     (
         "manifest-list",
+        "packages/core/src/repowise/core/analysis/fixture_readers.py",
+    ): "configs that can hand a test a helper (aliases, setup files, plugins), not manifests",
+    (
+        "manifest-list",
         "packages/core/src/repowise/core/analysis/dead_code/constants.py",
     ): "files that run or ship what they name, a wider set than manifests",
     (
