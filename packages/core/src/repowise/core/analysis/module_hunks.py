@@ -373,18 +373,9 @@ async def readers(
     :func:`~.function_hunks.run_once_symbols`), whose later callers run none
     of its lines.
     """
-    tree = _parse(new_text)
-    if tree is None:
-        return "it does not parse"
-    if fn := _once_function(path, tree.tree, change.bodies, once):
-        return f"{fn} changed and runs once for every later caller"
-    # Names the file itself derives from a changed one at import (``DOUBLE = LIMIT * 2``).
-    derived = _derived(tree.tree, change.names | change.removed)
-    if isinstance(derived, str):
-        return f"it reads a changed name at import: {derived}"
-    every = frozenset(derived) | change.names | change.removed
-    if fn := _once_reader(path, tree.tree, every, once):
-        return f"{fn} reads a changed name and runs once for every later caller"
+    every = _own_names(path, change, new_text, once)
+    if isinstance(every, str):
+        return every
     modules, tests = {path}, set()
     # ``None``: every importer of a test helper counts, whatever it takes, since
     # the map does not measure helpers and any test importing one may run it.
@@ -393,32 +384,71 @@ async def readers(
     while queue:
         module, names = queue.pop()
         for imp in await _importers_of(module, importers):
-            if "*" in imp.names:
-                return f"{imp.path} star-imports {module}"
-            taken = imp.names if names is None else imp.names & names
-            if imp.names and not taken:
+            step = _step(imp, module, names, path, change, read, once, is_test, is_support)
+            if isinstance(step, str):
+                return step
+            if step is None:
                 continue
-            if module == path and taken & change.removed:
-                return f"{imp.path} imports a name the change removes"
-            if is_test(imp.path):
+            if step[0] == "test":
                 tests.add(imp.path)
                 continue
-            if PurePosixPath(imp.path).name == "conftest.py":
-                return f"{imp.path} takes a changed name"
-            if is_support(imp.path):
-                key = (imp.path, None)
-            else:
-                followed = _follow(
-                    imp, module, taken or names or frozenset(), read, once, change.removed
-                )
-                if isinstance(followed, str):
-                    return followed
+            if step[0] == "module":
                 modules.add(imp.path)
-                key = (imp.path, frozenset(followed))
+            key = (imp.path, step[1])
             if key not in seen and key[1] != frozenset():
                 seen.add(key)
                 queue.append(key)
-    return Readers(frozenset(modules), frozenset(tests), frozenset(every))
+    return Readers(frozenset(modules), frozenset(tests), every)
+
+
+def _own_names(
+    path: str, change: ModuleChange, new_text: str | None, once: Collection[str]
+) -> frozenset[str] | str:
+    """The changed names plus those the file derives from them at import
+    (``DOUBLE = LIMIT * 2``), or why the file's own code cannot be followed."""
+    tree = _parse(new_text)
+    if tree is None:
+        return "it does not parse"
+    if fn := _once_function(path, tree.tree, change.bodies, once):
+        return f"{fn} changed and runs once for every later caller"
+    derived = _derived(tree.tree, change.names | change.removed)
+    if isinstance(derived, str):
+        return f"it reads a changed name at import: {derived}"
+    every = frozenset(derived) | change.names | change.removed
+    if fn := _once_reader(path, tree.tree, every, once):
+        return f"{fn} reads a changed name and runs once for every later caller"
+    return every
+
+
+def _step(
+    imp: Importer,
+    module: str,
+    names: frozenset[str] | None,
+    path: str,
+    change: ModuleChange,
+    read: Callable[[str], str | None],
+    once: Collection[str],
+    is_test: Callable[[str], bool],
+    is_support: Callable[[str], bool],
+) -> tuple[str, frozenset[str] | None] | str | None:
+    """What one importer of *module* is: ``None`` (takes no changed name), a reader
+    ``("test", _)``, ``("helper", None)`` or ``("module", names it passes on)``, or
+    why it cannot be followed."""
+    if "*" in imp.names:
+        return f"{imp.path} star-imports {module}"
+    taken = imp.names if names is None else imp.names & names
+    if imp.names and not taken:
+        return None
+    if module == path and taken & change.removed:
+        return f"{imp.path} imports a name the change removes"
+    if is_test(imp.path):
+        return ("test", None)
+    if PurePosixPath(imp.path).name == "conftest.py":
+        return f"{imp.path} takes a changed name"
+    if is_support(imp.path):
+        return ("helper", None)
+    followed = _follow(imp, module, taken or names or frozenset(), read, once, change.removed)
+    return followed if isinstance(followed, str) else ("module", frozenset(followed))
 
 
 async def _importers_of(
@@ -456,20 +486,7 @@ def _follow(
     side = _parse(read(imp.path))
     if side is None:
         return f"{imp.path} does not parse"
-    stem = PurePosixPath(module)
-    own = stem.parent.name if stem.name == "__init__.py" else stem.stem
-    aliases = set()
-    for node in ast.walk(side.tree):
-        if isinstance(node, ast.ImportFrom):
-            aliases |= {a.asname or a.name for a in node.names if a.name in names}
-            if not imp.names:
-                aliases |= {a.asname or a.name for a in node.names if a.name == own}
-        elif isinstance(node, ast.Import) and not imp.names:
-            aliases |= {
-                a.asname or a.name.split(".")[0]
-                for a in node.names
-                if a.name.rsplit(".", 1)[-1] == own
-            }
+    aliases = _aliases(side.tree, module, names, whole=not imp.names)
     reads = aliases | (set(names) if not imp.names else set())
     if fn := _once_reader(imp.path, side.tree, reads, once):
         return f"{imp.path}: {fn} reads a changed name and runs once for every later caller"
@@ -479,6 +496,25 @@ def _follow(
     if isinstance(derived, str):
         return f"{imp.path} reads a changed name at import: {derived}"
     return aliases | derived
+
+
+def _aliases(tree: ast.Module, module: str, names: Collection[str], *, whole: bool) -> set[str]:
+    """The names *tree* binds to *names* imported from *module*, and with *whole* the
+    names it binds the module itself to (``from pkg import mod``, ``import pkg.mod as m``)."""
+    stem = PurePosixPath(module)
+    own = stem.parent.name if stem.name == "__init__.py" else stem.stem
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            wanted = {*names, own} if whole else set(names)
+            out |= {a.asname or a.name for a in node.names if a.name in wanted}
+        elif isinstance(node, ast.Import) and whole:
+            out |= {
+                a.asname or a.name.split(".")[0]
+                for a in node.names
+                if a.name.rsplit(".", 1)[-1] == own
+            }
+    return out
 
 
 def _derived(tree: ast.Module, reads: Collection[str]) -> set[str] | str:
