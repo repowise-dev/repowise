@@ -43,7 +43,7 @@ from ..sfc_source import vue_component_name_from_stem
 from .ts_workspace import _probe_path
 
 if TYPE_CHECKING:
-    from ..models import Import, ParsedFile
+    from ..models import CallSite, Import, ParsedFile
     from .context import ResolverContext
 
 _CONFIG_NAMES = ("nuxt.config.ts", "nuxt.config.js", "nuxt.config.mjs", "nuxt.config.mts")
@@ -88,25 +88,31 @@ def _read_text(ctx: ResolverContext, rel: str) -> str | None:
         return None
 
 
-def _nuxt_version(ctx: ResolverContext, root: str) -> str | None:
-    """The ``nuxt`` version spec from the nearest ``package.json``, or None when not a dependency."""
+def _nearest_manifest(ctx: ResolverContext, root: str) -> str | None:
+    """Text of the ``package.json`` in *root* or the nearest directory above it."""
     current = root
-    while True:
-        text = _read_text(ctx, _join(current, "package.json"))
-        if text is not None:
-            try:
-                manifest = json.loads(text)
-            except ValueError:
-                manifest = None
-            if isinstance(manifest, dict):
-                for key in ("dependencies", "devDependencies"):
-                    deps = manifest.get(key)
-                    if isinstance(deps, dict) and isinstance(deps.get("nuxt"), str):
-                        return deps["nuxt"]
-            return None
+    while (text := _read_text(ctx, _join(current, "package.json"))) is None:
         if not current:
             return None
         current = posixpath.dirname(current)
+    return text
+
+
+def _nuxt_version(ctx: ResolverContext, root: str) -> str | None:
+    """The ``nuxt`` version spec from the nearest ``package.json``, or None when not a dependency."""
+    text = _nearest_manifest(ctx, root)
+    try:
+        manifest = json.loads(text) if text is not None else None
+    except ValueError:
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    for key in ("dependencies", "devDependencies"):
+        deps = manifest.get(key)
+        version = deps.get("nuxt") if isinstance(deps, dict) else None
+        if isinstance(version, str):
+            return version
+    return None
 
 
 def _src_dir(ctx: ResolverContext, root: str, config: str, version: str) -> str:
@@ -198,23 +204,23 @@ def _components(ctx: ResolverContext, src: str, config: str) -> dict[str, str]:
 def _auto_imports(ctx: ResolverContext, src: str) -> dict[str, str]:
     """Named exports of the top-level files (and ``<dir>/index.*``) in composables/ and utils/."""
     parsed_files = ctx.parsed_files or {}
+    bases = tuple(_join(src, folder) + "/" for folder in ("composables", "utils"))
     pairs: list[tuple[str, str]] = []
-    for folder in ("composables", "utils"):
-        base = _join(src, folder) + "/"
-        for path in ctx.sorted_paths:
-            if not path.startswith(base) or not path.endswith(_SCRIPT_EXTENSIONS):
-                continue
-            rel = path[len(base) :]
-            depth = rel.count("/")
-            if _IGNORED_RE.search(path) or depth > 1:
-                continue
-            if depth == 1 and rel.rsplit("/", 1)[-1].rsplit(".", 1)[0] != "index":
-                continue
-            parsed = parsed_files.get(path)
-            for name in getattr(parsed, "exports", ()) or ():
-                if name != "default":
-                    pairs.append((name, path))
+    for path in ctx.sorted_paths:
+        if not _is_auto_import_file(path, bases):
+            continue
+        exports = getattr(parsed_files.get(path), "exports", None) or ()
+        pairs.extend((name, path) for name in exports if name != "default")
     return _unique(pairs)
+
+
+def _is_auto_import_file(path: str, bases: tuple[str, ...]) -> bool:
+    """A top-level script (or ``<dir>/index.*``) under one of *bases*, as Nuxt scans them."""
+    base = next((b for b in bases if path.startswith(b)), None)
+    if base is None or not path.endswith(_SCRIPT_EXTENSIONS) or _IGNORED_RE.search(path):
+        return False
+    parts = path[len(base) :].split("/")
+    return len(parts) == 1 or (len(parts) == 2 and parts[1].rsplit(".", 1)[0] == "index")
 
 
 def nuxt_projects(ctx: ResolverContext) -> tuple[NuxtProject, ...]:
@@ -242,7 +248,7 @@ def nuxt_projects(ctx: ResolverContext) -> tuple[NuxtProject, ...]:
         )
     projects.sort(key=lambda p: len(p.root), reverse=True)
     result = tuple(projects)
-    ctx._nuxt_projects = result  # type: ignore[attr-defined]
+    setattr(ctx, "_nuxt_projects", result)  # noqa: B010 - per-context cache, not a field
     return result
 
 
@@ -324,56 +330,67 @@ def nuxt_auto_imports(
     A use binds only when nothing in the file already names it (an import, a
     declaration of its own) and exactly one file in the project provides it.
     """
-    from ..models import Import, NamedBinding
-
-    projects = nuxt_projects(ctx)
-    if not projects:
+    if not nuxt_projects(ctx):
         return {}
     result: dict[str, list[Import]] = {}
     for path, parsed in parsed_files.items():
-        if not parsed.calls:
+        project = _project_for(path, ctx) if parsed.calls else None
+        if project is None or not _takes_auto_imports(path, project):
             continue
-        if not path.endswith(_SFC_EXTENSIONS + _SCRIPT_EXTENSIONS):
-            continue
-        project = _project_for(path, ctx)
-        if project is None or path.startswith(_join(project.root, "server") + "/"):
-            continue
-        known = {name for imp in parsed.imports for name in imp.local_names}
-        known.update(sym.name for sym in parsed.symbols)
-        wanted: dict[tuple[str, str], str] = {}  # (target, local name) -> exported name
-        for call in parsed.calls:
-            name = call.target_name
-            if call.receiver_name is not None or not name or name in known:
-                continue
-            target = None
-            if call.argument_count is None:
-                # A markup tag (no argument list); ``Image()`` in script is not one.
-                target = project.components.get(name)
-                if target is None and name.startswith("Lazy"):
-                    target = project.components.get(name[4:])
-            if target is not None:
-                exported = _component_symbol(target)
-            else:
-                target, exported = project.auto_imports.get(name), name
-            if target is None or target == path or (target, name) in wanted:
-                continue
-            if _declares(ctx, path, name):
-                known.add(name)
-                continue
-            wanted.setdefault((target, name), exported)
-        imports = [
-            Import(
-                raw_statement=f"// nuxt auto-import: {local}",
-                module_path=_alias_spec(project, target),
-                imported_names=[local],
-                is_relative=False,
-                resolved_file=target,
-                bindings=[
-                    NamedBinding(local_name=local, exported_name=exported, source_file=target)
-                ],
-            )
-            for (target, local), exported in sorted(wanted.items())
-        ]
+        imports = _file_auto_imports(path, parsed, project, ctx)
         if imports:
             result[path] = imports
     return result
+
+
+def _takes_auto_imports(path: str, project: NuxtProject) -> bool:
+    """A Vue or script file of the app; ``server/`` belongs to Nitro's own auto-imports."""
+    return path.endswith(_SFC_EXTENSIONS + _SCRIPT_EXTENSIONS) and not path.startswith(
+        _join(project.root, "server") + "/"
+    )
+
+
+def _provider(call: CallSite, project: NuxtProject) -> tuple[str, str] | None:
+    """``(file, exported name)`` Nuxt would load for *call*, or None."""
+    name = call.target_name
+    if call.argument_count is None:
+        # A markup tag (no argument list); ``Image()`` in script is not one.
+        target = project.components.get(name)
+        if target is None and name.startswith("Lazy"):
+            target = project.components.get(name[4:])
+        if target is not None:
+            return target, _component_symbol(target)
+    target = project.auto_imports.get(name)
+    return (target, name) if target is not None else None
+
+
+def _file_auto_imports(
+    path: str, parsed: ParsedFile, project: NuxtProject, ctx: ResolverContext
+) -> list[Import]:
+    from ..models import Import, NamedBinding
+
+    known = {name for imp in parsed.imports for name in imp.local_names}
+    known.update(sym.name for sym in parsed.symbols)
+    wanted: dict[tuple[str, str], str] = {}  # (target, local name) -> exported name
+    for call in parsed.calls:
+        name = call.target_name
+        if call.receiver_name is not None or not name or name in known:
+            continue
+        found = _provider(call, project)
+        if found is None or found[0] == path or (found[0], name) in wanted:
+            continue
+        if _declares(ctx, path, name):
+            known.add(name)
+            continue
+        wanted[(found[0], name)] = found[1]
+    return [
+        Import(
+            raw_statement=f"// nuxt auto-import: {local}",
+            module_path=_alias_spec(project, target),
+            imported_names=[local],
+            is_relative=False,
+            resolved_file=target,
+            bindings=[NamedBinding(local_name=local, exported_name=exported, source_file=target)],
+        )
+        for (target, local), exported in sorted(wanted.items())
+    ]
