@@ -206,6 +206,10 @@ def trailing_glued_name(path: str) -> str | None:
     ``/api/v1${endpoint}`` gives ``endpoint``, and so does ``/repos/${id}${endpoint}``,
     where the hole follows a parameter; a parameter segment (``/users/${id}``), an
     expression hole, or two holes glued onto a segment give None.
+
+    Ceiling: a hole after a parameter is read the same way as one after a literal
+    segment, so a query string held in a function's first parameter (``list(qs)``
+    requesting `` `/users/${id}${qs}` ``) reads as a wrapper and the call is left out.
     """
     m = _TRAILING_QUERY_EXPR_RE.search(path)
     hole = _HOLE_NAME_RE.fullmatch(m.group()) if m else None
