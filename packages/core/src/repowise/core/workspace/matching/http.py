@@ -383,12 +383,20 @@ def gateway_pass(state: MatchState) -> None:
     """Link each gateway-routed consumer on the path its route forwards, in the route's target.
 
     A routed consumer no provider there serves is left to :func:`service_pass`,
-    which draws the service-level edge the route itself establishes.
+    which draws the service-level edge the route itself establishes. A relative
+    ``fetch`` its own service serves is served there, as in the exact pass.
     """
     for consumer in state.unmatched("http"):
         upstream = consumer.meta.get("route_path")
         split = _split_http_id(normalize_contract_id(consumer.contract_id))
         if upstream is None or split is None:
+            continue
+        if reaches_own_origin(consumer) and any(
+            internal(p, consumer)
+            for k in find_matching_keys(consumer.contract_id, state.provider_index)
+            for p in state.provider_index[k]
+        ):
+            state.mark_served(consumer)
             continue
         target = consumer.meta.get("target_repo")
         keys = find_matching_keys(f"http::{split[0]}::{upstream}", state.provider_index)
