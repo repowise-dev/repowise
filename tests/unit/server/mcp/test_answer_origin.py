@@ -665,3 +665,6 @@ async def test_a_landing_git_cannot_tell_is_answered_but_not_kept(
     result = await get_answer("When did AuthService first appear?")
     assert result["confidence"] == "high"
     assert not origin._WALKS
+    # The commit's own date, never labelled a landing nobody read.
+    assert "landed" not in result["answer"]
+    assert "authored" not in result["answer"]

@@ -568,7 +568,9 @@ def _landing(repo_path: str, sha: str, committed: str, timeout: int) -> str | No
     from *sha*: the merge that brought its branch in, or *sha* itself (its
     committer date *committed*) when it is HEAD or sits on the first-parent
     line (a squash, rebase or direct commit, whose committer date is when it
-    was applied).
+    was applied). Ceiling: a fast-forward of an unrebased branch leaves no
+    record of when it happened in the history, so it keeps the commit's own
+    committer date; only the reflog of the machine that ran it knows more.
     """
     try:
         proc = subprocess.run(
@@ -650,9 +652,11 @@ def _answer(
     short = commit["sha"][:12]
     # A stored change's merge date is its landing date.
     landed = commit["date"]
+    # Without a read landing, the commit's own date is all there is: no labels.
+    authored = None if commit.get("unsettled") else commit.get("authored")
     if change is not None and change.merged_at is not None:
         landed = _utc(change.merged_at).date().isoformat()
-    authored = commit.get("authored")
+        authored = commit.get("authored")
     gap = abs((date.fromisoformat(landed) - date.fromisoformat(authored)).days) if authored else 0
     when = f"landed {landed}, authored {authored}" if gap > _AUTHORED_GAP_DAYS else landed
     by = f"{commit['author']}, {when}"
