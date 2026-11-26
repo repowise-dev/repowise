@@ -4,7 +4,7 @@ A wall-clock budget fails whenever a shared runner is slow. How the time grows
 with the input does not depend on the machine: the same work on an input four
 times larger takes about 4x as long when it is linear and about 16x when it is
 quadratic. :func:`assert_linear_growth` times both sizes, alternating, keeps
-the best of three runs of each, and holds off garbage collection so a pause
+the best of five runs of each, and holds off garbage collection so a pause
 lands on neither side.
 """
 
