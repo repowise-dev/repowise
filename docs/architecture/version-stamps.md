@@ -39,7 +39,7 @@ A bump makes every existing index redo work once, on the user's first
 written for.
 
 The first five rows are pinned together by the coupling test. Each of the
-other four versions an id that is stored on health rows and restamped only by
+other four versions an id that is stored on health rows and rewritten only by
 the health re-score, which `HEALTH_ANALYZER_VERSION` alone triggers. Moving
 one of them without the analyzer leaves every stored id minted by a kernel
 that no longer exists, on a store that is never told to recompute. Every other
@@ -48,9 +48,9 @@ row has its own gate and moves alone; the test lists those by name.
 | Constant | File | What a bump triggers | When to bump |
 |---|---|---|---|
 | `HEALTH_ANALYZER_VERSION` | `core/analysis/health/engine.py` | `health_analyzer_changed()` reads true, so the next `update` re-scores health for every file, not only changed ones. Also part of the event snapshot stamp | Any change to what the health re-score writes: a detector, a score, a finding's detail, a biomarker |
-| `PERFORMANCE_MODEL_VERSION` | `core/analysis/health/perf/causal.py` | The prefix of every stored performance finding id; an id from another version reads as stale until the re-score restamps it. Coupled with the analyzer | Identity, grouping, actionability or ranking of performance findings changes meaning |
-| `REFACTORING_MODEL_VERSION` | `core/analysis/health/refactoring/identity.py` | The prefix of every stored refactoring plan id; restamped by the re-score. Coupled with the analyzer | The refactoring identity kernel changes |
-| `FINDING_ID_VERSION` | `core/analysis/health/finding_identity.py` | Hashed into the `public_id` stored on every health finding, so every id changes; stored rows are restamped by the re-score. Coupled with the analyzer | The finding identity kernel changes |
+| `PERFORMANCE_MODEL_VERSION` | `core/analysis/health/perf/causal.py` | The prefix of every stored performance finding id; an id from another version reads as stale until the re-score rewrites the findings. Coupled with the analyzer | Identity, grouping, actionability or ranking of performance findings changes meaning |
+| `REFACTORING_MODEL_VERSION` | `core/analysis/health/refactoring/identity.py` | The prefix of every stored refactoring plan id; rewritten by the re-score. Coupled with the analyzer | The refactoring identity kernel changes |
+| `FINDING_ID_VERSION` | `core/analysis/health/finding_identity.py` | Hashed into the `public_id` stored on every health finding, so every id changes; stored rows are rewritten by the re-score. Coupled with the analyzer | The finding identity kernel changes |
 | `IDENTITY_VERSION` | `core/analysis/change_health/identity.py` | Hashed into every `chf_` id stored on commit-health rows, which are refilled when their analyzer version no longer matches. Coupled with the analyzer | The change-finding identity inputs change |
 | `SECURITY_SCANNER_VERSION` | `core/analysis/security/patterns.py` | `security_scanner_changed()` reads true, so the next `update` rescans every tracked file. A store with no stamp counts as changed | A pattern is added or removed, a severity changes, or a rule's precision changes |
 | `GIT_HISTORY_VERSION` | `core/ingestion/git_indexer/_constants.py` | `git_history_stale()` reads true, so the next `update` re-walks git history and rewrites the rows of files that did not change. A store with no stamp counts as stale. Also part of the event snapshot stamp | What the stored git rows hold changes: owners, top authors, bus factor, churn, blame owners |
@@ -66,7 +66,6 @@ row has its own gate and moves alone; the test lists those by name.
 | `ONBOARDING_GENERATION_VERSION` | `core/generation/onboarding/slots.py` | Folded into every onboarding page's source hash, so all onboarding pages regenerate once on the next docs update, with model calls | A builder or template change should reach pages already cached |
 | `STRUCTURAL_GENERATION_VERSION` | `core/generation/page_generator/structural.py` | Structural pages regenerate once on the next docs update. No model calls | A renderer's output improves without any template's bytes changing |
 | `MODEL_PAGE_GENERATION_VERSION` | `core/generation/page_generator/reuse.py` | Part of the model-page reuse fingerprint, so subject-keyed model pages regenerate once, with model calls | A change the template hash cannot see should reach model pages |
-| `MIN_SHOWN_ANALYZER_VERSION` | `core/analysis/history/delta.py` | Recomputes nothing. A floor: stored commit deltas written below it read as never scanned | Raise it with an analyzer bump that changes what a finding means |
 
 ## Local cache versions
 
@@ -94,23 +93,25 @@ instead and need no bump; the row says when they do not.
 | `_PROMPT_VERSION` | `core/analysis/health/refactoring/llm/enrich.py` | Cached refactoring drafts written under the old prompt are not served; the next request drafts again, with a model call | The prompt's wording changes |
 | `_ANSWER_SCHEMA_VERSION` | `server/mcp_server/tool_answer/config.py` | Cached `get_answer` payloads below it are ignored and answered again | The stored answer payload or what synthesis writes into it changes |
 | `_OVERLAY_VERSION` | `core/workspace/cross_repo.py` | `cross_repo_edges.json` from an older version is discarded and rebuilt on the next workspace update | The meaning of a persisted cross-repo field changes |
+| `_KG_SCHEMA_VERSION` | `core/analysis/knowledge_graph.py` | `knowledge-graph.json` below it is ignored and the knowledge graph rebuilt | The file's schema changes |
 | `SCHEMA_VERSION` | `core/workspace/store.py` | `workspace.db` with another version is rebuilt | Any table change |
 
 ## Schema and format IDs
 
 These version a file, an id, a payload or a wire response that something else
 reads: an older repowise, a plugin, a CI job, an agent. A bump tells that
-reader the shape changed. Nothing recomputes. Bump only for a change a
-previous reader could misread: a removed or renamed field, or a field whose
-meaning changes. Adding an optional field does not bump.
+reader the shape changed. No analysis result is recomputed. Bump only for a
+change a previous reader could misread: a removed or renamed field, or a field
+whose meaning changes. Adding an optional field does not bump. Rows that work
+differently say so.
 
 | Constant | File | What a bump triggers | When to bump |
 |---|---|---|---|
+| `MIN_SHOWN_ANALYZER_VERSION` | `core/analysis/history/delta.py` | A display floor, not a stamp on stored data: stored commit deltas written below it read as never scanned. Nothing recomputes | Raise it with an analyzer bump that changes what a finding means |
 | `CLIENT_IDENTITY_MAPPING_VERSION` | `core/agents/identity.py` | Recorded on savings events, so events attributed under different alias rules stay distinguishable | The announced-name alias rules change |
 | `CHANGE_REVIEW_CONTRACT_VERSION` | `core/analysis/change_review/models.py` | Marks a serialized change-review bundle the previous reader cannot read | A field is removed, renamed or changes meaning |
 | `MANIFEST_VERSION` | `core/analysis/decisions/manifest.py` | An older reader refuses a `decisions.yaml` with a higher version | A change a previous reader could misread; additive optional keys do not bump |
 | `IDENTITY_VERSION` | `core/analysis/diff_risk/detect.py` | Hashed into every `drf_` diff-risk id, so every id changes. Nothing stores them | The identity inputs change |
-| `_KG_SCHEMA_VERSION` | `core/analysis/knowledge_graph.py` | `knowledge-graph.json` below it is ignored and rebuilt | The file's schema changes |
 | `BASELINE_VERSION` | `core/ci/baseline.py` | Versions the CI findings baseline, which the doc-drift baseline also uses | The baseline file changes shape |
 | `EVIDENCE_SCHEMA_VERSION` | `core/changes/evidence.py` | Versions the change evidence checklist payload | A field is renamed, removed or changes meaning |
 | `SCHEMA_VERSION` | `core/changes/record.py` | Versions the change record every surface serves | The record's shape changes for an existing reader |

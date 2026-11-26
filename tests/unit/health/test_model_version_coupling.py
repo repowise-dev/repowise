@@ -88,7 +88,6 @@ _RECOMPUTE_ALONE = frozenset(
         ("ONBOARDING_GENERATION_VERSION", "core/generation/onboarding/slots.py"),
         ("STRUCTURAL_GENERATION_VERSION", "core/generation/page_generator/structural.py"),
         ("MODEL_PAGE_GENERATION_VERSION", "core/generation/page_generator/reuse.py"),
-        ("MIN_SHOWN_ANALYZER_VERSION", "core/analysis/history/delta.py"),
     }
 )
 
