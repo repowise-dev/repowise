@@ -367,6 +367,7 @@ def test_base_includes_all_models():
         "http_routes_stamp",
         "statement_sites",
         "statement_sites_stamp",
+        "package_advisories",
         "pipeline_jobs",
         "graph_metrics",
         "graph_node_membership",

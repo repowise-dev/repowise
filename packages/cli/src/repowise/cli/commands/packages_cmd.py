@@ -141,12 +141,15 @@ def packages_export(fmt: str, output: str | None, repo: str | None) -> None:
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd).")
 @format_option(choices=("text", "json"), default="text")
 def packages_import(file: str, repo: str | None, fmt: str) -> None:
-    """Join a Syft, SPDX, CycloneDX or OSV JSON FILE to where its packages are used."""
+    """Join a Syft, SPDX, CycloneDX or OSV JSON FILE to where its packages are used.
+
+    The document is stored as the repository's advisory data, replacing the last one.
+    """
     from repowise.core.inventory.advisories import join_usage
 
     root = _repo_root(repo)
     try:
-        result = run_async(_with_index(root, lambda s, rid: join_usage(s, rid, root, file)))
+        result = run_async(_with_index(root, lambda s, rid: join_usage(s, rid, root, file, store=True)))
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     if fmt == "json":
@@ -165,7 +168,7 @@ def packages_import(file: str, repo: str | None, fmt: str) -> None:
             reach = row["summary"]["reachability"]
             table.add_row(
                 escape(f"{row['ecosystem'] or '?'}:{row['name']}"),
-                escape(", ".join(a["id"] for a in row.get("advisories", []))),
+                escape(", ".join(_advisory_cell(a) for a in row.get("advisories", []))),
                 str(row["summary"]["files"]),
                 str(reach["reachable"]),
                 str(reach["unknown"]),
@@ -177,4 +180,14 @@ def packages_import(file: str, repo: str | None, fmt: str) -> None:
         console.print(
             f"[dim]{escape(row['name'])} ({escape(ids)}): not declared or imported here.[/dim]"
         )
+    clear = sum(len(row.get("not_affected", ())) for row in result["matched"])
+    if clear:
+        console.print(f"{clear} advisory match(es) left out: the pinned version is outside the range.")
     console.print(f"[dim]{escape(result['method'])}.[/dim]")
+
+
+def _advisory_cell(a: dict[str, Any]) -> str:
+    """``GHSA-x (high, fixed in 2.32.0)``; ``?`` marks one no version could decide."""
+    notes = [n for n in (a.get("severity"), a.get("fix") and f"fixed in {a['fix']}") if n]
+    text = f"{a['id']}{'?' if a.get('affected') is None else ''}"
+    return f"{text} ({', '.join(notes)})" if notes else text
