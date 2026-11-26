@@ -101,8 +101,9 @@ export with strong evidence".
   unneeded.
 - **Loaded by a JS framework's convention:** the file sits where a framework
   its `package.json` depends on loads files from (React Email `emails/`,
-  Next.js `pages/`, Remix `app/routes/`, Nuxt pages, plugins and auto-imported
-  `components/`, `composables/` and `utils/`, SvelteKit hooks and routes,
+  Next.js `pages/`, Remix `app/routes/`, Nuxt pages, layouts, plugins,
+  middleware, `server/`, `@nuxtjs/i18n` locale files (its `langDir`) and
+  auto-imported `components/`, `composables/` and `utils/`, SvelteKit hooks and routes,
   Astro `src/pages/`, Expo Router `app/`).
 - **Weak resolution for the language in this repository:** the language is
   unknown to the graph, its import support is not full, none of its call edges

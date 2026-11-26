@@ -160,3 +160,37 @@ def test_convention_reasons_name_the_framework_and_its_manifest(tmp_path: Path) 
 def test_an_unreadable_manifest_is_skipped(tmp_path: Path) -> None:
     repo = _write(tmp_path, {"package.json": "{ not json", "emails/a.tsx": _NONE})
     assert convention_load_reasons(repo, ["emails/a.tsx"]) == {}
+
+
+def test_a_nuxt_4_app_s_convention_dirs_and_i18n_locales_are_loaded(tmp_path: Path) -> None:
+    """The shape of a Nuxt 4 app with ``@nuxtjs/i18n`` and a ``langDir`` that climbs out of ``i18n/``."""
+    repo = _write(
+        tmp_path,
+        {
+            "frontend/package.json": _pkg({"nuxt": "4", "@nuxtjs/i18n": "10"}),
+            "frontend/nuxt.config.ts": (
+                "export default defineNuxtConfig({\n"
+                "  i18n: { lazy: true, langDir: './../app/lang/locales', locales: [] },\n"
+                "});\n"
+            ),
+        },
+    )
+    loaded = [
+        "frontend/app/layouts/blank.vue",
+        "frontend/app/plugins/theme.ts",
+        "frontend/app/middleware/auth.ts",
+        "frontend/server/api/health.ts",
+        "frontend/server/routes/feed.ts",
+        "frontend/server/middleware/log.ts",
+        "frontend/app/lang/locales/de-DE.ts",
+        "frontend/app/i18n.config.ts",
+        "frontend/app/composables/use-user.ts",  # auto-imported: review, not entry
+    ]
+    reasons = convention_load_reasons(repo, [*loaded, "frontend/app/lib/api.ts"])
+    assert set(reasons) == set(loaded)
+    assert all("Nuxt" in r for r in reasons.values())
+
+
+def test_nuxt_locales_need_the_i18n_module(tmp_path: Path) -> None:
+    repo = _write(tmp_path, {"package.json": _pkg({"nuxt": "4"})})
+    assert convention_load_reasons(repo, ["i18n/locales/en.ts"]) == {}
