@@ -231,6 +231,9 @@ class MeasuredRow(_Strict):
     #: workloads' runs names it (``evidence.compare``); only where the host
     #: read the comparisons.
     slower: MeasuredRowSlower | None = None
+    #: ``import time`` on a module body's row (the time to import its file);
+    #: absent on a function's row.
+    label: str | None = None
     #: Where each field that holds a value came from: ``workload_hotness``,
     #: ``symbols``, ``call_graph``, ``run_drivers``, ``function_blame``, the
     #: ``tests_basis``, ``run_inside`` or ``static_finding``, the

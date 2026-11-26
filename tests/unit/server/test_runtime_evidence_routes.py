@@ -472,3 +472,6 @@ def test_the_measured_row_schema_holds_the_action_row_json_form() -> None:
     assert parsed.next_step is not None and parsed.next_step.verify is None
     assert parsed.verify_basis == "workload" and parsed.slower.ratio == 2.0
     assert parsed.model_dump(exclude_unset=True).keys() == row.keys()
+    # A module body's row carries its import-time label through the closed model.
+    module = action_row(SimpleNamespace(**{**vars(measured), "symbol_id": "src/app.py::<module>"}))
+    assert MeasuredRow.model_validate(module.as_dict()).label == "import time"

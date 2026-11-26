@@ -3381,6 +3381,7 @@ export interface MeasuredRow {
   verify_basis?: "benchmark" | "workload" | null;
   on_static_findings?: string[];
   slower?: MeasuredRowSlower | null;
+  label?: string | null;
   sources?: Record<string, string>;
 }
 

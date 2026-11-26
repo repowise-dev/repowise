@@ -38,6 +38,7 @@ from typing import Any
 
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
+from .format_v1 import IMPORT_TIME, is_import_row
 from .function_tests import PER_TEST_MAP, RowTests
 from .next_step import NextStep, next_step, verify_command
 from .payloads import file_language, weighted_callers
@@ -155,6 +156,9 @@ class ActionRow:
     verify_basis: str | None = None
     on_static_findings: list[str] = field(default_factory=list)
     slower: dict[str, Any] | None = None
+    #: ``import time`` for a module body's row (the time to import the file),
+    #: ``None`` for a function's: its name says what it is.
+    label: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON form (``MeasuredRow``). ``on_static_findings`` and
@@ -190,6 +194,8 @@ class ActionRow:
             out["on_static_findings"] = self.on_static_findings
         if self.slower is not None:
             out["slower"] = self.slower
+        if self.label is not None:
+            out["label"] = self.label
         out["sources"] = self._sources()
         return out
 
@@ -274,6 +280,7 @@ def action_row(
         verify_basis=basis,
         on_static_findings=sorted(static_causes),
         slower=row_slower(symbol_id, compare, workload_name),
+        label=IMPORT_TIME if is_import_row(symbol_id) else None,
     )
 
 
@@ -397,6 +404,8 @@ def row_compact(row: Mapping[str, Any]) -> dict[str, Any]:
     if row.get("on_static_findings"):
         # Open with ``get_health(opportunity_id=...)``.
         out["on_static_findings"] = row["on_static_findings"]
+    if row.get("label"):
+        out["label"] = row["label"]  # "import time": a module body's row
     return out
 
 

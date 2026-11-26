@@ -168,7 +168,7 @@ async def test_an_import_row_says_import_time_and_others_add_nothing(setup_mcp, 
     module = "src/auth/service.py::<module>"
     await _seed(session, materialized, [_hot(module), _hot(LOGIN, rank=2)])
     rows = {r["symbol_id"]: r for r in (await _measured(limit=10))["rows"]}
-    assert (rows[module]["label"], rows[module]["lines"]) == ("import time", None)
+    assert rows[module]["label"] == "import time" and "lines" not in rows[module]
     assert "label" not in rows[LOGIN]
 
 
