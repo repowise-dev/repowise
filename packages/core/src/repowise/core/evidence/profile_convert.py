@@ -229,20 +229,30 @@ def is_native_frame(frame: ProfileFrame) -> bool:
     return frame.language == "go" and frame.function.startswith("runtime.")
 
 
+#: The JDK's packages, as a collapsed stack with no files names them (dots or slashes).
+_JDK_NAMES = (
+    "java.", "java/", "javax.", "javax/", "jdk.", "jdk/", "sun.", "sun/", "com.sun.", "com/sun/",
+)  # fmt: skip
+
+
 def is_library_frame(frame: ProfileFrame, reason: str | None) -> bool:
     """Whether *frame*, joined with skip *reason*, runs library code: code nobody
     here maintains that has a source, so a dependency or the standard library.
 
-    A vendored or generated file is always one. Outside the checkout every frame
-    is one except the runtime and built-ins (:func:`is_native_frame`) and import
-    machinery (:func:`is_import_frame`, import time: the module it loads decides):
-    a module cache or ``site-packages``, GOROOT, CPython's ``Lib`` and frozen
-    modules, Node's ``node:`` modules, and a collapsed stack's qualified name
-    (JDK frames such as ``java/util/HashMap.get``, ``jdk.internal.misc.Unsafe.park``).
+    A vendored or generated file is always one. Outside the checkout a frame with
+    a file is one unless it is the runtime or a built-in (:func:`is_native_frame`)
+    or import machinery (:func:`is_import_frame`, import time: the module it
+    loads decides): a module cache or ``site-packages``, GOROOT, CPython's
+    ``Lib`` and frozen modules, Node's ``node:`` modules. A frame with no file
+    (a collapsed stack's bare name) says only its name, which places it only
+    when it is the JDK's (:data:`_JDK_NAMES`, ``java/util/HashMap.get``); an
+    application's own pathless frames are not known to be library code.
     """
     if reason in ("vendored", "generated"):
         return True
-    return reason == "outside_root" and not is_native_frame(frame) and not is_import_frame(frame)
+    if reason != "outside_root" or is_native_frame(frame) or is_import_frame(frame):
+        return False
+    return bool(frame.path) or frame.function.startswith(_JDK_NAMES)
 
 
 def is_child_process_frame(frame: ProfileFrame) -> bool:
@@ -678,12 +688,15 @@ class _Tally:
 
     def _unmaintained_kind(self, segment: Sequence[int]) -> str:
         """A run of frames nobody here maintains: a wait or an import anywhere in it,
-        else what its first frame is."""
+        else what its first frame is: ``native`` only for the runtime or a built-in, so a
+        pathless name the split cannot place (:func:`is_library_frame`) still reads as
+        ``library``."""
         if any(self._wait[i] for i in segment):
             return "wait"
         if any(self._import[i] for i in segment):
             return "import"
-        return "library" if self._library[segment[0]] else "native"
+        first = segment[0]
+        return "native" if self._native[first] and not self._library[first] else "library"
 
     def _leaf_key(self, index: int) -> tuple[Any, ...]:
         """The frame a stack ended in, keyed like a callee, with its kind kept once."""

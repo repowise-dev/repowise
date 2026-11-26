@@ -608,7 +608,8 @@ is counted there as `unplaced`.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
   `libraries` (a library frame runs below the innermost repo frame, or on a
   stack with no repo frame: a dependency, including Go's module cache, or the
-  standard library: GOROOT, CPython's `Lib`, the JDK, Node's `node:` modules;
+  standard library: GOROOT, CPython's `Lib`, the JDK (by name in a stack with
+  no files), Node's `node:` modules;
   the frames `inside` calls `library`), `repo_self` (neither, and that frame is
   a production function by `code_origin`: time in production repo code itself,
   the built-ins and runtime it called included), or none of them (test or

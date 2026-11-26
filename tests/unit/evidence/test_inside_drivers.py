@@ -297,6 +297,11 @@ def test_library_frames_are_dependencies_and_the_standard_library() -> None:
     assert not library(f"{GOROOT}\\runtime\\cgocall.go", "runtime.cgocall")
     assert not library("<built-in>", "posix.stat", "python")
     assert not library("~", "<built-in method builtins.len>", "unknown")  # cProfile
+    # A pathless name places a frame only when it is the JDK's: an application's
+    # own frames in a collapsed JVM stack, or a pathless dependency, are not known.
+    assert not library("", "com/acme/App.run", "unknown")
+    assert not library("", "com.acme.App.run", "unknown")
+    assert not library("", "gorm.(*DB).First", "unknown")
     assert not library("", "(program)", "unknown")
     assert is_library_frame(_frame("vendor/x/y.go", "y.F"), "vendored")
     assert not is_library_frame(_frame("pkg/app.py", "App.run", "python"), "no_span")
@@ -421,3 +426,19 @@ def test_a_dotted_bare_name_is_a_library_and_a_runtime_marker_is_native() -> Non
     assert not is_native_frame(frame("requests.get"))
     assert is_native_frame(frame("runtime.mallocgc"))
     assert is_native_frame(frame("(program)"))
+
+
+def test_a_pathless_frame_counts_as_a_library_in_the_split_only_when_it_is_the_jdks() -> None:
+    text = "\n".join(
+        [
+            f"App.run ({_APP}:10);java/util/HashMap.get 3",
+            f"App.run ({_APP}:10);com/acme/Helper.work 2",
+            "com/acme/Main.main;com/acme/Helper.work 5",
+        ]
+    )
+    conv = _convert("collapsed", text.encode())
+    # The JDK call is a library; the application's own pathless frames are not
+    # known to be, so run keeps them and the stack with no repo frame is neither.
+    assert (conv.libraries, conv.repo_self) == (3, 2)
+    inside = {i["name"]: i["kind"] for i in _entries(conv)["pkg.app.App.run"]["inside"]}
+    assert inside == {"java/util/HashMap.get": "library", "com/acme/Helper.work": "library"}
