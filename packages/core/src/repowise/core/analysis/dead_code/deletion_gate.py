@@ -40,6 +40,7 @@ class FindingView:
     file_path: str
     confidence: float
     export_only: bool = False
+    runs_at_load: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,15 @@ def _export_only_reason(view: FindingView, _facts: GateFacts) -> str | None:
     return "Only the export is unused: remove the export, not the symbol"
 
 
+def _load_time_reason(view: FindingView, _facts: GateFacts) -> str | None:
+    if not view.runs_at_load:
+        return None
+    return (
+        "Its declaration calls something when the module loads (a registration, "
+        "a side effect), so deleting it is not proven safe"
+    )
+
+
 def _weak_language_reason(view: FindingView, facts: GateFacts) -> str | None:
     if facts.file_languages is None:
         return None
@@ -127,6 +137,7 @@ _BLOCKERS: tuple[Blocker, ...] = (
     _base_reason,
     _docs_example_reason,
     _export_only_reason,
+    _load_time_reason,
     _weak_language_reason,
 )
 
@@ -222,6 +233,7 @@ def _view_of(finding: Any) -> FindingView:
         file_path=finding.file_path,
         confidence=finding.confidence,
         export_only=finding.export_only,
+        runs_at_load=finding.runs_at_load,
     )
 
 

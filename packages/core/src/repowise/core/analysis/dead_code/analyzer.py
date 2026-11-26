@@ -73,6 +73,7 @@ from .finding_helpers import (  # noqa: F401  (moved helpers re-exported)
 )
 from .go_name_uses import drop_go_package_uses
 from .kotlin_multiplatform import settle_platform_declarations
+from .load_time_calls import mark_load_time_calls
 from .meta_annotations import MetaAnnotations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .module_strings import drop_named_modules
@@ -421,6 +422,7 @@ class DeadCodeAnalyzer:
             BuildFacts(repo_root=self._repo_root, dotnet_index=self._dotnet_index),
         )
 
+        findings = mark_load_time_calls(findings, self._source_map, self._repo_root)
         return apply_deletion_gate(findings, self.graph, self._repo_root)
 
     def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
