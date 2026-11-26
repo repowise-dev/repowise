@@ -261,7 +261,7 @@ def test_an_unclosed_quote_scans_in_linear_time() -> None:
 @pytest.mark.parametrize(
     ("page", "n"),
     [
-        pytest.param(lambda n: b"<b " * n + b"{{{", 20_000, id="unbalanced-brace"),
+        pytest.param(lambda n: b"<b " * n + b"{{{", 40_000, id="unbalanced-brace"),
         pytest.param(lambda n: b"{/* c */}<Card />\n" * n, 2_500, id="many-hidden-ranges"),
         pytest.param(lambda n: b"<Card />\n" * n, 10_000, id="many-tags"),
         pytest.param(

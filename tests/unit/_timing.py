@@ -28,7 +28,7 @@ def assert_linear_growth(
     large: T,
     *,
     reset: Callable[[], object] | None = None,
-    rounds: int = 3,
+    rounds: int = 5,
 ) -> None:
     """Fail when ``run(large)`` costs ``MAX_GROWTH`` times ``run(small)`` or more.
 
