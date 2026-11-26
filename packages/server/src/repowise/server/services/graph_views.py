@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import Row, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.exclusion import spec_key
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES, NON_CODE_EDGE_TYPES
 from repowise.core.persistence import crud
@@ -218,13 +219,6 @@ def clear_code_graph_cache() -> None:
     _code_graph_locks.clear()
 
 
-def _spec_key(exclude_spec: Any) -> tuple[str, ...] | None:
-    """The rules a spec was compiled from: equal rules share one cached graph."""
-    if exclude_spec is None:
-        return None
-    return tuple(str(p.pattern) for p in exclude_spec.patterns)
-
-
 async def load_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any) -> CodeGraph:
     """Every code node and edge of *repo_id*, minus excluded files, as a DiGraph.
 
@@ -234,7 +228,7 @@ async def load_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any
     file layer to the symbol layer. Kept per index state and exclude rules;
     callers must not mutate the result.
     """
-    key = await _code_graphs.key(session, repo_id, _spec_key(exclude_spec))
+    key = await _code_graphs.key(session, repo_id, spec_key(exclude_spec))
     if key in _code_graphs:
         return _code_graphs.get(key)
     async with _code_graph_locks.setdefault(repo_id, asyncio.Lock()):

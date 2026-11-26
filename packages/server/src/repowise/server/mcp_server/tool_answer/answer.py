@@ -375,7 +375,7 @@ async def _run_retrieval_pipeline(
         await _apply_pagerank_bias(hits, ctx)
     # 1-hop walk rescues "right module, wrong file" near-misses.
     with contextlib.suppress(Exception):
-        hits = await _expand_via_graph(hits, ctx, repo_id)
+        hits = await _expand_via_graph(hits, ctx, repo_id, exclude_spec)
     # Graph expansion can pull excluded neighbors back in; re-filter before the cap.
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
     # Symbol anchoring: force a question-named symbol's defining file in as a
@@ -404,7 +404,9 @@ async def _run_retrieval_pipeline(
     # anchors the function holding it.
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
-            hits = await value_line_anchor_hits(ctx, session, repo_id, question, question_ids, hits)
+            hits = await value_line_anchor_hits(
+                ctx, session, repo_id, question, question_ids, hits, exclude_spec
+            )
     # Flow-path expansion: when the question anchors 2+ endpoints, inject the
     # files on the path between them, reaching a far endpoint 1-hop expansion
     # cannot. This and the stages below run before the cap so an injected file
@@ -422,13 +424,15 @@ async def _run_retrieval_pipeline(
         with contextlib.suppress(Exception):
             async with get_session(ctx.session_factory) as session:
                 hits, flow_paths = await _expand_via_flow_path(
-                    session, repo_id, hits, question, question_ids
+                    session, repo_id, hits, question, question_ids, exclude_spec
                 )
     # Neighborhood re-rank: for flow questions whose target file is never named,
     # re-rank the 1-2 hop neighborhood of the top hits. No-op on other shapes.
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
-            hits = await _expand_via_neighbor_rerank(session, repo_id, hits, question, ctx)
+            hits = await _expand_via_neighbor_rerank(
+                session, repo_id, hits, question, ctx, exclude_spec
+            )
     # Parent-concept surfacing: a subsystem-shaped question leads with the
     # rollup page for the subsystem. No-op on other shapes, and skipped once a
     # call trace answers the question: its entry file must keep the lead.

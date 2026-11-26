@@ -6,6 +6,7 @@ from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
+from repowise.core.exclusion import is_excluded
 from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.database import get_session
@@ -113,13 +114,19 @@ async def projected_graph(session: Any, repo_id: str) -> _ProjectedGraph:
     )
 
 
-def _seed_neighbors(graph: _ProjectedGraph, seed_set: set[str], existing: set[Any]) -> set[str]:
-    """Files one hop from a seed and not yet a candidate."""
+def _seed_neighbors(
+    graph: _ProjectedGraph, seed_set: set[str], existing: set[Any], exclude_spec: Any = None
+) -> set[str]:
+    """Files one hop from a seed, not yet a candidate and not excluded.
+
+    Excluded files leave here, before hub ranking and the additions cap, so
+    they never take a slot an allowed neighbour would have filled.
+    """
     return {
         theirs
         for seed in seed_set
         for theirs in graph.neighbours.get(seed, ())
-        if theirs not in existing
+        if theirs not in existing and not is_excluded(theirs, exclude_spec)
     }
 
 
@@ -185,7 +192,9 @@ def _expansion_candidates(
     return candidates
 
 
-async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dict]:
+async def expand_via_graph(
+    hits: list[dict], ctx: Any, repo_id: str, exclude_spec: Any = None
+) -> list[dict]:
     """Add up to ``_GRAPH_EXPAND_MAX_NEW`` one-hop neighbours of the top hits.
 
     Recovers the right file when retrieval landed next to it (a consumer
@@ -205,7 +214,7 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
         # Every edge type, co-changes included, projected from the symbol layer
         # too so call edges reach the seeds.
         graph = await projected_graph(session, repo_id)
-        neighbors = _seed_neighbors(graph, set(seed_paths), existing)
+        neighbors = _seed_neighbors(graph, set(seed_paths), existing, exclude_spec)
         if not neighbors:
             return hits
         page_rows, pr_by_path = await _neighbor_pages(session, neighbors)

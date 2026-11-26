@@ -16,6 +16,7 @@ from repowise.core.analysis.execution_graph import (
     is_excluded_execution_path,
     is_walkable_execution_edge,
 )
+from repowise.core.exclusion import node_is_excluded
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import (
@@ -88,6 +89,7 @@ async def bfs_trace(
     node_cache: dict[str, GraphNode] | None = None,
     hop_origins: dict[tuple[str, str], str] | None = None,
     termination: dict[str, Any] | None = None,
+    exclude_spec: Any = None,
 ) -> list[str]:
     """Trace the primary execution path from *entry_id* along ``calls`` edges.
 
@@ -105,6 +107,9 @@ async def bfs_trace(
     describe the wrong hops.
 
     *termination*, when given, is filled with ``reason`` and ``detail``.
+
+    *exclude_spec*, when given, skips a successor in a file the repo rules
+    exclude the same way as a test path, so the walk never steps through one.
     """
     if node_cache is None:
         node_cache = {}
@@ -151,7 +156,7 @@ async def bfs_trace(
             if not is_walkable_execution_edge(e.edge_type, e.resolution_origin, e.confidence):
                 low_confidence[e.resolution_origin or "unlabelled"] += 1
                 continue
-            if _node_id_is_excluded(tid):
+            if _node_id_is_excluded(tid) or node_is_excluded(tid, exclude_spec):
                 excluded += 1
                 continue
             if tid in visited:

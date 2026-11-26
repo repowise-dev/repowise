@@ -184,6 +184,7 @@ async def get_execution_flows(
                 node_cache,
                 hop_origins,
                 termination,
+                exclude_spec,
             )
             # Drop excluded files reached downstream so they don't leak via the
             # trace (entry-point filtering above doesn't cover BFS descendants).
