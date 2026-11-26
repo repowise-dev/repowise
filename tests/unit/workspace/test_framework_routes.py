@@ -118,6 +118,24 @@ class TestExpressRecognition:
         assert route.path is None
         assert route.paren_offset == len("app.use")
 
+    def test_single_arg_setting_get_calls_are_skipped(self) -> None:
+        src = (
+            "var fn = app.get('etag fn');\n"
+            "var env = app.get('env');\n"
+            "if (app.get('trust proxy fn')(addr)) {}\n"
+            "app.get('/users/:id', show);\n"
+            "router.get('*', fallback);\n"
+            "app.get(':id', show);\n"
+            "app.get('items', listItems);\n"
+        )
+        routes = [(r.verb, r.path) for r in express_routes(src)]
+        assert routes == [
+            ("GET", "/users/:id"),
+            ("GET", "*"),
+            ("GET", ":id"),
+            ("GET", "items"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Consumer 1 — graph edges

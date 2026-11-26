@@ -186,6 +186,23 @@ def js_router_bindings(content: str) -> dict[str, str]:
     return out
 
 
+def _is_express_setting_read(
+    content: str, paren_offset: int, arg_end: int, path: str
+) -> bool:
+    """True when ``.get('...')`` takes one non-path string argument (an Express setting lookup)."""
+    if path.startswith(("/", "*", ":")) and not any(ch.isspace() for ch in path):
+        return False
+    close = match_paren(content, paren_offset)
+    if close == -1:
+        return False
+    for i, ch, _depth in scan_code(content, arg_end):
+        if i >= close:
+            break
+        if not ch.isspace():
+            return False
+    return True
+
+
 def express_routes(content: str) -> Iterator[RouteMatch]:
     """Router/app route registrations in *content*.
 
@@ -194,13 +211,20 @@ def express_routes(content: str) -> Iterator[RouteMatch]:
     argument list itself from ``paren_offset``.
     """
     for m in _EXPRESS_ROUTE_RE.finditer(content):
+        verb = m.group("verb").upper()
+        path = m.group("path")
+        paren_offset = m.start("paren")
+        if verb == "GET" and path is not None and _is_express_setting_read(
+            content, paren_offset, m.end(), path
+        ):
+            continue
         yield RouteMatch(
-            verb=m.group("verb").upper(),
-            path=m.group("path"),
+            verb=verb,
+            path=path,
             receiver=m.group("receiver"),
             handler=None,
             offset=m.start(),
-            paren_offset=m.start("paren"),
+            paren_offset=paren_offset,
         )
 
 
