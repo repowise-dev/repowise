@@ -144,7 +144,7 @@ _FEATURE_NAMED_TESTS_DIR = "tests"
 #   Next.js, Nuxt and Astro ``pages/``: any script, component or Markdown page
 #   Nuxt/Nitro ``server/api/`` and ``server/routes/``: any script file
 # Which framework a repo runs is read from package.json in
-# ``ingestion/framework_facts.py``; this classifier is path-only and memoized,
+# ``ingestion/framework_facts/``; this classifier is path-only and memoized,
 # so it keys on the root plus a served-file shape instead. Ceiling: a repo with
 # no router that keeps plainly named suites under ``pages/test/`` or
 # ``app/test/route.ts`` reads as production; passing framework facts in as
@@ -482,8 +482,12 @@ def _tree_segments(
 
 
 def _router_root_end(segments: list[str], filename: str, ext: str, js_family: bool) -> int | None:
-    """Where the URL segments start under the nearest router root that serves this file."""
-    for i in range(len(segments) - 1, -1, -1):
+    """Where the URL segments start under the outermost router root that serves this file.
+
+    Outermost, because a folder under a root is itself a URL segment even when
+    it is named like a root: ``pages/test/app/page.tsx`` serves ``/test/app``.
+    """
+    for i in range(len(segments)):
         seg, above = segments[i], segments[i - 1] if i else ""
         if seg == "routes" and above == "src":
             served = filename.startswith("+")

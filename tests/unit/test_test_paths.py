@@ -81,6 +81,7 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/pages/test/about.astro", None, ""),
     ("server/api/test/ping.post.ts", None, ""),
     ("server/routes/tests/health.ts", None, ""),
+    ("pages/test/app/page.tsx", None, ""),
     ("app/api/test/route.test.ts", None, "test"),
     ("app/api/test/__tests__/route.ts", None, "test"),
     ("pages/test/index.spec.ts", None, "test"),
