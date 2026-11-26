@@ -126,7 +126,7 @@ def _normalize_jvm_function(path: str, function: str) -> str:
     if "/" in path and "." in function:
         dir_dotted = path.rsplit("/", 1)[0].replace("/", ".")
         parts = function.split(".")
-        for i in range(len(parts) - 2, 0, -1):
+        for i in range(len(parts) - 1, 0, -1):
             pkg = ".".join(parts[:i])
             if dir_dotted == pkg or dir_dotted.endswith("." + pkg):
                 return ".".join(parts[i:])
@@ -162,7 +162,9 @@ def resolve_location(
     fn = raw_fn if raw_fn in names else _normalized_function_name(location["path"], raw_fn)
     found = names.get(fn, [])
     by_qualified = [s for s in found if _exact(s, fn)]
-    if location.get("exact"):
+    # A name with its package stripped must still name the symbol in full:
+    # ``srv.Get`` is the package function ``Get``, never the method ``Store.Get``.
+    if location.get("exact") or fn != raw_fn:
         found = by_qualified
     line = location.get("line")
     # A bare name must also agree on the line when one is given: a method

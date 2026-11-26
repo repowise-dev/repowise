@@ -301,3 +301,22 @@ def test_go_receiver_and_jvm_package_names_resolve_to_indexed_symbols() -> None:
         None,
         "unknown_symbol",
     )
+
+
+def test_a_package_qualified_name_never_joins_a_method_of_the_same_name() -> None:
+    symbols = {
+        "srv/store.go": symbol_lookup([IndexedSymbol("srv/store.go::Store.Get", "Store.Get", "Get", 5)]),
+        "src/com/acme/Util.kt": symbol_lookup([IndexedSymbol("src/com/acme/Util.kt::get", "get", "get", 3)]),
+    }
+
+    # ``srv.Get`` is the package function Get, not the method Store.Get.
+    assert resolve_location(_loc("srv/store.go", "srv.Get"), symbols) == (None, "unknown_symbol")
+    assert resolve_location(_loc("srv/store.go", "example.com/m/srv.Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    # A Kotlin top-level function strips its whole package.
+    assert resolve_location(_loc("src/com/acme/Util.kt", "com.acme.get"), symbols) == (
+        "src/com/acme/Util.kt::get",
+        None,
+    )
