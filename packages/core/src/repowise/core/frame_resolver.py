@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-FrameLanguage = Literal["go", "python", "javascript", "java", "kotlin"]
+FrameLanguage = Literal["go", "python", "javascript", "php", "java", "kotlin"]
 
 #: JVM frames: no file of their own, placed by class name (:func:`place_jvm_frames`).
 _JVM = frozenset({"java", "kotlin"})
@@ -146,20 +146,24 @@ def resolve_frames(
     the method name and class to agree with the innermost method at its line;
     with no line it joins by name (:func:`_name_join`): the one method of that
     name in that class, else the one whose parameter count (and types) match
-    the frame's, else ``ambiguous``. A frame is never put on one overload of
-    several by name alone.
+    the frame's, else ``ambiguous``. PHP needs the frame's function name
+    (``Class::method`` or a bare function) to agree with the innermost method
+    or function at its line. A frame is never put on one overload of several by
+    name alone.
 
     Folding, when the frame's own function has no symbol: a Go closure
     (``Outer.func1``) whose start line lies inside ``Outer``; a Python frame
     whose qualified name runs through ``<locals>`` or ends in ``<lambda>``,
     ``<genexpr>`` or a comprehension, charged to the symbol its enclosing name
     matches; a JavaScript function that starts on a body line of an indexed
-    function. Module bodies (Python ``<module>``, the Go package initializer,
-    the CommonJS wrapper at 1:1, a JVM static initializer) resolve to the
-    file, and a Python frame on a decorator line resolves to the function it
-    decorates. A JVM lambda (``lambda$name$0``, Kotlin ``name$lambda$0``) and a
-    method of an anonymous class (``Outer$1``) fold into the method at their
-    line; compiler-made accessors and bridges (``access$000``, ``$default``,
+    function; a PHP ``{closure}`` frame folded into the method or function it
+    runs inside, and frames on ``{main}`` or class body lines attributed to the
+    file. Module bodies (Python ``<module>``, the Go package initializer, the
+    CommonJS wrapper at 1:1, a JVM static initializer) resolve to the file, and
+    a Python frame on a decorator line resolves to the function it decorates.
+    A JVM lambda (``lambda$name$0``, Kotlin ``name$lambda$0``) and a method of
+    an anonymous class (``Outer$1``) fold into the method at their line;
+    compiler-made accessors and bridges (``access$000``, ``$default``,
     ``$$Lambda``, ``$$`` proxies) are ``generated``.
     """
     paths = _PathMap(root, symbols_by_file, dirty_paths)
@@ -283,7 +287,7 @@ def _resolve(
     rel = paths.relative(frame.path)
     if rel is None:
         return "outside_root"
-    if frame.language not in ("go", "python", "javascript", *_JVM):
+    if frame.language not in ("go", "python", "javascript", "php", *_JVM):
         return "unsupported_language"
     # A JVM frame without a line still has its class, method and parameters.
     if frame.line < 1 and frame.language not in _JVM:
@@ -312,6 +316,8 @@ def _resolve(
         outcome = _go(frame, symbols)
     elif frame.language in _JVM:
         outcome = _jvm(frame, symbols, kotlin=rel.endswith(".kt"))
+    elif frame.language == "php":
+        outcome = _php(frame, symbols)
     else:
         outcome = _python(frame, symbols, lines)
     return (rel, outcome) if isinstance(outcome, tuple) else outcome
@@ -434,6 +440,83 @@ def _decorated(
 def _qualname_tail(frame_name: str, qualified_name: str) -> bool:
     """Whether *frame_name* (``Flask.__init__``) ends *qualified_name* at a dot."""
     return qualified_name == frame_name or qualified_name.endswith("." + frame_name)
+
+
+# -- PHP -----------------------------------------------------------------------
+
+_PHP_CLOSURE_RE = re.compile(r"(?:^|::|->|\\)(\{closure\}|Closure::__invoke)$")
+_PHP_BODY_NAMES = frozenset({"{main}", "<main>", "main", "[main]"})
+
+
+def _php(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipReason:
+    raw_name = frame.function
+    if not raw_name:
+        return "no_second_signal"
+
+    closure_match = _PHP_CLOSURE_RE.search(raw_name)
+    folded = closure_match is not None
+
+    prefix = raw_name[: closure_match.start()] if folded else raw_name
+
+    if prefix in _PHP_BODY_NAMES:
+        return (None, folded)
+
+    symbol = symbol_at((s for s in symbols if s.kind in _CALLABLE_KINDS), frame.line)
+
+    if symbol is None:
+        if folded and not prefix:
+            return (None, True)
+        container = symbol_at(
+            (s for s in symbols if s.kind in ("class", "interface", "trait", "enum")),
+            frame.line,
+        )
+        if container is not None:
+            clean = prefix.replace("\\", ".").replace("::", ".").replace("->", ".")
+            if clean == container.name or clean.endswith("." + container.name):
+                return (None, folded)
+        return "no_span"
+
+    if folded:
+        if not prefix:
+            return (symbol, True)
+        clean_prefix = prefix.replace("\\", ".").replace("::", ".").replace("->", ".")
+        qual_parts = symbol.qualified_name.split(".")
+        if len(qual_parts) >= 2 and symbol.kind == "method":
+            parent = qual_parts[-2]
+            if clean_prefix == parent or clean_prefix.endswith("." + parent):
+                return (symbol, True)
+            return "second_signal_mismatch"
+        if clean_prefix == symbol.name or clean_prefix.endswith("." + symbol.name):
+            return (symbol, True)
+        return "second_signal_mismatch"
+
+    normalized = prefix.replace("\\", ".").replace("::", ".").replace("->", ".")
+    qual_parts = symbol.qualified_name.split(".")
+    if len(qual_parts) >= 2 and symbol.kind == "method":
+        parent = qual_parts[-2]
+        expected_suffix = f"{parent}.{symbol.name}"
+        if (
+            normalized == expected_suffix
+            or normalized.endswith("." + expected_suffix)
+            or normalized == symbol.name
+            or symbol.qualified_name.endswith("." + normalized)
+            or normalized.lower() == expected_suffix.lower()
+            or normalized.lower().endswith("." + expected_suffix.lower())
+        ):
+            return (symbol, False)
+        return "second_signal_mismatch"
+
+    if (
+        normalized == symbol.name
+        or normalized.endswith("." + symbol.name)
+        or symbol.qualified_name == normalized
+        or symbol.qualified_name.endswith("." + normalized)
+        or normalized.lower() == symbol.name.lower()
+        or normalized.lower().endswith("." + symbol.name.lower())
+    ):
+        return (symbol, False)
+
+    return "second_signal_mismatch"
 
 
 # -- JVM (Java, Kotlin) ----------------------------------------------------------

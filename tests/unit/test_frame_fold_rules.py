@@ -235,3 +235,30 @@ def test_javascript_reads_each_file_once() -> None:
     frames = [_js(6, 15), _js(6, 15, "x"), _js(5, 23, "handle")]
     resolve_frames(frames, root=ROOT, symbols_by_file={"lib/app.js": JS}, read_lines=read)
     assert calls == ["lib/app.js"]
+
+
+# -- PHP -------------------------------------------------------------------------
+
+PHP_SYM = [
+    _sym("Cart.php", "Cart.Cart", 1, 30, "class"),
+    _sym("Cart.php", "Cart.Cart.total", 5, 20, "method"),
+]
+
+
+def _php(line: int, name: str) -> ProfileFrame:
+    return ProfileFrame(f"{ROOT}/Cart.php", line, "php", function=name)
+
+
+def test_php_closure_folds_into_enclosing_method() -> None:
+    assert _hit(_run(_php(8, "{closure}"), PHP_SYM)) == (PHP_SYM[1], True)
+    assert _hit(_run(_php(8, "Cart::{closure}"), PHP_SYM)) == (PHP_SYM[1], True)
+    assert _hit(_run(_php(8, "Shop\\Cart::{closure}"), PHP_SYM)) == (PHP_SYM[1], True)
+
+
+def test_php_closure_at_module_level_folds_into_file() -> None:
+    assert _hit(_run(_php(35, "{closure}"), PHP_SYM)) == (None, True)
+
+
+def test_php_closure_with_wrong_class_prefix_is_mismatch() -> None:
+    assert _run(_php(8, "OtherClass::{closure}"), PHP_SYM).skipped == {"second_signal_mismatch": 1}
+

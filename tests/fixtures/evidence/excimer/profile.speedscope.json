@@ -1,0 +1,63 @@
+{
+  "$schema": "https://www.speedscope.app/file-format-schema.json",
+  "shared": {
+    "frames": [
+      {
+        "name": "{main}",
+        "file": "src/cart.php",
+        "line": 33
+      },
+      {
+        "name": "Shop\\Cart::__construct",
+        "file": "src/cart.php",
+        "line": 10
+      },
+      {
+        "name": "Shop\\Cart::empty",
+        "file": "src/cart.php",
+        "line": 14
+      },
+      {
+        "name": "Shop\\Cart::add",
+        "file": "src/cart.php",
+        "line": 18
+      },
+      {
+        "name": "Shop\\Cart::total",
+        "file": "src/cart.php",
+        "line": 22
+      },
+      {
+        "name": "Shop\\Cart::{closure}",
+        "file": "src/cart.php",
+        "line": 25
+      }
+    ]
+  },
+  "profiles": [
+    {
+      "type": "sampled",
+      "name": "php",
+      "unit": "microseconds",
+      "startValue": 0,
+      "endValue": 1000,
+      "samples": [
+        [0],
+        [0, 2],
+        [0, 2, 1],
+        [0, 3],
+        [0, 4],
+        [0, 4, 5]
+      ],
+      "weights": [
+        50,
+        50,
+        100,
+        200,
+        250,
+        350
+      ]
+    }
+  ],
+  "exporter": "excimer"
+}

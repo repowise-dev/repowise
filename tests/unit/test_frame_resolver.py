@@ -31,6 +31,9 @@ GO_PARENT = _sym("command.go", "command.Command.HasParent", 120, 122, "method")
 JS_SEND = _sym("lib/response.js", "response.send", 5, 20)
 JS_TWIN_A = _sym("lib/twins.js", "twins.a", 1, 1)
 JS_TWIN_B = _sym("lib/twins.js", "twins.b", 1, 1)
+PHP_CLASS = _sym("src/Cart.php", "src.Cart.Cart", 5, 30, "class")
+PHP_TOTAL = _sym("src/Cart.php", "src.Cart.Cart.total", 10, 20, "method")
+PHP_HELPER = _sym("src/Cart.php", "src.Cart.helper", 22, 28, "function")
 
 SYMBOLS = {
     "pkg/app.py": [PY_CLASS, PY_INIT, PY_RUN],
@@ -38,6 +41,7 @@ SYMBOLS = {
     "command.go": [GO_FLAGS, GO_PARENT],
     "lib/response.js": [JS_SEND],
     "lib/twins.js": [JS_TWIN_A, JS_TWIN_B],
+    "src/Cart.php": [PHP_CLASS, PHP_TOTAL, PHP_HELPER],
     "gen/api_pb2.py": [_sym("gen/api_pb2.py", "gen.api_pb2.f", 1, 5)],
 }
 
@@ -58,6 +62,10 @@ def _resolve(*frames: ProfileFrame, **kw):
 
 def _py(line: int, name: str, path: str = "pkg/app.py") -> ProfileFrame:
     return ProfileFrame(f"{ROOT}/{path}", line, "python", function=name)
+
+
+def _php(line: int, name: str, path: str = "src/Cart.php") -> ProfileFrame:
+    return ProfileFrame(f"{ROOT}/{path}", line, "php", function=name)
 
 
 def _one(resolution):
@@ -152,7 +160,7 @@ def test_line_below_one_is_bad() -> None:
 
 
 def test_unknown_language_is_unsupported() -> None:
-    frame = ProfileFrame(f"{ROOT}/pkg/app.py", 5, "ruby", function="x")  # type: ignore[arg-type]
+    frame = ProfileFrame(f"{ROOT}/pkg/app.py", 5, "csharp", function="x")  # type: ignore[arg-type]
     assert _resolve(frame).skipped == {"unsupported_language": 1}
 
 
@@ -360,3 +368,34 @@ def test_frame_paths_lists_only_files_under_the_root() -> None:
         ProfileFrame("<built-in>", 0, "python"),
     ]
     assert frame_paths(frames, root=ROOT) == {"pkg/app.py"}
+
+
+# -- PHP ----------------------------------------------------------------------
+
+
+def test_php_method_resolves_with_class_qualifier() -> None:
+    assert _one(_resolve(_php(12, "Cart::total"))) is PHP_TOTAL
+    assert _one(_resolve(_php(12, "Shop\\Cart::total"))) is PHP_TOTAL
+    assert _one(_resolve(_php(12, "total"))) is PHP_TOTAL
+
+
+def test_php_bare_function_resolves() -> None:
+    assert _one(_resolve(_php(24, "helper"))) is PHP_HELPER
+    assert _one(_resolve(_php(24, "Shop\\helper"))) is PHP_HELPER
+
+
+def test_php_method_mismatch_is_second_signal_mismatch() -> None:
+    assert _resolve(_php(12, "Cart::add")).skipped == {"second_signal_mismatch": 1}
+    assert _resolve(_php(12, "OtherClass::total")).skipped == {"second_signal_mismatch": 1}
+
+
+def test_php_main_body_resolves_to_file() -> None:
+    res = _resolve(_php(35, "{main}"))
+    assert len(res.resolved) == 1
+    hit = res.resolved[0]
+    assert hit.symbol is None and not hit.folded
+
+
+def test_php_frame_without_name_is_no_second_signal() -> None:
+    assert _resolve(_php(12, "")).skipped == {"no_second_signal": 1}
+
