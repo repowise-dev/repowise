@@ -1317,7 +1317,7 @@ def _benchmark_run(run: Any, at: datetime) -> dict[str, Any]:
 async def _symbol_spans(
     session: AsyncSession, repository_id: str, paths: set[str]
 ) -> dict[str, list[Any]]:
-    """Every indexed symbol's span in *paths*, per file."""
+    """Every indexed symbol's span and kind in *paths*, per file."""
     from ...models import WikiSymbol
 
     out: dict[str, list[Any]] = {}
@@ -1328,6 +1328,7 @@ async def _symbol_spans(
                 WikiSymbol.symbol_id,
                 WikiSymbol.start_line,
                 WikiSymbol.end_line,
+                WikiSymbol.kind,
             ).where(WikiSymbol.repository_id == repository_id, WikiSymbol.file_path.in_(batch))
         )
         for row in result:
@@ -1435,18 +1436,12 @@ async def _function_context(
     (``evidence.function_tests.row_tests``). A benchmark that calls the
     function or ran its lines is its verify command, never a test.
     """
-    from ....evidence.function_tests import (
-        benchmark_command,
-        is_benchmark,
-        row_tests,
-        runnable_test,
-    )
+    from ....evidence.function_tests import benchmark_command, is_benchmark, row_tests
     from ....evidence.ingest import load_origins
     from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
     from ....ingestion.symbol_identity import file_of_symbol
     from ..git import function_owner_history
     from ..graph import get_node_degree_counts_bulk
-    from .coverage_map import tests_running_spans
     from .function_facts import tests_for_functions
 
     if not symbol_ids:
@@ -1463,18 +1458,8 @@ async def _function_context(
         sid: [s for s in found if origins.get(file_of_symbol(s)) == "production"]
         for sid, found in sources.items()
     }
-    wanted = set(symbol_ids)
-    lines = {
-        s.symbol_id: (path, s.start_line, s.end_line)
-        for path, held in spans.items()
-        for s in held
-        if s.symbol_id in wanted and s.start_line and s.end_line
-    }
-    ran = await tests_running_spans(session, repository_id, lines)
-    ran_tests = {sid: {runnable_test(t, f) for t, f, _ in found} for sid, found in ran.items()}
+    reach, ran = await _benchmark_reach(session, repository_id, symbol_ids, spans, sources)
     near = await tests_for_functions(session, repository_id, symbol_ids)
-    # A benchmark is a direct caller or a test that ran the function's lines.
-    reach = {sid: {*sources.get(sid, ()), *ran_tests.get(sid, ())} for sid in symbol_ids}
     # The nearest tests are asked too, so a stored benchmark there is never listed as a test.
     listed = {t.selector for found in near.values() for t in found}
     stored = await _stored_benchmarks(session, repository_id, set().union(listed, *reach.values()))
@@ -1502,6 +1487,116 @@ async def _function_context(
         },
         benchmark=benchmark,
     )
+
+
+async def _benchmark_reach(
+    session: AsyncSession,
+    repository_id: str,
+    symbol_ids: list[str],
+    spans: dict[str, list[Any]],
+    sources: dict[str, list[str]],
+) -> tuple[dict[str, set[str]], dict[str, Any]]:
+    """``(reach, ran)``: per function, the selectors that may benchmark it (its
+    direct callers, *sources*, and the tests the per-test map saw run its lines
+    in *spans*), and what the map read (``crud.tests_running_spans``)."""
+    from ....evidence.function_tests import runnable_test
+    from .coverage_map import tests_running_spans
+
+    wanted = set(symbol_ids)
+    lines = {
+        s.symbol_id: (path, s.start_line, s.end_line)
+        for path, held in spans.items()
+        for s in held
+        if s.symbol_id in wanted and s.start_line and s.end_line
+    }
+    ran = await tests_running_spans(session, repository_id, lines)
+    ran_tests = {sid: {runnable_test(t, f) for t, f, _ in found} for sid, found in ran.items()}
+    # A benchmark is a direct caller or a test that ran the function's lines.
+    reach = {sid: {*sources.get(sid, ()), *ran_tests.get(sid, ())} for sid in symbol_ids}
+    return reach, ran
+
+
+#: Symbol kinds a change's measured functions are read from: function level only.
+_CALLABLE_KINDS = ("function", "method", "constructor")
+
+
+async def measured_in_change(
+    session: AsyncSession, repository_id: str, changed: dict[str, set[int]]
+) -> list[Any]:
+    """The production functions *changed* (``{path: new-side lines}``) edits
+    that a measurement speaks for, each with its verify command
+    (``evidence.change_measured.measured_changes``): ranked by a workload in a
+    class that may lead, or measured by a benchmark with stored results.
+
+    A function is edited when a changed line falls inside it and in no
+    narrower callable. Lines are the change's new side, read against the
+    indexed spans: a change far ahead of the index can miss a function that
+    moved (the upgrade is mapping lines through the diff since the indexed
+    commit, as ``direct_test_selectors`` notes too). Functions outside
+    production code (``code_origin``) are never measured. Empty when the
+    index holds no evidence, after two one-row reads.
+    """
+    from ....evidence.change_measured import Ranked, measured_changes
+    from ....evidence.function_tests import benchmark_command
+    from ....evidence.ingest import load_origins
+    from ....symbol_spans import innermost
+    from ...models import EvidenceBenchmarkResult, EvidenceRun, WorkloadHotness
+
+    if not await _holds_any(session, repository_id, (WorkloadHotness, EvidenceBenchmarkResult)):
+        return []
+    origins = await load_origins(session, repository_id, changed)
+    files = {p for p in changed if origins.get(p) == "production"}
+    if not files:
+        return []
+    spans = await _symbol_spans(session, repository_id, files)
+    edited: list[str] = []
+    for path, held in spans.items():
+        lines = changed[path]
+        touched = [
+            s
+            for s in held
+            if s.kind in _CALLABLE_KINDS and any(s.start_line <= n <= s.end_line for n in lines)
+        ]
+        edited += [s.symbol_id for s in innermost(touched)]
+    if not edited:
+        return []
+    ranked: list[tuple[str, Ranked]] = []
+    for batch in chunked(sorted(set(edited))):
+        result = await session.execute(
+            select(
+                WorkloadHotness.symbol_id,
+                EvidenceRun.workload_name,
+                EvidenceRun.workload_class,
+                WorkloadHotness.rank,
+            )
+            .join(EvidenceRun, EvidenceRun.id == WorkloadHotness.run_id)
+            .where(
+                WorkloadHotness.repository_id == repository_id,
+                WorkloadHotness.symbol_id.in_(batch),
+            )
+        )
+        ranked += [(sid, Ranked(name, cls, rank)) for sid, name, cls, rank in result.tuples()]
+    sources = await _callers_of(session, repository_id, edited)
+    reach, _ = await _benchmark_reach(session, repository_id, edited, spans, sources)
+    # Measured means a stored result: a benchmark nobody ran measured nothing yet.
+    stored = await _stored_benchmarks(session, repository_id, set().union(*reach.values()))
+    benchmarks = {
+        sid: command
+        for sid, found in reach.items()
+        if (command := benchmark_command(b for b in found if b in stored))
+    }
+    return measured_changes(edited, ranked, benchmarks)
+
+
+async def _holds_any(session: AsyncSession, repository_id: str, tables: tuple[Any, ...]) -> bool:
+    """Whether any of *tables* has a row for the repository."""
+    for table in tables:
+        found = await session.execute(
+            select(table.repository_id).where(table.repository_id == repository_id).limit(1)
+        )
+        if found.first() is not None:
+            return True
+    return False
 
 
 async def _stored_benchmarks(
@@ -1684,6 +1779,7 @@ __all__ = [
     "list_opportunity_evidence",
     "list_performance_opportunities",
     "measured_costs",
+    "measured_in_change",
     "opportunity_details",
     "performance_facet_counts",
     "performance_headline",

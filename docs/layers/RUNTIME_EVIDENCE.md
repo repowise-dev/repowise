@@ -828,6 +828,12 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
     A unit-test run has neither.
   - **Slower**: in `get_health`, a row a slower comparison names says so
     (`slower`: its own measure that got worse and the commits that changed it).
+- **Change risk** (`get_change_risk`, `repowise risk` table and JSON): a
+  `measured` block, only when the change edits a function an entry-point,
+  load-test or production run ranks, or a benchmark with stored results measures.
+  Each function comes with the same one `verify` command as its measured row.
+  Function level only, and it never moves the score
+  (`repowise.core.evidence.change_measured`).
 
 ## Reference
 

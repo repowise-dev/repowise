@@ -174,12 +174,12 @@ def _git_out(root: str, args: list[str], ok: tuple[int, ...] = (0,)) -> bytes | 
 
 
 async def _index_inputs(ctx: Any) -> str:
-    """The index state and the newest coverage ingest; ``""`` without an index."""
+    """The index state and the newest coverage and evidence ingests; ``""`` without an index."""
     from sqlalchemy import func, select
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.core.persistence.database import get_session
-    from repowise.core.persistence.models import CoverageIngest
+    from repowise.core.persistence.models import CoverageIngest, EvidenceRun
     from repowise.server.mcp_server import tool_change_risk as _pkg
     from repowise.server.mcp_server._index_state import index_state_key
 
@@ -197,6 +197,14 @@ async def _index_inputs(ctx: Any) -> str:
                     )
                 )
             ).one()
+            # The measured block reads evidence an ingest adds without an index stamp.
+            runs_at, runs = (
+                await session.execute(
+                    select(func.max(EvidenceRun.ingested_at), func.count()).where(
+                        EvidenceRun.repository_id == repository.id
+                    )
+                )
+            ).one()
     except (LookupError, SQLAlchemyError):
         return ""
-    return f"{index_state_key(repository)}|{newest or ''}|{count}"
+    return f"{index_state_key(repository)}|{newest or ''}|{count}|{runs_at or ''}|{runs}"

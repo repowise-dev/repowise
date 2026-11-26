@@ -71,6 +71,39 @@ def _impacted_tests_for(repo_path: str, result, revspec: str | None) -> dict:
     return run_async(read())
 
 
+def _measured_for(repo_path: str, result, revspec: str | None) -> dict | None:
+    """The measured functions the change edits, as ``get_change_risk`` names them."""
+    from repowise.core import git_refs
+    from repowise.core.persistence import create_session_factory
+    from repowise.server.mcp_server.tool_change_risk.measured import scored_change_measured
+
+    root = Path(git_refs.toplevel(repo_path) or repo_path).resolve()
+
+    async def read() -> dict | None:
+        async with repo_index_session(root) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            factory = create_session_factory(session.bind)
+            return await scored_change_measured(root, factory, revspec, result, repo=repo_id)
+
+    return run_async(read())
+
+
+def _print_measured(block: dict | None) -> None:
+    """Each measured function the change edits, with the command that checks it."""
+    if not block:
+        return
+    from repowise.core.evidence.change_measured import measured_line
+
+    console.print(f"\n[bold]{escape(str(block['summary']))}[/bold]")
+    for row in block["functions"]:
+        console.print(f"  {escape(measured_line(row))}")
+    more = block.get("total", 0) - len(block["functions"])
+    if more > 0:
+        console.print(f"  [dim]and {more} more[/dim]")
+
+
 def _print_independent_changes(block: dict) -> None:
     """The groups, plainly: no score, no percentage, no adjective."""
     console.print(f"\n[bold]{escape(str(block.get('summary') or ''))}[/bold]")
@@ -95,6 +128,7 @@ def _print_change(subject: _Subject, result: ChangeRiskResult, failed: bool) -> 
     """The table rendering of a scored change."""
     _print_size(result, subject.fail_above, failed)
     _print_fix_history_and_shape(result)
+    _print_measured(_measured_for(subject.repo_path, result, subject.revspec))
     groups = _independent_changes_for(subject.repo_path, result, subject.revspec)
     if groups:
         _print_independent_changes(groups)
@@ -215,6 +249,9 @@ def _emit_machine(subject: _Subject, result: ChangeRiskResult) -> None:
         payload["impacted_tests"] = _impacted_tests_for(
             subject.repo_path, result, subject.revspec
         )
+        measured = _measured_for(subject.repo_path, result, subject.revspec)
+        if measured:
+            payload["measured"] = measured
         if fail_above is not None:
             payload["gate"] = {
                 "fail_above_percentile": fail_above,
