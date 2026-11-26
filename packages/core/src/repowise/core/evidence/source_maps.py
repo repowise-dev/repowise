@@ -69,7 +69,8 @@ def _webpack_source(
     except ValueError:
         raise _refuse("invalid map or source URL") from None
     if parsed.scheme != "webpack":
-        return None  # A query or fragment names a loader's view of the file, never the file.
+        return None
+    # A loader's query or fragment (``?vue&type=script``) is ignored: the path joins.
     decoded = unquote(parsed.path).lstrip("/").replace("\\", "/")
     base = posixpath.dirname(map_path)
     if not decoded or ":" in decoded or "\0" in decoded:
