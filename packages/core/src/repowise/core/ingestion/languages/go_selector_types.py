@@ -567,24 +567,31 @@ class GoSelectorTypes(Generic[T]):
             hits = [hit for t in level if (hit := lookup(t)) is not None]
             if hits:
                 return hits[0] if len(hits) == 1 and hits[0] is not _UNTYPED else None
-            deeper: list[GoType] = []
-            for t in level:
-                path = self._declaring_file(*t)
-                if path is None or t[1] not in self.facts(path).structs:
-                    return None
-                for f in self.facts(path).structs.get(t[1], ()) if path else ():
-                    if not f.embedded:
-                        continue
-                    embedded = None if f.written is None else self.resolve_written(path, f.written)
-                    if embedded is None:
-                        return None
-                    if embedded not in seen:
-                        seen.add(embedded)
-                        deeper.append(embedded)
+            deeper = self._embedded_in(level, seen)
             if not deeper:
                 return None
             level = deeper
         return None
+
+    def _embedded_in(self, level: list[GoType], seen: set[GoType]) -> list[GoType] | None:
+        """The repository structs *level*'s structs embed, unseen yet; None when
+        one of *level* is not a struct or embeds a type outside the repository."""
+        deeper: list[GoType] = []
+        for t in level:
+            path = self._declaring_file(*t)
+            fields = self.facts(path).structs.get(t[1]) if path else None
+            if fields is None:
+                return None
+            for f in fields:
+                if not f.embedded:
+                    continue
+                embedded = None if f.written is None else self.resolve_written(path, f.written)
+                if embedded is None:
+                    return None
+                if embedded not in seen:
+                    seen.add(embedded)
+                    deeper.append(embedded)
+        return deeper
 
     def _declaring_file(self, package: str, type_name: str) -> str | None:
         """The one file of *package* declaring *type_name*, or None."""
