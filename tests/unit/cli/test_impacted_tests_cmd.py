@@ -164,14 +164,31 @@ def test_a_build_file_change_runs_everything_and_says_why(repo) -> None:
     assert "Dockerfile changed: build or test configuration can change any test." in _err(result)
 
 
-def test_a_new_untested_file_runs_everything(repo) -> None:
+def test_a_new_file_runs_the_tests_reaching_the_code_beside_it(repo) -> None:
     _write(repo, {"src/c.py": "C = 1\n"})
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "new")
     result = _run(repo, "main...feat", "--format", "json")
     data = json.loads(result.stdout)
+    assert data["run_all"] is False and data["args"] == ["tests/test_a.py"]
+    assert data["selected"]["basis"]["src/c.py"] == "new-file"
+    assert any(
+        r.startswith("src/c.py changed: it is new in this change, beside 2 existing code file(s)")
+        for r in data["reasons"]
+    )
+
+
+def test_a_new_file_nothing_names_or_sits_beside_runs_everything(repo) -> None:
+    _write(repo, {"lone/c.py": "C = 1\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "new")
+    result = _run(repo, "main...feat", "--format", "json")
+    data = json.loads(result.stdout)
     assert data["run_all"] is True and data["args"] == [":all"]
-    assert data["reasons"][0].startswith("src/c.py: no coverage")
+    assert data["reasons"][0] == (
+        "lone/c.py changed: it is new in this change, no changed file names it and no "
+        "existing code sits beside it."
+    )
 
 
 def test_no_index_runs_everything(repo) -> None:

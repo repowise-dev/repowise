@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..models import GlobImport
 from ..resolvers import ResolverContext, resolve_import
 
 
@@ -50,6 +51,11 @@ def resolve_import_targets(
         from ..resolvers.python import resolve_python_import_all
 
         return tuple(resolve_python_import_all(imp, path, ctx))
+    if isinstance(imp, GlobImport):
+        # Vite ``import.meta.glob``: one edge per file the patterns match.
+        from ..resolvers.typescript import resolve_ts_js_glob
+
+        return resolve_ts_js_glob(imp.glob_patterns, path, ctx)
     if language in ("typescript", "javascript"):
         # React Native: ``./Button`` also means ``Button.ios.tsx`` /
         # ``Button.android.tsx`` (Metro platform extensions). A repo with no

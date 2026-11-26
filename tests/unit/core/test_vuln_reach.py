@@ -62,7 +62,7 @@ def test_tiers_strongest_first():
 
 def test_roots_are_entry_modules_route_handlers_and_cli_commands():
     roots = production_roots(
-        entry_files=["app/main.py"],
+        root_files=["app/main.py"],
         route_handlers=["app/api.py::list_users", None],
         cli_commands=["app/cli.py::serve"],
     )
@@ -71,7 +71,7 @@ def test_roots_are_entry_modules_route_handlers_and_cli_commands():
 
 def test_roots_outside_production_code_are_dropped():
     roots = production_roots(
-        entry_files=["tests/test_main.py", "docs_src/tutorial/main.py", "scripts/release.py"],
+        root_files=["tests/test_main.py", "docs_src/tutorial/main.py", "scripts/release.py"],
         route_handlers=["tests/conftest.py::fake_route"],
         cli_commands=["examples/demo.py::main"],
     )
@@ -80,7 +80,7 @@ def test_roots_outside_production_code_are_dropped():
 
 def test_stored_origin_wins_over_the_path_rule():
     roots = production_roots(
-        entry_files=["app/main.py", "tools/gen.py"],
+        root_files=["app/main.py", "tools/gen.py"],
         origins={"app/main.py": "generated", "tools/gen.py": "production"},
     )
     assert roots == {"tools/gen.py::__module__"}
@@ -93,7 +93,7 @@ def test_reach_walks_from_roots_over_call_edges():
             "app/svc.py::run": ["app/parse.py::read_config"],
             "app/unused.py::old": ["app/parse.py::legacy"],
         },
-        entry_files=["app/main.py"],
+        root_files=["app/main.py"],
     )
     assert "app/parse.py::read_config" in reached
     assert "app/parse.py::legacy" not in reached
@@ -291,7 +291,7 @@ GO_RENDER = "internal/page/render.go"
 def test_go_reachable_when_a_reached_file_imports_the_affected_path():
     reached = _reach(
         {"cmd/srv/main.go::__module__": [f"{GO_RENDER}::Render"]},
-        entry_files=["cmd/srv/main.go"],
+        root_files=["cmd/srv/main.go"],
     )
     result = tier_advisory(
         ecosystem="go",

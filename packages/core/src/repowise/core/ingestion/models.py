@@ -354,6 +354,17 @@ class Import:
 
 
 @dataclass
+class GlobImport(Import):
+    """A Vite ``import.meta.glob`` call: it loads every indexed file its patterns match.
+
+    ``module_path`` is the first pattern; ``glob_patterns`` holds all of them in
+    order, ``!`` negations included.
+    """
+
+    glob_patterns: tuple[str, ...] = ()
+
+
+@dataclass
 class CallReceiver:
     """A call expression used as the receiver of another call.
 

@@ -16,11 +16,108 @@ what did not map.
 - **What it never guesses:** an entry that does not join exactly is skipped and
   counted by reason, and a value that was not measured is unknown, never zero.
 
-Stored evidence is read by `repowise evidence status` and `repowise evidence
-setup`. The static findings it sits beside are in
-[PERFORMANCE.md](PERFORMANCE.md).
+Repowise already holds the call graph, git and fix history, owners, which tests
+cover which code and the static performance findings. Evidence adds what a run
+measured, and the two together answer three questions no profiler answers on
+its own.
 
-## Quick start
+## What you learn
+
+### What to fix, why, and how to check it
+
+`repowise health` lists, for each workload's newest run, the functions that cost
+the most, each as one row: the next step first, then what the run measured
+inside the function, the callers that drove it, the measurement with its owner
+and last change, the tests that ran it and one command to run before and after
+the fix.
+
+```text
+Measured (entry_point "repowise status" at 3f9c2b7, 0 days old: repo code itself 41%, waits 12%, libraries 38% of 700 samples)
+  1. packages/cli/status_cmd.py::_index_storage_bytes
+     next: walk with os.scandir and use each entry's is_file() and stat(), which reuse the directory read, instead of a Path.is_file or stat per path
+     why: 96% of it is filesystem metadata calls during a directory walk (57% is_file, 25% select_recursive, 15% stat): a stat per entry
+     driven by: status_cmd.py::_workspace_rows 100%
+     self 9% of the run (7% to 11%) · with callees 12% · 63 samples · 2 callers · owner Ada · last changed 2026-10-03 (abcdef1, #42) · test that ran it tests/unit/cli/test_status_storage.py::test_sums
+     verify: repowise perf measure --save before -- repowise status before the change, then --against before after it
+```
+
+A row with a next step from an entry-point, load-test or production run becomes
+a Fix first item ("Speed up `_index_storage_bytes`", gain `up to 9% of the
+"repowise status" run`) and leads it: see
+[how measured evidence creates and orders work](PERFORMANCE.md#how-measured-evidence-creates-and-orders-work).
+An agent gets the same row: `get_health(include=["performance"])` lists it
+compactly (`symbol_id`, `share`, `next`, and `verify` when a benchmark
+measures the function), and `get_context` on the function adds the `why` and
+`driven by` parts to its `measured` line. The rules for each field are under
+[Where it shows up](#where-it-shows-up).
+
+### When a change touches measured code
+
+`repowise risk` and MCP `get_change_risk` add a `measured` block when the change
+edits a function an entry-point, load-test or production run ranks, or that a
+stored benchmark measures, with the one command that checks it:
+
+```text
+This change edits 1 measured function: run each verify before and after it and compare.
+  context.go::getMapFromFormData (benchmark): go test -run '^$' -bench '^BenchmarkGetMapFromFormData$' -count 5 .
+```
+
+It names functions, never a file that merely holds one, and it never moves the
+risk score.
+
+### What got slower, and which commit did it
+
+`repowise evidence status --compare` sets each workload's newest run against a
+band of earlier runs and names the commits in between that changed a function
+the slower workload ran:
+
+```text
+"go bench .": 1 benchmark slower than the band of 5 earlier runs (BenchmarkOneRouteParam 1.30x (48.1 ns/op to 62.3 ns/op)); changed in a1b2c3d..f6a7b8c: tree.go::node::getValue in d4e5f6a "tree: walk params once" (#812).
+```
+
+For a test suite, `repowise evidence tests` then says which group of tests
+holds the time and the fixture they share:
+
+```text
+Start with the 29 tests that run persistence/database.py and 3 more files: they take 39.2 s more
+than the rest's pace (55% of the suite), 15 of them through fixture indexed (tests/unit/evidence/test_add.py:48).
+```
+
+`evidence add` prints the comparison line for the workload it stored,
+`repowise update` prints it when a workload is slower, and `get_health` lists
+it under `performance_measured.slower`.
+
+Every answer stays silent when the evidence does not hold it: no list for a
+suite under a minute, no ranked function from a benchmark profile, no
+regression inside the band's own noise, no `why` without a dominant callee,
+and no owner or last change when function-level blame has none (never the
+file's owner instead).
+
+## Connect it
+
+Paste this prompt into your coding agent, from the repository root. It runs
+`evidence setup`, follows its `next_call` steps until there is nothing left to
+collect, and reports what is stored. The commands always come from `setup`, so
+the prompt is the same for every stack.
+
+```text
+Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in and any environment variables (`env`) it sets. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
+```
+
+From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
+returns the same text with the agent's role line before it. To keep evidence
+fresh on every push, `repowise evidence setup --write` writes a CI file
+([In CI](#in-ci)).
+
+A service that already holds measurements (a database's statement statistics,
+a continuous profiler) connects through a plugin instead of a file:
+**[Writing an evidence source](../reference/PLUGINS.md#writing-an-evidence-source)**.
+Its runs are stored exactly as a file of the same entries would be.
+
+The rest of this page is the reference: the steps `setup` prints, every input
+format, how entries join to code, and where each answer shows up.
+
+## Run the steps yourself
 
 Four commands, run from the repository root. `add` needs an index. On a
 repository with none, `setup` prints the coverage plan and a `next_call` of
@@ -161,18 +258,6 @@ series:
 go test '-run=^$' -bench . -benchmem -count=1 ./work > .repowise/go-bench-results-work.txt
 repowise evidence add .repowise/go-bench-results-work.txt --workload "go bench results ./work" --class benchmark --commit <sha>
 ```
-
-### Hand it to an agent
-
-The "Connect evidence" prompt hands an agent the loop instead of stack
-commands, so the commands always come from `setup`:
-
-```text
-Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in and any environment variables (`env`) it sets. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
-```
-
-From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
-returns the same text with the agent's role line before it.
 
 ## Reading the results
 
@@ -709,6 +794,21 @@ checkout only the range is named. `evidence add` prints the same line for the
 workload it stored, `repowise update` prints one line when a workload is slower,
 and MCP `get_health(include=["performance"])` lists the lines under
 `performance_measured.slower`, only when there are any.
+
+One benchmark run of unchanged code can drift 1.4x on a busy machine, which is
+why a single run needs 25%. For a comparison you can trust at every commit, run
+the benchmark step twice per commit in CI and add both files under the same
+workload and commit: the two runs pool their samples and the floor drops to 10% (the band's own
+spread still applies when it is wider).
+For Go, `-count=10` in the one run also helps: the ten repeats fold into one
+result whose median, minimum and maximum the overlap check reads.
+
+```bash
+for i in 1 2; do
+  go test '-run=^$' -bench . -benchmem -count=5 ./... > bench-$i.txt
+  repowise evidence add bench-$i.txt --workload "go bench" --class benchmark --commit $(git rev-parse HEAD)
+done
+```
 
 ### `evidence tests`
 

@@ -167,6 +167,30 @@
   arguments: (arguments (string) @import.module)
 ) @import.statement
 
+; Vite glob import: import.meta.glob('./dir/*.ts') or (['./a/*.ts', '!./a/x.ts'], {...}).
+; The bundler loads every file the patterns match, so each gets an edge from
+; the caller (extractors/imports/ts_js.py expands the patterns).
+(call_expression
+  function: (member_expression
+    object: (meta_property)
+    property: (property_identifier) @_glob)
+  arguments: (arguments . [(string) (template_string) (array)] @import.module)
+  (#eq? @_glob "glob")
+) @import.statement
+
+; new URL('./worker.js', import.meta.url): a file the bundler emits beside the
+; caller and the caller loads (a worker, a plugin, an asset).
+(new_expression
+  constructor: (identifier) @_url
+  arguments: (arguments
+    . (string) @import.module
+    . (member_expression
+        object: (meta_property)
+        property: (property_identifier) @_meta_url))
+  (#eq? @_url "URL")
+  (#eq? @_meta_url "url")
+) @import.statement
+
 ; CommonJS: const svc = require('./svc')  /  const { a, b } = require('./svc')
 ; Tag the individual declarator so multi-declarator statements aren't deduped.
 (variable_declarator

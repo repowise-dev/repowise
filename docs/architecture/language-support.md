@@ -76,7 +76,7 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           TS/JS:  relative paths, tsconfig aliases, workspace exports,
                   `export ... from` re-export barrels, node_modules,
                   package.json "imports" (`#alias/*`) subpath imports
-          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> src/lib
+          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> kit.files.lib (src/lib)
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories

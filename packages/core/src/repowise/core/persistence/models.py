@@ -3639,6 +3639,48 @@ class PackageAdvisory(Base):
     __table_args__ = ({"sqlite_with_rowid": False},)
 
 
+class ExternalCallSiteRow(Base):
+    """One call into a package (``ingestion.external_calls.ExternalCallSite``).
+
+    Kept beside ``graph_edges``, never in it: the callee is no repo symbol, and
+    no graph metric may move. A full graph build replaces the repository's rows;
+    a scoped patch replaces the re-resolved files' rows (``crud.external_call_sites``).
+    Complete only when ``external_call_sites_stamp`` carries the current version.
+    """
+
+    __tablename__ = "external_call_sites"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    line: Mapped[int] = mapped_column(Integer, primary_key=True)
+    caller_symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    local_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    ecosystem: Mapped[str] = mapped_column(String(16), nullable=False)
+    module: Mapped[str] = mapped_column(Text, nullable=False)
+    package: Mapped[str] = mapped_column(Text, nullable=False)
+    external_node: Mapped[str] = mapped_column(Text, nullable=False)
+    binding: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    __table_args__ = (
+        Index("ix_external_call_sites_repo_package", "repository_id", "package"),
+        {"sqlite_with_rowid": False},
+    )
+
+
+class ExternalCallSitesStamp(Base):
+    """The ``EXTERNAL_CALL_SITES_VERSION`` a repository's ``external_call_sites`` hold.
+
+    No row, NULL or another version: the table is incomplete, readers answer
+    "unknown", and the next update rebuilds the graph in full to refill it.
+    """
+
+    __tablename__ = "external_call_sites_stamp"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class BuildUnitDep(Base):
     """One in-repo dependency of a build unit on another."""
 
