@@ -1839,6 +1839,9 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert second["items"] == block["items"][1:2]
     # The lead is the queue's, whatever page is shown.
     assert second["lead"] == block["lead"] == dashboard["lead"]
+    # Both say why ``gain`` need not fall down the list.
+    assert block["order"] == dashboard["order"]
+    assert block["order"].startswith("value band")
 
 
 @pytest.mark.asyncio
