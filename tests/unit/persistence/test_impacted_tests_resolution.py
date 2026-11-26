@@ -1129,3 +1129,109 @@ async def test_a_map_measured_before_the_base_matches_by_moved_line(
     assert not out["map_current"]
     assert set(out["covered"]) == {"tests/test_foo.py::test_b|run"}
     assert out["matched_by_file"] == []
+
+
+async def test_a_module_level_change_is_answered_by_the_tests_reading_its_names(
+    async_session, tmp_path
+) -> None:
+    """A constant's new value reaches the tests running code that reads it, not every importer."""
+    import json
+
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.test_collection import collect
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    files = {
+        "src/settings.py": "LIMIT = 3\nNAMES = ('a',)\n\n\ndef helper():\n    return LIMIT\n",
+        "src/user.py": "from src.settings import LIMIT\n\n\ndef use():\n    return LIMIT\n",
+        "src/other.py": "from src.settings import NAMES\n\n\ndef names():\n    return NAMES\n",
+        "tests/test_user.py": "from src.user import use\n",
+        "tests/test_other.py": "from src.other import names\n",
+        "tests/test_settings.py": "from src.settings import helper\n",
+        # A guard reading the source as text, through a helper that walks it.
+        "tests/_tree.py": (
+            "from pathlib import Path\n\n"
+            'SRC = Path(__file__).resolve().parents[1] / "src"\n\n\n'
+            "def sources():\n"
+            '    return {p.name: p.read_text() for p in SRC.rglob("*.py")}\n'
+        ),
+        "tests/test_guard.py": "from src.other import names\nfrom tests._tree import sources\n",
+    }
+    for path, text in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text, encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    (tmp_path / "src/settings.py").write_text(
+        files["src/settings.py"].replace("LIMIT = 3", "LIMIT = 4"), encoding="utf-8"
+    )
+    _git(tmp_path, "commit", "-qam", "change")
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+
+    repo = await insert_repo(async_session)
+    await save_test_coverage(
+        async_session,
+        repo.id,
+        [
+            _rec("tests/test_settings.py::t|run", "src/settings.py", [6], "tests/test_settings.py"),
+            _rec("tests/test_user.py::t|run", "src/user.py", [5], "tests/test_user.py"),
+            _rec("tests/test_other.py::t|run", "src/other.py", [5], "tests/test_other.py"),
+            _rec("tests/test_guard.py::t|run", "src/other.py", [5], "tests/test_guard.py"),
+        ],
+        source_format="coverage.py",
+        ingested_commit_sha=base,
+    )
+    for path in files:
+        async_session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id=path,
+                node_type="file",
+                is_test=path.startswith("tests/test_"),
+            )
+        )
+    for source, target, names in (
+        ("src/user.py", "src/settings.py", ["LIMIT"]),
+        ("src/other.py", "src/settings.py", ["NAMES"]),
+        ("tests/test_settings.py", "src/settings.py", ["helper"]),
+        ("tests/test_user.py", "src/user.py", ["use"]),
+        ("tests/test_other.py", "src/other.py", ["names"]),
+        ("tests/test_guard.py", "src/other.py", ["names"]),
+        ("tests/test_guard.py", "tests/_tree.py", ["sources"]),
+    ):
+        async_session.add(
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=source,
+                target_node_id=target,
+                edge_type="imports",
+                imported_names_json=json.dumps(names),
+            )
+        )
+    await async_session.commit()
+
+    out = await collect(async_session, repo.id, str(tmp_path), change)
+    assert out["map_current"]
+    assert out["function_covered"] == []
+    assert out["module_covered"] == {
+        "src/settings.py": ["tests/test_settings.py", "tests/test_user.py"]
+    }
+    # test_guard runs no code reading LIMIT, but reads the source as text through
+    # its helper, so the map does not speak for it and it is never left out.
+    assert out["measured_test_files"] == [
+        "tests/test_other.py",
+        "tests/test_settings.py",
+        "tests/test_user.py",
+    ]
+
+    # A module-level call in the change is not a binding: the graph keeps its answer.
+    (tmp_path / "src/settings.py").write_text(
+        files["src/settings.py"].replace("LIMIT = 3", "LIMIT = 4\nprint(LIMIT)"), encoding="utf-8"
+    )
+    _git(tmp_path, "commit", "-qam", "call")
+    called = change_set(str(tmp_path), f"{base}..HEAD")
+    assert (await collect(async_session, repo.id, str(tmp_path), called))["module_covered"] == {}

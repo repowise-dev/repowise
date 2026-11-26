@@ -32,7 +32,7 @@ import structlog
 
 from ..pytest_roots import PytestRoots
 from .function_hunks import FileFunctions
-from .test_selection import Selection, TestSelectionConfig, project_dirs
+from .test_selection import Selection, TestSelectionConfig, is_runnable_test, project_dirs
 
 log = structlog.get_logger(__name__)
 
@@ -503,11 +503,19 @@ async def collect(
     routes = sorted({*routes, *scope_routes})
     # git runs off the event loop when the map's commit needs moving to the base.
     out["query_lines"] = lines = await asyncio.to_thread(query_lines, change, measured, repo_path)
+    usable = out["map_current"] and not (out["map_empty"] or out["map_truncated"])
     functions = (
         await function_scoped_lines(
             session, repo_id, repo_path, change, measured_side(change, measured), lines
         )
-        if out["map_current"] and not (out["map_empty"] or out["map_truncated"])
+        if usable
+        else {}
+    )
+    modules = (
+        await _module_scoped(
+            session, repo_id, repo_path, change, lines, functions, repo_keys, read_source, roots
+        )
+        if usable
         else {}
     )
     await resolve_impacted(
@@ -523,7 +531,12 @@ async def collect(
         groups=scope_groups,
         cancelled=cancelled,
         functions=functions,
+        modules=modules,
     )
+    if out["measured_test_files"]:
+        # What these read is source text, not code they run: the map cannot speak for them.
+        walkers = await _tree_walking_helper_tests(session, repo_id, repo_path, read_source, roots)
+        out["measured_test_files"] = [t for t in out["measured_test_files"] if t not in walkers]
     # Changed files with lines whose covering tests were matched by file all the same.
     covered = {f for row in out["covered"].values() for f in row["source_files"]}
     out["matched_by_file"] = sorted(
@@ -535,6 +548,69 @@ async def collect(
     if explain:
         await _explain_route(session, repo_id, explain, change, out)
     return out
+
+
+async def _module_scoped(
+    session, repo_id, repo_path, change, lines, functions, repo_keys, read_source, roots
+) -> dict[str, frozenset[str]]:
+    """The changed Python files with module-level changes the per-test map can answer
+    (:func:`~.module_hunks.module_scoped_tests`), with the test files each needs."""
+    from .function_hunks import is_python_source
+    from .module_hunks import module_scoped_tests
+
+    paths = [
+        p
+        for p, asked in lines.items()
+        if asked is not None and p in change.files and p not in functions and is_python_source(p)
+    ]
+    return await module_scoped_tests(
+        session,
+        repo_id,
+        repo_path,
+        change,
+        paths,
+        repo_keys=repo_keys,
+        read_source=read_source,
+        is_test=lambda p: is_runnable_test(p, roots),
+    )
+
+
+async def _tree_walking_helper_tests(
+    session, repo_id: str, repo_path, read_source, roots
+) -> set[str]:
+    """Test files importing a test helper that lists and reads files under a source
+    directory, directly or through other helpers.
+
+    A test doing the walk itself always runs (``always_run``); one calling a
+    helper that does is not seen there. The per-test map cannot leave it out
+    either: a module-level edit changes the text it reads without it running
+    any changed line.
+    """
+    from ..ingestion.always_run import walks_source_tree
+    from .test_reach.db import cached_file_paths, imported_names
+    from .test_selection import is_test_helper
+
+    def read(path: str) -> str | None:
+        if read_source is not None:
+            return read_source(path)
+        try:
+            return (Path(repo_path) / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+
+    helpers = sorted(p for p in await cached_file_paths(session, repo_id) if is_test_helper(p))
+    frontier = [p for p in helpers if (text := read(p)) and walks_source_tree(p, text)]
+    seen, tests = set(frontier), set()
+    while frontier:
+        rows = await imported_names(session, repo_id, frontier)
+        frontier = []
+        for source, _, _ in rows:
+            if is_runnable_test(source, roots):
+                tests.add(source)
+            elif is_test_helper(source) and source not in seen:
+                seen.add(source)
+                frontier.append(source)
+    return tests
 
 
 async def _explain_route(session, repo_id: str, test: str, change, out: dict) -> None:
@@ -606,7 +682,7 @@ async def _gap_routes(
         cached_import_graphs,
         cached_test_files,
     )
-    from .test_selection import is_code_file, is_runnable_test, split_rewired, with_rewired
+    from .test_selection import is_code_file, split_rewired, with_rewired
 
     try:
         indexed: frozenset[str] | None = await cached_file_paths(session, repo_id)
@@ -879,6 +955,9 @@ def empty_result(changed_files: int) -> dict:
         # changed files whose covering tests answer them (``function_hunks``),
         # and every test file the per-test map measured, read only for those
         "function_covered": [],
+        # changed files with module-level changes, and the test files that ran
+        # code reading a changed name or import one (``module_hunks``)
+        "module_covered": {},
         "measured_test_files": [],
         "inferred": [],  # {source_file, test_file, via}
         "unknown": [],  # source_file (nothing knows of a test for it)
@@ -899,6 +978,7 @@ async def resolve_impacted(
     groups: Mapping[str, Sequence[str]] | None = None,
     cancelled: Callable[[], bool] = _never,
     functions: Mapping[str, FileFunctions] | None = None,
+    modules: Mapping[str, Collection[str]] | None = None,
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -949,7 +1029,8 @@ async def resolve_impacted(
     graph_targets = sorted({*changed, *route_only})
     has_rows = await _record_coverage(session, repo_id, asked, route_only, out, groups)
     out["function_covered"] = answered = sorted(p for p in functions if p in has_rows)
-    if answered:
+    out["module_covered"] = {p: sorted(t) for p, t in sorted((modules or {}).items())}
+    if answered or out["module_covered"]:
         out["measured_test_files"] = sorted(await measured_test_files(session, repo_id))
     if not graph_targets:
         return out

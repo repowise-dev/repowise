@@ -797,15 +797,22 @@ def _function_notes(
     """One line per changed file the tests covering its changed functions answer."""
     out = []
     for path in code:
-        if path not in ev.functions:
+        if path not in ev.functions and path not in ev.modules:
             continue
         files = {f for _, f in per_file[path][0] if f}
-        covering = files & {f for _, f in ev.covered.get(path, ())}
-        line = (
-            f"{path}: {len(covering)} test file(s) cover the changed function lines; every "
-            "change in it sits inside function bodies, so measured tests that only import "
-            "it are left out"
-        )
+        if path in ev.functions:
+            covering = files & {f for _, f in ev.covered.get(path, ())}
+            line = (
+                f"{path}: {len(covering)} test file(s) cover the changed function lines; every "
+                "change in it sits inside function bodies, so measured tests that only import "
+                "it are left out"
+            )
+        else:
+            covering = files & ev.modules[path]
+            line = (
+                f"{path}: {len(covering)} test file(s) ran code reading a name its module-level "
+                "change binds, or import one, so measured tests that did neither are left out"
+            )
         if unmeasured := len(files - covering):
             line += f"; {unmeasured} test file(s) the map never ran still run for it"
         out.append(f"{line}.")
@@ -839,9 +846,11 @@ def _why(
         vias = {f: via for f, via in ev.inferred.get(path, ())}
         covered = {f for _, f in ev.covered.get(path, ())}
         by_coverage = FUNCTION_COVERAGE_VIA if path in ev.functions else "coverage"
+        readers = ev.modules.get(path, frozenset())
         for _, test_file in tests:
             if test_file and test_file not in out:
                 via = by_coverage if test_file in covered else vias.get(test_file, basis)
+                via = MODULE_READERS_VIA if test_file in readers else via
                 out[test_file] = f"{path} changed ({_VIA_WHY.get(via, via)})"
     return out
 
@@ -870,10 +879,17 @@ _IMPORT_ONLY = frozenset({"import-graph", PACKAGE_INIT_VIA, BROADCAST_VIA})
 #: How :attr:`Selection.why` names a test that covers a changed function's body,
 #: in a file whose every change sits inside function bodies (``function_hunks``).
 FUNCTION_COVERAGE_VIA = "function-coverage"
+#: How :attr:`Selection.why` names a test that ran code reading a name a module-level
+#: change binds, or imports one (``module_hunks``).
+MODULE_READERS_VIA = "module-readers"
 
 # The vias a conftest route adds (``conftest_routes``), spelled out.
 _VIA_WHY = {
     FUNCTION_COVERAGE_VIA: f"{FUNCTION_COVERAGE_VIA}: it covers the changed function lines",
+    MODULE_READERS_VIA: (
+        f"{MODULE_READERS_VIA}: it ran code reading a name the module-level change binds, "
+        "or imports one"
+    ),
     BROADCAST_VIA: (
         f"{BROADCAST_VIA}: a conftest above it is on the route and keeps every test under it"
     ),
@@ -1395,9 +1411,12 @@ class _Evidence:
     known_tests: tuple[str, ...]
     plugin_loader: str | None
     gap: frozenset[str] = frozenset()
-    # Changed files their covering tests answer (``function_covered``), and the
-    # test files the per-test map measured (``measured_test_files``).
+    # Changed files their covering tests answer (``function_covered``), changed
+    # files with module-level changes and the test files reading them
+    # (``module_covered``), and the test files the per-test map measured
+    # (``measured_test_files``).
     functions: frozenset[str] = frozenset()
+    modules: Mapping[str, frozenset[str]] = field(default_factory=dict)
     measured: frozenset[str] = frozenset()
     # Tests every subset runs (unplaced and detected always-run).
     every_subset: frozenset[str] = frozenset()
@@ -1433,6 +1452,7 @@ class _Evidence:
             plugin_loader=inp.plugin_loader,
             gap=frozenset(inp.index_gap or ()),
             functions=frozenset(inp.tiers.get("function_covered") or ()),
+            modules={p: frozenset(t) for p, t in (inp.tiers.get("module_covered") or {}).items()},
             measured=frozenset(inp.tiers.get("measured_test_files") or ()),
             readers=inp.tiers.get("helper_readers") or {},
             every_subset=frozenset(inp.unplaced_tests) | frozenset(inp.always_run_tests),
@@ -1484,7 +1504,8 @@ def _file_tests(
     """
     found = ev.found(path)
     covered = _covering(path, ev)
-    tests = ev.present([*covered, *found])
+    readers = [(t, t) for t in sorted(ev.modules.get(path, ()))]
+    tests = ev.present([*covered, *found, *readers])
     basis = _basis(path, ev.covered, ev.inferred, ev.unknown)
     scopes, basis = _scope_files(path, found, basis)
     tests = _function_scoped(path, _expand_scopes(path, tests, scopes, ev), covered, ev)
@@ -1521,11 +1542,17 @@ def _covering(path: str, ev: _Evidence) -> list[_TestRef]:
 def _function_scoped(
     path: str, tests: list[_TestRef], covered: list[_TestRef], ev: _Evidence
 ) -> list[_TestRef]:
-    """*tests* less, for a file answered by its changed functions, the measured tests
-    that do not cover them: those only import them. One the map never ran stays."""
-    if path not in ev.functions:
+    """*tests* less the measured tests the per-test map says cannot see the change.
+
+    For a file answered by its changed functions, those not covering them: they
+    only import them. For a module-level change, those that ran no code reading
+    a changed name and import none. One the map never ran stays."""
+    if path in ev.functions:
+        mine = {f for _, f in covered}
+    elif path in ev.modules:
+        mine = set(ev.modules[path])
+    else:
         return tests
-    mine = {f for _, f in covered}
     return [(t, f) for t, f in tests if f in mine or f not in ev.measured]
 
 

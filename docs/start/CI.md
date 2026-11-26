@@ -952,7 +952,12 @@ changed in between, or one is a lockfile, manifest, build or test config, or
 - The subset is only as small as the code is loosely coupled: on this
   repository the graph alone picks over 80% of test files, since most tests
   import something importing the change. Real savings need a per-test map
-  measured at the change's base; `selected.basis` shows what drove each pick.
+  measured at the change's base or head. With one, a measured test answers for
+  a changed Python file: a change inside function bodies runs the tests covering
+  those functions, and a module-level change the tests that ran code reading a
+  name it binds or import one
+  ([details](../architecture/test-intelligence.md#module-level-changes)). Tests the map never ran
+  keep the graph's answer; `selected.basis` shows what drove each pick.
 
 ## When a gate exits 2
 
