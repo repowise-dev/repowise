@@ -117,3 +117,19 @@ def test_a_target_with_glob_characters_is_read_as_a_path(tmp_path):
 
     assert commits == 2
     assert [r["file_path"] for r in records] == ["app/lib.ts"]
+
+
+def test_a_partner_renamed_apart_from_the_target_keeps_its_older_commits(tmp_path):
+    """The rename commit does not touch the target; the older pairs still count."""
+    _git(tmp_path, "init", "-q")
+    _commit(tmp_path, ["src/a.py", "src/old.py"], "2024-06-01")
+    _git(tmp_path, "mv", "src/old.py", "src/new.py")
+    _git(tmp_path, "commit", "-q", "-m", "move", date="2024-06-02T12:00:00")
+    _commit(tmp_path, ["src/a.py", "src/new.py"], "2024-06-03")
+
+    records, commits = windowed_partners(
+        str(tmp_path), "src/a.py", "2024-05-01", {"src/a.py", "src/new.py"}
+    )
+
+    assert commits == 2
+    assert [(r["file_path"], r["frequency"]) for r in records] == [("src/new.py", 2)]

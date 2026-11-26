@@ -366,17 +366,68 @@ def compute_co_changes_and_entropy(
 _WINDOW_GIT_TIMEOUT_SECONDS = 20.0
 
 
+def _git_log(repo_root: str, args: list[str]) -> str | None:
+    """One ``git log``'s stdout, or ``None`` when git could not run it."""
+    try:
+        proc = run_git(args, repo_root, timeout=_WINDOW_GIT_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _commit_blocks(raw: str) -> list[tuple[int, str]]:
+    """``(timestamp, block)`` per commit of a ``%x00%ct`` log, in its order."""
+    blocks = []
+    for chunk in raw.split("\x00")[1:]:
+        stamp = chunk.split("\n", 1)[0].strip()
+        blocks.append((int(stamp) if stamp.isdigit() else 0, "\x00" + chunk))
+    return blocks
+
+
+def _interleave(touched: str, renames: str) -> str:
+    """Both logs as one newest-first stream.
+
+    On a tie the touching commit goes first, so a commit in both logs resolves
+    its own paths before its renames are recorded (``RenameTrail``). A
+    rename-only block never touches the target, so the tally skips it.
+    """
+    merged = sorted(
+        [(-ts, 0, i, b) for i, (ts, b) in enumerate(_commit_blocks(touched))]
+        + [(-ts, 1, i, b) for i, (ts, b) in enumerate(_commit_blocks(renames))]
+    )
+    return "".join(b if b.endswith("\n") else b + "\n" for *_, b in merged)
+
+
+@dataclass
+class _TargetTally(_WalkTally):
+    """A tally that folds only the commits touching ``target``."""
+
+    target: str = ""
+
+    def add_commit(self, current: set[str], current_ts: int, current_ordinal: int) -> None:
+        if self.target in current:
+            super().add_commit(current, current_ts, current_ordinal)
+
+
 def windowed_partners(
     repo_root: str, target: str, since: str, all_files: set[str]
 ) -> tuple[list[dict], int] | None:
     """Co-change partners of *target* over the commits since *since*, counted plainly.
 
     The stored partners are a recency-decayed mass over the whole indexed walk,
-    which cannot be cut back to a window. This walks only the commits that
-    touched *target* since the git date *since*, with every file each one
-    changed (``--full-diff``), under the indexer's rules: merges skipped,
-    renamed paths filed under HEAD's name, mass-edit commits dropped, and pairs
-    below ``MIN_CO_CHANGE_SUPPORT`` shared commits left out.
+    which cannot be cut back to a window. This walks the commits that touched
+    *target* since the git date *since*, with every file each one changed
+    (``--full-diff``), under the indexer's rules: merges skipped, renamed paths
+    filed under HEAD's name, mass-edit commits dropped, and pairs below
+    ``MIN_CO_CHANGE_SUPPORT`` shared commits left out. The window's renames are
+    read in a second, rename-only walk and interleaved newest first, so a
+    partner renamed in a commit that does not touch *target* still has its
+    older commits filed under its name at HEAD.
+
+    The pathspec keeps git's history simplification: a change merged in from
+    side branches (backports) counts once, as on the mainline, not once per
+    branch. It names *target* at HEAD, so *target*'s own commits from before
+    a rename of it inside the window are not walked.
 
     Records have the persisted shape, so :func:`~repowise.core.co_change.parse_partners`
     reads them. ``co_change_count`` and ``frequency`` are both the plain number
@@ -386,39 +437,19 @@ def windowed_partners(
 
     Returns ``(records, target_commits)``, or ``None`` when git cannot walk
     (no checkout, no git binary, a bad date, a timeout).
-
-    The pathspec names *target* at HEAD, so commits from before a rename of
-    *target* itself inside the window are not walked. ``--follow`` would add
-    them at the cost of a second walk; a window is usually shorter than a
-    file's last rename.
     """
-    try:
-        proc = run_git(
-            [
-                "log",
-                f"--since={since}",
-                "-M",
-                "--name-status",
-                "--no-merges",
-                "--full-diff",
-                # Paths relative to the checkout the index names, which can sit
-                # below the git top level (``git_cli.checkout_relative``).
-                "--relative",
-                "--format=%x00%ct",
-                "--",
-                # A path, never a glob or pathspec magic.
-                f":(literal){target}",
-            ],
-            repo_root,
-            timeout=_WINDOW_GIT_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
+    # Paths relative to the checkout the index names, which can sit below the
+    # git top level (``git_cli.checkout_relative``).
+    base = ["log", f"--since={since}", "-M", "--name-status", "--no-merges", "--relative"]
+    touched = _git_log(
+        repo_root, [*base, "--full-diff", "--format=%x00%ct", "--", f":(literal){target}"]
+    )
+    renames = _git_log(repo_root, [*base, "--diff-filter=R", "--format=%x00%ct"])
+    if touched is None or renames is None:
         return None
 
-    tally = _WalkTally(now_ts=0.0)
-    _walk_commits(proc.stdout, all_files | {target}, tally, None)
+    tally = _TargetTally(now_ts=0.0, target=target)
+    _walk_commits(_interleave(touched, renames), all_files | {target}, tally, None)
     target_commits = tally.file_commits.get(target, 0)
 
     ranked: list[tuple[int, int, str, dict]] = []
