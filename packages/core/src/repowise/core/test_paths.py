@@ -146,9 +146,9 @@ _FEATURE_NAMED_TESTS_DIR = "tests"
 # Which framework a repo runs is read from package.json in
 # ``ingestion/framework_facts/``; this classifier is path-only and memoized,
 # so it keys on the root plus a served-file shape instead. Ceiling: a repo with
-# no router that keeps plainly named suites under ``pages/test/`` or
-# ``app/test/route.ts`` reads as production; passing framework facts in as
-# context would settle that case.
+# no router that keeps plainly named suites or helpers under ``pages/test/``,
+# ``server/routes/tests/`` (an Express backend) or ``app/test/route.ts`` reads
+# as production; passing framework facts in as context would settle that case.
 _ROUTER_URL_TEST_SEGMENTS: frozenset[str] = frozenset({"test", "tests"})
 _NEXT_APP_ROUTE_STEMS: frozenset[str] = frozenset(
     {
@@ -498,7 +498,9 @@ def _router_root_end(segments: list[str], filename: str, ext: str, js_family: bo
         elif seg == "pages":
             served = js_family or ext in _PAGE_EXTS
         elif seg == "app":
-            served = js_family and PurePosixPath(filename.lower()).stem in _NEXT_APP_ROUTE_STEMS
+            served = (js_family or ext == ".mdx") and PurePosixPath(
+                filename.lower()
+            ).stem in _NEXT_APP_ROUTE_STEMS
         else:
             continue
         if served:
