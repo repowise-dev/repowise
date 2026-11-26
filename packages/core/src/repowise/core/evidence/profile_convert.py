@@ -210,7 +210,7 @@ def package_name(path: str) -> str:
     ``typing``, ``<frozen posixpath>`` -> ``posixpath``. A path under neither
     gives its file's module name.
     """
-    norm = path.replace("\\", "/")
+    norm = path.replace("\\", "/").rstrip("/")
     if norm.startswith("<frozen "):  # a frozen standard-library module
         return norm.removeprefix("<frozen ").rstrip(">").split(".")[0]
     match = _INSTALLED_RE.search(norm) or _STDLIB_RE.search(norm)
@@ -559,6 +559,11 @@ class _Tally:
                 chain = None
             elif hit.symbol is not None:
                 rows[k], chain = hit.symbol.symbol_id, None
+            elif hit.folded:
+                # A module-level lambda or comprehension: import time inside an
+                # import, but never a row of its own (one a function calls at
+                # run time is not an import).
+                rows[k] = chain
             else:
                 chain = chain or f"{hit.path}::{MODULE_FUNCTION}"
                 rows[k] = chain
@@ -667,7 +672,7 @@ class _Tally:
                 if machinery is None:
                     return self._frame_key(i), "native"
             else:
-                name = package_name(self._frames[i].path)
+                name = _written_name(package_name(self._frames[i].path))
                 key: tuple[Any, ...] = ("package", name)
                 self._named.setdefault(key, {"name": name})
                 return key, "library"

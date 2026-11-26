@@ -527,7 +527,7 @@ async def load_symbols(
     """
     from sqlalchemy import select
 
-    from repowise.core.persistence.models import WikiSymbol
+    from repowise.core.persistence.models import HealthFileMetric, WikiSymbol
 
     wanted = sorted(set(paths))
     per_file: dict[str, list[IndexedSymbol]] = {}
@@ -548,6 +548,16 @@ async def load_symbols(
             per_file.setdefault(row.file_path, []).append(
                 IndexedSymbol(row.symbol_id, row.qualified_name, row.name, row.start_line)
             )
+        # Indexed with no symbols (an ``__init__.py`` of imports): known by its
+        # health row, as ``frame_resolver.load_frame_symbols`` knows it.
+        known = await session.execute(
+            select(HealthFileMetric.file_path).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.file_path.in_(wanted[i : i + 400]),
+            )
+        )
+        for (path,) in known:
+            per_file.setdefault(path, [])
     return {path: symbol_lookup(symbols) for path, symbols in per_file.items()}
 
 

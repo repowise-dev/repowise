@@ -190,3 +190,28 @@ def test_a_cprofile_import_is_the_same_row() -> None:
     assert (row["path"], row["function"]) == ("pkg/app.py", "<module>")
     assert row["self"] == pytest.approx(0.33)
     assert row["inside"][0]["name"] == "sqlalchemy"
+
+
+def test_a_module_level_lambda_a_function_calls_is_not_import_time() -> None:
+    frames = [
+        FRAMES[8],
+        {"name": "<lambda>", "file": FRAMES[3]["file"], "line": 4},
+    ]
+    conv = _convert(frames, [([0, 1], 2)])
+    assert [(e["path"], e["function"]) for e in conv.document["symbols"]] == [
+        ("pkg/app.py", "pkg.app.App.run")
+    ]
+    assert conv.self_unattributed == {"module_body": 2.0}
+    # Run while importing, the same lambda is that import's time.
+    genexpr = {"name": "<genexpr>", "file": FRAMES[1]["file"], "line": 50}
+    frames = [FRAMES[1], FRAMES[2], genexpr]
+    [row] = _convert(frames, [([0, 1, 2], 3)]).document["symbols"]
+    assert (row["path"], row["function"], row["self"]) == ("pkg/app.py", "<module>", 3)
+
+
+def test_measured_hotspots_mint_no_item_for_import_time() -> None:
+    from repowise.core.analysis.health.perf.opportunities import measured_hotspots
+
+    module, fn = "src/app.py::<module>", "src/app.py::load"
+    items = measured_hotspots({}, {module: "15% of run", fn: "9% of run"}, frozenset({module, fn}))
+    assert [i.evidence[0]["function_name"] for i in items] == ["load"]
