@@ -258,26 +258,31 @@ def _sql_shape(text: str, channel: str, *, complete: bool) -> StatementShape | N
     update = _UPDATE_RE.match(text)
     if update is not None:
         schema, name = _split_qualified(update.group(1))
-        set_clause = _SET_RE.search(text, update.end() - 1) if complete else None
-        columns = (
-            frozenset(_unquote(c) for c in _SET_COLUMN_RE.findall(set_clause.group(1)))
-            if set_clause is not None
-            else None
-        )
-        return StatementShape(channel, "update", name, schema, columns or None, filters)
+        columns = _set_columns(text, update.end() - 1) if complete else None
+        return StatementShape(channel, "update", name, schema, columns, filters)
     delete = _DELETE_RE.match(text)
     if delete is not None:
         schema, name = _split_qualified(delete.group(1))
         return StatementShape(channel, "delete", name, schema, None, filters)
     if not re.match(r"\s*SELECT\b", text, re.I):
         return None
+    return _select_shape(text, channel, filters)
+
+
+def _set_columns(text: str, at: int) -> frozenset[str] | None:
+    set_clause = _SET_RE.search(text, at)
+    if set_clause is None:
+        return None
+    return frozenset(_unquote(c) for c in _SET_COLUMN_RE.findall(set_clause.group(1))) or None
+
+
+def _select_shape(text: str, channel: str, filters: frozenset[str] | None) -> StatementShape | None:
+    """A ``SELECT``: the table its own ``FROM`` names, or the function it calls."""
     source = next((m for m in _FROM_RE.finditer(text) if _depth(text, m.start()) == 0), None)
     if source is None:
         call = _SELECT_CALL_RE.match(text)
-        if call is None:
-            return None
-        schema, name = _split_qualified(call.group(1))
-        if schema in _SYSTEM_SCHEMAS or name in _KEYWORDS:
+        schema, name = _split_qualified(call.group(1)) if call else (None, "")
+        if call is None or schema in _SYSTEM_SCHEMAS or name in _KEYWORDS:
             return None
         return StatementShape(channel, "call", name, schema)
     if source.group(1) is None:
@@ -383,26 +388,24 @@ def _agrees(site: StatementSite, shape: StatementShape) -> bool:
         return False
     if site.verb is not None and site.verb != shape.verb:
         return False
-    if site.name is not None:
-        if site.name != shape.name:
-            return False
-        if site.schema == "?":
-            pass  # a schema only known at run time
-        elif (
-            site.schema is not None and shape.schema is not None and site.schema != shape.schema
-        ) or (site.schema is None and shape.schema not in (None, "public")):
-            return False
-    if (
-        site.columns is not None
-        and shape.columns is not None
-        and not site.columns.agrees(shape.columns)
-    ):
+    if site.name is not None and not _same_relation(site, shape):
         return False
-    return not (
-        site.filters is not None
-        and shape.filters is not None
-        and not site.filters.agrees(shape.filters)
-    )
+    return _fits(site.columns, shape.columns) and _fits(site.filters, shape.filters)
+
+
+def _same_relation(site: StatementSite, shape: StatementShape) -> bool:
+    """The same table or function, in the same schema as far as both say."""
+    if site.name != shape.name:
+        return False
+    if site.schema == "?":
+        return True  # a schema only known at run time
+    if site.schema is None:
+        return shape.schema in (None, "public")
+    return shape.schema is None or site.schema == shape.schema
+
+
+def _fits(known: Columns | None, statement: frozenset[str] | None) -> bool:
+    return known is None or statement is None or known.agrees(statement)
 
 
 def match_statement(shape: StatementShape | None, sites: Sequence[StatementSite]) -> StatementMatch:

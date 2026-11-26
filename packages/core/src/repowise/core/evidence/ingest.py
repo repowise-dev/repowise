@@ -241,13 +241,10 @@ def _join(
     """
     spec = evidence_kinds[kind]
     optional = spec.keeps_unlinked
-    if spec.join == "statement":
-        match = match_statement(statement_shape(entry.get("shape_text")), sites)
-        return spec.row({**entry, "issuer": match.issuer}, match.symbol_id), match.reason, None
+    if spec.join == "statement" or (kind == "query_count" and entry.get("path") is None):
+        return _join_by_statement(spec, entry, sites, changed)
     if spec.join not in LOCATION_JOINS:
         return spec.row(entry, None), None, None
-    if kind == "query_count" and entry.get("path") is None:
-        return _query_by_statement(spec, entry, sites, changed)
     location = spec.location(entry)
     if location is None:
         # A test named by a classname no indexed file matched (place_test_entries).
@@ -278,15 +275,18 @@ def _join(
     return spec.row(entry, symbol_id), reason, path
 
 
-def _query_by_statement(
+def _join_by_statement(
     spec: Any,
     entry: Mapping[str, Any],
     sites: Sequence[StatementSite],
     changed: frozenset[str],
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """A query count that names its statement, not its call site: the one
-    function that issues it, or skipped by why there is none."""
+    """An entry that names its statement, not its call site, joined through the
+    statement sites. A statement row is kept with what the join found; a query
+    count takes the one function that issues it, or is skipped by why there is none."""
     match = match_statement(statement_shape(entry.get("shape_text")), sites)
+    if spec.join == "statement":
+        return spec.row({**entry, "issuer": match.issuer}, match.symbol_id), match.reason, None
     if match.issuer != "function":
         return None, match.reason, None
     held = [s for s in match.sites if s.symbol_id == match.symbol_id]

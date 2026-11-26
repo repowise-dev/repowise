@@ -373,17 +373,27 @@ def _name_value(repo: _Repo, mod: _Module, fn: _Function | None, expr: ast.expr)
     if literal is not None:
         return _Value("literal", (literal,))
     if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name):
-        alias = mod.module_aliases.get(expr.value.id)
-        other = repo.module_named(alias) if alias else None
-        if other is None and expr.value.id in mod.imports:
-            source, original = mod.imports[expr.value.id]
-            other = repo.module_named(f"{source}.{original}" if source else original)
-        if other is not None and expr.attr in other.constants:
-            return _Value("constant", (other.constants[expr.attr],))
-        return None
+        return _attribute_value(repo, mod, expr)
     if not isinstance(expr, ast.Name):
         return None
-    name = expr.id
+    return _scoped_value(repo, mod, fn, expr.id)
+
+
+def _attribute_value(repo: _Repo, mod: _Module, expr: ast.Attribute) -> _Value | None:
+    """``names.EVENTS``: a constant of another module of the repo."""
+    owner = expr.value.id  # type: ignore[attr-defined]
+    alias = mod.module_aliases.get(owner)
+    other = repo.module_named(alias) if alias else None
+    if other is None and owner in mod.imports:
+        source, original = mod.imports[owner]
+        other = repo.module_named(f"{source}.{original}" if source else original)
+    if other is not None and expr.attr in other.constants:
+        return _Value("constant", (other.constants[expr.attr],))
+    return None
+
+
+def _scoped_value(repo: _Repo, mod: _Module, fn: _Function | None, name: str) -> _Value | None:
+    """What *name* holds where *fn* reads it: a local, a parameter, or a module constant."""
     holder = fn
     while holder is not None:
         is_param = name in holder.params() or name in holder.kwonly()
@@ -456,30 +466,29 @@ def _loop_data(repo: _Repo, mod: _Module, fn: _Function, name: str) -> list[str]
     for node in _own_nodes(fn):
         if not isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
             continue
-        target = node.target
-        if isinstance(target, ast.Name):
-            position = 0 if target.id == name else None
-        elif isinstance(target, ast.Tuple):
-            hits = [
-                i for i, e in enumerate(target.elts) if isinstance(e, ast.Name) and e.id == name
-            ]
-            position = hits[0] if hits else None
-        else:
-            position = None
+        position = _loop_position(node.target, name)
         if position is None:
             continue
-        rows = None
-        if isinstance(node.iter, ast.Name):
-            rows = repo.constant_table(mod, node.iter.id)
-        elif isinstance(node.iter, (ast.Tuple, ast.List)):
-            rows = _constant_rows(node.iter)
-        if rows is None:
+        rows = (
+            repo.constant_table(mod, node.iter.id)
+            if isinstance(node.iter, ast.Name)
+            else _constant_rows(node.iter)
+        )
+        column = [row[position] if position < len(row) else None for row in rows or ()]
+        if not column or not all(isinstance(v, str) for v in column):
             return None
-        for row in rows:
-            if position >= len(row) or not isinstance(row[position], str):
-                return None
-            out.append(row[position])
+        out.extend(column)
     return out or None
+
+
+def _loop_position(target: ast.expr, name: str) -> int | None:
+    """Where *name* sits in a loop target: ``name`` is 0, ``(a, name, b)`` is 1."""
+    if isinstance(target, ast.Name):
+        return 0 if target.id == name else None
+    if isinstance(target, ast.Tuple):
+        hits = [i for i, e in enumerate(target.elts) if isinstance(e, ast.Name) and e.id == name]
+        return hits[0] if hits else None
+    return None
 
 
 def _columns(fn: _Function | None, expr: ast.expr | None) -> Columns | None:
@@ -519,65 +528,79 @@ def _union(parts: list[Columns | None]) -> Columns | None:
     return Columns(required, every - required, all(p.closed for p in known))
 
 
+_MUTATORS = frozenset({"update", "setdefault", "pop", "popitem", "clear", "append", "extend"})
+
+
+def _names(node: ast.AST, name: str) -> bool:
+    """Whether *node* binds or mentions *name* anywhere inside it."""
+    return any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(node))
+
+
+@dataclass
+class _DictUses:
+    """What a function does with one local dict, read node by node (:func:`_local_columns`)."""
+
+    fn: _Function
+    name: str
+    assigned: list[Columns | None] = field(default_factory=list)
+    always: set[str] = field(default_factory=set)
+    maybe: set[str] = field(default_factory=set)
+    closed: bool = True
+    passed: int = 0
+    lost: bool = False
+
+    def read(self, node: ast.AST) -> None:
+        if isinstance(node, ast.Name):
+            self._load(node)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                self._store(node, target)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension, ast.With, ast.AsyncWith)):
+            self.lost = self.lost or _names(_target(node), self.name)
+        elif isinstance(node, ast.Delete):
+            self.lost = self.lost or any(_names(t, self.name) for t in node.targets)
+        elif isinstance(node, ast.AugAssign):
+            self.closed = self.closed and not _names(node.target, self.name)
+        elif isinstance(node, ast.Attribute) and node.attr in _MUTATORS:
+            self.closed = self.closed and not _names(node.value, self.name)
+
+    def _load(self, node: ast.Name) -> None:
+        if node.id != self.name or not isinstance(node.ctx, ast.Load):
+            return
+        parent = self.fn.module.parents.get(node)
+        if isinstance(parent, ast.keyword):
+            parent = self.fn.module.parents.get(parent)
+        if isinstance(parent, ast.Call) and parent.func is not node:
+            self.passed += 1
+
+    def _store(self, node: ast.stmt, target: ast.expr) -> None:
+        if isinstance(target, ast.Name) and target.id == self.name:
+            self.assigned.append(_columns(self.fn, node.value))  # type: ignore[attr-defined]
+            return
+        if not (isinstance(target, ast.Subscript) and _names(target.value, self.name)):
+            return
+        key = _string(target.slice)
+        if key is None:
+            self.closed = False
+        elif node in self.fn.node.body:
+            self.always.add(key)
+        else:
+            self.maybe.add(key)
+
+
 def _local_columns(fn: _Function, name: str) -> Columns | None:
     """The keys of a local dict: what it is assigned, plus keys set on it later."""
-    assigned: list[Columns | None] = []
-    added_always: set[str] = set()
-    added_maybe: set[str] = set()
-    closed = True
-    passed = 0
-    body_level = {id(s) for s in fn.node.body}
+    uses = _DictUses(fn, name)
     for node in _own_nodes(fn):
-        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
-            parent = fn.module.parents.get(node)
-            if isinstance(parent, ast.keyword):
-                parent = fn.module.parents.get(parent)
-            if isinstance(parent, ast.Call) and parent.func is not node:
-                passed += 1
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for t in targets:
-                if isinstance(t, ast.Name) and t.id == name:
-                    assigned.append(_columns(fn, node.value))
-                elif (
-                    isinstance(t, ast.Subscript)
-                    and isinstance(t.value, ast.Name)
-                    and t.value.id == name
-                ):
-                    key = _string(t.slice)
-                    if key is None:
-                        closed = False
-                    elif id(node) in body_level:
-                        added_always.add(key)
-                    else:
-                        added_maybe.add(key)
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension, ast.With, ast.AsyncWith)):
-            if any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(_target(node))):
-                return None
-        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-            if node.target.id == name:
-                closed = False
-        elif isinstance(node, ast.Delete):
-            if any(
-                isinstance(n, ast.Name) and n.id == name for t in node.targets for n in ast.walk(t)
-            ):
-                return None
-        elif (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == name
-            and node.attr in {"update", "setdefault", "pop", "popitem", "clear", "append", "extend"}
-        ):
-            closed = False
-    if not assigned:
-        return None
-    base = _union(assigned)
+        uses.read(node)
+    base = _union(uses.assigned) if uses.assigned and not uses.lost else None
     if base is None:
         return None
-    required = base.required | added_always
-    optional = (base.optional | added_maybe) - required
+    required = base.required | uses.always
+    optional = (base.optional | uses.maybe) - required
     # Handed to another call besides the one that sends it: that call may add keys.
-    return Columns(required, optional, base.closed and closed and passed <= 1)
+    return Columns(required, optional, base.closed and uses.closed and uses.passed <= 1)
 
 
 def _target(node: ast.AST) -> ast.AST:
@@ -622,73 +645,95 @@ def _filter_column(
     return None
 
 
+@dataclass
+class _ChainRead:
+    """What a PostgREST builder chain says: verb, columns, filter columns (:func:`_postgrest_table_site`)."""
+
+    repo: _Repo
+    mod: _Module
+    fn: _Function | None
+    closed: bool
+    verb: str | None = None
+    columns: Columns | None = None
+    required: set[str] = field(default_factory=set)
+    optional: set[str] = field(default_factory=set)
+    conflicting: bool = False
+
+    def read(self, name: str, link: ast.Call, first: bool) -> None:
+        if name in _VERB_METHODS:
+            # ``t = client.table("x")`` then ``t.insert(...)`` and ``t.delete()``:
+            # one builder, several statements; none of them is known.
+            self.conflicting = self.conflicting or not first
+            if self.verb is None:
+                self._verb(name, link)
+        elif name in _FILTER_METHODS or name == "match":
+            found = _filter_column(name, link, self.repo, self.mod, self.fn)
+            if found is None:
+                self.closed = False
+            else:
+                (self.required if first else self.optional).update(found)
+        elif name not in _NEUTRAL_METHODS:
+            self.closed = False  # ``or_`` and anything unknown may filter more
+
+    def _verb(self, name: str, link: ast.Call) -> None:
+        self.verb = _VERB_METHODS[name]
+        first_arg = link.args[0] if link.args else None
+        if name != "select":
+            self.columns = _columns(self.fn, first_arg)
+            return
+        self.columns = _select_columns(link)
+        text = _string(first_arg)
+        if text is not None and ("(" in text or "!" in text):
+            self.closed = False  # an embedded resource joins on more columns
+
+    def filters(self) -> Columns | None:
+        if self.verb == "insert":
+            return None
+        return Columns(
+            frozenset(self.required), frozenset(self.optional - self.required), self.closed
+        )
+
+
+def _schema_of(call: ast.Call) -> str | None:
+    """``client.schema("x").table("t")``: ``x``; a schema the code does not spell is "?"."""
+    owner = call.func.value if isinstance(call.func, ast.Attribute) else None
+    if not (
+        isinstance(owner, ast.Call)
+        and isinstance(owner.func, ast.Attribute)
+        and owner.func.attr == "schema"
+    ):
+        return None
+    return ((_string(owner.args[0]) if owner.args else None) or "?").lower()
+
+
 def _postgrest_table_site(
     repo: _Repo, mod: _Module, fn: _Function | None, call: ast.Call
 ) -> tuple[StatementSite, _Value | None]:
     methods, top = _chain(mod, call)
     chains = [methods]
     closed = bool(methods) and methods[-1][0] == "execute"
-    if not closed and fn is not None:
-        # ``q = client.table("x").delete().eq(...)``, then ``q.lte(...).execute()``.
-        extended = _extensions(mod, fn, top)
-        if extended is not None:
-            chains.extend(extended)
-            closed = True
-    verb = None
-    columns: Columns | None = None
-    required: set[str] = set()
-    optional: set[str] = set()
-    conflicting = False
-    for i, chain in enumerate(chains):
-        for name, link in chain:
-            if name in _VERB_METHODS and i > 0:
-                # ``t = client.table("x")`` then ``t.insert(...)`` and ``t.delete()``:
-                # one builder, several statements; none of them is known.
-                conflicting = True
-            if name in _VERB_METHODS and verb is None:
-                verb = _VERB_METHODS[name]
-                if name == "select":
-                    columns = _select_columns(link)
-                    text = _string(link.args[0]) if link.args else None
-                    if text is not None and ("(" in text or "!" in text):
-                        closed = False  # an embedded resource joins on more columns
-                else:
-                    columns = _columns(fn, link.args[0] if link.args else None)
-            elif name in _FILTER_METHODS or name == "match":
-                found = _filter_column(name, link, repo, mod, fn)
-                if found is None:
-                    closed = False
-                else:
-                    (required if i == 0 else optional).update(found)
-            elif name not in _NEUTRAL_METHODS and name not in _VERB_METHODS:
-                closed = False  # ``or_`` and anything unknown may filter more
-    if conflicting:
-        verb, columns, closed = None, None, False
-    filters = (
-        None
-        if verb == "insert"
-        else Columns(frozenset(required), frozenset(optional - required), closed)
-    )
-    schema = None
-    owner = call.func.value if isinstance(call.func, ast.Attribute) else None
-    if (
-        isinstance(owner, ast.Call)
-        and isinstance(owner.func, ast.Attribute)
-        and owner.func.attr == "schema"
-    ):
-        # ``client.schema("x").table("t")``; a schema the code does not spell is "?".
-        schema = ((_string(owner.args[0]) if owner.args else None) or "?").lower()
+    # ``q = client.table("x").delete().eq(...)``, then ``q.lte(...).execute()``.
+    extended = _extensions(mod, fn, top) if not closed and fn is not None else None
+    if extended is not None:
+        chains.extend(extended)
+        closed = True
+    chain = _ChainRead(repo, mod, fn, closed)
+    for i, links in enumerate(chains):
+        for name, link in links:
+            chain.read(name, link, first=i == 0)
+    if chain.conflicting:
+        chain.verb, chain.columns, chain.closed = None, None, False
     site = StatementSite(
         file_path=mod.path,
         line=call.lineno,
         channel="postgrest",
         target="table",
         name=None,
-        verb=verb,
+        verb=chain.verb,
         via="literal",
-        schema=schema,
-        columns=columns,
-        filters=filters,
+        schema=_schema_of(call),
+        columns=chain.columns,
+        filters=chain.filters(),
     )
     return site, _name_value(repo, mod, fn, call.args[0]) if call.args else None
 
@@ -702,32 +747,30 @@ def _extensions(
     run it or assign it back to the name; a builder returned or passed on
     may be filtered anywhere.
     """
-    assign = mod.parents.get(top)
-    if not (
-        isinstance(assign, ast.Assign)
-        and len(assign.targets) == 1
-        and isinstance(assign.targets[0], ast.Name)
-    ):
+    name = _assigned_name(mod.parents.get(top))
+    if name is None:
         return None
-    name = assign.targets[0].id
     chains: list[list[tuple[str, ast.Call]]] = []
     for node in _own_nodes(fn):
         if not (isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)):
             continue
         chain, end = _chain(mod, node)
-        if not chain:
-            return None
-        parent = mod.parents.get(end)
-        reassigned = (
-            isinstance(parent, ast.Assign)
-            and len(parent.targets) == 1
-            and isinstance(parent.targets[0], ast.Name)
-            and parent.targets[0].id == name
-        )
-        if chain[-1][0] != "execute" and not reassigned:
+        ran = bool(chain) and chain[-1][0] == "execute"
+        if not chain or not (ran or _assigned_name(mod.parents.get(end)) == name):
             return None
         chains.append(chain)
     return chains or None
+
+
+def _assigned_name(node: ast.AST | None) -> str | None:
+    """The one name ``name = ...`` binds, else None."""
+    if (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ):
+        return node.targets[0].id
+    return None
 
 
 def _select_columns(call: ast.Call) -> Columns | None:
@@ -775,35 +818,62 @@ def _orm_model(repo: _Repo, mod: _Module, expr: ast.expr) -> str | None:
 
 def _orm_site(repo: _Repo, mod: _Module, call: ast.Call) -> StatementSite | None:
     func = call.func
-    verb = model = None
-    if isinstance(func, ast.Name) and func.id in _ORM_VERBS and call.args:
-        verb, model = _ORM_VERBS[func.id], _orm_model(repo, mod, call.args[0])
+    if isinstance(func, ast.Name):
+        found = (
+            (_ORM_VERBS[func.id], _orm_model(repo, mod, call.args[0]))
+            if func.id in _ORM_VERBS and call.args
+            else None
+        )
     elif isinstance(func, ast.Attribute):
-        if func.attr in ("query", "get") and call.args:
-            verb, model = "select", _orm_model(repo, mod, call.args[0])
-            if func.attr == "query":
-                # ``session.query(M).filter(...).delete()`` deletes; ``.update({...})`` updates.
-                for name, _link in _chain(mod, call)[0]:
-                    if name in ("delete", "update"):
-                        verb = name
-        elif func.attr in ("add", "add_all", "delete", "merge") and call.args:
-            first = call.args[0]
-            model = _orm_model(repo, mod, first.func) if isinstance(first, ast.Call) else None
-            verb = {"add": "insert", "add_all": "insert", "delete": "delete"}.get(func.attr)
-            if model is None and (_session_like(func.value) or _uses_orm(repo, mod)):
-                # ``db.add(user)``: a model the code does not name here. Any
-                # receiver in a file that uses the ORM (``db``, ``s``, ``self.db``).
-                return StatementSite(mod.path, call.lineno, "sql", "table", None, verb, "runtime")
-        elif func.attr in _ORM_VERBS and isinstance(func.value, (ast.Name, ast.Attribute)):
-            # ``users.insert()`` on a ``Table("users", ...)``, or ``sa.select(M)``.
-            target = _orm_model(repo, mod, func.value)
-            if target is not None and not call.args:
-                verb, model = _ORM_VERBS[func.attr], target
-            elif call.args:
-                verb, model = _ORM_VERBS[func.attr], _orm_model(repo, mod, call.args[0])
-    if verb is None or model is None:
+        if func.attr in _SESSION_WRITES and call.args:
+            return _session_write(repo, mod, call, func)
+        found = _orm_method(repo, mod, call, func)
+    else:
+        found = None
+    if found is None or found[1] is None:
         return None
+    verb, model = found
     return StatementSite(mod.path, call.lineno, "sql", "table", model.lower(), verb, "model")
+
+
+_SESSION_WRITES = {"add": "insert", "add_all": "insert", "delete": "delete", "merge": None}
+
+
+def _orm_method(
+    repo: _Repo, mod: _Module, call: ast.Call, func: ast.Attribute
+) -> tuple[str, str | None] | None:
+    """``session.query(M)``, ``session.get(M, id)``, ``users.insert()``, ``sa.select(M)``."""
+    if func.attr in ("query", "get") and call.args:
+        verb = "select"
+        if func.attr == "query":
+            # ``session.query(M).filter(...).delete()`` deletes; ``.update({...})`` updates.
+            later = [name for name, _link in _chain(mod, call)[0] if name in ("delete", "update")]
+            verb = later[-1] if later else verb
+        return verb, _orm_model(repo, mod, call.args[0])
+    if func.attr not in _ORM_VERBS or not isinstance(func.value, (ast.Name, ast.Attribute)):
+        return None
+    table = _orm_model(repo, mod, func.value)
+    if table is not None and not call.args:
+        return _ORM_VERBS[func.attr], table
+    if call.args:
+        return _ORM_VERBS[func.attr], _orm_model(repo, mod, call.args[0])
+    return None
+
+
+def _session_write(
+    repo: _Repo, mod: _Module, call: ast.Call, func: ast.Attribute
+) -> StatementSite | None:
+    """``session.add(User(...))``; ``db.add(user)`` in a file that uses the ORM is a site
+    whose model the code does not name here (any receiver: ``db``, ``s``, ``self.db``)."""
+    first = call.args[0]
+    # ``session.add(User(...))`` names the model by its constructor; ``sa.delete(User)`` by name.
+    model = _orm_model(repo, mod, first.func if isinstance(first, ast.Call) else first)
+    verb = _SESSION_WRITES[func.attr]
+    if model is not None and verb is not None:
+        return StatementSite(mod.path, call.lineno, "sql", "table", model.lower(), verb, "model")
+    if model is None and (_session_like(func.value) or _uses_orm(repo, mod)):
+        return StatementSite(mod.path, call.lineno, "sql", "table", None, verb, "runtime")
+    return None
 
 
 _ORM_PACKAGES = ("sqlalchemy", "sqlmodel", "flask_sqlalchemy")
@@ -883,28 +953,31 @@ def _is_docstring(mod: _Module, node: ast.Constant) -> bool:
 
 
 def _read_models(repo: _Repo, mod: _Module) -> None:
-    for node in [*mod.classes, *mod.nodes]:
-        if isinstance(node, ast.ClassDef):
-            for stmt in node.body:
-                if (
-                    isinstance(stmt, ast.Assign)
-                    and any(
-                        isinstance(t, ast.Name) and t.id == "__tablename__" for t in stmt.targets
-                    )
-                ) and _string(stmt.value) is not None:
-                    _add_model(repo, node.name, _string(stmt.value) or "")
-        elif (
-            isinstance(node, ast.Assign)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, (ast.Name, ast.Attribute))
-            and (getattr(node.value.func, "id", None) or getattr(node.value.func, "attr", None))
-            == "Table"
-            and node.value.args
-            and _string(node.value.args[0]) is not None
-        ):
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    _add_model(repo, t.id, _string(node.value.args[0]) or "")
+    for cls in mod.classes:
+        for stmt in cls.body:
+            if isinstance(stmt, ast.Assign) and _binds(stmt, "__tablename__"):
+                table = _string(stmt.value)
+                if table is not None:
+                    _add_model(repo, cls.name, table)
+    for node in mod.nodes:
+        table = _table_call_name(node.value) if isinstance(node, ast.Assign) else None
+        if table is not None:
+            for target in node.targets:  # type: ignore[attr-defined]
+                if isinstance(target, ast.Name):
+                    _add_model(repo, target.id, table)
+
+
+def _binds(stmt: ast.Assign, name: str) -> bool:
+    return any(isinstance(t, ast.Name) and t.id == name for t in stmt.targets)
+
+
+def _table_call_name(value: ast.expr) -> str | None:
+    """``Table("users", metadata, ...)``: ``users``."""
+    if not isinstance(value, ast.Call) or not value.args:
+        return None
+    func = value.func
+    called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+    return _string(value.args[0]) if called == "Table" else None
 
 
 def _add_model(repo: _Repo, name: str, table: str) -> None:
@@ -916,66 +989,74 @@ def _scan(repo: _Repo, mod: _Module) -> tuple[list[StatementSite], list[_Templat
     sites: list[StatementSite] = []
     templates: list[_Template] = []
     for node in mod.nodes:
-        if isinstance(node, ast.JoinedStr):
-            if mod.enclosing(node) is not None:
-                site = _fstring_site(mod, node)
-                if site is not None:
-                    sites.append(site)
+        if isinstance(node, ast.Call):
+            _scan_call(repo, mod, node, sites, templates)
             continue
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if isinstance(mod.parents.get(node), ast.JoinedStr):
-                continue  # read whole, above
-            if mod.enclosing(node) is not None and not _is_docstring(mod, node):
-                site = _sql_site(mod, node.value, node.lineno, partial=_partial(mod, node))
-                if site is not None:
-                    sites.append(site)
-            continue
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            # A module constant holding SQL: the function that reads it issues it.
-            text = repo.constant(mod, node.id)
-            if text is not None and mod.enclosing(node) is not None:
-                site = _sql_site(mod, text, node.lineno, partial=False)
-                if site is not None:
-                    sites.append(replace(site, via="constant"))
-            continue
-        if not isinstance(node, ast.Call):
-            continue
-        fn = mod.enclosing(node)
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr == "rpc" and node.args:
-            site, value, params = _rpc_site(repo, mod, fn, node)
-            columns_param = _param_of(fn, mod, params)
-            _place(sites, templates, site, value, columns_param, fn)
-        elif isinstance(func, ast.Attribute) and func.attr in ("table", "from_") and node.args:
-            site, value = _postgrest_table_site(repo, mod, fn, node)
-            columns_param = None
-            methods, _top = _chain(mod, node)
-            for name, link in methods:
-                if name in ("insert", "upsert", "update") and link.args:
-                    columns_param = _param_of(fn, mod, link.args[0])
-                    break
-            _place(sites, templates, site, value, columns_param, fn)
-        else:
-            site = _orm_site(repo, mod, node)
-            if site is not None:
-                sites.append(site)
-    for node in mod.nodes:
-        # ``Model.query.filter(...)``: Flask-SQLAlchemy's query property.
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr == "query"
-            and mod.enclosing(node) is not None
-        ):
-            parent = mod.parents.get(node)
-            if not (isinstance(parent, ast.Call) and parent.func is node):
-                model = _orm_model(repo, mod, node.value)
-                if model is not None:
-                    sites.append(
-                        StatementSite(
-                            mod.path, node.lineno, "sql", "table", model.lower(), "select", "model"
-                        )
-                    )
+        if mod.enclosing(node) is None:
+            continue  # module level: no function issues it
+        site = _text_site(repo, mod, node)
+        if site is not None:
+            sites.append(site)
     return sites, templates
+
+
+def _text_site(repo: _Repo, mod: _Module, node: ast.AST) -> StatementSite | None:
+    """A site a string, an f-string, a SQL constant or ``Model.query`` holds."""
+    if isinstance(node, ast.JoinedStr):
+        return _fstring_site(mod, node)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        # An f-string's parts are read whole, above; a docstring is no statement.
+        if isinstance(mod.parents.get(node), ast.JoinedStr) or _is_docstring(mod, node):
+            return None
+        return _sql_site(mod, node.value, node.lineno, partial=_partial(mod, node))
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        # A module constant holding SQL: the function that reads it issues it.
+        text = repo.constant(mod, node.id)
+        site = _sql_site(mod, text, node.lineno, partial=False) if text is not None else None
+        return replace(site, via="constant") if site is not None else None
+    if isinstance(node, ast.Attribute) and node.attr == "query":
+        return _query_property_site(repo, mod, node)
+    return None
+
+
+def _query_property_site(repo: _Repo, mod: _Module, node: ast.Attribute) -> StatementSite | None:
+    """``Model.query.filter(...)``: Flask-SQLAlchemy's query property."""
+    parent = mod.parents.get(node)
+    if isinstance(parent, ast.Call) and parent.func is node:
+        return None
+    model = _orm_model(repo, mod, node.value)
+    if model is None:
+        return None
+    return StatementSite(mod.path, node.lineno, "sql", "table", model.lower(), "select", "model")
+
+
+def _scan_call(
+    repo: _Repo,
+    mod: _Module,
+    node: ast.Call,
+    sites: list[StatementSite],
+    templates: list[_Template],
+) -> None:
+    fn = mod.enclosing(node)
+    attr = node.func.attr if isinstance(node.func, ast.Attribute) else None
+    if attr == "rpc" and node.args:
+        site, value, params = _rpc_site(repo, mod, fn, node)
+        _place(sites, templates, site, value, _param_of(fn, mod, params), fn)
+    elif attr in ("table", "from_") and node.args:
+        site, value = _postgrest_table_site(repo, mod, fn, node)
+        written = next(
+            (
+                link.args[0]
+                for name, link in _chain(mod, node)[0]
+                if name in ("insert", "upsert", "update") and link.args
+            ),
+            None,
+        )
+        _place(sites, templates, site, value, _param_of(fn, mod, written), fn)
+    else:
+        site = _orm_site(repo, mod, node)
+        if site is not None:
+            sites.append(site)
 
 
 def _param_of(fn: _Function | None, mod: _Module, expr: ast.expr | None) -> str | None:
@@ -1069,39 +1150,44 @@ class _Calls:
 
 
 def _calls(repo: _Repo, mod: _Module, call: ast.Call, target: _Function) -> bool:
+    """Whether *call* is a call of *target* this can show: a bare name the module
+    defines or imports from *target*'s module, ``self.name`` in its class, or
+    ``module.name`` on its module."""
     func = call.func
-    top_level = "." not in target.qualname
     if isinstance(func, ast.Name):
-        if not top_level or target.in_class:
-            return False
-        if mod is target.module:
-            return func.id not in mod.imports
-        source = mod.imports.get(func.id)
+        return _calls_by_name(repo, mod, func.id, target)
+    if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+        return False
+    owner = func.value.id
+    if owner in ("self", "cls"):
+        caller = mod.enclosing(call)
         return (
-            source is not None
-            and repo.module_named(source[0]) is target.module
-            and source[1] == target.name
+            target.in_class
+            and mod is target.module
+            and caller is not None
+            and caller.qualname.rsplit(".", 1)[0] == target.qualname.rsplit(".", 1)[0]
         )
-    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        owner = func.value.id
-        if owner in ("self", "cls"):
-            if not target.in_class or mod is not target.module:
-                return False
-            caller = mod.enclosing(call)
-            return (
-                caller is not None
-                and caller.qualname.rsplit(".", 1)[0] == target.qualname.rsplit(".", 1)[0]
-            )
-        alias = mod.module_aliases.get(owner) or (
-            ".".join(mod.imports[owner]) if owner in mod.imports else None
-        )
-        return (
-            top_level
-            and not target.in_class
-            and alias is not None
-            and repo.module_named(alias) is target.module
-        )
-    return False
+    alias = mod.module_aliases.get(owner) or (
+        ".".join(mod.imports[owner]) if owner in mod.imports else None
+    )
+    return _module_level(target) and alias is not None and repo.module_named(alias) is target.module
+
+
+def _module_level(target: _Function) -> bool:
+    return "." not in target.qualname and not target.in_class
+
+
+def _calls_by_name(repo: _Repo, mod: _Module, name: str, target: _Function) -> bool:
+    if not _module_level(target):
+        return False
+    if mod is target.module:
+        return name not in mod.imports
+    source = mod.imports.get(name)
+    return (
+        source is not None
+        and repo.module_named(source[0]) is target.module
+        and source[1] == target.name
+    )
 
 
 def _maybe_calls(repo: _Repo, mod: _Module, call: ast.Call, target: _Function) -> bool:
@@ -1185,60 +1271,61 @@ def _resolve(
     assert template.name is not None and template.name.param is not None
     found, complete = calls.of(repo, target)
     open_site = replace(template.site, via="runtime")  # the helper's own site, name unknown
-    if not found:
-        return [open_site]
-    out: list[StatementSite] = []
+    out = [] if found and complete else [open_site]
     for mod, call in found:
-        bound = isinstance(call.func, ast.Attribute)
-        arg = _argument(call, target, template.name.param, bound=bound)
-        caller = mod.enclosing(call)
-        value = _name_value(repo, mod, caller, arg) if arg is not None else None
-        columns_arg = (
-            _argument(call, target, template.columns_param, bound=bound)
-            if template.columns_param
-            else None
-        )
+        out.extend(_resolve_call(repo, calls, template, open_site, mod, call, depth))
+    return out
+
+
+def _resolve_call(
+    repo: _Repo,
+    calls: _Calls,
+    template: _Template,
+    open_site: StatementSite,
+    mod: _Module,
+    call: ast.Call,
+    depth: int,
+) -> list[StatementSite]:
+    """The sites one call of a helper fixes."""
+    target = template.function
+    param = template.name.param  # type: ignore[union-attr]
+    bound = isinstance(call.func, ast.Attribute)
+    arg = _argument(call, target, param, bound=bound)  # type: ignore[arg-type]
+    caller = mod.enclosing(call)
+    columns_arg = (
+        _argument(call, target, template.columns_param, bound=bound)
+        if template.columns_param
+        else None
+    )
+    if arg is None:
+        # Spread from ``*args`` or ``**kwargs`` is unknown; left out, the default holds.
         spread = any(isinstance(a, ast.Starred) for a in call.args) or any(
             kw.arg is None for kw in call.keywords
         )
-        if arg is None and spread:
-            out.append(open_site)
-        elif arg is None:
-            default = _default(target, template.name.param)
-            out.append(
-                replace(open_site, name=default.lower(), via="constant")
-                if default is not None
-                else open_site
-            )
-        elif value is None:
-            out.append(open_site)
-        elif value.kind == "param" and value.function is not None:
-            if depth >= _MAX_HOPS:
-                out.append(open_site)
-                continue
-            deeper = _Template(
-                replace(open_site, file_path=mod.path, line=call.lineno),
-                value,
-                _param_of(caller, mod, columns_arg),
-                value.function,
-            )
-            if template.columns_param and deeper.columns_param is None:
-                deeper = replace(
-                    deeper,
-                    site=replace(deeper.site, columns=_columns(caller, columns_arg)),
-                )
-            out.extend(_resolve(repo, calls, deeper, depth + 1))
-        elif value.kind == "data":
-            # A loop over a constant table: the helper itself issues each name.
-            out.extend(replace(open_site, name=n.lower(), via="data") for n in value.names)
-        else:
-            site = replace(open_site, file_path=mod.path, line=call.lineno, via="wrapper")
-            if template.columns_param:
-                site = replace(site, columns=_columns(caller, columns_arg))
-            out.extend(replace(site, name=n.lower()) for n in value.names)
-    if not complete:
-        out.append(open_site)
-    return out
+        default = None if spread else _default(target, param)  # type: ignore[arg-type]
+        return [replace(open_site, name=default.lower(), via="constant") if default else open_site]
+    value = _name_value(repo, mod, caller, arg)
+    if value is None:
+        return [open_site]
+    if value.kind == "data":
+        # A loop over a constant table: the helper itself issues each name.
+        return [replace(open_site, name=n.lower(), via="data") for n in value.names]
+    if value.kind != "param" or value.function is None:
+        site = replace(open_site, file_path=mod.path, line=call.lineno, via="wrapper")
+        if template.columns_param:
+            site = replace(site, columns=_columns(caller, columns_arg))
+        return [replace(site, name=n.lower()) for n in value.names]
+    if depth >= _MAX_HOPS:
+        return [open_site]
+    deeper = _Template(
+        replace(open_site, file_path=mod.path, line=call.lineno),
+        value,
+        _param_of(caller, mod, columns_arg),
+        value.function,
+    )
+    if template.columns_param and deeper.columns_param is None:
+        deeper = replace(deeper, site=replace(deeper.site, columns=_columns(caller, columns_arg)))
+    return _resolve(repo, calls, deeper, depth + 1)
 
 
 def read_python_sites(
@@ -1252,6 +1339,27 @@ def read_python_sites(
     whose new callers or readers would add a site.
     """
     repo = _Repo(texts)
+    wanted, names = _parse_wanted(repo, texts)
+    sites: list[StatementSite] = []
+    templates: list[_Template] = []
+    for mod in filter(None, (repo.modules.get(path) for path in wanted)):
+        found, helpers = _scan(repo, mod)
+        sites.extend(found)
+        templates.extend(helpers)
+    # A helper's callers may sit in files the prefilter passed over:
+    # ``_Calls.of`` parses those as it looks for them.
+    calls = _Calls(repo)
+    for template in templates:
+        sites.extend(_resolve(repo, calls, template))
+    if inputs is not None:
+        inputs["files"] = sorted(repo.modules)
+        inputs["names"] = names
+        inputs["helpers"] = sorted(calls.searched)
+    return sorted(set(sites), key=_site_order)
+
+
+def _parse_wanted(repo: _Repo, texts: Mapping[str, str]) -> tuple[list[str], list[str]]:
+    """The files to scan, parsed, and the model and SQL constant names that pulled some in."""
     wanted = [p for p, t in texts.items() if p.endswith(".py") and _PREFILTER_RE.search(t)]
     for path in wanted:
         repo.module(path)
@@ -1267,30 +1375,10 @@ def read_python_sites(
         for name, text in mod.constants.items()
         if statement_shape(text) is not None
     ]
-    if models or held_sql:
-        wanted.extend(p for p in repo.calling(*models, *held_sql) if repo.module(p) is not None)
-    sites: list[StatementSite] = []
-    templates: list[_Template] = []
-    for path in wanted:
-        mod = repo.modules.get(path)
-        if mod is None:
-            continue
-        found, helpers = _scan(repo, mod)
-        sites.extend(found)
-        templates.extend(helpers)
-    helpers: set[str] = set()
-    if templates:
-        # A helper's callers may sit in files the prefilter passed over:
-        # ``_Calls.of`` parses those as it looks for them.
-        calls = _Calls(repo)
-        for template in templates:
-            sites.extend(_resolve(repo, calls, template))
-        helpers = calls.searched
-    if inputs is not None:
-        inputs["files"] = sorted(repo.modules)
-        inputs["names"] = sorted({*models, *held_sql})
-        inputs["helpers"] = sorted(helpers)
-    return sorted(set(sites), key=_site_order)
+    names = sorted({*models, *held_sql})
+    if names:
+        wanted.extend(p for p in repo.calling(*names) if repo.module(p) is not None)
+    return wanted, names
 
 
 def _site_order(s: StatementSite) -> tuple[Any, ...]:
