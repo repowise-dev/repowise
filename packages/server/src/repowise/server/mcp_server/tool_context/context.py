@@ -20,7 +20,8 @@ Optional ``include`` parameter widens the response:
                             complete (symbol targets only)
   - include=["references+"]→ the same, plus lines naming it in a comment,
                             docstring or sentence
-  - include=["ownership"] → primary owner, bus factor, contributor count; on a
+  - include=["ownership"] → primary owner, bus factor, contributor count, top
+                            committer all time and in 90 days; on a
                             component target, declared owners against recent
                             activity, with findings
   - include=["last_change"]→ last commit date, and its author when stored
