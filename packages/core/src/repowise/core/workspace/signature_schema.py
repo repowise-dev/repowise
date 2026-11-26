@@ -109,8 +109,9 @@ class _Grammar:
 _C_BLOCK = ("/*", "*/")
 
 # Only languages whose parameter grammar was verified against the real parser
-# output. Java is absent on purpose: its stored signature carries no parameter
-# list at all (``"getReports -> List<String>"``), so there is nothing to read.
+# output. Java and Kotlin are absent: their stored signatures carry the
+# parameters (``"charge(String accountId, long cents) -> Invoice"``), but no
+# grammar for them has been verified yet.
 _GRAMMARS: dict[str, _Grammar] = {
     "python": _Grammar("colon", "#", None, generics=False, optional_marker=False),
     "typescript": _Grammar(

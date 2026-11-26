@@ -76,7 +76,10 @@ _KTS_BARE_CORE_PLUGIN_RE = re.compile(
 _GRADLE_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _GRADLE_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
-_ROOT_PROJECT_NAME_RE = re.compile(r'rootProject\s*\.\s*name\s*=\s*"([^"]+)"')
+# ``rootProject.name = 'x'``, ``= ("x")`` or ``rootProject.setName('x')``.
+_ROOT_PROJECT_NAME_RE = re.compile(
+    r"""rootProject\s*\.\s*(?:name\s*=\s*\(?|setName\s*\()\s*(["'])([^"'\n]+)\1"""
+)
 # A quoted fully-qualified class name: lowercase package segments, then a
 # capitalised type (``'org.elasticsearch.system.indices.SystemIndicesQA'``).
 _QUOTED_FQN_RE = re.compile(r"""['"]((?:[a-z_]\w*\.)+[A-Z]\w*)['"]""")
@@ -128,6 +131,8 @@ class JvmGradleIndex:
 
     # Custom project-dir overrides from settings.gradle
     _project_dir_overrides: dict[str, str] = field(default_factory=dict)
+    #: The ``rootProject.name`` the root settings declare, or None.
+    root_project_name: str | None = None
 
     def lookup_class(self, fqn: str) -> list[str]:
         """Match ``com.example.Foo`` to files declaring ``package com.example``
@@ -194,6 +199,29 @@ def parse_settings(settings_file: Path) -> tuple[list[str], dict[str, str]]:
 def included_builds(settings_text: str) -> list[str]:
     """The directories a settings script composes in with ``includeBuild``, as written."""
     return [match.group(2) for match in _INCLUDE_BUILD_RE.finditer(settings_text)]
+
+
+def root_project_name(settings_text: str) -> str | None:
+    """The ``rootProject.name`` a settings script declares, or None.
+
+    Without it Gradle names the root project after its directory, which a
+    clone may name anything, so no name is given.
+    """
+    text = _GRADLE_BLOCK_COMMENT_RE.sub("", settings_text)
+    match = _ROOT_PROJECT_NAME_RE.search(_GRADLE_LINE_COMMENT_RE.sub("", text))
+    return match.group(2) if match else None
+
+
+def _declared_root_name(settings_paths: list[Path]) -> str | None:
+    """The ``rootProject.name`` of the first of *settings_paths* that declares one."""
+    for path in settings_paths:
+        try:
+            name = root_project_name(path.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            continue
+        if name:
+            return name
+    return None
 
 
 def _module_dir(repo_path: Path, module_name: str, overrides: dict[str, str]) -> Path:
@@ -705,6 +733,8 @@ def build_jvm_gradle_index(
         mods, ovr = parse_settings(sp)
         modules.extend(mods)
         project_dir_overrides.update(ovr)
+
+    index.root_project_name = _declared_root_name(settings_paths)
 
     if not modules and (
         (repo_path / "build.gradle").is_file() or (repo_path / "build.gradle.kts").is_file()

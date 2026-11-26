@@ -11,20 +11,25 @@ emission, so it carries a ``symbol_id`` and
 :func:`..signature_schema.attach_signature_schemas` turns the parameter list
 into its schema — which is what makes the field rules fire on a method. A
 consumer comes from the ``imports`` edges to an ``external:`` target, which
-already name the symbols they bring in.
+already name the symbols they bring in. A Java or Kotlin import is read by its
+target path, since the names its edge carries do not tell a member from a type.
 
 **Published, not merely public.** The surface is what the *manifest* exposes,
 never every public symbol under the package: the two differ by an order of
 magnitude, and the larger number is also wrong, since a symbol no entry point
 re-exports cannot be imported by package name. Where an ecosystem has no entry
 file the whole project directory is the surface, allowed only when the manifest
-carries an explicit publish opt-in to bound it — .NET has one, Go and Maven do
-not.
+carries an explicit publish opt-in to bound it — .NET has one (``IsPackable``);
+Go does not. A Maven or Gradle module that deploys is the files its build unit
+owns, which :mod:`.code_api_jvm` reads.
 
-**Package identity is the manifest's declared name, and only that.** It is the
+**Package identity is the name the build declares, and only that.** It is the
 one of this repo's several package notions that can be joined to an
 ``external:<pkg>`` node id, since that id is whatever the importing source
-wrote. Nothing here reads or changes the others.
+wrote. Nothing here reads or changes the others. A Maven module is named
+``groupId:artifactId``. Gradle has no name of that kind, since it names a
+publication by group and artifact: a Gradle module is named by the
+``rootProject.name`` of its settings and its project path (``shop:client``).
 
 Reuse, not extension: ``_removed_endpoint`` already covers a deleted public
 symbol and the three field rules cover its parameters, so this module writes no
@@ -36,17 +41,24 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from repowise.core.fsutils import repo_relative
 from repowise.core.pyparse import parse_python
+from repowise.core.workspace import code_api_jvm
 from repowise.core.workspace.origins import ContractOrigin, origin_confidence
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Mapping
     from pathlib import Path
 
-    from repowise.core.workspace.repo_index import IndexedSymbol, RepoIndex, WorkspaceIndex
+    from repowise.core.workspace.repo_index import (
+        ExternalImport,
+        IndexedSymbol,
+        RepoIndex,
+        WorkspaceIndex,
+    )
 
 _log = logging.getLogger("repowise.workspace.code_api")
 
@@ -65,13 +77,16 @@ _MANIFESTS: dict[str, str] = {
 }
 
 #: Not implemented, but counted, so the coverage figure names what it misses.
-_UNSUPPORTED_MANIFESTS: dict[str, str] = {"go.mod": "go", "pom.xml": "maven"}
+_UNSUPPORTED_MANIFESTS: dict[str, str] = {"go.mod": "go"}
 
 #: Ecosystem tokens a resolver prefixes onto an external node id — a C#
 #: `using` that matches a PackageReference resolves to `external:nuget:<ns>`.
 _EXTERNAL_PREFIXES = ("nuget:", "pub:", "gem:")
 
-#: The bound ``external_systems._discover`` uses, so both see one manifest set.
+#: How deep the walk looks for npm, PyPI and Cargo manifests: the bound
+#: ``external_systems._discover`` uses, so both see one set of them. A JVM build
+#: file seen within it starts the Maven and Gradle readers, which then read every
+#: depth; a repo whose JVM build files all lie deeper is not read.
 _MANIFEST_DEPTH = 3
 
 #: The language an entry-file-less ecosystem's surface is written in.
@@ -80,17 +95,22 @@ _ECOSYSTEM_LANGUAGE = {"nuget": "csharp"}
 #: Kinds a consumer can import by name.
 _EXPORTABLE_KINDS = frozenset({"function", "method", "class", "interface", "struct", "enum"})
 
+#: Kinds a call runs: a symbol declared inside one is local to it.
+_CALLABLE_KINDS = frozenset({"function", "method"})
+
 
 @dataclass(frozen=True)
 class PublishedPackage:
     """One package a repo ships, as its own manifest declares it."""
 
-    name: str  # the manifest's declared name — what an importer writes
+    name: str  # the name the build declares; ``import_names`` is what an importer writes
     ecosystem: str
     repo: str  # workspace alias
     manifest: str  # repo-relative POSIX path
     root: str  # repo-relative POSIX dir, "" at the repo root
-    #: ``None`` where the ecosystem has no entry file and *root* is the surface.
+    #: The files whose public symbols are the surface: an entry file, or for a
+    #: JVM module the files its build unit owns. ``None`` where the ecosystem
+    #: has no entry file and *root* is the surface.
     entry_files: frozenset[str] | None = None
     #: ``__all__`` names defined elsewhere in the package.
     reexported: frozenset[str] = frozenset()
@@ -98,6 +118,9 @@ class PublishedPackage:
     #: a PyPI distribution ships a differently-named module, and Cargo
     #: rewrites `-` to `_`.
     import_names: frozenset[str] = frozenset()
+    #: For a JVM module: the Java package each of its files declares, the
+    #: start of every exported path (``com.acme.billing.client.Invoice``).
+    file_packages: Mapping[str, str] = field(default_factory=dict, compare=False)
 
 
 # ---------------------------------------------------------------------------
@@ -301,15 +324,21 @@ def _cargo(text: str, root: str, crate_dir: Path) -> tuple[str, frozenset[str]] 
 
 
 def find_published_packages(
-    alias: str, repo_path: Path
+    alias: str, repo_path: Path, *, jvm: bool = True
 ) -> tuple[list[PublishedPackage], dict[str, int]]:
-    """Every package *repo_path* declares it publishes, plus skip counters."""
+    """Every package *repo_path* declares it publishes, plus skip counters.
+
+    *jvm* False leaves out the Maven and Gradle modules, which need the build
+    units and the JVM workspace index of the repo.
+    """
     from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
     from repowise.core.ingestion.resolvers.dotnet.msbuild import find_csproj_files, parse_csproj
 
     packages: list[PublishedPackage] = []
     counts: dict[str, int] = {}
     prune = PRUNED_DIRS | {"target", "dist", "build"}
+    jvm_files = code_api_jvm.build_file_names()
+    has_jvm_build = False
 
     for dirpath, dirnames, filenames in walk_repo(repo_path, prune_dirs=prune):
         if len(dirpath.relative_to(repo_path).parts) >= _MANIFEST_DEPTH:
@@ -318,6 +347,7 @@ def find_published_packages(
         if rel_dir is None:
             continue
         root = "" if rel_dir == "." else rel_dir
+        has_jvm_build = has_jvm_build or any(n in jvm_files for n in filenames)
         for fname in filenames:
             if fname in _UNSUPPORTED_MANIFESTS:
                 counts["code_unsupported_ecosystem"] = (
@@ -378,6 +408,8 @@ def find_published_packages(
                 import_names=frozenset({package_id}),
             )
         )
+    if jvm and has_jvm_build:
+        packages.extend(code_api_jvm.find_packages(alias, repo_path, counts))
     return packages, counts
 
 
@@ -418,6 +450,16 @@ def _exported_name(symbol: IndexedSymbol) -> str:
     return ".".join(part for part in tail if part) or symbol.name
 
 
+def _exports(
+    package: PublishedPackage, index: RepoIndex, exclude: Callable[[str], bool]
+) -> list[tuple[IndexedSymbol, str]]:
+    """Each symbol *package* publishes, with the path an importer names it by."""
+    symbols = _surface_symbols(package, index, exclude)
+    if package.ecosystem == "maven":
+        return code_api_jvm.exports(package, index, symbols)
+    return [(s, _exported_name(s)) for s in symbols]
+
+
 def _surface_symbols(
     package: PublishedPackage, index: RepoIndex, exclude: Callable[[str], bool]
 ) -> list[IndexedSymbol]:
@@ -455,6 +497,15 @@ def _surface_symbols(
 # ---------------------------------------------------------------------------
 
 
+def _overloads(first: IndexedSymbol, second: IndexedSymbol) -> bool:
+    """Whether two symbols with one exported path are overloads of one callable."""
+    return (
+        first.file_path == second.file_path
+        and first.kind == second.kind
+        and first.kind in _CALLABLE_KINDS
+    )
+
+
 def contract_id_for(package_name: str, exported: str) -> str:
     return f"{CODE_CONTRACT_TYPE}::{package_name}::{exported}"
 
@@ -468,6 +519,9 @@ class CodeSurface:
     #: package name -> the exported paths its provider contracts cover. What lets
     #: an import of a type expand to the members that type owns.
     members: dict[str, set[str]] = field(default_factory=dict)
+    #: package name -> the Java class of each Kotlin file with top-level functions
+    #: -> the exported paths of those functions.
+    file_classes: dict[str, dict[str, set[str]]] = field(default_factory=dict)
 
     def for_repo(self, alias: str) -> list[Any]:
         return self.by_repo.get(alias, [])
@@ -478,7 +532,9 @@ def find_workspace_packages(
 ) -> tuple[list[PublishedPackage], dict[str, dict[str, int]]]:
     """Every package the workspace repos publish, plus per-repo skip counters.
 
-    Read from manifests alone, so it needs no repo's index open.
+    Read from the manifests, and for a Maven or Gradle module that deploys from
+    the package declarations of its Java and Kotlin files, so it needs no
+    repo's index open.
     """
     published: list[PublishedPackage] = []
     stats: dict[str, dict[str, int]] = {}
@@ -521,7 +577,9 @@ def build_code_surface(
 
     # -- providers ---------------------------------------------------------
     by_name: dict[str, PublishedPackage] = {}
-    by_import: dict[str, PublishedPackage] = {}
+    #: Every package by each name an importer writes: Java packages split
+    #: across modules, so one name may lead to several.
+    by_import: dict[str, list[PublishedPackage]] = {}
     for package in published:
         index = workspace_index.get(package.repo)
         if index is None:
@@ -535,20 +593,25 @@ def build_code_surface(
             continue
         by_name[package.name] = package
         for import_name in package.import_names:
-            by_import.setdefault(import_name, package)
+            by_import.setdefault(import_name, []).append(package)
         rows = surface.by_repo.setdefault(package.repo, [])
         exported_here = surface.members.setdefault(package.name, set())
-        seen: set[str] = set()
-        for symbol in _surface_symbols(package, index, exclude):
-            exported = _exported_name(symbol)
-            if exported in seen:
+        seen: dict[str, IndexedSymbol] = {}
+        for symbol, exported in _exports(package, index, exclude):
+            first = seen.get(exported)
+            if first is not None:
                 # Two entry files exporting one name: which row survives
-                # would otherwise be decided by index row order.
-                stats = surface.stats.setdefault(package.repo, {})
-                stats["code_ambiguous_export"] = stats.get("code_ambiguous_export", 0) + 1
+                # would otherwise be decided by index row order. Overloads of
+                # one method share its contract, and are no ambiguity.
+                if not _overloads(first, symbol):
+                    stats = surface.stats.setdefault(package.repo, {})
+                    stats["code_ambiguous_export"] = stats.get("code_ambiguous_export", 0) + 1
                 continue
-            seen.add(exported)
+            seen[exported] = symbol
             exported_here.add(exported)
+            if package.ecosystem == "maven" and (kt := code_api_jvm.file_class(package, symbol)):
+                by_class = surface.file_classes.setdefault(package.name, {})
+                by_class.setdefault(kt, set()).add(exported)
             rows.append(
                 Contract(
                     repo=package.repo,
@@ -575,7 +638,9 @@ def build_code_surface(
         stats["code_provider_symbols"] = stats.get("code_provider_symbols", 0) + len(seen)
 
     # -- consumers ---------------------------------------------------------
-    for alias in repo_paths if consumers is None else [a for a in repo_paths if a in consumers]:
+    consuming = [a for a in repo_paths if consumers is None or a in consumers]
+    needs = code_api_jvm.ModuleNeeds(repo_paths, consuming)
+    for alias in consuming:
         index = workspace_index.get(alias)
         if index is None:
             continue
@@ -583,13 +648,15 @@ def build_code_surface(
         stats = surface.stats.setdefault(alias, {})
         seen_pairs: set[tuple[str, str, str]] = set()
         for edge in index.external_import_edges():
-            package = _package_for(edge.external_name, by_import)
-            if package is None:
+            match = _match_import(edge.external_name, by_import)
+            if match is None or exclude(edge.source_file):
                 continue
-            if package.repo == alias or exclude(edge.source_file):
-                continue
-            for name in edge.imported_names:
-                for exported in _consumed_exports(name, surface.members[package.name]):
+            depended = partial(needs.of, alias, edge.source_file)
+            found = _consumed(match, by_import, edge, surface, alias, stats, depended)
+            for package, consumed in found:
+                if package.repo == alias:
+                    continue
+                for exported in consumed:
                     key = (package.name, exported, edge.source_file)
                     if key in seen_pairs:
                         continue
@@ -601,6 +668,8 @@ def build_code_surface(
                             contract_type=CODE_CONTRACT_TYPE,
                             role="consumer",
                             file_path=edge.source_file,
+                            # Display only. A Maven or Gradle name holds colons
+                            # and a Java name none, so the last colon splits it.
                             symbol_name=f"{package.name}:{exported}",
                             confidence=origin_confidence(_ORIGIN),
                             origin=_ORIGIN,
@@ -636,30 +705,73 @@ def _import_names(ecosystem: str, name: str, entry_files: frozenset[str] | None)
     return frozenset(n for n in names if n)
 
 
-def _package_for(
-    external_name: str, by_import: dict[str, PublishedPackage]
-) -> PublishedPackage | None:
-    """Resolve an ``external:`` target to a published package.
+def _without_ecosystem_prefix(external_name: str) -> str:
+    """*external_name* without the token a resolver prefixes onto it, such as ``nuget:``."""
+    for prefix in _EXTERNAL_PREFIXES:
+        if external_name.startswith(prefix):
+            return external_name[len(prefix) :]
+    return external_name
+
+
+def _match_import(external_name: str, import_names: Collection[str]) -> tuple[str, str] | None:
+    """The import name an ``external:`` target reaches, and what follows it.
 
     The target carries whatever the importing source reached: a subpath
     (``@scope/ui/lib/format``), a child namespace (``nuget:Contoso.Orders.Models``)
     or a submodule (``mylib.sub``). The longest import name that prefixes it on a
     separator wins — a bare prefix would match ``@scope/ui`` for an unrelated
-    ``@scope/ui-icons``.
+    ``@scope/ui-icons``. What follows is ``Api.run`` for ``com.acme.lib.Api.run``,
+    ``*`` for ``com.acme.lib.*`` and ``""`` for the import name itself.
     """
-    for prefix in _EXTERNAL_PREFIXES:
-        if external_name.startswith(prefix):
-            external_name = external_name[len(prefix) :]
-            break
-    if external_name in by_import:
-        return by_import[external_name]
-    best: tuple[int, PublishedPackage] | None = None
-    for name, package in by_import.items():
-        if external_name.startswith((f"{name}/", f"{name}.")) and (
-            best is None or len(name) > best[0]
-        ):
-            best = (len(name), package)
-    return best[1] if best else None
+    external_name = _without_ecosystem_prefix(external_name)
+    if external_name in import_names:
+        return external_name, ""
+    # Each prefix that ends before a separator, longest first: a lookup per
+    # separator, not a scan of every import name.
+    end = len(external_name)
+    while (end := max(external_name.rfind("/", 0, end), external_name.rfind(".", 0, end))) > 0:
+        if external_name[:end] in import_names:
+            return external_name[:end], external_name[end + 1 :]
+    return None
+
+
+def _package_for(
+    external_name: str, by_import: dict[str, PublishedPackage]
+) -> PublishedPackage | None:
+    """The package an ``external:`` target resolves to, or None."""
+    match = _match_import(external_name, by_import)
+    return by_import[match[0]] if match else None
+
+
+def _consumed(
+    match: tuple[str, str],
+    by_import: Mapping[str, list[PublishedPackage]],
+    edge: ExternalImport,
+    surface: CodeSurface,
+    repo: str,
+    stats: dict[str, int],
+    depended: Callable[[], Collection[str]],
+) -> list[tuple[PublishedPackage, list[str]]]:
+    """Each package an import in *repo* reaches, with the exports it consumes there.
+
+    *depended* gives the names of the packages the importing module depends on
+    (:meth:`.code_api_jvm.ModuleNeeds.of`).
+    """
+    import_name, rest = match
+    packages = by_import[import_name]
+    if packages[0].ecosystem == "maven":
+        return code_api_jvm.consumed(import_name, rest, packages, surface, repo, stats, depended)
+    package = packages[0]
+    return [
+        (
+            package,
+            [
+                e
+                for name in edge.imported_names
+                for e in _consumed_exports(name, surface.members[package.name])
+            ],
+        )
+    ]
 
 
 def _consumed_exports(imported: str, exported: set[str]) -> list[str]:

@@ -173,8 +173,13 @@ def _in_dir(rel_dir: str, filename: str) -> str:
 def _walk_project_manifests(
     repo_root: Path,
     index: _ManifestIndex,
+    *,
+    poms_only: bool = False,
 ) -> tuple[list[Path], list[Path], list[ComposerManifest]]:
-    """Collect .NET, Maven and first-party composer manifests in one pruned walk."""
+    """Collect .NET, Maven and first-party composer manifests in one pruned walk.
+
+    With *poms_only* it reads no other manifest, and leaves *index* empty.
+    """
     from xml.etree import ElementTree as ET
 
     from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
@@ -198,6 +203,8 @@ def _walk_project_manifests(
             path = dirpath / filename
             if filename == "pom.xml":
                 poms.append(path)
+            elif poms_only:
+                continue
             elif filename == COMPOSER_JSON:
                 rel = path.parent.relative_to(repo_root).as_posix()
                 rel = "" if rel == "." else rel
@@ -215,6 +222,11 @@ def _walk_project_manifests(
     # Root first, then by directory: the order a name is first claimed in.
     composer.sort(key=lambda m: (m.rel_dir != "", m.rel_dir))
     return csprojects, poms, composer
+
+
+def find_poms(repo_root: Path) -> list[Path]:
+    """The ``pom.xml`` files of *repo_root* that the cross-repo package step reads."""
+    return _walk_project_manifests(repo_root, _ManifestIndex(), poms_only=True)[1]
 
 
 def _assembly_name(tree: Any, csproj: Path) -> str:
