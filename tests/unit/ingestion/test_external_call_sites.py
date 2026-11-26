@@ -20,7 +20,8 @@ def _build(tmp_path: Path, files: dict[str, str]) -> GraphBuilder:
     for rel, src in files.items():
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(src, encoding="utf-8")
+        # Bytes, so the file on disk matches what was parsed on every platform.
+        path.write_bytes(src.encode("utf-8"))
         info = FileInfo(
             path=rel,
             abs_path=str(path),
@@ -208,6 +209,84 @@ def test_two_imports_of_one_name_bind_neither_provably(tmp_path: Path) -> None:
         "def f(x):\n    json.dumps(x)\n"
     )
     assert _sites(_build(tmp_path, {"a.py": src})) == []
+
+
+def test_a_module_jest_mock_replaces_is_not_the_package(tmp_path: Path) -> None:
+    src = (
+        "const rimraf = require('rimraf');\nconst _ = require('lodash');\n"
+        "jest.mock('rimraf');\n"
+        "test('x', () => {\n  rimraf.mockResolvedValue(1);\n  _.merge({});\n});\n"
+    )
+    sites = _sites(_build(tmp_path, {"__tests__/a.test.js": src}))
+    assert [s[3] for s in sites] == ["lodash"]
+
+
+def test_a_mock_in_one_file_leaves_another_files_calls(tmp_path: Path) -> None:
+    files = {
+        "a.test.js": "const rimraf = require('rimraf');\njest.mock('rimraf');\nrimraf.sync('x');\n",
+        "b.js": "const rimraf = require('rimraf');\nfunction g(x) {\n  rimraf.sync(x);\n}\n",
+    }
+    assert [s[0] for s in _sites(_build(tmp_path, files))] == ["b.js"]
+
+
+@pytest.mark.parametrize(
+    "mock",
+    [
+        "vi.mock('axios', () => ({ default: { get: vi.fn() } }));",
+        'vi.doMock("axios");',
+        "jest.unstable_mockModule('axios', () => ({ default: { get: jest.fn() } }));",
+        # A factory that reads a hoisted double still swaps the module.
+        "const { get } = vi.hoisted(() => ({ get: vi.fn() }));\n"
+        "vi.mock('axios', () => ({ default: { get } }));",
+    ],
+)
+def test_vitest_and_esm_mocks_replace_the_package(tmp_path: Path, mock: str) -> None:
+    src = (
+        "import { vi, test } from 'vitest';\nimport axios from 'axios';\n"
+        f"{mock}\n"
+        "test('x', () => {\n  axios.get('/u');\n});\n"
+    )
+    # ``vi.mock`` and ``test`` are real calls into vitest; ``axios.get`` runs the mock.
+    assert {s[3] for s in _sites(_build(tmp_path, {"src/a.test.ts": src}))} == {"vitest"}
+
+
+@pytest.mark.parametrize(
+    "mock",
+    [
+        "jest.mock('axios', () => ({ ...jest.requireActual('axios'), post: jest.fn() }));",
+        "vi.mock('axios', async (importOriginal) => ({ ...(await importOriginal()) }));",
+        # A factory passed by name may keep the original; it is not read.
+        "const factory = () => ({ ...jest.requireActual('axios') });\njest.mock('axios', factory);",
+    ],
+)
+def test_a_partial_mock_keeps_the_package(tmp_path: Path, mock: str) -> None:
+    src = f"const axios = require('axios');\n{mock}\naxios.get('/u');\n"
+    assert {s[3] for s in _sites(_build(tmp_path, {"a.test.js": src}))} == {"axios"}
+
+
+def test_a_full_mock_stays_a_mock_when_the_file_reads_the_original_elsewhere(
+    tmp_path: Path,
+) -> None:
+    src = (
+        "const axios = require('axios');\n"
+        "jest.mock('axios', () => ({ get: jest.fn() }));\n"
+        "const real = jest.requireActual('axios');\n"
+        "axios.get('/u');\n"
+    )
+    assert _sites(_build(tmp_path, {"a.test.js": src})) == []
+
+
+def test_a_manual_mock_directory_replaces_the_package_in_tests_only(tmp_path: Path) -> None:
+    files = {
+        "commands/__mocks__/@scope/output.js": "module.exports = jest.fn();\n",
+        "commands/__tests__/run.test.js": (
+            "const output = require('@scope/output');\ntest('x', () => {\n  output.logged();\n});\n"
+        ),
+        "commands/run.js": (
+            "const output = require('@scope/output');\nfunction run(x) {\n  output(x);\n}\n"
+        ),
+    }
+    assert [s[0] for s in _sites(_build(tmp_path, files))] == ["commands/run.js"]
 
 
 def test_a_check_that_raises_marks_the_build_incomplete(tmp_path: Path, monkeypatch) -> None:
