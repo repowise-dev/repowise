@@ -266,3 +266,77 @@ func Register(g *gin.RouterGroup) {{
         ("http::GET::/api/x", "api/routes/r.go", 6),
         ("http::GET::/y", "admin/api/routes/r.go", 6),
     ]
+
+
+def _one_file(tmp_path: Path, body: str) -> list[tuple[str, str, int]]:
+    _write(tmp_path, {"main.go": f"package main\n\nimport {GIN}\n\n{body}"})
+    return [(cid, line) for cid, _file, line in _routes(tmp_path)]
+
+
+def test_a_name_reused_in_another_function_keeps_each_ones_binding(tmp_path: Path) -> None:
+    body = """\
+func main() { r := gin.Default(); Reg(r.Group("/a")) }
+func Reg(g *gin.RouterGroup) { h := g.Group("/inner"); h.GET("/x", X) }
+func Other(r *gin.Engine) { g := r.Group("/o"); g.GET("/y", Y) }
+"""
+    assert _one_file(tmp_path, body) == [
+        ("http::GET::/a/inner/x", 6),
+        ("http::GET::/o/y", 7),
+    ]
+
+
+def test_a_function_registering_itself_adds_no_path(tmp_path: Path) -> None:
+    body = """\
+func main() { r := gin.Default(); Leaf(r.Group("/m")) }
+func Leaf(g *gin.RouterGroup) { g.GET("/x", X); Leaf(g.Group("/rec")) }
+"""
+    assert _one_file(tmp_path, body) == [("http::GET::/m/x", 6)]
+
+
+def test_a_shadowed_parameter_is_not_the_handed_group(tmp_path: Path) -> None:
+    body = """\
+func main() { r := gin.Default(); Reg(r.Group("/api")) }
+func Reg(g *gin.RouterGroup) { g := gin.New(); g.GET("/x", X) }
+"""
+    assert _one_file(tmp_path, body) == [("http::GET::/x", 6)]
+
+
+def test_a_fan_out_past_the_cap_keeps_the_in_function_path(tmp_path: Path) -> None:
+    # 2^5 = 32 distinct prefixes reach Leaf; more than the cap is refused whole.
+    levels = [
+        f'func F{i}(g *gin.RouterGroup) {{ F{i + 1}(g.Group("/p{i}")); F{i + 1}(g.Group("/q{i}")) }}'
+        for i in range(5)
+    ]
+    body = (
+        'func main() { r := gin.Default(); F0(r.Group("/api")) }\n'
+        + "\n".join(levels)
+        + '\nfunc F5(g *gin.RouterGroup) { g.GET("/leaf", X) }\n'
+    )
+    assert _one_file(tmp_path, body) == [("http::GET::/leaf", 11)]
+
+
+def test_a_dependency_with_a_matching_directory_is_not_the_repos_package(tmp_path: Path) -> None:
+    main = f"""\
+package main
+
+import (
+	{GIN}
+	"github.com/someone/lib/api"
+)
+
+func main() {{
+	r := gin.Default()
+	api.Reg(r.Group("/tp"))
+}}
+"""
+    own = f"""\
+package api
+
+import {GIN}
+
+func Reg(g *gin.RouterGroup) {{
+	g.GET("/x", X)
+}}
+"""
+    _write(tmp_path, {"go.mod": "module example.com/app\n", "main.go": main, "api/a.go": own})
+    assert _routes(tmp_path) == [("http::GET::/x", "api/a.go", 6)]
