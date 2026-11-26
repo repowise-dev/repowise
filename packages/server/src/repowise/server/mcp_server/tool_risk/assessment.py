@@ -497,6 +497,11 @@ async def _co_change_source(
     return source, origins, note
 
 
+def _applied_since(note: dict[str, Any] | None) -> str | None:
+    """The date a window counted partners from, when it was applied."""
+    return note["since"] if note and "target_commits" in note else None
+
+
 def _apply_co_changes(
     card: dict[str, Any],
     meta: Any,
@@ -619,11 +624,8 @@ async def _assess_one_target(
         origins.get(lookup_path) or path_origin(lookup_path),
         source,
     )
-    applied_since = None
     if window_note is not None:
         result_data["co_change_window"] = window_note
-        if "target_commits" in window_note:
-            applied_since = window_note["since"]
     result_data.update(history_fields(meta, dep_count, team_size))
     defect_profile = _defect_profile(meta, now=as_of_ts)
     if defect_profile is not None:
@@ -638,6 +640,6 @@ async def _assess_one_target(
         defect_profile,
         dep_count,
         co_changes_total,
-        co_change_since=applied_since,
+        co_change_since=_applied_since(window_note),
     )
     return result_data
