@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -105,6 +106,44 @@ def _exact(sym: IndexedSymbol, function: str) -> bool:
     return function in (sym.qualified_name, local_symbol_id(sym.symbol_id))
 
 
+_GO_RECEIVER_RE = re.compile(r"\(\*?([^)]+)\)")
+_JVM_EXTENSIONS = (".java", ".kt", ".kts", ".scala", ".groovy")
+
+
+def _normalize_go_function(path: str, function: str) -> str:
+    name = function.rsplit("/", 1)[-1]
+    name = _GO_RECEIVER_RE.sub(r"\1", name)
+    dir_name = path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in path else ""
+    if "." in name:
+        head, rest = name.split(".", 1)
+        has_receiver = "(" in function
+        if "." in rest or (not has_receiver and ("/" in function or head == dir_name)):
+            return rest
+    return name
+
+
+def _normalize_jvm_function(path: str, function: str) -> str:
+    if "/" in path and "." in function:
+        dir_dotted = path.rsplit("/", 1)[0].replace("/", ".")
+        parts = function.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            pkg = ".".join(parts[:i])
+            if dir_dotted == pkg or dir_dotted.endswith("." + pkg):
+                return ".".join(parts[i:])
+    return function
+
+
+def _normalized_function_name(path: str, function: str) -> str:
+    """Normalise Go profiler names (``pkg.(*T).M``, ``pkg.T.M``, ``imp/pkg.F``)
+    and JVM package-qualified names (``com.acme.T.m``) when the package
+    matches the file's path."""
+    if path.endswith(".go"):
+        return _normalize_go_function(path, function)
+    if path.endswith(_JVM_EXTENSIONS):
+        return _normalize_jvm_function(path, function)
+    return function
+
+
 def resolve_location(
     location: Mapping[str, Any],
     by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
@@ -119,9 +158,13 @@ def resolve_location(
     names = by_file.get(location["path"])
     if names is None:
         return None, "unknown_file"
-    found = names.get(location["function"], [])
-    by_qualified = [s for s in found if _exact(s, location["function"])]
-    if location.get("exact"):
+    raw_fn = location["function"]
+    fn = raw_fn if raw_fn in names else _normalized_function_name(location["path"], raw_fn)
+    found = names.get(fn, [])
+    by_qualified = [s for s in found if _exact(s, fn)]
+    # A name with its package stripped must still name the symbol in full:
+    # ``srv.Get`` is the package function ``Get``, never the method ``Store.Get``.
+    if location.get("exact") or fn != raw_fn:
         found = by_qualified
     line = location.get("line")
     # A bare name must also agree on the line when one is given: a method

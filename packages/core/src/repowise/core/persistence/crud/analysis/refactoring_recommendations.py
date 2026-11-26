@@ -305,7 +305,7 @@ async def _timed_targets(
     if not paths or root is None or not root.is_dir():
         return {}
     from repowise.core.evidence.runtime_setup import load_runtime_inputs
-    from repowise.core.evidence.setup import timed_targets
+    from repowise.core.evidence.setup import detect_go_mains, timed_targets
     from repowise.core.test_runners.stacks import detect_repo_stacks
 
     from ..build_units import load_build_units
@@ -313,14 +313,19 @@ async def _timed_targets(
     units = await load_build_units(session, repository_id)
     runtime = await load_runtime_inputs(session, repository_id)
     # Both plan finalizers of an update ask, over one tree: the session keeps
-    # the first detection. Ceiling: a session held across a working-tree edit
-    # keeps the stacks it read; sessions here last one update or one request.
-    key = ("detected_stacks", str(root), frozenset(u.manifest for u in units.units.values()))
+    # the first detection and Go main walk. Ceiling: a session held across a
+    # working-tree edit keeps what it read; sessions here last one update or one request.
+    manifests = frozenset(u.manifest for u in units.units.values())
+    key = ("detected_stacks", str(root), manifests)
     stacks = session.info.get(key)
     if stacks is None:
         stacks = session.info[key] = await asyncio.to_thread(detect_repo_stacks, root, units)
+    mains_key = ("go_mains", str(root), manifests)
+    mains = session.info.get(mains_key)
+    if mains is None:
+        mains = session.info[mains_key] = await asyncio.to_thread(detect_go_mains, root, stacks)
     return await asyncio.to_thread(
-        timed_targets, root, paths, units=units, runtime=runtime, stacks=stacks
+        timed_targets, root, paths, units=units, runtime=runtime, stacks=stacks, go_mains=mains
     )
 
 

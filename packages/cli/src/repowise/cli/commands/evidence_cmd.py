@@ -139,7 +139,9 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile, benchmark
     results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
-    V8 .cpuprofile, collapsed stacks, Python cProfile/pstats, pytest-benchmark or hyperfine JSON,
+    V8 .cpuprofile, collapsed stacks, Python cProfile/pstats, pytest-benchmark,
+    hyperfine or Vitest
+    benchmark JSON, Criterion estimates,
     go test -bench or go test -json output, JUnit XML, a pg_stat_statements CSV from
     psql --csv), detected from its content. Several
     profiles (a parent process and its workers, or a directory holding one file
@@ -208,7 +210,7 @@ def evidence_add(
         for path, size in zip(paths, sizes, strict=True):
             check_file_size(size, max_file_mb, str(path))
         prepared = prepare_evidence_files(
-            [(str(path), path.read_bytes()) for path in paths],
+            [(path, path.read_bytes()) for path in paths],
             report_dir=evidence_report_dir(paths, root),
             checkout_root=root,
             commit=commit,

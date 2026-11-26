@@ -3366,6 +3366,7 @@ export interface MeasuredRow {
   freshness: "current" | "body_unchanged" | "stale";
   callers_total: number | null;
   callers: string[];
+  caller_shares?: Record<string, number>;
   owner: MeasuredOwner | null;
   last_change: MeasuredLastChange | null;
   tests: string[] | null;

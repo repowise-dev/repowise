@@ -264,6 +264,62 @@ def test_coverage_setup_leaves_test_timings_out(tmp_path: Path) -> None:
     assert "test_timings" not in unit
 
 
+def test_timed_targets_reuses_passed_go_mains_without_rebuilding_build_facts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.analysis import published_packages
+    from repowise.core.evidence.runtime_setup import RuntimeInputs
+    from repowise.core.evidence.setup import detect_go_mains, timed_targets
+    from repowise.core.test_runners.stacks import detect_repo_stacks
+
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n")
+    app = tmp_path / "cmd" / "app"
+    app.mkdir(parents=True)
+    (app / "main.go").write_text("package main\n\nfunc main() {}\n")
+    (app / "h.go").write_text("package main\n\nfunc Helper() {}\n")
+    (app / "h_test.go").write_text("package main\n\nimport \"testing\"\n\nfunc BenchmarkH(b *testing.B) {}\n")
+
+    constructions = 0
+    real_build_facts = published_packages.BuildFacts
+
+    def counting_build_facts(root: Path):
+        nonlocal constructions
+        constructions += 1
+        return real_build_facts(root)
+
+    monkeypatch.setattr(published_packages, "BuildFacts", counting_build_facts)
+
+    stacks = detect_repo_stacks(tmp_path, None)
+    mains = detect_go_mains(tmp_path, stacks)
+    first = timed_targets(
+        tmp_path, ["cmd/app/h.go"], units=None, runtime=RuntimeInputs(), stacks=stacks, go_mains=mains
+    )
+    second = timed_targets(
+        tmp_path, ["cmd/app/h.go"], units=None, runtime=RuntimeInputs(), stacks=stacks, go_mains=mains
+    )
+
+    assert constructions == 1
+    assert first == second
+
+
+def test_detect_go_mains_skips_build_facts_for_non_go_repos(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.analysis import published_packages
+    from repowise.core.evidence.setup import detect_go_mains
+    from repowise.core.test_runners.stacks import detect_repo_stacks
+
+    _python(tmp_path)
+
+    def fail_build_facts(root: Path):
+        raise AssertionError("BuildFacts should not be constructed for non-Go repos")
+
+    monkeypatch.setattr(published_packages, "BuildFacts", fail_build_facts)
+
+    stacks = detect_repo_stacks(tmp_path, None)
+    assert detect_go_mains(tmp_path, stacks) == []
+
+
 def test_the_per_test_map_file_sits_in_the_unit_root_and_needs_a_command() -> None:
     from repowise.core.evidence.setup import _coverage_unit
     from repowise.core.test_runners.stacks import Stack
