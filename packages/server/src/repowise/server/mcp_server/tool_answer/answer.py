@@ -191,6 +191,7 @@ from repowise.server.mcp_server.tool_answer.neighbors import (
     lead_file,
     neighbor_evidence,
 )
+from repowise.server.mcp_server.tool_answer.origin import origin_reply
 from repowise.server.mcp_server.tool_answer.payload import (
     _apply_lean_high,  # noqa: F401  — backward-compatible helper re-export
     _build_best_guesses,  # noqa: F401  — re-exported: imported from here by tests
@@ -611,6 +612,15 @@ async def _data_shape_answer(question: str, ctx, repository, t0: float) -> dict 
     if grounded is None:
         return None
     return build_data_shape_payload(grounded, t0, repository)
+
+
+async def _origin_answer(ask: _Ask) -> dict | None:
+    """The origin reply for "which change introduced X", or ``None``."""
+    try:
+        return await origin_reply(ask)
+    except Exception:
+        _log.warning("get_answer: origin lookup failed", exc_info=True)
+        return None
 
 
 async def _graph_callers(ask: _Ask, retrieved: _Retrieved):
@@ -1092,6 +1102,11 @@ async def get_answer(
     shaped = await _data_shape_answer(question, ctx, repository, t0)
     if shaped is not None:
         return shaped
+    # Before cache and retrieval: retrieval answers "which PR added X" with
+    # X's definition, and an origin reply costs one git log, not a synthesis.
+    origin = await _origin_answer(ask)
+    if origin is not None:
+        return origin
 
     # Normalize once, then use the same value for retrieval and cache identity.
     # The versioned identity deliberately misses legacy question-only rows.
