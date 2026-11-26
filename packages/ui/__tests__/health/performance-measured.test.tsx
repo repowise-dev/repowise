@@ -339,6 +339,21 @@ describe("buildMeasuredFunctionsPrompt", () => {
     );
   });
 
+  it("names production callers, with the share each measured caller drove", () => {
+    const prompt = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [
+        measuredRow({
+          callers: ["src/cli.py::build", "src/render/page.py::render_page"],
+          caller_shares: { "src/cli.py::build": 0.82 },
+        }),
+      ],
+    });
+    expect(prompt).toContain(
+      "Production callers: `src/cli.py::build` (drove 82.0% of its time), `src/render/page.py::render_page`",
+    );
+  });
+
   it("gives a rank and no share for an ordering-only run", () => {
     const prompt = buildMeasuredFunctionsPrompt({
       run: measuredRun({ ordering_only: true, repo_self_share: null }),

@@ -470,6 +470,45 @@ def test_go_chain_on_an_external_return_type_refuses_the_bare_name(tmp_path: Pat
     assert after == []
 
 
+_GO_ENGINE = (
+    'package web\n\nimport "net/http"\n\ntype Engine struct{}\n\n'
+    "func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {}\n"
+)
+
+
+def _go_web_chain(tmp_path: Path, caller: str, outer: str) -> list[str]:
+    """Callee ids of the chained call *outer* in ``web/use.go``, one package with ``Engine``."""
+    (tmp_path / "web").mkdir(exist_ok=True)
+    parsed = {}
+    parsed.update(_parse(tmp_path, "web/engine.go", "go", _GO_ENGINE))
+    parsed.update(_parse(tmp_path, "web/use.go", "go", caller))
+    call = next(c for c in parsed["web/use.go"].calls if c.target_name == outer and c.receiver_call)
+    resolver = CallResolver(parsed, {}, repo_path=str(tmp_path))
+    return [edge.callee_id for edge in resolver.resolve_file("web/use.go", [call])]
+
+
+def test_go_chain_on_a_library_call_is_not_a_repo_method(tmp_path: Path) -> None:
+    """``http.FileServer(fs).ServeHTTP(w, r)`` is the library handler's method, not the
+    package's one ``ServeHTTP``: a chain on a library call keeps no bare-name edge."""
+    caller = (
+        'package web\n\nimport "net/http"\n\n'
+        "func serve(fs http.FileSystem, w http.ResponseWriter, r *http.Request) {\n"
+        "\thttp.FileServer(fs).ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == []
+
+
+def test_go_chain_on_a_repo_function_value_keeps_the_bare_name(tmp_path: Path) -> None:
+    """``engine()`` calls a function value the package declares, so its result may be the
+    package's ``Engine`` and the bare name stays (the lane cannot type a variable)."""
+    caller = (
+        'package web\n\nimport (\n\t"net/http"\n\t"sync"\n)\n\n'
+        "var engine = sync.OnceValue(func() *Engine { return &Engine{} })\n\n"
+        "func serve(w http.ResponseWriter, r *http.Request) {\n\tengine().ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == ["web/engine.go::Engine::ServeHTTP"]
+
+
 def test_go_chain_on_a_repository_return_type_binds_its_method(tmp_path: Path) -> None:
     """The same shape over a type the repository declares resolves to that type's method."""
     parsed = _go_packages(

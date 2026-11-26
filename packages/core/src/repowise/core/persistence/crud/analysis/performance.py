@@ -1194,7 +1194,8 @@ async def measured_costs(
     ``newer_run`` (``crud.newer_unranked``). Each row's ``share`` is the function's self time (its
     cost: built-ins and libraries it called included, waits excluded) with its
     interval; ``inclusive`` is context. A row carries the function's
-    lines, callers outside test code, owner, tests (``tests_basis``: the
+    lines, production callers (the ones the run measured first, with the share
+    each drove), owner, tests (``tests_basis``: the
     per-test map's tests that ran it, else nearest by call graph), the
     ``verify`` command of the benchmarks that measure it and, when an open
     static performance cause sits on it and that cause's evidence runs in
@@ -1223,6 +1224,8 @@ async def measured_costs(
     spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
     covered = await _static_causes_on(session, repository_id, set(ids), spans)
     context = await _function_context(session, repository_id, ids, spans)
+    pairs = {(r.run_id, r.symbol_id) for runs in shown.values() for _, rows in runs for r in rows}
+    drivers = await _run_drivers(session, repository_id, pairs)
     listed = [run for runs in groups.values() for run, _ in runs]
     newer = await newer_unranked(session, repository_id, listed)
     at = now or _now_utc()
@@ -1234,7 +1237,9 @@ async def measured_costs(
                     _measured_run(run, rows, at, newer.get(run.id)) for run, rows in groups[key]
                 ],
                 "rows": [
-                    _measured_row(r, spans, context, covered) for _, rows in runs for r in rows
+                    _measured_row(r, spans, context, covered, drivers.get((r.run_id, r.symbol_id)))
+                    for _, rows in runs
+                    for r in rows
                 ],
                 "total": sum(len(rows) for _, rows in groups[key]),
             }
@@ -1398,8 +1403,10 @@ async def _function_context(
     per-test map and the function test map. *spans* are the indexed symbols'
     lines per file.
 
-    Callers in test code (``code_origin``) are neither listed nor counted: a
-    measured production function's callers say who pays for it in production.
+    Only production callers (``code_origin``) are listed and counted: a
+    measured production function's callers say who pays for it in production,
+    and test, tooling, generated or example code does not. ``callers`` keeps
+    every one, best first; each row lists the ones its run measured first.
     Tests are the ones the per-test map saw run the function's lines (*spans*),
     or its nearest by call graph where the map lacks its file
     (``evidence.function_tests.row_tests``). A benchmark that calls the
@@ -1429,8 +1436,8 @@ async def _function_context(
     origins = await load_origins(
         session, repository_id, {file_of_symbol(s) for found in sources.values() for s in found}
     )
-    outside_tests = {
-        sid: [s for s in found if origins.get(file_of_symbol(s)) != "test"]
+    production = {
+        sid: [s for s in found if origins.get(file_of_symbol(s)) == "production"]
         for sid, found in sources.items()
     }
     wanted = set(symbol_ids)
@@ -1456,8 +1463,8 @@ async def _function_context(
         if (command := benchmark_command(b for b in found if is_benchmark(b, stored)))
     }
     return _FunctionContext(
-        callers_total={i: len(outside_tests.get(i, ())) for i in symbol_ids if i in degrees},
-        callers={sid: found[:_MEASURED_CALLERS] for sid, found in outside_tests.items() if found},
+        callers_total={i: len(production.get(i, ())) for i in symbol_ids if i in degrees},
+        callers={sid: found for sid, found in production.items() if found},
         history=await function_owner_history(
             session,
             repository_id,
@@ -1529,6 +1536,39 @@ async def _callers_of(
     return {target: list(dict.fromkeys(found)) for target, found in out.items()}
 
 
+async def _run_drivers(
+    session: AsyncSession, repository_id: str, pairs: set[tuple[str, str]]
+) -> dict[tuple[str, str], str]:
+    """``{(run id, symbol id): drivers_json}``: what each shown row's own run
+    measured calling the function (``evidence_symbol_costs``), where it did.
+
+    One statement per chunk of symbol ids, narrowed to the shown runs.
+    """
+    from ...models import EvidenceSymbolCost
+
+    if not pairs:
+        return {}
+    runs = sorted({run for run, _ in pairs})
+    out: dict[tuple[str, str], str] = {}
+    for batch in chunked(sorted({symbol for _, symbol in pairs})):
+        result = await session.execute(
+            select(
+                EvidenceSymbolCost.run_id,
+                EvidenceSymbolCost.symbol_id,
+                EvidenceSymbolCost.drivers_json,
+            ).where(
+                EvidenceSymbolCost.repository_id == repository_id,
+                EvidenceSymbolCost.run_id.in_(runs),
+                EvidenceSymbolCost.symbol_id.in_(batch),
+                EvidenceSymbolCost.drivers_json.is_not(None),
+            )
+        )
+        for run_id, symbol_id, drivers_json in result:
+            if (run_id, symbol_id) in pairs:
+                out[(run_id, symbol_id)] = drivers_json
+    return out
+
+
 def _measured_run(
     run: Any, rows: list[Any], at: datetime, newer: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -1565,7 +1605,10 @@ def _measured_row(
     spans: dict[str, list[Any]],
     context: _FunctionContext,
     covered: dict[str, set[str]],
+    drivers_json: str | None,
 ) -> dict[str, Any]:
+    """One ranked row; *drivers_json* is its run's measured callers of the function."""
+    from ....evidence.payloads import weighted_callers
     from ....ingestion.symbol_identity import file_of_symbol
 
     symbol_id = row.symbol_id
@@ -1573,6 +1616,9 @@ def _measured_row(
     span = next((s for s in spans.get(path, ()) if s.symbol_id == symbol_id), None)
     history = context.history.get(symbol_id) or {}
     tests = context.tests[symbol_id]
+    callers, caller_shares = weighted_callers(
+        context.callers.get(symbol_id, ()), drivers_json, _MEASURED_CALLERS
+    )
     out = {
         "symbol_id": symbol_id,
         "file_path": path,
@@ -1587,7 +1633,9 @@ def _measured_row(
         "samples": row.samples,
         "freshness": row.freshness,
         "callers_total": context.callers_total.get(symbol_id),
-        "callers": context.callers.get(symbol_id, []),
+        # Production callers; the ones the run measured lead, with the share each drove.
+        "callers": callers,
+        "caller_shares": caller_shares,
         # From the function's own lines; none without its blame row, never the file's.
         "owner": history.get("owner"),
         "last_change": history.get("last_change"),

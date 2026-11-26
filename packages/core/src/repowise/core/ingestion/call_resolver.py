@@ -1134,15 +1134,22 @@ class CallResolver(
             return self._with_props(hit, call)
         return self._with_props(self._resolve_bare_call(file_path, call, caller_id), call)
 
-    def _chain_from_repo_function(self, file_path: str, call: CallSite, caller_id: str) -> bool:
-        """Whether the inner call of chained *call* resolves to a repo function or method."""
+    def _chain_from_repo_function(
+        self, file_path: str, call: CallSite, caller_id: str, *, values: bool = False
+    ) -> bool:
+        """Whether the inner call of chained *call* resolves to a repo function or method.
+
+        With *values*, a repo variable counts too: Go calls a function value
+        the repo declares (``var engine = sync.OnceValue(...)``; ``engine()``).
+        """
         assert call.receiver_call is not None
         language = self._language_of(file_path) or ""
         # Not gated on the return-type chain lane: whether the inner call is a
         # repo function needs no return type, so every language gets the carve-out.
         inner = self._chain_inner_link(file_path, call, call.receiver_call, caller_id, language)
         symbol = self._symbols_by_id.get(inner.callee_id) if inner is not None else None
-        return symbol is not None and symbol.kind in ("function", "method")
+        kinds = ("function", "method", "variable") if values else ("function", "method")
+        return symbol is not None and symbol.kind in kinds
 
     def _through_kotlin_alias(
         self, alias: Symbol, call: CallSite, caller_id: str
@@ -1189,9 +1196,17 @@ class CallResolver(
             # value, and a value's method is never a module-level function of
             # that name. Only a repo function or method may hand back a module
             # (``_lazy_mod().helper()``, ``self._backend().helper()``), so only
-            # its result keeps the name.
-            function = alias is not None and alias.kind == "function"
-            return None if function and not self._chain_from_repo_function(file_path, call, caller_id) else hit
+            # its result keeps the name. A Go chain is always a method on that
+            # value, so a method hit needs the result of a repo function (or
+            # of a function value the repo declares) too:
+            # ``http.FileServer(fs).ServeHTTP(w, r)`` is the library handler's.
+            go = self._language_of(file_path) == "go"
+            narrowed = alias is not None and (alias.kind == "function" or go)
+            if narrowed and not self._chain_from_repo_function(
+                file_path, call, caller_id, values=go
+            ):
+                return None
+            return hit
         if hit is None:
             return hit
         return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit
