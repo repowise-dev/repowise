@@ -110,6 +110,8 @@ def window_claim(
     else:
         words = "in production, window unknown"
     if commit is None:
+        if base_commit:
+            return f"{words}, deployed from {base_commit[:12]}, newest commit unknown"
         return f"{words}, deployed commit unknown"
     if base_commit and base_commit != commit:
         return f"{words}, deployed {base_commit[:12]} to {commit[:12]}"

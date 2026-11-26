@@ -172,6 +172,8 @@ def test_a_production_run_names_its_window_and_deploy() -> None:
     )
     same = run_status(_production("b" * 40, base_commit_sha="b" * 40), None)["window"]
     assert same["claim"].endswith(f"deployed {'b' * 12}")
+    oldest_only = run_status(_production(None, base_commit_sha="a" * 40), None)["window"]
+    assert oldest_only["claim"].endswith(f"deployed from {'a' * 12}, newest commit unknown")
     unbounded = _production(None, window_start=None)
     assert run_status(unbounded, None)["window"]["claim"] == (
         "in production, window unknown, deployed commit unknown"

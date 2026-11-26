@@ -883,14 +883,21 @@ def test_a_host_with_no_checkout_stores_entries_batches_with_no_checkout_root(
             workload="prod db bytes", entries=None, document=None,
             data=v1_bytes, format="repowise-evidence-v1",
         ),
+        # So does a benchmark report: it names its benchmarks, not source lines.
+        SourceBatch(
+            kind="benchmark", workload="cli bench", workload_class="benchmark", commit=head,
+            data=(_REPO / "tests" / "fixtures" / "evidence" / "hyperfine.json").read_bytes(),
+            format="hyperfine",
+        ),
     ]
 
     outcome = _fetch(root, double, _request(), repo_path=no_checkout)
 
     assert outcome.status == "ok", outcome.error
-    assert [p["stored"] for p in outcome.stored] == [True, True, True]
+    assert [p["stored"] for p in outcome.stored] == [True, True, True, True]
     runs, _costs = _stored(root)
     assert sorted((r.kind, r.checkout_root) for r in runs) == [
+        ("benchmark", None),
         ("profile", None),
         ("statement_stats", None),
         ("statement_stats", None),

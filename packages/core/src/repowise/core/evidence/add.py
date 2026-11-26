@@ -68,8 +68,8 @@ def _bad_option(option: str, message: str) -> EvidenceRefusedError:
     return EvidenceRefusedError("invalid_option", message, option=option)
 
 
-#: Why a file in a profile format is refused with no checkout.
-_NEEDS_CHECKOUT = "a profile file is read against the checkout's source; name an existing checkout."
+#: Why a profile (or Go output) is refused with no checkout.
+_NEEDS_CHECKOUT = "this file is read against the checkout's source; name an existing checkout."
 
 
 @dataclass(frozen=True)
@@ -292,9 +292,11 @@ def prepare_evidence(
             text = data.decode("utf-8", errors="replace")
             doc = parse_evidence(text)
         else:
-            if checkout_root is None:
-                raise _bad_option("--checkout-root", _NEEDS_CHECKOUT)
             reader = profile_formats.get(fmt)
+            # A profile's frames, and Go output's packages, are placed on the
+            # checkout; the other report formats name their files already.
+            if checkout_root is None and (reader.read is not None or reader.needs_checkout):
+                raise _bad_option("--checkout-root", _NEEDS_CHECKOUT)
             if reader.to_v1 is not None:
                 text = json.dumps(reader.convert_to_v1(data, name, checkout_root), sort_keys=True)
                 doc = parse_evidence(text)
@@ -846,10 +848,11 @@ async def ingest_batch(
     one savepoint: a batch is stored whole or not at all. Raises
     :class:`EvidenceRefusedError` like :func:`ingest_evidence`.
 
-    Only profile bytes need the checkout (their frames are placed on the
-    source). A batch of entries, or of v1 bytes, names its files already, so a
-    host with no checkout (hosted) passes one that does not exist and the run
-    stores none.
+    Only profile bytes and Go output need the checkout (their frames and
+    packages are placed on the source). A batch of entries, or of bytes in a
+    format that names its files (v1, benchmark and test reports), reads no
+    source, so a host with no checkout (hosted) passes one that does not
+    exist and the run stores none.
     """
     from .sources import SOURCE_COLUMN, batch_v1
 
