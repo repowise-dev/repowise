@@ -148,6 +148,24 @@ def test_nuxt_alias_glob_reaches_the_components(tmp_path: Path) -> None:
     assert not _unreachable(report) & set(edges)
 
 
+def test_template_pattern_and_base_option(tmp_path: Path) -> None:
+    graph, _ = _build(
+        tmp_path,
+        {
+            "src/index.ts": (
+                "export const a = import.meta.glob(`./views/*.ts`);\n"
+                "export const b = import.meta.glob(['./*.ts', '!./skip.ts'], { base: './widgets' });\n"
+                "export const c = import.meta.glob(`./${dir}/*.ts`);\n"
+            ),
+            "src/views/home.ts": "export const v = 1;\n",
+            "src/widgets/button.ts": "export const w = 1;\n",
+            "src/widgets/skip.ts": "export const s = 1;\n",
+        },
+    )
+    edges = _imports_from(graph, "src/index.ts")
+    assert set(edges) == {"src/views/home.ts", "src/widgets/button.ts"}
+
+
 def test_glob_never_matches_the_importer_or_unindexed_files(tmp_path: Path) -> None:
     graph, _ = _build(
         tmp_path,

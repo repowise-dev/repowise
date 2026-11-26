@@ -5,6 +5,8 @@ Also serves the SFC tags (svelte, vue, astro), whose script blocks parse as TS.
 
 from __future__ import annotations
 
+import posixpath
+
 from tree_sitter import Node
 
 from ...models import GlobImport, Import
@@ -39,10 +41,26 @@ def _is_meta_glob(stmt_node: Node, src: str) -> bool:
 
 
 def _string_value(node: Node, src: str) -> str | None:
-    """A plain string literal's value; ``None`` for anything else."""
+    """A string literal's value, or a template's with no ``${}``; ``None`` for anything else."""
+    if node.type == "template_string" and not any(
+        c.type == "template_substitution" for c in node.named_children
+    ):
+        return node_text(node, src)[1:-1]
     if node.type != "string":
         return None
     return node_text(node, src)[1:-1]
+
+
+def _rebase(pattern: str, base: str | None) -> str:
+    """*pattern* read from the call's ``base:`` option; only relative patterns move."""
+    negated = pattern.startswith("!")
+    body = pattern[1:] if negated else pattern
+    if not base or not body.startswith(("./", "../")):
+        return pattern
+    joined = posixpath.normpath(posixpath.join(base, body))
+    if base.startswith(("./", "../")) and not joined.startswith("../"):
+        joined = "./" + joined
+    return ("!" if negated else "") + joined
 
 
 def _glob_option(options: Node | None, key: str, src: str) -> str | None:
@@ -64,14 +82,15 @@ def _meta_glob_import(stmt_node: Node, module_node: Node, raw: str, src: str) ->
     or only the one ``import:`` names. A ``query:`` such as ``?raw`` or
     ``?url`` loads the file as text or a URL, which uses none of its exports.
     """
-    items = [module_node] if module_node.type == "string" else module_node.named_children
-    patterns = tuple(p for item in items if (p := _string_value(item, src)))
-    positive = [p for p in patterns if not p.startswith("!")]
-    if not positive:
-        return []
+    items = module_node.named_children if module_node.type == "array" else [module_node]
     args = stmt_node.child_by_field_name("arguments")
     rest = [c for c in args.named_children if c.id != module_node.id] if args else []
     options = rest[0] if rest else None
+    base = _glob_option(options, "base", src)
+    patterns = tuple(_rebase(p, base) for item in items if (p := _string_value(item, src)))
+    positive = [p for p in patterns if not p.startswith("!")]
+    if not positive:
+        return []
     imported = _glob_option(options, "import", src)
     names = [imported] if imported else ["*"]
     if _glob_option(options, "query", src) or _glob_option(options, "as", src):

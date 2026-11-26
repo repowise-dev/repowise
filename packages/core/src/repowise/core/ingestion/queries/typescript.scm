@@ -245,7 +245,7 @@
   function: (member_expression
     object: (meta_property)
     property: (property_identifier) @_glob)
-  arguments: (arguments . [(string) (array)] @import.module)
+  arguments: (arguments . [(string) (template_string) (array)] @import.module)
   (#eq? @_glob "glob")
 ) @import.statement
 
