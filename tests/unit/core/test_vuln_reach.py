@@ -8,11 +8,18 @@ from repowise.core.analysis.execution_graph import ExecutionGraphIndex
 from repowise.core.inventory.vuln_reach import (
     MAX_SITES,
     TIERS,
-    AffectedImport,
     ImportSite,
     production_roots,
     tier_advisory,
 )
+
+
+@dataclass(frozen=True)
+class AffectedImport:
+    """The advisory record's fields the fold reads (``inventory.osv.AffectedImport``)."""
+
+    path: str
+    symbols: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -378,3 +385,28 @@ def test_go_import_only_in_test_code_is_not_reachable():
         call_sites_known=False,
     )
     assert result.tier == "test_or_dev_only"
+
+
+def test_symbols_without_a_path_match_anywhere_in_the_package():
+    result = tier_advisory(
+        ecosystem="pypi",
+        affected=(AffectedImport("", ("load",)),),
+        import_sites=PARSE_IMPORT,
+        call_sites=[LOAD_CALL],
+        reachable={"app/parse.py::read_config"},
+    )
+    assert result.tier == "reachable"
+
+
+def test_go_import_path_counts_only_for_a_path_that_names_symbols():
+    result = tier_advisory(
+        ecosystem="go",
+        affected=(
+            AffectedImport("golang.org/x/net/html"),
+            AffectedImport("golang.org/x/net/http2", ("Server.Serve",)),
+        ),
+        import_sites=[ImportSite(GO_RENDER, "golang.org/x/net/html")],
+        reachable={f"{GO_RENDER}::Render"},
+        call_sites_known=False,
+    )
+    assert result.tier == "imported"

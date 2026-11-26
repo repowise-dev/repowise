@@ -116,15 +116,18 @@ class ImportSite:
     line: int | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class AffectedImport:
-    """An affected package path and the symbols in it (OSV ``imports[]``).
+class AffectedImport(Protocol):
+    """An advisory's affected package path and the symbols in it (OSV ``imports[]``),
+    as ``inventory.osv.AffectedImport`` carries them.
 
-    No *symbols* means the advisory names none for this path.
+    No *symbols* means the advisory names none for this path. An empty *path*
+    means it named symbols without one: they are matched anywhere in the package.
     """
 
-    path: str
-    symbols: tuple[str, ...] = ()
+    @property
+    def path(self) -> str: ...
+    @property
+    def symbols(self) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +194,10 @@ def _names_symbol(call: CallRecord, affected: AffectedImport, ecosystem: str) ->
     never matches ``Session.get``. A default binding's leading ``default`` is
     the module's export, so ``default.get`` is a call of ``get``.
     """
-    if not affected.symbols or not _module_matches(call.module, affected.path, ecosystem):
+    if not affected.symbols:
+        return False
+    # No path: the record named symbols only, and the calls are the package's.
+    if affected.path and not _module_matches(call.module, affected.path, ecosystem):
         return False
     called = call.symbol_path
     plain = called.removeprefix("default.")
@@ -246,13 +252,14 @@ def tier_advisory(
         return _below_imported(imports, dependency)
     imported_sites = _sites(Site(s.path, s.line) for s in shipping)
 
-    if ecosystem in _IMPORT_PATH_ECOSYSTEMS and any(a.symbols for a in affected):
+    named_paths = [a.path for a in affected if a.path and a.symbols]
+    if ecosystem in _IMPORT_PATH_ECOSYSTEMS and named_paths:
         reached_files = {file_of_symbol(node) for node in reachable}
         hits = [
             Site(s.path, s.line)
             for s in shipping
             if s.path in reached_files
-            and any(_module_matches(s.module, a.path, ecosystem) for a in affected)
+            and any(_module_matches(s.module, path, ecosystem) for path in named_paths)
         ]
         if hits:
             return TierResult("reachable", "import_path", _sites(hits))
