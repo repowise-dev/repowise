@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from repowise.core.generation.editor_files import tech_stack as tech_stack_mod
-from repowise.core.generation.editor_files.tech_stack import (
+from repowise.core.ingestion import tech_stack as tech_stack_mod
+from repowise.core.ingestion.tech_stack import (
     detect_build_commands,
     detect_tech_stack,
 )
@@ -90,6 +90,90 @@ def test_node_modules_tsconfig_is_not_typescript_evidence(tmp_path):
     items = detect_tech_stack(tmp_path)
     names = [i.name for i in items]
     assert "TypeScript" not in names
+
+
+_PYPROJECT = "[project]\nname = 'api'\n"
+
+
+def _write_package(directory, deps):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "package.json").write_text(
+        json.dumps({"name": directory.name, "dependencies": deps}), encoding="utf-8"
+    )
+
+
+def test_a_next_app_in_a_monorepo_folder_is_in_the_stack(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(_PYPROJECT, encoding="utf-8")
+    _write_package(
+        tmp_path / "apps" / "web",
+        {"next": "14.2.0", "react": "18.3.0", "vite": "5.0.0", "prisma": "5.0.0"},
+    )
+
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+
+    assert {"Python", "Next.js", "React"} <= set(names)
+    # A nested package's build tool and ORM are not the repo's stack.
+    assert not {"Vite", "Prisma", "Node.js"} & set(names)
+
+
+def test_a_nuxt_app_in_a_monorepo_folder_is_in_the_stack(tmp_path):
+    _write_package(tmp_path / "packages" / "site", {"nuxt": "^3.12.0"})
+
+    assert "Nuxt" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_a_root_app_is_named_the_way_framework_facts_names_it(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "app", "devDependencies": {"@sveltejs/kit": "^2.0.0"}}),
+        encoding="utf-8",
+    )
+
+    assert "SvelteKit" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+@pytest.mark.parametrize("folder", ["tests/fixtures/next-app", "examples/next-app", "scripts/site"])
+def test_a_manifest_outside_production_code_is_not_the_stack(tmp_path, folder):
+    (tmp_path / "pyproject.toml").write_text(_PYPROJECT, encoding="utf-8")
+    _write_package(tmp_path / folder, {"next": "14.2.0"})
+
+    assert "Next.js" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def _exclude(tmp_path, *patterns):
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    lines = "".join(f"  - {p}\n" for p in patterns)
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        f"exclude_patterns:\n{lines}", encoding="utf-8"
+    )
+
+
+def test_a_manifest_the_index_excludes_is_not_the_stack(tmp_path):
+    _exclude(tmp_path, "apps/legacy/")
+    _write_package(tmp_path / "apps" / "legacy", {"next": "12.0.0"})
+
+    assert "Next.js" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_an_excluded_manifest_above_a_counted_one_is_not_read(tmp_path):
+    # npm_manifests also reads ancestors; only the manifests chosen here count.
+    _exclude(tmp_path, "apps/package.json")
+    _write_package(tmp_path / "apps", {"nuxt": "^3.12.0"})
+    _write_package(tmp_path / "apps" / "web", {"next": "14.2.0"})
+
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+
+    assert "Next.js" in names
+    assert "Nuxt" not in names
+
+
+def test_a_rails_app_is_named_from_its_boot_file(tmp_path):
+    (tmp_path / "Gemfile").write_text("source 'https://rubygems.org'\n", encoding="utf-8")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "application.rb").write_text("module App; end\n", encoding="utf-8")
+
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+
+    assert {"Ruby", "Rails"} <= set(names)
 
 
 def test_fixture_csproj_does_not_make_repo_csharp(tmp_path):
@@ -372,7 +456,7 @@ def test_a_root_signal_moves_the_key_without_help_from_the_directory_mtime(tmp_p
     """
     import os
 
-    from repowise.core.generation.editor_files.tech_stack import _manifest_fingerprint
+    from repowise.core.ingestion.tech_stack import _manifest_fingerprint
 
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
     before = _manifest_fingerprint(tmp_path)
@@ -475,8 +559,8 @@ def test_detects_makefile_targets(tmp_path):
 def test_the_memo_key_stats_every_registry_manifest():
     """The key reads manifest names from the language registry, so a manifest
     a spec declares can never be missing from it."""
-    from repowise.core.generation.editor_files.tech_stack import _MANIFEST_FILES
     from repowise.core.ingestion.languages.registry import REGISTRY
+    from repowise.core.ingestion.tech_stack import _MANIFEST_FILES
 
     assert REGISTRY.manifest_filenames() <= set(_MANIFEST_FILES)
     assert {"tsconfig.json", "Dockerfile"} <= set(_MANIFEST_FILES)

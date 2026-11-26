@@ -132,6 +132,8 @@ def add_framework_edges(
 ) -> int:
     """Add synthetic edges for framework-mediated relationships.
 
+    *tech_stack* is the names :func:`~repowise.core.ingestion.tech_stack.detect_tech_stack`
+    returns; each handler asks it through :meth:`DetectionContext.uses`.
     Returns the number of edges added.
     """
     path_set = set(parsed_files.keys())

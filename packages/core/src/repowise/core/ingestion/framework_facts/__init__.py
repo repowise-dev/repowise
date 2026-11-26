@@ -12,7 +12,8 @@ deletion-ready on "no importer" alone.
 
 One module per framework (``nuxt``, ``sveltekit``, ``php``, ...) holds its
 facts and the config it reads; ``base`` holds :class:`FrameworkFacts`, ``npm``
-the ``package.json`` reader, and ``js`` the per-manifest answer.
+the ``package.json`` reader, ``js`` the per-manifest answer, and ``presence``
+which frameworks a repo's manifests declare (the tech stack reads it).
 """
 
 from __future__ import annotations
@@ -33,6 +34,13 @@ from .npm import (
 from .nuxt import NUXT, NUXT_CONFIGS, NUXT_I18N, nuxt_src_dir
 from .php import LARAVEL, PHP_FRAMEWORKS, SYMFONY, TYPO3, detect_php_framework
 from .platforms import ANDROID, LWC, SALESFORCE
+from .presence import (
+    NPM_STACK_NAMES,
+    convention_framework_names,
+    declared_frameworks,
+    nested_frameworks,
+    production_npm_manifests,
+)
 from .react_email import REACT_EMAIL
 from .remix import REMIX
 from .sveltekit import SVELTE_CONFIGS, SVELTEKIT, KitFiles, kit_files, sveltekit_lib_dir
@@ -48,6 +56,7 @@ __all__ = [
     "LWC",
     "NEXT_PAGES",
     "NPM_DEP_FIELDS",
+    "NPM_STACK_NAMES",
     "NUXT",
     "NUXT_CONFIGS",
     "NUXT_I18N",
@@ -63,13 +72,17 @@ __all__ = [
     "KitFiles",
     "NpmManifest",
     "angular_entry_files",
+    "convention_framework_names",
     "convention_load_reasons",
+    "declared_frameworks",
     "detect_php_framework",
     "js_frameworks",
     "kit_files",
+    "nested_frameworks",
     "npm_dependency_names",
     "npm_manifests",
     "nuxt_src_dir",
     "parse_npm_manifest",
+    "production_npm_manifests",
     "sveltekit_lib_dir",
 ]

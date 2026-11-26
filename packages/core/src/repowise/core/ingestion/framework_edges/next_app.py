@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 class _NextAppRouterHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        if any("next" in tok for tok in dctx.stack_lower):
+        if dctx.uses("Next.js"):
             return True
         # Cheap presence check: any app-router file in the parsed set.
         for path, parsed in dctx.parsed_files.items():
