@@ -11,6 +11,10 @@ so a symbol (and a file older than the indexed window) walks git: ``git log
 kept per repository head, so a repeat costs nothing. An origin question this cannot answer says so and
 names the git command that can, instead of falling through to retrieval.
 
+The date is when the change reached the branch (:func:`_landing`), not when
+its first commit was written: a branch authored months before its merge, or
+rebased and squashed later, started the behaviour on the day it landed.
+
 "When did we start limiting the number of content codings" names a behaviour,
 not code. It resolves to a symbol only when one production symbol's whole name
 is spelled by the question's words (``MAX_CONTENT_CODINGS``: "limiting",
@@ -27,7 +31,7 @@ import re
 import subprocess
 import time
 from collections import OrderedDict
-from datetime import UTC
+from datetime import UTC, date
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +71,10 @@ _ARTICLE = r"(?:(?:the|a|an)\s+)?"
 _MAX_DEF_FILES = 5
 #: Seconds for the history walk; a slower one answers "could not tell".
 _GIT_TIMEOUT = 10
-_LOG_FORMAT = "--format=%H\t%an\t%aI\t%s"
+_LOG_FORMAT = "--format=%H\t%an\t%aI\t%cI\t%s"
+#: Calendar days between writing and landing past which the answer names both
+#: (one day absorbs a timezone apart).
+_AUTHORED_GAP_DAYS = 1
 
 #: Git walks already made: (repo id, kind, name, paths, live head) -> the
 #: commit, or why none adds it. History below a head never changes, so an
@@ -483,7 +490,7 @@ async def _first_commit(
             return None, _TIMED_OUT
         # A walk that failed or ran out of time may succeed next time, and a
         # shallow clone can be deepened under the same head.
-        keep = isinstance(commit, dict) or commit == _NO_COMMIT
+        keep = (isinstance(commit, dict) and not commit.get("unsettled")) or commit == _NO_COMMIT
         if head and keep and not shallow_roots(str(repo_path)):
             _WALKS[key] = commit
             while len(_WALKS) > _WALKS_MAX:
@@ -518,8 +525,10 @@ def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str
     origin; only when no such line is found does any whole-word mention count
     (a bare -S would also count "parse" inside "parser").
     """
+    deadline = time.monotonic() + 2 * _GIT_TIMEOUT
     if kind == "file":
-        return _walk(repo_path, ["--diff-filter=A", "--follow"], paths, _GIT_TIMEOUT)
+        found = _walk(repo_path, ["--diff-filter=A", "--follow"], paths, _GIT_TIMEOUT)
+        return _landed(repo_path, found, deadline)
     word = re.escape(name.rsplit(".", 1)[-1])
     # A rename moves the text without adding it; follow one file across renames.
     follow = ["--follow"] if len(paths) == 1 else []
@@ -527,13 +536,68 @@ def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str
         f"^[[:space:]]*(({_DEF_MODIFIERS})[[:space:]]+)*({_DEF_KEYWORDS})[[:space:]]+{word}"
         f"([^A-Za-z0-9_]|$)|^[[:space:]]*{word}[[:space:]]*(:[^=]*)?=[^=]"
     )
-    deadline = time.monotonic() + 2 * _GIT_TIMEOUT
     found = _walk(repo_path, ["--pickaxe-regex", f"-S{defines}", *follow], paths, _GIT_TIMEOUT)
-    if found != _NO_COMMIT:
-        return found
-    mention = f"(^|[^A-Za-z0-9_]){word}([^A-Za-z0-9_]|$)"
-    left = max(1, int(deadline - time.monotonic()))
-    return _walk(repo_path, ["--pickaxe-regex", f"-S{mention}", *follow], paths, left)
+    if found == _NO_COMMIT:
+        mention = f"(^|[^A-Za-z0-9_]){word}([^A-Za-z0-9_]|$)"
+        left = max(1, int(deadline - time.monotonic()))
+        found = _walk(repo_path, ["--pickaxe-regex", f"-S{mention}", *follow], paths, left)
+    return _landed(repo_path, found, deadline)
+
+
+def _landed(repo_path: str, found: dict | str, deadline: float) -> dict | str:
+    """*found* with ``date`` moved to the day its change landed, time allowing.
+
+    When git cannot tell in time, ``date`` stays *found*'s own committer date
+    and ``unsettled`` keeps the walk out of the cache, so a later ask retries.
+    """
+    if isinstance(found, dict) and not found["cut"]:
+        left = int(deadline - time.monotonic())
+        landed = _landing(repo_path, found["sha"], found["date"], left) if left >= 1 else None
+        if landed is None:
+            found["unsettled"] = True
+        else:
+            found["date"] = landed
+    return found
+
+
+def _landing(repo_path: str, sha: str, committed: str, timeout: int) -> str | None:
+    """The day the change holding *sha* reached the checked-out branch, or
+    ``None`` when git cannot tell.
+
+    That is the committer date of the oldest first-parent commit descending
+    from *sha*: the merge that brought its branch in, or *sha* itself (its
+    committer date *committed*) when it is HEAD or sits on the first-parent
+    line (a squash, rebase or direct commit, whose committer date is when it
+    was applied).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "log",
+                "--first-parent",
+                "--ancestry-path",
+                "--format=%H %P%x09%cI",
+                f"{sha}..HEAD",
+            ],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = [ln for ln in proc.stdout.splitlines() if "\t" in ln]
+    if not lines:
+        return committed  # *sha* is HEAD
+    ids, when = lines[-1].split("\t", 1)
+    first_parent = ids.split()[1:2]
+    return committed if first_parent == [sha] else when[:10]
 
 
 def _walk(repo_path: str, args: list[str], paths: list[str], timeout: int) -> dict | str:
@@ -554,16 +618,18 @@ def _walk(repo_path: str, args: list[str], paths: list[str], timeout: int) -> di
         return _TIMED_OUT
     except OSError:
         return "git could not be run"
-    lines = [ln for ln in proc.stdout.splitlines() if ln.count("\t") >= 3]
+    lines = [ln for ln in proc.stdout.splitlines() if ln.count("\t") >= 4]
     if proc.returncode != 0:
         return "git could not read this checkout's history"
     if not lines:
         return _NO_COMMIT
-    sha, author, date, subject = lines[-1].split("\t", 3)
+    sha, author, authored, committed, subject = lines[-1].split("\t", 4)
     return {
         "sha": sha,
         "author": author,
-        "date": date[:10],
+        # Its own committer date until :func:`_landed` reads the landing's.
+        "date": committed[:10],
+        "authored": authored[:10],
         "subject": subject,
         "source": "git",
         # A shallow clone's cut commit shows as adding everything it holds.
@@ -582,7 +648,14 @@ def _answer(
     resolved: bool = False,
 ) -> dict:
     short = commit["sha"][:12]
-    by = f"{commit['author']}, {commit['date']}"
+    # A stored change's merge date is its landing date.
+    landed = commit["date"]
+    if change is not None and change.merged_at is not None:
+        landed = _utc(change.merged_at).date().isoformat()
+    authored = commit.get("authored")
+    gap = abs((date.fromisoformat(landed) - date.fromisoformat(authored)).days) if authored else 0
+    when = f"landed {landed}, authored {authored}" if gap > _AUTHORED_GAP_DAYS else landed
+    by = f"{commit['author']}, {when}"
     if change is not None and change.forge_ref:
         title = change.title or commit["subject"]
         what = f'{change.forge_ref} "{title}" (commit {short}, by {by})'
@@ -596,7 +669,7 @@ def _answer(
         "subject": name,
         "commit": commit["sha"],
         "author": commit["author"],
-        "date": commit["date"],
+        "date": landed,
     }
     hint = f"Use the answer directly; it rests on git history of {paths[0]}."
     if resolved:

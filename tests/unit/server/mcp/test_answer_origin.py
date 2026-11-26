@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import UTC, datetime
 
@@ -338,6 +339,84 @@ async def test_a_shallow_clone_walk_is_not_kept(setup_mcp, history, monkeypatch)
     assert not origin._WALKS
 
 
+def _dated(cwd, when: str, *args: str, authored: str | None = None) -> str:
+    """``git *args`` committed at *when*, authored at *authored* (default *when*)."""
+    env = {
+        **os.environ,
+        "GIT_COMMITTER_DATE": f"{when}T12:00:00Z",
+        "GIT_AUTHOR_DATE": f"{authored or when}T12:00:00Z",
+    }
+    return subprocess.run(
+        ["git", "-c", "user.name=Dev", "-c", "user.email=dev@example.com", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout.strip()
+
+
+@pytest.fixture(params=["merge", "squash", "rebase"])
+def late_landing(request, tmp_path):
+    """AuthService written on a branch on 2026-01-18 that lands on main on 2026-08-12."""
+    _dated(tmp_path, "2026-01-01", "init", "-q", "-b", "main")
+    path = tmp_path / "src/auth/service.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("x = 1\n", encoding="utf-8")
+    _dated(tmp_path, "2026-01-01", "add", "src")
+    _dated(tmp_path, "2026-01-01", "commit", "-qm", "seed")
+    _dated(tmp_path, "2026-01-18", "checkout", "-qb", "feat")
+    path.write_text("x = 1\nclass AuthService:\n    pass\n", encoding="utf-8")
+    _dated(tmp_path, "2026-01-18", "commit", "-qam", "Add the auth service")
+    _dated(tmp_path, "2026-03-01", "checkout", "-q", "main")
+    (tmp_path / "notes.txt").write_text("n\n", encoding="utf-8")
+    _dated(tmp_path, "2026-03-01", "add", "notes.txt")
+    _dated(tmp_path, "2026-03-01", "commit", "-qm", "notes")
+    land = "2026-08-12"
+    if request.param == "merge":
+        _dated(tmp_path, land, "merge", "-q", "--no-ff", "feat", "-m", "Merge pull request #7")
+    elif request.param == "squash":
+        _dated(tmp_path, land, "merge", "-q", "--squash", "feat")
+        # The forge keeps the branch's author date on the squash commit.
+        _dated(tmp_path, land, "commit", "-qm", "Add the auth service (#7)", authored="2026-01-18")
+    else:
+        _dated(tmp_path, land, "rebase", "-q", "main", "feat")
+        _dated(tmp_path, land, "checkout", "-q", "main")
+        _dated(tmp_path, land, "merge", "-q", "--ff-only", "feat")
+    (tmp_path / "notes.txt").write_text("n\nm\n", encoding="utf-8")
+    _dated(tmp_path, "2026-09-01", "commit", "-qam", "more notes")
+    return request.param
+
+
+@pytest.mark.asyncio
+async def test_the_date_is_when_the_change_landed_not_when_it_was_written(setup_mcp, late_landing):
+    from repowise.server.mcp_server import get_answer
+
+    result = await get_answer("When did AuthService first appear?")
+    assert result["confidence"] == "high"
+    assert result["origin"]["date"] == "2026-08-12"
+    assert "authored" not in result["origin"]
+    assert "(by Dev, landed 2026-08-12, authored 2026-01-18)" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_a_commit_written_and_landed_together_gives_one_date(setup_mcp, history):
+    from repowise.server.mcp_server import get_answer
+
+    result = await get_answer("Who added AuthService?")
+    assert "authored" not in result["answer"]
+    assert f"(by Dev, {result['origin']['date']})" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_change_dates_the_origin_by_its_merge(setup_mcp, session, history):
+    from repowise.server.mcp_server import get_answer
+
+    await _seed_change(session, history)  # merged_at 2026-03-01
+    result = await get_answer("Which PR introduced AuthService?")
+    assert result["origin"]["date"] == "2026-03-01"
+
+
 @pytest.mark.asyncio
 async def test_a_use_before_the_definition_is_not_the_origin(setup_mcp, tmp_path):
     from repowise.server.mcp_server import get_answer
@@ -573,3 +652,16 @@ async def test_a_scan_past_its_cap_resolves_nothing(setup_mcp, session, limit_hi
     monkeypatch.setattr(origin, "_MAX_SCANNED_NAMES", 1)
     result = await get_answer("When did we start limiting login attempts?")
     assert "origin" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_landing_git_cannot_tell_is_answered_but_not_kept(
+    setup_mcp, late_landing, monkeypatch
+):
+    from repowise.server.mcp_server import get_answer
+    from repowise.server.mcp_server.tool_answer import origin
+
+    monkeypatch.setattr(origin, "_landing", lambda *args: None)
+    result = await get_answer("When did AuthService first appear?")
+    assert result["confidence"] == "high"
+    assert not origin._WALKS
