@@ -449,6 +449,25 @@ def test_a_module_path_resolving_to_the_helper_names_it() -> None:
     assert "tests/autobahn/client/far.py" not in found
 
 
+def test_a_config_word_relative_path_or_module_elsewhere_does_not_name_the_helper() -> None:
+    sources = {**_AUTOBAHN, "tests/tools/runner": "#!/bin/sh"}
+    # An extensionless helper's name in prose is still a bare word.
+    sources["setup.cfg"] = "description = the test runner"
+    assert "tests/tools/runner" in helper_readers(["tests/tools/runner"], [], sources.get)
+    # ``./client`` from the root is another directory; ``.client`` is no config path.
+    for text in ("alias = ./client", "plugins = .client"):
+        sources["setup.cfg"] = text
+        assert _CLIENT in helper_readers([_CLIENT], _tests(sources), sources.get)
+    sources["setup.cfg"] = "alias = ./tests/autobahn/client/"
+    assert helper_readers([_CLIENT], _tests(sources), sources.get) == {}
+
+
+def test_a_bare_name_in_a_string_after_a_period_still_counts() -> None:
+    sources = {**_AUTOBAHN, "tests/helpers/msg.py": 'MSG = "start the server. client next"'}
+    found = helper_readers([_CLIENT], _tests(sources), sources.get)[_CLIENT]
+    assert "tests/helpers/msg.py" in found
+
+
 def test_a_config_names_the_helper_only_by_its_path() -> None:
     """A path to another file of the same name is not the helper; its own path is."""
     sources = {**_AUTOBAHN, "tests/helpers/rel.py": 'P = "../client/client.py"'}

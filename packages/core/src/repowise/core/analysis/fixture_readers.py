@@ -23,6 +23,7 @@ the file or the tree, or when no test code does (a glob or a computed path).
 from __future__ import annotations
 
 import io
+import posixpath
 import re
 import tokenize
 from collections.abc import Callable, Collection, Mapping
@@ -221,8 +222,8 @@ def _configured(helper: str, read: Callable[[str], str | None]) -> bool:
         for name in _CONFIG_NAMES:
             text = read(name if str(d) == "." else f"{d}/{name}")
             if text and (
-                _names_helper(text := text.lower(), helper, reader=None)
-                or _spells_dir(text, folder)
+                _names_helper(text := text.lower(), helper, reader=None, at=d)
+                or _spells_dir(text, folder, d)
             ):
                 return True
     return False
@@ -236,7 +237,9 @@ _MODULE_TAIL = re.compile(r"[\w.]*$")
 _PATH_TOKEN = re.compile(r"(?<![\w.\-@~#$])[\w.\-@~#$]*(?:[/\\][\w.\-@~#$]*)+")
 
 
-def _names_helper(text: str, helper: str, reader: str | None) -> bool:
+def _names_helper(
+    text: str, helper: str, reader: str | None, at: PurePosixPath | None = None
+) -> bool:
     """Whether lowercased *text* names *helper* by its file name or stem.
 
     A name counts when written as a path whose directories line up with the
@@ -245,7 +248,8 @@ def _names_helper(text: str, helper: str, reader: str | None) -> bool:
     different dotted name (``aiohttp.client``, ``self.client``) does not, unless
     its first name is an alias the text binds with ``as``. A bare stem may still be
     an import of this exact file (``from . import client``), so it counts for a
-    test file *reader*; in a config (*reader* ``None``) only a bare file name does.
+    test file *reader*; in a config (*reader* ``None``, in directory *at*) only a bare
+    file name does, and a relative path counts when it resolves to the helper from *at*.
     """
     if reader and reader.endswith(".py"):  # tokenized by :func:`code_text`
         text = _join_dots(text)
@@ -257,7 +261,8 @@ def _names_helper(text: str, helper: str, reader: str | None) -> bool:
         target = path.parts if word == path.name else module
         for m in re.finditer(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", text):
             before = text[max(0, m.start() - _WINDOW) : m.start()]
-            if _refers(before, text, word, target, reader, word == path.name):
+            named = word == path.name and "." in word
+            if _refers(before, text, word, target, reader, named, at):
                 return True
     return False
 
@@ -272,11 +277,18 @@ def _join_dots(text: str) -> str:
     ``aiohttp . client`` reads ``aiohttp.client``; ``from . . client`` reads
     ``from ..client``, a relative import.
     """
-    text = re.sub(r"\.\s+(?=[\w.])", ".", text)
-    text = re.sub(r"([)\]])\s+(?=\.)", r"\1", text)
-    return re.sub(
-        r"\b(\w+)\s+(?=\.)", lambda m: m[0] if m[1] in ("from", "import") else m[1], text
-    )
+    pieces = _STRING.split(text)
+    for i in range(0, len(pieces), 2):  # the code between string literals, which stay as written
+        code = re.sub(r"\.\s+(?=[\w.])", ".", pieces[i])
+        code = re.sub(r"([)\]])\s+(?=\.)", r"\1", code)
+        pieces[i] = re.sub(
+            r"\b(\w+)\s+(?=\.)", lambda m: m[0] if m[1] in ("from", "import") else m[1], code
+        )
+    return "".join(pieces)
+
+
+#: A one-line string literal: its text is as written, not tokens joined by spaces.
+_STRING = re.compile(r"""("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')""")
 
 
 def _refers(
@@ -286,6 +298,7 @@ def _refers(
     target: tuple[str, ...],
     reader: str | None,
     file_name: bool,
+    at: PurePosixPath | None = None,
 ) -> bool:
     """Whether *word*, written after *before* in *text*, refers to the file at *target*.
 
@@ -294,6 +307,8 @@ def _refers(
     """
     if before.endswith(("/", "\\")):
         written = _PATH_TAIL.search(before).group()  # type: ignore[union-attr]
+        if at is not None and written.startswith("."):
+            return posixpath.normpath(f"{at}/{written}{word}".lower()) == "/".join(target)
         return _tail_matches((*_path_parts(written), word), target)
     if not before.endswith("."):
         return reader is not None or file_name
@@ -309,7 +324,7 @@ def _refers(
     if start and not start[-1].isspace() and start[-1] not in "\"'`(":
         return False  # ``f().client``, ``x?.client``: an attribute, not a module path
     if reader is None:
-        return True
+        return False  # no runner reads a module path relative to its config
     base = PurePosixPath(reader.lower()).parent
     for _ in range(dots - 1):
         base = base.parent
@@ -330,19 +345,22 @@ def _tail_matches(parts: tuple[str, ...], target: tuple[str, ...]) -> bool:
     return k > 0 and parts[-k:] == target[-k:]
 
 
-def _spells_dir(text: str, folder: PurePosixPath) -> bool:
-    """Whether lowercased *text* writes a path ending in *folder*'s names.
+def _spells_dir(text: str, folder: PurePosixPath, at: PurePosixPath) -> bool:
+    """Whether lowercased *text*, a config in directory *at*, writes *folder* as a path.
 
-    ``src/test/helpers``, or a relative ``./helpers`` (an alias target), does. A lone
+    ``src/test/helpers``, or a relative ``./test/helpers`` resolving to it from *at*
+    (an alias target), does. A lone
     ``tests/`` in a glob or a test path list does not: it names where tests live.
     Ceiling: an alias target written as a lone name (tsconfig ``"helpers/*"``) is not
     read, so a test importing through that alias by another name stays unseen.
     """
     target = tuple(p.lower() for p in folder.parts)
     for m in _PATH_TOKEN.finditer(text):
-        written = m.group()
-        parts = _path_parts(written)
-        if len(parts) >= (1 if written.startswith(".") else 2) and _tail_matches(parts, target):
+        written = m.group().replace("\\", "/")
+        if written.startswith("."):
+            if posixpath.normpath(f"{at}/{written}".lower()).strip("/") == "/".join(target):
+                return True
+        elif len(parts := _path_parts(written)) >= 2 and _tail_matches(parts, target):
             return True
     return False
 
