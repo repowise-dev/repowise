@@ -384,6 +384,102 @@ def test_a_helper_a_runner_config_names_keeps_its_users_unknown() -> None:
     assert helper_readers(["web/src/test/render.tsx"], list(sources), sources.get) == {}
 
 
+def test_a_config_spelling_the_helper_directory_keeps_its_users_unknown() -> None:
+    sources = {
+        "web/vitest.config.ts": "alias: { '@h': './src/test' }",
+        "web/src/test/render.tsx": "export {}",
+        "web/e2e/a.test.tsx": "import { render } from '@h/render'",
+    }
+    tests = ["web/src/test/render.tsx", "web/e2e/a.test.tsx"]
+    assert helper_readers(["web/src/test/render.tsx"], tests, sources.get) == {}
+    # A relative alias target of one name is the directory too.
+    sources["web/vitest.config.ts"] = "alias: { 'test-utils': './test' }"
+    sources["web/src/vitest.config.ts"] = sources.pop("web/vitest.config.ts")
+    assert helper_readers(["web/src/test/render.tsx"], tests, sources.get) == {}
+    # A lone directory name where tests live hands no helper to a test; the test
+    # outside the helper's tree reads it through the alias path it writes.
+    sources["web/src/vitest.config.ts"] = "include: ['test/**/*.test.tsx'], root: 'src/'"
+    found = helper_readers(["web/src/test/render.tsx"], tests, sources.get)
+    assert found == {"web/src/test/render.tsx": ["web/e2e/a.test.tsx"]}
+
+
+# aiohttp: the helper's stem is a word of the package's own module and prose.
+_AUTOBAHN = {
+    "setup.cfg": "filterwarnings =\n    ignore:Unclosed client session <aiohttp.client.ClientSession",
+    "pyproject.toml": 'description = "Async http client/server framework (asyncio)"',
+    "tests/conftest.py": "from aiohttp.client import ClientSession\nclient_ssl_ctx = 1",
+    "tests/test_web.py": "async def test_x(aiohttp_client):\n    client = await aiohttp_client(app)",
+    "tests/autobahn/client/client.py": "import aiohttp",
+    "tests/autobahn/test_autobahn.py": 'CMD = ["python", "tests/autobahn/client/client.py"]',
+}
+_CLIENT = "tests/autobahn/client/client.py"
+
+
+def _tests(sources: dict[str, str]) -> list[str]:
+    return [p for p in sources if p.startswith("tests/")]
+
+
+def test_a_different_dotted_name_or_prose_does_not_name_the_helper() -> None:
+    """``aiohttp.client`` is another module and ``client session`` prose: neither the
+    configs nor the conftest name the helper. A bare ``client`` in a test may be an
+    import of it, so that test still reads it."""
+    found = helper_readers([_CLIENT], _tests(_AUTOBAHN), _AUTOBAHN.get)
+    assert found == {_CLIENT: ["tests/autobahn/test_autobahn.py", "tests/test_web.py"]}
+
+
+def test_a_module_path_resolving_to_the_helper_names_it() -> None:
+    sources = {
+        **_AUTOBAHN,
+        "tests/helpers/abs.py": "import tests.autobahn.client.client",
+        "tests/helpers/alias.py": "import tests.autobahn.client as h\nh.client.main()",
+        "tests/helpers/other.py": "from tests.other.client import run",
+        "tests/autobahn/client/near.py": "from .client import main",
+        "tests/autobahn/client/far.py": "from ..client import main",
+        "tests/autobahn/up.py": "from .client.client import main",
+        "tests/helpers/attr.py": "x = make().client",
+    }
+    found = helper_readers([_CLIENT], _tests(sources), sources.get)[_CLIENT]
+    for reader in ("abs", "alias"):
+        assert f"tests/helpers/{reader}.py" in found
+    assert "tests/autobahn/client/near.py" in found
+    assert "tests/autobahn/up.py" in found
+    for not_reader in ("tests/helpers/other.py", "tests/helpers/attr.py", "tests/conftest.py"):
+        assert not_reader not in found
+    # ``..client`` from inside the package is tests/autobahn/client, the package itself.
+    assert "tests/autobahn/client/far.py" not in found
+
+
+def test_a_config_word_relative_path_or_module_elsewhere_does_not_name_the_helper() -> None:
+    sources = {**_AUTOBAHN, "tests/tools/runner": "#!/bin/sh"}
+    # An extensionless helper's name in prose is still a bare word.
+    sources["setup.cfg"] = "description = the test runner"
+    assert "tests/tools/runner" in helper_readers(["tests/tools/runner"], [], sources.get)
+    # ``./client`` from the root is another directory; ``.client`` is no config path.
+    for text in ("alias = ./client", "plugins = .client"):
+        sources["setup.cfg"] = text
+        assert _CLIENT in helper_readers([_CLIENT], _tests(sources), sources.get)
+    for text in ("alias = ./tests/autobahn/client/", r"alias = .\tests\autobahn\client\client.py"):
+        sources["setup.cfg"] = text
+        assert helper_readers([_CLIENT], _tests(sources), sources.get) == {}
+
+
+def test_a_bare_name_in_a_string_after_a_period_still_counts() -> None:
+    sources = {**_AUTOBAHN, "tests/helpers/msg.py": 'MSG = "start the server. client next"'}
+    found = helper_readers([_CLIENT], _tests(sources), sources.get)[_CLIENT]
+    assert "tests/helpers/msg.py" in found
+
+
+def test_a_config_names_the_helper_only_by_its_path() -> None:
+    """A path to another file of the same name is not the helper; its own path is."""
+    sources = {**_AUTOBAHN, "tests/helpers/rel.py": 'P = "../client/client.py"'}
+    sources["setup.cfg"] = "omit = aiohttp/client.py src/aiohttp/client"
+    found = helper_readers([_CLIENT], _tests(sources), sources.get)[_CLIENT]
+    assert "tests/helpers/rel.py" in found
+    for named in ("addopts = tests/autobahn/client/client.py", "-p tests.autobahn.client.client"):
+        sources["setup.cfg"] = named
+        assert helper_readers([_CLIENT], _tests(sources), sources.get) == {}
+
+
 def test_an_unreadable_test_file_keeps_every_helper_unknown() -> None:
     """It may be the file naming the helper, so no helper is cleared."""
     sources = {"suite/cases/sub/case.py": "x = 1", "e2e/test_ok.py": "import os"}

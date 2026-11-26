@@ -22,7 +22,9 @@ the file or the tree, or when no test code does (a glob or a computed path).
 
 from __future__ import annotations
 
+import functools
 import io
+import posixpath
 import re
 import tokenize
 from collections.abc import Callable, Collection, Mapping
@@ -120,7 +122,8 @@ def helper_readers(
     A test helper no test imports is used, if at all, by a test file naming it:
     a subprocess, a fixture runner, a mock, a case list. Its readers are the test
     files (code or data) naming its file name or its name up to the first dot
-    (a module path, a fixture runner adding ``.input.tsx``), comments aside; those
+    (a module path, a fixture runner adding ``.input.tsx``), comments aside, as
+    :func:`_names_helper` reads a name; those
     writing its directory or the one above as a path (``"typing"``,
     ``./cmd/tool``), a listing; the runnable tests under the directory above it,
     which may list it unnamed; and code beside it that lists its directory. An
@@ -141,17 +144,19 @@ def helper_readers(
     texts = _naming_texts(test_files, wanted, read)
     if texts is None:
         return {}
-    files = sorted(test_files)
-    return {
-        h: [p for p in files if p != h and _reads(p, h, found, texts)] for h, found in names.items()
-    }
+    out: dict[str, list[str]] = {h: [] for h in names}
+    for p in sorted(test_files):  # file by file, so its per-text reads are cached once
+        for h, found in names.items():
+            if p != h and _reads(p, h, found, texts):
+                out[h].append(p)
+    return out
 
 
 def _naming_texts(
     test_files: Collection[str], wanted: Collection[str], read: Callable[[str], str | None]
 ) -> dict[str, str] | None:
     """``{test file: its code text}`` for each holding one of *wanted* or a listing;
-    ``None`` when one cannot be read."""
+    ``None`` when one cannot be read. Python's dotted names are joined again."""
     texts: dict[str, str] = {}
     for p in sorted(test_files):
         raw = read(p)
@@ -159,7 +164,8 @@ def _naming_texts(
             return None
         text = raw.lower()
         if any(map(text.__contains__, wanted)) or _LISTING.search(text):
-            texts[p] = code_text(p, text)
+            code = code_text(p, text)
+            texts[p] = _join_dots(code) if p.endswith(".py") else code
     return texts
 
 
@@ -178,8 +184,8 @@ def _reads(
         return False
     if p.startswith(f"{parent}/") and _LISTING.search(text):
         return True
-    words, dirs = found
-    return _names_either(text, *words) or any(_writes_dir(text, d) for d in dirs)
+    _, dirs = found
+    return _names_helper(text, helper, reader=p) or any(_writes_dir(text, d) for d in dirs)
 
 
 #: Code listing a directory, which reaches a file it never names.
@@ -210,14 +216,160 @@ _CONFIG_NAMES = (
 
 
 def _configured(helper: str, read: Callable[[str], str | None]) -> bool:
-    """Whether a config at or above *helper*'s directory names its file name or stem."""
-    words, _ = _helper_names(helper)
+    """Whether a config at or above *helper*'s directory spells its file or its directory.
+
+    A bare word does not count: ``client`` in an ``aiohttp.client`` warning filter
+    or a project description names something else.
+    """
     folder = PurePosixPath(helper).parent
     for d in (folder, *folder.parents):
         for name in _CONFIG_NAMES:
             text = read(name if str(d) == "." else f"{d}/{name}")
-            if text and _names_either(text.lower(), *words):
+            if text and (
+                _names_helper(text := text.lower(), helper, reader=None, at=d)
+                or _spells_dir(text, folder, d)
+            ):
                 return True
+    return False
+
+
+#: Characters a written path is made of, up to the name it ends in.
+_PATH_TAIL = re.compile(r"[\w.\-/\\@~#$]*$")
+#: Characters a dotted module path is made of, up to the name it ends in.
+_MODULE_TAIL = re.compile(r"[\w.]*$")
+#: A written path holding at least one slash.
+_PATH_TOKEN = re.compile(r"(?<![\w.\-@~#$])[\w.\-@~#$]*(?:[/\\][\w.\-@~#$]*)+")
+
+
+def _names_helper(
+    text: str, helper: str, reader: str | None, at: PurePosixPath | None = None
+) -> bool:
+    """Whether lowercased *text* names *helper* by its file name or stem.
+
+    A name counts when written as a path whose directories line up with the
+    helper's (``autobahn/client/client.py``, ``../client``), or as a module path
+    resolving to it (``tests.autobahn.client.client``, ``.client`` beside it). A
+    different dotted name (``aiohttp.client``, ``self.client``) does not, unless
+    its first name is an alias the text binds with ``as``. A bare stem may still be
+    an import of this exact file (``from . import client``), so it counts for a
+    test file *reader*; in a config (*reader* ``None``, in directory *at*) only a bare
+    file name does, and a relative path counts when it resolves to the helper from *at*.
+    """
+    path = PurePosixPath(helper.lower())
+    stem = path.name.split(".")[0]
+    module = (*path.parts[:-1], stem)
+    words = (path.name,) if stem in _ENTRY_STEMS else (path.name, stem)
+    for word in dict.fromkeys(w for w in words if w):
+        target = path.parts if word == path.name else module
+        for m in re.finditer(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", text):
+            before = text[max(0, m.start() - _WINDOW) : m.start()]
+            if before.endswith(("/", "\\")):
+                found = _path_refers(before, word, target, at)
+            elif before.endswith("."):
+                found = _module_refers(before, text, word, target, reader)
+            else:  # a bare word, or a file name in a config
+                found = reader is not None or (word == path.name and "." in word)
+            if found:
+                return True
+    return False
+
+
+#: How far back a path or module path written before a name is read.
+_WINDOW = 256
+
+
+def _join_dots(text: str) -> str:
+    """Python text :func:`code_text` tokenized, with its dotted names joined again.
+
+    ``aiohttp . client`` reads ``aiohttp.client``; ``from . . client`` reads
+    ``from ..client``, a relative import.
+    """
+    pieces = _STRING.split(text)
+    for i in range(0, len(pieces), 2):  # the code between string literals, which stay as written
+        code = re.sub(r"\.\s+(?=[\w.])", ".", pieces[i])
+        code = re.sub(r"([)\]])\s+(?=\.)", r"\1", code)
+        pieces[i] = re.sub(
+            r"\b(\w+)\s+(?=\.)", lambda m: m[0] if m[1] in ("from", "import") else m[1], code
+        )
+    return "".join(pieces)
+
+
+#: A one-line string literal: its text is as written, not tokens joined by spaces.
+_STRING = re.compile(r"""("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')""")
+
+
+@functools.lru_cache(maxsize=8)
+def _aliases(text: str) -> frozenset[str]:
+    """The names *text* binds with ``as``."""
+    return frozenset(re.findall(r"\bas\s+(\w+)", text))
+
+
+def _path_refers(
+    before: str, word: str, target: tuple[str, ...], at: PurePosixPath | None
+) -> bool:
+    """Whether *word*, ending the path written at the end of *before*, is the file at *target*.
+
+    In a config in directory *at*, a relative path resolves from there.
+    """
+    written = _PATH_TAIL.findall(before)[0].replace("\\", "/")
+    if at is not None and written.startswith("."):
+        return posixpath.normpath(f"{at}/{written}{word}".lower()) == "/".join(target)
+    return _tail_matches((*_path_parts(written), word), target)
+
+
+def _module_refers(
+    before: str, text: str, word: str, target: tuple[str, ...], reader: str | None
+) -> bool:
+    """Whether *word*, ending the dotted name at the end of *before*, is the module at *target*."""
+    chain = _MODULE_TAIL.findall(before)[0]
+    names = [n for n in chain.split(".") if n]
+    dots = len(chain) - len(chain.lstrip("."))
+    if not dots:
+        # ``h.client`` after ``import tests.autobahn.client as h``: an alias may be the package.
+        return _tail_matches((*names, word), target) or names[0] in _aliases(text)
+    start = before[: len(before) - len(chain)]
+    if start and not start[-1].isspace() and start[-1] not in "\"'`(":
+        return False  # ``f().client``, ``x?.client``: an attribute, not a module path
+    if reader is None:
+        return False  # no runner reads a module path relative to its config
+    base = PurePosixPath(reader.lower()).parent
+    for _ in range(dots - 1):
+        base = base.parent
+    return (*(p for p in base.parts if p != "."), *names, word) == target
+
+
+def _path_parts(written: str) -> tuple[str, ...]:
+    """The directory names of a *written* path, without ``.``, ``..`` or a leading alias."""
+    parts = [c for c in re.split(r"[/\\]", written) if c not in ("", ".", "..")]
+    if parts and not (parts[0][0].isalnum() or parts[0][0] == "_"):
+        parts = parts[1:]  # an alias (``@/``, ``~/``, ``$lib/``) stands for some directory
+    return tuple(parts)
+
+
+def _tail_matches(parts: tuple[str, ...], target: tuple[str, ...]) -> bool:
+    """Whether *parts* and *target* agree over their common trailing length."""
+    k = min(len(parts), len(target))
+    return k > 0 and parts[-k:] == target[-k:]
+
+
+def _spells_dir(text: str, folder: PurePosixPath, at: PurePosixPath) -> bool:
+    """Whether lowercased *text*, a config in directory *at*, writes *folder* as a path.
+
+    ``src/test/helpers``, or a relative ``./test/helpers`` resolving to it from *at*
+    (an alias target), does. A lone ``tests/`` in a glob or a test path list does
+    not: it names where tests live. A path shorter than *folder* matches on its
+    trailing names, as it may be written from a root config or a base directory.
+    Ceiling: an alias target written as a lone name (tsconfig ``"helpers/*"``) is not
+    read, so a test importing through that alias by another name stays unseen.
+    """
+    target = tuple(p.lower() for p in folder.parts)
+    for m in _PATH_TOKEN.finditer(text):
+        written = m.group().replace("\\", "/")
+        if written.startswith("."):
+            if posixpath.normpath(f"{at}/{written}".lower()).strip("/") == "/".join(target):
+                return True
+        elif len(parts := _path_parts(written)) >= 2 and _tail_matches(parts, target):
+            return True
     return False
 
 
