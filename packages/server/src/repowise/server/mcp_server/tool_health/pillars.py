@@ -179,8 +179,9 @@ async def _comparisons(session: Any, repository_id: str) -> list[Any]:
 
 def _measured_run(run: dict[str, Any]) -> dict[str, Any]:
     out = {f: run[f] for f in _MEASURED_RUN_FIELDS}
-    # The workload rerun its rows verify with, once per run (a row names its
-    # own ``verify`` only when a benchmark measures it).
+    # How its rows check a fix, once per run: the workload rerun, or the next
+    # window for production (a row names its own ``verify`` only when a
+    # benchmark measures it).
     verify = run_verify(run)
     if verify:
         out["verify"] = verify
