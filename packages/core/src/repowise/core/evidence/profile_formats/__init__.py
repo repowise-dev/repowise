@@ -43,6 +43,7 @@ from . import (
     google_benchmark,
     hyperfine,
     jfr,
+    jmh,
     junit,
     pg_stat_statements,
     pprof,
@@ -125,6 +126,7 @@ profile_formats.register(
     "google-benchmark",
     ProfileFormat(google_benchmark.sniff, to_v1=google_benchmark.to_v1),
 )
+profile_formats.register("jmh", ProfileFormat(jmh.sniff, to_v1=jmh.to_v1))
 profile_formats.register(
     "criterion",
     ProfileFormat(criterion.sniff, to_v1=criterion.to_v1, to_v1_from_path=criterion.to_v1),
