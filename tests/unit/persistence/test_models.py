@@ -368,6 +368,8 @@ def test_base_includes_all_models():
         "statement_sites",
         "statement_sites_stamp",
         "package_advisories",
+        "external_call_sites",
+        "external_call_sites_stamp",
         "pipeline_jobs",
         "graph_metrics",
         "graph_node_membership",

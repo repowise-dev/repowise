@@ -363,6 +363,16 @@ async def persist_units(ctx: IncrementalPersist) -> None:
         await persist_build_units(ctx.session, ctx.repo_id, ctx.graph_builder)
 
 
+async def persist_external_calls(ctx: IncrementalPersist) -> None:
+    # Follows the graph build: every file on a full build, the patch scope on
+    # a scoped one. A failed write clears the stamp, and the next update then
+    # rebuilds the graph in full, so the step heals itself.
+    from repowise.core.pipeline.persist import persist_external_call_sites
+
+    with timed(ctx.timings, "persist.external_calls"):
+        await persist_external_call_sites(ctx.session, ctx.repo_id, ctx.graph_builder)
+
+
 async def backfill_related(ctx: IncrementalPersist) -> None:
     # Refresh related-pages metadata across the whole wiki. LLM-free, so even
     # index-only updates heal pages generated before the feature shipped (or
@@ -520,6 +530,13 @@ BUILD_UNITS_STEP = Step(
     when=lambda ctx: getattr(ctx.graph_builder, "build_units", None) is not None,
 )
 
+#: Shared with the docs-mode writer. Skipped when no graph build ran here.
+EXTERNAL_CALLS_STEP = Step(
+    "External call sites persist",
+    persist_external_calls,
+    when=lambda ctx: getattr(ctx.graph_builder, "external_call_sites", None) is not None,
+)
+
 # Range-scoped steps are the ones a later run cannot heal on its own; the
 # membership test is in persist_incremental_index's docstring.
 INCREMENTAL_STEPS: tuple[Step, ...] = (
@@ -568,6 +585,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
     BUILD_UNITS_STEP,
+    EXTERNAL_CALLS_STEP,
     Step("Related-pages backfill", backfill_related),
     Step(
         "Knowledge-graph persist",

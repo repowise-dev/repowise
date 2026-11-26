@@ -104,7 +104,7 @@ def _framework_repo(tmp_path, deps: dict[str, str]):
     [
         ({"react-email": "6"}, "mail/emails/auth/welcome.tsx"),
         ({"nuxt": "3"}, "mail/components/Card.ts"),  # auto-imported by name
-        ({"nuxt": "3"}, "mail/app/composables/useThing.ts"),  # Nuxt 4 srcDir
+        ({"nuxt": "4"}, "mail/app/composables/useThing.ts"),  # Nuxt 4 srcDir
         ({"next": "14"}, "mail/src/pages/index.tsx"),
     ],
 )

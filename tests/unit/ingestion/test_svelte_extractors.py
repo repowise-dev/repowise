@@ -118,12 +118,29 @@ class TestCalls:
 
 class TestSvelteKitLibAlias:
     """$lib is declared only in the generated .svelte-kit tsconfig, which is
-    gitignored — without explicit handling every $lib import goes external."""
+    gitignored — without explicit handling every $lib import goes external.
 
-    def _ctx(self, paths: set[str]) -> ResolverContext:
+    A project is a package.json depending on @sveltejs/kit; its svelte.config
+    may move the directory (``kit.files.lib``)."""
+
+    @pytest.fixture(autouse=True)
+    def _repo(self, tmp_path) -> None:
+        self.repo = tmp_path
+
+    def _ctx(self, paths: set[str], apps: dict[str, str | None] | None = None) -> ResolverContext:
+        """*apps*: app directory -> its svelte.config.js text (None for no config)."""
+        import json
+
         import networkx as nx
 
-        return ResolverContext(path_set=paths, stem_map={}, graph=nx.DiGraph())
+        for app, config in (apps if apps is not None else {"": None}).items():
+            root = self.repo / app
+            root.mkdir(parents=True, exist_ok=True)
+            deps = {"devDependencies": {"@sveltejs/kit": "^2.0.0"}}
+            (root / "package.json").write_text(json.dumps(deps), encoding="utf-8")
+            if config is not None:
+                (root / "svelte.config.js").write_text(config, encoding="utf-8")
+        return ResolverContext(path_set=paths, stem_map={}, graph=nx.DiGraph(), repo_path=self.repo)
 
     def test_lib_alias_resolves_to_src_lib(self) -> None:
         ctx = self._ctx({"svelte.config.js", "src/lib/fmt.ts", "src/routes/+page.svelte"})
@@ -153,12 +170,37 @@ class TestSvelteKitLibAlias:
                 "apps/docs/svelte.config.js",
                 "apps/docs/src/lib/fmt.ts",
                 "apps/docs/src/routes/+page.svelte",
-            }
+            },
+            apps={"apps/web": "export default {};", "apps/docs": "export default {};"},
         )
         assert (
             resolve_import("$lib/fmt", "apps/docs/src/routes/+page.svelte", "svelte", ctx)
             == "apps/docs/src/lib/fmt.ts"
         )
+
+    def test_kit_files_lib_moves_the_alias(self) -> None:
+        config = "export default { kit: { files: { lib: 'app/shared', hooks: { server: 'app/hooks' } } } };"
+        ctx = self._ctx(
+            {"svelte.config.js", "app/shared/fmt.ts", "src/lib/fmt.ts", "src/routes/+page.svelte"},
+            apps={"": config},
+        )
+        assert (
+            resolve_import("$lib/fmt", "src/routes/+page.svelte", "svelte", ctx) == "app/shared/fmt.ts"
+        )
+
+    def test_without_the_kit_dependency_lib_stays_external(self) -> None:
+        import json
+
+        import networkx as nx
+
+        (self.repo / "package.json").write_text(json.dumps({"dependencies": {"svelte": "5"}}), "utf-8")
+        ctx = ResolverContext(
+            path_set={"svelte.config.js", "src/lib/fmt.ts", "src/App.svelte"},
+            stem_map={},
+            graph=nx.DiGraph(),
+            repo_path=self.repo,
+        )
+        assert resolve_import("$lib/fmt", "src/App.svelte", "svelte", ctx) == "external:$lib/fmt"
 
     def test_app_virtual_modules_stay_external(self) -> None:
         # $app/* is synthesised by the framework — it has no file in the repo.

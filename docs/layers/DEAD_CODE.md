@@ -103,7 +103,8 @@ export with strong evidence".
   its `package.json` depends on loads files from (React Email `emails/`,
   Next.js `pages/`, Remix `app/routes/`, Nuxt pages, layouts, plugins,
   middleware, `server/`, `@nuxtjs/i18n` locale files (its `langDir`) and
-  auto-imported `components/`, `composables/` and `utils/`, SvelteKit hooks and routes,
+  auto-imported `components/`, `composables/` and `utils/` under its `srcDir`,
+  SvelteKit hooks and routes where its `kit.files` puts them,
   Astro `src/pages/`, Expo Router `app/`).
 - **Weak resolution for the language in this repository:** the language is
   unknown to the graph, its import support is not full, none of its call edges
@@ -140,6 +141,14 @@ dynamic `import(` and `require.context(`, `Class.forName(`, `ServiceLoader.load(
 `const_get(`, `plugin.Open(` and `//go:embed`, `NSClassFromString(`,
 `Activator.CreateInstance(`, and `dlopen(` / `LoadLibrary(` in C. Dynamic edges
 found by the language extractors count the same way.
+
+Two JavaScript and TypeScript loaders are read as imports instead. A Vite
+`import.meta.glob(...)` call gets an import edge to every indexed file its
+patterns match: relative patterns, `**` patterns, patterns rooted at an alias
+the repository's imports already use (tsconfig `paths`, Nuxt `~/`, SvelteKit
+`$lib`), and `!` patterns that remove files. Its `import:` option names the one
+export used. `new URL('./x', import.meta.url)` gets an edge to the file beside
+the caller.
 
 The cases where a finding is most likely wrong:
 

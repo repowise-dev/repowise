@@ -48,7 +48,11 @@ Sample `get_context` ownership block:
   "contributor_count": 4,
   "bus_factor": 1,
   "recent_owner": "Sam Ortiz",
-  "recent_owner_pct": 0.6
+  "recent_owner_pct": 0.6,
+  "commits": {
+    "all_time": "Dana Lee 34 of 48",
+    "last_90d": "Sam Ortiz 6 of 10"
+  }
 }
 ```
 
@@ -62,6 +66,7 @@ Sample `get_context` ownership block:
 | `owner_pct` | The primary owner's share of the file's commits (0-1). Can be empty when the blame owner made none of the indexed commits |
 | `owner_line_pct` | The primary owner's share of current lines by blame (0-1). Empty without blame |
 | `recent_owner`, `recent_owner_pct` | Who made the most commits to the file in the last 90 days, and their share of those commits. `get_context` only shows these when the recent owner differs from the primary owner |
+| `commits.all_time`, `commits.last_90d` | `get_context` only. The author of the most commits to the file over the indexed history and over the last 90 days, with their count out of all commits in that window (bots excluded) (`no commits` when nobody touched it in 90 days). The 90 days count back from the newest indexed commit. Both are shown even when they name the primary owner, so "who should review this" needs no `git log`. A total ending in `+` is a floor: the file has more authors than the 50 kept |
 | `contributor_count` | Distinct authors in the indexed history of the file |
 | `bus_factor` | How many of the top authors it takes to cover 80% of the file's commits. 1 means one person wrote at least 80% of them. 0 means no history was indexed for the file, not "no risk" |
 

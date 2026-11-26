@@ -67,6 +67,7 @@ from .health import (
 )
 from .ingestion import (
     persist_build_units,
+    persist_external_call_sites,
     persist_ingestion,
 )
 from .prune import (

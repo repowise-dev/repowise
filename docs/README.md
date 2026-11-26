@@ -139,6 +139,7 @@ For a map of every layer and how they feed each other, read
 | [architecture/README.md](architecture/README.md) | Index of the internals pages |
 | [architecture/ARCHITECTURE.md](architecture/ARCHITECTURE.md) | How repowise is built, end to end |
 | [architecture/single-sources.md](architecture/single-sources.md) | Which module owns each shared concept; check it before writing a helper |
+| [architecture/version-stamps.md](architecture/version-stamps.md) | Every version stamp and what bumping it does; check it before moving one |
 | [architecture/ci.md](architecture/ci.md) | Which CI jobs run when, and how to reproduce a failure |
 | [architecture/deep-dives.md](architecture/deep-dives.md) | Algorithm walkthroughs referenced from the architecture page |
 | [architecture/graph-algorithms.md](architecture/graph-algorithms.md) | Every graph algorithm, its math, and why it was chosen |

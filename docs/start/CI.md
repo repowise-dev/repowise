@@ -799,7 +799,10 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
   `*.yaml`, `*.json`, shell scripts.
 - `.repowise/config.yaml`, or a path `tests.full_run_on` matches.
 - A non-code file in a test tree.
-- A file with no known test, or only a filename guess.
+- A file with no known test, or only a filename guess (a file new in the
+  change selects its own scope, below).
+- A file new in the change that no changed file names and no existing code
+  sits beside.
 - A route through a test helper no test imports, unless every known test is
   selected anyway (the reasons say so).
 - Any Python test helper while a conftest or pytest config loads plugins by
@@ -817,6 +820,7 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
 | nested `package.json`, lockfile or `go.mod` | tests under its directory and those reaching code there |
 | root lockfile, manifest or runner config; Python, Ruby, PHP, Gradle or Maven dependency files (pip requirements included); `tsconfig`; jest or vitest config | its whole ecosystem |
 | production package `__init__.py` | tests reaching any module under it |
+| code file new in the change | tests reaching the changed files naming it in their added lines and the existing code in its directory (migrations, plugins and routes load by directory) |
 | doc, template, query, stylesheet, image or nested data file | tests reaching code that names it (outside comments and docstrings) |
 | doc, template, stylesheet or image no code names | its package's tests; Markdown, reST or AsciiDoc in no package and a top-level directory without code needs none |
 | `conftest.py`, test package `__init__.py`, imported test helper | tests under or importing it |

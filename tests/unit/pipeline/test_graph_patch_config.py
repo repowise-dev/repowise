@@ -316,6 +316,9 @@ def test_chained_updates_keep_the_record_current(
         ("native/CMakeLists.txt", True),
         ("app/Package.swift", True),
         ("src/Shop/Shop.CSPROJ", True),
+        # Framework configs framework_facts reads (Nuxt srcDir, SvelteKit kit.files).
+        ("web/nuxt.config.mjs", True),
+        ("svelte.config.ts", True),
         (".github/workflows/ci.yml", False),
         ("src/locales/en.json", False),
         (".gitattributes", False),
@@ -389,6 +392,14 @@ def test_digest_tracks_dependency_names_not_versions(tmp_path: Path) -> None:
     (tmp_path / "package.json").write_text(_package(dependencies={"left-pad": "^2.0.0"}))
     assert _digest(tmp_path, "package.json") == before
     (tmp_path / "package.json").write_text(_package(devDependencies={"react-email": "6.0.0"}))
+    assert _digest(tmp_path, "package.json") != before
+
+
+def test_digest_tracks_the_nuxt_version(tmp_path: Path) -> None:
+    """Nuxt's major version says whether its default source directory is ``app/``."""
+    (tmp_path / "package.json").write_text(_package(devDependencies={"nuxt": "^3.12.0"}))
+    before = _digest(tmp_path, "package.json")
+    (tmp_path / "package.json").write_text(_package(devDependencies={"nuxt": "^4.1.0"}))
     assert _digest(tmp_path, "package.json") != before
 
 

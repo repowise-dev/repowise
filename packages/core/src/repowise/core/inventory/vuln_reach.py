@@ -3,9 +3,9 @@
 A pure fold over records the index already holds, so every caller (the CLI,
 MCP, a reader of an uploaded index) gets the same answer from the same rows:
 
-* production roots: entry-point files (their top-level code), the functions
-  serving HTTP routes, and CLI commands, kept only in production code
-  (:mod:`repowise.core.code_origin`);
+* production roots: the stored root files (their top-level code) and the
+  functions serving HTTP routes (:mod:`.roots`), and CLI commands, kept only
+  in production code (:mod:`repowise.core.code_origin`);
 * the functions the reliable execution graph reaches from those roots
   (:meth:`ExecutionGraphIndex.forward_reachable`);
 * the package's import sites and its external call sites (a repository
@@ -47,7 +47,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from repowise.core.code_origin import path_origin
 from repowise.core.ingestion.symbol_identity import file_of_symbol, module_symbol_id
@@ -146,7 +146,7 @@ class TierResult:
     sites: tuple[Site, ...] = field(default=())
 
 
-def _origin_reader(origins: Mapping[str, str] | None) -> Callable[[str], str]:
+def _origin_reader(origins: Mapping[str, str | None] | None) -> Callable[[str], str]:
     """Stored ``code_origin`` per path when given, the path rule otherwise."""
     stored = origins or {}
     return lambda path: stored.get(path) or path_origin(path)
@@ -154,25 +154,45 @@ def _origin_reader(origins: Mapping[str, str] | None) -> Callable[[str], str]:
 
 def production_roots(
     *,
-    entry_files: Iterable[str] = (),
+    root_files: Iterable[str] = (),
     route_handlers: Iterable[str | None] = (),
     cli_commands: Iterable[str] = (),
-    origins: Mapping[str, str] | None = None,
+    origins: Mapping[str, str | None] | None = None,
 ) -> frozenset[str]:
     """Execution-graph nodes production work starts from.
 
-    *entry_files* are files flagged ``is_entry_point``; their top-level code
+    *root_files* are :attr:`.roots.StoredRoots.files` (entry points, other
+    reachability roots, framework-loaded files); their top-level code
     (``<file>::__module__``) is the root. *route_handlers* are
     ``http_routes.handler_symbol_id`` values (None skipped). *cli_commands* are
     command function ids. Only roots in files whose origin is ``production``
     count: a test's ``main`` or a tutorial's route never starts production work.
     """
     origin = _origin_reader(origins)
-    roots = {module_symbol_id(path) for path in entry_files if origin(path) == "production"}
+    roots = {module_symbol_id(path) for path in root_files if origin(path) == "production"}
     for symbol in (*route_handlers, *cli_commands):
         if symbol and origin(file_of_symbol(symbol)) == "production":
             roots.add(symbol)
     return frozenset(roots)
+
+
+async def load_production_roots(
+    session: Any, repository_id: str, *, cli_commands: Iterable[str] = ()
+) -> frozenset[str]:
+    """:func:`production_roots` over the repository's stored roots and origins."""
+    from repowise.core.analysis.test_reach.db import stored_origins
+
+    from .roots import load_stored_roots
+
+    stored = await load_stored_roots(session, repository_id)
+    cli_commands = tuple(cli_commands)
+    files = {*stored.files, *(file_of_symbol(s) for s in (*stored.route_handlers, *cli_commands))}
+    return production_roots(
+        root_files=stored.files,
+        route_handlers=stored.route_handlers,
+        cli_commands=cli_commands,
+        origins=await stored_origins(session, repository_id, sorted(files)),
+    )
 
 
 def _module_matches(module: str, path: str, ecosystem: str) -> bool:
@@ -329,6 +349,7 @@ __all__ = [
     "Site",
     "Tier",
     "TierResult",
+    "load_production_roots",
     "production_roots",
     "tier_advisory",
 ]
