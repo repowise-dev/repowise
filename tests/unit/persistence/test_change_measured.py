@@ -146,3 +146,18 @@ async def test_code_outside_production_is_never_measured(async_session) -> None:
         async_session, repo.id, [_hot("helper", symbol_id=f"{test_file}::helper")]
     )
     assert await measured_in_change(async_session, repo.id, {test_file: {3}}) == []
+
+
+async def test_an_outer_function_edited_in_its_own_body_stays_beside_a_nested_one(
+    async_session,
+) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("serve"), _hot("inner", rank=2)])
+
+    # Line 3 is ``serve``'s own body; line 6 is inside ``inner`` (5-8).
+    found = await measured_in_change(async_session, repo.id, {APP: {3, 6}})
+
+    assert [m.symbol_id for m in found] == [f"{APP}::serve", f"{APP}::inner"]

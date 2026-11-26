@@ -1540,7 +1540,7 @@ async def measured_in_change(
     from ....evidence.change_measured import Ranked, measured_changes
     from ....evidence.function_tests import benchmark_command
     from ....evidence.ingest import load_origins
-    from ....symbol_spans import innermost
+    from ....symbol_spans import symbol_at
     from ...models import EvidenceBenchmarkResult, EvidenceRun, WorkloadHotness
 
     if not await _holds_any(session, repository_id, (WorkloadHotness, EvidenceBenchmarkResult)):
@@ -1554,7 +1554,10 @@ async def measured_in_change(
     for path, held in spans.items():
         lines = sorted(changed[path])
         touched = [s for s in held if s.kind in _CALLABLE_KINDS and _holds_a_line(s, lines)]
-        edited += [s.symbol_id for s in innermost(touched)]
+        # Each line is charged to the narrowest callable holding it, so an
+        # outer function edited in its own body stays edited beside a nested one.
+        here = {span.symbol_id for n in lines if (span := symbol_at(touched, n)) is not None}
+        edited += sorted(here)
     if not edited:
         return []
     ranked: list[tuple[str, Ranked]] = []

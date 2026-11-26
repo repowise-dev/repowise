@@ -60,3 +60,16 @@ def test_the_block_caps_its_rows_and_counts_the_rest() -> None:
     assert block["total"] == MEASURED_SHOWN + 2
     assert block["summary"].startswith("This change edits 7 measured functions")
     assert measured_line(block["functions"][0]) == f"a.go::f0 (benchmark): {BENCH}"
+
+
+def test_an_unnamed_better_rank_never_hides_a_named_rerun() -> None:
+    [found] = measured_changes(
+        ["a.go::serve"],
+        [
+            ("a.go::serve", Ranked(None, "production", 1)),
+            ("a.go::serve", Ranked("api", "entry_point", 4)),
+        ],
+        {},
+    )
+    assert found.ranked == Ranked("api", "entry_point", 4)
+    assert found.verify.startswith("repowise perf measure")

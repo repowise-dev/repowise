@@ -70,7 +70,8 @@ def measured_changes(
     (best rank), then benchmarked ones, each by id.
 
     *ranked* is ``(symbol_id, Ranked)`` per workload that ranks a function (a
-    function two workloads rank comes twice; its best rank is kept), any
+    function two workloads rank comes twice; its best rank among named
+    workloads is kept, since only a name gives a rerun), any
     class: only :data:`~.hotness.LEAD_CLASSES` count. *benchmarks* maps a
     function to the command rerunning the stored benchmarks that measure it
     (:func:`.function_tests.benchmark_command`).
@@ -81,10 +82,7 @@ def measured_changes(
         if symbol_id not in wanted or row.workload_class not in LEAD_CLASSES:
             continue
         held = best.get(symbol_id)
-        if held is None or (row.rank, row.workload_name or "") < (
-            held.rank,
-            held.workload_name or "",
-        ):
+        if held is None or _order(row) < _order(held):
             best[symbol_id] = row
     out: list[MeasuredChange] = []
     for symbol_id in wanted & (set(best) | set(benchmarks)):
@@ -104,6 +102,11 @@ def measured_changes(
         )
     )
     return out
+
+
+def _order(row: Ranked) -> tuple[bool, int, str]:
+    """A named workload first (only a name gives a rerun), then the best rank."""
+    return (row.workload_name is None, row.rank, row.workload_name or "")
 
 
 def measured_block(found: list[MeasuredChange]) -> dict[str, Any] | None:
