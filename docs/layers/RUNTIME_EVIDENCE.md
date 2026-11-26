@@ -83,9 +83,9 @@ Start with the 29 tests that run persistence/database.py and 3 more files: they 
 than the rest's pace (55% of the suite), 15 of them through fixture indexed (tests/unit/evidence/test_add.py:48).
 ```
 
-`evidence add` and `repowise update` print the same slower line for the
-workload they touch, and `get_health` lists it under
-`performance_measured.slower`.
+`evidence add` prints the comparison line for the workload it stored,
+`repowise update` prints it when a workload is slower, and `get_health` lists
+it under `performance_measured.slower`.
 
 Every answer stays silent when the evidence does not hold it: no list for a
 suite under a minute, no ranked function from a benchmark profile, no
@@ -798,7 +798,8 @@ and MCP `get_health(include=["performance"])` lists the lines under
 One benchmark run of unchanged code can drift 1.4x on a busy machine, which is
 why a single run needs 25%. For a comparison you can trust at every commit, run
 the benchmark step twice per commit in CI and add both files under the same
-workload and commit: the two runs pool their samples and the bar drops to 10%.
+workload and commit: the two runs pool their samples and the floor drops to 10% (the band's own
+spread still applies when it is wider).
 For Go, `-count=10` in the one run also helps: the ten repeats fold into one
 result whose median, minimum and maximum the overlap check reads.
 
