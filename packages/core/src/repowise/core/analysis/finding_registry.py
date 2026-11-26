@@ -65,14 +65,15 @@ _VALIDATED = FindingTypeStatus("validated")
 _LABELLED = "hand-labelled findings from one TS/Python monorepo"
 
 REGISTRY: dict[str, FindingTypeStatus] = {
+    # No precision recorded: the held-out sample was too small to publish a
+    # figure, so the type stays hidden until a re-measure clears it.
     "unused_internal": FindingTypeStatus(
         "hidden",
-        precision=0.005,
-        corpus=f"{_LABELLED}, 1,511 in all",
-        measured_on="2026-09-29",
+        corpus="held-out TS/Python repositories",
+        measured_on="2026-11-26",
         reason=(
-            "Measured on TS/Python code: private-symbol findings were almost all "
-            "false, because same-file uses leave no 'reads' edge there."
+            "Measured on TS/Python code: precision is below the publishing bar; "
+            "some same-file uses leave no edge."
         ),
     ),
     "duplicated_assertion_block": FindingTypeStatus(
