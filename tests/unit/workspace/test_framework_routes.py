@@ -265,6 +265,36 @@ class TestContractConsumer:
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "api")}
         assert "http::GET::/legacy" in ids
 
+    def test_django_inline_includes_compose_view_and_router_paths(self, tmp_path: Path) -> None:
+        (tmp_path / "urls.py").write_text(
+            """\
+from django.urls import include, re_path
+from rest_framework.routers import DefaultRouter
+
+api_router = DefaultRouter()
+api_router.register("users", views.UserViewSet)
+
+urlpatterns = [
+    re_path(r"^api/", include([  # ] in a comment
+        re_path(r"^search/", include([
+            re_path(r"^autocomplete/", views.autocomplete, {"label": "]"}),
+        ])),
+        re_path(r"^$", views.api_root),
+        re_path(r"^v1/", include(api_router.urls)),
+    ])),
+    re_path(r"^$", views.site_root),
+]
+""",
+            encoding="utf-8",
+        )
+        assert set(_providers(tmp_path)) == {
+            "http::*::/",
+            "http::*::/api",
+            "http::*::/api/search/autocomplete",
+            "http::*::/api/v1/users",
+            "http::*::/api/v1/users/{param}",
+        }
+
 
 # ---------------------------------------------------------------------------
 # What the handler buys: identity
