@@ -42,7 +42,7 @@ Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
 |-------|---------|
 | `contract_version` | Response contract version (currently 4); the version of record even when not emitted |
 | `timing_ms` | Tool wall time |
-| `block_timing_ms` | `get_change_risk` only: wall ms per block (`score`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `cross_repo`, `branch_overlap`, `health_delta`). Some blocks overlap, so they need not sum to `timing_ms` |
+| `block_timing_ms` | `get_change_risk` only: wall ms per block (`score`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `measured`, `cross_repo`, `branch_overlap`, `health_delta`). Some blocks overlap, so they need not sum to `timing_ms` |
 | `index_age_days` | Whole days since the index last synced, the same time `repowise status` reports |
 | `indexed_commit`, `live_head` | Short SHAs of the index and of the checkout. A lean reply keeps `indexed_commit` when the index is behind HEAD or more than 7 days old and no `stale_warning` names it |
 | `index_behind` | `true` if HEAD moved, `false` if not; absent if the comparison could not run |
@@ -495,6 +495,7 @@ In workspace mode the directive adds `will_break_consumers` (structural reach on
 | `fix_history` | Recency-weighted fix record of touched files (no manifests or lockfiles), with `overlap` |
 | `impacted_tests` | Tests the change needs |
 | `patch_coverage` | Share of changed executable lines the stored coverage ran |
+| `measured` | Only when the change edits a function runtime evidence measured; see [measured](#measured) |
 | `branch_overlap` | Other branches editing the same files |
 | `independent_changes` | The diff is several unrelated changes |
 | `cross_repo` | Workspace: consumers and breaking changes |
@@ -572,6 +573,10 @@ Present when coverage is stored. With a gate set and coverage measured at head, 
 - `overlap` (needs an index), per file: `fix_count`, `overlapping_lines` (`approximate`: past ranges use their own parent, so read "this area was patched before"), `last_fix_days_ago`, `changed_lines`, `share_of_change`.
 - `concentration` names a file holding at least half the changed lines.
 - Never names the commit that introduced a bug; absent without fix history.
+
+### measured
+
+Present only when the change edits a production function that an entry-point, load-test or production run ranks, or that a benchmark with stored results calls or ran (a unit-test run never counts). Function level: a change beside a measured function in the same file adds nothing. `summary`, then up to five `functions[]`: `fn` (symbol id), `measured` (`rank N in <class> "<workload>"`, or `benchmark`) and `verify`, the one command to run before and after the change (the benchmark rerun when one measures it, else the workload's rerun). `total` only when more were cut. Never moves the score or the verdict. Changed lines are read against the indexed spans, so a change far ahead of the index can miss a function that moved.
 
 ### branch_overlap
 

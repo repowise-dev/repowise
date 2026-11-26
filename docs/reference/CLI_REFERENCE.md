@@ -798,6 +798,7 @@ repowise risk --fail-above-percentile 95 --format github
   {"fail_above_percentile": P, "percentile": <unrounded>, "status": "pass" | "fail"}`. About (100 - P)% fail by design;
   answer with a split or second reviewer, not a fix (no baseline).
 - Unreadable revspec: exit `2` even ungated; JSON `{"error", "message"}`.
+- With an index holding runtime evidence, a change that edits a measured function lists it with the command to run before and after (`measured` in JSON); see [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md).
 - **Headline**: live percentile by size and spread among recent repo commits (size, not danger), then touched files'
   bug-fix record. Raw 0-10 score: secondary, corpus-anchored, high where commits run large. Drivers: versus the model's
   baseline commit.

@@ -174,7 +174,7 @@ def _git_out(root: str, args: list[str], ok: tuple[int, ...] = (0,)) -> bytes | 
 
 
 async def _index_inputs(ctx: Any) -> str:
-    """The index state and the newest coverage ingest; ``""`` without an index."""
+    """The index state and the newest coverage and evidence ingests; ``""`` without an index."""
     from sqlalchemy import func, select
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -199,4 +199,30 @@ async def _index_inputs(ctx: Any) -> str:
             ).one()
     except (LookupError, SQLAlchemyError):
         return ""
-    return f"{index_state_key(repository)}|{newest or ''}|{count}"
+    return f"{index_state_key(repository)}|{newest or ''}|{count}|{await _evidence_inputs(ctx)}"
+
+
+async def _evidence_inputs(ctx: Any) -> str:
+    """The newest evidence ingest and the run count, which the measured block
+    reads and an ingest writes without an index stamp; ``""`` when unreadable
+    (an index older than the evidence tables), which keeps the rest of the key."""
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import EvidenceRun
+    from repowise.server.mcp_server import tool_change_risk as _pkg
+
+    try:
+        async with get_session(ctx.session_factory) as session:
+            repository = await _pkg._get_repo(session)
+            newest, count = (
+                await session.execute(
+                    select(func.max(EvidenceRun.ingested_at), func.count()).where(
+                        EvidenceRun.repository_id == repository.id
+                    )
+                )
+            ).one()
+    except (LookupError, SQLAlchemyError):
+        return ""
+    return f"{newest or ''}|{count}"
