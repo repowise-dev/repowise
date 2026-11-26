@@ -255,6 +255,8 @@ def test_vitest_and_esm_mocks_replace_the_package(tmp_path: Path, mock: str) -> 
     [
         "jest.mock('axios', () => ({ ...jest.requireActual('axios'), post: jest.fn() }));",
         "vi.mock('axios', async (importOriginal) => ({ ...(await importOriginal()) }));",
+        # A factory passed by name may keep the original; it is not read.
+        "const factory = () => ({ ...jest.requireActual('axios') });\njest.mock('axios', factory);",
     ],
 )
 def test_a_partial_mock_keeps_the_package(tmp_path: Path, mock: str) -> None:

@@ -40,6 +40,9 @@ _FACTORY_TAKES_ORIGINAL = re.compile(
     rb"\s*,\s*(?:async\s*)?(?:\(\s*[\w${\[]|[\w$]+\s*=>|function\s*[\w$]*\s*\(\s*[\w${\[])"
 )
 _ACTUAL_OF = rb"(?:requireActual|importActual)\s*(?:<[^>()]*>)?\s*\(\s*['\"`]%s['\"`]"
+#: No factory (an automock), or an inline one whose text can be read. A factory
+#: passed by name is defined elsewhere, so what it keeps is unknown.
+_READABLE_FACTORY = re.compile(rb"\s*(?:\)|,\s*(?:async\s*)?(?:\(|function\b))")
 _MOCKS_DIR = "__mocks__"
 _JS_SUFFIXES = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
 
@@ -134,7 +137,11 @@ class ExternalCallsMixin:
                 for start in starts:
                     m = _MOCK_SPEC.match(data, start)
                     # A factory handed the original keeps the package's real exports.
-                    if m is None or _FACTORY_TAKES_ORIGINAL.match(data, m.end()):
+                    if (
+                        m is None
+                        or _FACTORY_TAKES_ORIGINAL.match(data, m.end())
+                        or not _READABLE_FACTORY.match(data, m.end())
+                    ):
                         continue
                     spec = m.group(2)
                     factory = data[m.end() : _call_end(data, m.end())]
