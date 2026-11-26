@@ -661,7 +661,7 @@ async def test_a_landing_git_cannot_tell_is_answered_but_not_kept(
     from repowise.server.mcp_server import get_answer
     from repowise.server.mcp_server.tool_answer import origin
 
-    monkeypatch.setattr(origin, "_landing", lambda *args: None)
+    monkeypatch.setattr(origin, "landing_date", lambda *args: None)
     result = await get_answer("When did AuthService first appear?")
     assert result["confidence"] == "high"
     assert not origin._WALKS

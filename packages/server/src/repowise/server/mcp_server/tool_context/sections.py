@@ -41,6 +41,7 @@ from repowise.core.persistence.models import (
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._changes import (
     file_changes,
+    file_landing,
     file_provenance,
     load_file_meta,
     symbol_changes,
@@ -497,13 +498,19 @@ async def _symbol_last_change(card: CardState, file_path: str) -> dict[str, Any]
         ),
         "author": found["author"],
     }
+    if found["authored"]:
+        change["authored"] = found["authored"]
     if found["ref"]:
         change["ref"] = found["ref"]
     return change
 
 
 async def _directory_last_change(card: CardState) -> dict[str, Any]:
-    """The newest commit under a directory, as a file's, plus the file it touched."""
+    """The newest commit under a directory, as a file's, plus the file it touched.
+
+    Ceiling: the file is picked by its newest commit, so an older branch merged
+    later into another file under the directory does not move the pick.
+    """
     dated = [r for r in await card.dir_rows() if r.last_commit_at]
     if not dated:
         return await _change_of(card, None)
@@ -512,20 +519,31 @@ async def _directory_last_change(card: CardState) -> dict[str, Any]:
 
 
 async def _change_of(card: CardState, row: Any) -> dict[str, Any]:
-    """A file's newest commit from its git row: date, days since, and author.
+    """A file's newest change: the day it landed, days since, and author.
 
-    ``author`` is the stored author whose own newest commit is that one, and is
-    absent when none matches: the primary owner is not who made the change.
+    The date is the file's newest commit's, unless a stored change touching
+    the file landed later (:func:`file_landing`, a merge of an older branch):
+    then it is that change's merge. No ``authored`` day: the stored history
+    keeps committer dates only, and a rebase moves those (a symbol's walk reads
+    the author date). ``author`` is the stored author whose own newest commit
+    is that change's newest commit on the file, and is absent when none
+    matches: the primary owner is not who made it.
     """
     if row is None or row.last_commit_at is None:
         return {"date": None, "days_ago": None}
+    moment, written = row.last_commit_at, _as_utc(row.last_commit_at)
+    landing = await file_landing(card.session, card.repo_id, row.file_path, moment)
+    if landing is not None:
+        merged, written = landing
+        # Printed in the stored commit date's own form (naive or aware).
+        moment = merged if moment.tzinfo else merged.replace(tzinfo=None)
     change: dict[str, Any] = {
-        "date": row.last_commit_at.isoformat(),
+        "date": moment.isoformat(),
         "days_ago": await _days_since_last_change(
-            card.session, card.repo_id, row.last_commit_at, card.query.as_of_ts
+            card.session, card.repo_id, moment, card.query.as_of_ts
         ),
     }
-    author = _author_at(row.top_authors_json, _as_utc(row.last_commit_at))
+    author = _author_at(row.top_authors_json, written)
     if author:
         change["author"] = author
     return change

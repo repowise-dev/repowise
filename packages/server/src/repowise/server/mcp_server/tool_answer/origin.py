@@ -11,7 +11,7 @@ so a symbol (and a file older than the indexed window) walks git: ``git log
 kept per repository head, so a repeat costs nothing. An origin question this cannot answer says so and
 names the git command that can, instead of falling through to retrieval.
 
-The date is when the change reached the branch (:func:`_landing`), not when
+The date is when the change reached the branch (:func:`landing_date`), not when
 its first commit was written: a branch authored months before its merge, or
 rebased and squashed later, started the behaviour on the day it landed.
 
@@ -31,13 +31,14 @@ import re
 import subprocess
 import time
 from collections import OrderedDict
-from datetime import UTC, date
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import or_, select
 
 from repowise.core.analysis.changed_lines import shallow_roots
+from repowise.core.analysis.git_cli import landed_apart, landing_date
 from repowise.core.code_origin import path_origin
 from repowise.core.persistence.crud.changes import find_changes
 from repowise.core.persistence.database import get_session
@@ -72,9 +73,6 @@ _MAX_DEF_FILES = 5
 #: Seconds for the history walk; a slower one answers "could not tell".
 _GIT_TIMEOUT = 10
 _LOG_FORMAT = "--format=%H\t%an\t%aI\t%cI\t%s"
-#: Calendar days between writing and landing past which the answer names both
-#: (one day absorbs a timezone apart).
-_AUTHORED_GAP_DAYS = 1
 
 #: Git walks already made: (repo id, kind, name, paths, live head) -> the
 #: commit, or why none adds it. History below a head never changes, so an
@@ -552,54 +550,12 @@ def _landed(repo_path: str, found: dict | str, deadline: float) -> dict | str:
     """
     if isinstance(found, dict) and not found["cut"]:
         left = int(deadline - time.monotonic())
-        landed = _landing(repo_path, found["sha"], found["date"], left) if left >= 1 else None
+        landed = landing_date(repo_path, found["sha"], found["date"], left) if left >= 1 else None
         if landed is None:
             found["unsettled"] = True
         else:
-            found["date"] = landed
+            found["date"] = landed[:10]
     return found
-
-
-def _landing(repo_path: str, sha: str, committed: str, timeout: int) -> str | None:
-    """The day the change holding *sha* reached the checked-out branch, or
-    ``None`` when git cannot tell.
-
-    That is the committer date of the oldest first-parent commit descending
-    from *sha*: the merge that brought its branch in, or *sha* itself (its
-    committer date *committed*) when it is HEAD or sits on the first-parent
-    line (a squash, rebase or direct commit, whose committer date is when it
-    was applied). Ceiling: a fast-forward of an unrebased branch leaves no
-    record of when it happened in the history, so it keeps the commit's own
-    committer date; only the reflog of the machine that ran it knows more.
-    """
-    try:
-        proc = subprocess.run(
-            [
-                "git",
-                "log",
-                "--first-parent",
-                "--ancestry-path",
-                "--format=%H %P%x09%cI",
-                f"{sha}..HEAD",
-            ],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    lines = [ln for ln in proc.stdout.splitlines() if "\t" in ln]
-    if not lines:
-        return committed  # *sha* is HEAD
-    ids, when = lines[-1].split("\t", 1)
-    first_parent = ids.split()[1:2]
-    return committed if first_parent == [sha] else when[:10]
 
 
 def _walk(repo_path: str, args: list[str], paths: list[str], timeout: int) -> dict | str:
@@ -657,8 +613,7 @@ def _answer(
     if change is not None and change.merged_at is not None:
         landed = _utc(change.merged_at).date().isoformat()
         authored = commit.get("authored")
-    gap = abs((date.fromisoformat(landed) - date.fromisoformat(authored)).days) if authored else 0
-    when = f"landed {landed}, authored {authored}" if gap > _AUTHORED_GAP_DAYS else landed
+    when = f"landed {landed}, authored {authored}" if landed_apart(landed, authored) else landed
     by = f"{commit['author']}, {when}"
     if change is not None and change.forge_ref:
         title = change.title or commit["subject"]
