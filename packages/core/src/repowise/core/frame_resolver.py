@@ -449,16 +449,43 @@ _RUST_HASH_RE = re.compile(r"::h[0-9a-fA-F]+$")
 _RUST_FOLD_RE = re.compile(r"(?:::\{\{(?:closure|async_block)\}\})+$")
 
 
+def _clean_rust_base_name(clean: str, fold_match: Any) -> str:
+    base_name = clean[: fold_match.start()] if fold_match else clean
+    if base_name.startswith("<") and ">::" in base_name:
+        bracket_content, method_part = base_name[1:].split(">::", 1)
+        type_part = bracket_content.split(" as ")[0].strip()
+        return f"{type_part}::{method_part}"
+    return base_name
+
+
+def _matches_rust_symbol(symbol: IndexedSymbol, normalized: str) -> bool:
+    qual_parts = symbol.qualified_name.split(".")
+    if len(qual_parts) >= 2 and symbol.kind == "method":
+        parent = qual_parts[-2]
+        expected_suffix = f"{parent}.{symbol.name}"
+        return (
+            normalized == expected_suffix
+            or normalized.endswith("." + expected_suffix)
+            or normalized == symbol.name
+            or symbol.qualified_name.endswith("." + normalized)
+        )
+    return (
+        normalized == symbol.name
+        or normalized.endswith("." + symbol.name)
+        or symbol.qualified_name == normalized
+        or symbol.qualified_name.endswith("." + normalized)
+    )
+
+
 def _rust(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipReason:
     raw_name = frame.function
     if not raw_name:
         return "no_second_signal"
 
     clean = _RUST_HASH_RE.sub("", raw_name)
-
     fold_match = _RUST_FOLD_RE.search(clean)
     folded = fold_match is not None
-    base_name = clean[: fold_match.start()] if folded else clean
+    base_name = _clean_rust_base_name(clean, fold_match)
 
     symbol = symbol_at((s for s in symbols if s.kind in _CALLABLE_KINDS), frame.line)
 
@@ -473,31 +500,8 @@ def _rust(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipR
             return (None, False)
         return "no_span"
 
-    if base_name.startswith("<") and ">::" in base_name:
-        bracket_content, method_part = base_name[1:].split(">::", 1)
-        type_part = bracket_content.split(" as ")[0].strip()
-        base_name = f"{type_part}::{method_part}"
-
     normalized = base_name.replace("::", ".")
-    qual_parts = symbol.qualified_name.split(".")
-    if len(qual_parts) >= 2 and symbol.kind == "method":
-        parent = qual_parts[-2]
-        expected_suffix = f"{parent}.{symbol.name}"
-        if (
-            normalized == expected_suffix
-            or normalized.endswith("." + expected_suffix)
-            or normalized == symbol.name
-            or symbol.qualified_name.endswith("." + normalized)
-        ):
-            return (symbol, folded)
-        return "second_signal_mismatch"
-
-    if (
-        normalized == symbol.name
-        or normalized.endswith("." + symbol.name)
-        or symbol.qualified_name == normalized
-        or symbol.qualified_name.endswith("." + normalized)
-    ):
+    if _matches_rust_symbol(symbol, normalized):
         return (symbol, folded)
 
     return "second_signal_mismatch"
