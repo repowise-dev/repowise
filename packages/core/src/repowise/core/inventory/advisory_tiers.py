@@ -291,12 +291,18 @@ async def called_advisories_in_files(
     advisory is absent, and that common case costs one indexed read: the
     stored calls of *files*.
     """
-    from repowise.core.persistence.crud.external_call_sites import list_external_call_sites
+    from repowise.core.persistence.crud.external_call_sites import (
+        external_call_sites_complete,
+        list_external_call_sites,
+    )
 
     wanted = sorted(set(files))
     if not wanted:
         return {}
     if not await list_external_call_sites(session, repository_id, file_paths=wanted):
+        return {}
+    # An incomplete table proves no call, so nothing here could be "called".
+    if not await external_call_sites_complete(session, repository_id):
         return {}
     stored = await load_advisories(session, repository_id)
     if stored is None or not any(p.advisories for p in stored.packages):

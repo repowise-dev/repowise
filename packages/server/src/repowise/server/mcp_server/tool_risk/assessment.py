@@ -257,20 +257,24 @@ async def attach_advisory_calls(
     with no stored package call in the targets this is one indexed read."""
     from repowise.core.inventory.advisory_tiers import called_advisories_in_files
 
-    by_path = {
-        normalize_target_path(card["target"], repo_root=repo_root): card
-        for card in cards
-        if card.get("resolved") is not False
-    }
-    if not by_path:
-        return
     try:
-        found = await called_advisories_in_files(session, repo_id, repo_root or ".", by_path)
+        by_path: dict[str, list[dict]] = {}
+        for card in cards:
+            if card.get("resolved") is not False:
+                path = normalize_target_path(card["target"], repo_root=repo_root)
+                by_path.setdefault(path, []).append(card)
+        if not by_path:
+            return
+        # A savepoint, so a failed read never aborts the transaction the rest
+        # of get_risk reads through.
+        async with session.begin_nested():
+            found = await called_advisories_in_files(session, repo_id, repo_root or ".", by_path)
     except Exception:
         # The card stands without the line; it is never worth failing the call.
         return
     for path, rows in found.items():
-        by_path[path]["advisory_call"] = advisory_call_line(rows)
+        for card in by_path[path]:
+            card["advisory_call"] = advisory_call_line(rows)
 
 
 def _build_co_changes(
