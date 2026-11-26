@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft, Layers, Sparkles } from "lucide-react";
 import { ApiError, EmptyState, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
   CONFIDENCE_DOT,
   CONFIDENCE_LABEL,
@@ -530,11 +531,11 @@ function OpportunitySummaryStrip({
   return (
     <p className="text-sm text-[var(--color-text-secondary)]">
       <span className="font-semibold text-[var(--color-text-primary)] tabular-nums">
-        {page.total.toLocaleString()}
+        {formatNumber(page.total)}
       </span>{" "}
       opportunit{page.total === 1 ? "y" : "ies"}
       {filePath ? ` in ${filePath}` : ""} ·{" "}
-      <span className="tabular-nums">{steps.toLocaleString()}</span> step
+      <span className="tabular-nums">{formatNumber(steps)}</span> step
       {steps === 1 ? "" : "s"}, <span className="tabular-nums">{mechanical}</span> mechanical
     </p>
   );
