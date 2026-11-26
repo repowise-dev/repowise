@@ -1,8 +1,9 @@
 "use client";
 
 import type {
-  FileTestCost,
+  CostCluster,
   SlowTest,
+  SuiteCost,
 } from "@repowise-dev/types/runtime-evidence";
 
 import { formatNumber } from "../../lib/format";
@@ -21,10 +22,12 @@ import { SLOW_TESTS_MORE, type TestsView } from "./runtime";
 import { EvidenceWordTag } from "./tags";
 
 /**
- * Stored test timings on the Performance tab: the test time per production
- * file as ranked bars, the slowest tests with their file, a "Show 50" for
- * both, and a plain line when the ingest cut the run at its row cap, since
- * the lists then miss whatever was cut.
+ * Stored test timings on the Performance tab: the groups of tests that run the
+ * same code and take longer than the rest (excess clusters, with the fixture
+ * they share) as ranked bars, the slowest tests with their file, a "Show 50",
+ * and a plain line when the ingest cut the run at its row cap, since the lists
+ * then miss whatever was cut. A suite under a minute, or with no group worth
+ * a list, gets one line and no lists.
  */
 
 const LIST =
@@ -46,35 +49,78 @@ function Bar({ value, scale }: { value: number; scale: number }) {
   );
 }
 
-function FileRow({
-  file,
+function ClusterRow({
+  cluster,
   scale,
-  href,
+  fileHref,
   onPrompt,
 }: {
-  file: FileTestCost;
+  cluster: CostCluster;
   scale: number;
-  href: string;
+  fileHref: (path: string) => string;
   onPrompt: () => void;
 }) {
+  const more = cluster.files_total - cluster.files.length;
+  const fx = cluster.fixture;
   return (
     <li className="group/row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 px-1 py-2.5">
-      <a href={href} className={`flex min-w-0 font-mono ${QUIET_LINK_CLS}`}>
-        <FilePath path={file.file_path} fold className="text-xs" />
-      </a>
-      <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)]">
-        {secondsText(file.test_seconds)}
+      <span className="min-w-0 text-[var(--color-text-primary)]">
+        {plural(cluster.tests, "test")} at {secondsText(cluster.mean_s)} each
+        vs {secondsText(cluster.others_mean_s)}
       </span>
-      <Bar value={file.test_seconds} scale={scale} />
+      <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)]">
+        +{secondsText(cluster.excess_s)}
+      </span>
+      <Bar value={cluster.excess_s} scale={scale} />
       <span className="flex items-center justify-end gap-2">
-        <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
-          {plural(file.timed_tests, "timed test")}
-        </span>
+        {cluster.share != null ? (
+          <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+            {Math.round(cluster.share * 100)}% of the suite
+          </span>
+        ) : null}
         <RowPromptAction
           variant="icon"
           onClick={onPrompt}
-          subject={`tests that run ${file.file_path}`}
+          subject={`the ${plural(cluster.tests, "test")} that run ${cluster.files[0] ?? "the same code"}`}
         />
+      </span>
+      <span className="col-span-2 flex min-w-0 flex-col gap-0.5 text-[11px]">
+        {cluster.files.map((path) => (
+          <a
+            key={path}
+            href={fileHref(path)}
+            className={`flex min-w-0 font-mono ${QUIET_LINK_CLS}`}
+          >
+            <FilePath path={path} fold className="text-[11px]" />
+          </a>
+        ))}
+        {more > 0 ? (
+          <span className="text-[var(--color-text-tertiary)]">
+            and {plural(more, "more file")}
+          </span>
+        ) : null}
+        {cluster.within ? (
+          <span className="text-[var(--color-text-tertiary)]">
+            Inside the {formatNumber(cluster.within.tests)} tests that run{" "}
+            <span className="font-mono">{cluster.within.files[0]}</span>
+          </span>
+        ) : null}
+        {fx ? (
+          <span className="text-[var(--color-text-secondary)]">
+            Fixture <span className="font-mono">{fx.name}</span>{" "}
+            <a
+              href={fileHref(fx.file_path)}
+              className={`font-mono ${QUIET_LINK_CLS}`}
+            >
+              {fx.file_path}
+              {fx.line != null ? `:${fx.line}` : ""}
+            </a>
+            , asked for by {formatNumber(fx.tests)} of them and{" "}
+            {fx.others === 0
+              ? "no other timed test"
+              : plural(fx.others, "other timed test")}
+          </span>
+        ) : null}
       </span>
     </li>
   );
@@ -121,22 +167,21 @@ function TestRow({
 
 const subhead = "mb-2 text-xs font-medium text-[var(--color-text-secondary)]";
 
-function fileNote(
-  costs: NonNullable<TestsView["suite"]["file_costs"]>,
-): string {
-  return [
-    costs.basis === "inferred"
-      ? "Which tests run a file is inferred from the call graph."
-      : "Which tests run a file comes from the per-test coverage map.",
-    costs.every_test > 0
-      ? `${plural(costs.every_test, "file")} every timed test runs ${costs.every_test === 1 ? "is" : "are"} counted, not listed.`
-      : null,
-    costs.not_production > 0
-      ? `${plural(costs.not_production, "test or tooling file")} counted, not listed.`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" ");
+/** The suite in one line: what its time adds up to and how concentrated it is. */
+export function costLine(cost: SuiteCost): string {
+  const total = secondsText(cost.seconds);
+  const timed = plural(cost.timed, "timed test");
+  if (cost.verdict === "small_suite") {
+    return `Tests take ${total} in all (${timed}): under a minute, nothing to speed up.`;
+  }
+  if (cost.verdict === "small_excess") {
+    return `Tests take ${total} (${timed}), spread evenly: no group of tests runs 5 s over the rest.`;
+  }
+  const top = cost.concentration;
+  const spread = top
+    ? `; the slowest ${formatNumber(top.tests)} take ${Math.round(top.share * 100)}% of it`
+    : "";
+  return `Tests take ${total} (${timed})${spread}.`;
 }
 
 /** "30,000 of 49,132 tests timed; 19,104 cut ...", or null when nothing was cut. */
@@ -165,9 +210,13 @@ export function TestsGroup({
 }) {
   if (!tests) return null;
   const { suite, limit, more, loading, failed } = tests;
-  const files = suite.file_costs?.files ?? [];
-  const scale = Math.max(0, ...files.map((f) => f.test_seconds));
-  const cut = cutLine(tests);
+  const cost = suite.cost;
+  // Silence: a suite under a minute, or with no group of tests worth a list.
+  const quiet =
+    cost?.verdict === "small_suite" || cost?.verdict === "small_excess";
+  const clusters = cost?.clusters ?? [];
+  const scale = Math.max(0, ...clusters.map((c) => c.excess_s));
+  const cut = quiet ? null : cutLine(tests);
   const ask = (
     subject: SlowTestsSubject,
     title: string,
@@ -181,13 +230,11 @@ export function TestsGroup({
     });
   const caption = [
     `${plural(suite.tests_total, "timed test")}`,
-    suite.file_costs
-      ? plural(suite.file_costs.files_total, "production file")
-      : null,
+    cost ? secondsText(cost.seconds) : null,
   ]
     .filter(Boolean)
     .join(" · ");
-  const fewer = files.length < limit && suite.slow_tests.length < limit;
+  const fewer = suite.slow_tests.length < limit;
   return (
     <CollapsibleSection
       title={
@@ -208,54 +255,69 @@ export function TestsGroup({
             {cut}
           </p>
         ) : null}
-        <div className="grid gap-x-8 gap-y-6 lg:grid-cols-2">
-          {files.length > 0 ? (
-            <div className="min-w-0">
-              <h4 className={subhead}>By production file, test seconds</h4>
-              <ul aria-label="Test time by production file" className={LIST}>
-                {files.map((file) => (
-                  <FileRow
-                    key={file.file_path}
-                    file={file}
-                    scale={scale}
-                    href={fileHref(file.file_path)}
-                    onPrompt={() =>
-                      ask(
-                        { kind: "file", file, basis: suite.file_costs!.basis },
-                        `The tests that run ${file.file_path}, faster without losing coverage.`,
-                        file.file_path,
-                      )
-                    }
-                  />
-                ))}
-              </ul>
-              <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-                {fileNote(suite.file_costs!)}
-              </p>
-            </div>
-          ) : null}
-          {suite.slow_tests.length > 0 ? (
-            <div className="min-w-0">
-              <h4 className={subhead}>Slowest tests</h4>
-              <ul aria-label="Slowest tests" className={LIST}>
-                {suite.slow_tests.map((test) => (
-                  <TestRow
-                    key={`${test.workload}:${test.test_id}`}
-                    test={test}
-                    fileHref={fileHref}
-                    onPrompt={() =>
-                      ask(
-                        { kind: "tests", tests: [test] },
-                        `${test.test_id}, faster without losing coverage.`,
-                        test.test_file,
-                      )
-                    }
-                  />
-                ))}
-              </ul>
-            </div>
-          ) : null}
-        </div>
+        {cost ? (
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            {costLine(cost)}
+          </p>
+        ) : null}
+        {cost?.verdict === "no_test_map" && cost.command ? (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            To see which code makes them slow, record a per-test coverage map:{" "}
+            <code className="font-mono">{cost.command}</code>, then{" "}
+            <code className="font-mono">repowise coverage add .coverage</code>.
+          </p>
+        ) : null}
+        {quiet ? null : (
+          <div className="grid gap-x-8 gap-y-6 lg:grid-cols-2">
+            {clusters.length > 0 ? (
+              <div className="min-w-0">
+                <h4 className={subhead}>Groups of tests slower than the rest</h4>
+                <ul aria-label="Groups of slow tests" className={LIST}>
+                  {clusters.map((cluster) => (
+                    <ClusterRow
+                      key={cluster.files.join("|")}
+                      cluster={cluster}
+                      scale={scale}
+                      fileHref={fileHref}
+                      onPrompt={() =>
+                        ask(
+                          { kind: "cluster", cluster },
+                          `The ${plural(cluster.tests, "test")} that run the same code, faster without losing coverage.`,
+                          cluster.fixture?.file_path ?? cluster.files[0] ?? null,
+                        )
+                      }
+                    />
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+                  Each group&apos;s time over the other tests&apos; pace; which
+                  tests run which code comes from the per-test coverage map.
+                </p>
+              </div>
+            ) : null}
+            {suite.slow_tests.length > 0 ? (
+              <div className="min-w-0">
+                <h4 className={subhead}>Slowest tests</h4>
+                <ul aria-label="Slowest tests" className={LIST}>
+                  {suite.slow_tests.map((test) => (
+                    <TestRow
+                      key={`${test.workload}:${test.test_id}`}
+                      test={test}
+                      fileHref={fileHref}
+                      onPrompt={() =>
+                        ask(
+                          { kind: "tests", tests: [test] },
+                          `${test.test_id}, faster without losing coverage.`,
+                          test.test_file,
+                        )
+                      }
+                    />
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        )}
         {failed ? (
           <p
             role="status"
@@ -270,7 +332,7 @@ export function TestsGroup({
           >
             Reading more rows.
           </p>
-        ) : more && !fewer ? (
+        ) : more && !fewer && !quiet ? (
           <button
             type="button"
             onClick={more}

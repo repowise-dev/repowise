@@ -331,7 +331,26 @@ async def test_tests_lists_slow_tests_with_their_basis_run(
     assert out["status"] == "measured"
     assert [t["test_id"] for t in out["slow_tests"]] == ["tests/test_a.py::test_2", "tests/test_a.py::test_1"]
     assert out["runs"][0]["freshness"] == "current"
-    assert out["file_costs"] == {"basis": "inferred", "files": [], "files_total": 0, "not_production": 0, "every_test": 0}
+    assert out["cost"] == {
+        "verdict": "small_suite", "seconds": 3.0, "timed": 3,
+        "concentration": {"tests": 1, "share": round(2 / 3, 4)}, "clusters": [], "command": None,
+    }
+
+
+def test_the_suite_cost_model_serves_clusters_with_their_fixture() -> None:
+    from repowise.core.evidence.suite_cost import Fixture, cost_fold
+    from repowise.server.schemas.runtime_evidence import SuiteCost
+
+    slow = {f"tests/test_s.py::t{i}": 10.0 for i in range(5)}
+    rest = {f"tests/test_r.py::t{i}": 1.0 for i in range(20)}
+    reach = {t: {"src/app.py", "src/store.py"} for t in slow} | {t: {"src/app.py"} for t in rest}
+    fixtures = {t: {Fixture("indexed", "tests/test_s.py", 48)} for t in slow}
+
+    cost = cost_fold(slow | rest, reach, fixtures)
+
+    served = SuiteCost.model_validate(cost).model_dump()
+    assert served == cost
+    assert served["clusters"][0]["fixture"]["name"] == "indexed"
 
 
 @pytest.mark.asyncio

@@ -249,7 +249,7 @@ describe("Runtime evidence marks", () => {
         },
       ],
       tests_total: 1240,
-      file_costs: null,
+      cost: null,
     }));
     const { unmount } = render(
       <PerformanceView adapter={adapter({ ...evidenceAdapter(), getEvidenceTests })} />,

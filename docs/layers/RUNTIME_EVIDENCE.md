@@ -530,25 +530,44 @@ repowise evidence tests
 repowise evidence tests --limit 50 --format json
 ```
 
-The slowest tests and the test time spent on each production file, from the
+Which groups of tests make the suite slow, and the slowest tests, from the
 JUnit XML timings `evidence add` stored: the newest run of each test workload
 as `evidence status` picks it (the newest environment when a workload ran in
-several), each test at
-its longest duration across them. A test flagged `first_in_class` may carry
-fixture time its whole class or module shares.
+several), each test at its longest duration across them. A test flagged
+`first_in_class` may carry fixture time its whole class or module shares.
 
-Test time per file is the summed duration of the timed tests that run it, with
-how many of its tests were timed. Its `basis` is `measured` when a stored per-test
-coverage map (`repowise coverage add` with per-test contexts) names the timed
-tests, and `inferred` from each function's nearest tests on the call graph
-otherwise.
-Only production files are listed; files of other origins run by timed tests are
-counted under `not_production`. A production file run by every timed test that
-reaches production code (one the test setup imports) would show all of their time,
-so it is counted under `every_test` instead of listed, unless no other file is. With nothing stored, `status` is
-`no_test_timings` and `command` is `repowise evidence setup`, which prints how
-each unit's tests write JUnit XML. Timing orders tests and files; it never
-gates. The same answer is served at `GET /api/repos/{repo_id}/evidence/tests`.
+The first line says where to start and what it saves. A suite under a minute,
+or one where no group of tests runs 5 s over the rest, gets that one line and
+no list (`cost.verdict` is `small_suite` or `small_excess`). Otherwise the
+output gives how concentrated the time is (the slowest tenth of the tests and
+their share), the duration histogram, and up to 3 groups:
+
+```
+Start with the 29 tests that run persistence/database.py and 3 more files: they take 39.2 s more
+than the rest's pace (55% of the suite), 15 of them through fixture indexed (tests/unit/evidence/test_add.py:48).
+  1. 29 tests at 1.44 s each vs 0.09 s: +39.2 s (55%)
+     inside the 161 tests that run registry/plugins.py
+     fixture: indexed (tests/unit/evidence/test_add.py:48), asked for by 15 of them and no other timed test
+```
+
+A group is the tests that run the same production files, from a stored
+per-test coverage map (`repowise coverage add` with per-test contexts); file
+origin is `code_origin`'s, so test helpers never form one. Its excess is its
+test count times the gap between its mean duration and the other tests' mean,
+over files at least 3 and at most 90% of the timed tests run: a file nearly
+every test runs (one the test setup imports) separates nothing. The file with
+the most excess and every file the same tests run form the group, and its
+tests leave the ranking before the next group is picked, so groups never share
+a test. When a narrower group inside it carries two thirds of that excess, the
+narrower one is reported, with the larger group it sits inside (`within`).
+A group names its fixture when at least a quarter of its tests ask for it by
+name and at least half of the timed tests asking for it are in the group, read
+from the fixture requests the index resolved for pytest. Without a per-test
+map the verdict is `no_test_map`: the concentration only, and `command` says
+how to record one. With nothing stored, `status` is `no_test_timings` and
+`command` is `repowise evidence setup`, which prints how each unit's tests
+write JUnit XML. Timing orders tests and groups; it never gates. The same
+answer is served at `GET /api/repos/{repo_id}/evidence/tests`.
 
 ### What is stored
 
