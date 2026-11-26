@@ -448,6 +448,48 @@ _PHP_CLOSURE_RE = re.compile(r"(?:^|::|->|\\)(\{closure\}|Closure::__invoke)$")
 _PHP_BODY_NAMES = frozenset({"{main}", "<main>", "main", "[main]"})
 
 
+def _clean_php_name(name: str) -> str:
+    return name.replace("\\", ".").replace("::", ".").replace("->", ".")
+
+
+def _matches_php_container(container: IndexedSymbol, clean_prefix: str) -> bool:
+    return clean_prefix == container.name or clean_prefix.endswith("." + container.name)
+
+
+def _matches_php_folded(symbol: IndexedSymbol, clean_prefix: str) -> bool:
+    if not clean_prefix:
+        return True
+    qual_parts = symbol.qualified_name.split(".")
+    if len(qual_parts) >= 2 and symbol.kind == "method":
+        parent = qual_parts[-2]
+        return clean_prefix == parent or clean_prefix.endswith("." + parent)
+    return clean_prefix == symbol.name or clean_prefix.endswith("." + symbol.name)
+
+
+def _matches_php_symbol(symbol: IndexedSymbol, normalized: str) -> bool:
+    qual_parts = symbol.qualified_name.split(".")
+    norm_lower = normalized.lower()
+    if len(qual_parts) >= 2 and symbol.kind == "method":
+        parent = qual_parts[-2]
+        expected_suffix = f"{parent}.{symbol.name}"
+        exp_lower = expected_suffix.lower()
+        return (
+            normalized in (expected_suffix, symbol.name)
+            or normalized.endswith("." + expected_suffix)
+            or symbol.qualified_name.endswith("." + normalized)
+            or norm_lower == exp_lower
+            or norm_lower.endswith("." + exp_lower)
+        )
+    return (
+        normalized == symbol.name
+        or normalized.endswith("." + symbol.name)
+        or symbol.qualified_name == normalized
+        or symbol.qualified_name.endswith("." + normalized)
+        or norm_lower == symbol.name.lower()
+        or norm_lower.endswith("." + symbol.name.lower())
+    )
+
+
 def _php(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipReason:
     raw_name = frame.function
     if not raw_name:
@@ -455,12 +497,12 @@ def _php(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipRe
 
     closure_match = _PHP_CLOSURE_RE.search(raw_name)
     folded = closure_match is not None
-
     prefix = raw_name[: closure_match.start()] if folded else raw_name
 
     if prefix in _PHP_BODY_NAMES:
         return (None, folded)
 
+    clean_prefix = _clean_php_name(prefix)
     symbol = symbol_at((s for s in symbols if s.kind in _CALLABLE_KINDS), frame.line)
 
     if symbol is None:
@@ -470,50 +512,16 @@ def _php(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipRe
             (s for s in symbols if s.kind in ("class", "interface", "trait", "enum")),
             frame.line,
         )
-        if container is not None:
-            clean = prefix.replace("\\", ".").replace("::", ".").replace("->", ".")
-            if clean == container.name or clean.endswith("." + container.name):
-                return (None, folded)
+        if container is not None and _matches_php_container(container, clean_prefix):
+            return (None, folded)
         return "no_span"
 
     if folded:
-        if not prefix:
-            return (symbol, True)
-        clean_prefix = prefix.replace("\\", ".").replace("::", ".").replace("->", ".")
-        qual_parts = symbol.qualified_name.split(".")
-        if len(qual_parts) >= 2 and symbol.kind == "method":
-            parent = qual_parts[-2]
-            if clean_prefix == parent or clean_prefix.endswith("." + parent):
-                return (symbol, True)
-            return "second_signal_mismatch"
-        if clean_prefix == symbol.name or clean_prefix.endswith("." + symbol.name):
+        if _matches_php_folded(symbol, clean_prefix):
             return (symbol, True)
         return "second_signal_mismatch"
 
-    normalized = prefix.replace("\\", ".").replace("::", ".").replace("->", ".")
-    qual_parts = symbol.qualified_name.split(".")
-    if len(qual_parts) >= 2 and symbol.kind == "method":
-        parent = qual_parts[-2]
-        expected_suffix = f"{parent}.{symbol.name}"
-        if (
-            normalized == expected_suffix
-            or normalized.endswith("." + expected_suffix)
-            or normalized == symbol.name
-            or symbol.qualified_name.endswith("." + normalized)
-            or normalized.lower() == expected_suffix.lower()
-            or normalized.lower().endswith("." + expected_suffix.lower())
-        ):
-            return (symbol, False)
-        return "second_signal_mismatch"
-
-    if (
-        normalized == symbol.name
-        or normalized.endswith("." + symbol.name)
-        or symbol.qualified_name == normalized
-        or symbol.qualified_name.endswith("." + normalized)
-        or normalized.lower() == symbol.name.lower()
-        or normalized.lower().endswith("." + symbol.name.lower())
-    ):
+    if _matches_php_symbol(symbol, clean_prefix):
         return (symbol, False)
 
     return "second_signal_mismatch"
