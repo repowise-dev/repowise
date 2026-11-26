@@ -20,7 +20,7 @@ Stored evidence is read by `repowise evidence status` and `repowise evidence
 setup`. The static findings it sits beside are in
 [PERFORMANCE.md](PERFORMANCE.md).
 
-## The loop
+## Quick start
 
 Four commands, run from the repository root. `add` needs an index. On a
 repository with none, `setup` prints the coverage plan and a `next_call` of
@@ -39,7 +39,15 @@ the stack, the coverage command and its ingest line, then the runtime targets
 profiler command that needs no elevated privileges, its prerequisites, where the
 profile lands (under `.repowise/`) and the exact `evidence add` line. `next_call`
 is the sequence to run next: a coverage report already on disk, then the best
-profile, then the tests with coverage. Workloads already measured at HEAD are
+profile, then the tests with coverage. The test step also writes the unit's test
+timings (JUnit XML, or `go test -json` for Go) and ingests them, so one run gives
+coverage and timings, and `evidence tests` has something to rank. A step that
+needs environment variables carries them under `env` (name to value), never in
+the command text, since sh and PowerShell spell an assignment differently; a
+pytest run with per-test contexts sets `COVERAGE_CORE=ctrace`, because
+coverage.py's default tracer from Python 3.14 records no contexts. Coverage
+stored at HEAD without the unit's timings still runs the tests once more.
+Workloads already measured at HEAD are
 not asked for again, so rerunning `setup` after each step comes to an end:
 `next_call` is `null` and `reason` says why. A target with no ingest line carries
 a `reason` instead (no commit to stamp, a recipe whose output this build does not
@@ -80,13 +88,17 @@ read, a program with no profiler flag).
   names that directory, so the run's files merge into one run. Node writes a
   profile even when the program throws or exits nonzero, so check the exit code
   before ingesting.
+- A JavaScript test suite whose test script is the runner alone (Mocha, Jest
+  or Vitest and plain arguments, past an exec wrapper such as `npx`) gets a
+  `node tests` target (`unit_test`): `node --cpu-prof` runs the runner's own
+  script from the unit's `node_modules` (`node_modules/mocha/bin/mocha.js`),
+  so the profile holds the tests and not the package manager. A unit whose
+  test files are mostly TypeScript gets a reason only.
+- A `package.json` whose `packageManager` names a tool Repowise does not know
+  (not npm, pnpm, Yarn or Bun) gets one note saying so and no install step:
+  install the dependencies with that tool. The test command runs the runner
+  through `npx --no`, which stops at once when the runner is not installed.
 - `repowise coverage setup` prints the same plan with the coverage part only.
-- `repowise evidence setup --write` also writes a CI file with one job per unit:
-  its tests with coverage and JUnit XML, on pull requests and pushes to the
-  default branch, the report and test results kept as artifacts. <!-- repowise-drift-ignore -->
-  `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
-  (include it from `.gitlab-ci.yml`) for a GitLab repository; `--ci` picks one.
-  A different file already at that path is left alone and the command exits `1`.
 
 ### Python example
 
@@ -152,17 +164,19 @@ repowise evidence add .repowise/go-bench-results-work.txt --workload "go bench r
 
 ### Hand it to an agent
 
-The "Connect evidence" prompt hands an agent the loop rather than stack
+The "Connect evidence" prompt hands an agent the loop instead of stack
 commands, so the commands always come from `setup`:
 
 ```text
-Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
+Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in and any environment variables (`env`) it sets. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
 ```
 
 From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
 returns the same text with the agent's role line before it.
 
-## `evidence add`
+## Reading the results
+
+### `evidence add`
 
 ```bash
 repowise evidence add .repowise/app.speedscope.json --workload "app" --class entry_point --commit $(git rev-parse HEAD)
@@ -204,7 +218,7 @@ result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `environment
 `rows_written`, `truncated` and `runs_pruned`. Every flag:
 [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 
-### Several profiles of one run
+#### Several profiles of one run
 
 A profile of one process misses the work of the processes it starts. When a
 run has workers, profile each process and pass every file to one `evidence
@@ -233,8 +247,8 @@ not recorded, so a missing worker cannot be told apart.
 Every run carries an environment tag, the OS and whether it ran in a CI job
 (`linux-ci`, `macos-local`), unless `--environment` names another. Runs of
 one workload in different environments keep separate histories. The tag does
-not catch everything that slows one machine (antivirus scanning on file open
-did once); two agreeing runs are the guard.
+not catch everything that slows one machine (antivirus scanning on file open,
+for one); two agreeing runs are the guard.
 
 A server that receives the same file calls
 `repowise.core.evidence.add.ingest_evidence(session, repo, data, repo_path=..., workload=..., workload_class=...)`
@@ -246,7 +260,7 @@ same checks, stores the same run and returns the same result; a file or option
 it will not take raises `EvidenceRefusedError` with a `code`, the `option` at
 fault and a `hint`.
 
-### Workload classes
+#### Workload classes
 
 The class says what kind of run produced the numbers, so a reader knows how far
 they reach.
@@ -254,7 +268,7 @@ they reach.
 | Class | The run | What its numbers stand for |
 |---|---|---|
 | `unit_test` | The test suite, profiled or timed | Where time goes while tests run; test-shaped, not production-shaped |
-| `benchmark` | A benchmark run | One series per benchmark, named by the benchmark; never the cost of the production functions it calls |
+| `benchmark` | A benchmark run | One series per benchmark, named by the benchmark; never the cost of the production functions it calls. A benchmark profile ranks no function and never leads: each benchmark gets about the same time, so a function's share tracks how many benchmarks target it. Benchmark results list per benchmark, with the function it measures (a function it calls directly whose name its own name carries) and its time and allocations per operation |
 | `entry_point` | A real command or a request replay, profiled | Where time goes on that path |
 | `load_test` | A load test, profiled | Where time goes under that load |
 | `production` | Not accepted from the CLI | Reserved for a verified source; `--class production` is refused |
@@ -262,7 +276,7 @@ they reach.
 `setup` ranks its targets `entry_point`, then `benchmark`, then `unit_test`, so
 the first profile it asks for is the one closest to real use.
 
-## Kinds and input formats
+### Kinds and input formats
 
 One file holds one run of one kind; the profiles of one run's processes may come in
 several files (see [Several profiles of one run](#several-profiles-of-one-run)).
@@ -271,14 +285,14 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 |---|---|---|
 | `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, V8 `.cpuprofile`, collapsed stacks, or a v1 document |
 | `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, `go test -bench` output, hyperfine JSON, or a v1 document |
-| `test_timing` | Per test: duration and outcome | JUnit XML, or a v1 document |
+| `test_timing` | Per test: duration and outcome | JUnit XML, `go test -json`, or a v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `cpuprofile`, `pytest-benchmark`, `go-bench`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
+`pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
 
-### Profiles as the profiler wrote them
+#### Profiles as the profiler wrote them
 
 | Format | Written by | What a frame carries |
 |---|---|---|
@@ -301,7 +315,7 @@ The format is detected from the content, never the file name;
   it. A build made in another directory (CI, a container) joins with that
   directory as `--checkout-root`.
 
-### Benchmark results as the runner wrote them
+#### Benchmark results as the runner wrote them
 
 | Format | Written by | What a benchmark carries |
 |---|---|---|
@@ -337,14 +351,29 @@ The format is detected from the content, never the file name;
   back.
 - A hyperfine result links to no function: it times a command line, not a symbol, so every entry is a series on its own. `user`, `system`, `parameters` and the exit codes are not read.
 
-### Test reports as the runner wrote them
+#### Test reports as the runner wrote them
 
 | Format | Written by | What a test carries |
 |---|---|---|
-| `junit` | `pytest --junitxml=junit.xml`, Maven Surefire (`target/surefire-reports`) and Gradle (`build/test-results/test`) by default, Vitest `--reporter=junit`, jest with `jest-junit` | `classname`, `name`, `time` in seconds, and the outcome from a `failure`, `error` or `skipped` child; `file` when the runner writes it |
+| `junit` | `pytest --junitxml=junit.xml`, Maven Surefire (`target/surefire-reports`) and Gradle (`build/test-results/test`) by default, Vitest `--reporter=junit`, jest with `jest-junit`, Mocha `--reporter xunit` | `classname`, `name`, `time` in seconds, and the outcome from a `failure`, `error` or `skipped` child; `file` when the runner writes it |
+
+| `go-test-json` | `go test -json` saved to a file (`> go-test.json`) | each top-level test's `pass`, `fail` or `skip` event with its `Elapsed` seconds; subtests are inside their parent's time and are not stored |
 
 - A Maven or Gradle report directory, one file per test class, is one run:
-  pass the directory (or several report files) as FILE. The files in it that
+  pass the directory (or several report files) as FILE. A multi-module build
+  writes one directory per module; a quoted glob
+  (`'**/target/surefire-reports/*.xml'`) names them all, and `evidence add`
+  expands it from the current directory itself.
+- A run in which every test errored (a collection or session error) is
+  refused: it timed no test.
+- **Go.** A test links to the `TestX` function in its package's `_test.go`
+  file, found as for benchmarks; one outside the checkout keeps its timing
+  under `<package>::<name>`. A `go test -json` file holding benchmark results
+  is read as benchmarks (`go-bench`). UTF-16 output from PowerShell 5 reads
+  the same.
+- Mocha 11.6 and later write each test's file relative to where Mocha runs
+  (`showRelativePaths`); older releases write it absolute, and those tests keep
+  their timing without a file. The files in it that
   are not JUnit XML (Surefire's `.txt` summaries, `failsafe-summary.xml`, a
   file that declares a document type) are left out.
 - A test is stored under its `path::qualname` id, the id coverage contexts
@@ -371,7 +400,7 @@ The format is detected from the content, never the file name;
 - `--commit` is required; the report records none. Captured output,
   properties and failure messages are not read.
 
-## The `repowise-evidence-v1` document
+### The `repowise-evidence-v1` document
 
 Any tool can write this shape directly; converted formats become it before
 they are joined.
@@ -402,7 +431,7 @@ they are joined.
 
 | Kind | Entry fields |
 |---|---|
-| `profile` | location; `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
+| `profile` | location; `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only; optional `inside` (up to 3 of `{name, kind, share}`, each with an optional `leaf` of the same shape) and `drivers` (up to 3 of `{function, share}`, plus `path` and `line` for a repo caller), shares of `total` |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required); optional `classname` (a dotted name, placed on its file at ingest, when there is no `path`) and `first_in_class` |
 | `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
@@ -424,7 +453,7 @@ they are joined.
   optional location that breaks the path rules is dropped and the entry kept.
 - Fields the format does not name are never read.
 
-## How entries join to code
+### How entries join to code
 
 A profile or query-count entry ends as a row for exactly one indexed function,
 or as a count under a reason. Nothing is matched by path suffix.
@@ -472,9 +501,35 @@ is counted there as `unplaced`.
   dispatcher is on every stack and costs nothing itself.
 - A stack whose innermost repo frame was skipped charges no function; its self
   time is reported under `self_unattributed` by that skip reason.
+- **Inside and drivers.** Each function keeps up to three callees by share of
+  its inclusive time (`inside`), read like `go tool pprof -peek`: the frame
+  directly below its innermost occurrence on each stack, with a `kind`: `own`
+  (its own code), `repo`, `wait` (the frames down to the next repo frame
+  block, an event loop or a subprocess wait included), `import`, `native` (a
+  built-in, the Go runtime, assembly) or `library` (the standard library or a
+  dependency). A callee also names its heaviest `leaf`, the frame its stacks
+  end in, when that is not the callee itself (`existsSync` under a template
+  render, `runtime.cgocall` under an ORM call). It also keeps up to three
+  callers (`drivers`): the nearest repo frame above its outermost occurrence,
+  through any library in between, else the frame directly above. The
+  `functions` route returns both; a run stored before they were recorded has
+  none: add the profile again.
+- **Next step.** For an entry point, load test or production run, the
+  `functions` route also gives each function a `next_step`: what its time is
+  (`why`), what to do (`next`) and how to check a change for that workload
+  (`verify`), read from the callee family holding at least half of its time and
+  that callee's leaf (a stat per entry in a directory walk, an import inside the
+  function, templates read and compiled per render, an ETag hash per response,
+  an ORM read per call, and so on). It is null when the profile does not say:
+  no dominant callee, its own code, a wait, the framework spine, a response
+  write, a database write per request, or `runtime.cgocall` time with no
+  database call above it. A database step says "N+1" only when a static
+  `io_in_loop` finding in production code loops over the function or its main
+  driver; a static finding on the function itself becomes the `why` when its
+  boundary agrees with the callee.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
-  `libraries` (a dependency frame runs below the innermost repo frame, or on a
-  stack with no repo frame),
+  `libraries` (a dependency frame, including Go's module cache, runs below the
+  innermost repo frame, or on a stack with no repo frame),
   `repo_self` (neither, and that frame is a production function by
   `code_origin`: time in production repo code itself), or none of them (test or
   tooling code, module bodies, unjoined frames, stacks with no repo frame that
@@ -487,7 +542,7 @@ A profile or query-count run where more than half the entries did not map is
 refused unless `--allow-partial`; stored that way it is flagged
 `mapping_partial`.
 
-### Stale evidence
+#### Stale evidence
 
 Evidence keeps the commit it measured. A run from another commit than the
 checkout's HEAD is stored with its own commit and reads as `stale`; it is never
@@ -496,7 +551,7 @@ older commit, `add` says to run `repowise update` and add the file again. The sa
 file added again with the same flags against the same index restamps the stored
 run instead of adding a second one; after `repowise update` it is joined afresh.
 
-## `evidence status`
+### `evidence status`
 
 ```bash
 repowise evidence status
@@ -514,34 +569,53 @@ recorded: add the profile again). The JSON form adds
 unit counts (`total`, `matched`, `skipped`, `outside_repo`, `truncated`) and
 skip reasons. An unknown value reads as unknown, never 0.
 
-## `evidence tests`
+### `evidence tests`
 
 ```bash
 repowise evidence tests
 repowise evidence tests --limit 50 --format json
 ```
 
-The slowest tests and the test time spent on each production file, from the
+Which groups of tests make the suite slow, and the slowest tests, from the
 JUnit XML timings `evidence add` stored: the newest run of each test workload
 as `evidence status` picks it (the newest environment when a workload ran in
-several), each test at
-its longest duration across them. A test flagged `first_in_class` may carry
-fixture time its whole class or module shares.
+several), each test at its longest duration across them. A test flagged
+`first_in_class` may carry fixture time its whole class or module shares.
 
-Test time per file is the summed duration of the timed tests that run it, with
-how many of its tests were timed. Its `basis` is `measured` when a stored per-test
-coverage map (`repowise coverage add` with per-test contexts) names the timed
-tests, and `inferred` from each function's nearest tests on the call graph
-otherwise.
-Only production files are listed; files of other origins run by timed tests are
-counted under `not_production`. A production file run by every timed test that
-reaches production code (one the test setup imports) would show all of their time,
-so it is counted under `every_test` instead of listed, unless no other file is. With nothing stored, `status` is
-`no_test_timings` and `command` is `repowise evidence setup`, which prints how
-each unit's tests write JUnit XML. Timing orders tests and files; it never
-gates. The same answer is served at `GET /api/repos/{repo_id}/evidence/tests`.
+The first line says where to start and what it saves. A suite under a minute,
+or one where no group of tests runs 5 s over the rest, gets that one line and
+no list (`cost.verdict` is `small_suite` or `small_excess`). Otherwise the
+output gives how concentrated the time is (the slowest tenth of the tests and
+their share), the duration histogram, and up to 3 groups:
 
-## What is stored
+```
+Start with the 29 tests that run persistence/database.py and 3 more files: they take 39.2 s more
+than the rest's pace (55% of the suite), 15 of them through fixture indexed (tests/unit/evidence/test_add.py:48).
+  1. 29 tests at 1.44 s each vs 0.09 s: +39.2 s (55%)
+     inside the 161 tests that run registry/plugins.py
+     fixture: indexed (tests/unit/evidence/test_add.py:48), asked for by 15 of them and no other timed test
+```
+
+A group is the tests that run the same production files, from a stored
+per-test coverage map (`repowise coverage add` with per-test contexts); file
+origin is `code_origin`'s, so test helpers never form one. Its excess is its
+test count times the gap between its mean duration and the other tests' mean,
+over files at least 3 and at most 90% of the timed tests run: a file nearly
+every test runs (one the test setup imports) separates nothing. The file with
+the most excess and every file the same tests run form the group, and its
+tests leave the ranking before the next group is picked, so groups never share
+a test. When a narrower group inside it carries two thirds of that excess, the
+narrower one is reported, with the larger group it sits inside (`within`).
+A group names its fixture when at least a quarter of its tests ask for it by
+name and at least half of the timed tests asking for it are in the group, read
+from the fixture requests the index resolved for pytest. Without a per-test
+map the verdict is `no_test_map`: the concentration only, and `command` says
+how to record one. With nothing stored, `status` is `no_test_timings` and
+`command` is `repowise evidence setup`, which prints how each unit's tests
+write JUnit XML. Timing orders tests and groups; it never gates. The same
+answer is served at `GET /api/repos/{repo_id}/evidence/tests`.
+
+### What is stored
 
 Evidence lives in the local index (`evidence_runs` and one table per kind:
 `evidence_symbol_costs`, `evidence_benchmark_results`, `evidence_test_timings`,
@@ -559,7 +633,7 @@ Entry paths are repo-relative; the checkout root is stored as given. Retention i
 keeps its newest `history_runs` runs, and the kind keeps `max_runs` overall,
 oldest first, though every workload always keeps its newest run.
 
-## Settings
+## Tuning
 
 The `evidence:` block of `.repowise/config.yaml`:
 
@@ -573,7 +647,55 @@ The `evidence:` block of `.repowise/config.yaml`:
 
 Full reference: [CONFIG.md](../reference/CONFIG.md#the-evidence-block).
 
-## Adding a format
+## In CI
+
+`repowise evidence setup --write` writes a CI file with one job per unit: its tests
+with coverage and JUnit XML, on pull requests and pushes to the default branch, the
+report and test results kept as artifacts. <!-- repowise-drift-ignore -->
+`.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
+(include it from `.gitlab-ci.yml`) for a GitLab repository; `--ci` picks one. A
+different file already at that path is left alone and the command exits `1`.
+`repowise perf check` gates a change on allocations per operation from stored
+benchmark results; time never gates. The other gates: [Repowise in CI](../start/CI.md).
+
+## Accuracy and limits
+
+- An entry joins exactly or not at all: a profile frame needs its line inside an
+  indexed function and a second signal that agrees, and nothing is matched by path
+  suffix. What does not join is counted by reason, and a value that was not
+  measured is unknown, never zero.
+- A profile joins to code for Python, Go and JavaScript frames. TypeScript and
+  bundled code are refused, since source maps are not read, and so is a Go binary
+  built with `-trimpath`.
+- A profile or query-count run where more than half the entries did not map is
+  refused unless `--allow-partial`.
+- A profile of one process misses the processes it starts; profile each one and
+  add the files together.
+- Test timing includes fixtures, so it orders tests and files and never gates.
+  Benchmark time per operation is not exact; allocations and bytes per operation are.
+- Evidence is never re-mapped onto newer code: a run from another commit reads as
+  `stale`.
+
+## Where it shows up
+
+- **CLI**: `repowise evidence setup|add|status|tests`, `repowise coverage setup` and
+  `repowise perf check`.
+- **REST**: `GET /api/repos/{repo_id}/evidence/tests`.
+- **Python**: `repowise.core.evidence.add.ingest_evidence` for a server that receives
+  the file, and `render_connect_evidence` for the agent prompt.
+- **Performance findings**: the static findings evidence sits beside, in
+  [PERFORMANCE.md](PERFORMANCE.md).
+- **Measured rows** (`repowise health`, the Performance tab and its REST view): each
+  ranked function names up to 3 tests. With a stored per-test map that has the
+  function's file, they are tests that ran its lines (`tests_basis: per_test_map`;
+  an empty list means none did); otherwise its nearest tests on the call graph
+  (`call_graph`). A benchmark that calls the function or ran its lines is never
+  listed as a test: `verify` is the command that reruns it before and after a fix
+  (`go test -run '^$' -bench ...` or `pytest ... --benchmark-only`).
+
+## Reference
+
+### Adding a format
 
 Input formats register on the `profile-format` seam. A format is a sniffer over
 the file's first bytes plus one reader: `read` returns a profile run (frames
@@ -590,3 +712,12 @@ profile_formats.register("myprof", ProfileFormat(sniff=my_sniff, read=my_read))
 Detection takes the first format that claims the file, built-in formats first,
 and `--input-format myprof` picks it by name. Entry points, testing and
 publishing: [PLUGINS.md](../reference/PLUGINS.md#seams).
+
+Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
+
+## See also
+
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance
+- [PERFORMANCE.md](PERFORMANCE.md): the static performance findings
+- [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md): coverage reports and the per-test map
+- [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#runtime-evidence): coverage and profile support per language

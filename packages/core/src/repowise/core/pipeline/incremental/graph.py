@@ -1073,6 +1073,36 @@ async def _prime_graph_metrics(
         log(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
 
 
+def _replay_graph_metrics(
+    repo_path: Any, graph_builder: Any, timings: PhaseTimings | None, log: LogFn
+) -> bool:
+    """Prime the metrics from the snapshot's memo when the graph came out the same.
+
+    Every metric is a function of the graph, so an unchanged graph replays the
+    values the last run computed and stored, and the node rows need no write
+    (``graph_metrics_reused``). A full re-score always computes afresh, and
+    any error here only costs the shortcut.
+    """
+    from .graph_seed import confirm_kept_snapshot
+
+    graph_builder.graph_metrics_reused = False
+    try:
+        with timed(timings, "rebuild.snapshot_match"):
+            memo = confirm_kept_snapshot(repo_path, graph_builder)
+        if memo is None or graph_builder.fresh_communities:
+            return False
+        restore = getattr(graph_builder, "restore_metric_memo", None)
+        if restore is None or not restore(memo):
+            return False
+    except Exception as exc:
+        graph_builder.kept_snapshot_match = False
+        log(f"[yellow]Graph metrics recomputed: the snapshot check failed: {exc}[/yellow]")
+        return False
+    graph_builder.graph_metrics_reused = True
+    log("Graph unchanged: reusing the last run's graph metrics")
+    return True
+
+
 async def rebuild_graph_and_git(
     repo_path: Any,
     file_diffs: list,
@@ -1200,13 +1230,21 @@ async def rebuild_graph_and_git(
     # avoids rewriting unchanged rows, but the metric values must still be fresh.
     # A full re-score detects communities afresh rather than reusing a drifted partition.
     graph_builder.fresh_communities = fresh_communities
-    await _prime_graph_metrics(graph_builder, timings, log)
+    reused = _replay_graph_metrics(repo_path, graph_builder, timings, log)
+    if not reused:
+        await _prime_graph_metrics(graph_builder, timings, log)
+    # Nothing after this point changes the graph, so the metrics describe the
+    # graph the snapshot will hold (init primes them before its co-change
+    # edges go in, and so never stores a memo).
+    graph_builder.metrics_on_final_graph = True
 
     graph_builder.incremental_graph_decision = _graph_update_decision(
         enabled=patch_graph,
         seed_edges=seed_edges,
         patch_plan=getattr(graph_builder, "patch_plan", None),
     )
+    if reused:
+        graph_builder.incremental_graph_decision["metrics"] = "reused"
 
     if timings is not None:
         timings.stop("rebuild")

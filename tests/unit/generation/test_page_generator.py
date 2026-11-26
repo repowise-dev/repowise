@@ -18,6 +18,7 @@ from repowise.core.generation.page_generator import SYSTEM_PROMPTS, PageGenerato
 from repowise.core.generation.page_generator.core import PriorPage
 from repowise.core.generation.page_generator.validation import InvalidGeneratedContentError
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
+from repowise.core.pipeline.phase_timing import PhaseTimings
 from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
 
@@ -692,11 +693,12 @@ async def test_generate_all_level_values_in_range():
 
 
 async def _setup_timings(
-    *, file_pages_only: bool = False, only_page_ids: set[str] | None = None
+    *,
+    file_pages_only: bool = False,
+    only_page_ids: set[str] | None = None,
+    timings: PhaseTimings | None = None,
 ) -> dict[str, float]:
     """The timings table of a one-file generation run."""
-    from repowise.core.pipeline.phase_timing import PhaseTimings
-
     config = GenerationConfig(
         max_tokens=256, token_budget=500, max_concurrency=2, file_pages_only=file_pages_only
     )
@@ -718,7 +720,7 @@ async def _setup_timings(
         total_loc=10,
         entry_points=[],
     )
-    timings = PhaseTimings()
+    timings = timings if timings is not None else PhaseTimings()
     await gen.generate_all(
         [p],
         {"pkg/main.py": b"def main(): pass"},
@@ -727,7 +729,12 @@ async def _setup_timings(
         "test-repo",
         only_page_ids=only_page_ids,
         timings=timings,
+        # As the pipeline's recorder does: a sub-phase opens in the same table
+        # and stays open until generation returns.
+        on_subphase=lambda name, _total: timings.start(name),
     )
+    timings.stop("generation.llm")
+    timings.stop("onboarding")
     return timings.totals
 
 
@@ -746,6 +753,48 @@ async def test_generation_setup_steps_are_timed_inside_setup():
     # The steps are disjoint parts of setup, so together they fit inside it
     # (each total is rounded to 0.01 s, hence the slack).
     assert sum(steps.values()) <= totals["generation.setup"] + 0.01 * len(steps)
+
+
+async def test_level_builds_are_timed_inside_generation_llm(monkeypatch):
+    import time
+
+    from repowise.core.generation.page_generator import levels as _levels
+
+    # A slow level-2 build, so a span that overlapped its neighbours, or missed
+    # the build, would show in the totals instead of rounding to zero.
+    real_build = _levels.build_level2_coros
+
+    async def slow_build(run):
+        time.sleep(0.2)
+        return await real_build(run)
+
+    monkeypatch.setattr(_levels, "build_level2_coros", slow_build)
+    totals = await _setup_timings()
+
+    builds = {k: v for k, v in totals.items() if k.startswith("generation.llm.")}
+    assert set(builds) == {f"generation.llm.build.level{n}" for n in (1, 2, 3, 4, 5, 6, 7, 8)}
+    assert builds["generation.llm.build.level2"] >= 0.19
+    # The builds, the levels they feed and the finalize pass are disjoint parts
+    # of generation.llm, so together they fit inside it (each total is rounded
+    # to 0.01 s, hence the slack). Were the slow build counted twice, the sum
+    # would overshoot by its 0.2 s, well past the slack.
+    levels = {k: v for k, v in totals.items() if k.startswith("generation.level")}
+    parts = {**builds, **levels, "generation.finalize": totals["generation.finalize"]}
+    assert sum(parts.values()) <= totals["generation.llm"] + 0.01 * len(parts)
+
+
+async def test_level_build_span_closes_when_the_build_raises(monkeypatch):
+    from repowise.core.generation.page_generator import levels as _levels
+
+    def boom(run):
+        raise RuntimeError("build failed")
+
+    monkeypatch.setattr(_levels, "build_level3_coros", boom)
+    timings = PhaseTimings()
+    with pytest.raises(RuntimeError, match="build failed"):
+        await _setup_timings(timings=timings)
+
+    assert "generation.llm.build.level3" in timings.totals
 
 
 @pytest.mark.parametrize(

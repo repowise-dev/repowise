@@ -187,10 +187,10 @@ work: `?tab=hotspots`, `heatmap`, `modules`, and `trend` land on Overview.
 
 Clicking any file opens the health drawer: its markers, its file signals
 (owners, churn, dependents), its score trend as a sparkline, and its **bug
-history** section (see [BUG_HISTORY.md](../layers/BUG_HISTORY.md)).
+history** section (see [Bug History](../layers/BUG_HISTORY.md)).
 
 The full scoring model is documented in
-[docs/layers/CODE_HEALTH.md](../layers/CODE_HEALTH.md). Note that the per-file
+[Code Health](../layers/CODE_HEALTH.md). Note that the per-file
 score trend lives on the file's own Health tab and in the drawer rather than as
 a separate top-level tab.
 
@@ -200,15 +200,15 @@ a separate top-level tab.
 
 **Answers:** given that this file is in trouble, what exactly do I change?
 
-A board of structured plans (Extract Class, Extract Helper, Move Method, Break
-Cycle, Split File), each rendered as a card with its split groups, the evidence
-that justifies it, its impact delta, an effort bucket, and the blast radius that
+A board of structured plans (Extract Class, Extract Method, Extract Helper,
+Move Method, Break Cycle, Split File, Performance Fix), each rendered as a
+card with its split groups, the evidence that justifies it, its impact delta, an effort bucket, and the blast radius that
 has to move with it. Filter by type with `?type=`. Two actions per card:
 **copy-to-agent**, which produces a prompt you can hand to a coding agent, and
 **Generate code**, an opt-in LLM expansion into code plus a unified diff.
 Everything except that last button is deterministic.
 
-Reference: [docs/layers/REFACTORING.md](../layers/REFACTORING.md).
+Reference: [Refactoring](../layers/REFACTORING.md).
 
 ## Files
 
@@ -256,9 +256,9 @@ score distribution, a
 code-evolution chart, commit-category breakdowns, and AI-agent provenance
 badges plus their trend over time, shown as agent, human-attested and unknown
 commits with the agent share of covered commits beside its coverage (see
-[ATTRIBUTION.md](../layers/ATTRIBUTION.md)). The
+[AI attribution](../layers/ATTRIBUTION.md)). The
 risk model is documented in
-[docs/layers/CHANGE_RISK.md](../layers/CHANGE_RISK.md).
+[Change Risk](../layers/CHANGE_RISK.md).
 
 ## Changes
 
@@ -272,7 +272,7 @@ and commits, newest first, filtered by category or by "Needs attention". Each
 row counts the attention and unknown items of the change's evidence checklist
 once it is built; the detail page builds it on first view and lists the
 commits, files, provenance and metadata of one Change Record. See
-[CHANGES.md](../layers/CHANGES.md).
+[Changes](../layers/CHANGES.md).
 
 ## Contributors
 
@@ -291,10 +291,10 @@ concentrated. Useful before a reorg, and before assuming a file has an owner.
 **Answers:** why is this code shaped this way?
 
 Architectural decisions with their evidence drawer and a decision graph.
-(Supersession lineage renders empty for now — the detector that produced those
-edges is off, see `docs/layers/DECISIONS.md`.) Decisions are mined from history
-and PR discussion and can be
-confirmed, edited, or added by hand. This is the view that keeps a "we already
+Supersession lineage shows the successors recorded with `repowise decision
+deprecate --superseded-by` and commit reversals; it is never inferred from text
+similarity (see [Decisions](../layers/DECISIONS.md)). Decisions are mined from
+history and PR discussion and can be confirmed, edited, or added by hand. This is the view that keeps a "we already
 tried that" answer from being lost.
 
 ## Chat
@@ -345,7 +345,7 @@ server config and tool toggles, display preferences).
 ## Workspace views
 
 These appear only when repowise is running over a multi-repo workspace. See
-[docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for setup.
+[Workspaces](../scale/WORKSPACES.md) for setup.
 
 - `/workspace`: repo cards across the workspace with per-repo status.
 - `/workspace/system-map`: the cross-repo dependency picture, including a
@@ -368,8 +368,8 @@ These appear only when repowise is running over a multi-repo workspace. See
 
 ## See also
 
-- [QUICKSTART.md](QUICKSTART.md): getting to a first index.
-- [USER_GUIDE.md](USER_GUIDE.md): the CLI-side workflow.
-- [docs/agent/MCP_TOOLS.md](../agent/MCP_TOOLS.md): the same data, for agents.
-- [docs/reference/CLI_REFERENCE.md](../reference/CLI_REFERENCE.md): every
+- [Quickstart](QUICKSTART.md): getting to a first index.
+- [User Guide](USER_GUIDE.md): how the CLI, agent and dashboard fit together.
+- [MCP Tools](../agent/MCP_TOOLS.md): the same data, for agents.
+- [CLI Reference](../reference/CLI_REFERENCE.md): every
   command, including `serve` flags.

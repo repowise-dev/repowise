@@ -1,4 +1,4 @@
-import type { MeasuredRow } from "@repowise-dev/types/runtime-evidence";
+import type { BenchmarkRow, MeasuredRow } from "@repowise-dev/types/runtime-evidence";
 
 import { formatNumber, formatPercent } from "../../lib/format";
 import { humanizeToken } from "./presentation";
@@ -28,6 +28,26 @@ export function intervalText(low: number | null, high: number | null): string | 
 export function rowLocation(row: Pick<MeasuredRow, "file_path" | "lines">): string {
   const start = row.lines?.[0];
   return start != null ? `${row.file_path}:${start}` : row.file_path;
+}
+
+/** 1234.5 reads "1,234.5", 0.00012 reads "0.00012": enough figures to compare. */
+const perOpFigure = (v: number) =>
+  Math.abs(v) >= 1 || v === 0 ? formatNumber(Math.round(v * 10) / 10) : String(Number(v.toPrecision(2)));
+
+/**
+ * A benchmark's figures per operation, "1,234.5 ns/op · 12 allocs/op · 2,048 B/op".
+ * A figure the tool did not report is left out, never read as zero.
+ */
+export function perOpText(
+  row: Pick<BenchmarkRow, "time" | "unit" | "allocs_per_op" | "bytes_per_op">,
+): string {
+  return [
+    row.time != null ? `${perOpFigure(row.time)} ${row.unit ? `${row.unit}/op` : "per op"}` : null,
+    row.allocs_per_op != null ? `${perOpFigure(row.allocs_per_op)} allocs/op` : null,
+    row.bytes_per_op != null ? `${perOpFigure(row.bytes_per_op)} B/op` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function plural(n: number, one: string, many = `${one}s`): string {

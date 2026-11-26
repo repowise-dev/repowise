@@ -22,6 +22,7 @@ from repowise.core.ingestion.symbol_identity import local_symbol_id
 from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_function
 
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
+from .suite_cost import timing_summary
 
 #: Every workload class a run may carry, in the order of how far a claim may go.
 WORKLOAD_CLASSES = ("unit_test", "benchmark", "entry_point", "load_test", "production")
@@ -199,10 +200,16 @@ def _join(
         symbol_id, reason = resolve_location(location, by_file)
     if symbol_id is None and not optional:
         return None, reason, path
+    if kind == "profile" and entry.get("drivers"):
+        entry = {
+            **entry,
+            "drivers": _joined_drivers(entry["drivers"], by_file, origins, changed),
+        }
     return _ROW_BUILDERS[kind](entry, symbol_id), reason, path
 
 
 def _profile_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
+    inside, drivers = entry.get("inside"), entry.get("drivers")
     return {
         "symbol_id": symbol_id,
         "line": entry["line"],
@@ -212,7 +219,35 @@ def _profile_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, A
         "total_samples": entry["total_samples"],
         "call_count": entry["call_count"],
         "resolution": "declared",
+        "inside_json": json.dumps(inside, sort_keys=True) if inside else None,
+        "drivers_json": json.dumps(drivers, sort_keys=True) if drivers else None,
     }
+
+
+def _joined_drivers(
+    drivers: Iterable[Mapping[str, Any]],
+    by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
+    origins: Mapping[str, str],
+    changed: frozenset[str],
+) -> list[dict[str, Any]]:
+    """A profile entry's ``drivers`` as stored: ``name`` and ``share``, plus the
+    caller's ``symbol`` when its location joins exactly (:func:`resolve_location`),
+    else its ``path`` when it named one. A caller in a file that differs from the
+    commit measured, or that nobody here maintains, keeps its path only, as an
+    entry there would not join."""
+    out: list[dict[str, Any]] = []
+    for driver in drivers:
+        item: dict[str, Any] = {"name": driver["function"], "share": driver["share"]}
+        path = driver.get("path")
+        if path is not None:
+            joins = path not in changed and origins.get(path) not in _UNMAINTAINED
+            symbol_id = resolve_location(driver, by_file)[0] if joins else None
+            if symbol_id is not None:
+                item["symbol"] = symbol_id
+            else:
+                item["path"] = driver["path"]
+        out.append(item)
+    return out
 
 
 def _benchmark_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
@@ -344,8 +379,10 @@ def cap_rows(
 
     A profile keeps its costliest symbols (self, the cost waits excluded,
     then inclusive, then id, so the cut is stable): a leaf that does the work
-    outlives the frames that only call it. Other kinds keep the document's
-    order.
+    outlives the frames that only call it. A test run keeps its slowest tests
+    (untimed last, ties in the document's order); what every test adds up to
+    is folded before the cut (``suite_cost.timing_summary``). Other kinds keep
+    the document's order.
     """
     if kind == "profile":
         limit = caps.max_symbols_per_run
@@ -353,6 +390,9 @@ def cap_rows(
             rows,
             key=lambda r: (-(r["self_value"] or 0.0), -(r["total_value"] or 0.0), r["symbol_id"]),
         )
+    elif kind == "test_timing":
+        limit = caps.max_rows_per_run
+        rows = sorted(rows, key=lambda r: (r["duration_s"] is None, -(r["duration_s"] or 0.0)))
     else:
         limit = caps.max_rows_per_run
     return rows[:limit], max(len(rows) - limit, 0)
@@ -434,6 +474,11 @@ def run_fields(
         "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,
         "tests_failed": provenance.tests_failed,
+        "timing_summary_json": (
+            json.dumps(timing_summary(joined.rows), separators=(",", ":"))
+            if doc.kind == "test_timing"
+            else None
+        ),
     }
 
 
@@ -445,12 +490,13 @@ def unlisted_count(rows: Iterable[Mapping[str, Any]], origins: Mapping[str, str]
 
 
 def entry_paths(doc: EvidenceDocument) -> set[str]:
-    """Every file the document's entries name."""
+    """Every file the document's entries name, a profile entry's drivers included."""
     out: set[str] = set()
     for entry in doc.entries:
         location = entry.get("location") if doc.kind in ("benchmark", "test_timing") else entry
         if location is not None:
             out.add(location["path"])
+        out.update(d["path"] for d in entry.get("drivers") or () if d.get("path"))
     return out
 
 

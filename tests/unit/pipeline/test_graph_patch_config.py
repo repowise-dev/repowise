@@ -349,6 +349,7 @@ def test_presence_read(path: str, read: bool) -> None:
         ("db/queries.sql.go", False),
         # Cleared only while the indexed set holds still (test_unindexed_edits_no_step_opens_are_patched).
         (".gitignore", False),
+        (".repowiseIgnore", False),
         # Prose and data no step opens by extension; API specs are read only when indexed.
         ("data/blob.json", True),
         ("CHANGELOG.md", True),
@@ -466,6 +467,7 @@ _BIG_SPEC = {"openapi": "3.0.0", "paths": {f"/r{i}": {"get": {}} for i in range(
 _UNINDEXED_TREE = {
     **_TREE,
     ".gitattributes": "* text=auto\n",
+    ".repowiseIgnore": "dist/\n",
     ".repowise/decisions.yaml": "decisions: []\n",
     ".repowise/config.yaml": "sql_dialect: postgres\n",
     # Gitignored (dist/) and oversized files.
@@ -499,6 +501,7 @@ def unindexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
         pytest.param({".repowise/decisions.yaml": "decisions:\n  - id: d1\n"}, id="repowise-decisions"),
         # Ignores a directory that holds nothing the walk indexed.
         pytest.param({".gitignore": "dist/\nbuild/\n"}, id="gitignore-same-index"),
+        pytest.param({".repowiseIgnore": "dist/\nbuild/\n"}, id="repowiseignore-same-index"),
         pytest.param({"CHANGELOG.md": "# Changelog\n\n- one more\n" + _BIG_MARKDOWN}, id="oversized-markdown"),
         pytest.param(
             {"api/openapi.json": json.dumps({**_BIG_SPEC, "info": {"title": "x"}}) + "\n"}, id="oversized-openapi"
@@ -559,6 +562,11 @@ def test_unindexed_edits_no_step_opens_are_patched(
             {".gitignore": "dist/\nnative/\n"},
             ".gitignore: it changed which files the walk indexes",
             id="gitignore-drops-indexed-files",
+        ),
+        pytest.param(
+            {".repowiseIgnore": "dist/\nnative/\n"},
+            ".repowiseIgnore: it changed which files the walk indexes",
+            id="repowiseignore-drops-indexed-files",
         ),
     ],
 )
@@ -708,6 +716,61 @@ def test_gitignore_edit_without_a_builds_record_falls_back(
 
     assert not patched.patch_plan.eligible
     assert "no record of which build outputs" in (patched.patch_plan.reason or "")
+
+
+_REINDEXED = "detected changes include unparsed files"
+_INDEX_MOVED = ".repowiseIgnore: it changed which files the walk indexes"
+_NOTHING = "coverage/\n"
+_LIB_DIST = "packages/lib/dist/\n"
+_LIB_SRC = "packages/lib/src/\n"
+_META_DIR = "packages/meta/\n"
+_META = {"name": "@acme/meta", "version": "1.0.0"}
+
+
+@pytest.mark.parametrize(
+    ("gitignore", "before", "after", "reason"),
+    [
+        # dist/ gitignored: the import reads the source the build came from.
+        pytest.param("dist/\n", _NOTHING, _LIB_DIST, None, id="ignores-gitignored-build"),
+        # dist/ checked in: the import reads the build, which the walk never indexes.
+        pytest.param("", _NOTHING, _LIB_DIST, None, id="ignores-checked-in-build"),
+        pytest.param("", _LIB_DIST, _NOTHING, None, id="unignores-checked-in-build"),
+        # ...unless a negation hands the build to the walk.
+        pytest.param("", _NOTHING, "!" + _LIB_DIST, _REINDEXED, id="reincludes-build"),
+        # A package directory holding only its manifest.
+        pytest.param("dist/\n", _NOTHING, _META_DIR, _INDEX_MOVED, id="ignores-manifest-only"),
+        # The walk stops, or starts, indexing the package's source.
+        pytest.param("dist/\n", _NOTHING, _LIB_SRC, _INDEX_MOVED, id="ignores-source"),
+        pytest.param("dist/\n", _LIB_SRC, _NOTHING, _REINDEXED, id="unignores-source"),
+    ],
+)
+def test_repowiseignore_edit_over_package_builds(
+    tmp_path: Path, gitignore: str, before: str, after: str, reason: str | None
+) -> None:
+    """``.repowiseIgnore`` is read only by the walk; ``git check-ignore`` never sees it."""
+    import subprocess
+
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            **_BUILDS_TREE,
+            "packages/meta/package.json": json.dumps(_META) + "\n",
+            ".gitignore": gitignore or "# nothing ignored\n",
+            ".repowiseIgnore": before,
+        },
+    )
+    subprocess.run(["git", "init", "-q"], cwd=tree, check=True)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+
+    patched = _update(tree, _snapshot(first), {".repowiseIgnore": after})
+
+    if reason is None:
+        assert patched.patch_plan.eligible, patched.patch_plan.reason
+    else:
+        assert not patched.patch_plan.eligible
+        assert reason in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
 
 
 # --- files parsed without their grammar ---------------------------------------

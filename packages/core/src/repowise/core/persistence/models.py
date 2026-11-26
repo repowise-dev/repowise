@@ -494,6 +494,13 @@ class GraphEdge(Base):
     guarded: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # True when every load-time import along the edge is a Python module-form
+    # import (``import b``) whose name no module-level code mentions. A cycle
+    # made only of these is static only, unlikely to fail at import; it stays
+    # a cycle. Persisted for the same reason as ``type_only``.
+    module_form: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1297,6 +1304,13 @@ class GitFunctionBlame(Base):
     # ``function_blame_rollup.COMMIT_SET_LIMIT``. Split File's co-change edge
     # reads it when a re-score has no blame index. NULL on rows written before.
     commit_shas_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Blamed for the function's owner and last change only: a file under the
+    # commit floor, or a production file over the biomarkers' size cap. The
+    # health readers (function mod percentile, Split File sets, Fix first,
+    # plan annotations) skip these rows, so they read what the biomarkers saw.
+    history_only: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -3134,6 +3148,10 @@ class EvidenceRun(Base):
     # Tests that failed in a profiled test suite (the run is still a full
     # workload); NULL when the profile does not say.
     tests_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A test-timing run's every test folded before the row cap: seconds and
+    # tests per test file and a duration histogram (``evidence.suite_cost.
+    # timing_summary``). NULL for other kinds and for runs stored before it.
+    timing_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_evidence_runs_repo_ingested", "repository_id", "ingested_at"),
@@ -3178,6 +3196,12 @@ class EvidenceSymbolCost(Base):
     # the commit it measured; NULL otherwise. A later index compares it to
     # tell an unchanged body from an edited one.
     body_digest: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # What the symbol's time went to and what drove it, as shares of ``total``
+    # (``evidence.profile_convert``): JSON lists of up to three ``{name, kind,
+    # share}`` callees and ``{name, share, symbol | path}`` callers; NULL when
+    # the run did not say.
+    inside_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    drivers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 
@@ -3360,6 +3384,9 @@ class SymbolHotness(Base):
     ordering_only: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # ``current``, ``body_unchanged`` (older commit, same body) or ``stale``.
     freshness: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The basis run's ``evidence_symbol_costs.inside_json`` and ``drivers_json``.
+    inside_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    drivers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 
@@ -3419,6 +3446,46 @@ class BuildUnitRow(Base):
     source: Mapped[str] = mapped_column(String(32), nullable=False)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class HttpRoute(Base):
+    """One HTTP route the repository registers (``workspace.repo_routes.Route``).
+
+    Replaced whole by every read (``crud.http_routes``). ``path`` is the
+    normalized template (``/users/{param}``); ``handler_symbol_id`` is the
+    ``wiki_symbols`` id of the function serving the route, NULL for an inline
+    handler or one the read could not resolve without guessing.
+    """
+
+    __tablename__ = "http_routes"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    method: Mapped[str] = mapped_column(String(16), primary_key=True)
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    line: Mapped[int] = mapped_column(Integer, primary_key=True)
+    framework: Mapped[str] = mapped_column(String(32), nullable=False)
+    handler_symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The handler expression as the registration writes it (``user.list``).
+    handler: Mapped[str | None] = mapped_column(Text, nullable=True)
+    service: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class HttpRoutesStamp(Base):
+    """Which read last wrote a repository's ``http_routes``.
+
+    ``repo_routes.routes_fingerprint()`` of that read. An update re-reads the
+    routes when a changed path can hold one or this differs, so an index
+    written before the table, or by other extractors, fills on its next
+    update. No row (or NULL) means read again.
+    """
+
+    __tablename__ = "http_routes_stamp"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class BuildUnitDep(Base):

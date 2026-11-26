@@ -95,7 +95,12 @@ from repowise.server.services.history.health import (
 )
 from repowise.server.services.hotspots import FILTERS as HOTSPOT_FILTERS
 from repowise.server.services.hotspots import SORTS as HOTSPOT_SORTS
-from repowise.server.services.hotspots import HotspotQuery, is_accelerating, list_hotspots
+from repowise.server.services.hotspots import (
+    HotspotQuery,
+    count_hotspots,
+    is_accelerating,
+    list_hotspots,
+)
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
@@ -958,7 +963,7 @@ async def get_git_summary(
     result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = list(result.scalars().all())
 
-    hotspot_count = sum(1 for m in all_meta if m.is_hotspot)
+    hotspot_count = await count_hotspots(session, repo_id)
     stable_count = sum(1 for m in all_meta if m.is_stable)
     # Normalize to 0-100 to match the rest of the HTTP API contract.
     avg_churn = (

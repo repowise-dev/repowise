@@ -160,16 +160,24 @@ def _prose(report: FirstLookReport, baseline: FirstLookReport | None) -> dict[st
 
 
 async def _current(
-    session: Any, repository_id: str, root: Path | None, store_missing: bool, app_url: str | None
+    session: Any,
+    repository_id: str,
+    root: Path | None,
+    store_missing: bool,
+    app_url: str | None,
+    unavailable: Mapping[str, str] | None,
 ) -> tuple[FirstLookReport, FirstLookReport | None, bool]:
     """The report at the index now, the stored one, and whether this call stored it."""
     from .write import build_report, write_first_look
 
     baseline = await load_baseline(session, repository_id, root)
     if baseline is None and store_missing:
-        current = await write_first_look(session, repository_id, root, app_url=app_url)
+        current = await write_first_look(
+            session, repository_id, root, app_url=app_url, unavailable=unavailable
+        )
         return current, current, True
-    return await build_report(session, repository_id, root), baseline, False
+    report = await build_report(session, repository_id, root, unavailable=unavailable)
+    return report, baseline, False
 
 
 def _finish(
@@ -195,22 +203,30 @@ async def build_living(
     *,
     store_missing: bool = False,
     app_url: str | None = None,
+    unavailable: Mapping[str, str] | None = None,
 ) -> LivingReport:
     """The report at the index now, against the stored one, with every item's status.
 
     With *store_missing* and no stored report, the report collected now is
     stored first (as ``init`` writes it, *app_url* in its rendered files) and
-    is its own baseline.
+    is its own baseline. *unavailable* maps a section key to why this store
+    holds no inputs for it (:func:`.collect.collect_first_look`): the section
+    is listed as unavailable instead of collected, and a baseline's items in
+    it are left out (neither carried nor resolved).
     """
     root = Path(repo_root) if repo_root is not None else None
-    current, baseline, wrote = await _current(session, repository_id, root, store_missing, app_url)
+    current, baseline, wrote = await _current(
+        session, repository_id, root, store_missing, app_url, unavailable
+    )
     if baseline is None:
         statuses = await item_statuses(session, repository_id, current.items())
         report = _finish(current, None, [], statuses)
         return LivingReport(report=report, statuses=statuses)
     found = compare(baseline, current.items(), unknown=current.unavailable)
     now_ids = {i.id for i in current.items()}
-    dropped = [i for i in baseline.items() if i.id not in now_ids]
+    # A section the host never stored has no items now; its baseline items are left out.
+    skipped = unavailable or {}
+    dropped = [i for i in baseline.items() if i.id not in now_ids and i.section not in skipped]
     # A section the index cannot read now keeps the baseline's items as they were.
     statuses = await item_statuses(
         session,

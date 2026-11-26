@@ -107,6 +107,25 @@ _OWN_HEADER = (
         ("ci/tools/lint.py", "tooling"),
         ("Tools/Gen/Program.cs", "tooling"),
         ("build/tools/gen.py", "tooling"),
+        # ``build/`` and ``devtools/`` are tooling outside a ``src/`` tree only.
+        ("build/build.ts", "tooling"),
+        ("tools/build/release.py", "tooling"),
+        ("scripts/build/bundle.js", "tooling"),
+        ("packages/build/index.ts", "tooling"),
+        ("build/cucumber-test-runner/src/com/x/Main.java", "tooling"),
+        ("buildSrc/src/main/java/org/x/build/Conventions.java", "tooling"),
+        ("devtools/cypress/support.js", "tooling"),
+        ("packages/next/src/build/x.ts", "production"),
+        ("src/node/build/build.ts", "production"),
+        ("crates/turbopack-cli/src/build/mod.rs", "production"),
+        ("lib/src/backends/build/analyzer.dart", "production"),
+        ("src/main/java/org/apache/commons/io/build/AbstractOrigin.java", "production"),
+        ("packages/react-devtools-shared/src/devtools/ContextMenu.js", "production"),
+        ("drift/lib/src/runtime/devtools/devtools.dart", "production"),
+        ("Src/Build/Compiler.cs", "production"),
+        ("src/build/scripts/bundle.py", "tooling"),
+        ("src/build/generated/x.ts", "generated"),
+        ("src/build/__tests__/a.ts", "test"),
         # A ``tools/`` folder inside the product is its own code.
         ("lib/ai/tools/get-weather.ts", "production"),
         ("src/tools/search.py", "production"),
@@ -905,7 +924,7 @@ def test_build_files_by_type(path: str) -> None:
         # Near misses: code named like a build step, which ships.
         ("src/build.rs", "production"),  # a ``mod build;``, not a Cargo build script
         ("homeassistant/setup.py", "production"),  # a nested setup.py is a module
-        ("src/build/compiler.ts", "tooling"),  # the build/ directory rule, not the type
+        ("src/build/compiler.ts", "production"),  # a build/ module of the source tree
         ("src/builder.py", "production"),
         ("src/gradle/GradlePlugin.java", "production"),
         ("lib/webpack.js", "production"),

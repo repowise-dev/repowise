@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
@@ -107,6 +108,9 @@ async def save_evidence_run(
         ).scalar_one_or_none()
         if same is not None:
             same.ingested_at = at
+            # A run stored before the fold existed gets it from the same file.
+            if same.timing_summary_json is None and run.get("timing_summary_json"):
+                same.timing_summary_json = run["timing_summary_json"]
             await session.flush()
             return EvidenceWrite(same.id, restamped=True, rows_written=0, runs_pruned=0)
 
@@ -242,6 +246,50 @@ async def benchmark_results(
     return out
 
 
+async def benchmark_runs(session: AsyncSession, repository_id: str) -> list[EvidenceRun]:
+    """The repository's ``benchmark`` kind runs (results, not profiles)."""
+    result = await session.execute(
+        select(EvidenceRun).where(
+            EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "benchmark"
+        )
+    )
+    return list(result.scalars())
+
+
+async def benchmark_callees(
+    session: AsyncSession, repository_id: str, benchmarks: Iterable[str | None]
+) -> dict[str, list[str]]:
+    """The production functions each of *benchmarks* calls directly, by
+    benchmark symbol id: graph ``calls`` edges whose target sits in a file
+    whose ``code_origin`` is ``production``. One statement per chunk."""
+    from ....evidence.ingest import load_origins
+    from ....ingestion.symbol_identity import file_of_symbol
+    from ...models import GraphEdge
+
+    wanted = sorted({b for b in benchmarks if b})
+    out: dict[str, list[str]] = {}
+    for i in range(0, len(wanted), _BATCH_SIZE):
+        result = await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id)
+            .where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.source_node_id.in_(wanted[i : i + _BATCH_SIZE]),
+                GraphEdge.edge_type == "calls",
+            )
+            .order_by(GraphEdge.source_node_id, GraphEdge.target_node_id)
+        )
+        for source, target in result:
+            out.setdefault(source, []).append(target)
+    origins = await load_origins(
+        session, repository_id, {file_of_symbol(t) for found in out.values() for t in found}
+    )
+    return {
+        source: kept
+        for source, found in out.items()
+        if (kept := [t for t in found if origins.get(file_of_symbol(t)) == "production"])
+    }
+
+
 async def hotness_inputs(
     session: AsyncSession, repository_id: str
 ) -> tuple[list[RunFacts], dict[str, list[CostFacts]]] | None:
@@ -296,6 +344,8 @@ async def hotness_inputs(
                 cost.total_samples,
                 cost.call_count,
                 cost.self_samples,
+                cost.inside_json,
+                cost.drivers_json,
             ).where(cost.run_id.in_(ids[i : i + _BATCH_SIZE]))
         )
         for row in result:
@@ -371,10 +421,72 @@ async def hotness_for_symbols(
     return out
 
 
+async def step_findings(
+    session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
+) -> list[dict[str, Any]]:
+    """The open performance findings a next step reads for *rows*
+    (``evidence.next_step``): those in the rows' files and their drivers' files,
+    and those whose call path names a row or a driver, as
+    :func:`~repowise.core.evidence.next_step.static_finding` dicts. Findings in
+    files that are not production code (``code_origin``) are left out, so a loop
+    in a test never reads as an N+1."""
+    import json
+
+    from ....evidence.ingest import load_origins
+    from ....evidence.next_step import static_finding
+    from ....ingestion.symbol_identity import file_of_symbol
+    from ...models import HealthFinding
+
+    targets: set[str] = set()
+    for row in rows:
+        targets.add(row.symbol_id)
+        try:
+            drivers = json.loads(getattr(row, "drivers_json", None) or "[]")
+        except ValueError:
+            drivers = []
+        for driver in drivers if isinstance(drivers, list) else ():
+            if isinstance(driver, dict) and isinstance(driver.get("symbol"), str):
+                targets.add(driver["symbol"])
+    if not targets:
+        return []
+    files = sorted({file_of_symbol(t) for t in targets})
+    named = sorted(targets)
+    # Half a batch of each per statement keeps the bound variables under the limit.
+    step = _BATCH_SIZE // 2
+    found: dict[str, HealthFinding] = {}
+    for i in range(0, max(len(files), len(named)), step):
+        clauses: list[Any] = []
+        if files[i : i + step]:
+            clauses.append(HealthFinding.file_path.in_(files[i : i + step]))
+        clauses += [
+            HealthFinding.details_json.contains(json.dumps(t), autoescape=True)
+            for t in named[i : i + step]
+        ]
+        result = await session.execute(
+            select(HealthFinding).where(
+                HealthFinding.repository_id == repository_id,
+                HealthFinding.dimension == "performance",
+                HealthFinding.status == "open",
+                or_(*clauses),
+            )
+        )
+        found.update({f.id: f for f in result.scalars()})
+    origins = await load_origins(session, repository_id, {f.file_path for f in found.values()})
+    return [
+        static_finding(
+            f.file_path, f.function_name, f.biomarker_type, f.reason, json.loads(f.details_json or "{}")
+        )
+        for f in sorted(found.values(), key=lambda f: (f.file_path, f.line_start or 0, f.id))
+        if origins.get(f.file_path) == "production"
+    ]
+
+
 async def ranked_by_workload(
     session: AsyncSession, repository_id: str
 ) -> list[tuple[EvidenceRun, list[WorkloadHotness]]]:
-    """Each workload's newest run with its ranked functions, best rank first.
+    """Each workload's newest run that ranks any function, with its ranked
+    functions, best rank first (:func:`newer_unranked` names a newer run
+    that ranks nothing).
 
     Runs come newest first. Two statements: the ranked rows, then their runs.
     Empty when nothing is ranked.
@@ -403,18 +515,24 @@ async def ranked_by_workload(
 async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     """Why :func:`ranked_by_workload` has no row, as one token.
 
-    ``no_runtime_data``: no profile run is stored. ``stale``: every function
-    the stored runs mapped is stale (measured at another commit, body changed
-    since). ``needs_update``: a workload's newest run is the basis of ranked
+    ``no_runtime_data``: no profile run is stored outside the ``benchmark``
+    class. ``ahead_of_index``: every
+    function the stored runs mapped is stale, and a workload's newest run was
+    added after the newest run at the indexed commit
+    (``evidence.hotness.commit_position``): it ranks once the index reaches
+    its commit. ``stale``: every function the stored runs mapped is stale
+    otherwise (measured at another commit, body changed since).
+    ``needs_update``: a workload's newest run is the basis of ranked
     functions in the per-function view but the per-workload view holds
     nothing (a store from before it existed, until the next update or ingest
-    rebuilds both); a
-    newest run that ranks nothing beside an older one that did is
-    ``not_ranked``, never this. ``not_ranked``: current evidence that ranks
-    nothing (too few samples in production code, or no production frame).
+    rebuilds both). ``not_ranked``: current evidence that ranks nothing (too
+    few samples in production code, or no production frame).
     """
     has_profile = select(EvidenceRun.id).where(
-        EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "profile"
+        EvidenceRun.repository_id == repository_id,
+        EvidenceRun.kind == "profile",
+        # A benchmark profile never ranks (``evidence.hotness``).
+        EvidenceRun.workload_class != "benchmark",
     )
     if (await session.execute(has_profile.limit(1))).first() is None:
         return "no_runtime_data"
@@ -425,12 +543,106 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
             return "needs_update"
         return "not_ranked"
     if (await session.execute(mapped.limit(1))).first() is not None:
+        if await _newest_ahead_of_index(session, repository_id):
+            return "ahead_of_index"
         return "stale"
     return "not_ranked"
 
 
+async def newer_unranked(
+    session: AsyncSession, repository_id: str, listed: Iterable[Any]
+) -> dict[str, dict[str, Any]]:
+    """For each of *listed* (runs :func:`ranked_by_workload` returned) that is
+    not its workload's newest complete run, that newest run, which ranks
+    nothing, and why, by the listed run's id.
+
+    ``reason`` is ``ahead_of_index`` when the newer run was added after
+    the newest run at the indexed commit (``evidence.hotness.commit_position``:
+    it ranks once the index reaches its commit), ``not_ranked`` when it is at
+    the indexed commit (too few samples in production code, or no production
+    frame), else ``stale`` (another commit whose bodies changed since).
+    Ceiling: a newer run at another commit is judged by its commit alone; one
+    whose rows still match the index but are too thin to rank reads as ahead
+    or stale. Two statements, none of a run's rows.
+    """
+    from ....evidence.hotness import _age_key, commit_position
+
+    listed = list(listed)
+    if not listed:
+        return {}
+    runs, head = await _run_marks(session, repository_id)
+    out: dict[str, dict[str, Any]] = {}
+    for run in listed:
+        same = (run.kind, run.workload_name, run.environment)
+        newer = [
+            r
+            for r in runs
+            if (r.kind, r.workload_name, r.environment) == same
+            and not r.mapping_partial
+            and _age_key(r) > _age_key(run)
+        ]
+        if not newer:
+            continue
+        top = max(newer, key=_age_key)
+        position = commit_position(top, runs, head)
+        out[run.id] = {
+            "run_id": top.id,
+            "commit": top.commit_sha,
+            "measured_at": _utc_iso(top.measured_at or top.ingested_at),
+            "reason": _SKIPPED_REASON.get(position, "stale"),
+        }
+    return out
+
+
+#: Why a workload's newer run ranks nothing, by where its commit sits.
+_SKIPPED_REASON = {"ahead": "ahead_of_index", "indexed": "not_ranked"}
+
+
+def _utc_iso(at: Any) -> str | None:
+    # SQLite hands back the stored UTC time without its zone.
+    return at.replace(tzinfo=at.tzinfo or UTC).isoformat() if at else None
+
+
+async def _run_marks(session: AsyncSession, repository_id: str) -> tuple[list[Any], str | None]:
+    """Every stored run's kind, workload, environment, commit and times (none
+    of its rows), and the indexed commit: what ``commit_position`` reads."""
+    from ...models import Repository
+
+    head = (
+        await session.execute(select(Repository.head_commit).where(Repository.id == repository_id))
+    ).scalar_one_or_none()
+    result = await session.execute(
+        select(
+            EvidenceRun.id,
+            EvidenceRun.kind,
+            EvidenceRun.workload_name,
+            EvidenceRun.workload_class,
+            EvidenceRun.environment,
+            EvidenceRun.commit_sha,
+            EvidenceRun.measured_at,
+            EvidenceRun.ingested_at,
+            EvidenceRun.mapping_partial,
+        ).where(EvidenceRun.repository_id == repository_id)
+    )
+    return list(result), head
+
+
+async def _newest_ahead_of_index(session: AsyncSession, repository_id: str) -> bool:
+    """A profile workload's newest complete run is ahead of the index (a
+    benchmark profile never ranks, so it is not one)."""
+    from ....evidence.hotness import BENCHMARK_CLASS, commit_position, newest_runs
+
+    runs, head = await _run_marks(session, repository_id)
+    newest = newest_runs(
+        r
+        for r in runs
+        if r.kind == "profile" and r.workload_class != BENCHMARK_CLASS and not r.mapping_partial
+    )
+    return any(commit_position(r, runs, head) == "ahead" for r in runs if r.id in newest)
+
+
 async def measured_status(session: AsyncSession, repository_id: str) -> str:
-    """``measured`` when a workload's newest run ranks a function (what
+    """``measured`` when a workload's run ranks a function (what
     :func:`ranked_by_workload` lists), else :func:`unranked_reason`'s token.
     One indexed lookup when anything is ranked."""
     ranked = select(WorkloadHotness.run_id).where(WorkloadHotness.repository_id == repository_id)
@@ -441,10 +653,11 @@ async def measured_status(session: AsyncSession, repository_id: str) -> str:
 
 def unranked_command(status: str) -> str | None:
     """The command that moves an :func:`unranked_reason` token on: ``repowise
-    update`` builds a per-workload view that was never built, evidence setup
+    update`` builds a per-workload view that was never built, or brings the
+    index to the commit that evidence ahead of it measured; evidence setup
     connects evidence when none is stored or all of it is stale. ``None`` for
     ``not_ranked`` and ``measured``: no command ranks thin evidence."""
-    if status == "needs_update":
+    if status in ("needs_update", "ahead_of_index"):
         return "repowise update"
     if status in ("no_runtime_data", "stale"):
         from ....evidence.setup import SETUP_COMMAND
@@ -454,59 +667,21 @@ def unranked_command(status: str) -> str | None:
 
 
 async def _workload_view_missing(session: AsyncSession, repository_id: str) -> bool:
-    """A workload's newest run is the basis of a ranked function, yet
-    ``workload_hotness`` is empty: the per-workload view was never built.
+    """A run is the basis of a fresh ranked function, yet ``workload_hotness``
+    is empty: the per-workload view was never built.
 
-    Built, that run's ranked functions would be rows there, so an empty view
-    beside ranked older runs only (a thin newest run) is not this.
-
-    Sound, not complete: a function keeps one basis run across all runs, so
-    a newest run whose every ranked function another run ranks better (a
-    lead class, a better place) is the basis of nothing, and a never built
-    view then reads as ``not_ranked``. Nothing stored says whether a run
-    ranked a function it is not the basis of: that takes the run's place
-    and floor, which only the derivation knows. Counting any function a
-    newest run measured instead would answer ``needs_update`` after every
-    update for a thin newest run, so the miss is kept: it lasts only until
-    the next update or ingest rebuilds both views. A stored marker that the
-    view was built would make this exact.
+    Built, it lists each workload's newest run that ranks any function, so a
+    run that ranked one would have rows there whatever runs came after it.
     """
-    from types import SimpleNamespace
-
-    from ....evidence.hotness import newest_runs
-
     built = select(WorkloadHotness.run_id).where(WorkloadHotness.repository_id == repository_id)
     if (await session.execute(built.limit(1))).first() is not None:
         return False
-    result = await session.execute(
-        select(
-            EvidenceRun.id,
-            EvidenceRun.workload_name,
-            EvidenceRun.environment,
-            EvidenceRun.measured_at,
-            EvidenceRun.ingested_at,
-        ).where(
-            EvidenceRun.repository_id == repository_id,
-            EvidenceRun.kind == "profile",
-            EvidenceRun.mapping_partial.is_(False),
-        )
-    )
-    newest = newest_runs(
-        SimpleNamespace(
-            id=r.id,
-            workload_name=r.workload_name,
-            environment=r.environment,
-            measured_at=r.measured_at or r.ingested_at,
-        )
-        for r in result
-    )
     ranked = select(SymbolHotness.symbol_id).where(
         SymbolHotness.repository_id == repository_id,
         SymbolHotness.tier.in_(("ranked", "lead_candidate")),
         SymbolHotness.freshness != "stale",
-        SymbolHotness.run_id.in_(sorted(newest)),
     )
-    return bool(newest) and (await session.execute(ranked.limit(1))).first() is not None
+    return (await session.execute(ranked.limit(1))).first() is not None
 
 
 def _refuse_repeated_keys(table: Table, rows: list[dict[str, Any]]) -> None:
@@ -540,11 +715,15 @@ def _full_row(table: Table, row: Mapping[str, Any]) -> dict[str, Any]:
 __all__ = [
     "EVIDENCE_ROW_TABLES",
     "EvidenceWrite",
+    "benchmark_callees",
+    "benchmark_results",
+    "benchmark_runs",
     "delete_evidence_runs",
     "hotness_for_symbols",
     "hotness_inputs",
     "list_evidence_runs",
     "measured_status",
+    "newer_unranked",
     "prune_evidence_runs",
     "ranked_by_workload",
     "replace_symbol_hotness",

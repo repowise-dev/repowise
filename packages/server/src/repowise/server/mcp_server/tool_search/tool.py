@@ -50,6 +50,7 @@ from repowise.server.mcp_server.tool_search_symbols import (
     issue_files,
 )
 
+from .concept_lift import lift_named_rows
 from .ordering import _collapse_by_file
 from .ranking import (
     _VALID_KINDS,
@@ -156,6 +157,7 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
     boost_named_paths(
         output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
     )
+    lift_named_rows(output, score_key="relevance_score")
     _downweight_test_pages(output, query, origins)
     _sort_demoting_noise(output, query, minor, origins)
     return _dedup_decisions(output)

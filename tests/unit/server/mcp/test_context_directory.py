@@ -178,7 +178,7 @@ async def test_files_lists_every_file_with_its_tests(setup_mcp):
     # middleware.py has a graph node and no git row; it is listed all the same.
     assert files["total"] == 3 and files["complete"] is True
     assert "omitted" not in files and "note" not in files
-    assert files["counts"] == {"tested": 1, "untested": 2}
+    assert files["listed_counts"] == {"tested": 1, "untested": 2}
     assert files["rows"] == [
         {"path": "src/auth/middleware.py", "has_test": False},
         {
@@ -247,7 +247,7 @@ async def test_files_rows_stop_at_the_size_budget(setup_mcp, monkeypatch):
     block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
     assert [r["path"] for r in block["rows"]] == ["src/auth/middleware.py"]
     assert block["complete"] is False and block["omitted"] == 2
-    assert block["counts"] == {"untested": 1}
+    assert block["listed_counts"] == {"untested": 1}
 
 
 def test_files_list_code_before_other_files_and_tests():

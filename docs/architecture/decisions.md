@@ -39,11 +39,12 @@ or `update` will run.
 | `session_discovery` | no | yes | off |
 | `conventions` | yes | no | off |
 | `cli` | yes | no | always (not switchable) |
+| `agent` | yes | no | always (not switchable) |
 
 A source with no deterministic stage reports `skipped_no_provider` when no
 model is configured; a hybrid source falls back to its deterministic stage.
-`session_discovery` and `conventions` were added after the presets existed, so
-a stored preset that enumerates its sources does not silently gain them.
+A stored preset that enumerates its sources does not silently gain
+`session_discovery` or `conventions`.
 
 Source details:
 

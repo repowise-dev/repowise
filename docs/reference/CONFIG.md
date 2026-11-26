@@ -50,7 +50,7 @@ column names it and says whether it or the file wins.
 
 ```yaml
 provider: anthropic
-model: claude-sonnet-4-6
+model: claude-haiku-5-5
 embedder: mock
 embedding_model: text-embedding-3-small
 reasoning: auto
@@ -358,9 +358,10 @@ overrides a key for one session.
 
 ## The `mcp:` block
 
-Chooses the tools the MCP server advertises. The default is curated: 10 tools
-in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
---tools` / `--all` override it for one launch.
+Chooses the tools the MCP server advertises. The default is curated: Claude
+Code gets the 10 tools of the `standard` profile, and clients that load every
+schema up front get the five-tool `core` profile; `list_repos` joins in
+workspace mode. `repowise mcp --tools` / `--all` override it for one launch.
 
 <!-- BEGIN GENERATED settings:mcp (python scripts/gen_config_docs.py) -->
 | Key | Default | What it does |
@@ -374,6 +375,8 @@ in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
 | `["+name", "-name"]` | Add to or remove from the default set. |
 | `["get_answer", "get_context"]` | Unprefixed: an explicit allowlist. |
 | `all` | Everything available. |
+| `standard` | The ten default tools. |
+| `core` | `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_why`. |
 | `lean` | `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk`, `get_why` (plus `list_repos` in workspace mode), small enough for Claude Code to keep every schema loaded. |
 
 The seven opt-in tools are `get_dependency_path`, `get_execution_flows`,
@@ -978,6 +981,26 @@ free; with a configured provider one model call can write its prose.
 | `first_look.llm` | `true` | Let one model call write the report's prose when a provider is configured and prose is on. |
 | `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
 <!-- END GENERATED settings:report -->
+
+## The `contracts:` block
+
+Contracts inside one repository, off by default. When on, `init` and `update`
+read the repo's HTTP routes and client calls, gRPC services, sockets and
+message topics into `.repowise/contracts.json` and link each caller to the
+route it reaches, across the repo's services. An update re-reads them only when
+a commit or an uncommitted edit touches a file that can hold one. A workspace
+keeps its own contracts in `.repowise-workspace/contracts.json`.
+
+```yaml
+contracts:
+  in_repo: true
+```
+
+<!-- BEGIN GENERATED settings:contracts (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `in_repo` | `false` | Extract this repo's HTTP, gRPC, socket and topic contracts into .repowise/contracts.json on init and update, and link callers to routes across its services. |
+<!-- END GENERATED settings:contracts -->
 
 ## The `assertions:` block
 

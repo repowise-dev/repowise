@@ -34,6 +34,7 @@ from .external_systems import *  # noqa: F403
 from .git import *  # noqa: F403
 from .graph import *  # noqa: F403
 from .history import *  # noqa: F403
+from .http_routes import *  # noqa: F403
 from .knowledge_graph import *  # noqa: F403
 from .page_archive import *  # noqa: F403
 from .page_rekey import *  # noqa: F403

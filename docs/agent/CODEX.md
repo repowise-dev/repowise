@@ -49,7 +49,7 @@ hooks = true
 
 `required = true` makes Codex wait for the server before the first turn. Without it the first turn can start while the server is still booting, before the Repowise tools are in the tool catalog. The cost is that Codex does not start when `repowise` cannot be launched; `repowise doctor` reports that case with the fix. `startup_timeout_sec` is the ceiling for a slow cold start; a healthy server answers in a few seconds.
 
-`repowise agents add --target=codex` rewrites an entry written by an older version to this shape and keeps any keys you added to the table.
+`repowise agents add --target=codex` writes the entry in this shape and keeps any keys you added to the table.
 
 ### Keys and environment
 
@@ -73,7 +73,7 @@ Repowise writes hooks to `.codex/hooks.json`, not inline `[hooks]` tables. The d
 - `PostToolUse` for `Bash|shell_command` to detect git operations that make the wiki stale. On current Codex the shell calls arrive as `shell_command`; `Bash` is kept in the set for older and future builds. See [HOOKS.md](HOOKS.md) for why `exec` is deliberately excluded.
 - `PostToolUse` for `apply_patch`, `Edit`, and `Write` to remind Codex after edits.
 
-`UserPromptSubmit` is no longer among them. It ran unmatched on every prompt and returned the same static guidance `SessionStart` had already delivered, so it repeated a block the agent was holding. An existing `.codex/hooks.json` is repaired the next time something writes it: `repowise agents refresh`, or a `repowise init` that selects Codex. Hooks you added yourself are untouched, and so is a timeout you raised yourself. This file is project-local, so the repair happens per repo rather than once per machine.
+There is no `UserPromptSubmit` hook: `SessionStart` already delivers the guidance, so a per-prompt hook would repeat it. `repowise agents refresh`, or a `repowise init` that selects Codex, rewrites the repowise entries in `.codex/hooks.json` to this set. Hooks you added yourself are untouched, and so is a timeout you raised yourself. The file is project-local, so this happens per repo.
 
 Claude Code has its own search-result enrichment hook path for `Grep` and `Glob`. Codex setup stays focused on lifecycle guidance and freshness checks instead of trying to reuse that Claude-specific search enrichment.
 
@@ -133,7 +133,7 @@ codex
 /plugins
 ```
 
-The plugin bundles Repowise MCP, lifecycle hooks, and Codex-neutral skills for exploration, pre-modification checks, architectural decisions, and dead-code cleanup. Plugin-bundled hooks are opt-in in current Codex releases; enable them with `[features] plugin_hooks = true` if you want hooks loaded from an installed plugin.
+The plugin bundles Repowise MCP, lifecycle hooks, and seven Codex-neutral skills: `architectural-decisions`, `change-review`, `code-health`, `codebase-exploration`, `dead-code-cleanup`, `pre-modification-check` and `settings`. Plugin-bundled hooks are opt-in in current Codex releases; enable them with `[features] plugin_hooks = true` if you want hooks loaded from an installed plugin.
 
 ## Slash commands
 

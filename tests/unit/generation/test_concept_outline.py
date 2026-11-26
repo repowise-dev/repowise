@@ -531,14 +531,14 @@ class TestCycleNaming:
         assert len(set(titles.values())) == 3
         # The one that keeps the plain name is decided by path order, not by
         # input order, so a re-run does not swap them.
-        assert titles["scc-ccc"] == "Circular Dependency: Store"
+        assert titles["scc-ccc"] == "Static Import Cycle: Store"
 
     def test_a_nameless_cycle_falls_back_to_its_id(self):
         from repowise.core.generation.page_generator.levels import _scc_titles
 
         titles = _scc_titles([("scc-aaa", ["main.py"])])
 
-        assert titles["scc-aaa"] == "Circular Dependency: scc-aaa"
+        assert titles["scc-aaa"] == "Static Import Cycle: scc-aaa"
 
 
 class TestTruncatedNamingIsVisible:

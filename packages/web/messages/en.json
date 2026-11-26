@@ -1711,7 +1711,7 @@
       "referenceApi": "API",
       "referenceFiles": "Files",
       "referenceInfrastructure": "Infrastructure",
-      "referenceCycles": "Dependency cycles",
+      "referenceCycles": "Static import cycles",
       "projectActivity": "Project activity"
     },
     "reader": {

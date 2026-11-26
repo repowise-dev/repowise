@@ -15,27 +15,6 @@ is a separate, on-request step that does use an LLM
 <img src="../../.github/assets/health-loop.svg" alt="repowise code-health loop: markers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
 </div>
 
-## Plan types
-
-| Type | What the plan names |
-|------|---------------------|
-| **Extract Class** | The cohesive groups (methods and fields) an incohesive or god class splits into. |
-| **Extract Method** | A line span to lift out of a long or complex function, with the helper's parameters and return value. |
-| **Extract Helper** | Every occurrence of a duplicated block and where the shared helper belongs. |
-| **Move Method** | A method that uses another class more than its own, and the class it belongs in. |
-| **Break Cycle** | The smallest set of import edges to invert to break a runtime dependency cycle. Advisory: see below. |
-| **Split File** | The files an oversized module splits into, which symbols go where, and the import edits in each dependent. |
-| **Performance Fix** | One shared change for a performance problem, with the affected call sites and caller-to-sink paths. |
-
-When one copy of a duplicated block is already a whole function the other copies
-could call, the Extract Helper plan says so instead of asking for a new helper:
-each other site gets the call that replaces it, or is marked as a copy to delete
-and import. Plan detail carries the call text; lists stay the same size.
-
-Each detector reports nothing when a signal it needs is missing, so a gap means
-"no suggestion", never a guessed one. Output is deterministic: the same commit
-gives the same plans and the same ids.
-
 ## Quick start
 
 ```bash
@@ -94,7 +73,61 @@ one set of steps wherever it starts. The recipe and the prompt name the plan by
 the public id `get_health(plan_id=...)` takes; REST plan detail's own `id` field
 is the storage id.
 
+### Code generation
+
+Code generation is off by default, only runs when you ask for it, and never
+runs during indexing. Turn it on with the code-generation switch on the repo
+Settings page or in an open plan, or with `refactoring.llm.enabled: true`. The
+switch names the provider and model it will use, so there is nothing else to
+configure. The CLI flag is itself an explicit request and does not read that
+setting.
+
+You can ask from three places:
+
+- CLI: `repowise health --refactoring-targets --generate-code <rank-or-symbol>`.
+- Dashboard: the **Generate code** action on a plan, when the server runs on your
+  machine with the checkout on disk.
+- MCP: `generate_refactoring_code(suggestion_id=...)`. This tool is off the default
+  MCP surface; add it with `mcp.tools: ["+generate_refactoring_code"]`.
+
+Generation reads the plan's real source spans from the working tree, sends the
+plan, the source and the graph and co-change context to your configured provider,
+and returns refactored code with a unified diff. Where a check is cheap it runs
+one: Extract Class compares LCOM4 before and after, Split File checks each new file
+is under the size floor with no symbol duplicated, and Extract Method checks the
+remaining function's complexity dropped. Results are cached by a hash of plan,
+source and model, so an unchanged plan is not paid for twice. Nothing is applied
+to your files.
+
+The CLI uses the provider configured for page generation; the web and MCP use the
+chat model. With generation disabled, the MCP tool returns the plan with
+`generation.available: false` and the REST endpoint returns `403`. With no key,
+MCP returns `error: "no_provider"`.
+
 ## Reading the results
+
+### Plan types
+
+| Type | What the plan names |
+|------|---------------------|
+| **Extract Class** | The cohesive groups (methods and fields) an incohesive or god class splits into. |
+| **Extract Method** | A line span to lift out of a long or complex function, with the helper's parameters and return value. |
+| **Extract Helper** | Every occurrence of a duplicated block and where the shared helper belongs. |
+| **Move Method** | A method that uses another class more than its own, and the class it belongs in. |
+| **Break Cycle** | The smallest set of import edges to invert to break a runtime dependency cycle. Advisory: see below. |
+| **Split File** | The files an oversized module splits into, which symbols go where, and the import edits in each dependent. |
+| **Performance Fix** | One shared change for a performance problem, with the affected call sites and caller-to-sink paths. |
+
+When one copy of a duplicated block is already a whole function the other copies
+could call, the Extract Helper plan says so instead of asking for a new helper:
+each other site gets the call that replaces it, or is marked as a copy to delete
+and import. Plan detail carries the call text; lists stay the same size.
+
+Each detector reports nothing when a signal it needs is missing, so a gap means
+"no suggestion", never a guessed one. Output is deterministic: the same commit
+gives the same plans and the same ids.
+
+### Plans and opportunities
 
 A **plan** is one detector's output for one target. An **opportunity** is one
 file's refactoring work: the finding it leads with, and its plans as ordered steps
@@ -187,38 +220,7 @@ round-robins over the lead finding, plan type and area so the first rows cover
 distinct problems. `canonical` returns the plain rank order. Test files always rank
 after production files.
 
-## Code generation
-
-Code generation is off by default, only runs when you ask for it, and never
-runs during indexing. Turn it on with the code-generation switch on the repo
-Settings page or in an open plan, or with `refactoring.llm.enabled: true`. The
-switch names the provider and model it will use, so there is nothing else to
-configure. The CLI flag is itself an explicit request and does not read that
-setting.
-
-You can ask from three places:
-
-- CLI: `repowise health --refactoring-targets --generate-code <rank-or-symbol>`.
-- Dashboard: the **Generate code** action on a plan, when the server runs on your
-  machine with the checkout on disk.
-- MCP: `generate_refactoring_code(suggestion_id=...)`. This tool is off the default
-  MCP surface; add it with `mcp.tools: ["+generate_refactoring_code"]`.
-
-Generation reads the plan's real source spans from the working tree, sends the
-plan, the source and the graph and co-change context to your configured provider,
-and returns refactored code with a unified diff. Where a check is cheap it runs
-one: Extract Class compares LCOM4 before and after, Split File checks each new file
-is under the size floor with no symbol duplicated, and Extract Method checks the
-remaining function's complexity dropped. Results are cached by a hash of plan,
-source and model, so an unchanged plan is not paid for twice. Nothing is applied
-to your files.
-
-The CLI uses the provider configured for page generation; the web and MCP use the
-chat model. With generation disabled, the MCP tool returns the plan with
-`generation.available: false` and the REST endpoint returns `403`. With no key,
-MCP returns `error: "no_provider"`.
-
-## Configuration
+## Tuning
 
 In `.repowise/config.yaml`:
 
@@ -282,7 +284,14 @@ Most plans answer a health finding, so per-path marker rules in
   Move Method and Split File have less to work with.
 - Generated code depends on the model you configure. The self-checks catch some
   structural mistakes, not behavior changes; review and test the diff.
-- There is no published accuracy benchmark for refactoring plans yet.
+- Refactoring plans have no published accuracy benchmark.
+
+## Where it shows up
+
+- **CLI**: `repowise health --refactoring-targets` and `repowise health --plan`.
+- **MCP**: `get_health` (Fix first, `refactoring_opportunities`, `plan_id`,
+  `opportunity_id`) and the opt-in `generate_refactoring_code`.
+- **Dashboard**: the **Refactoring** page and each plan's drawer.
 
 ## Reference
 

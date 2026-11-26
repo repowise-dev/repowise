@@ -81,6 +81,9 @@ def full_meta(tool: str | None = None) -> bool:
 # The preferred path is the git-HEAD comparison below, which fires only on a
 # real mismatch and gives a single, calibrated stale signal.
 _STALE_AGE_FLOOR_DAYS = 90
+#: Past this age a lean reply keeps ``indexed_commit`` (:func:`keeps_indexed_commit`):
+#: a week-old index is worth naming, though not worth a warning.
+_STAMP_AGE_DAYS = 7
 
 
 def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | None:
@@ -914,9 +917,26 @@ def drop_false_status_flags(result: Any) -> Any:
     return result
 
 
+def keeps_indexed_commit(meta: dict[str, Any]) -> bool:
+    """Whether a lean ``_meta`` keeps ``indexed_commit``: the index is behind HEAD
+    or older than :data:`_STAMP_AGE_DAYS`, and no ``stale_warning`` names it already
+    (the age-only warning names none).
+
+    A current index says nothing by its hash, so the default reply stays its size.
+    """
+    commit = meta.get("indexed_commit")
+    if commit and commit in (meta.get("stale_warning") or ""):
+        return False
+    age = meta.get("index_age_days")
+    return meta.get("index_behind") is True or (isinstance(age, int) and age > _STAMP_AGE_DAYS)
+
+
 def _lean_meta(meta: dict[str, Any]) -> None:
+    stamp = meta.get("indexed_commit") if keeps_indexed_commit(meta) else None
     for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, *_DEBUG_LAYER_KEYS, "embedder"):
         meta.pop(key, None)
+    if stamp:
+        meta["indexed_commit"] = stamp
     existing = meta.pop("degraded", None)
     reasons = [existing] if isinstance(existing, str) else list(existing or [])
     for key in sorted(k for k in meta if k.endswith("_degraded")):

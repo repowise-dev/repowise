@@ -33,6 +33,92 @@ It is a recommendation, not a requirement. Nothing is wiped until you choose to 
 
 ## Behaviour changes worth knowing about
 
+### 0.62.0: health, the parse cache and ownership refresh once
+
+**Your first `update` does the rest once, on its own.** It re-scores health (analyzer 45 to 46), refreshes the parse cache (parser schema 13 to 14) and walks git history once to recompute ownership (git history 4 to 5) and rescans security (scanner 6 to 7). A workspace update re-extracts contracts once (contracts 16 to 17). Database migrations 0124 to 0140 apply automatically. Nothing needs re-indexing: the store format is unchanged.
+
+**What you may notice:**
+
+- Performance cause ids move to the v4 model. Until that first `update`, performance counts read 0 with `stale_model`.
+- Bot accounts leave file ownership and the contributor count, and one person counts once across names and emails, so contributor counts can go down.
+- Code a data folder holds for the product to read by path gets its own origin, `data`, and leaves dead code, the queues, the area map and security headlines.
+- `repowise search` defaults to auto mode and the MCP tool's default limit.
+- Runtime evidence is opt in: `repowise evidence setup` prints what can be collected here and how to ingest it.
+
+### 0.61.0: decision mining and the MCP tool list are opt in
+
+**Your first `update` re-scores health and re-detects communities once.** Health re-scores (analyzer 44 to 45), the parse cache refreshes (parser schema 12 to 13) and a workspace update re-extracts contracts once (contracts 15 to 16). Database migrations 0122 and 0123 apply automatically. Nothing needs re-indexing.
+
+**Defaults that change:**
+
+- `repowise update` makes no decision model calls unless `decisions.update_mining` is on, and session start lists decisions only with `decisions.session_start` on. `repowise decision config` sets both.
+- MCP clients other than Claude Code get the core tool list and the server instructions that match it. `repowise config set mcp.tools standard` (or any list) gives them the wider set.
+- `mcp.always_load` is off; `repowise config set mcp.always_load true` turns it on for Claude Code.
+- Health markers judged under 80% precision are advisory in the languages where they missed: `low_cohesion` is advisory everywhere, `dry_violation` scores only in TypeScript and `error_handling` only in Python. Scores held down by those markers can rise.
+
+### 0.60.0: the wiki rebuilds once in its new shape
+
+**Your first `update` rebuilds the wiki once** (store format 2 to 3). It is free for a wiki built from code, priced and confirmed for a model-written wiki, and deferred to `repowise update --yes` when there is no terminal. A rebuilt wiki is usually leaner: a symbol gets its own page only when its production callers make it worth one, at most eight per file, and more files get their own file page.
+
+The same update re-scores health (analyzer 43 to 44), rescans security (scanner 5 to 6), refreshes the parse cache (parser schema 10 to 12) and walks git history once (git history 3 to 4). Database migrations 0119 to 0121 apply automatically. Nothing needs re-indexing.
+
+**What you may notice:**
+
+- Key Concepts and Glossary pages redirect to the overview, and that update removes them. Their config keys warn and are ignored.
+- The first ask of each cached `get_answer` question is synthesised again.
+- A Claude Code MCP entry written by 0.59 moves to `~/.claude.json` the next time `init`, `agents refresh` or `doctor --repair` runs.
+- `repowise mcp --transport sse` prints a deprecation notice. Use `--transport streamable-http`.
+- `repeated_nesting` is advisory: listed, with no deduction.
+
+### 0.59.0: health and security refresh once, and decision prompts are on
+
+**Your first `update` re-scores health and rescans security.** Health re-scores (analyzer 41 to 43), the parse cache refreshes (parser schema 9 to 10) and security rescans (scanner 4 to 5). Nothing needs re-indexing.
+
+**What you may notice:**
+
+- For Claude Code, a prompt to record the decision a commit made is on: a PostToolUse entry on Git commands, and the prompt itself fires only on `git commit`. `repowise decision config capture-prompt --off` turns it off per repository.
+- Agents can accept decision candidates signed as themselves. `repowise decision config agent-acceptance --off` keeps acceptance for people.
+- Accepting a decision requires decision text: pass it with `repowise decision confirm --decision TEXT`.
+- `repowise serve` opens the web UI in your browser from a terminal. `--no-open` or `REPOWISE_NO_OPEN=1` turns it off.
+- `repowise coverage add` stores nothing from a report that mostly does not map unless you pass `--allow-partial`; it suggests the path prefix that maps it.
+- A repository's excluded paths and wiki style live in `.repowise/config.yaml`, written by the CLI, the server and the web settings form alike.
+
+### 0.58.0: health scoring saturates per category
+
+**Your first `update` re-scores the whole repository** (analyzer 40 to 41) and refreshes the parse cache once (parser schema 8 to 9). Nothing needs re-indexing.
+
+**What you may notice:**
+
+- Each defect category's deduction follows a saturating curve, and findings on one function count the largest in full and the rest at a quarter. Scores move on that first update.
+- `bumpy_road` is `repeated_nesting`. The old id keeps working in `health-rules.json`, findings and filters.
+- `brain_method` is listed without a deduction, since the size markers already charge that function.
+- Init, status, update and the editor files name the modes Built from code, Written by <model> and Index only. Flags, state and JSON values are unchanged. `repowise update --full` takes a fast index to a full one.
+
+### 0.57.0: a wider git window and one provider order
+
+- **Git history reads the newest 5,000 commits by default.** An existing index keeps the `commit_limit` its `.repowise/config.yaml` records (`init` wrote 500 before 0.57), and `update` names that value once. Set `commit_limit: 5000` there to read the wider window.
+- **One provider order everywhere.** Provider, model and base URL resolve as flag or UI choice, then `.repowise/config.yaml`, then the web UI's global default, then `REPOWISE_PROVIDER` / `REPOWISE_MODEL`. If you set the provider with those variables and `config.yaml` names one, the file decides. A base URL in `config.yaml` takes precedence over `OPENAI_BASE_URL` and the other `*_BASE_URL` variables.
+- **Provider defaults.** DeepSeek defaults to `deepseek-flash` and LiteLLM to `groq/openai/gpt-oss-120b`.
+- **Renamed fields.** `get_answer` moves `retrieval_quality` behind `include=["diagnostics"]`. `/commits/agent-trend` returns `coverage_pct` and `agent_pct_of_covered` in place of `agent_pct`, and `get_context` ownership carries `agent_share` in place of `agent_authored_pct`.
+
+### 0.56.0: git history is re-read once, and `search_codebase` drops `file`
+
+- **Your first `update` walks the whole git history once,** with no page generation and no model calls.
+- **`search_codebase` rows carry `path` only.** The `file` field, deprecated in 0.55, is removed. Read `path`.
+- **`anthropic` and `claude_cli` default to `claude-haiku-5-5`.** Pass `--model` to keep another model.
+- **`get_risk` replies are leaner.** `structural_impact_score`, `overall_risk_score` and `may_break_tests` are dropped by default; `pr_blast_radius` comes with `include=["blast"]` and detailed owner metrics with `include=["owners"]`.
+- **Bare `repowise health` reads the stored analysis** and writes nothing. `--recompute` runs the in-process analysis.
+- **Import cycles count only imports that run.** Type-only imports, imports under `TYPE_CHECKING` and imports inside function bodies are left out, so cycle counts can drop, and `break_cycle` plans are advisory.
+
+### 0.55.0: leaner MCP replies, and unanalysed files carry no score
+
+- **`search_codebase` rows name their file as `path`.** `file` stays as a deprecated alias for one minor release (removed in 0.56).
+- **MCP results are compact JSON with a lean `_meta`.** `MCP_CONTRACT_VERSION` moves to 3. `REPOWISE_MCP_DEBUG_META=1` restores the diagnostics and `REPOWISE_MCP_PRETTY_JSON=1` restores indented text.
+- **`get_risk` owner metrics** (`owner_pct`, `owner_line_pct`, `recent_owner`, `recent_owner_pct`, `bus_factor`, `contributor_count`) move behind `include=["owners"]`.
+- **Files in languages health cannot analyse store no score.** They are left out of averages, hotspot health, band counts and trends, so a repository average can move.
+- **`repowise dead-code` and `health --refactoring-targets` read the stored results** when the index is at HEAD. `--recompute` runs live analysis for refactoring targets.
+- **`update` re-scores and re-parses an unchanged checkout** when the health analyzer or the parser changed since the index was built.
+
 ### 0.54.0: health re-scores once, and some git numbers move
 
 **Your first `update` re-scores the whole repository.** The health analyzer version moved from 31 to 36, so the first update after upgrading re-scores every file and takes longer than usual. The parser schema moved from 3 to 5 (Python import resolution and overload declarations), so that same update re-parses files instead of reading them from the parse cache. Nothing needs re-indexing: the store format is unchanged.
@@ -66,7 +152,7 @@ repowise decision source set session --on
 
 **A decision needs a stated reason to be accepted.** `repowise decision confirm` refuses a record whose body only restates its own title. Existing records are untouched, but ids that used to pass may now be rejected; add a reason with `repowise decision add --rationale`, or re-record it.
 
-**Your first `update` re-scores the whole repository.** The health analyzer version moved from 11 to 21 over this cycle, because new test-quality markers, a per-language assertion vocabulary, a `.tsx` grammar fix and re-ranked history gates all change how a stored health number is computed. Rather than wait out the decay timer, the first update after upgrading re-scores every file, so it takes longer than usual. On a 171-file repository that was 10.2 seconds against a 5.8 second baseline, with the next update back to normal. Nothing needs re-indexing: the store format and parser schema are unchanged.
+**Your first `update` re-scores the whole repository.** The health analyzer version moved from 11 to 21 over this cycle, because new test-quality markers, a per-language assertion vocabulary, a `.tsx` grammar fix and re-ranked history gates all change how a stored health number is computed. Instead of waiting out the decay timer, the first update after upgrading re-scores every file, so it takes longer than usual. On a 171-file repository that was 10.2 seconds against a 5.8 second baseline, with the next update back to normal. Nothing needs re-indexing: the store format and parser schema are unchanged.
 
 ### Git history is re-read once when its rules change
 

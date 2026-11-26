@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -209,6 +210,86 @@ async def resolve_scope(
     if found:
         return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(found)), missing, [])
     nearest = await _suggestions(session, repo_id, missing)
+    if nearest is None:
+        return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(prefixes)), [], [])
+    return ScopeResolution(None, missing, nearest)
+
+
+def _holds_over(listed: list[str], prefix: str) -> bool:
+    """Whether *listed* holds *prefix* or a path under it as a directory (``_under``)."""
+    under = f"{prefix}/"
+    return any(p == prefix or p.startswith(under) for p in listed)
+
+
+def _pieces_over(listed: list[str], raw: str) -> list[str]:
+    """:func:`_split_pieces` judged against *listed*."""
+
+    def split(piece: str, sep: str | None) -> list[str]:
+        norm = _normalize_scope(piece)
+        if norm is None:
+            return []
+        parts = norm.split(sep)
+        if len(parts) == 1 or _holds_over(listed, norm):
+            return [norm]
+        return [n for part in parts if (n := _normalize_scope(part))]
+
+    return list(dict.fromkeys(p for piece in split(raw, ",") for p in split(piece, None)))
+
+
+def _directories_over(listed: list[str], ancestor: str) -> Counter:
+    """:func:`_directories` counted over *listed*."""
+    counts: Counter = Counter()
+    for path in listed:
+        if ancestor and not _holds_over([path], ancestor):
+            continue
+        parts = path.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            counts["/".join(parts[:i])] += 1
+    return counts
+
+
+def _suggestions_over(listed: list[str], missing: list[str]) -> list[str] | None:
+    """:func:`_suggestions` over *listed*."""
+    picked: list[str] = []
+    for m in missing:
+        parts = m.split("/")
+        ancestor = next(
+            (
+                a
+                for i in range(len(parts) - 1, 0, -1)
+                if _holds_over(listed, a := "/".join(parts[:i]))
+            ),
+            "",
+        )
+        dir_files = _directories_over(listed, ancestor)
+        if not dir_files and not ancestor:
+            return None
+        picked.extend(d for d in _nearest(m, ancestor, dir_files) if d not in picked)
+    return [f"{d}/" for d in picked[:_NEAREST_DIRS]]
+
+
+def resolve_scope_over(paths: Iterable[str], raw: str | None) -> ScopeResolution:
+    """:func:`resolve_scope` over a list of indexed file paths instead of a store.
+
+    For a host that holds the indexed paths (a search index, a file listing)
+    but no session and no checkout. The rules are the session resolver's: a
+    prefix holds a path equal to it or under it as a directory, exact case,
+    and with no prefix held the nearest directories are picked the same way.
+    With no checkout, no document directory is found on disk.
+    """
+    if _normalize_scope(raw) is None:
+        return ScopeResolution(None, [], [])
+    # Ceiling: each prefix test scans the list, so a call costs prefixes x paths
+    # (a scope names a handful). Upgrade path: a sorted list and bisect.
+    listed = list(dict.fromkeys(p for p in paths if p))
+    prefixes = _pieces_over(listed, raw or "")
+    if not prefixes:
+        return ScopeResolution(None, [], [])
+    found = [p for p in prefixes if _holds_over(listed, p)]
+    missing = [p for p in prefixes if p not in found]
+    if found:
+        return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(found)), missing, [])
+    nearest = _suggestions_over(listed, missing)
     if nearest is None:
         return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(prefixes)), [], [])
     return ScopeResolution(None, missing, nearest)
