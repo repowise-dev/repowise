@@ -41,6 +41,7 @@ from repowise.core.test_paths import dotted_module_paths, nodeid_test_file
 
 from .alignment import Alignment, drop_misaligned
 from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
+from .detector import detect_format
 from .detector import parse as parse_coverage
 from .model import (
     ContextCoverageReport,
@@ -1385,7 +1386,7 @@ def build_coverage_map(
         if not report.files:
             msg = (
                 EMPTY_COVERAGE_REPORT_NOTE
-                if report.source_format != "unknown"
+                if report.source_format != "unknown" and detect_format(text) == report.source_format
                 else f"no coverage entries (detected={report.source_format})"
             )
             errors.append((path, msg))

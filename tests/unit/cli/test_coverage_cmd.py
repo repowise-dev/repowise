@@ -941,3 +941,22 @@ def test_coverage_add_when_only_empty_or_unrecognized_reports_stores_nothing(
     assert "empty/target/site/jacoco/jacoco.xml: measured no files, skipped" in output
     assert "bad.xml: no coverage entries (detected=unknown)" in output
     assert "Nothing was stored." in output
+
+
+def test_coverage_add_forced_format_on_mismatched_content_keeps_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+    bad_report = tmp_path / "mismatched.xml"
+    bad_report.write_text('<?xml version="1.0"?><report name="empty"/>', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["coverage", "add", "--format", "lcov", str(bad_report)]
+    )
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert stored == []
+    assert "mismatched.xml: no coverage entries (detected=lcov)" in output
+    assert "measured no files, skipped" not in output
+    assert "Nothing was stored." in output
