@@ -291,6 +291,17 @@ def test_a_dot_src_dir_is_the_app_root() -> None:
     assert facts.entry_files("", ["pages/index.vue", "app/pages/a.vue"]) == ["pages/index.vue"]
 
 
+def test_a_bracketed_src_dir_is_a_name_not_a_pattern() -> None:
+    from dataclasses import replace
+
+    manifest = parse_npm_manifest({"dependencies": {"nuxt": "^3.12.0", "@nuxtjs/i18n": "8"}})
+    assert manifest is not None
+    config = "defineNuxtConfig({ srcDir: 'src[1]', i18n: { langDir: 'lang' } })"
+    ((facts, _pkg),) = js_frameworks(replace(manifest, configs={"nuxt.config.ts": config}))
+    paths = ["src[1]/layouts/a.vue", "src[1]/lang/en.json", "src[1]/i18n.config.ts", "src1/layouts/a.vue"]
+    assert facts.entry_files("", paths) == sorted(paths[:3])
+
+
 def test_the_deletion_gate_roots_a_nuxt_4_app_where_the_graph_does(tmp_path: Path) -> None:
     repo = _write(tmp_path, {"package.json": _pkg({"nuxt": "^4.1.0"})})
     repo_paths = {"app/app.vue", "app/components/A.vue", "components/Old.vue"}

@@ -111,7 +111,8 @@ def _nuxt_i18n_globs(manifest: NpmManifest, srcs: tuple[str, ...]) -> tuple[str,
     """Locale files and the vue-i18n config ``@nuxtjs/i18n`` loads by path.
 
     v9 and later resolve ``langDir`` under ``<rootDir>/i18n`` (default
-    ``locales``); v8 resolved it under the source directory, one of *srcs*.
+    ``locales``); v8 resolved it under the source directory, one of *srcs*
+    (unescaped; this escapes what it builds).
     Every reading is anchored, since an extra anchor only spares a file that
     is not there.
     """
@@ -121,7 +122,7 @@ def _nuxt_i18n_globs(manifest: NpmManifest, srcs: tuple[str, ...]) -> tuple[str,
         for base in ("i18n", *src_dirs):
             if (inside := _inside(posixpath.join(base, lang_dir))) is not None:
                 dirs.add(inside)
-    configs = _js("i18n/i18n.config", *(_join(s, "i18n.config") for s in src_dirs))
+    configs = _js("i18n/i18n.config", *(glob.escape(_join(s, "i18n.config")) for s in src_dirs))
     return (*(f"{glob.escape(d)}/*" for d in sorted(dirs)), *configs)
 
 
@@ -142,8 +143,8 @@ def nuxt_facts(manifest: NpmManifest, paths: Collection[str] | None = None) -> F
         elif root and rel == src:
             srcs = _NUXT_SRC  # a srcDir outside the package: nothing of ours to root at
         else:
-            srcs = (f"{glob.escape(rel)}/",)
-    entry, review = _nuxt_globs(srcs)
+            srcs = (f"{rel}/",)
+    entry, review = _nuxt_globs(tuple(glob.escape(s) for s in srcs))
     if NUXT_I18N in manifest.dependencies:
         entry += _nuxt_i18n_globs(manifest, srcs)
     return replace(NUXT, entry_globs=entry, review_globs=review)
