@@ -114,3 +114,52 @@ def test_a_wrapper_whose_whole_url_is_its_parameter_is_left_alone(tmp_path: Path
         'export const list = () => apiFetch("/api/items");\n'
     )
     assert _consumers(tmp_path, {"src/api.ts": text}) == {("GET", "/api/items")}
+
+
+_CALLER = (
+    'import { createEvidenceApi } from "./evidence";\n'
+    "export const api = createEvidenceApi(apiRequest, (id) => `/api/repos/${id}/evidence`);\n"
+)
+
+
+def test_an_object_return_type_does_not_hide_the_body(tmp_path: Path) -> None:
+    factory = (
+        "export function createEvidenceApi(\n"
+        "  request: ApiRequest, base: (id: string) => string,\n"
+        "): { getStatus: (id: string) => Promise<void> } {\n"
+        "  return { getStatus: (id: string) => request(`${base(id)}/status`) };\n"
+        "}\n"
+    )
+    assert _consumers(tmp_path, {"src/evidence.ts": factory, "src/api.ts": _CALLER}) == {
+        ("GET", "/api/repos/{param}/evidence/status")
+    }
+
+
+def test_a_curried_factory_is_read(tmp_path: Path) -> None:
+    factory = (
+        "export const createEvidenceApi = (request: ApiRequest, base: (id: string) => string) =>\n"
+        "  (id: string) => request(`${base(id)}/status`);\n"
+    )
+    assert _consumers(tmp_path, {"src/evidence.ts": factory, "src/api.ts": _CALLER}) == {
+        ("GET", "/api/repos/{param}/evidence/status")
+    }
+
+
+def test_a_call_in_a_ternary_branch_is_read(tmp_path: Path) -> None:
+    caller = (
+        'import { createEvidenceApi } from "./evidence";\n'
+        "export const api = local\n"
+        "  ? createEvidenceApi(apiRequest, (id) => `/api/repos/${id}/evidence`) : remote;\n"
+    )
+    assert ("GET", "/api/repos/{param}/evidence/status") in _consumers(
+        tmp_path, {"src/evidence.ts": _FACTORY, "src/api.ts": caller}
+    )
+
+
+def test_an_unnamed_factory_emits_no_tail_only_request(tmp_path: Path) -> None:
+    factory = (
+        "export default function (request: ApiRequest, base: (id: string) => string) {\n"
+        "  return { getStatus: (id: string) => request(`${base(id)}/status`) };\n"
+        "}\n"
+    )
+    assert _consumers(tmp_path, {"src/evidence.ts": factory}) == set()
