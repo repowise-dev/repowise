@@ -348,3 +348,24 @@ def test_a_spread_call_beside_a_readable_one_keeps_the_in_function_path(tmp_path
             """,
         },
     ) == {("/u", "u.js")}
+
+
+def test_a_comma_inside_a_type_keeps_parameter_positions(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "src/app.ts": """
+                import express, { Router } from 'express';
+                import register from './users';
+                const app = express();
+                const api = Router();
+                register(cfg, api);
+                app.use('/api', api);
+            """,
+            "src/users.ts": """
+                export default function (opts: Record<string, string>, router: Router) {
+                  router.get('/users', list);
+                }
+            """,
+        },
+    ) == {("/api/users", "src/users.ts")}

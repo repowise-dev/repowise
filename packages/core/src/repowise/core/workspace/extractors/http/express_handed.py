@@ -193,10 +193,27 @@ def _params(m: re.Match[str]) -> tuple[str | None, ...]:
     if not text.strip():
         return ()
     out: list[str | None] = []
-    for part in text.split(","):
+    for part in _top_level_params(text):
         p = _PARAM_RE.match(part)
         out.append(p.group(1) if p else None)
     return tuple(out)
+
+
+def _top_level_params(text: str) -> list[str]:
+    """*text* split at the commas outside type arguments, object and array
+    types or defaults (``opts: Record<string, string>, router``), so each
+    parameter keeps its position. An arrow's ``=>`` closes nothing."""
+    parts, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        if ch in "<[{":
+            depth += 1
+        elif ch in "]}" or (ch == ">" and text[i - 1 : i] != "="):
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return parts
 
 
 def _block_end(code: str, open_idx: int) -> int:
