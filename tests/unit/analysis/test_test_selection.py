@@ -363,6 +363,59 @@ def test_an_unimported_helper_adds_nothing_when_every_known_test_runs() -> None:
     assert "no test imports that helper" in sel.reasons[0]
 
 
+def _helper_route(readers):
+    tiers = _tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/test_a.py", "call-graph"),
+            _inferred("src/a.py", "tests/autobahn/client.py", "import-graph"),
+        ]
+    )
+    if readers is not None:
+        tiers["helper_readers"] = {"tests/autobahn/client.py": readers}
+    known = ["tests/test_a.py", "tests/test_b.py", "tests/autobahn/test_autobahn.py"]
+    return _select(["src/a.py"], tiers, known_tests=known)
+
+
+def test_an_unimported_helper_only_tests_name_selects_those_tests() -> None:
+    """A test starting the helper by path is its user; nothing else can be."""
+    sel = _helper_route(["tests/autobahn/test_autobahn.py"])
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_a.py", "tests/autobahn/test_autobahn.py")
+    assert sel.reasons == (
+        "tests/autobahn/client.py is a test helper no test imports; the 1 test file(s) "
+        "naming it run for it (e.g. tests/autobahn/test_autobahn.py).",
+    )
+
+
+def test_an_unimported_helper_no_test_names_runs_nothing_for_itself() -> None:
+    """A type-check input or a script run by hand: no test can run it."""
+    sel = _helper_route([])
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_a.py",)
+    assert sel.reasons == (
+        "tests/autobahn/client.py is a test helper no test imports or names, so no test runs it.",
+    )
+
+
+@pytest.mark.parametrize("readers", [None, ["tests/conftest.py"], ["tests/other_helper.py"]])
+def test_an_unimported_helper_other_test_code_names_still_runs_everything(readers) -> None:
+    """A conftest or helper naming it reaches tests unknown; one not read for is unknown."""
+    sel = _helper_route(readers)
+    assert sel.run_all
+    assert "no test imports that helper" in sel.reasons[0]
+
+
+def test_a_changed_helper_no_test_imports_or_names_needs_no_test() -> None:
+    path = "tests/typing/typing_options.py"
+    tiers = _tiers(inferred=[_inferred(path, path, "changed-test")])
+    tiers["helper_readers"] = {path: []}
+    sel = _select([path], tiers)
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ()
+    tiers["helper_readers"] = {path: ["tests/test_typing.py"]}
+    assert _select([path], tiers).test_files == ("tests/test_typing.py",)
+
+
 def test_an_unimported_helper_still_runs_everything_when_a_peer_is_not_selected() -> None:
     tiers = _tiers(
         inferred=[

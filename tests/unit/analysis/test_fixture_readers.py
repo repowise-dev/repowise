@@ -9,6 +9,7 @@ import pytest
 from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
 from repowise.core.analysis.fixture_readers import (
     fixture_root,
+    helper_readers,
     with_data_file_readers,
     with_fixture_readers,
 )
@@ -280,3 +281,111 @@ def test_production_code_is_only_tokenized_when_it_holds_a_tree_path(monkeypatch
     assert out == {}
     assert "src/indexer.py" in seen
     assert "src/app.py" not in seen
+
+
+# -- test helpers no test imports ---------------------------------------------
+
+NL = chr(10)
+_HELPER_SOURCES = {
+    "tests/typing/typing_options.py": "from typing import assert_type" + NL + "import click",
+    "tests/typing/typing_prompt.py": "from typing import assert_type",
+    "tests/test_basic.py": "import typing" + NL + "from typing import Any",
+    "tests/autobahn/client/client.py": "import aiohttp",
+    "tests/autobahn/test_autobahn.py": 'CMD = ["python", "tests/autobahn/client/client.py"]',
+    "src/v4/__testfixtures__/rename.output.tsx": "import { q } from 'q'",
+    "src/v4/__tests__/rename.test.cjs": "defineTest(__dirname, 'rename', null, 'rename')",
+    "cmd/integration_test/main.go": "package main",
+    "pkg/integration/clients/go_test.go": "// go run cmd/integration_test/main.go"
+    + NL
+    + "package clients",
+    "tests/tools/lister_test.go": 'dir := filepath.Join("tools", "x")',
+    "tests/tools/run.py": "print(1)",
+    "tests/tools/test_run.py": "import os",
+}
+
+
+def test_a_type_check_input_is_read_only_by_the_runnable_tests_near_it() -> None:
+    """``from typing import`` names a module, not the ``typing`` directory, so the
+    sibling type-check file is no reader; the runnable tests under ``tests/`` may
+    list the directory, so they are."""
+    found = helper_readers(
+        ["tests/typing/typing_options.py"], list(_HELPER_SOURCES), _HELPER_SOURCES.get
+    )
+    assert found == {
+        "tests/typing/typing_options.py": [
+            "tests/autobahn/test_autobahn.py",
+            "tests/test_basic.py",
+            "tests/tools/lister_test.go",
+            "tests/tools/test_run.py",
+        ]
+    }
+
+
+def test_a_helper_started_by_path_is_read_by_the_test_naming_it() -> None:
+    found = helper_readers(
+        ["tests/autobahn/client/client.py", "src/v4/__testfixtures__/rename.output.tsx"],
+        list(_HELPER_SOURCES),
+        _HELPER_SOURCES.get,
+    )
+    assert found["tests/autobahn/client/client.py"] == ["tests/autobahn/test_autobahn.py"]
+    # A fixture runner names the case, and adds ``.input.tsx`` / ``.output.tsx`` itself.
+    assert found["src/v4/__testfixtures__/rename.output.tsx"] == [
+        "src/v4/__tests__/rename.test.cjs"
+    ]
+
+
+def test_an_entry_point_is_named_by_its_directory_and_comments_do_not_count() -> None:
+    found = helper_readers(
+        ["cmd/integration_test/main.go"], list(_HELPER_SOURCES), _HELPER_SOURCES.get
+    )
+    assert found == {"cmd/integration_test/main.go": []}
+    sources = {
+        **_HELPER_SOURCES,
+        "pkg/x_test.go": 'exec.Command("go", "run", "./cmd/integration_test")',
+    }
+    found = helper_readers(["cmd/integration_test/main.go"], list(sources), sources.get)
+    assert found == {"cmd/integration_test/main.go": ["pkg/x_test.go"]}
+
+
+def test_a_helper_below_a_listed_directory_is_read_by_the_test_listing_it() -> None:
+    """A test above the helper writing its parent's parent reaches it unnamed."""
+    sources = {
+        "suite/cases/sub/case.py": "x = 1",
+        "e2e/test_cases.py": 'ROOT = "suite/cases"',
+        "e2e/test_other.py": "import os",
+    }
+    found = helper_readers(["suite/cases/sub/case.py"], list(sources), sources.get)
+    assert found == {"suite/cases/sub/case.py": ["e2e/test_cases.py"]}
+
+
+def test_a_case_list_or_a_lister_beside_it_is_a_reader() -> None:
+    """Data naming the helper, or code beside it listing its directory, reach it;
+    neither is a runnable test, so selection keeps the full run."""
+    sources = {
+        "suite/cases/sub/case.py": "x = 1",
+        "suite/cases/sub/run_all.py": "for f in Path(__file__).parent.glob('*.py'): ...",
+        "e2e/cases.yaml": "- case.py",
+    }
+    found = helper_readers(["suite/cases/sub/case.py"], list(sources), sources.get)
+    assert found == {"suite/cases/sub/case.py": ["e2e/cases.yaml", "suite/cases/sub/run_all.py"]}
+
+
+def test_a_helper_at_the_repository_root_keeps_its_users_unknown() -> None:
+    assert helper_readers(["helpers.py"], ["test_a.py"], {"test_a.py": ""}.get) == {}
+
+
+def test_a_helper_a_runner_config_names_keeps_its_users_unknown() -> None:
+    """An alias or setup file hands it to tests that never import or name it."""
+    sources = {
+        "web/vitest.config.ts": "alias: { '@render': './src/test/render.tsx' }",
+        "web/src/test/render.tsx": "export {}",
+        "web/src/a.test.tsx": "import { render } from '@render'",
+    }
+    assert helper_readers(["web/src/test/render.tsx"], list(sources), sources.get) == {}
+
+
+def test_an_unreadable_test_file_keeps_every_helper_unknown() -> None:
+    """It may be the file naming the helper, so no helper is cleared."""
+    sources = {"suite/cases/sub/case.py": "x = 1", "e2e/test_ok.py": "import os"}
+    files = [*sources, "e2e/test_locked.py"]
+    assert helper_readers(["suite/cases/sub/case.py"], files, sources.get) == {}
