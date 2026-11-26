@@ -123,7 +123,11 @@ def _render_measured_costs(view: dict[str, Any] | None) -> None:
             console.print(f"\n[bold]{title}[/bold] [dim]({escape(_run_basis(run))})[/dim]")
             rows = [r for r in group["rows"] if r["run_id"] == run["run_id"]]
             for row in rows:
-                console.print(f"  {row['rank']}. [cyan]{escape(row['symbol_id'])}[/cyan]")
+                # An import row reads "<file> import time", not "<file>::<module>".
+                name = row["symbol_id"]
+                if row.get("label"):
+                    name = f"{row['file_path']} {row['label']}"
+                console.print(f"  {row['rank']}. [cyan]{escape(name)}[/cyan]")
                 console.print(f"     [dim]{escape(_row_facts(row))}[/dim]")
     _render_benchmarks(view.get("benchmarks"))
 

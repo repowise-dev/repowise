@@ -166,6 +166,15 @@ async def test_rows_carry_their_basis_and_cap(setup_mcp, session, materialized):
 
 
 @pytest.mark.asyncio
+async def test_an_import_row_says_import_time_and_others_add_nothing(setup_mcp, session, materialized):
+    module = "src/auth/service.py::<module>"
+    await _seed(session, materialized, [_hot(module), _hot(LOGIN, rank=2)])
+    rows = {r["symbol_id"]: r for r in (await _measured(limit=10))["rows"]}
+    assert (rows[module]["label"], rows[module]["lines"]) == ("import time", None)
+    assert "label" not in rows[LOGIN]
+
+
+@pytest.mark.asyncio
 async def test_totals_count_past_the_page_cap(setup_mcp, session, materialized):
     """Twelve ranked functions: the page holds ten, the total says twelve."""
     await _seed(session, materialized, [_hot(f"src/app.py::f{i}", rank=i + 1) for i in range(12)])

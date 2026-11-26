@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ....evidence.format_v1 import is_import_row
 from ....evidence.query_counts import strongest
 from ....ingestion.symbol_identity import file_of_symbol
 from ...execution_roles import COLD_ROLES, ENTRY_ROLES, hottest_role
@@ -533,10 +534,13 @@ def measured_hotspots(
         for members in groups.values()
         for f in ([m for m in members if not _inert(m)] or members)
     }
+    # An import row (``<path>::<module>``) is no function to profile for
+    # repeated work; it speaks on the measured view only. Ceiling: no queue item
+    # for import time until a rule can say which import the run did not need.
     return [
         _measured_hotspot(symbol_id, measured[symbol_id], (ranks or {}).get(symbol_id))
         for symbol_id in sorted(hot - owned)
-        if symbol_id in measured and "::" in symbol_id
+        if symbol_id in measured and "::" in symbol_id and not is_import_row(symbol_id)
     ]
 
 

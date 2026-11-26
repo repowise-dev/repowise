@@ -35,6 +35,25 @@ The run's time is split four ways, each stack into exactly one:
 - the rest: test or tooling code, module bodies, unresolved frames, and
   stacks with no repo frame that run only the runtime and standard library.
 
+Import time is a row of its own. A Python module body (``<module>``: a
+file's top level, run when it is imported) and the repo modules it imports in
+turn, with nothing but import machinery and other module bodies between them,
+are one import: its row is the outermost module's, under the reserved id
+``<path>::<module>`` (:data:`MODULE_FUNCTION`, no line), ranked by self time
+with the functions. Its self time is every stack whose innermost maintained
+repo frame is one of those module bodies: their top-level code, the libraries
+and standard-library modules they import, and the import machinery loading
+them. A function on the way breaks the chain: a module a function imports
+starts a row of its own, and a library a function imports stays the
+function's (kind ``import``). The row's ``inside`` names what the import spent
+its time on, by top-level package for a library or the standard library (kind
+``library``: ``sqlalchemy``, ``json``), by name for a repo function run at
+import time (kind ``repo``), ``own`` for the modules' own top-level code and
+``import`` for the machinery itself. Ceiling: a Go package initializer or a
+JavaScript module wrapper has no row (no probe profile shows them above the
+share rule); its self time counts under ``self_unattributed`` as
+``module_body``.
+
 ``explained`` (weight on stacks with a production frame anywhere) is still
 written for older readers; it says nothing about cost, since a CLI's entry
 function is on every stack.
@@ -70,7 +89,13 @@ from typing import TYPE_CHECKING, Any
 from repowise.core.code_origin import is_vendored_or_generated_path, path_origin
 from repowise.core.frame_resolver import frame_paths, resolve_frames
 
-from .format_v1 import _LONG_TEXT, EVIDENCE_FORMAT, MAX_SPLIT_ITEMS, EvidenceFormatError
+from .format_v1 import (
+    _LONG_TEXT,
+    EVIDENCE_FORMAT,
+    MAX_SPLIT_ITEMS,
+    MODULE_FUNCTION,
+    EvidenceFormatError,
+)
 
 if TYPE_CHECKING:
     from repowise.core.frame_resolver import FrameResolution, ProfileFrame
@@ -141,6 +166,10 @@ _CHILD_PROCESS_PREFIXES = ("os/exec.", "os.(*Process).")
 
 #: Entries of ``inside`` and of ``drivers`` kept per symbol, costliest first.
 TOP_SPLIT = MAX_SPLIT_ITEMS
+#: Where a Python package's top-level name starts in a library path: after an
+#: installer's directory, else after the standard library's.
+_INSTALLED_RE = re.compile(r"(?:^|/)(?:site|dist)-packages/(?P<top>[^/]+)")
+_STDLIB_RE = re.compile(r"(?:^|/)(?:Lib|lib(?:64)?/python\d+(?:\.\d+)?)/(?P<top>[^/]+)")
 #: Import machinery, by path fragment: CPython's frozen importlib, Node's module loader.
 _IMPORT_PATHS = ("importlib._bootstrap", "node:internal/modules/")
 _IMPORT_FUNCTIONS = frozenset({"__import__", "importlib.import_module", "import_module"})
@@ -171,6 +200,26 @@ def is_dependency_path(path: str) -> bool:
     if is_vendored_or_generated_path(norm):
         return True
     return _GO_MODULE_CACHE_RE.search(norm) is not None and _GO_TOOLCHAIN not in norm
+
+
+def package_name(path: str) -> str:
+    """The top-level package a library module file belongs to, as ``import`` names it.
+
+    ``.../site-packages/sqlalchemy/orm/__init__.py`` -> ``sqlalchemy``,
+    ``.../Lib/json/decoder.py`` -> ``json``, ``.../lib/python3.12/typing.py`` ->
+    ``typing``, ``<frozen posixpath>`` -> ``posixpath``. A path under neither
+    gives its file's module name.
+    """
+    norm = path.replace("\\", "/").rstrip("/")
+    if norm.startswith("<frozen "):  # a frozen standard-library module
+        return norm.removeprefix("<frozen ").rstrip(">").split(".")[0]
+    match = _INSTALLED_RE.search(norm) or _STDLIB_RE.search(norm)
+    if match:
+        top = match.group("top")
+    else:
+        parts = norm.rsplit("/", 2)
+        top = parts[-2] if parts[-1] == "__init__.py" and len(parts) > 1 else parts[-1]
+    return top.removesuffix(".py") or top
 
 
 def _written_name(name: str) -> str:
@@ -458,10 +507,12 @@ class _Tally:
         self._child = [is_child_process_frame(f) for f in frames]
         self._import = [is_import_frame(f) for f in frames]
         self._native = [is_native_frame(f) for f in frames]
+        self._python = [f.language == "python" for f in frames]
         self._frames = frames
         self._resolved = {r.index: r for r in resolution.resolved}
         self._origins = origins
-        self._symbols: dict[str, tuple[str, IndexedSymbol]] = {}
+        #: Per row id, its file and symbol (None for a module body's row).
+        self._symbols: dict[str, tuple[str, IndexedSymbol | None]] = {}
         self._inclusive: defaultdict[str, float] = defaultdict(float)
         self._own: defaultdict[str, float] = defaultdict(float)
         self._inclusive_n: Counter[str] = Counter()
@@ -494,6 +545,30 @@ class _Tally:
     def _production(self, path: str) -> bool:
         return (self._origins.get(path) or path_origin(path)) == "production"
 
+    def _rows_on(self, frames: tuple[int, ...]) -> list[str | None]:
+        """Per stack position, the row a maintained repo frame is charged to: its
+        symbol's, or for a Python module body the import row it belongs to (the
+        outermost module body of its chain, see the module docstring)."""
+        rows: list[str | None] = [None] * len(frames)
+        chain: str | None = None
+        for k, i in enumerate(frames):
+            if self._unmaintained[i]:
+                continue
+            hit = self._resolved.get(i)
+            if hit is None or (hit.symbol is None and not self._python[i]):
+                chain = None
+            elif hit.symbol is not None:
+                rows[k], chain = hit.symbol.symbol_id, None
+            elif hit.folded:
+                # A module-level lambda or comprehension: import time inside an
+                # import, but never a row of its own (one a function calls at
+                # run time is not an import).
+                rows[k] = chain
+            else:
+                chain = chain or f"{hit.path}::{MODULE_FUNCTION}"
+                rows[k] = chain
+        return rows
+
     def add(self, stack: Stack) -> None:
         weight, samples = stack.weight, stack.samples or 0
         self.total += weight
@@ -502,14 +577,15 @@ class _Tally:
         first: dict[str, int] = {}
         last: dict[str, int] = {}
         in_production = False
+        rows = self._rows_on(stack.frames)
         for k, i in enumerate(stack.frames):
             hit = self._resolved.get(i)
             self.frame_time["resolved" if hit is not None else str(self._reasons[i])] += weight
             if hit is None:
                 continue
             in_production = in_production or self._production(hit.path)
-            if hit.symbol is not None:
-                sid = hit.symbol.symbol_id
+            sid = rows[k]
+            if sid is not None:
                 last[sid] = k
                 if sid not in first:
                     first[sid] = k
@@ -518,7 +594,7 @@ class _Tally:
                     self._inclusive_n[sid] += samples
         if in_production:
             self.explained += weight
-        self._charge(stack.frames, weight, samples)
+        self._charge(stack.frames, rows, weight, samples)
         if first and weight > 0:
             self._split(stack.frames, first, last, weight)
 
@@ -541,10 +617,16 @@ class _Tally:
             if not self._unmaintained[frames[k]]:
                 at = k
         for sid, k in last.items():
-            key, kind = self._callee(frames, k, below[k])
+            module = self._symbols[sid][1] is None
+            if module:
+                key, kind = self._imported(frames, first[sid])
+            else:
+                key, kind = self._callee(frames, k, below[k])
             self._inside.setdefault(sid, Counter())[key] += weight
             self._inside_kinds.setdefault((sid, key), Counter())[kind] += weight
-            if kind != "own":
+            # A module's imports are named by package; the frame a library's
+            # import ended in says nothing about what to do.
+            if kind != "own" and not module:
                 leaf = self._leaf_key(frames[-1])
                 self._leaves.setdefault((sid, key), Counter())[leaf] += weight
         for sid, k in first.items():
@@ -568,6 +650,37 @@ class _Tally:
         # The unmaintained frames down to the next repo frame, or to the leaf.
         segment = frames[k + 1 : nxt]
         return self._frame_key(segment[0]), self._unmaintained_kind(segment)
+
+    def _imported(self, frames: tuple[int, ...], k: int) -> tuple[tuple[Any, ...], str]:
+        """What the import whose row starts at position *k* spent this stack on:
+        the first thing below it that is not import machinery or a repo module body
+        (a library by top-level package, a repo function, a wait or a built-in
+        called from top-level code); else the modules' own code when the stack ends
+        in one, or the import machinery it ends in."""
+        machinery: int | None = None
+        for i in frames[k + 1 :]:
+            if not self._unmaintained[i]:
+                hit = self._resolved.get(i)
+                if hit is None or hit.symbol is not None:
+                    return self._repo_key(i, callee=True)
+                machinery = None  # a repo module body of the same import
+            elif self._wait[i]:
+                return self._frame_key(i), "wait"
+            elif self._import[i]:
+                machinery = i if machinery is None else machinery
+            elif self._native[i]:
+                if machinery is None:
+                    return self._frame_key(i), "native"
+            else:
+                name = _written_name(package_name(self._frames[i].path))
+                key: tuple[Any, ...] = ("package", name)
+                self._named.setdefault(key, {"name": name})
+                return key, "library"
+        if machinery is None:
+            key = ("own",)
+            self._named.setdefault(key, {"name": "(own code)"})
+            return key, "own"
+        return self._frame_key(machinery), "import"
 
     def _unmaintained_kind(self, segment: Sequence[int]) -> str:
         """A run of frames nobody here maintains: a wait or an import anywhere in it,
@@ -658,7 +771,9 @@ class _Tally:
             out.append(driver)
         return out
 
-    def _charge(self, frames: tuple[int, ...], weight: float, samples: int) -> None:
+    def _charge(
+        self, frames: tuple[int, ...], rows: list[str | None], weight: float, samples: int
+    ) -> None:
         """Self time to the innermost maintained repo frame, and the stack's bucket."""
         # The innermost frame somebody here maintains, and what runs below it.
         at = next(
@@ -679,14 +794,18 @@ class _Tally:
             return
         innermost = frames[at]
         hit = self._resolved.get(innermost)
+        sid = rows[at]
+        if sid is not None:
+            self._own[sid] += weight
+            self._own_n[sid] += samples
         if hit is not None and hit.symbol is not None:
-            self._own[hit.symbol.symbol_id] += weight
-            self._own_n[hit.symbol.symbol_id] += samples
             if not in_library and self._production(hit.path):
                 self.buckets["repo_self"] += weight
-        else:
-            # The index keeps no symbol for a file's top level, so a module
-            # body's own time has no row; it is counted here, never dropped.
+        elif sid is None:
+            # A Go package initializer or a JavaScript module wrapper has no
+            # row (a Python module body does: ``<path>::<module>``), so its own
+            # time is counted here, never dropped. A module body stays out of
+            # ``repo_self`` either way: the split counts it with the rest.
             why = "module_body" if hit is not None else str(self._reasons[innermost])
             self.self_unattributed[why] += weight
 
@@ -698,8 +817,11 @@ class _Tally:
         return [
             {
                 "path": self._symbols[sid][0],
-                "function": self._symbols[sid][1].qualified_name,
-                "line": self._symbols[sid][1].start_line,
+                **(
+                    {"function": symbol.qualified_name, "line": symbol.start_line}
+                    if (symbol := self._symbols[sid][1]) is not None
+                    else {"function": MODULE_FUNCTION}
+                ),
                 "self": self._own[sid],
                 "total": self._inclusive[sid],
                 **(
@@ -774,5 +896,6 @@ __all__ = [
     "is_import_frame",
     "is_native_frame",
     "merge_runs",
+    "package_name",
     "refuse_compiled_positions",
 ]
