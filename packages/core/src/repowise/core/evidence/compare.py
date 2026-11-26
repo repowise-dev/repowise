@@ -611,14 +611,14 @@ def benchmark_reach(
 ) -> list[str]:
     """What slower *benchmarks* (their functions; ``None`` for one not placed) ran,
     most direct first: each one's own function and callees, then the functions
-    the benchmark *profiles* measured only when the graph leaves a gap (a
-    benchmark not placed, or one the graph knows no production callee of). A
-    profile of every benchmark is no reach of one: a single noisy benchmark
-    would take the blame for every function the others ran. Ceiling: a profile
-    holds no per-benchmark split, so one gap fills the whole set's reach."""
+    the benchmark *profiles* measured only when the graph knows no production
+    callee of any of them. A profile of every benchmark is no reach of one: a
+    single noisy benchmark would take the blame for every function the others
+    ran. Ceiling: a profile holds no per-benchmark split, so a benchmark the
+    graph does not reach, slower beside one it does, names only its own
+    function's commits."""
     placed = [b for b in benchmarks if b]
-    gap = not placed or len(placed) < len(benchmarks)
-    gap = gap or any(not history.callees.get(b) for b in placed)
+    gap = not any(history.callees.get(b) for b in placed)
     return reached_functions(placed, history, profiles if gap else ())
 
 

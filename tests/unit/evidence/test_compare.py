@@ -8,6 +8,7 @@ from types import SimpleNamespace as NS  # noqa: N814
 from repowise.core.evidence.compare import (
     Cause,
     History,
+    benchmark_reach,
     cause_words,
     compare_runs,
     comparison_line,
@@ -263,6 +264,15 @@ def test_the_profile_fills_a_benchmark_with_no_production_callee_known() -> None
     )
     found = next(c for c in compare_runs(runs, rows, history) if c.kind == "benchmark")
     assert found.cause.commits[0].functions == (GET_VALUE,)
+
+
+def test_a_reached_benchmark_takes_no_profile_fill_from_an_unreached_one() -> None:
+    """A noisy reached benchmark slower beside one the graph does not reach."""
+    other = "bench_test.go::BenchmarkOther"
+    history = History(callees={BENCH_FN: ("context.go::Context::JSON",)})
+    profile = [[NS(symbol_id=GET_VALUE, self_value=5.0)]]
+    assert GET_VALUE not in benchmark_reach([BENCH_FN, other, None], history, profile)
+    assert GET_VALUE in benchmark_reach([other, None], history, profile)
 
 
 def test_unordered_callees_rank_by_name() -> None:
