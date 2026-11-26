@@ -5,7 +5,7 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
 
     {
       "format": "repowise-evidence-v1",
-      "kind": "profile",                  # profile | benchmark | test_timing | query_count
+      "kind": "profile",                  # one of evidence.kinds (below)
       "commit_sha": "<40 or 64 hex>",     # optional: the commit measured
       "dirty": false,                     # optional: uncommitted changes at measurement
       "tool": {"name": "pyinstrument", "version": "4.6.2"},   # optional
@@ -26,8 +26,17 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
                                 "share": 1.0}]}]
     }
 
-The entry list is named by the kind: ``symbols`` (profile), ``benchmarks``,
-``tests`` (test_timing) or ``queries`` (query_count). A code location is
+The entry list is named by the kind (:mod:`.kinds` holds every kind):
+``symbols`` (profile), ``benchmarks``, ``tests`` (test_timing), ``queries``
+(query_count), ``routes`` (route_latency) or ``statements``
+(statement_stats). The last two are production kinds: a ``route_latency``
+entry is ``{method, route, count, p50_ms, p95_ms, total_ms, errors}`` (a
+route template, never a requested URL), a ``statement_stats`` entry is
+``{statement_fp, query, calls, total_ms, mean_ms, rows}`` with ``query`` the
+normalized text, cut short and with every value masked
+(:func:`statement_text`). Any run may say the ``window`` it covers
+(``{"start": ISO 8601, "end": ISO 8601}``) and ``base_commit_sha``, the
+oldest commit deployed in it (``commit_sha`` is then the newest). A code location is
 ``path`` (repo-relative POSIX), ``function`` (the qualified name, or the
 symbol's id after its file as a test runner names it: ``TestCache::test_get``)
 and ``line`` (where the function starts). A profile entry's ``self`` is what
@@ -62,6 +71,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from repowise.core.git_sha import is_full_sha
@@ -69,13 +79,6 @@ from repowise.core.interchange import format_tag, load_json_object, repo_relativ
 
 EVIDENCE_FORMAT = "repowise-evidence-v1"
 
-#: Evidence kind -> the key of its entry list.
-ENTRY_LISTS: dict[str, str] = {
-    "profile": "symbols",
-    "benchmark": "benchmarks",
-    "test_timing": "tests",
-    "query_count": "queries",
-}
 VALUE_KINDS = frozenset({"cpu", "wall"})
 TEST_OUTCOMES = frozenset({"passed", "failed", "skipped", "error"})
 QUERY_SCOPES = frozenset({"test", "request"})
@@ -127,6 +130,11 @@ class EvidenceDocument:
     entries: tuple[dict[str, Any], ...]
     #: Entries not read, by reason: the converter's own counts plus this file's.
     skipped: dict[str, int] = field(default_factory=dict)
+    #: The window a production run covers (``window.start``, ``window.end``), UTC.
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+    #: The oldest commit deployed in the window; ``commit_sha`` is the newest.
+    base_commit_sha: str | None = None
 
     @property
     def units_total(self) -> int:
@@ -140,6 +148,7 @@ def parse_evidence(text: str) -> EvidenceDocument:
     commit = _commit_sha(data)
     value_kind, unit = _value_kind_and_unit(kind, data)
     tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+    window_start, window_end = _window(data.get("window"))
 
     skipped: Counter[str] = Counter(_converter_skips(data.get("skipped")))
     entries = _read_entries(kind, raw_entries, skipped)
@@ -160,11 +169,16 @@ def parse_evidence(text: str) -> EvidenceDocument:
         total_samples=_count(data.get("total_samples")),
         entries=tuple(entries),
         skipped=dict(skipped),
+        window_start=window_start,
+        window_end=window_end,
+        base_commit_sha=_commit_sha(data, "base_commit_sha"),
     )
 
 
 def _envelope(text: str) -> tuple[dict[str, Any], str, list[Any]]:
     """The JSON object, its kind and its entry list, or the document-level error."""
+    from .kinds import ENTRY_LISTS, RESERVED_KINDS
+
     data = load_json_object(text)
     if data is None:
         raise EvidenceFormatError(
@@ -178,6 +192,12 @@ def _envelope(text: str) -> tuple[dict[str, Any], str, list[Any]]:
             f"set \"format\": \"{EVIDENCE_FORMAT}\", or convert the tool's output first",
         )
     kind = _member(data.get("kind"), ENTRY_LISTS)
+    if kind is None and _member(data.get("kind"), RESERVED_KINDS):
+        raise EvidenceFormatError(
+            f"kind {data['kind']!r} is reserved: its shape is documented, and no "
+            "release reads it yet",
+            "kind is one of " + ", ".join(sorted(ENTRY_LISTS)),
+        )
     if kind is None:
         raise EvidenceFormatError(
             f"unknown kind {data.get('kind')!r}",
@@ -192,30 +212,68 @@ def _envelope(text: str) -> tuple[dict[str, Any], str, list[Any]]:
     return data, kind, raw_entries
 
 
-def _commit_sha(data: dict[str, Any]) -> str | None:
-    commit = data.get("commit_sha")
+def _commit_sha(data: dict[str, Any], key: str = "commit_sha") -> str | None:
+    commit = data.get(key)
     if commit is None:
         return None
     commit = commit.lower() if isinstance(commit, str) else commit
     if not is_full_sha(commit):
         raise EvidenceFormatError(
-            "commit_sha is not a full 40- or 64-character hex SHA",
+            f"{key} is not a full 40- or 64-character hex SHA",
             "use the output of `git rev-parse HEAD` at measurement, or leave it out",
         )
     return commit
 
 
+def _instant(value: Any, name: str) -> datetime:
+    """An ISO 8601 time with its offset, in UTC."""
+    try:
+        at = datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        at = None
+    if at is None or at.tzinfo is None:
+        raise EvidenceFormatError(
+            f"{name} is not an ISO 8601 time with its UTC offset",
+            'write it like "2026-11-26T09:00:00Z", or leave the window out',
+        )
+    return at.astimezone(UTC)
+
+
+def _window(raw: Any) -> tuple[datetime | None, datetime | None]:
+    """``window: {start, end}``: when a production run's counters started and stopped."""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        raise EvidenceFormatError(
+            "window is not an object", 'write "window": {"start": ..., "end": ...}'
+        )
+    start = None if raw.get("start") is None else _instant(raw["start"], "window.start")
+    end = None if raw.get("end") is None else _instant(raw["end"], "window.end")
+    if start is not None and end is not None and start > end:
+        raise EvidenceFormatError(
+            "window.start is after window.end", "swap them, or leave the window out"
+        )
+    return start, end
+
+
 def _read_entries(
     kind: str, raw_entries: list[Any], skipped: Counter[str]
 ) -> list[dict[str, Any]]:
-    """The valid entries in order; each one not read is counted in *skipped*."""
+    """The valid entries in order; each one not read is counted in *skipped*.
+
+    Two entries are one measurement when their kind's ``identity`` agrees: no
+    finer than the store's key, so two entries never land on one stored row.
+    """
+    from .kinds import evidence_kinds
+
+    spec = evidence_kinds[kind]
     entries: list[dict[str, Any]] = []
     seen: set[Any] = set()
-    read = _ENTRY_READERS[kind]
+    read = spec.read_entry
     for raw in raw_entries:
         entry, reason = read(raw) if isinstance(raw, dict) else (None, "not_an_object")
         if entry is not None:
-            identity = _IDENTITY[kind](entry)
+            identity = spec.identity(entry)
             if identity in seen:
                 entry, reason = None, "duplicate"
             else:
@@ -228,10 +286,11 @@ def _read_entries(
 
 
 def _value_kind_and_unit(kind: str, data: dict[str, Any]) -> tuple[str | None, str | None]:
-    if kind == "test_timing":
-        return "wall", "s"
-    if kind == "query_count":
-        return None, "count"
+    from .kinds import evidence_kinds
+
+    clock = evidence_kinds[kind].clock
+    if clock is not None:
+        return clock
     value_kind = _member(data.get("value_kind"), VALUE_KINDS)
     unit = _token(data.get("unit"))
     if kind == "profile":
@@ -327,7 +386,7 @@ def _location(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
 # --- entries ----------------------------------------------------------------
 
 
-def _profile_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def profile_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     where, reason = _location(raw)
     if where is None:
         return None, reason
@@ -392,7 +451,7 @@ def _split_items(
     return items[:MAX_SPLIT_ITEMS] or None
 
 
-def _benchmark_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def benchmark_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     name, reason = _name(raw.get("name"))
     if name is None:
         return None, reason
@@ -416,7 +475,7 @@ def _benchmark_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
     }, None
 
 
-def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     test_id, reason = _name(raw.get("id"))
     if test_id is None:
         return None, "no_id" if reason == "no_name" else reason
@@ -454,7 +513,7 @@ def _query_scope(
     return (scope_kind, scope_id, _count(scope.get("items"))), None
 
 
-def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     scope, reason = _query_scope(raw)
     if scope is None:
         return None, reason
@@ -480,33 +539,128 @@ def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None
     }, None
 
 
-_ENTRY_READERS = {
-    "profile": _profile_entry,
-    "benchmark": _benchmark_entry,
-    "test_timing": _test_entry,
-    "query_count": _query_entry,
-}
+# --- production entries -----------------------------------------------------
 
-#: What makes two entries of a kind the same measurement: no finer than the
-#: store's key, so two entries never land on one stored row. The line is not
-#: part of it; one function is one symbol.
-_IDENTITY = {
-    "profile": lambda e: (e["path"], e["function"]),
-    "benchmark": lambda e: e["name"],
-    "test_timing": lambda e: e["test_id"],
-    "query_count": lambda e: (
-        e["scope_kind"], e["scope_id"], e["path"], e["function"], e["statement_fp"]
-    ),
-}
+#: An HTTP method as a route table names it (``GET``, ``ALL``), upper case.
+_METHOD_RE = re.compile(r"[A-Z]{1,16}")
+#: A path segment that is a value, not part of a template: a number, an email
+#: or other ``@`` handle, or a long hex id or UUID. Ceiling: a template with a
+#: literal numeric segment (``/v2/2024/report``) is refused too; name it
+#: ``:year`` in the file.
+_VALUE_SEGMENT_RE = re.compile(r"\d+|[^/]*@[^/]*|[0-9a-fA-F-]{16,}")
+#: Longest statement text kept: enough to name its tables and functions for
+#: the statement-site join, never a whole statement.
+STATEMENT_TEXT_MAX = 200
+# One left-to-right pass of PostgreSQL's lexical rules, so a quote inside a
+# comment, a name or another string is read as what it sits in. Quoted text
+# and numbers outside a parameter (``$1``) are values, never kept; a
+# double-quoted name is kept as written. A backslash escapes the next
+# character only in an ``E'...'`` string: in a standard string it is a
+# character like any other.
+_SQL_TOKEN_RE = re.compile(
+    r"(?P<comment>/\*.*?(?:\*/|\Z)|--[^\n]*)"
+    r"|(?P<name>\"(?:[^\"]|\"\")*(?:\"|\Z))"
+    r"|(?P<dollar>\$(?P<tag>[A-Za-z_]\w*)?\$.*?(?:\$(?P=tag)\$|\Z))"
+    r"|(?P<escaped>(?<!\w)[Ee]'(?:[^'\\]|\\.|'')*(?:'|\Z))"
+    r"|(?P<string>'(?:[^']|'')*(?:'|\Z))"
+    # A number is any word that starts with a digit (``0x1F``, ``1_000``,
+    # ``3.5e2``, ``5.5.5``) or a dot and a digit (``.5``), unless it ends a
+    # parameter or a name (``$12``, ``t2``).
+    r"|(?P<number>(?<![$\w])\.?\d[\w.]*)",
+    re.DOTALL,
+)
+
+
+def _mask(match: re.Match[str]) -> str:
+    if match.group("name") is not None:
+        return match.group("name")
+    return " " if match.group("comment") is not None else "?"
+
+
+def statement_text(value: Any) -> str | None:
+    """Statement text as stored: comments dropped, every quoted string and
+    number outside a parameter replaced by ``?``, whitespace collapsed, cut at
+    :data:`STATEMENT_TEXT_MAX`; None for anything else.
+
+    ``pg_stat_statements`` already replaces constants with ``$n``; this holds
+    for text from any other source too, so no value reaches the store. The
+    text is read as PostgreSQL: a double-quoted word is a name and is kept.
+    """
+    if not isinstance(value, str):
+        return None
+    text = _SQL_TOKEN_RE.sub(_mask, value)
+    text = " ".join("".join(c if ord(c) >= 0x20 else " " for c in text).split())
+    if not text:
+        return None
+    return text if len(text) <= STATEMENT_TEXT_MAX else text[: STATEMENT_TEXT_MAX - 3] + "..."
+
+
+def route_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """A ``route_latency`` entry: one route's requests over the run's window."""
+    method = raw.get("method")
+    method = method.strip().upper() if isinstance(method, str) else None
+    if method is None or not _METHOD_RE.fullmatch(method):
+        return None, "bad_method"
+    route, reason = _name(raw.get("route"))
+    if route is None:
+        return None, "no_route" if reason == "no_name" else reason
+    # A template (``/users/:id``), never a URL someone requested: a query
+    # string, a fragment or a segment that reads as a value may carry what
+    # they typed or who they are.
+    if (
+        not route.startswith("/")
+        or "?" in route
+        or "#" in route
+        or any(_VALUE_SEGMENT_RE.fullmatch(part) for part in route.split("/"))
+    ):
+        return None, "not_a_route_template"
+    count = _count(raw.get("count"))
+    if count is None:
+        return None, "no_value"
+    return {
+        "method": method,
+        "route": route,
+        "count": count,
+        "p50_ms": _amount(raw.get("p50_ms")),
+        "p95_ms": _amount(raw.get("p95_ms")),
+        "total_ms": _amount(raw.get("total_ms")),
+        "errors": _count(raw.get("errors")),
+    }, None
+
+
+def statement_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """A ``statement_stats`` entry: one normalized statement's totals over the window."""
+    fp = raw.get("statement_fp")
+    fp = fp.lower() if isinstance(fp, str) else None
+    if fp is None or not _DIGEST_RE.fullmatch(fp):
+        return None, "statement_not_digest"
+    calls = _count(raw.get("calls"))
+    if calls is None:
+        return None, "no_value"
+    return {
+        "statement_fp": fp,
+        "query": statement_text(raw.get("query")),
+        "calls": calls,
+        "total_ms": _amount(raw.get("total_ms")),
+        "mean_ms": _amount(raw.get("mean_ms")),
+        "rows": _count(raw.get("rows")),
+    }, None
 
 
 __all__ = [
-    "ENTRY_LISTS",
     "EVIDENCE_FORMAT",
     "QUERY_SCOPES",
+    "STATEMENT_TEXT_MAX",
     "TEST_OUTCOMES",
     "VALUE_KINDS",
     "EvidenceDocument",
     "EvidenceFormatError",
+    "benchmark_entry",
     "parse_evidence",
+    "profile_entry",
+    "query_entry",
+    "route_entry",
+    "statement_entry",
+    "statement_text",
+    "test_entry",
 ]

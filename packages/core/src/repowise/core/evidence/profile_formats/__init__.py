@@ -8,7 +8,7 @@ works for coverage reports. A format is a :class:`ProfileFormat`: a
 turns the whole file into a :class:`ProfileRun` (frames and weighted
 stacks, nothing joined); joining frames to code and writing the
 ``repowise-evidence-v1`` document is shared (:mod:`..profile_convert`). Any
-other kind (benchmark results, test reports) has ``to_v1`` instead, which writes the v1
+other kind (benchmark results, test reports, a pg_stat_statements export) has ``to_v1`` instead, which writes the v1
 document directly: its entries name their functions, and ingest joins
 them. A format whose tool names a package rather than a file (Go) sets
 ``needs_checkout`` and gets the checkout the run used as a second argument;
@@ -40,6 +40,7 @@ from . import (
     go_test_json,
     hyperfine,
     junit,
+    pg_stat_statements,
     pprof,
     pytest_benchmark,
     speedscope,
@@ -89,6 +90,10 @@ profile_formats.register(
 )
 profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
 profile_formats.register("junit", ProfileFormat(junit.sniff, to_v1=junit.to_v1))
+profile_formats.register(
+    "pg-stat-statements",
+    ProfileFormat(pg_stat_statements.sniff, to_v1=pg_stat_statements.to_v1),
+)
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 
 

@@ -1039,3 +1039,50 @@ def test_tests_names_a_suite_total_over_several_workloads_as_a_sum() -> None:
     text = " ".join(evidence_cmd._tests_lines(payload))
 
     assert "the 4 timed tests take 9.0s, summed over 2 workloads." in text
+
+
+_PRODUCTION = Path(__file__).parents[1] / "evidence" / "fixtures" / "production"
+
+
+def test_a_statement_export_is_stored_as_production_with_no_class(indexed) -> None:
+    root, _head = indexed
+    csv = root / "statements.csv"
+    csv.write_bytes((_PRODUCTION / "pg_stat_statements.csv").read_bytes())
+
+    result = _add(str(csv), "--workload", "prod db")
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert "in production" in result.stderr + result.stdout
+    assert "unknown deployed commit" in result.stderr + result.stdout
+    (run,), _ = _stored(root)
+    # Production ran where users are, not on the machine adding the file.
+    assert (run.kind, run.workload_class, run.environment) == (
+        "statement_stats", "production", "production",
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--class", "production"], "never from --class"),
+        (["--class", "load_test"], "production by what it measures"),
+    ],
+)
+def test_a_production_file_refuses_a_typed_class_in_one_line(indexed, args, message) -> None:
+    root, _head = indexed
+    path = root / "statements.json"
+    path.write_bytes((_PRODUCTION / "statement_stats.json").read_bytes())
+
+    result = _add(str(path), "--workload", "prod db", *args)
+
+    assert result.exit_code == 2
+    error = [line for line in result.stderr.splitlines() if line.startswith("Error")]
+    assert len(error) == 1 and message in error[0]
+
+
+def test_a_profile_still_needs_its_class(indexed) -> None:
+    root, head = indexed
+    result = _add(str(_write(root)), "--workload", "w", "--commit", head)
+    assert result.exit_code == 2
+    assert "name the workload class" in result.stderr
+    assert _stored(root) == ([], [])

@@ -20,12 +20,12 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import Table, delete, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ....evidence.kinds import STORE_TABLES, evidence_kinds
 from ...models import (
+    Base,
     EvidenceBenchmarkResult,
-    EvidenceQueryCount,
     EvidenceRun,
     EvidenceSymbolCost,
-    EvidenceTestTiming,
     SymbolHotness,
     WorkloadHotness,
     _new_uuid,
@@ -36,12 +36,16 @@ from .._shared import _BATCH_SIZE
 if TYPE_CHECKING:
     from ....evidence.hotness import CostFacts, RunFacts
 
-#: The table that holds a run's rows, by the run's evidence kind.
+
+def evidence_row_table(kind: str) -> Table | None:
+    """The table that holds a run's rows, by the run's evidence kind (``evidence.kinds``)."""
+    spec = evidence_kinds.get(kind)
+    return None if spec is None else Base.metadata.tables[spec.table]
+
+
+#: :func:`evidence_row_table` of every kind registered at import (the built-in ones).
 EVIDENCE_ROW_TABLES: dict[str, Table] = {
-    "profile": EvidenceSymbolCost.__table__,  # type: ignore[dict-item]
-    "benchmark": EvidenceBenchmarkResult.__table__,  # type: ignore[dict-item]
-    "test_timing": EvidenceTestTiming.__table__,  # type: ignore[dict-item]
-    "query_count": EvidenceQueryCount.__table__,  # type: ignore[dict-item]
+    name: Base.metadata.tables[spec.table] for name, spec in evidence_kinds.items()
 }
 
 
@@ -74,13 +78,15 @@ async def save_evidence_run(
     anything is written. A run whose ``run_key`` and commit match a stored
     run is one measurement ingested twice: the stored run is restamped and
     nothing else is written, like ``coverage._record_ingest``, so ``run_key``
-    must cover everything the run row records. A run with no commit is
-    always new, since it cannot be told apart from another. Pruning keeps
+    must cover everything the run row records. A run with no commit (a
+    production window whose deployed commit is unknown) matches only a stored
+    run with no commit, by ``run_key`` alone: the same file added again, by a
+    nightly job, is one measurement. Pruning keeps
     *history_runs* per workload and *max_runs* per kind, never dropping a
     workload's newest run (:func:`prune_evidence_runs`).
     """
     kind = run["kind"]
-    table = EVIDENCE_ROW_TABLES.get(kind)
+    table = evidence_row_table(kind)
     if table is None:
         raise ValueError(f"unknown evidence kind {kind!r}")
     if history_runs < 1 or max_runs < 1:
@@ -93,26 +99,27 @@ async def save_evidence_run(
     _refuse_repeated_keys(table, filled)
     at = run.get("ingested_at") or _now_utc()
     commit = run.get("commit_sha")
-    if commit is not None:
-        same = (
-            await session.execute(
-                select(EvidenceRun)
-                .where(
-                    EvidenceRun.repository_id == repository_id,
-                    EvidenceRun.run_key == run["run_key"],
-                    EvidenceRun.commit_sha == commit,
-                )
-                .order_by(EvidenceRun.ingested_at.desc())
-                .limit(1)
+    same = (
+        await session.execute(
+            select(EvidenceRun)
+            .where(
+                EvidenceRun.repository_id == repository_id,
+                EvidenceRun.run_key == run["run_key"],
+                EvidenceRun.commit_sha.is_(None)
+                if commit is None
+                else EvidenceRun.commit_sha == commit,
             )
-        ).scalar_one_or_none()
-        if same is not None:
-            same.ingested_at = at
-            # A run stored before the fold existed gets it from the same file.
-            if same.timing_summary_json is None and run.get("timing_summary_json"):
-                same.timing_summary_json = run["timing_summary_json"]
-            await session.flush()
-            return EvidenceWrite(same.id, restamped=True, rows_written=0, runs_pruned=0)
+            .order_by(EvidenceRun.ingested_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if same is not None:
+        same.ingested_at = at
+        # A run stored before the fold existed gets it from the same file.
+        if same.timing_summary_json is None and run.get("timing_summary_json"):
+            same.timing_summary_json = run["timing_summary_json"]
+        await session.flush()
+        return EvidenceWrite(same.id, restamped=True, rows_written=0, runs_pruned=0)
 
     # One savepoint, so a failed row batch leaves no run without its rows.
     async with session.begin_nested():
@@ -226,7 +233,7 @@ async def delete_evidence_runs(session: AsyncSession, run_ids: list[str]) -> Non
     """
     for i in range(0, len(run_ids), _BATCH_SIZE):
         chunk = run_ids[i : i + _BATCH_SIZE]
-        for table in EVIDENCE_ROW_TABLES.values():
+        for table in (Base.metadata.tables[name] for name in STORE_TABLES):
             await session.execute(delete(table).where(table.c.run_id.in_(chunk)))
         await session.execute(delete(EvidenceRun).where(EvidenceRun.id.in_(chunk)))
 
@@ -719,6 +726,7 @@ __all__ = [
     "benchmark_results",
     "benchmark_runs",
     "delete_evidence_runs",
+    "evidence_row_table",
     "hotness_for_symbols",
     "hotness_inputs",
     "list_evidence_runs",

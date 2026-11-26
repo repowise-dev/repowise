@@ -356,6 +356,8 @@ def test_base_includes_all_models():
         "evidence_test_timings",
         "evidence_test_stats",
         "evidence_query_counts",
+        "evidence_route_latency",
+        "evidence_statement_stats",
         "symbol_hotness",
         "workload_hotness",
         "build_units",

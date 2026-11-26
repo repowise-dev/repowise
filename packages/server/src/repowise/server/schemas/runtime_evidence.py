@@ -56,7 +56,8 @@ class EvidenceRunSummary(_Strict):
     """One stored run: its workload, commit, freshness and where its time went."""
 
     run_id: str
-    #: ``profile``, ``benchmark``, ``test_timing`` or ``query_count``.
+    #: One of ``evidence.kinds``: ``profile``, ``benchmark``, ``test_timing``,
+    #: ``query_count``, ``route_latency`` or ``statement_stats``.
     kind: str
     workload: str
     #: The workload class: ``unit_test``, ``benchmark``, ``entry_point``,

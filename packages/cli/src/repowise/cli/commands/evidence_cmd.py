@@ -46,7 +46,7 @@ from repowise.core.evidence.add import (
 )
 from repowise.core.evidence.ci_snippet import CI_KINDS
 from repowise.core.evidence.format_v1 import VALUE_KINDS
-from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
+from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES, run_class
 from repowise.core.evidence.profile_formats import profile_formats
 
 
@@ -68,8 +68,9 @@ def evidence_group() -> None:
 @click.option(
     "--class",
     "workload_class",
-    required=True,
-    help="Workload class: " + ", ".join(FLAG_WORKLOAD_CLASSES) + ".",
+    default=None,
+    help="Workload class: " + ", ".join(FLAG_WORKLOAD_CLASSES) + ". Required, except for "
+    "a route_latency or statement_stats file, which is production by its kind.",
 )
 @click.option(
     "--commit",
@@ -93,7 +94,7 @@ def evidence_group() -> None:
     "--environment",
     default=None,
     help="Where it ran, one word. Defaults to the OS and whether this is a CI job, "
-    "e.g. linux-ci or macos-local.",
+    "e.g. linux-ci or macos-local; production for a production file.",
 )
 @click.option(
     "--input-format",
@@ -121,7 +122,7 @@ def evidence_group() -> None:
 def evidence_add(
     files: tuple[Path, ...],
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     commit: str | None,
     checkout_root: Path | None,
     dirty: bool | None,
@@ -138,7 +139,8 @@ def evidence_add(
     FILE is a repowise-evidence-v1 document, or a profile, benchmark
     results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
     V8 .cpuprofile, collapsed stacks, pytest-benchmark or hyperfine JSON,
-    go test -bench or go test -json output, JUnit XML), detected from its content. Several
+    go test -bench or go test -json output, JUnit XML, a pg_stat_statements CSV from
+    psql --csv), detected from its content. Several
     profiles (a parent process and its workers, or a directory holding one file
     per process) merge into one run; they must share a format, unit, tool and
     clock.
@@ -151,7 +153,9 @@ def evidence_add(
     v1 entries name their function (path, qualified name, line) and match
     exactly. Evidence from another commit than HEAD keeps its commit and
     reads as stale; it is never re-mapped. The production class is set only
-    by a verified source, never by this flag.
+    by a verified source or a production kind (route_latency, statement_stats:
+    leave --class out, and --commit is optional since a window spans
+    deploys), never by this flag.
 
     Examples:
 
@@ -163,12 +167,14 @@ def evidence_add(
         repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
         repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)
         repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
+        repowise evidence add statements.csv --workload "prod db"
 
     Exits 1 when nothing was stored, 2 on a usage error.
     """
     configure_cli_logging(verbose=verbose)
     notices = notice_console(fmt)
     commit = commit.lower() if commit is not None else None
+    named_environment = environment
     environment = environment or detect_environment()
     try:
         check_options(workload, workload_class, environment, commit)
@@ -211,6 +217,14 @@ def evidence_add(
         )
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
+    # The class the file's kind takes, refused before the index is opened (a
+    # converted profile is a profile).
+    stored_class, why = run_class(prepared.doc.kind if prepared.doc else "profile", workload_class)
+    if why is not None:
+        raise click.BadParameter(why, param_hint="--class")
+    if stored_class == "production" and named_environment is None:
+        # Production ran where users are, not on the machine adding the file.
+        environment = "production"
     try:
         payload = run_async(
             _ingest(
@@ -260,7 +274,7 @@ async def _store(
     repo_path: Path,
     prepared: PreparedEvidence,
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     environment: str,
     allow_partial: bool,
     caps: Any,
@@ -341,7 +355,7 @@ _SHORT_RUN_S = 3.0
 
 
 def _warn_short_run(
-    notices: Any, workload_class: str, value_kind: str | None, summary: dict[str, Any]
+    notices: Any, workload_class: str | None, value_kind: str | None, summary: dict[str, Any]
 ) -> None:
     """Warn (never refuse) when an entry point's wall-clock profile covers only a few seconds.
 
@@ -371,9 +385,12 @@ def _report_stored(
 ) -> None:
     """Print what was stored, what was left out and whether it reads as current."""
     verb = "Restamped" if restamped else "Stored"
+    commit = summary["commit_sha"]
+    at = commit[:12] if commit else "an unknown deployed commit"
     notices.print(
-        f"[green]{verb} {summary['kind']} evidence for {escape(summary['workload'])}[/green]: "
-        f"{stored} of {summary['entries']} entries stored at {summary['commit_sha'][:12]}."
+        f"[green]{verb} {summary['kind']} evidence for {escape(summary['workload'])}[/green]"
+        f"{escape(_production_window(summary))}: {stored} of {summary['entries']} entries "
+        f"stored at {at}."
     )
     labels = (("Skipped", summary["skipped"]), ("Kept without a function", summary["unlinked"]))
     for label, counts in labels:
@@ -394,13 +411,23 @@ def _report_stored(
     _report_staleness(notices, summary, index_commit)
 
 
+def _production_window(summary: dict[str, Any]) -> str:
+    """`` in production over <start> to <end>`` for a production run; ``""`` otherwise."""
+    window = summary.get("window")
+    if not window:
+        return ""
+    if not (window["start"] or window["end"]):
+        return " in production"
+    return f" in production over {window['start'] or '?'} to {window['end'] or '?'}"
+
+
 def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str | None) -> None:
     if summary["stale"]:
         notices.print(
             "[yellow]Measured at another commit than HEAD: it is kept with its own "
             "commit and reads as stale.[/yellow]"
         )
-    elif index_commit and index_commit != summary["commit_sha"]:
+    elif index_commit and summary["commit_sha"] and index_commit != summary["commit_sha"]:
         notices.print(
             "[yellow]The index is at another commit than the one measured; run "
             "[cyan]repowise update[/cyan] and add the file again to join it to the "
@@ -731,7 +758,8 @@ def _status_line(run: dict[str, Any]) -> str:
     return (
         f"[bold]{escape(run['workload'])}[/bold] ({run['kind']}, {run['class']}, "
         f"{escape(run['environment'])}): {run['freshness']} at "
-        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}{explained}"
+        f"{run['commit_sha'][:12] if run['commit_sha'] else 'an unknown commit'}; "
+        f"{stored}{explained}"
         + (f"; {run['tests_failed']:,} tests failed" if run["tests_failed"] else "")
         + "."
         + (" [red](partial)[/red]" if run["mapping_partial"] else "")

@@ -13,9 +13,8 @@ Revision ID: 0147
 Revises: 0144
 Create Date: 2026-11-26
 
-Intended final chain: 0143 -> 0144 (inside and drivers) -> 0145 (function blame
-history) -> 0146 (evidence kinds) -> 0147. Down revision is 0144 while this
-branch stacks on 0144 alone; set it to 0146 when the chain is merged.
+Chain: 0144 (inside and drivers) -> 0147 (this) -> 0148 (function blame
+history) -> 0149 (evidence kinds).
 """
 
 from __future__ import annotations

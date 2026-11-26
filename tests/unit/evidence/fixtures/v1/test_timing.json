@@ -1,0 +1,16 @@
+{
+  "format": "repowise-evidence-v1",
+  "kind": "test_timing",
+  "tool": {"name": "junit"},
+  "tests": [
+    {"id": "tests/test_app.py::test_build", "path": "tests/test_app.py", "function": "test_build",
+     "line": 4, "duration_s": 1.25, "outcome": "passed", "first_in_class": true},
+    {"id": "tests/test_app.py::TestX::test_y", "path": "tests/test_app.py", "function": "TestX::test_y",
+     "duration_s": 0.5, "outcome": "failed"},
+    {"id": "tests.unit.test_x.TestC::test_z", "classname": "tests.unit.test_x.TestC",
+     "duration_s": 0.1, "outcome": "skipped"},
+    {"id": "tests/test_app.py::test_skip", "outcome": "skipped"},
+    {"id": "no value"},
+    {"duration_s": 1}
+  ]
+}
