@@ -18,6 +18,7 @@ from repowise.core.persistence.crud import tests_running_spans as spans_run
 from repowise.core.persistence.models import (
     EvidenceBenchmarkResult,
     EvidenceRun,
+    EvidenceSymbolCost,
     FunctionFact,
     GitCommit,
     GitFunctionBlame,
@@ -444,6 +445,51 @@ async def test_callers_are_read_in_one_statement_and_tests_never_count(async_ses
     assert rows[load]["callers"] == [f"src/c00{i}.py::f" for i in range(3)]
     assert rows[f"{APP}::serve"]["callers_total"] == 1
     assert len([s for s in edge_reads if "ORDER BY" in s]) == 1
+
+
+async def test_callers_are_production_ones_and_the_measured_caller_leads(async_session) -> None:
+    """Tooling and test callers never count; the caller the run measured driving the
+    function leads the list with its share, ahead of a more confident static one."""
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    load = f"{APP}::load"
+    confidence = {
+        "src/c1.py::a": 1.0,
+        "src/c2.py::b": 0.9,
+        "src/c3.py::c": 0.8,
+        "src/c4.py::d": 0.7,
+        "scripts/release.py::cut": 1.0,
+        "tests/test_load.py::test_load": 1.0,
+    }
+    async_session.add_all(
+        [GraphNode(repository_id=repo.id, node_id=load, node_type="symbol")]
+        + [
+            GraphEdge(repository_id=repo.id, source_node_id=c, target_node_id=load,
+                      edge_type="calls", confidence=conf)
+            for c, conf in confidence.items()
+        ]
+    )
+    drivers = [
+        {"name": "d", "share": 0.6, "symbol": "src/c4.py::d"},
+        {"name": "cut", "share": 0.3, "symbol": "scripts/release.py::cut"},
+        {"name": "main", "share": 0.1, "path": "src/main.py"},
+    ]
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    # The run's own measured callers of ``load``.
+    async_session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=load, repository_id=repo.id, drivers_json=json.dumps(drivers)
+        )
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("load")])
+
+    (row,) = (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"]
+
+    assert row["callers_total"] == 4
+    assert row["callers"] == ["src/c4.py::d", "src/c1.py::a", "src/c2.py::b"]
+    assert row["caller_shares"] == {"src/c4.py::d": 0.6}
 
 
 async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session) -> None:

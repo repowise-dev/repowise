@@ -512,16 +512,19 @@ def timed_targets(
     units: BuildUnitIndex | None,
     runtime: RuntimeInputs,
     stacks: Sequence[Stack] | None = None,
+    go_mains: Sequence[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """For each repo-relative path in *paths*, the workload ``perf measure``
     times for a change there (:func:`~.runtime_setup.timed_target`); a path
     with none is left out. One stack detection for all of them, or *stacks*
-    when the caller already detected them for this tree. Blocking reads.
+    when the caller already detected them for this tree. Pass *go_mains*
+    when the caller already cached :func:`detect_go_mains` for the session.
+    Blocking reads.
     """
     root = Path(repo_root)
     if stacks is None:
         stacks = detect_repo_stacks(root, units)
-    mains = _go_mains(root, stacks)
+    mains = list(go_mains) if go_mains is not None else detect_go_mains(root, stacks)
     out: dict[str, dict[str, Any]] = {}
     # Files of one language in one directory share a unit, so its targets are read once.
     seen: dict[tuple[str, str], dict[str, Any] | None] = {}
@@ -535,13 +538,16 @@ def timed_targets(
     return out
 
 
-def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
+def detect_go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
     """Go ``package main`` directories, read only when a unit is Go."""
     if not any(s.language == "go" for s in stacks):
         return []
     from ..analysis.published_packages import BuildFacts, go_main_packages
 
     return go_main_packages(BuildFacts(root))
+
+
+_go_mains = detect_go_mains
 
 
 __all__ = [

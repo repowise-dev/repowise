@@ -220,3 +220,103 @@ def test_a_failed_test_count_is_part_of_the_run_and_its_key() -> None:
     # Every count is its own run, and a run that reports none differs from one that reports 0.
     keys = {run_key("{}", p, "profile") for p in (base, red, redder, zero)}
     assert len(keys) == 4
+
+
+def test_go_receiver_and_jvm_package_names_resolve_to_indexed_symbols() -> None:
+    symbols = {
+        "srv/cache.go": symbol_lookup(
+            [
+                IndexedSymbol("srv/cache.go::Cache.Get", "Cache.Get", "Get", 10),
+                IndexedSymbol("srv/cache.go::Store.Get", "Store.Get", "Get", 25),
+                IndexedSymbol("srv/cache.go::Load", "Load", "Load", 40),
+            ]
+        ),
+        "src/main/java/com/acme/Cache.java": symbol_lookup(
+            [
+                IndexedSymbol("src/main/java/com/acme/Cache.java::Cache.get", "Cache.get", "get", 12),
+            ]
+        ),
+    }
+
+    assert resolve_location(_loc("srv/cache.go", "Cache.Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "srv.(*Cache).Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "(*Cache).Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "srv.Cache.Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "example.com/m/srv.Load"), symbols) == (
+        "srv/cache.go::Load",
+        None,
+    )
+    assert resolve_location(
+        _loc("src/main/java/com/acme/Cache.java", "com.acme.Cache.get"), symbols
+    ) == ("src/main/java/com/acme/Cache.java::Cache.get", None)
+    assert resolve_location(_loc("src/main/java/com/acme/Cache.java", "Cache.get"), symbols) == (
+        "src/main/java/com/acme/Cache.java::Cache.get",
+        None,
+    )
+
+    # A same-named method on another type stays unknown; a bare ambiguous name stays ambiguous.
+    assert resolve_location(_loc("srv/cache.go", "srv.(*Other).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    assert resolve_location(_loc("srv/cache.go", "(*Other).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    assert resolve_location(_loc("srv/cache.go", "Get"), symbols) == (None, "ambiguous_symbol")
+    assert resolve_location(
+        _loc("src/main/java/com/acme/Cache.java", "com.other.Cache.get"), symbols
+    ) == (None, "unknown_symbol")
+
+    # Receiver matching directory does not drop the type and mistakenly resolve to another receiver's method.
+    symbols["pkg/node/list.go"] = symbol_lookup(
+        [
+            IndexedSymbol("pkg/node/list.go::list.Get", "list.Get", "Get", 10),
+        ]
+    )
+    assert resolve_location(_loc("pkg/node/list.go", "(*node).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+
+    # JVM file under a directory named like a class does not drop the class prefix.
+    symbols["src/main/java/Cache/Foo.java"] = symbol_lookup(
+        [
+            IndexedSymbol("src/main/java/Cache/Foo.java::Foo.get", "Foo.get", "get", 10),
+        ]
+    )
+    assert resolve_location(_loc("src/main/java/Cache/Foo.java", "Cache.get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+
+
+def test_a_package_qualified_name_never_joins_a_method_of_the_same_name() -> None:
+    symbols = {
+        "srv/store.go": symbol_lookup([IndexedSymbol("srv/store.go::Store.Get", "Store.Get", "Get", 5)]),
+        "src/com/acme/Util.kt": symbol_lookup([IndexedSymbol("src/com/acme/Util.kt::get", "get", "get", 3)]),
+    }
+
+    # ``srv.Get`` is the package function Get, not the method Store.Get.
+    assert resolve_location(_loc("srv/store.go", "srv.Get"), symbols) == (None, "unknown_symbol")
+    assert resolve_location(_loc("srv/store.go", "example.com/m/srv.Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    # A Kotlin top-level function strips its whole package.
+    assert resolve_location(_loc("src/com/acme/Util.kt", "com.acme.get"), symbols) == (
+        "src/com/acme/Util.kt::get",
+        None,
+    )

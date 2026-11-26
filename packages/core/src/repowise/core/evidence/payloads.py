@@ -14,7 +14,9 @@ Nothing here reads a store.
   route from ``symbol_hotness`` rows, each with its ``next_step``
   (:mod:`.next_step`) from the static performance findings the host passes;
 - :func:`owner_history_payload`: a measured function's owner and last change
-  from its ``git_function_blame`` row and the newest commit's row.
+  from its ``git_function_blame`` row and the newest commit's row;
+- :func:`weighted_callers`: a measured row's production callers, the ones its
+  run measured first with the share each drove.
 """
 
 from __future__ import annotations
@@ -177,6 +179,32 @@ def _function_fields(row: Any) -> dict[str, Any]:
     }
 
 
+def weighted_callers(
+    callers: Sequence[str], drivers_json: str | None, k: int
+) -> tuple[list[str], dict[str, float]]:
+    """A measured row's first *k* *callers* and the share each drove.
+
+    *callers* are the function's production callers by the call graph, best
+    first; *drivers_json* is its run's measured callers (``drivers``: up to
+    three, each with the ``symbol`` it joined and its ``share`` of the
+    function's time). The callers the run measured lead, heaviest first, so
+    the caller that drives the cost is named first; the rest keep their
+    order. A measured caller the graph does not list is not added: the list
+    stays the graph's, ordered by what the run saw.
+    """
+    shares: dict[str, float] = {}
+    for driver in _json_list(drivers_json) or ():
+        if not isinstance(driver, Mapping):
+            continue
+        symbol, share = driver.get("symbol"), driver.get("share")
+        if isinstance(symbol, str) and isinstance(share, (int, float)):
+            shares[symbol] = max(float(share), shares.get(symbol, 0.0))
+    order = {caller: i for i, caller in enumerate(callers)}
+    ranked = sorted(callers, key=lambda c: (c not in shares, -shares.get(c, 0.0), order[c]))
+    listed = ranked[: max(k, 0)]
+    return listed, {c: shares[c] for c in listed if c in shares}
+
+
 def _json_list(text: str | None) -> list[Any] | None:
     """A stored JSON list column; None when empty or unreadable."""
     if not text:
@@ -195,4 +223,5 @@ __all__ = [
     "owner_history_payload",
     "runs_payload",
     "status_payload",
+    "weighted_callers",
 ]
