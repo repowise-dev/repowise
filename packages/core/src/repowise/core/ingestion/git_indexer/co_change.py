@@ -401,9 +401,13 @@ def windowed_partners(
                 "--name-status",
                 "--no-merges",
                 "--full-diff",
+                # Paths relative to the checkout the index names, which can sit
+                # below the git top level (``git_cli.checkout_relative``).
+                "--relative",
                 "--format=%x00%ct",
                 "--",
-                target,
+                # A path, never a glob or pathspec magic.
+                f":(literal){target}",
             ],
             repo_root,
             timeout=_WINDOW_GIT_TIMEOUT_SECONDS,

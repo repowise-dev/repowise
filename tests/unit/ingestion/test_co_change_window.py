@@ -84,3 +84,36 @@ def test_a_path_the_index_lacks_is_never_a_partner(tmp_path):
 
 def test_no_checkout_returns_none(tmp_path):
     assert windowed_partners(str(tmp_path), "src/a.py", "2024-05-01", {"src/a.py"}) is None
+
+
+def test_an_index_below_the_git_top_level_reads_its_own_paths(tmp_path):
+    """The index names files from its checkout; git's top level is one up."""
+    _git(tmp_path, "init", "-q")
+    sub = tmp_path / "svc"
+    for day in ("2024-06-01", "2024-06-02"):
+        _commit(tmp_path, ["svc/src/a.py", "svc/src/b.py", "other/x.py"], day)
+
+    records, commits = windowed_partners(
+        str(sub), "src/a.py", "2024-05-01", {"src/a.py", "src/b.py"}
+    )
+
+    assert commits == 2
+    assert [(r["file_path"], r["frequency"]) for r in records] == [("src/b.py", 2)]
+
+
+def test_a_target_with_glob_characters_is_read_as_a_path(tmp_path):
+    _git(tmp_path, "init", "-q")
+    for day in ("2024-06-01", "2024-06-02"):
+        _commit(tmp_path, ["app/[id]/page.tsx", "app/lib.ts"], day)
+        # ``[id]`` read as a glob would match this file too.
+        _commit(tmp_path, ["app/i/page.tsx", "app/other.ts"], day)
+
+    records, commits = windowed_partners(
+        str(tmp_path),
+        "app/[id]/page.tsx",
+        "2024-05-01",
+        {"app/[id]/page.tsx", "app/lib.ts", "app/i/page.tsx", "app/other.ts"},
+    )
+
+    assert commits == 2
+    assert [r["file_path"] for r in records] == ["app/lib.ts"]

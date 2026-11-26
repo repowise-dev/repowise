@@ -1418,10 +1418,10 @@ async def test_get_risk_since_counts_partners_over_the_window(setup_mcp, tmp_pat
     git("init", "-q")
     for n, (files, day) in enumerate(
         [
-            (["src/auth/service.py", "src/db/models.py"], "2020-01-01"),
-            (["src/auth/service.py", "src/db/models.py"], "2020-01-02"),
-            (["src/auth/service.py", "src/auth/middleware.py"], "2025-01-01"),
-            (["src/auth/service.py", "src/auth/middleware.py"], "2025-01-02"),
+            (["src/auth/service.py", "src/auth/middleware.py"], "2020-01-01"),
+            (["src/auth/service.py", "src/auth/middleware.py"], "2020-01-02"),
+            (["src/auth/service.py", "src/db/models.py"], "2025-01-01"),
+            (["src/auth/service.py", "src/db/models.py"], "2025-01-02"),
         ]
     ):
         for path in files:
@@ -1435,11 +1435,14 @@ async def test_get_risk_since_counts_partners_over_the_window(setup_mcp, tmp_pat
     card = result["targets"]["src/auth/service.py"]
 
     assert card["co_change_window"] == {"since": "2024-06-01", "target_commits": 2}
-    # src/auth/middleware.py has no git row in the fixture, so the window holds nothing.
-    assert card["co_change_partners"] == []
-    assert card["co_change_partners_total"] == 0
-    assert "co-change partners since 2024-06-01" in card["risk_summary"]
+    assert [(p["file_path"], p["support"], p["conf_ab"]) for p in card["co_change_partners"]] == [
+        ("src/db/models.py", 2, 1.0)
+    ]
+    assert card["co_change_partners_total"] == 1
+    assert "1 co-change partners since 2024-06-01" in card["risk_summary"]
 
+    # The older pair is with src/auth/middleware.py, which has no git row in the
+    # fixture: a path the index does not hold is never a partner.
     wide = (await get_risk(["src/auth/service.py"], since="2019-01-01"))["targets"][
         "src/auth/service.py"
     ]
