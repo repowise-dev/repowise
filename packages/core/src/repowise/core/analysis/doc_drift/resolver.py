@@ -335,18 +335,21 @@ def _foreign_project(ref: DocReference) -> str:
     repository").
     """
     context = " ".join(part for part in (ref.previous_context, ref.context) if part)
-    idx = context.find(ref.raw)
+    current_start = len(context) - len(ref.context)
+    idx = context.find(ref.raw, current_start)
     preceding = context[:idx] if idx != -1 else context
     prose = _CODE_SPAN_RE.sub(lambda m: " " * len(m.group()), preceding)
     # A dot inside a dotted identifier (for example ``scanner.js``) is not
     # sentence punctuation. Only treat it as a boundary when it is followed
-    # by whitespace or the end of the available prose.
-    boundaries = [m.end() for m in re.finditer(r"[!?]|(?<=\w)\.(?=\s|$)", prose)]
+    # by whitespace or the end of the available prose. Code spans have already
+    # been blanked, so do not require a word character before the period.
+    boundaries = [m.end() for m in re.finditer(r"[!?]|\\.(?=\\s|$)", prose)]
     sentence_start = max(boundaries, default=0)
     sentence = preceding[sentence_start:]
     if _READER_PROJECT_RE.search(sentence):
         return "reader-project"
-    following = ref.context[idx + len(ref.raw) :] if idx != -1 else ""
+    current_idx = idx - current_start if idx != -1 else -1
+    following = ref.context[current_idx + len(ref.raw) :] if current_idx != -1 else ""
     if _OTHER_REPOSITORY_RE.search(sentence) or _OTHER_REPOSITORY_AFTER_RE.match(following):
         return "other-repository"
     return ""
