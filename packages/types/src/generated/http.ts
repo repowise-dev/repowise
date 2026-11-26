@@ -3683,6 +3683,40 @@ export interface OwnershipEntry {
   is_silo: boolean;
 }
 
+/**
+ * The package's stored advisories, strongest tier first.
+ *
+ * *imported* is False when no advisory document was ever imported, so an
+ * empty list then means "not checked", not "no advisories".
+ */
+export interface PackageAdvisoriesResponse {
+  imported: boolean;
+  advisories: PackageAdvisoryRow[];
+}
+
+/** One stored advisory on the package and the closest production code comes to it. */
+export interface PackageAdvisoryRow {
+  package: string;
+  ecosystem?: string | null;
+  id: string;
+  tier: string;
+  basis: string;
+  aliases?: string[];
+  severity?: string | null;
+  score?: number | null;
+  version?: string | null;
+  fix?: string | null;
+  affected?: boolean | null;
+  summary?: string | null;
+  sites?: PackageAdvisorySite[];
+}
+
+export interface PackageAdvisorySite {
+  path: string;
+  line?: number | null;
+  symbol?: string | null;
+}
+
 export interface PackageUsageComponent {
   name: string;
   files: number;
@@ -5457,8 +5491,6 @@ export interface ValidationError {
   loc: (string | number)[];
   msg: string;
   type: string;
-  input?: unknown;
-  ctx?: Record<string, unknown>;
 }
 
 /** Server version, PyPI freshness, and (optional) per-repo store status. */
