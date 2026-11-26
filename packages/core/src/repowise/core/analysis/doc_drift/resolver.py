@@ -343,7 +343,7 @@ def _foreign_project(ref: DocReference) -> str:
     # sentence punctuation. Only treat it as a boundary when it is followed
     # by whitespace or the end of the available prose. Code spans have already
     # been blanked, so do not require a word character before the period.
-    boundaries = [m.end() for m in re.finditer(r"[!?]|\\.(?=\\s|$)", prose)]
+    boundaries = [m.end() for m in re.finditer(r"[!?]|\.(?=\s|$)", prose)]
     sentence_start = max(boundaries, default=0)
     sentence = preceding[sentence_start:]
     if _READER_PROJECT_RE.search(sentence):
