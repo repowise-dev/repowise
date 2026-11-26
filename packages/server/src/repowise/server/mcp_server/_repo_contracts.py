@@ -223,11 +223,12 @@ def _named_sites(sites: list[dict]) -> tuple[str, int]:
 
 def _caller_line(
     store: RepoContracts, links: list[dict], include: str | None
-) -> tuple[str, list[dict]] | None:
-    # The line counts exact links only; a candidate shows only in the rows.
+) -> tuple[str | None, list[dict]]:
+    """The default line (exact links only, else None) and every row, candidates labelled."""
+    rows = _sites(store, links, "consumer")
     exact = _exact(links)
     if not exact:
-        return None
+        return None, rows
     # A place is a (file, line): one line calling two routes is one place.
     sites = _places(_sites(store, exact, "consumer"))
     routes = len({lk.get("contract_id") for lk in exact})
@@ -237,27 +238,28 @@ def _caller_line(
         + (f": {named}" if named else "")
         + _tail(len(sites), shown, include)
     )
-    return text, _sites(store, links, "consumer")
+    return text, rows
 
 
 def _route_line(
     store: RepoContracts, links: list[dict], include: str | None
-) -> tuple[str, list[dict]] | None:
-    # The line counts exact links only; a candidate shows only in the rows.
+) -> tuple[str | None, list[dict]]:
+    """The default line (exact links only, else None) and every row, candidates labelled."""
+    rows = _sites(store, links, "provider")
     exact = _exact(links)
     if not exact:
-        return None
+        return None, rows
     by_route: dict[str, dict] = {}
     for row in _sites(store, exact, "provider"):
         by_route.setdefault(row["route"], row)
     parts: list[str] = []
     shown = 0
-    for file, rows in _by_file(list(by_route.values())):
+    for file, grouped in _by_file(list(by_route.values())):
         if shown >= _TOP:
             break
         named = [
             f"{r['route']} L{r['line']}" if r.get("line") else r["route"]
-            for r in rows[: _TOP - shown]
+            for r in grouped[: _TOP - shown]
         ]
         parts.append(f"{file} ({', '.join(named)})")
         shown += len(named)
@@ -266,7 +268,7 @@ def _route_line(
         + (f": {'; '.join(parts)}" if parts else "")
         + _tail(len(by_route), shown, include)
     )
-    return text, _sites(store, links, "provider")
+    return text, rows
 
 
 def attach_contract_lines(response: dict[str, Any], repo_path: Any, include: set[str]) -> None:
@@ -295,20 +297,18 @@ def attach_contract_lines(response: dict[str, Any], repo_path: Any, include: set
 
 def _attach_one(store: RepoContracts, target: str, card: dict, include: set[str]) -> None:
     parts: list[str] = []
-    callers = _caller_line(
-        store, store.provided(target), None if "callers" in include else "callers"
-    )
-    if callers is not None:
-        parts.append(callers[0])
-        if "callers" in include:
-            card["in_repo_callers"] = callers[1][:DETAIL_LIMIT]
-            card["in_repo_callers_total"] = len(callers[1])
-    routes = _route_line(store, store.consumed(target), None if "callees" in include else "callees")
-    if routes is not None:
-        parts.append(routes[0])
-        if "callees" in include:
-            card["in_repo_routes"] = routes[1][:DETAIL_LIMIT]
-            card["in_repo_routes_total"] = len(routes[1])
+    for want, key, build, links in (
+        ("callers", "in_repo_callers", _caller_line, store.provided(target)),
+        ("callees", "in_repo_routes", _route_line, store.consumed(target)),
+    ):
+        if not links:
+            continue
+        text, rows = build(store, links, None if want in include else want)
+        if text:
+            parts.append(text)
+        if want in include and rows:
+            card[key] = rows[:DETAIL_LIMIT]
+            card[f"{key}_total"] = len(rows)
     if parts:
         card["in_repo_contracts"] = "; ".join(parts)
 
@@ -500,11 +500,18 @@ def route_breaks_payload(breaks: list[_Break] | None, *, detail: bool) -> dict[s
     callers = sum(len(b.callers) for b in breaks)
     first = breaks[0]
     named, shown = _named_sites(first.callers)
+    hint = None if detail else "findings"
     line = (
         f"stops serving {_n(len(breaks), 'route')} that {_n(callers, 'place')} in this repo "
         f"call: {_route(first.contract_id)} ({first.provider_file}) from {named}"
-        + _tail(callers, shown, None if detail else "findings")
     )
+    # The tail counts the named route's own sites; other routes are counted apart.
+    others = len(breaks) - 1
+    line += _tail(len(first.callers), shown, None if others else hint)
+    if others:
+        line += f"; {others} more {'route' if others == 1 else 'routes'}"
+        if hint:
+            line += f' (include=["{hint}"] lists them)'
     out: dict[str, Any] = {"in_repo_contracts": line}
     if detail:
         out["in_repo_breaks"] = [

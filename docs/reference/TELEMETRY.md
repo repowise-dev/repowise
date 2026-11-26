@@ -135,7 +135,7 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 | `properties.index_mode` | `none` / `template` / `model` / `mixed` | Who wrote the served index's pages; absent when the server has no index to read |
 | `properties.provider_kind` | `none` / `subscription_cli` / `local` / `api_key` / `mock` / `other` | How the model that synthesised the answer runs (an agent CLI login, a local model, a hosted API key); never the provider or model name |
 | `properties.empty_result` | `true` / `false` | Whether the call found nothing; sent only by `search_codebase`, `get_context`, `get_answer` and `get_why`, and not on an `error` call |
-| `properties.<stage>_ms` | `retrieve_ms`: `310` | Time spent in one stage of the call. The stages are `retrieve` and `synthesize` (`get_answer`), and `score`, `health_delta`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `measured`, `cross_repo` and `branch_overlap` (`get_change_risk`) |
+| `properties.<stage>_ms` | `retrieve_ms`: `310` | Time spent in one stage of the call. The stages are `retrieve` and `synthesize` (`get_answer`), and `score`, `health_delta`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `measured`, `cross_repo`, `in_repo_contracts` and `branch_overlap` (`get_change_risk`) |
 
 Example `command_run` payload:
 

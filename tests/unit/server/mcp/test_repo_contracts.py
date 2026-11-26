@@ -175,12 +175,16 @@ def test_candidate_links_stay_out_of_the_line_and_are_labelled_in_rows(repo: Pat
     assert [r.get("match_type") for r in rows] == [None, "candidate"]
 
 
-def test_only_candidate_links_add_nothing_by_default(repo: Path) -> None:
+def test_only_candidate_links_add_nothing_by_default_and_rows_when_asked(repo: Path) -> None:
     _demote(repo, "::")
     assert _card(repo, ROUTES_FILE, CLIENT_FILE) == {
         ROUTES_FILE: {"target": ROUTES_FILE},
         CLIENT_FILE: {"target": CLIENT_FILE},
     }
+    cards = _card(repo, ROUTES_FILE, CLIENT_FILE, include={"callers", "callees"})
+    assert "in_repo_contracts" not in cards[ROUTES_FILE]
+    assert {r["match_type"] for r in cards[ROUTES_FILE]["in_repo_callers"]} == {"candidate"}
+    assert cards[CLIENT_FILE]["in_repo_routes_total"] == 2
 
 
 def test_files_with_no_contract_role_gain_zero_bytes(repo: Path) -> None:
@@ -366,3 +370,18 @@ def test_a_topic_link_is_not_called_a_route(repo: Path) -> None:
         link["contract_type"] = "topic"
     store_path.write_text(json.dumps(data), encoding="utf-8")
     assert _card(repo, ROUTES_FILE)[ROUTES_FILE] == {"target": ROUTES_FILE}
+
+
+def test_two_broken_routes_count_the_named_route_and_the_rest_apart() -> None:
+    def site(file: str, line: int) -> dict:
+        return {"route": "r", "file": file, "line": line}
+
+    breaks = [
+        rc._Break("http::GET::/a", "s.py", [site("c.ts", 1)], 0),
+        rc._Break("http::GET::/b", "s.py", [site("d.ts", 2), site("e.ts", 3)], 0),
+    ]
+    line = rc.route_breaks_payload(breaks, detail=False)["in_repo_contracts"]
+    assert line == (
+        "stops serving 2 routes that 3 places in this repo call: GET /a (s.py) from c.ts:1; "
+        '1 more route (include=["findings"] lists them)'
+    )
