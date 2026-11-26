@@ -18,6 +18,7 @@ the other way round.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
@@ -447,10 +448,12 @@ def go_groups(content: str) -> Iterator[GroupMatch]:
     groups = list(_groups(_GO_GROUP_RE, content))
     yield from groups
     bound = {g.var for g in groups}
-    for m in _GO_USE_RE.finditer(content):
-        var, parent = m.group("var"), m.group("parent")
-        # `v1 = v1.Use(mw)` keeps v1's own Group binding; a second one would erase it.
-        if var != parent and var not in bound:
+    uses = [(m.group("var"), m.group("parent")) for m in _GO_USE_RE.finditer(content)]
+    names = Counter(var for var, _parent in uses)
+    for var, parent in uses:
+        # Bindings are file-wide by name: `v1 = v1.Use(mw)` would erase v1's own
+        # Group binding, and a name two functions bind from Use is neither's.
+        if var != parent and var not in bound and names[var] == 1:
             yield GroupMatch(var=var, parent=parent, prefix="")
 
 

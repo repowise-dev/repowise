@@ -439,3 +439,24 @@ func main() {{
 """
     _write(tmp_path, {"main.go": main})
     assert _routes(tmp_path) == [("http::GET::/v1/ping", "main.go", 9)]
+
+
+def test_a_name_two_functions_bind_from_use_takes_neither_parent(tmp_path: Path) -> None:
+    main = f"""\
+package main
+
+import {GIN}
+
+func a(r *gin.Engine) {{
+	api := r.Use(Auth())
+	api.GET("/health", Health)
+}}
+
+func c(r *gin.Engine) {{
+	v1 := r.Group("/v1")
+	api := v1.Use(Auth())
+	api.GET("/ping", Ping)
+}}
+"""
+    _write(tmp_path, {"main.go": main})
+    assert ("http::GET::/health", "main.go", 7) in _routes(tmp_path)
