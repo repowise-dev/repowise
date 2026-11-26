@@ -10,6 +10,7 @@ here; its unit tests on small inputs can stay beside the code they test.
 from __future__ import annotations
 
 import ast
+import functools
 import re
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -23,6 +24,8 @@ from repowise.core.analysis.knowledge_graph import _DOC_EXTENSIONS as KG_DOC_EXT
 from repowise.core.generation.categories import _DOC_SUFFIXES
 from repowise.core.ingestion.git_commit_index import _DEEP_CACHE_GLOB, _deep_cache_name
 from repowise.core.ingestion.git_indexer.fix_shape import _DOC_EXT
+from repowise.core.ingestion.languages.registry import REGISTRY as LANGUAGE_REGISTRY
+from repowise.core.ingestion.languages.specs import ALL_SPECS as LANGUAGE_SPECS
 from repowise.core.ingestion.models import EDGE_TYPE_VALUES
 from repowise.core.pipeline.incremental.carried_files import (
     CARRIED_DIRS,
@@ -1398,3 +1401,202 @@ class TestNoProviderNameBranches:
         """A glob that matched nothing, or a name set that emptied, passes vacuously."""
         assert len(_sources()) > 500
         assert {"claude_cli", "codex_cli", "opencode", "litellm", "openai"} <= _CHECKED
+
+
+# ============================================================================
+# Commit ids, module symbol ids and manifest name lists each have one owner.
+# ============================================================================
+#
+# docs/architecture/single-sources.md names the owners. Each guard below fails
+# on a new copy outside its owner. ``_KNOWN_COPIES`` holds the copies that
+# exist today, each with its reason. The list only shrinks: an entry whose
+# file no longer holds the copy fails until it is removed.
+
+# A hex character class quantified to admit exactly 40 digits: ``{40}``,
+# ``{7,40}``, ``{40,64}``. The owner is ``git_sha.FULL_SHA_PATTERN``.
+_FULL_SHA_REGEX = re.compile(r"\[(?=[^\]]*a-f)(?=[^\]]*0-9)[0-9a-fA-F-]+\]\{(?:40|\d*,40|40,\d*)\}")
+
+_OWNER_HOMES: dict[str, str] = {
+    "full-sha-regex": "packages/core/src/repowise/core/git_sha.py",
+    "module-symbol-id": "packages/core/src/repowise/core/ingestion/symbol_identity.py",
+}
+# Language specs declare manifest names and the registry unions them.
+_MANIFEST_HOME = "packages/core/src/repowise/core/ingestion/languages/"
+
+_KNOWN_COPIES: dict[tuple[str, str], str] = {
+    # full-sha-regex
+    (
+        "full-sha-regex",
+        "packages/cli/src/repowise/cli/platform/decision_sync.py",
+    ): "a commit prefix check that accepts upper case; git_sha.is_sha_prefix is the target",
+    (
+        "full-sha-regex",
+        "packages/core/src/repowise/core/analysis/decisions/reverts.py",
+    ): "a `git log --grep` argument in git's own regex dialect, which has no `(?:`",
+    (
+        "full-sha-regex",
+        "packages/core/src/repowise/core/analysis/security/patterns.py",
+    ): "a GitLab token shape, not a commit id",
+    (
+        "full-sha-regex",
+        "packages/core/src/repowise/core/changes/reconstruct.py",
+    ): "a Gerrit Change-Id (`I` and 40 hex digits), not a commit id",
+    # module-symbol-id
+    (
+        "module-symbol-id",
+        "packages/core/src/repowise/core/analysis/function_hunks.py",
+    ): "tests and strips the suffix by hand; symbol_identity.split_symbol_id is the target",
+    (
+        "module-symbol-id",
+        "packages/core/src/repowise/core/analysis/health/refactoring/recommendations.py",
+    ): "an endswith check; symbol_identity.split_symbol_id is the target",
+    (
+        "module-symbol-id",
+        "packages/core/src/repowise/core/generation/flow_pages.py",
+    ): "a suffix constant; symbol_identity.module_symbol_id is the target",
+    # manifest-list
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/code_origin.py",
+    ): "build files by ecosystem, a wider set than package manifests (wrappers, build tools)",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/analysis/test_selection.py",
+    ): "full-run patterns: lockfiles and manifests no ecosystem scope covers, beside globs",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/analysis/dead_code/constants.py",
+    ): "files that run or ship what they name, a wider set than manifests",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/ingestion/build_roots.py",
+    ): "roots of Gradle, Dart and Swift builds; the registry is the target",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/ingestion/workspace_members.py",
+    ): "the root manifests a description is read from; the registry is the target",
+    (
+        "manifest-list",
+        "packages/server/src/repowise/server/mcp_server/tool_search/ranking.py",
+    ): "config-path tokens for the search kind filter, mixed with names that are not manifests",
+}
+
+
+@functools.cache
+def _manifest_owners() -> dict[str, frozenset[str]]:
+    """Package-manifest file name -> the languages whose spec declares it."""
+    package_names = LANGUAGE_REGISTRY.package_manifest_filenames()
+    owners: dict[str, set[str]] = {}
+    for spec in LANGUAGE_SPECS:
+        for name in spec.manifest_files:
+            if name in package_names:
+                owners.setdefault(name, set()).add(spec.tag)
+    return {name: frozenset(tags) for name, tags in owners.items()}
+
+
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                found.add(id(first.value))
+    return found
+
+
+def _is_cross_language_manifest_list(node: ast.AST) -> bool:
+    """A literal naming package manifests of languages no one spec spans."""
+    if not isinstance(node, ast.List | ast.Tuple | ast.Set):
+        return False
+    owners = _manifest_owners()
+    named = [
+        owners[e.value]
+        for e in node.elts
+        if isinstance(e, ast.Constant) and isinstance(e.value, str) and e.value in owners
+    ]
+    return len(named) >= 2 and not frozenset.intersection(*named)
+
+
+def _owner_copies(tree: ast.AST) -> set[str]:
+    """The kinds of copy *tree* holds: full-sha-regex, module-symbol-id, manifest-list."""
+    kinds: set[str] = set()
+    docstrings = _docstring_nodes(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in docstrings:
+                continue
+            if _FULL_SHA_REGEX.search(node.value):
+                kinds.add("full-sha-regex")
+            if "::__module__" in node.value:
+                kinds.add("module-symbol-id")
+        elif _is_cross_language_manifest_list(node):
+            kinds.add("manifest-list")
+    return kinds
+
+
+def _owner_copies_by_file() -> set[tuple[str, str]]:
+    """(kind, repo-relative path) for every copy in the shipped package sources."""
+    found: set[tuple[str, str]] = set()
+    for src in _parsed():
+        if "/src/repowise/" not in src.rel:
+            continue
+        for kind in _owner_copies(src.tree):
+            if _OWNER_HOMES.get(kind) == src.rel:
+                continue
+            if kind == "manifest-list" and src.rel.startswith(_MANIFEST_HOME):
+                continue
+            found.add((kind, src.rel))
+    return found
+
+
+class TestNoOwnerCopies:
+    def test_no_new_copy_outside_its_owner(self) -> None:
+        new = sorted(_owner_copies_by_file() - _KNOWN_COPIES.keys())
+        assert not new, (
+            "A copy of an owned concept outside its owner (docs/architecture/single-sources.md):\n"
+            + "\n".join(f"  [{kind}] {rel}" for kind, rel in new)
+            + "\n\nfull-sha-regex: build from git_sha.FULL_SHA_PATTERN or call git_sha.is_full_sha."
+            "\nmodule-symbol-id: call symbol_identity.module_symbol_id or split_symbol_id."
+            "\nmanifest-list: read package_manifest_filenames() or is_package_manifest()"
+            " from the language registry."
+        )
+
+    def test_known_copies_still_exist(self) -> None:
+        stale = sorted(_KNOWN_COPIES.keys() - _owner_copies_by_file())
+        assert not stale, "No longer a copy; remove these from _KNOWN_COPIES: " + ", ".join(
+            f"[{kind}] {rel}" for kind, rel in stale
+        )
+
+    @pytest.mark.parametrize(
+        ("snippet", "kind"),
+        [
+            ('R = re.compile(r"^[0-9a-f]{40}$")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9a-fA-F]{7,40}")', "full-sha-regex"),
+            ('s = f"{path}::__module__"', "module-symbol-id"),
+            ('NAMES = ("package.json", "Cargo.toml")', "manifest-list"),
+        ],
+    )
+    def test_the_guard_sees_each_shape(self, snippet: str, kind: str) -> None:
+        assert kind in _owner_copies(ast.parse(snippet))
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            'R = re.compile(r"[0-9a-f]{64}")',  # a sha256 content hash
+            'R = re.compile(r"[0-9a-f]{12}")',
+            'def f():\n    """Owns ``a.py::__module__``."""',
+            'NAMES = ("build.gradle", "build.gradle.kts")',  # one ecosystem's names
+        ],
+    )
+    def test_the_guard_passes_what_is_not_a_copy(self, snippet: str) -> None:
+        assert not _owner_copies(ast.parse(snippet))
+
+    def test_the_guard_is_looking_at_real_sources(self) -> None:
+        """An emptied manifest map or source list would pass vacuously."""
+        assert len(_manifest_owners()) > 20
+        assert {
+            "package.json",
+            "Cargo.toml",
+            "go.mod",
+            "pyproject.toml",
+        } <= _manifest_owners().keys()
