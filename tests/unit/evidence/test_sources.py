@@ -783,3 +783,78 @@ def test_a_refetch_corrects_when_the_run_was_measured(double, indexed) -> None:
     assert payload["restamped"] is True
     (run,), _ = _stored(root)
     assert run.measured_at.replace(tzinfo=UTC) == at
+
+
+# --- The statement-site join: a source's statements name the functions an upload names ---
+
+
+def _store_sites(root: Path) -> None:
+    from repowise.core.persistence.crud import replace_statement_sites
+    from tests.unit.evidence.test_statement_ingest import SITES
+
+    async def store() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                await replace_statement_sites(session, "r1", SITES, "fp")
+        finally:
+            await engine.dispose()
+
+    asyncio.run(store())
+
+
+def _issuers(root: Path) -> dict[str, tuple[str | None, str | None]]:
+    from repowise.core.persistence.models import EvidenceStatementStats
+
+    async def read() -> dict[str, tuple[str | None, str | None]]:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                rows = (await session.execute(select(EvidenceStatementStats))).scalars()
+                return {r.statement_fp: (r.symbol_id, r.issuer) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def test_a_statement_batch_names_the_issuing_function_an_upload_names(
+    double, indexed, tmp_path, tmp_path_factory, monkeypatch
+) -> None:
+    from tests.unit.evidence.test_statement_ingest import _statements
+
+    root, _head = indexed
+    upload = tmp_path / "upload"
+    _indexed_copy(upload, tmp_path_factory)
+    doc = json.loads(_statements())
+    doc["statements"].append(
+        # Two functions insert into events through the client: never one picked.
+        {
+            "statement_fp": "5" * 16,
+            "calls": 4,
+            "query": 'WITH pgrst_source AS (INSERT INTO "public"."events"("a") SELECT 1) SELECT $1',
+        }
+    )
+    for checkout in (root, upload):
+        _store_sites(checkout)
+    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: upload)
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    path = upload / "statements.json"
+    path.write_text(json.dumps(doc))
+    uploaded = _json(_add(str(path), "--workload", "prod db", "--format", "json"))
+    double.batches = [_statement_batch(entries=doc["statements"], document={})]
+
+    outcome = _fetch(root, double, _request())
+
+    assert outcome.status == "ok"
+    assert {**outcome.stored[0], "run_id": None} == {**uploaded, "run_id": None}
+    issuers = _issuers(root)
+    assert issuers == _issuers(upload)
+    assert issuers == {
+        "1" * 16: ("src/app.py::build", "function"),
+        "2" * 16: (None, "database_schedule"),
+        "3" * 16: (None, None),
+        "4" * 16: (None, None),
+        "5" * 16: (None, "ambiguous"),
+    }
