@@ -567,6 +567,10 @@ async def _read_fix_first(
     if pop.scoped or not req.wants("fix_first"):
         return None, None
     full = await load_fix_first(session, repository.id, limit=None)
+    # A measured item with a next step and verify command is work an agent can
+    # do, so Fix first keeps it. Deliberate: get_overview's Do next, the perf
+    # page and headline counts and the generated agent files (a push, which
+    # waits on the agent-push decision) still leave every measured item out.
     full = without_sources(
         full, await measured_hotspot_ids(session, repository.id, without_step=True)
     )

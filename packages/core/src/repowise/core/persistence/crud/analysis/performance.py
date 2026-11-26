@@ -14,6 +14,7 @@ for the same reason - they can no longer describe the current tree.
 from __future__ import annotations
 
 import json
+import logging
 from bisect import bisect_left
 from collections.abc import Collection, Iterable
 from datetime import UTC, datetime
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
     from ....evidence.measured_fold import MeasuredFold
 
 _PLAN_TYPE = "performance_fix"
+
+logger = logging.getLogger(__name__)
 
 _EVIDENCE_LIMIT = 8
 """Evidence rows folded into a persisted plan's affected-location list.
@@ -344,15 +347,27 @@ async def _hotspot_rows(
     names for it: what a measured hotspot carries onto Fix first and the
     performance queue. Built by :func:`measured_costs`, the reader every
     measured surface uses, so the item and the measured table say the same.
-    Nothing is read when no function is hot.
+    Nothing is read when no function is hot. A read that fails leaves every
+    hotspot without a row (listed, never leading), never the health write.
 
-    Ceiling: no ``slower``; comparisons are read per request, not stored here.
+    Ceiling: the row is stored as of this finalize, which runs before the
+    index writes function blame and the per-test map and before this finalize
+    reconciles the causes, so its ``owner``, ``last_change``, map-backed
+    ``tests`` and ``on_static_findings`` can lag one update (none of them
+    decides the step or the lead; Fix first shows no owner). No ``slower``:
+    comparisons are read per request. Upgrade path: build the rows after the
+    blame and map writes.
     """
     if not measured.hot:
         return {}
-    view = await measured_costs(
-        session, repository_id, limit=len(measured.hot), symbol_ids=measured.hot
-    )
+    try:
+        async with session.begin_nested():
+            view = await measured_costs(
+                session, repository_id, limit=len(measured.hot), symbol_ids=measured.hot
+            )
+    except Exception as exc:  # best effort: the row is an addition to the item
+        logger.warning("measured hotspot rows unavailable: %s", exc)
+        return {}
     block = (view or {}).get("measured") or {}
     workload = {run["run_id"]: run["workload_name"] for run in block.get("runs", ())}
     return {
@@ -850,8 +865,17 @@ async def measured_hotspot_ids(
     return frozenset(
         oid
         for oid, details_json in result.all()
-        if not without_step or not _leads_with_step(json.loads(details_json or "{}"))
+        if not without_step or not _leads_with_step(_details(details_json))
     )
+
+
+def _details(details_json: str | None) -> dict[str, Any]:
+    """A stored ``details_json``; an unreadable one reads as empty."""
+    try:
+        details = json.loads(details_json or "{}")
+    except ValueError:
+        return {}
+    return details if isinstance(details, dict) else {}
 
 
 def _leads_with_step(details: dict[str, Any]) -> bool:
@@ -1220,7 +1244,8 @@ async def measured_costs(
 
     *run_id* keeps that one run (a workload's listed run); any other id ranks
     nothing here and gives ``None``. *symbol_ids* keeps those functions' rows
-    only, before the *limit* cut (the rows a measured hotspot carries).
+    only, before the *limit* cut (the rows a measured hotspot carries); each
+    group's ``total`` then counts the kept rows.
 
     Read at request time from ``workload_hotness``, which every ingest and
     update rebuilds, so nothing new is stored and an index without evidence

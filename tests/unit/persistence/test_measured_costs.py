@@ -1046,3 +1046,18 @@ async def test_a_measured_item_with_a_next_step_leads_fix_first_with_its_row(
 async def test_unit_test_and_benchmark_runs_mint_no_measured_item(async_session, cls) -> None:
     _, items = await _measured_items(async_session, cls)
     assert items == []
+
+
+async def test_a_failed_row_read_keeps_the_health_write_and_the_item_never_leads(
+    async_session, monkeypatch
+) -> None:
+    from repowise.core.persistence.crud.analysis import performance
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("no rows today")
+
+    monkeypatch.setattr(performance, "measured_costs", broken)
+    _, items = await _measured_items(async_session)
+    assert len(items) == 2
+    assert all(json.loads(r.details_json)["may_lead"] is False for r in items)
+    assert all("measured_row" not in json.loads(r.details_json) for r in items)
