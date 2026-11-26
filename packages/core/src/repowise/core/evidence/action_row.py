@@ -475,12 +475,17 @@ def row_compact(row: Mapping[str, Any]) -> dict[str, Any]:
         out["on_static_findings"] = row["on_static_findings"]
     if row.get("label"):
         out["label"] = row["label"]  # "import time": a module body's row
-    facts = row.get("statements")
-    if facts:
-        # A production statement row: ``share`` is of the window's statement time.
-        out["calls"] = facts["calls"]
-        if facts.get("mean_ms") is not None:
-            out["mean_ms"] = facts["mean_ms"]
+    return out | _statements_compact(row.get("statements"))
+
+
+def _statements_compact(facts: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A production statement row's ``calls`` and ``mean_ms`` (its ``share`` is
+    of the window's statement time); nothing on a profile row."""
+    if not facts:
+        return {}
+    out = {"calls": facts["calls"]}
+    if facts.get("mean_ms") is not None:
+        out["mean_ms"] = facts["mean_ms"]
     return out
 
 

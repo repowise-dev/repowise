@@ -188,6 +188,34 @@ class StatementRun(NamedTuple):
 StatementPoint = tuple[str, "str | None", "str | None", int, "float | None"]
 
 
+_Sums = dict[str, dict[str, list[float]]]
+
+
+def _sum_statements(
+    points: Iterable[StatementPoint], keep: set[str]
+) -> tuple[_Sums, _Sums, dict[str, list[float]]]:
+    """Per kept run: ``[ms, calls, statements]`` per function the join named,
+    ``[ms, statements]`` per label on no single function, and the run's
+    ``[ms, statements]``."""
+    by_fn: _Sums = {rid: {} for rid in keep}
+    other: _Sums = {rid: {} for rid in keep}
+    totals: dict[str, list[float]] = {rid: [0.0, 0] for rid in keep}
+    for run_id, symbol_id, issuer, calls, total_ms in points:
+        if run_id not in keep:
+            continue
+        ms = float(total_ms or 0.0)
+        totals[run_id][0] += ms
+        totals[run_id][1] += 1
+        if issuer == "function" and symbol_id:
+            acc = by_fn[run_id].setdefault(symbol_id, [0.0, 0, 0])
+            acc[1] += calls or 0
+        else:
+            acc = other[run_id].setdefault(issuer or UNJOINED, [0.0, 0])
+        acc[0] += ms
+        acc[-1] += 1
+    return by_fn, other, totals
+
+
 def fold_statements(runs: Iterable[Any], points: Iterable[StatementPoint]) -> list[StatementRun]:
     """Each production statement workload's newest run, newest first, with what
     each issuing function's statements cost in its window.
@@ -212,22 +240,7 @@ def fold_statements(runs: Iterable[Any], points: Iterable[StatementPoint]) -> li
     keep = set(query_runs_to_read(runs))
     if not keep:
         return []
-    by_fn: dict[str, dict[str, list[float]]] = {rid: {} for rid in keep}
-    other: dict[str, dict[str, list[float]]] = {rid: {} for rid in keep}
-    totals: dict[str, list[float]] = {rid: [0.0, 0] for rid in keep}
-    for run_id, symbol_id, issuer, calls, total_ms in points:
-        if run_id not in keep:
-            continue
-        ms = float(total_ms or 0.0)
-        totals[run_id][0] += ms
-        totals[run_id][1] += 1
-        if issuer == "function" and symbol_id:
-            acc = by_fn[run_id].setdefault(symbol_id, [0.0, 0, 0])
-            acc[1] += calls or 0
-        else:
-            acc = other[run_id].setdefault(issuer or UNJOINED, [0.0, 0])
-        acc[0] += ms
-        acc[-1] += 1
+    by_fn, other, totals = _sum_statements(points, keep)
 
     def share(ms: float, whole: float) -> float | None:
         return ms / whole if whole > 0 else None
