@@ -13,7 +13,6 @@ import yaml
 from click.testing import CliRunner
 
 from repowise.cli.main import cli
-from repowise.cli.ui.result_panels import SUGGESTED_STEP, build_contextual_next_steps
 from repowise.core.analysis.decisions.manifest import ManifestDecision, write_manifest
 from repowise.core.settings import all_settings, get
 from repowise.core.settings.areas.generation import MIN_UNPAGED_PRODUCTION
@@ -401,17 +400,6 @@ def test_status_text_names_the_count(repo, monkeypatch):
     monkeypatch.setattr(status_cmd, "suggested_for", lambda root: [])
     _, out = _invoke("status", str(repo), "--no-workspace")
     assert "fit this repo" not in out
-
-
-def test_init_panel_gives_suggestions_one_row_within_the_limit():
-    steps = build_contextual_next_steps(suggested=2, dead_unused=4, hotspot_count=1)
-    assert [command for command, _ in steps][1] == SUGGESTED_STEP
-    assert "2 settings fit this repo" in steps[1][1]
-    assert len(steps) == 3
-    steps = build_contextual_next_steps(dead_unused=4)
-    assert SUGGESTED_STEP not in [command for command, _ in steps]
-    fast = build_contextual_next_steps(fast_mode=True, suggested=1, dead_unused=4)
-    assert [command for command, _ in fast][2] == SUGGESTED_STEP
 
 
 # ---------------------------------------------------------------- large repositories

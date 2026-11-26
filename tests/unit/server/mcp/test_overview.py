@@ -131,3 +131,33 @@ async def test_default_overview_leaves_out_empty_blocks(setup_mcp, session):
     assert "git_health" not in result
     assert "code_health" not in result
     assert result["title"]
+
+
+@pytest.mark.asyncio
+async def test_hotspot_count_is_the_web_apps_count(setup_mcp, session, populated_db):
+    """get_overview quotes the hotspot count the web app's card and list show: a
+    hotspot whose stored origin the list holds out (a test here) is not counted."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server import get_overview
+    from repowise.server.services.hotspots import count_hotspots
+
+    before = (await get_overview())["git_health"]["hotspot_count"]
+    path = "src/auth/service.py"
+    row = await session.scalar(
+        select(HealthFileMetric).where(
+            HealthFileMetric.repository_id == populated_db, HealthFileMetric.file_path == path
+        )
+    )
+    if row is None:
+        session.add(
+            HealthFileMetric(repository_id=populated_db, file_path=path, code_origin="test")
+        )
+    else:
+        row.code_origin = "test"
+    await session.commit()
+
+    after = (await get_overview())["git_health"]["hotspot_count"]
+    assert after == before - 1
+    assert after == await count_hotspots(session, populated_db)

@@ -46,6 +46,8 @@ from repowise.core.analysis.decisions.lifecycle import (
     NO_EVIDENCE_BLOCKER,
     NO_RATIONALE_BLOCKER,
     NO_SCOPE_BLOCKER,
+    RULE_DRIFTED,
+    rule_drift_reason,
 )
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
 from repowise.core.precedent.currency import describe_decision_currency
@@ -1588,6 +1590,13 @@ def _print_health_summary(summary: dict) -> None:
     console.print(stats_table)
 
 
+def _stale_reason(d) -> str:
+    """Why a decision reads stale: what left its rule, else how much of its code moved."""
+    if getattr(d, "rule_check", None) == RULE_DRIFTED:
+        return f"rule changed: {rule_drift_reason(d.rule_check_basis)}"
+    return f"staleness: {d.staleness_score:.2f}"
+
+
 def _print_health_lists(health: dict) -> None:
     """Stale, ungoverned and proposed, each capped so the report stays short."""
     _print_capped(
@@ -1595,7 +1604,7 @@ def _print_health_lists(health: dict) -> None:
         "Stale decisions",
         health["stale_decisions"],
         5,
-        lambda d: f"{d.id[:8]}  {escape(d.title)}  (staleness: {d.staleness_score:.2f})",
+        lambda d: f"{d.id[:8]}  {escape(d.title)}  ({escape(_stale_reason(d))})",
     )
     _print_capped("yellow", "Ungoverned hotspots", health["ungoverned_hotspots"], 10, str)
     _print_capped(

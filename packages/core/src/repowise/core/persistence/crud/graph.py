@@ -103,6 +103,12 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     deferred = edge_data.get("deferred")
     if deferred is not None:
         existing.deferred = bool(deferred)
+    guarded = edge_data.get("guarded")
+    if guarded is not None:
+        existing.guarded = bool(guarded)
+    module_form = edge_data.get("module_form")
+    if module_form is not None:
+        existing.module_form = bool(module_form)
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
@@ -134,6 +140,8 @@ def _edge_content_values(e: dict) -> dict:
         "call_lines_json": e.get("call_lines_json", "[]"),
         "type_only": bool(e.get("type_only", False)),
         "deferred": bool(e.get("deferred", False)),
+        "guarded": bool(e.get("guarded", False)),
+        "module_form": bool(e.get("module_form", False)),
     }
 
 
@@ -488,6 +496,52 @@ async def get_scc_members(
     return out
 
 
+async def get_static_only_scc_ids(
+    session: AsyncSession,
+    repository_id: str,
+    sccs: dict[int, list[str]],
+) -> set[int]:
+    """The ids in *sccs* (as :func:`get_scc_members` reads them) whose cycle is
+    static only (:func:`~repowise.core.ingestion.cohesion.is_static_only_cycle`).
+
+    Read off the stored edges between each cycle's own files, with the same
+    edge filter the cycle pass used, so the tier always matches the stored
+    cycles.
+    """
+    from repowise.core.ingestion.cohesion import is_static_only_cycle
+    from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
+
+    scc_of = {node: scc_id for scc_id, members in sccs.items() for node in members}
+    edges: dict[int, list[dict]] = {scc_id: [] for scc_id in sccs}
+    nodes = sorted(scc_of)
+    for start in range(0, len(nodes), _BATCH_SIZE):
+        rows = await session.execute(
+            select(
+                GraphEdge.source_node_id,
+                GraphEdge.target_node_id,
+                GraphEdge.edge_type,
+                GraphEdge.hint_source,
+                GraphEdge.type_only,
+                GraphEdge.deferred,
+                GraphEdge.guarded,
+                GraphEdge.module_form,
+            ).where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.source_node_id.in_(nodes[start : start + _BATCH_SIZE]),
+            )
+        )
+        for row in rows:
+            scc_id = scc_of[row.source_node_id]
+            if (
+                row.source_node_id == row.target_node_id
+                or scc_of.get(row.target_node_id) != scc_id
+                or row.edge_type in NON_CODE_EDGE_TYPES
+            ):
+                continue
+            edges[scc_id].append(dict(row._mapping))
+    return {scc_id for scc_id, found in edges.items() if is_static_only_cycle(found)}
+
+
 async def get_graph_metrics(
     session: AsyncSession,
     repository_id: str,
@@ -584,6 +638,8 @@ async def get_all_graph_edges(
                 "call_lines": call_lines,
                 "type_only": bool(row.type_only),
                 "deferred": bool(row.deferred),
+                "guarded": bool(row.guarded),
+                "module_form": bool(row.module_form),
             }
         )
     return edges

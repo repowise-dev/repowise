@@ -41,9 +41,12 @@ from ..strings import (
     PYTHON_SYNTAX,
     match_paren,
     split_first_arg,
+    split_top_level,
 )
-from .client_calls import VERBS, is_rooted_url, join_base
+from .client_calls import VERBS, is_rooted_url, join_base, method_from_options
 from .dialect import build_consumer_contract
+from .js_clients import based_url, wrapper_prefixes
+from .node_clients import FieldScope
 from .wrappers import (
     DEFAULT_HOP_BUDGET,
     GENERIC_ARGS,
@@ -83,9 +86,6 @@ _CLIENT_CALL_RE = re.compile(
 # ``request`` is absent on purpose: it takes the method as its first argument
 # and the URL as its second, so this rule would record the verb as the path.
 _HTTP_VERBS = VERBS
-
-# ``method: "POST"`` anywhere in the remaining arguments of the same call.
-_METHOD_OPT_RE = re.compile(r"""method\s*:\s*['"](\w+)['"]""")
 
 # Module-level names so a test can stand in a failing scanner.
 _match_paren = match_paren
@@ -222,12 +222,14 @@ def extract_consumers(
 
     strings = FileStrings(content, PYTHON_SYNTAX if is_python else JS_SYNTAX, code or None)
     declarations = _declaration_sites(symbols)
+    fields = None if is_python else FieldScope(strings)
+    prefixes = wrapper_prefixes(content, confirmed, strings, fields) if fields else {}
 
     # Pass 1: every call site of a confirmed wrapper, split into resolved
     # (concrete literal) and unresolved. The set of wrappers proven to take a
     # path is only complete once the whole file has been scanned, so the
     # unresolved tally is settled afterwards.
-    resolved: list[tuple[str, str, str, int, ContractOrigin]] = []  # + origin
+    resolved: list[tuple[str, str, str, int, ContractOrigin, int]] = []  # + origin, offset
     unresolved_by_callee: dict[str, int] = {}
     path_taking: set[str] = set()
     # Calls whose argument list would not parse. Kept apart from the
@@ -261,7 +263,13 @@ def extract_consumers(
             parse_failures += 1
             continue
         first, rest = _split_first_arg(content[open_idx + 1 : close_idx])
+        if fields is not None and "this." in first:
+            fields.enter(m.start())
         url = _first_arg_url(first, strings)
+        if fields is not None:
+            # The base a class field or the wrapper's own body adds; one that
+            # does not resolve leaves the call unresolved, not matched bare.
+            url = based_url(url, "" if is_sink_call else prefixes.get(name, ""), fields)
         if url is None:
             # The wrapper's own plumbing — ``fetch(path)`` inside the very
             # function that wraps it — is not a lost endpoint. Whatever flows
@@ -272,9 +280,8 @@ def extract_consumers(
             unresolved_by_callee[name] = unresolved_by_callee.get(name, 0) + 1
             continue
         path_taking.add(name)
-        opt = _METHOD_OPT_RE.search(rest)
-        method = opt.group(1).upper() if opt else "GET"
-        resolved.append((name, url, method, line, ContractOrigin.TYPED_CLIENT))
+        method = method_from_options([a.strip() for a in split_top_level(rest, ",")]) or "GET"
+        resolved.append((name, url, method, line, ContractOrigin.TYPED_CLIENT, m.start()))
 
     # Pass 1b: calls through a variable bound to an HTTP client instance. No
     # wrapper confirmation applies — the binding already proves the receiver.
@@ -301,17 +308,17 @@ def extract_consumers(
             client_unresolved += 1
             continue
         origin = ContractOrigin.INSTANCE_BASE if client.base else ContractOrigin.TYPED_CLIENT
-        resolved.append((client.library, url, verb.upper(), line, origin))
+        resolved.append((client.library, url, verb.upper(), line, origin, m.start()))
 
     from ..from_index import EXTRACTION_LAYER_KEY, LAYER_INDEX
 
     out: list[Contract] = []
-    for callee, url, method, line, origin in resolved:
+    for callee, url, method, line, origin, offset in resolved:
         # Higher than the regex dialect's 0.65/0.75: the callee is a confirmed
         # sink-reaching wrapper and the URL is a whole literal argument, not a
         # string that happened to sit next to a parenthesis.
         contract = build_consumer_contract(
-            ctx, method=method, url=url, client=callee, line=line, origin=origin
+            ctx, method=method, url=url, client=callee, line=line, origin=origin, offset=offset
         )
         if contract is not None:
             contract.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX

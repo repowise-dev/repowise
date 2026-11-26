@@ -33,6 +33,8 @@ _TABLES = (
     "evidence_test_timings",
     "evidence_test_stats",
     "evidence_query_counts",
+    "evidence_route_latency",
+    "evidence_statement_stats",
     "symbol_hotness",
 )
 
@@ -115,7 +117,7 @@ async def test_the_same_file_at_the_same_commit_restamps_the_run(async_session) 
     [
         ({"key": "k1", "commit": "b" * 40}, 2),  # another commit is another measurement
         ({"key": "k2", "commit": "a" * 40}, 2),  # other content at the same commit
-        ({"key": "k1", "commit": None}, 2),  # no commit: cannot be told apart
+        ({"key": "k1", "commit": None}, 2),  # no commit is not the stored commit
     ],
 )
 async def test_other_measurements_append(async_session, second, expected_runs) -> None:
@@ -132,6 +134,24 @@ async def test_other_measurements_append(async_session, second, expected_runs) -
     assert write.restamped is False
     assert await _count(async_session, EvidenceRun) == expected_runs
     assert await _count(async_session, EvidenceSymbolCost) == 4
+
+
+async def test_a_production_file_with_no_commit_added_again_restamps(async_session) -> None:
+    repo = await insert_repo(async_session)
+    first = await save_evidence_run(
+        async_session, repo.id, _run(commit=None), _costs(2), history_runs=5, max_runs=50
+    )
+    again = await save_evidence_run(
+        async_session, repo.id, _run(commit=None), _costs(2), history_runs=5, max_runs=50
+    )
+    other = await save_evidence_run(
+        async_session, repo.id, _run("k2", commit=None), _costs(2), history_runs=5, max_runs=50
+    )
+    await async_session.commit()
+
+    assert (again.restamped, again.run_id) == (True, first.run_id)
+    assert other.restamped is False
+    assert await _count(async_session, EvidenceRun) == 2
 
 
 async def test_pruning_drops_the_oldest_runs_of_the_kind_and_their_rows(async_session) -> None:
@@ -300,6 +320,8 @@ def test_keys_are_the_reviewed_ones() -> None:
         "evidence_query_counts": [
             "run_id", "scope_kind", "scope_id", "site_symbol_id", "statement_fp",
         ],
+        "evidence_route_latency": ["run_id", "method", "route"],
+        "evidence_statement_stats": ["run_id", "statement_fp"],
         "symbol_hotness": ["repository_id", "symbol_id"],
     }
     for name in _TABLES:
@@ -405,5 +427,39 @@ def test_workload_hotness_migration_matches_the_model_and_downgrades(tmp_path: P
     created = tmp_path / "created.db"
     _init_db(created)
     assert _columns(migrated, "workload_hotness") == _columns(created, "workload_hotness")
-    command.downgrade(config, "-1")
+    command.downgrade(config, "0134")
     assert _columns(migrated, "workload_hotness") == {}
+
+
+def test_test_timings_first_in_class_migration_matches_the_model_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    migrated = tmp_path / "migrated.db"
+    config = _alembic_config(migrated)
+    command.upgrade(config, "head")
+    created = tmp_path / "created.db"
+    _init_db(created)
+    assert _columns(migrated, "evidence_test_timings") == _columns(created, "evidence_test_timings")
+    command.downgrade(config, "0135")
+    assert "first_in_class" not in _columns(migrated, "evidence_test_timings")
+
+
+def test_production_kinds_migration_matches_the_models_and_downgrades(tmp_path: Path) -> None:
+    migrated = tmp_path / "migrated.db"
+    created = tmp_path / "created.db"
+    _init_db(created)
+    config = _alembic_config(migrated)
+    command.upgrade(config, "head")
+    production = ("evidence_route_latency", "evidence_statement_stats", "evidence_runs")
+    for table in production:
+        assert _columns(migrated, table) == _columns(created, table), table
+
+    command.downgrade(config, "0148")
+    assert _columns(migrated, "evidence_route_latency") == {}
+    assert _columns(migrated, "evidence_statement_stats") == {}
+    assert not {"window_start", "window_end", "base_commit_sha"} & set(
+        _columns(migrated, "evidence_runs")
+    )
+    command.upgrade(config, "head")
+    for table in production:
+        assert _columns(migrated, table) == _columns(created, table), table

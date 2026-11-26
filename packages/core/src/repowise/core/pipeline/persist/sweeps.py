@@ -420,6 +420,56 @@ async def sweep_deselected_pages(
     return retired
 
 
+async def sweep_deselected_flow_pages(
+    session: Any, repo_id: str, graph_builder: Any, parsed_files: list[Any] | None
+) -> list[str]:
+    """Delete template ``flow_page`` rows whose entry the selection no longer picks.
+
+    An update renders a flow page only while its entry is selected, so a page
+    the ranking dropped was queued by every update and written by none. Judged
+    by the selection, never by what a run produced: a selected page whose
+    render failed stays.
+
+    Unlike :func:`sweep_absent_cycle_pages`, which retires by id whatever wrote
+    the page, this leaves a model-written page alone: its prose was paid for.
+    A model wiki can therefore hold more flow pages than the budget, until a
+    full generation leaves the dropped ones out or ``update --full`` finds them
+    stale and no longer produced.
+
+    Returns the deleted page ids so the caller can drop them from FTS and the
+    vector store after the session closes.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.generation.flow_pages import FLOW_PAGE_TYPE, selected_flow_page_ids
+    from repowise.core.persistence.models import Page
+
+    if not parsed_files:  # nothing parsed selects nothing: no evidence a flow was dropped
+        return []
+    selected = selected_flow_page_ids(graph_builder, parsed_files)
+    if selected is None:
+        return []
+    existing = (
+        (
+            await session.execute(
+                select(Page.id).where(
+                    Page.repository_id == repo_id,
+                    Page.page_type == FLOW_PAGE_TYPE,
+                    Page.freshness_status != "tombstone",
+                    Page.provider_name == "template",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    retired = [pid for pid in existing if pid not in selected]
+    await delete_pages(session, repo_id, retired, "deselected")
+    if retired:
+        logger.info("deselected_flow_pages_swept", repo_id=repo_id, count=len(retired))
+    return retired
+
+
 async def sweep_deselected_file_keyed_pages(
     session: Any, repo_id: str, parsed_files: list[Any] | None
 ) -> list[str]:

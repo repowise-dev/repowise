@@ -155,9 +155,9 @@ def _check_folder_coverage(
     "--embedder",
     "embedder_name",
     default=None,
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]),
+    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock"]),
     help=(
-        "Embedder for RAG: gemini | openai | openrouter | ollama | edenai | mock "
+        "Embedder for RAG: gemini | openai | openrouter | ollama | fastembed | edenai | mock "
         "(default: auto-detect)."
     ),
 )
@@ -514,7 +514,8 @@ def _check_folder_coverage(
         "and one short line per step anywhere else. 'json' writes one JSON event "
         "per line to stdout (stages, steps, warnings) and ends with a summary "
         "line: status, mode, restart_required, restart_hosts, spend, warnings, "
-        "files_written, next commands, mcp_tools and connect. Human text goes "
+        "files_written, next commands, long_running, first_prompt, mcp_tools "
+        "and connect. Human text goes "
         "to stderr."
     ),
 )

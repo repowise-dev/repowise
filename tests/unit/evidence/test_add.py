@@ -7,11 +7,17 @@ import json
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from repowise.core.evidence.add import EvidenceRefusedError, ingest_evidence
 from repowise.core.persistence import create_session_factory, get_session
 from repowise.core.persistence.database import create_engine
-from repowise.core.persistence.models import Repository
+from repowise.core.persistence.models import (
+    EvidenceTestTiming,
+    HealthFileMetric,
+    Repository,
+    WikiSymbol,
+)
 from tests.unit.cli.test_evidence_cmd import _git_repo, _index, _stored
 
 
@@ -88,6 +94,62 @@ def test_no_repository_row_reads_as_no_index(tmp_path: Path) -> None:
         )
 
     assert asyncio.run(run()) == {"stored": False, "reason": "no_index"}
+
+
+def _index_test_file(root: Path) -> None:
+    async def add() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                path = "tests/test_app.py"
+                session.add(HealthFileMetric(repository_id="r1", file_path=path, code_origin="test"))
+                session.add(
+                    WikiSymbol(
+                        repository_id="r1", file_path=path,
+                        symbol_id=f"{path}::TestBuild::test_builds", name="test_builds",
+                        qualified_name="TestBuild.test_builds", kind="method", start_line=2,
+                        end_line=3,
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(add())
+
+
+def _timings(root: Path) -> list:
+    async def read() -> list:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                rows = await session.execute(select(EvidenceTestTiming))
+                return sorted(rows.scalars(), key=lambda r: r.test_id)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def test_a_junit_report_is_stored_as_test_timings_on_its_test_functions(indexed) -> None:
+    root, head = indexed
+    _index_test_file(root)
+    report = b"""<testsuites><testsuite name="pytest">
+    <testcase classname="tests.test_app.TestBuild" name="test_builds[x]" time="2.5" />
+    <testcase classname="tests.test_app.TestBuild" name="test_gone" time="0.1" />
+    <testcase classname="nowhere.Mod" name="test_y" time="0.2" />
+    </testsuite></testsuites>"""
+
+    payload = _ingest(root, report, workload="pytest tests", workload_class="unit_test", commit=head)
+
+    assert payload["stored"] is True
+    assert (payload["kind"], payload["input_format"], payload["matched"]) == ("test_timing", "junit", 3)
+    assert payload["unlinked"] == {"unknown_symbol": 1, "unplaced": 1}
+    assert [(r.test_id, r.test_file, r.symbol_id, r.duration_s, r.first_in_class) for r in _timings(root)] == [
+        ("nowhere.Mod::test_y", None, None, 0.2, True),
+        ("tests/test_app.py::TestBuild::test_builds[x]", "tests/test_app.py",
+         "tests/test_app.py::TestBuild::test_builds", 2.5, True),
+        ("tests/test_app.py::TestBuild::test_gone", "tests/test_app.py", None, 0.1, False),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -269,3 +331,85 @@ def test_a_directory_stands_for_the_files_in_it(tmp_path: Path) -> None:
     with pytest.raises(EvidenceRefusedError) as refused:
         evidence_paths([tmp_path / "empty"])
     assert refused.value.option == "FILE"
+
+
+def test_a_profile_stores_inside_and_drivers_and_the_read_model_serves_them(indexed) -> None:
+    from repowise.core.evidence.payloads import function_payload
+    from repowise.core.persistence.models import SymbolHotness
+
+    root, head = indexed
+    frames = [
+        {"name": "build", "file": str(root / "src" / "app.py"), "line": 1},
+        {"name": "f", "file": str(root / "src" / "edited.py"), "line": 1},
+        {"name": "read", "file": "C:/Python/Lib/json.py", "line": 7},
+    ]
+    data = json.dumps({
+        "$schema": "https://www.speedscope.app/file-format-schema.json",
+        "exporter": "pyinstrument@5.1.3",
+        "shared": {"frames": frames},
+        "profiles": [{"type": "sampled", "unit": "seconds", "samples": [[0, 1, 2], [0]],
+                      "weights": [3.0, 1.0]}],
+    }).encode()
+
+    assert _ingest(root, data, workload="app", workload_class="entry_point", commit=head)["stored"]
+
+    _, costs = _stored(root)
+    by_id = {c.symbol_id: c for c in costs}
+    assert json.loads(by_id["src/app.py::build"].inside_json) == [
+        {"kind": "repo", "leaf": {"kind": "library", "name": "read", "share": 0.75},
+         "name": "f", "share": 0.75},
+        {"kind": "own", "name": "(own code)", "share": 0.25},
+    ]
+    # The caller's location joins to its symbol at ingest.
+    assert json.loads(by_id["src/edited.py::f"].drivers_json) == [
+        {"name": "build", "share": 1.0, "symbol": "src/app.py::build"},
+    ]
+    assert by_id["src/app.py::build"].drivers_json is None
+
+    async def hot() -> dict:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                rows = (await session.execute(select(SymbolHotness))).scalars()
+                return {r.symbol_id: function_payload(r) for r in rows}
+        finally:
+            await engine.dispose()
+
+    served = asyncio.run(hot())
+    assert served["src/edited.py::f"]["drivers"] == [
+        {"name": "build", "share": 1.0, "symbol": "src/app.py::build"},
+    ]
+    assert served["src/app.py::build"]["inside"][0]["name"] == "f"
+    assert served["src/app.py::build"]["drivers"] is None
+
+
+def test_a_glob_names_every_modules_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.evidence.add import evidence_paths
+
+    for module in ("a", "b"):
+        reports = tmp_path / module / "target" / "surefire-reports"
+        reports.mkdir(parents=True)
+        (reports / f"TEST-{module}.xml").write_text("<testsuite/>")
+        (reports / f"{module}.txt").write_text("summary")
+    monkeypatch.chdir(tmp_path)
+
+    got = evidence_paths([Path("**/target/surefire-reports/*.xml")])
+
+    assert sorted(p.name for p in got) == ["TEST-a.xml", "TEST-b.xml"]
+    with pytest.raises(EvidenceRefusedError, match="matches no file"):
+        evidence_paths([Path("**/build/test-results/test/*.xml")])
+
+
+def test_a_run_where_every_test_errored_is_refused(tmp_path: Path) -> None:
+    from repowise.core.evidence.add import prepare_evidence
+
+    errored = (
+        '<testsuite><testcase classname="tests.test_a" name="test_x" time="0"><error/></testcase>'
+        '<testcase classname="tests.test_a" name="test_y" time="0"><error/></testcase></testsuite>'
+    )
+
+    with pytest.raises(EvidenceRefusedError, match=r"every one of the 2 tests in junit.xml errored"):
+        prepare_evidence(errored.encode(), name="junit.xml", checkout_root=tmp_path, commit="a" * 40)
+    # One test that ran is a run: kept.
+    ran = errored.replace("<error/></testcase></testsuite>", "</testcase></testsuite>")
+    assert prepare_evidence(ran.encode(), name="junit.xml", checkout_root=tmp_path, commit="a" * 40).doc

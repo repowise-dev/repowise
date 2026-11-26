@@ -6,7 +6,13 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from repowise.cli.commands.evidence_cmd import _status_line
-from repowise.core.evidence.status import evidence_status, run_share, run_status, split_words
+from repowise.core.evidence.status import (
+    evidence_status,
+    low_signal,
+    run_share,
+    run_status,
+    split_words,
+)
 
 
 def _run(run_id: str, workload: str, commit: str | None, **fields) -> SimpleNamespace:
@@ -14,11 +20,13 @@ def _run(run_id: str, workload: str, commit: str | None, **fields) -> SimpleName
         "id": run_id, "kind": "profile", "workload_name": workload,
         "workload_class": "entry_point", "environment": "local", "value_kind": "wall",
         "unit": "samples", "tool_name": None, "tool_version": None, "commit_sha": commit,
-        "dirty": None, "ingested_at": datetime(2026, 1, 1, tzinfo=UTC), "units_total": None,
+        "dirty": None, "ingested_at": datetime(2026, 1, 1, tzinfo=UTC), "measured_at": None,
+        "units_total": None,
         "units_matched": None, "units_skipped": None, "units_outside_repo": None,
         "units_truncated": None, "skipped_json": None, "total_value": None,
         "explained_value": None, "repo_self_value": None, "wait_value": None,
         "library_value": None, "mapping_partial": False, "tests_failed": None,
+        "total_samples": None,
     }
     return SimpleNamespace(**{**base, **fields})
 
@@ -76,3 +84,53 @@ def test_a_red_suites_failures_show_with_its_run() -> None:
     assert run["tests_failed"] == 3
     assert "; 3 tests failed." in _status_line(run)
     assert "tests failed" not in _status_line(run_status(_run("r2", "x", None, tests_failed=0), None))
+
+
+def test_newest_is_by_measurement_time_like_the_ranking() -> None:
+    # r2 was re-added later (newer ingest) but measured earlier than r1.
+    status = evidence_status(
+        [
+            _run("r2", "build", None, ingested_at=datetime(2026, 3, 1, tzinfo=UTC),
+                 measured_at=datetime(2026, 1, 1, tzinfo=UTC)),
+            _run("r1", "build", None, ingested_at=datetime(2026, 2, 1, tzinfo=UTC),
+                 measured_at=datetime(2026, 2, 1, tzinfo=UTC)),
+            _run("b1", "build", None, kind="benchmark", measured_at=None),
+        ],
+        None,
+    )
+    assert [w["run_id"] for w in status["workloads"]] == ["r1", "b1"]
+    assert status["runs_stored"] == {"benchmark": 1, "profile": 2}
+
+
+def test_a_partial_run_is_newest_only_without_a_complete_one() -> None:
+    # Ranking skips partial runs, so status names the complete run it ranks.
+    status = evidence_status(
+        [
+            _run("p2", "build", None, mapping_partial=True,
+                 measured_at=datetime(2026, 3, 1, tzinfo=UTC)),
+            _run("r1", "build", None, measured_at=datetime(2026, 2, 1, tzinfo=UTC)),
+            _run("p1", "load", None, mapping_partial=True),
+        ],
+        None,
+    )
+    assert [w["run_id"] for w in status["workloads"]] == ["r1", "p1"]
+    assert status["workloads"][1]["mapping_partial"] is True
+    assert status["runs_stored"] == {"profile": 3}
+
+
+def test_a_profile_without_sample_counts_is_flagged_with_its_cause() -> None:
+    counted = _run("r1", "build", None, total_samples=4200, tool_name="pyinstrument")
+    pruned = _run("r2", "build", None, tool_name="pyinstrument")
+    uncounted = _run("r3", "build", None, tool_name="perf")
+    timing = _run("r4", "pytest", None, kind="test_timing")
+
+    assert [low_signal(r) for r in (counted, pruned, uncounted, timing)] == [
+        None,
+        "pruned_1pct",
+        "no_samples",
+        None,
+    ]
+    assert run_status(counted, None)["total_samples"] == 4200
+    assert run_status(pruned, None)["low_signal"] == "pruned_1pct"
+    assert "Low signal" in _status_line(run_status(pruned, None))
+    assert "Low signal" not in _status_line(run_status(counted, None))

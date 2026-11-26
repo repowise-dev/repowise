@@ -38,6 +38,7 @@ const NARROWING: NarrowingSpec[] = [
   { key: "boundary", facet: "boundary", anyLabel: "Any" },
   { key: "confidence", facet: "confidence", anyLabel: "Any" },
   { key: "proof", facet: "proof", anyLabel: "Any" },
+  { key: "static_cost", facet: "static_cost", anyLabel: "Any" },
   { key: "role", facet: "role", anyLabel: "Any" },
 ];
 

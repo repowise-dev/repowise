@@ -83,6 +83,7 @@ from repowise.server.mcp_server._answer_pipeline import (
 from repowise.server.mcp_server._answer_pipeline import (
     demote_noise_hits as _demote_noise_hits,
 )
+from repowise.server.mcp_server._answer_pipeline import drop_out_of_scope, in_scope
 from repowise.server.mcp_server._answer_pipeline import (
     expand_via_graph as _expand_via_graph,
 )
@@ -110,12 +111,14 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
     filter_dicts_by_key,
 )
+from repowise.server.mcp_server._line_hits import line_read_memo
 from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
     expand_via_neighbor_rerank as _expand_via_neighbor_rerank,
 )
+from repowise.server.mcp_server._origin_rank import load_row_languages, load_row_origins
 from repowise.server.mcp_server._savings.interaction import timed_stage
 from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
@@ -138,8 +141,10 @@ from repowise.server.mcp_server.tool_answer.callers import (
 )
 from repowise.server.mcp_server.tool_answer.citations import answer_files
 from repowise.server.mcp_server.tool_answer.clauses import cover_clauses
+from repowise.server.mcp_server.tool_answer.concept_names import concept_defining_files
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
+    _Grade,
     _grade_answer,
     _is_value_question,
     _retrieval_quality,
@@ -175,6 +180,12 @@ from repowise.server.mcp_server.tool_answer.evidence import (
     _is_readable_path,
     _repo_root,
 )
+from repowise.server.mcp_server.tool_answer.fix_history import (
+    asks_fix_history,
+    fix_history_lines,
+    named_file_fix_history,
+)
+from repowise.server.mcp_server.tool_answer.grounding import attach_grounding_bodies
 from repowise.server.mcp_server.tool_answer.neighbors import (
     attach_graph_neighbors,
     lead_file,
@@ -198,6 +209,11 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _attach_page_excerpts,
     _intersection_boost,
     _rerank_by_coverage,
+)
+from repowise.server.mcp_server.tool_answer.scope import (
+    ScopeResolution,
+    resolve_scope,
+    scope_label,
 )
 from repowise.server.mcp_server.tool_answer.symbols import (
     _anchor_symbol_hits,
@@ -266,6 +282,57 @@ class _Retrieved(NamedTuple):
     flow_paths: list[list[str]]
     # Lines in another workspace repo's documents (see ``documents``).
     other_repo_lines: list[dict]
+    # The normalized ``scope`` the question was asked under.
+    scope: str | None = None
+
+
+def _split_in_scope(split: dict[str, list[str]], scope: str) -> dict[str, list[str]]:
+    """The held-at-medium definitions as a scoped reply names them: files
+    outside the scope become a count. The grade itself saw every file, so a
+    scope never lifts it."""
+    shown = {}
+    for name, paths in split.items():
+        kept = [p for p in paths if in_scope(p, scope)]
+        outside = len(paths) - len(kept)
+        if outside:
+            many = f"{outside} files outside the scope"
+            kept.append("a file outside the scope" if outside == 1 else many)
+        shown[name] = kept
+    return shown
+
+
+def _keep_in_scope(
+    hits: list[dict], homonyms: dict, flow_paths: list[list[str]], scope: str | None
+) -> tuple[list[dict], list[list[str]]]:
+    """What retrieval found, less every file outside *scope*.
+
+    Hydration drops out-of-scope hits, but graph expansion, anchoring and flow
+    paths add files after it. A scoped caller asked about the scope, so none of
+    them may reach the answer, its lists or synthesis. A flow path that leaves
+    the scope goes whole: a cut chain would claim a call order that is not there.
+    ``homonyms`` is narrowed in place; ``split`` stays whole for the grade (see
+    :func:`_split_in_scope` for what the reply names).
+    """
+    if not scope:
+        return hits, flow_paths
+    homonyms["union"] = {
+        name: kept
+        for name, defs in (homonyms.get("union") or {}).items()
+        if (kept := [d for d in defs if in_scope(d.get("file_path") or "", scope)])
+    }
+    # A value reply lists each defining file's assignment: only the scope's.
+    homonyms["split_at"] = {
+        name: {path: line for path, line in at.items() if in_scope(path, scope)}
+        for name, at in (homonyms.get("split_at") or {}).items()
+    }
+    if homonyms.get("unindexed_lines"):
+        homonyms["unindexed_lines"] = [
+            r for r in homonyms["unindexed_lines"] if in_scope(r["path"], scope)
+        ]
+    return (
+        drop_out_of_scope(hits, scope),
+        [p for p in flow_paths if all(in_scope(f, scope) for f in p)],
+    )
 
 
 @timed_stage("retrieve")
@@ -282,8 +349,13 @@ async def _run_retrieval_pipeline(
     documents = asyncio.create_task(
         find_documents(question, _repo_root(ctx), ctx, scope=scope, exclude_spec=exclude_spec)
     )
-    hits = await _hybrid_retrieve(question, ctx)
-    hits = await _hydrate_hits(hits, ctx, scope=scope)
+    hits = await _hydrate_hits(await _hybrid_retrieve(question, ctx), ctx, scope=scope)
+    if scope and not hits:
+        # The repository's best rows held nothing under the scope: search inside
+        # it. Only then, so a scope the first pass already served keeps the
+        # ranks (and grades) it had.
+        scoped = await _hybrid_retrieve(question, ctx, scope=scope)
+        hits = await _hydrate_hits(scoped, ctx, scope=scope)
 
     # Drop excluded files right after hydration (which attaches target_path) so
     # they never enter ranking, citations, or fallback_targets.
@@ -362,9 +434,25 @@ async def _run_retrieval_pipeline(
     if not traced:
         with contextlib.suppress(Exception):
             hits = await _expand_via_parent_page(hits, question, ctx)
-    # Demote noise (decisions on non-why, test pages on non-test questions)
-    # below real pages. Non-dropping; after anchoring, which never injects noise.
-    hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question))
+    # Demote noise (decisions on non-why, test/generated/vendored files the
+    # question does not ask for, files in another language than the question's)
+    # below real pages. Non-dropping; after anchoring, which never injects noise
+    # and whose files say which language the question is about.
+    origins: dict[str, str] = {}
+    languages: dict[str, str] = {}
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            origins = await load_row_origins(session, repo_id, hits)
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            languages = await load_row_languages(session, repo_id, hits)
+    hits = _demote_noise_hits(
+        hits,
+        question,
+        is_why=_is_why_question(question),
+        origins=origins,
+        languages=languages,
+    )
     # Files on a pasted stack trace lead; files defining a named identifier
     # join just below the top three. No-op when the question has neither.
     try:
@@ -372,13 +460,22 @@ async def _run_retrieval_pipeline(
     except Exception:
         _log.warning("get_answer: issue file lookup failed", exc_info=True)
     else:
+
         def _in_scope(paths: list[str]) -> list[str]:
-            return [p for p in paths if not scope or p.startswith(scope)]
+            return [p for p in paths if in_scope(p, scope)]
 
         if traced := _in_scope(issue.traced):
             hits = lead_with_files(hits, traced)
         if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
+        elif not traced:
+            # Words spelling a symbol name ("bus factor" -> ``_bus_factor``)
+            # place its defining files the same way.
+            with contextlib.suppress(Exception):
+                async with get_session(ctx.session_factory) as session:
+                    concept = await concept_defining_files(session, repo_id, question, exclude_spec)
+                if concept := _in_scope(concept):
+                    hits = place_named_files(hits, concept)
     # Documents a question word names join the same way; no page carries them.
     docs = await documents
     hits = place_documents(hits, docs.hits)
@@ -386,6 +483,7 @@ async def _run_retrieval_pipeline(
     # A compound question gets each later clause's best file into the top five.
     with contextlib.suppress(Exception):
         hits = await cover_clauses(question, hits, ctx, scope=scope, exclude_spec=exclude_spec)
+    hits, flow_paths = _keep_in_scope(hits, homonyms, flow_paths, scope)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)
@@ -404,7 +502,7 @@ async def _run_retrieval_pipeline(
                     session, repo_id, resolved_pool, question_ids=question_ids
                 )
     return _Retrieved(
-        hits, resolved_pool, question_ids, homonyms, flow_paths, docs.other_repo_lines
+        hits, resolved_pool, question_ids, homonyms, flow_paths, docs.other_repo_lines, scope
     )
 
 
@@ -582,13 +680,45 @@ async def _pre_synthesis_reply(
     # Another workspace repo's documents can answer what this repo's code does
     # not (a ticket asked about by its key): synthesis reads their lines.
     if not hits and not retrieved.other_repo_lines:
+        # Same length as the unscoped line for a typical scope: names what was
+        # searched, and that widening the scope is the first thing to try.
+        lead = (
+            f"No wiki hits under {scope_label(retrieved.scope)} for this question. "
+            "Widen the scope or rephrase. "
+            if retrieved.scope
+            else "No wiki hits for this question. Rephrase around the code concept. "
+        )
         return _no_answer_payload(
-            "No wiki hits for this question. Rephrase around the code "
-            "concept. " + _NO_HITS_RECOVERY_HINT,
+            lead + _NO_HITS_RECOVERY_HINT,
             repository=ask.repository,
             t0=ask.t0,
         )
     return None
+
+
+async def _named_fix_history(ask: _Ask, hits: list[dict]) -> list[dict]:
+    """The fix record of each file the question asks why it breaks or keeps
+    changing; ``[]`` for every other question.
+
+    Its prompt line rides on that file's hit (the top hit when retrieval missed
+    the file), so synthesis reads it and the grade counts its numbers as shown.
+    """
+    if not asks_fix_history(ask.question):
+        return []
+    try:
+        async with get_session(ask.ctx.session_factory) as session:
+            history = await named_file_fix_history(
+                session, ask.repo_id, ask.question, ask.exclude_spec
+            )
+    except Exception:
+        _log.warning("get_answer: fix history lookup failed", exc_info=True)
+        return []
+    by_path = {h.get("target_path"): h for h in hits}
+    for row, line in zip(history, fix_history_lines(history), strict=True):
+        hit = by_path.get(row["path"]) or (hits[0] if hits else None)
+        if hit is not None:
+            hit.setdefault("_fix_history", []).append(line)
+    return history
 
 
 def _fallback_targets(hits: list[dict]) -> list[str]:
@@ -662,6 +792,13 @@ async def _user_prompt(
     ask: _Ask, hits: list[dict], graph_callers, other_repo_lines: list[dict]
 ) -> str:
     """The synthesis prompt; decisions (why questions) and prelude drop out when empty."""
+    # Prompt-only material, so it is fetched here and not in retrieval: a
+    # keyless reply never pays for it.
+    try:
+        async with get_session(ask.ctx.session_factory) as session:
+            await attach_grounding_bodies(session, ask.repo_id, hits, ask.ctx, ask.question)
+    except Exception:
+        _log.warning("get_answer: grounding body lookup failed", exc_info=True)
     top_paths = [h["target_path"] for h in hits if h.get("target_path")]
     decisions: list[dict] = []
     if _is_why_question(ask.question):
@@ -676,21 +813,30 @@ async def _user_prompt(
     prelude = ""
     with contextlib.suppress(Exception):
         prelude = await _build_structured_prelude(hits, decisions, ask.ctx, ask.repo_id)
-    if graph_callers.rows:
-        graph_block = "Callers from the call graph:\n" + "\n".join(
-            f"- {line}" for line in caller_lines(graph_callers.rows)
-        )
-        prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
-    if other_repo_lines:
-        docs_block = "Lines from documents in other repositories of this workspace:\n" + "\n".join(
-            f"- {r['repo']}: {r['path']}:{r['line']}: {r['text']}" for r in other_repo_lines
-        )
-        prelude = f"{prelude}\n\n{docs_block}" if prelude else docs_block
+    blocks = (
+        prelude,
+        _prompt_block("Callers from the call graph", caller_lines(graph_callers.rows)),
+        _prompt_block(
+            "Bug-fix history from the index",
+            [line for h in hits for line in h.get("_fix_history") or ()],
+        ),
+        _prompt_block(
+            "Lines from documents in other repositories of this workspace",
+            [f"{r['repo']}: {r['path']}:{r['line']}: {r['text']}" for r in other_repo_lines],
+        ),
+    )
     return _USER_TEMPLATE.format(
         question=ask.question.strip(),
         n=len(hits),
-        context=_build_context_block_v2(hits, prelude=prelude, decisions=decisions),
+        context=_build_context_block_v2(
+            hits, prelude="\n\n".join(b for b in blocks if b), decisions=decisions
+        ),
     )
+
+
+def _prompt_block(title: str, lines: list[str]) -> str:
+    """A titled bullet block for the prelude, or ``""`` with no lines."""
+    return f"{title}:\n" + "\n".join(f"- {line}" for line in lines) if lines else ""
 
 
 async def _graded_payload(
@@ -701,8 +847,8 @@ async def _graded_payload(
     agreement_dominant: bool,
     dominance,
     stop_reason: str | None = None,
-) -> tuple[dict, str, list[str]]:
-    """Grade the synthesized answer and build its payload: ``(payload, confidence, citations)``."""
+) -> tuple[dict, _Grade, list[str]]:
+    """Grade the synthesized answer and build its payload: ``(payload, grade, citations)``."""
     hits = retrieved.hits
     cited = answer_files(
         answer_text, hits, retrieved.resolved_pool, fallback_targets, _repo_root(ask.ctx)
@@ -736,6 +882,10 @@ async def _graded_payload(
         split_names=retrieved.homonyms.get("split"),
         stop_reason=stop_reason,
     )
+    if retrieved.scope and grade.split_names:
+        grade = grade._replace(split_names=_split_in_scope(grade.split_names, retrieved.scope))
+    if grade.off_topic:
+        return _off_topic_payload(ask, grade.off_topic), grade, []
     payload = await build_synthesized_payload(
         question=ask.question,
         answer_text=answer_text,
@@ -752,7 +902,77 @@ async def _graded_payload(
         repository=ask.repository,
         exclude_spec=ask.exclude_spec,
     )
-    return payload, grade.confidence, citations
+    return payload, grade, citations
+
+
+def _off_topic_payload(ask: _Ask, words: tuple[str, ...]) -> dict:
+    """The reply when the question asks about what the repository does not hold.
+
+    No answer, citations or files to read: whatever synthesis wrote came from
+    outside the evidence, and the files retrieved are only where a stray word
+    landed.
+    """
+    asked = ", ".join(f"'{w}'" for w in words[:3])
+    payload = _no_answer_payload("", repository=ask.repository, t0=ask.t0)
+    # The verdict is the answer: the reply has nothing else to say.
+    del payload["note"]
+    payload["answer"] = (
+        f"Not found in this repository: nothing indexed mentions {asked}, and the "
+        "synthesized reply drew on none of what was retrieved, so it is not served. "
+        "Ask about code, a file or a behaviour this repository has."
+    )
+    return payload
+
+
+async def _resolve_scope(ask: _Ask, scope: str | None) -> ScopeResolution:
+    """*scope* as :func:`resolve_scope` reads it; as written when the index
+    cannot be read, so a scope check never fails the answer."""
+    if _normalize_scope(scope) is None:
+        return ScopeResolution(None, [], [])
+    try:
+        async with get_session(ask.ctx.session_factory) as session:
+            return await resolve_scope(session, ask.repo_id, scope, _repo_root(ask.ctx))
+    except Exception:
+        _log.debug("get_answer scope check failed; scope kept as written", exc_info=True)
+        return ScopeResolution(_normalize_scope(scope), [], [])
+
+
+def _missing_label(scoped: ScopeResolution) -> str:
+    return ", ".join(f"{p}/" for p in scoped.missing)
+
+
+def _scope_miss_payload(ask: _Ask, scoped: ScopeResolution) -> dict:
+    """The reply when no prefix of the scope holds an indexed file: nothing was
+    searched, and the nearest existing directories are what to retry with."""
+    retry = (
+        f"Nearest indexed directories: {', '.join(scoped.nearest)}. "
+        "Retry with one of them, or omit scope."
+        if scoped.nearest
+        else "Omit scope to search the whole repository."
+    )
+    payload = _no_answer_payload(
+        f"Scope {_missing_label(scoped)} holds no indexed file, so nothing was searched. "
+        + retry,
+        repository=ask.repository,
+        t0=ask.t0,
+    )
+    if scoped.nearest:
+        payload["scope_suggestions"] = scoped.nearest
+    return payload
+
+
+def _with_scope_note(payload: dict, scoped: ScopeResolution) -> dict:
+    """Name the scope prefixes the index lacks, which this reply did not search.
+
+    Set per call, never inherited: a cached reply may carry another call's note.
+    """
+    payload.pop("scope_note", None)
+    if scoped.missing and scoped.scope:
+        payload["scope_note"] = (
+            f"{_missing_label(scoped)} holds no indexed file; "
+            f"searched {scope_label(scoped.scope)} only."
+        )
+    return payload
 
 
 def _with_scan_gaps(payload: dict, homonyms: dict) -> dict:
@@ -848,7 +1068,8 @@ async def get_answer(
 
     Args:
         question: developer question.
-        scope: optional path-prefix filter (e.g. "src/pkg/").
+        scope: optional path-prefix filter (e.g. "src/pkg/"); several
+            prefixes separated by commas or spaces search their union.
         repo: usually omitted.
         include: optional ``["evidence"]`` expanded projection;
             ``["diagnostics"]`` adds ``retrieval_quality``.
@@ -874,7 +1095,12 @@ async def get_answer(
 
     # Normalize once, then use the same value for retrieval and cache identity.
     # The versioned identity deliberately misses legacy question-only rows.
-    normalized_scope = _normalize_scope(scope)
+    # Several prefixes are one union; a prefix the index lacks is said, not
+    # silently searched.
+    scoped = await _resolve_scope(ask, scope)
+    if scoped.missing and scoped.scope is None:
+        return _scope_miss_payload(ask, scoped)
+    normalized_scope = scoped.scope
     qhash = _hash_answer_identity(question, normalized_scope)
     cache_disabled = _cache_disabled()
     if not cache_disabled:
@@ -891,15 +1117,18 @@ async def get_answer(
             served = _kept_keyless_reply(ask, qhash)
         if served is not None:
             clock.log("cached", "lookup")
-            return served
+            return _with_scope_note(served, scoped)
     clock.mark("lookup")
 
-    retrieved = await _run_retrieval_pipeline(
-        question, ctx, scope=normalized_scope, exclude_spec=exclude_spec, repo_id=ask.repo_id
-    )
+    # Its stages grep the same question words: one git grep per word.
+    with line_read_memo():
+        retrieved = await _run_retrieval_pipeline(
+            question, ctx, scope=normalized_scope, exclude_spec=exclude_spec, repo_id=ask.repo_id
+        )
     clock.mark("retrieve")
     hits = retrieved.hits
     resolved_pool = retrieved.resolved_pool
+    fix_history = await _named_fix_history(ask, hits)
     graph_callers = await _graph_callers(ask, retrieved)
     # Impact questions the caller lookup left unanswered get the users of the
     # file the answer leads with, once that file is known.
@@ -914,8 +1143,11 @@ async def get_answer(
     # Above the early returns: they rate retrieval too.
     agreement_dominant = _agreement(hits)
 
-    def _finish(payload: dict, *, keep: bool = False) -> dict:
+    def _finish(payload: dict, *, keep: bool = False, candidates: bool = True) -> dict:
         _with_scan_gaps(payload, retrieved.homonyms)
+        if fix_history:
+            payload["fix_history"] = fix_history
+        _with_scope_note(payload, scoped)
         if retrieved.other_repo_lines:
             payload["other_repo_lines"] = retrieved.other_repo_lines
         # Kept on the terms of the database cache, which watches only this repo.
@@ -926,7 +1158,8 @@ async def get_answer(
                 repo_id=ask.repo_id,
                 qhash=qhash,
             )
-        return _with_candidates(payload, resolved_pool)
+        # An off-topic reply ranks nothing: the pool is where stray words landed.
+        return _with_candidates(payload, resolved_pool if candidates else [])
 
     # Every return from here on goes through ``_finish`` (or the
     # degraded path, which does) so the ranked pool is never dropped.
@@ -1006,15 +1239,19 @@ async def get_answer(
     if failure_note is not None:
         return await _degrade("synthesis-failed", failure_note)
 
-    payload, confidence, citations = await _graded_payload(
+    payload, grade, citations = await _graded_payload(
         ask, retrieved, answer_text, fallback_targets, agreement_dominant, dominance, stop_reason
     )
+    confidence = grade.confidence
+    if grade.off_topic:
+        # Nothing retrieved is worth reading for it either.
+        fallback_targets = []
     attach_graph_callers(payload, graph_callers)
     await _neighbors(payload)
     if retrieved.flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in retrieved.flow_paths[:2]]
     # Navigation, not evidence: it survives the shrinking of ``retrieval``.
-    _finish(payload)
+    _finish(payload, candidates=not grade.off_topic)
     await _cache_and_stamp(
         payload,
         ask,
@@ -1064,7 +1301,7 @@ async def get_answer(
 
     Args:
         question: One question about one subject; split a multi-part task.
-        scope: Repository-relative path prefix.
+        scope: Repository-relative path prefix; several, comma-separated, search their union.
         repo: Usually omitted.
         include: ["evidence"] expands evidence; ["diagnostics"] adds retrieval_quality.
     """

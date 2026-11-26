@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from repowise.cli.commands import watch_cmd
 from repowise.cli.helpers import CommandTarget
 from repowise.cli.main import cli
+from repowise.core.update_lock import release_own_update_lock
 
 
 @pytest.mark.parametrize(
@@ -155,9 +156,7 @@ class TestSingleRepoTrigger:
             calls.append(kwargs)
             done.set()
 
-        monkeypatch.setattr(
-            "repowise.cli.commands.update_cmd.command.run_update", fake_run_update
-        )
+        monkeypatch.setattr("repowise.cli.commands.update_cmd.command.run_update", fake_run_update)
         monkeypatch.setattr(watch_cmd, "ensure_repowise_dir", lambda _p: None)
 
         started = threading.Event()
@@ -209,9 +208,7 @@ class TestSingleRepoTrigger:
         assert calls[0]["path"] == str(tmp_path)
         assert calls[0]["index_only"] is False
 
-    def test_index_only_is_passed_through(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ) -> None:
+    def test_index_only_is_passed_through(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         calls = self._fire(monkeypatch, tmp_path, index_only=True)
 
         assert calls[0]["index_only"] is True
@@ -231,7 +228,7 @@ class TestReleaseOwnUpdateLock:
         assert try_acquire_update_lock(tmp_path, "abc123") is None
         assert update_lock_path(tmp_path).exists()
 
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
         assert not update_lock_path(tmp_path).exists()
 
@@ -250,12 +247,12 @@ class TestReleaseOwnUpdateLock:
             encoding="utf-8",
         )
 
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
         assert lock.exists()
 
     def test_no_lock_is_not_an_error(self, tmp_path) -> None:
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
 
 class TestEventPaths:
@@ -291,3 +288,12 @@ class TestEventPaths:
         event = self._Event(str(tmp_path / ".repowise" / "state.json"))
 
         assert watch_cmd._event_paths(event, tmp_path) == set()
+
+
+def test_watch_missing_path_exits_2(tmp_path) -> None:
+    """A missing path argument is rejected with exit code 2 and creates no directory (#5981)."""
+    missing = tmp_path / "does_not_exist"
+    result = CliRunner().invoke(cli, ["watch", str(missing)])
+
+    assert result.exit_code == 2, result.output
+    assert not missing.exists()

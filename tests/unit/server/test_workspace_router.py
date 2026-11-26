@@ -253,11 +253,17 @@ def _create_workspace_repo_db(
             CREATE TABLE wiki_symbols (id TEXT PRIMARY KEY);
             CREATE TABLE git_metadata (
                 id TEXT PRIMARY KEY,
+                repository_id TEXT,
+                file_path TEXT,
                 churn_percentile REAL,
                 is_hotspot INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE health_file_metrics (
                 id TEXT PRIMARY KEY,
+                repository_id TEXT,
+                file_path TEXT,
+                code_origin TEXT,
+                is_test INTEGER,
                 score REAL NOT NULL,
                 nloc INTEGER NOT NULL
             );
@@ -967,16 +973,26 @@ class TestQueryRepoStats:
                 CREATE TABLE wiki_symbols (id TEXT PRIMARY KEY);
                 CREATE TABLE git_metadata (
                     id TEXT PRIMARY KEY,
+                    repository_id TEXT,
+                    file_path TEXT,
                     is_hotspot INTEGER NOT NULL DEFAULT 0,
                     churn_percentile REAL NOT NULL DEFAULT 0.0
+                );
+                CREATE TABLE health_file_metrics (
+                    id TEXT PRIMARY KEY,
+                    repository_id TEXT,
+                    file_path TEXT,
+                    code_origin TEXT,
+                    is_test INTEGER
                 );
                 INSERT INTO repositories (id) VALUES ('repo-1');
                 """
             )
             for idx, (is_hotspot, churn) in enumerate(rows):
                 conn.execute(
-                    "INSERT INTO git_metadata (id, is_hotspot, churn_percentile) VALUES (?, ?, ?)",
-                    (f"src/f{idx}.py", is_hotspot, churn),
+                    "INSERT INTO git_metadata (id, repository_id, file_path, is_hotspot,"
+                    " churn_percentile) VALUES (?, 'repo-1', ?, ?, ?)",
+                    (f"g{idx}", f"src/f{idx}.py", is_hotspot, churn),
                 )
             for node_id, node_type, language in graph_nodes or []:
                 conn.execute(
@@ -1001,6 +1017,28 @@ class TestQueryRepoStats:
         stats = query_repo_stats(db_path)
 
         assert stats["hotspot_count"] == 2
+
+    def test_hotspot_count_on_a_store_without_origins(self, tmp_path: Path) -> None:
+        """A store from before health rows carried an origin still counts its flags."""
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(db_path, rows=[(1, 0.99), (1, 0.95), (0, 0.10)])
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("DROP TABLE health_file_metrics")
+
+        assert query_repo_stats(db_path)["hotspot_count"] == 2
+
+    def test_hotspot_count_leaves_out_held_origins(self, tmp_path: Path) -> None:
+        """The workspace card counts the hotspots the Code Health list shows:
+        a hotspot whose stored origin the list holds out (a test here) is not one."""
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(db_path, rows=[(1, 0.99), (1, 0.95), (0, 0.10)])
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO health_file_metrics (id, repository_id, file_path, code_origin)"
+                " VALUES ('h0', 'repo-1', 'src/f0.py', 'test')"
+            )
+
+        assert query_repo_stats(db_path)["hotspot_count"] == 1
 
     def test_symbol_count_is_the_symbol_index(self, tmp_path: Path) -> None:
         """The figure `/api/repos/{id}/stats` reports: symbol index rows, not
@@ -1960,3 +1998,57 @@ async def test_workspace_indexed_at_comes_from_the_member_store(tmp_path: Path) 
     by_alias = {r["alias"]: r["indexed_at"] for r in repos}
     # backend: the store stamp over the config's 2026-04-12; frontend has no store.
     assert by_alias == {"backend": "2026-10-20T19:21:15+00:00", "frontend": None}
+
+
+# ---------------------------------------------------------------------------
+# Tests — GET /api/workspace/setup
+# ---------------------------------------------------------------------------
+
+
+class TestGetWorkspaceSetup:
+    @pytest.mark.asyncio
+    async def test_not_workspace_mode(self) -> None:
+        transport = ASGITransport(app=_make_workspace_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/setup")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_aggregates_members_and_names_those_with_steps_left(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from repowise.server.schemas.actions import WorkspaceSetupRepo
+
+        rows = {
+            "backend": WorkspaceSetupRepo(
+                alias="backend", path="./backend", repo_id="r1", status="available",
+                index_state="up_to_date", agent_calls=3, sync=True, coverage="on",
+                evidence="found", open=2, offer="finish_setup", essentials_done=True,
+            ),
+            "frontend": WorkspaceSetupRepo(
+                alias="frontend", path="./frontend", repo_id=None, status="not_indexed",
+                reason="Not indexed yet.",
+            ),
+        }  # fmt: skip
+
+        async def member(request, r, repo_id):
+            return rows[r.alias]
+
+        monkeypatch.setattr(workspace, "_member_setup", member)
+        monkeypatch.setattr(workspace, "_member_stats", lambda *a, **k: {})
+        app = _make_workspace_app(ws_config=_make_ws_config(), workspace_root=str(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            data = (await c.get("/api/workspace/setup", params={"flavor": "claude-code"})).json()
+        assert [r["alias"] for r in data["repos"]] == ["backend", "frontend"]
+        assert data["essentials_done"] == 1 and data["open"] == 2
+        assert data["offer"] == "finish_setup"
+        assert data["prompt"].startswith("You are Claude Code")
+        assert "this workspace: `./backend`." in data["prompt"]
+        assert "`./frontend`" not in data["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_an_unindexed_member_is_named_not_read(self) -> None:
+        member = _make_ws_config().repos[1]
+        row = await workspace._member_setup(MagicMock(), member, None)
+        assert row.status == "not_indexed" and row.open == 0 and not row.essentials_done

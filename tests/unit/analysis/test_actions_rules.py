@@ -88,6 +88,15 @@ def test_fragile_without_coverage_states_graph_absence_and_basis_unknown() -> No
     assert "untested" not in _text(a)
 
 
+def test_fragile_impact_names_the_fix_window_and_what_counts() -> None:
+    (a,) = _run(code.fragile_file, _facts([_file("src/a.py")])).actions
+    # 90-day code fixes, not commit prefixes or get_risk's 6-month fix_count.
+    assert a.impact.startswith(
+        "Changed 10 times in 90 days; 5 of those were bug fixes that changed its code."
+    )
+    assert next(w for w in a.why if w.label == "bug-fix commits in 90 days").value == "5"
+
+
 def test_fragile_below_80_says_raise_coverage() -> None:
     (a,) = _run(code.fragile_file, _facts([_file("src/a.py", line_coverage_pct=62.0)])).actions
     assert a.title == "Raise test coverage on `src/a.py` from 62%"
@@ -519,6 +528,27 @@ def test_secret_ignores_docs_comments_and_quotes() -> None:
         SecretFacts("src/c.py", "os_system", 3, "os.system(cmd)"),
     )
     assert _run(hygiene.live_secret, _facts(secrets=quiet)).actions == ()
+
+
+def test_secret_action_carries_location_and_kind_only() -> None:
+    from repowise.core.agent_prompts import render_action
+    from repowise.core.analysis.security.credentials import masked_snippet
+
+    value = "Zq9XjW7vK3pLm2NbQ8tR"  # made up for this test
+    snippet = masked_snippet(f'    API_KEY = "{value}"')
+    assert snippet.startswith('API_KEY = "Zq9X')  # what the store keeps
+    s = SecretFacts("src/config.py", "hardcoded_secret", 4, snippet)
+    (a,) = _run(hygiene.live_secret, _facts(secrets=(s,))).actions
+    wire = a.as_dict()
+    surfaces = [json.dumps(wire), render_action(wire), render_action(wire, "claude-code-mcp")]
+    for text in surfaces:
+        assert "API_KEY" not in text and "****" not in text
+        for at in range(len(value) - 2):
+            assert value[at : at + 3] not in text
+    assert "`src/config.py:4`" in surfaces[1]
+    assert [(d["path"], d["line"], d["marker"], d["reason"]) for d in wire["details"]] == [
+        ("src/config.py", 4, "hardcoded_secret", "")
+    ]
 
 
 # ---------------------------------------------------------------------------

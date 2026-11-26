@@ -15,18 +15,23 @@ Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
   libraries it called, never time blocked in a wait. Inclusive time is kept
   as context and never ranks: a function that only calls things is on every
   stack and costs nothing itself.
-- ``ranked``: among the run's production functions, in the top
-  ``rank_top_n`` by cost, with at least ``rank_min_samples`` self samples on
-  the function. A run that counted no samples (a traced or an evented
+- ``ranked``: among the run's production functions with at least
+  ``rank_min_samples`` self samples, in the top ``rank_top_n`` by cost. A
+  function under the floor takes no place, so the places a run lists run
+  1, 2, 3 with no gap. A run that counted no samples (a traced or an evented
   profile) cannot be checked against the floor and ranks by its order alone.
   Otherwise the row is ``measured``: not enough samples in repo code, or
   outside the top.
-- ``lead_candidate``: ranked in a workload class that may lead (never
-  ``unit_test``), and either the function's share of all samples is at least
-  ``lead_min_share`` with the interval's lower bound at least
-  ``lead_min_lower_bound``, or it is ranked in ``lead_min_runs`` or more
-  runs. Internal only until the thresholds are calibrated: no surface may
-  word it as a claim, which is why the tier is not named for one.
+- *Share*: the function's self time over the run's time, with an interval
+  around that same number (:func:`_share_interval`).
+- ``lead_candidate``: ranked, and either the function's self share of the
+  run's time is at least ``lead_min_share`` with the interval's lower bound
+  at least ``lead_min_lower_bound``, or, in a workload class that may lead,
+  it is ranked in ``lead_min_runs`` or more such runs. A ``unit_test`` run
+  clears the share rule like any other, and its readers keep it apart as
+  measured in tests. No surface words the tier as a claim, which is why it is
+  not named for one; the performance queue reads it as a measured cost
+  (``analysis.health.worth.lead_reason``).
 - A deterministic tracer (a run whose rows carry call counts) orders
   functions within the run only: rank, never a share, never a lead.
 - *Freshness*: ``current`` at the indexed commit; ``body_unchanged`` from an
@@ -34,6 +39,11 @@ Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
   ingest equals the indexed one); otherwise ``stale``: kept, flagged, not
   ranked. A row measured under another symbol id follows its lineage to the
   current id; evidence is never re-mapped by line or name.
+
+A ``benchmark`` run gets no rows at all: a run gives each benchmark about the
+same time, so a function's share of it tracks how many benchmarks target the
+function, not what it costs the product. Benchmarks speak through their own
+results (``evidence.benchmarks``).
 
 Only ``production`` code (``code_origin``) gets rows: test, tooling and
 generated code stays in the evidence tables and is never listed; each row
@@ -45,30 +55,36 @@ Two read models come out of one derivation (:class:`Hotness`):
 - ``symbol_hotness``: one row per function, from its basis run, for readers
   that ask about a function (``get_context``);
 - ``workload_hotness``: the ranked functions of each workload's newest run
-  (by workload name and environment, as ``evidence status`` groups them), one
-  row per run and function, for readers that list what each workload
-  measured. A function two workloads both rank is listed under each, so no
-  workload hides behind another's basis, and a superseded run of a workload
-  is never listed.
+  that ranks any (by workload name and environment, as ``evidence status``
+  groups them), one row per run and function, for readers that list what
+  each workload measured. A newer run that ranks nothing (measured ahead of
+  the index, too few samples, no production frame) leaves the one before it
+  listed, and readers name the newer one beside it
+  (:func:`commit_position`). A function two workloads both rank is listed
+  under each, so no workload hides behind another's basis, and a superseded
+  run that ranks is never listed.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.ingestion.symbol_identity import file_of_symbol
-from repowise.core.stats import wilson_interval
+from repowise.core.stats import Interval, wilson_interval
 
 from .status import run_share, time_split
 
 #: Tier values, weakest first. None is user copy: a surface words its own claim.
 TIERS = ("measured", "ranked", "lead_candidate")
 #: Workload classes whose evidence may lead the queue (``unit_test`` never does).
-LEAD_CLASSES = frozenset({"benchmark", "entry_point", "load_test", "production"})
+LEAD_CLASSES = frozenset({"entry_point", "load_test", "production"})
+#: The class whose profiles never rank: what it measured is benchmark results.
+BENCHMARK_CLASS = "benchmark"
 
 
 @dataclass(frozen=True)
@@ -83,7 +99,11 @@ class HotnessRules:
 
 
 def hotness_rules(config: Mapping[str, Any] | None) -> HotnessRules:
-    """The rules from a repo's ``config.yaml`` mapping, defaults where unset or invalid."""
+    """The rules from a repo's ``config.yaml`` mapping, defaults where unset or invalid.
+
+    ``hotness_rules(None)`` is the default set (the ``evidence.*`` settings'
+    defaults): what a host with no repository config derives with.
+    """
     from repowise.core.settings import resolve
 
     def value(key: str) -> Any:
@@ -133,6 +153,9 @@ class CostFacts:
     total_samples: int | None
     call_count: int | None
     self_samples: int | None = None
+    #: What the function's time went to and what drove it (JSON, as stored).
+    inside_json: str | None = None
+    drivers_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -184,7 +207,8 @@ class Hotness:
 
     #: ``symbol_hotness``: one per function, from its basis run.
     symbols: list[dict[str, Any]]
-    #: ``workload_hotness``: the ranked functions of each workload's newest run.
+    #: ``workload_hotness``: the ranked functions of each workload's newest
+    #: run that ranks any.
     workloads: list[dict[str, Any]]
 
 
@@ -201,10 +225,13 @@ def derive_hotness(
 
     *costs* holds each run's cost rows by run id, *origins* the
     ``code_origin`` of every current symbol's file and *head_commit* the
-    indexed commit. Pure, so the rules are tested without a store.
+    indexed commit. A ``benchmark`` run is skipped. Pure, so the rules are
+    tested without a store.
     """
     rows_by_symbol: dict[str, list[_Row]] = {}
     for run in runs:
+        if run.workload_class == BENCHMARK_CLASS:
+            continue
         for row in _run_rows(run, costs.get(run.id, ()), current, origins, head_commit, rules):
             rows_by_symbol.setdefault(row.symbol_id, []).append(row)
 
@@ -216,14 +243,13 @@ def derive_hotness(
             for r in leading:
                 r.tier = "lead_candidate"
         basis = min(rows, key=_basis_order)
-        symbols.append(_stored(basis, run_count=len({r.run.id for r in rows})))
-    newest = newest_runs(runs)
-    workloads = [
-        _workload_row(r)
-        for rows in rows_by_symbol.values()
-        for r in rows
-        if r.run.id in newest and r.tier != "measured"
-    ]
+        stored = _stored(basis, run_count=len({r.run.id for r in rows}))
+        stored["drivers_json"] = _current_drivers(stored["drivers_json"], current)
+        symbols.append(stored)
+    listed = [r for rows in rows_by_symbol.values() for r in rows if r.tier != "measured"]
+    # A newer run that ranks nothing never hides the run before it that does.
+    newest = newest_runs({r.run.id: r.run for r in listed}.values())
+    workloads = [_workload_row(r) for r in listed if r.run.id in newest]
     workloads.sort(key=lambda w: (w["run_id"], w["rank"], w["symbol_id"]))
     return Hotness(symbols, workloads)
 
@@ -232,7 +258,8 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
     """The id of each workload's newest run, by name and environment.
 
     *runs* carry ``id``, ``workload_name``, ``environment`` and
-    ``measured_at`` (the ingest time when the run did not say).
+    ``measured_at``; a run that did not say when it was measured counts from
+    its ``ingested_at`` when it carries one.
     """
     newest: dict[tuple[str, str], Any] = {}
     for run in runs:
@@ -242,8 +269,50 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
     return {run.id for run in newest.values()}
 
 
+def commit_position(run: Any, runs: Iterable[Any], head_commit: str | None) -> str:
+    """Where *run*'s commit sits against the indexed *head_commit*.
+
+    ``indexed`` at it; ``ahead`` when added after the newest of *runs* of the
+    same history (kind, workload, environment) at the indexed commit,
+    ``older`` when added before it; ``other`` when no such run is at the
+    indexed commit to compare with, or either commit is unknown. Another
+    workload's run never places it: a test run added late says nothing about
+    where a profile sits.
+    Ingest order (measurement time for a run stored without one), the rule
+    the UI's ``commitPosition`` reads from the runs list, so the two agree.
+    Ceiling: ingest order is commit order for runs a CI job adds on each
+    push; an old commit added late reads as ahead. Git order needs a
+    checkout, which a host's read path does not have.
+    """
+    if not run.commit_sha or not head_commit:
+        return "other"
+    if run.commit_sha == head_commit:
+        return "indexed"
+    history = _history(run)
+    anchors = [
+        _ingest_time(r) for r in runs if r.commit_sha == head_commit and _history(r) == history
+    ]
+    if not anchors:
+        return "other"
+    return "ahead" if _ingest_time(run) > max(anchors) else "older"
+
+
+def _history(run: Any) -> tuple[Any, ...]:
+    return (getattr(run, "kind", None), run.workload_name, run.environment)
+
+
+def _ingest_time(run: Any) -> float:
+    at = getattr(run, "ingested_at", None) or run.measured_at
+    # SQLite hands back the stored UTC time without its zone.
+    return at.replace(tzinfo=at.tzinfo or UTC).timestamp() if at else 0.0
+
+
 def _age_key(run: Any) -> tuple[float, str]:
-    return (run.measured_at.timestamp() if run.measured_at else 0.0, run.id)
+    at = run.measured_at or getattr(run, "ingested_at", None)
+    if at is None:
+        return (0.0, run.id)
+    # SQLite hands back the stored UTC time without its zone.
+    return (at.replace(tzinfo=at.tzinfo or UTC).timestamp(), run.id)
 
 
 def _workload_row(row: _Row) -> dict[str, Any]:
@@ -325,22 +394,56 @@ def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
 
     Stale rows take no place, and neither does a row that cost nothing itself
     (a function that only calls others): it stays measured, never ranked, even
-    in a run with fewer costly functions than the top. A tracer's rows order
-    by what the tracer gave and are exempt.
+    in a run with fewer costly functions than the top, nor a row under the
+    sample floor, so the places listed never skip a number. A tracer's rows
+    order by what the tracer gave and are exempt.
     """
     place = 0
     for row in rows:
         if not _takes_place(row):
             continue
+        counted = row.samples is not None
+        if not row.ordering_only and n is not None and counted and row.samples <= n:
+            row.share = _share_interval(row, n)
+        if counted and row.samples < rules.min_samples:
+            continue
         place += 1
         row.rank = place
-        counted = row.samples is not None
-        if place <= rules.top_n and (not counted or row.samples >= rules.min_samples):
+        if place <= rules.top_n:
             row.tier = "ranked"
-        if not row.ordering_only and n is not None and counted and row.samples <= n:
-            row.share = wilson_interval(row.samples, n)
-        if row.tier == "ranked" and _may_lead(row) and _clears_share_rule(row, rules):
+        if row.tier == "ranked" and _measures_cost(row) and _clears_share_rule(row, rules):
             row.tier = "lead_candidate"
+
+
+def _share_interval(row: _Row, n: int) -> Interval:
+    """The function's self share of the run's time, with an interval around it.
+
+    The share is a share of time (``self_value / total_value``) and the
+    interval comes from the sample counts (Wilson on ``samples`` of *n*). The
+    two differ whenever samples carry unequal time, which a sampler's do (each
+    sample is charged the time since the last, so a sample inside a blocking
+    call weighs more): on one real run a function held 3.6% of the time and
+    4.0% of the samples, and the raw count interval (3.8% to 4.2%) left out
+    the share it was printed beside. The counts still say how firm the share
+    is, so their interval is scaled by the time-to-count ratio: the relative
+    width stays, the bounds bracket the share that is shown and ranked.
+    A run without a time total keeps the count interval.
+    """
+    counts = wilson_interval(row.samples or 0, n)
+    share = _share(row.cost.self_value, row.run.total_value)
+    if share is None:
+        return counts
+    if counts.estimate <= 0:
+        return Interval(share, 0.0, max(counts.high, share), n, counts.method, counts.confidence)
+    scale = share / counts.estimate
+    return Interval(
+        share,
+        min(counts.low * scale, share),
+        max(min(counts.high * scale, 1.0), share),
+        n,
+        counts.method,
+        counts.confidence,
+    )
 
 
 def _takes_place(row: _Row) -> bool:
@@ -378,25 +481,41 @@ def run_samples(run: RunFacts) -> int | None:
     return None
 
 
+def _measures_cost(row: _Row) -> bool:
+    """A sampled share at the current body: what the share rule can read, in any class."""
+    return not row.ordering_only and row.freshness != "stale"
+
+
 def _may_lead(row: _Row) -> bool:
     return row.run.workload_class in LEAD_CLASSES and not row.ordering_only and row.freshness != "stale"
 
 
 def _clears_share_rule(row: _Row, rules: HotnessRules) -> bool:
+    """The share rule, on the self share of the run's time: a run with no time
+    total has no share to show, so it never clears it."""
     share = row.share
     return (
         share is not None
+        and _share(row.cost.self_value, row.run.total_value) is not None
         and share.estimate >= rules.lead_min_share
         and share.low >= rules.lead_min_lower_bound
     )
 
 
 def _basis_order(row: _Row) -> tuple[Any, ...]:
-    """Fresh first, then the strongest tier, a class that may lead, the best rank, the newest."""
+    """Fresh first, then the strongest tier, a class that may lead, the best rank, the newest.
+
+    A run in a class that may not lead counts as ``ranked`` at best here, so a
+    unit-test run never becomes the basis over a leading run that ranks the
+    function.
+    """
     newest = row.run.measured_at.timestamp() if row.run.measured_at else 0.0
+    tier = TIERS.index(row.tier)
+    if row.run.workload_class not in LEAD_CLASSES:
+        tier = min(tier, TIERS.index("ranked"))
     return (
         row.freshness == "stale",
-        -TIERS.index(row.tier),
+        -tier,
         row.run.workload_class not in LEAD_CLASSES,
         row.rank if row.rank is not None else float("inf"),
         -newest,
@@ -408,6 +527,22 @@ def _share(value: float | None, total: float | None) -> float | None:
     if value is None or total is None or total <= 0:
         return None
     return min(value / total, 1.0)
+
+
+def _current_drivers(drivers_json: str | None, current: CurrentFunctions) -> str | None:
+    """*drivers_json* with each caller's ``symbol`` checked against the index: one
+    the index no longer holds (renamed, moved, deleted) keeps only its file, as a
+    caller that never joined does. The caller's own lineage is not stored, so it
+    is never followed. With no indexed bodies to check against, kept as stored."""
+    if not drivers_json or not current.digest:
+        return drivers_json
+    drivers = json.loads(drivers_json)
+    for driver in drivers:
+        symbol = driver.get("symbol")
+        if symbol is not None and symbol not in current.digest:
+            del driver["symbol"]
+            driver["path"] = file_of_symbol(symbol)
+    return json.dumps(drivers, sort_keys=True)
 
 
 def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
@@ -436,6 +571,8 @@ def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
         "run_count": run_count,
         "evidence_commit_sha": run.commit_sha,
         "measured_at": run.measured_at,
+        "inside_json": cost.inside_json,
+        "drivers_json": cost.drivers_json,
     }
 
 
@@ -505,6 +642,7 @@ async def refresh_symbol_hotness(
 
 
 __all__ = [
+    "BENCHMARK_CLASS",
     "LEAD_CLASSES",
     "TIERS",
     "CostFacts",
@@ -512,6 +650,7 @@ __all__ = [
     "Hotness",
     "HotnessRules",
     "RunFacts",
+    "commit_position",
     "derive_hotness",
     "hotness_rules",
     "newest_runs",

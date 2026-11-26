@@ -179,6 +179,13 @@ def release_update_lock(repo_path: Path) -> None:
     _release_lock_at(update_lock_path(repo_path))
 
 
+def release_own_update_lock(repo_path: Path) -> None:
+    """Remove the per-repo update lock, only when this process holds it: another run may now."""
+    payload = read_update_lock(repo_path)
+    if payload is not None and payload.get("pid") == os.getpid():
+        release_update_lock(repo_path)
+
+
 @contextlib.contextmanager
 def holding_update_lock(repo_path: Path) -> Iterator[bool]:
     """Yield whether this process holds the repo's update lock for the block.

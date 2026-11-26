@@ -61,9 +61,9 @@ That default is what Claude Code is listed: it loads a tool's schema only when t
 
 **The read tools** are `get_answer`, `get_context`, `get_symbol` and `search_codebase`: the core profile without `get_why`. They are the set always-load keeps loaded.
 
-**Always-load** (`mcp.always_load`, off by default) applies to Claude Code, which keeps every schema behind tool search, so the first repowise call usually follows a tool-search turn. `repowise config set mcp.always_load true` asks it to keep the four read tools loaded from the first turn, for about 2k to 2.6k more tokens per turn, depending on the model. Other tools stay deferred; clients that load every schema up front are unaffected. Restart the agent after the change.
+**Always-load** (`mcp.always_load`, off by default) applies to Claude Code, which keeps every schema behind tool search, so the first repowise call usually follows a tool-search turn. `repowise config set mcp.always_load true` asks it to keep the four read tools loaded from the first turn, for about 2.5k more tokens a turn. Other tools stay deferred; clients that load every schema up front are unaffected. Restart the agent after the change.
 
-`repowise init` and `repowise agents add` print what each connected agent lists, and the always-load state for Claude Code; `repowise init --progress json` carries the same facts per agent in the summary's `mcp_tools` field.
+`repowise agents add` prints what each connected agent lists, and the always-load state for Claude Code. `repowise init --progress json` carries the same facts per agent in the summary's `mcp_tools` field, and the dashboard's Agents page shows them.
 
 | Value | Lists |
 |-------|-------|
@@ -245,12 +245,12 @@ Hybrid search routed by query shape: identifiers hit the symbol index, paths res
 |-----------|------|---------|---------|
 | `query` | string | `""` | Identifier, `a\|b` alternation, regex, path or natural language. Required unless `pattern` is given |
 | `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments`. Accepted, not advertised |
-| `limit` | int | `5` | Max results; outside `symbol` mode, max distinct files |
+| `limit` | int | `5` | Max results, up to 20; outside `symbol` mode, max distinct files. A larger value is cut to 20 and named in `ignored_arguments` |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path`, `hybrid`; unknown runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |
 | `symbol_kind` | string | none | Symbol filter, e.g. `function`, `class`, `method` |
 | `page_type` | string | none | One page type, usually `file_page` or `module_page`. Accepted, not advertised |
-| `repo` | string | default repo | Or `"all"` for every repo |
+| `repo` | string | default repo | In a workspace, `"all"` searches every repo; a single-repo server does not advertise it and serves it as the one repo |
 
 **Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier, literal, alternation and regex queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
 
@@ -272,7 +272,7 @@ What history says about touching a file: hotspot, bug-fix record, owners, co-cha
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph`, `owners`, `tests`, `blast` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)). Accepted, not advertised: `churn`, `scales`, `changes` (the same block as `get_context` `changes`) |
+| `include` | list[string] | none | `graph`, `owners`, `tests`, `blast` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)). Accepted, not advertised: `churn`, `scales`, `changes` (the same block as `get_context` `changes`), `hotspots` (the repository's hotspots outside the targets) |
 | `repo` | string | default repo | `"all"` not supported |
 
 **Returns** per-file `hotspot_score`, `health_score`, `dependents_count`, `co_change_partners`, `primary_owner`, `security_signals`; in PR mode `directive` with `may_break`, `tests_to_run`, `tests_to_update`, `reach` ([fields](../reference/MCP_RESPONSE_FIELDS.md#pr-mode-directive)). Dependent counts are a floor; `reach` is an uncalibrated band, not a probability.
@@ -417,7 +417,7 @@ Unreachable files, unused exports, unused internals and zombie packages, tiered 
 | `min_confidence` | float or string | `0.4` | Floor; or `"high"` (0.7), `"medium"` (0.4), `"low"` (0.0) |
 | `tier` | string | all | `high` (0.7+), `medium` (0.4 to 0.7), `low` |
 | `safe_only` | bool | `false` | Deletion-ready only: drops runtime-load risk such as dynamic imports and framework-registered functions |
-| `limit` | int | `20` | Per tier, clamped to 25 |
+| `limit` | int | `10` | Per tier, clamped to 25 |
 | `directory` | string | none | Path-prefix filter |
 | `owner` | string | none | Primary-owner filter |
 | `group_by` | string | none | `directory` or `owner` rollup |
@@ -426,7 +426,7 @@ Unreachable files, unused exports, unused internals and zombie packages, tiered 
 | `no_unreachable` | bool | `false` | Skip unreachable-file findings |
 | `no_unused_exports` | bool | `false` | Skip unused-export findings |
 | `include_unverified` | bool | `false` | Also show provisional types and gated-language findings |
-| `finding_id` | string | none | Open one finding |
+| `finding_id` | string | none | Open one finding, whatever its triage status, with every field |
 | `repo` | string | default repo | Or `"all"` to aggregate across repos |
 
 **Returns** `tiers`, `summary`, and `by_directory` or `by_owner` with `group_by` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_dead_code)).

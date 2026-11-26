@@ -22,7 +22,7 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { cn } from "../lib/cn";
-import { parseDate } from "../lib/format";
+import { formatDateWith, parseDate } from "../lib/format";
 import { commitCategoryColor } from "../shared/series";
 
 /**
@@ -70,14 +70,18 @@ const STACK_ORDER: CommitCategory[] = [
 
 type Mode = "share" | "volume";
 
+/** Axis label for a bucket: "Nov 3" for a week, "Nov 25" for a month.
+ *  Pinned to UTC on purpose: `start` is a calendar day the server chose
+ *  ("2026-11-03", the bucket's Monday or 1st), so it must read as that day in
+ *  every zone, never as Sunday for a viewer west of Greenwich. */
 function formatBucketLabel(startIso: string, granularity: string): string {
-  const d = parseDate(startIso);
-  if (Number.isNaN(d.getTime())) return startIso;
-  const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-  if (granularity === "week") {
-    return `${month} ${d.getUTCDate()}`;
-  }
-  return `${month} ${String(d.getUTCFullYear()).slice(2)}`;
+  if (Number.isNaN(parseDate(startIso).getTime())) return startIso;
+  return formatDateWith(
+    startIso,
+    granularity === "week"
+      ? { month: "short", day: "numeric", timeZone: "UTC" }
+      : { month: "short", year: "2-digit", timeZone: "UTC" },
+  );
 }
 
 /** Dominant category across a slice of buckets (by summed count). */

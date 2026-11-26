@@ -252,5 +252,6 @@ def test_scoped_token_reaches_a_worktree_path_of_its_repo(layout, monkeypatch) -
     monkeypatch.setattr(_state, "_repo_path", str(layout["repo"]))
     monkeypatch.setattr(_state, "_served_repo_id", "rid")
     assert _http_auth._call_targets({"repo": str(layout["wt"])}) == [("rid", "repo")]
+    assert _http_auth._call_targets({"repo": "."}) == [("rid", "repo")]
     other = str(layout["other"])
     assert _http_auth._call_targets({"repo": other}) == [(other,)]

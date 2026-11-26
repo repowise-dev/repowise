@@ -94,6 +94,14 @@ describe("DecisionAgentHero", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/Couldn't copy/));
   });
 
+  it("leads with the host's eyebrow line, defaulting to the handoff", () => {
+    const { rerender } = render(<DecisionAgentHero prompt={discover} />);
+    expect(screen.getByText("Hand off to your agent")).toBeInTheDocument();
+    rerender(<DecisionAgentHero prompt={discover} eyebrow="Claude Code made its first call 4 minutes ago" />);
+    expect(screen.getByText("Claude Code made its first call 4 minutes ago")).toBeInTheDocument();
+    expect(screen.queryByText("Hand off to your agent")).toBeNull();
+  });
+
   it("names the add pass when the server had nothing to check", () => {
     render(<DecisionAgentHero prompt={{ kind: "add", text: "record them", count: 0 }} />);
 
@@ -130,6 +138,23 @@ describe("DecisionAgentHero", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("Check every background record."));
     // The main prompt stays the primary action.
     expect(screen.getByRole("button", { name: "Copy prompt for your agent" })).toBeInTheDocument();
+  });
+
+  it("tells the host which prompt was copied", async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn(async () => undefined) } });
+    const onCopy = vi.fn();
+    render(
+      <DecisionAgentHero
+        prompt={discover}
+        reviewAll={{ text: "Check every background record.", label: "Review all records" }}
+        onCopy={onCopy}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(onCopy.mock.calls).toEqual([["prompt"]]));
+    fireEvent.click(screen.getByRole("button", { name: "Review all records" }));
+    await waitFor(() => expect(onCopy.mock.calls).toEqual([["prompt"], ["review_all"]]));
   });
 
   it("hides the whole-queue button when the host has no text for it", () => {

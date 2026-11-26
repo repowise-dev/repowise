@@ -1,8 +1,9 @@
 # Search Example
 
-Walk through `repowise search` — keyword lookup over the wiki, semantic
-search when an embedder is configured, and symbol lookup by name. No LLM
-key required for fulltext and symbol modes.
+Walk through `repowise search` — the default `auto` mode that picks a search
+from the query's shape, concept search over the wiki (full text, plus semantic
+matching when an embedder is configured), and symbol and path lookup. No LLM
+key required.
 
 ## Prerequisites
 
@@ -15,14 +16,27 @@ cd /path/to/your-repo
 repowise init --yes --no-prose
 ```
 
-## 1. Full-text search (default)
+## 1. Default search (`--mode auto`)
 
 ```bash
 repowise search "rate limiting"
-repowise search "pipeline" --limit 5
+repowise search "how are errors handled" --limit 5
 ```
 
-Searches rendered wiki pages. Works immediately after index-only init.
+`auto` is the default. It picks a mode from the shape of the query:
+
+| The query looks like | Mode it runs | Example |
+|----------------------|--------------|---------|
+| A file path | `path` | `src/app/main.py` |
+| A single identifier | `symbol` | `run_pipeline`, `pipeline` |
+| Natural language that names an identifier | `hybrid` | `where is run_pipeline called` |
+| Anything else | `concept` | `rate limiting` |
+
+With `--format json` the `"mode"` field says which one ran. Concept search
+runs over the rendered wiki pages and works immediately after index-only init.
+Pass `--mode concept` (or one of the modes above) to choose yourself, for
+example to search the wiki for a single word that `auto` would treat as a
+symbol name.
 
 ## 2. Symbol search
 
@@ -41,7 +55,9 @@ Requires a configured embedder (set during `init` / `reindex`):
 repowise search "how are errors handled" --mode semantic
 ```
 
-Without embeddings, use `--mode fulltext` explicitly or rely on the default.
+`--mode fulltext` and `--mode semantic` are still accepted for older scripts.
+Both run the same fused concept search as `--mode concept`, which matches on
+full text alone when no embeddings exist.
 
 ## Workspace scoping
 
@@ -54,7 +70,8 @@ repowise search "auth" --all              # fan out across all repos
 
 | Step | Expected |
 |------|----------|
-| `repowise search "pipeline" --limit 3` | Wiki hits with scores (or empty if no match) |
+| `repowise search "rate limiting" --limit 3` | Wiki hits with scores (or empty if no match) |
+| `repowise search "rate limiting" --format json` | `"mode": "concept"` and the same hits as JSON |
 | `repowise search "<symbol>" --mode symbol` | Symbol table with file + line |
 | No index present | Clear error directing you to run `repowise init` |
 

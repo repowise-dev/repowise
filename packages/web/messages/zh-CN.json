@@ -157,7 +157,8 @@
     "groupUnderstand": "理解",
     "groupCodeQuality": "代码质量",
     "tests": "测试",
-    "security": "安全"
+    "security": "安全",
+    "setup": "设置向导"
   },
   "breadcrumb": {
     "review": "审查",
@@ -561,10 +562,11 @@
       "indexed": "索引于 {date}",
       "notIndexed": "尚未索引",
       "snapshots": "{count} 个快照",
-      "coChangeNoticeTitle": "本次发布中健康分数发生了变化。",
+      "performanceNoticeLead": "新功能：性能标签页中的实测开销。",
+      "coChangeNoticeTitle": "本次发布中分数也有所变化。",
       "coChangeNoticeMore": "有哪些变化",
       "coChangeNoticeLess": "收起",
-      "coChangeNoticeBody": "部分问题和分数有所变化。代码健康现在按每种语言能够可靠识别的模式进行评判：在对 705 个问题的盲审中被认为在某种语言里很少值得处理的标记，在该语言中列为建议级别且不扣分；低内聚在所有语言中均为建议级别；重复代码只在 TypeScript 中计分，错误处理只在 Python 中计分；冷路径上的循环性能标记只列出、不计分。复杂度将连续的普通守卫语句、可选 setter、字段复制和简单的 switch 分支只计一次，字面量表、多行字符串、构建器链以及 SwiftUI、Compose 和 Flutter 视图树按数据处理。构造函数、trait 实现、框架回调和由编译器决定的签名按其自身特点评判；Rust 的 trait 实现和 Ruby 的 mixin 不算作上帝类；Python、Go 和 Rust 的惯用错误处理不会被标记；Swift、PHP、Dart、Ruby、F#、Objective-C 和 C++ 对参数和方法的识别更加准确；C++ 问题发布时不再带预览标签；Astro 文件连同其脚本和标记一起度量。优先修复的收益会计入文件仍保留的问题。含有这些模式的仓库分数可能升高或降低；其他仓库分数不变。",
+      "coChangeNoticeBody": "部分分数和问题有所变化。数据文件夹中供产品按路径读取的代码（如参考解答、生成器和样例输入）现在有自己的来源类型 data，和测试代码、第三方代码一样不进入队列、区域地图和死代码分析。带表达式函数体的具名箭头函数作为独立单元度量，其分支不再计入外层函数。以某个文件命名的测试即使只导入了测试框架，也会与该文件配对，因此更多文件被视为已测试。性能分析会读取你存储的运行时证据：实测运行会确认其覆盖到的问题，保留因名称或角色而被搁置的问题并允许其进入优先修复，而领先工作负载实测到却没有静态问题的函数会成为独立的工作项。没有修复策略的问题列为观察项，不再计入任何队列。含有数据文件夹、表达式体箭头函数或已存储运行时证据的仓库，分数可能升高或降低；其他仓库分数不变。",
       "tabs": {
         "performance": "性能",
         "findings": "发现",
@@ -635,6 +637,7 @@
         "origin": {
           "test": "测试文件",
           "docs_example": "文档示例",
+          "data": "数据文件",
           "build": "构建文件",
           "vendored": "第三方文件",
           "generated": "生成的文件",
@@ -862,29 +865,14 @@
       }
     },
     "costs": {
-      "spendEmptyTitle": "尚无模型调用记录",
-      "spendEmptyDescription": "此仓库还没有产生任何花费。Repowise 使用模型生成文档或回答问题后，花费会显示在这里。",
       "title": "用量与节省",
       "description": "智能体避开了什么、Repowise 花了多少，以及我们凭什么这么说。",
       "savingsErrorTitle": "无法加载智能体节省数据",
-      "spendTitle": "Repowise 模型开销",
-      "spendDescription": "Repowise 自身模型工作产生的花费，与智能体节省并列展示，且从不从中扣除。",
       "spendErrorTitle": "无法加载模型开销",
-      "savingsEmptyTitle": "尚未记录任何智能体节省",
-      "savingsEmptyDescription": "把嘈杂的命令走 repowise distill，或者用 repowise hook rewrite install 安装重写钩子。一旦有智能体开始使用这个仓库，节省数据就会自动出现在这里。",
-      "bySourceTitle": "按来源划分的节省",
-      "bySourceDescription": "总额中每一部分各由哪个采集面产生。",
-      "opportunitiesTitle": "观察到的机会",
-      "opportunitiesDescription": "本可被优化却没有被优化的行为。永不计入上面的总额。",
-      "detailsTitle": "明细",
-      "detailsDescription": "同样的节省数据，按日期、操作、计价模型和智能体拆分。",
       "loadingSavings": "正在加载智能体节省数据",
       "loadingSpend": "正在加载模型开销…",
       "savingsErrorBody": "节省数据接口没有响应。",
-      "savingsErrorBodySpendUnaffected": "节省数据接口没有响应，下方的模型开销不受影响。",
-      "surfaceHeader": "采集面",
-      "surfaceCaption": "按产生这些节省的采集面划分",
-      "surfaceEmpty": "这个时间窗口内没有任何节省带有采集面。"
+      "savingsErrorBodySpendUnaffected": "节省数据接口没有响应，下方的模型开销不受影响。"
     },
     "repoSettings": {
       "title": "设置",
@@ -1008,6 +996,123 @@
       "explorer": "浏览",
       "freshness": "文档新鲜度",
       "drift": "文档漂移"
+    },
+    "firstLook": {
+      "title": "仓库报告",
+      "description": "索引当前的发现，与初次检视对比。",
+      "empty": "还没有仓库报告",
+      "emptyHint": "repowise init 会生成一份；repowise report repo 会重新生成。",
+      "rewriteFailed": "无法生成报告",
+      "copy": {
+        "eyebrow": "仓库报告",
+        "back": "概览",
+        "handToAgent": "交给智能体",
+        "share": "分享",
+        "copyLink": "复制链接",
+        "copyLinkHint": "打开这份报告",
+        "copyForAgent": "复制给智能体",
+        "copyForAgentHint": "所有未处理项合成一个提示词",
+        "downloadMarkdown": "下载 Markdown",
+        "downloadMarkdownHint": "repo-report.md，不含按钮",
+        "savePdf": "另存为 PDF",
+        "savePdfHint": "浏览器打印，干净版式",
+        "downloadJson": "下载 JSON",
+        "downloadJsonHint": "供脚本和智能体使用",
+        "previewExport": "预览导出",
+        "previewExportHint": "查看不含控件的版本",
+        "exportNote": "导出视图：Markdown、PDF 和分享链接显示的就是这样。",
+        "exitExport": "返回应用视图",
+        "copied": "已复制。粘贴给你的智能体。",
+        "copyFailed": "无法复制",
+        "files": "{n} 个文件",
+        "firstLookOn": "初次检视于 {date}",
+        "writtenOn": "生成于 {date}",
+        "resolved": "已解决",
+        "acknowledged": "已确认",
+        "newSince": "自初次检视以来新增",
+        "newSinceDate": "自 {date} 以来新增",
+        "stripTitle": {
+          "security": "安全",
+          "performance": "性能",
+          "health": "健康度",
+          "tests": "测试",
+          "dead_code": "死代码",
+          "docs": "文档",
+          "decisions": "决策",
+          "hygiene": "整洁度",
+          "ownership": "所有权"
+        },
+        "stripUnit": {
+          "security": "有效密钥",
+          "performance": "值得立即修复",
+          "health": "优先重构",
+          "tests": "行覆盖率",
+          "dead_code": "可安全删除",
+          "docs": "失效引用",
+          "decisions": "待审阅",
+          "hygiene": "项",
+          "ownership": "单人负责区域"
+        },
+        "measured": "实测",
+        "startHere": "从这里开始",
+        "fixWithAgent": "用智能体修复",
+        "fixWithAgentHint": "为本节所有未处理项复制一个提示词",
+        "copyItemPrompt": "复制此项的提示词",
+        "moreInApp": "应用中还有 {n} 项",
+        "notInReport": "本报告未包含",
+        "openSection": "打开{title}",
+        "linesCovered": "行覆盖率",
+        "branchesCovered": "分支覆盖率",
+        "table": {
+          "function": "文件",
+          "ccn": "最大圈复杂度",
+          "lines": "代码行数",
+          "importers": "引用方",
+          "changes": "90 天变更",
+          "document": "文档",
+          "broken": "失效"
+        },
+        "status": {
+          "open": "未处理",
+          "done": "已完成",
+          "acknowledged": "已确认",
+          "false_positive": "不是问题",
+          "snoozed": "已暂缓",
+          "resolved": "已解决",
+          "new": "新增"
+        },
+        "severity": {
+          "act_now": "立即处理",
+          "plan": "计划",
+          "improve": "改进"
+        },
+        "confidence": "置信度 {level}",
+        "effort": "工作量 {e}",
+        "valuesRedacted": "值已隐藏",
+        "mark": "标记",
+        "markDone": "完成",
+        "markDoneHint": "已修复；下次更新会确认",
+        "markAck": "确认",
+        "markAckHint": "确实存在，稍后处理，需填写原因",
+        "markFalsePositive": "不是问题",
+        "markFalsePositiveHint": "误报，需填写原因",
+        "markSnooze": "暂缓 14 天",
+        "reasonLabel": "原因",
+        "save": "保存",
+        "cancel": "取消",
+        "reportAt": "报告提交 {sha}",
+        "sinceThen": "此后：",
+        "writing": "正在撰写...",
+        "repoReport": "仓库报告",
+        "openReport": "打开报告",
+        "countOf": "{n} / {total}",
+        "wordingByModel": "措辞由你的模型撰写，{date}",
+        "wordingTemplate": "模板措辞",
+        "rewrite": "重写",
+        "rewriteWithModel": "用你的模型重写",
+        "approxCost": "约 {cost}"
+      },
+      "markFailed": "无法保存标记"
     }
   },
   "settings": {
@@ -1088,6 +1193,14 @@
       "description": "这个浏览器显示什么、怎么显示。这里的设置不会改变索引。",
       "weekendLabel": "周末日",
       "weekendHint": "决定编码节奏热力图中“周末”时段所占的比例。",
+      "timeZoneLabel": "时区",
+      "timeZoneHint": "所有日期和时间都按这个时区显示。自动即跟随这个浏览器。",
+      "timeZoneAria": "日期和时间使用的时区",
+      "timeZoneAuto": "这个浏览器，{zone}",
+      "timeZoneAutoValue": "自动（{zone}）",
+      "timeZoneSearch": "搜索时区",
+      "timeZoneNoMatch": "没有匹配的时区。",
+      "timeZoneSaved": "日期现在按 {zone} 显示。",
       "chatDockLabel": "向 Repowise 提问",
       "chatDockHint": "每个代码仓库页面右下角的对话胶囊按钮。隐藏它也会隐藏下面两个控件，但不影响完整的对话页面。",
       "chatDockAria": "显示「向 Repowise 提问」对话胶囊",
@@ -1363,7 +1476,6 @@
       "askQuestion": "结合源码解释「{title}」，并列出它所依赖的文件。",
       "askLabel": "就 {title} 提问",
       "askPlaceholder": "就本页提问",
-      "noProse": "这份文档由索引构建：结构、历史和信号。还有 {count} 个页面的正文尚未由模型撰写。",
       "more": "更多",
       "menu": {
         "exportPage": "导出此页面（Markdown）",
@@ -1371,7 +1483,12 @@
         "exportZip": "下载 ZIP 压缩包",
         "present": "演示",
         "readerLevel": "阅读深度"
-      }
+      },
+      "modelAsk": "添加模型，为这些页面写出原理和原因。",
+      "modelReady": "已有可用的模型。{source}。",
+      "modelAskSub": "{count} 个页面由索引生成。即使没有模型，你的智能体的回答也已经在使用索引。",
+      "copyPrompt": "复制提示词",
+      "copied": "已复制"
     },
     "tree": {
       "searchPlaceholder": "搜索文档...",
@@ -1407,7 +1524,7 @@
       "referenceApi": "API",
       "referenceFiles": "文件",
       "referenceInfrastructure": "基础设施",
-      "referenceCycles": "依赖循环",
+      "referenceCycles": "静态导入循环",
       "projectActivity": "项目动态"
     },
     "reader": {
@@ -1755,12 +1872,12 @@
     "steps": {
       "repo": "你的仓库",
       "agent": "你的智能体",
-      "yours": "按你的方式设置"
+      "ask": "提问",
+      "repos": "你的仓库"
     },
     "skip": "跳过导览",
     "back": "返回",
     "nextAgent": "下一步：你的智能体",
-    "nextYours": "下一步：按你的方式设置",
     "finish": "在设置中完成",
     "repo": {
       "title": "我们已为 <em>{name}</em> 绘制地图",
@@ -1832,33 +1949,22 @@
       "prompt": "为此仓库将 repowise 连接到 {name}。在仓库根目录运行 `{command}`，然后重启 {name}，让它加载 repowise 工具。运行 `repowise doctor` 检查连接。",
       "listLabel": "本机上的智能体",
       "moreAgents": "还找到 {count} 个智能体。设置页列出了全部。",
-      "askLabel": "问它一个问题",
       "tips": {
         "title": "没有看到？",
         "claudeCode": "在 Claude Code 中运行 /mcp：repowise 应显示为已连接。如果没有，请在这个仓库中重启 Claude Code。",
         "cursor": "打开 Cursor 设置中的 MCP：repowise 应显示绿点。请在 Agent 模式下提问；Ask 模式不会调用工具。",
         "vscode": "在命令面板中运行 MCP: List Servers 并启动 repowise。请在 Copilot Chat 的 Agent 模式下提问。",
-        "codex": "重启 Codex 让它读取 ~/.codex/config.toml，然后运行 /mcp 确认 repowise 已列出。",
+        "codex": "在此仓库中重启 Codex 并信任该文件夹，让它读取 .codex/config.toml，然后运行 /mcp 确认 repowise 已列出。",
         "generic": "在这个仓库中重启 {name}，让它加载 repowise 工具。",
         "doctor": "仍然没有？在这个仓库中运行 <mono>repowise doctor</mono> 检查连接。"
       },
       "copy": "复制",
       "copied": "已复制",
       "copyFailed": "无法复制",
-      "copyQuestion": "复制：{question}"
+      "copyQuestion": "复制：{question}",
+      "waitingNote": "正在等待首次调用。可以问它任何关于此仓库的问题。"
     },
-    "yours": {
-      "title": "按<em>你的方式</em>设置",
-      "lede": "每一项都是可选的，之后可在设置中随时更改。",
-      "modelTitle": "在有用的地方添加模型",
-      "gets": {
-        "docs": "解释原理和原因的文档",
-        "chat": "在此仪表板中对话",
-        "answers": "为你的智能体撰写的回答",
-        "local": "你的密钥或登录信息保留在本机"
-      },
-      "detected": "在本机找到：{names}。",
-      "keyless": "添加模型之前，你的智能体得到的回答是索引中按相关度排序的证据。",
+    "ask": {
       "syncTitle": "保持索引同步",
       "syncBody": "每次提交后通过 git 钩子更新。",
       "syncFailed": "无法更改同步设置",
@@ -1867,12 +1973,52 @@
       "syncOffConfirm": "关闭",
       "teamTitle": "为团队运行？",
       "teamBody": "托管版 repowise 会在每次推送时建立索引、审查拉取请求，并为你的团队提供一个仪表板。",
-      "teamLink": "了解托管版"
+      "teamLink": "了解托管版",
+      "title": "现在<em>问它</em>一个问题",
+      "lede": "把其中一个粘贴到 {agent}。每个问题都针对此仓库，所以回答也关于你的代码。",
+      "ledeAny": "把其中一个粘贴到你的智能体。每个问题都针对你的代码，回答也一样。",
+      "ledeWorkspace": "把它粘贴到你的智能体。它跨这些仓库提问，回答会说明它们如何配合。",
+      "later": "之后可以在设置向导中修改。"
+    },
+    "nextAsk": "下一步：提问",
+    "workspace": {
+      "title": "我们已绘制 {name} 中的<em>{count} 个仓库</em>",
+      "titleNoName": "我们已绘制<em>{count} 个仓库</em>",
+      "lede": "{files} 个文件及其共享历史，均在本机读取，没有任何内容离开本机。",
+      "agentLede": "一个工作区服务器即可回答其中每个仓库的问题。",
+      "standout": "跨仓库",
+      "membersLabel": "此工作区中的仓库",
+      "agentUnknown": "无法读取工作区设置。请在工作区根目录运行 repowise doctor。",
+      "waitingNote": "正在等待首次调用。可以问你的智能体任何关于这些仓库的问题。",
+      "tip": "在工作区根目录重启你的智能体，让它加载工作区服务器。",
+      "contracts": {
+        "label": "契约",
+        "unit": "条仓库间链接",
+        "caption": "一个仓库提供、另一个仓库调用的 HTTP 路由和共享模式。",
+        "open": "打开契约"
+      },
+      "coChanges": {
+        "label": "共同变更",
+        "unit": "个工作会话",
+        "caption": "<mono>{a}</mono> 和 <mono>{b}</mono> 一起变更。",
+        "open": "打开共同变更"
+      },
+      "lowest": {
+        "label": "最低健康度",
+        "caption": "<mono>{name}</mono>，{count} 个已索引仓库中最低。",
+        "open": "打开工作区"
+      },
+      "notIndexed": {
+        "label": "未索引",
+        "unit": "个仓库",
+        "caption": "<mono>{names}</mono>。涉及它们的契约尚不可见。",
+        "open": "打开工作区"
+      }
     }
   },
   "chat": {
     "addModel": "添加模型",
-    "noProvider": "在这里对话需要 API 密钥或本地模型，请在<link>设置</link>中配置。没有模型时，你的智能体仍可查询索引。",
+    "noProvider": "添加模型即可在此聊天，也可以在<link>设置</link>中配置。没有模型时，你的智能体仍可查询索引。",
     "noProviderShort": "对话需要 API 密钥或本地模型，请在<link>设置</link>中配置。",
     "unverifiedFigure": "未在本轮工具结果中找到",
     "unverifiedFiguresNote": "带点状下划线的数字未在本轮工具结果中找到。",
@@ -1895,7 +2041,10 @@
       "noMatch": "没有匹配的模型。",
       "configure": "在设置中配置",
       "needsSetup": "其他提供商需要先添加密钥。"
-    }
+    },
+    "modelReady": "已有可用的模型。{source}。",
+    "copyPrompt": "复制提示词",
+    "copied": "已复制"
   },
   "codeHealth": {
     "hotspots": {
@@ -2245,7 +2394,7 @@
     },
     "next": {
       "title": "下一步",
-      "titleCount": "下一步 · {count, number}",
+      "titleCount": "下一步 · {count, number}{setup, plural, =0 {} other { · # 个设置步骤}}",
       "timeFrame": "时间范围",
       "week": "本周",
       "weekHint": "最近 7 天的提交带来了哪些变化",
@@ -2974,10 +3123,10 @@
       "hide": "在此电脑上隐藏"
     },
     "pill": {
-      "label": "设置向导",
-      "progress": "{done}/{total}",
-      "aria": "设置向导：已完成 {done}/{total} 项必备设置",
-      "hide": "在此电脑上隐藏设置提醒"
+      "essentials": "已完成 {done}/{total} 项必备设置",
+      "more": "还有 {count} 项",
+      "moreLong": "必备设置已完成。还有 {count} 项可完成，即 repowise next --prompt setup 列出的步骤",
+      "done": "已设置"
     },
     "settings": {
       "openSetup": "打开设置向导",
@@ -3025,7 +3174,8 @@
         "statusUnknown": "无法检查",
         "detailOn": "每次提交后更新。",
         "detailOff": "只有运行 repowise update 时索引才会更新。",
-        "detailUnknown": "无法读取 post-commit 钩子。"
+        "detailUnknown": "无法读取 post-commit 钩子。",
+        "behind": "自上次同步以来有 {count} 个提交。"
       },
       "model": {
         "title": "用于文档、对话和回答的模型",
@@ -3033,7 +3183,8 @@
         "statusBuilt": "基于索引生成",
         "detailActive": "正在使用 {provider}。",
         "detailReady": "此电脑上可用：{providers}。",
-        "detailNone": "文档基于索引生成；添加模型之前，你的智能体得到的回答是按相关度排序的证据。"
+        "detailNone": "文档基于索引生成；添加模型之前，你的智能体得到的回答是按相关度排序的证据。",
+        "ready": "已有可用的模型。{source}。"
       },
       "coverage": {
         "title": "测试覆盖率",
@@ -3051,7 +3202,8 @@
         "statusNa": "需要 Claude Code",
         "statusUnknown": "无法检查",
         "detail": "Claude Code 通过 distill 读取测试、构建和 git 的输出。",
-        "detailNa": "此功能配合 Claude Code 使用，而此电脑上没有安装它。"
+        "detailNa": "此功能配合 Claude Code 使用，而此电脑上没有安装它。",
+        "statusSuggested": "建议开启"
       },
       "check": {
         "statusWarn": "警告",
@@ -3074,8 +3226,74 @@
       "unreadable": {
         "status": "无法检查",
         "detail": "此处无法读取。请在终端运行 {command} 进行检查。"
+      },
+      "evidence": {
+        "title": "性能证据",
+        "statusFound": "已找到",
+        "statusOn": "已开启",
+        "statusOff": "未找到",
+        "detailFound": "磁盘上有性能剖析或基准测试结果。接入后，Repowise 会按实测时间排序慢路径，而不只看代码形态。",
+        "detailOn": "已存储运行时证据，慢路径按实测时间排序。",
+        "detailNone": "未找到性能剖析或基准测试结果。有了它们，慢路径会按实测时间排序。"
+      },
+      "depth": {
+        "statusSuggested": "建议"
       }
     },
-    "changeIn": "在{group}中更改"
+    "changeIn": "在{group}中更改",
+    "depth": "根据你的使用建议",
+    "hero": {
+      "eyebrow": "{agent} 于{when}发起了首次调用",
+      "eyebrowNoCall": "你的智能体已调用此索引",
+      "title": "让你的智能体完成设置",
+      "body": "它会开启此仓库缺少的功能，添加它找到的覆盖率报告和基准测试结果，最多只问你一个问题。",
+      "copy": "复制给智能体的提示词",
+      "copied": "已复制。粘贴到你的智能体中。",
+      "copyFailed": "无法复制。请选中预览手动复制。",
+      "footnote": "与 <code>repowise next --prompt setup</code> 输出的文本相同。也可以自己处理下面的各项。",
+      "notNow": "暂不"
+    },
+    "depthBlock": {
+      "title": "根据你的使用建议",
+      "lede": "Claude Code 已对此索引发起 {count} 次调用。"
+    },
+    "workspace": {
+      "title": "设置向导",
+      "description": "此工作区中每个仓库的设置情况。",
+      "progress": "{total} 个仓库中有 {done} 个已完成全部必要设置。",
+      "loading": "正在读取每个仓库的设置",
+      "loadFailedLabel": "无法加载设置",
+      "loadFailed": "无法读取工作区设置。请确认服务器正在运行，然后重试。",
+      "retry": "重试",
+      "heroEyebrow": "已有智能体调用此工作区",
+      "heroTitle": "让你的智能体完成整个工作区的设置",
+      "heroBody": "一个提示词。它会在每个还有步骤的仓库中运行设置流程，最多只问你一个问题。",
+      "heroCopy": "复制给智能体的提示词",
+      "heroCopied": "已复制。粘贴到你的智能体中。",
+      "heroCopyFailed": "无法复制。请选中预览手动复制。",
+      "foot": "打开某个仓库的设置向导，查看各项和提示词。",
+      "col": {
+        "repo": "仓库",
+        "index": "索引",
+        "agent": "智能体",
+        "sync": "同步",
+        "coverage": "覆盖率",
+        "evidence": "证据"
+      },
+      "cell": {
+        "upToDate": "最新",
+        "behind": "落后",
+        "incomplete": "不完整",
+        "notIndexed": "未索引",
+        "unreadable": "无法读取",
+        "connected": "已连接",
+        "noCalls": "尚无调用",
+        "on": "已开启",
+        "off": "已关闭",
+        "found": "已找到",
+        "none": "未找到",
+        "na": "不适用"
+      }
+    }
   }
 }

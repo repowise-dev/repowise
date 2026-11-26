@@ -12,15 +12,14 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import GitMetadata
 from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
 from repowise.server.services import overview_payload as sections
+from repowise.server.services.hotspots import DEFAULT_HELD, HotspotQuery, list_hotspots
 from repowise.server.services.overview_counts import explore_counts
 
 router = APIRouter(
@@ -28,10 +27,6 @@ router = APIRouter(
     tags=["overview"],
     dependencies=[Depends(verify_api_key)],
 )
-
-#: How many snapshots the health card's trend line plots. Also the width of the
-#: scalar window this route reads, so the read and the chart cannot drift.
-HEALTH_HISTORY_POINTS = 12
 
 
 def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
@@ -53,22 +48,9 @@ def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
 
 async def _top_hotspots(session: AsyncSession, repo_id: str) -> list[dict[str, Any]]:
     # Here rather than in the service: rows are shaped by the git router's helper.
-    rows = (
-        (
-            await session.execute(
-                select(GitMetadata)
-                .where(GitMetadata.repository_id == repo_id, GitMetadata.is_hotspot.is_(True))
-                .order_by(
-                    GitMetadata.temporal_hotspot_score.desc().nulls_last(),
-                    GitMetadata.churn_percentile.desc(),
-                )
-                .limit(8)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [_hotspot_from_row(r).model_dump(mode="json") for r in rows]
+    # The first rows of the list the card links to, in the scope its count reads.
+    listing = await list_hotspots(session, repo_id, HotspotQuery(limit=8, held=DEFAULT_HELD))
+    return [_hotspot_from_row(r).model_dump(mode="json") for r, _rank in listing.rows]
 
 
 @router.get("/{repo_id}/overview-summary")
@@ -88,13 +70,14 @@ async def overview_summary(
     # ``total_nloc``.
     health_metrics = await crud.get_health_metrics(session, repo_id)
     # Three scopes, three reads. This payload wants the *count* of retained
-    # snapshots, the newest ``HEALTH_HISTORY_POINTS`` rows' scalars for the
-    # sparkline, and the newest two rows' per-file maps for the file-count
-    # delta. Loading the history as entities pulled every row's
+    # snapshots, every retained row's scalars for the sparkline (it draws one
+    # point per day, ``sections.HEALTH_HISTORY_POINTS`` days; the read selects
+    # every row's three scalars whatever the window), and the newest two rows'
+    # per-file maps for the file-count delta. Loading the history as entities pulled every row's
     # ``per_file_scores_json`` (MBs per page load); capping the read at two rows
     # would flatten the sparkline and report a snapshot count of 2.
     snapshot = await crud.get_health_snapshot_headline(
-        session, repo_id, recent=HEALTH_HISTORY_POINTS
+        session, repo_id, recent=sections.HEALTH_HISTORY_READ
     )
 
     # The same indexed commit as /api/repos and /health/overview: state.json

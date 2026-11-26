@@ -436,16 +436,146 @@ def test_languages_outside_the_set_still_fall_back(
 
 
 def test_a_reached_file_outside_the_patchable_languages_falls_back(tmp_path: Path) -> None:
-    files = {**_PY, "scripts/build.sh": "#!/bin/sh\nslug() { echo x; }\nslug\n"}
+    files = {**_PY, "scripts/build.pl": "sub slug { return 1; }\nslug();\n"}
     tree, seed = _index(tmp_path, files)
     _edit(pkg__helpers_DOT_py="def slug(text):\n    return text\n")(tree)
 
     patched = _patch(tree, seed)
 
-    if patched.patch_plan.eligible:
-        assert "scripts/build.sh" not in patched.patch_plan.scope
-    else:
-        assert "shell" in (patched.patch_plan.reason or "")
+    assert not patched.patch_plan.eligible
+    assert "scripts/build.pl: a perl file the edit affects is not patched" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+# --- shell scripts and Dockerfiles -------------------------------------------
+
+# Scripts that source each other and call each other's functions, a script
+# that runs the Python app, and a Dockerfile that builds it. ``greet`` is
+# defined in both languages, so a name tier could cross between them.
+_SH = {
+    **_PY,
+    "scripts/lib.sh": "#!/bin/bash\ngreet() {\n  echo hi\n}\nhelper() {\n  greet\n}\n",
+    "scripts/run.sh": "#!/bin/bash\nsource ./lib.sh\nhelper\ngit status\n",
+    "scripts/ci.sh": '#!/bin/bash\n. "$(dirname "$0")/lib.sh"\ngreet\npython -m app.views\n',
+    "scripts/solo.sh": "#!/bin/sh\nset -e\npytest -q\n",
+    "app/greeting.py": "def greet():\n    return 'hi'\n",
+    "docker/Dockerfile": (
+        "FROM python:3.12-slim AS base\nWORKDIR /app\nCOPY pkg ./pkg\nCOPY app ./app\n"
+        "RUN pip install -e .\nEXPOSE 8000\nENTRYPOINT [\"python\", \"-m\", \"app.views\"]\n"
+    ),
+}
+
+
+def _sh(rel: str, old: str, new: str) -> Any:
+    def apply(tree: Path) -> None:
+        assert old in _SH[rel]
+        (tree / rel).write_text(_SH[rel].replace(old, new))
+
+    return apply
+
+
+@pytest.mark.parametrize(
+    ("edit", "edited"),
+    [
+        pytest.param(_sh("scripts/lib.sh", "echo hi", "echo hello"), "scripts/lib.sh", id="sh-function-body"),
+        pytest.param(_sh("scripts/run.sh", "helper\n", "helper\ngreet\n"), "scripts/run.sh", id="sh-call-added"),
+        pytest.param(_sh("scripts/ci.sh", "greet\n", "helper\n"), "scripts/ci.sh", id="sh-call-retargeted"),
+        pytest.param(_sh("scripts/run.sh", "git status\n", ""), "scripts/run.sh", id="sh-call-removed"),
+        pytest.param(_sh("scripts/solo.sh", "pytest -q", "pytest -q -x"), "scripts/solo.sh", id="sh-command-args"),
+        pytest.param(
+            _sh("docker/Dockerfile", "RUN pip install -e .", "RUN pip install --no-cache-dir -e ."),
+            "docker/Dockerfile",
+            id="dockerfile-run",
+        ),
+        pytest.param(
+            _sh("docker/Dockerfile", "COPY app ./app\n", "COPY app ./app\nCOPY scripts ./scripts\n"),
+            "docker/Dockerfile",
+            id="dockerfile-copy",
+        ),
+        pytest.param(
+            _sh("docker/Dockerfile", "WORKDIR /app\n", "WORKDIR /srv\nENV PYTHONUNBUFFERED=1\n"),
+            "docker/Dockerfile",
+            id="dockerfile-workdir-env",
+        ),
+    ],
+)
+def test_shell_and_dockerfile_body_edits_are_patched(tmp_path: Path, edit: Any, edited: str) -> None:
+    tree, seed = _index(tmp_path, _SH)
+    edit(tree)
+
+    patched = _patch(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == (edited,)
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        # Python edits whose names and stems the scripts and the Dockerfile spell.
+        pytest.param(_edit(app__helper_DOT_py="def helper():\n    return 1\n"), id="py-adds-a-name-a-script-calls"),
+        pytest.param(
+            _edit(app__greeting_DOT_py="def welcome():\n    return 'hi'\n"), id="py-drops-a-name-a-script-calls"
+        ),
+        pytest.param(_edit(app__slim_DOT_py="def slim():\n    return 0\n"), id="py-adds-a-stem-the-dockerfile-spells"),
+        pytest.param(_edit(app__greeting_DOT_py=None), id="py-removes-a-module-a-script-names"),
+        # A Python surface change plus a script body edit in one commit.
+        pytest.param(
+            lambda tree: (
+                _edit(app__helper_DOT_py="def helper():\n    return 1\n")(tree),
+                _sh("scripts/run.sh", "helper\n", "helper\ngreet\n")(tree),
+            ),
+            id="py-surface-with-script-body",
+        ),
+    ],
+)
+def test_scripts_a_refreshing_patch_reaches_are_re_resolved(tmp_path: Path, edit: Any) -> None:
+    tree, seed = _index(tmp_path, _SH)
+    edit(tree)
+
+    patched = _patch(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.refresh
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        pytest.param(
+            _sh("scripts/lib.sh", "helper() {", "farewell() {\n  echo bye\n}\nhelper() {"),
+            "scripts/lib.sh: its dependency surface changed",
+            id="sh-function-added",
+        ),
+        pytest.param(
+            _sh("scripts/run.sh", "source ./lib.sh", "source ./other.sh"),
+            "scripts/run.sh: its dependency surface changed",
+            id="sh-source-changed",
+        ),
+        pytest.param(
+            _sh("docker/Dockerfile", "FROM python:3.12-slim", "FROM python:3.13-slim"),
+            "docker/Dockerfile: its dependency surface changed",
+            id="dockerfile-base-image",
+        ),
+        pytest.param(
+            _sh("docker/Dockerfile", "EXPOSE 8000", "EXPOSE 9000"),
+            "docker/Dockerfile: its dependency surface changed",
+            id="dockerfile-expose",
+        ),
+        pytest.param(_edit(scripts__new_DOT_sh="#!/bin/sh\ngreet\n"), "scripts/new.sh: file added", id="sh-added"),
+        pytest.param(_edit(scripts__solo_DOT_sh=None), "scripts/solo.sh: file removed", id="sh-removed"),
+    ],
+)
+def test_shell_and_dockerfile_surface_changes_fall_back(tmp_path: Path, edit: Any, reason: str) -> None:
+    tree, seed = _index(tmp_path, _SH)
+    edit(tree)
+
+    patched = _patch(tree, seed)
+
+    assert not patched.patch_plan.eligible
+    assert reason in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 

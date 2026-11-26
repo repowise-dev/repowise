@@ -35,6 +35,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...pyparse import parse_python
 from ...pytest_roots import DEFAULT_PYTHON_FUNCTIONS, _words, pytest_options
 from ...symbol_spans import symbol_at
 from ..resolvers import ResolverContext
@@ -620,7 +621,7 @@ def _call_names(
 
 def _parse(text: str) -> ast.Module | None:
     try:
-        return ast.parse(text)
+        return parse_python(text)
     except (SyntaxError, ValueError):
         return None
 

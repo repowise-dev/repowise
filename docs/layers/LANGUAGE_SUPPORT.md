@@ -26,10 +26,10 @@ resolution and health markers are all static.
 </p>
 
 **Contents:** [Tiers](#tiers), [What the pipeline gives each tier](#what-the-pipeline-gives-each-tier),
-[How accurate is the graph per language](#how-accurate-is-the-graph-per-language),
 [Extensions and imports](#extensions-and-imports), [Framework-aware edges](#framework-aware-edges),
 [Beyond code files](#beyond-code-files), [Code-health coverage](#code-health-coverage),
-[Runtime evidence](#runtime-evidence), [Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
+[Runtime evidence](#runtime-evidence), [Accuracy and limits](#accuracy-and-limits),
+[Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
 
 ## Tiers
 
@@ -72,7 +72,7 @@ which has no imports and resolves names case-insensitively within each sfdx
 project's namespace. Object Pascal resolves `uses` through the project files
 that compile each unit and matches names case-insensitively.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
-[Limits](#limits).
+[Accuracy and limits](#accuracy-and-limits).
 
 \* COBOL files and programs get no dead-code claims: schedulers, region
 definitions outside the repo and dynamic program calls are entry paths the
@@ -96,7 +96,7 @@ A DB2 DCLGEN member (`.dcl`) is a copybook when it holds an
 output and OpenVMS DCL procedures share the extension and are not indexed.
 `EXEC CICS LINK` and `XCTL` link to their program when it is a literal or a
 constant moved into the program variable; any other target shows as a
-`cics-dynamic:` reference rather than a guess. A `PERFORM` binds only within
+`cics-dynamic:` reference instead of a guess. A `PERFORM` binds only within
 its program and the copybooks it copies; `CALL`, `LINK` and `XCTL` bind to a
 unique PROGRAM-ID. JCL (`.jcl`, `.prc`, `.proc`) links each job step to the
 program or PROC it runs, which makes that program an entry point, and BMS
@@ -118,65 +118,6 @@ A paragraph whose performer is in another file (a copybook's) is judged by the
 target's name alone.
 Apex dead-code findings are review-only, since the platform also reaches classes
 by name. A third-party library in a static resource counts as vendored.
-
-## How accurate is the graph per language
-
-Precision and recall differ by language, because resolution depends on what the
-grammar and the type system expose. Measured figures per language, with corpus
-and method, are in [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language).
-
-### Every call edge says how it was resolved, and how much to trust it
-
-Every `calls` edge repowise emits carries a **resolution origin** from a closed
-vocabulary, and every origin has exactly one confidence:
-
-| Origin | Confidence | What it means |
-|--------|:---:|---|
-| `same_file` | 0.95 | Defined in the calling file. A certainty |
-| `self_scope` | 0.95 | `self` / `this`, a method on the caller's own class |
-| `enclosing_class` | 0.95 | A bare call bound to the caller's own class |
-| `receiver_same_file` | 0.93 | The receiver names a class in the calling file |
-| `receiver_typed_same_file` | 0.93 | The receiver's declared type is a class in this file |
-| `receiver_field_same_file` | 0.93 | The receiver is a field whose type is a class in this file |
-| `receiver_framework_same_file` | 0.93 | A framework decorator retyped the receiver to a class in this file |
-| `scoped_name` | 0.93 | The call names its class directly, and that class declares the method |
-| `receiver_extension_same_file` | 0.93 | An extension method in this file extends the receiver's type |
-| `receiver_chain_same_file` | 0.93 | Every hop of a chained field receiver resolves within this file |
-| `return_type_same_file` | 0.93 | The inner call's declared return type is a class in this file |
-| `same_package` | 0.90 | The target is in a sibling file that needs no import |
-| `import_scoped` | 0.90 | The name was imported from the file that defines it |
-| `receiver_same_package` | 0.90 | The receiver is a class in the same package |
-| `receiver_typed_same_package` | 0.90 | The receiver's declared type is a class in the same package |
-| `receiver_field_same_package` | 0.90 | The receiver is a field whose type is a class in the same package |
-| `receiver_framework_same_package` | 0.90 | A framework decorator retyped the receiver to a class in the same package |
-| `return_type_same_package` | 0.90 | The inner call's declared return type is a class in the same package |
-| `self_inherited` | 0.90 | `self` / `this` names a method declared by one ancestor |
-| `enclosing_inherited` | 0.90 | A bare call names a method declared by one ancestor |
-| `package_alias` | 0.88 | The call is qualified by a package the repo declares |
-| `module_alias` | 0.88 | The receiver is an imported module, or a Rust module path such as `crate::index::open_ro()` that needs no `use` |
-| `crate_root` | 0.88 | The reference is scoped to its Rust crate |
-| `receiver_import` | 0.88 | The receiver's class was found in an imported file |
-| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file; or a Python local holds the module object a call returned |
-| `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
-| `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
-| `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
-| `receiver_chain_import` | 0.88 | A chained field receiver resolves through an imported type at its weakest hop |
-| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file; or a Python inner call returns an imported module object |
-| `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
-| `same_target` | 0.85 | The target is a sibling translation unit in the same build target |
-| `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
-| `receiver_typed_global` | 0.75 | The inferred type and method pair exists somewhere in the repo |
-| `receiver_field_global` | 0.75 | The field's type and method pair exists somewhere in the repo |
-| `receiver_framework_global` | 0.75 | The framework type and method pair exists somewhere in the repo |
-| `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
-| `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
-| `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
-
-That is the complete vocabulary of 39. You can filter a graph by confidence, and
-both the MCP tools and the web UI surface which origin produced an edge, so an
-agent reading an execution flow can tell a fact from an inference. Receiver
-typing, execution-flow terminations and the edge types are in
-[GRAPH.md](GRAPH.md).
 
 ## Extensions and imports
 
@@ -331,7 +272,67 @@ Formats, the join rules and the workload classes:
 [RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md) and
 [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md#supported-formats).
 
-## Limits
+## Accuracy and limits
+
+Precision and recall differ by language, because resolution depends on what the
+grammar and the type system expose. Measured figures per language, with corpus
+and method, are in [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language).
+
+### Every call edge says how it was resolved
+
+Every `calls` edge repowise emits carries a **resolution origin** from a closed
+vocabulary, and every origin has exactly one confidence:
+
+| Origin | Confidence | What it means |
+|--------|:---:|---|
+| `same_file` | 0.95 | Defined in the calling file. A certainty |
+| `self_scope` | 0.95 | `self` / `this`, a method on the caller's own class |
+| `enclosing_class` | 0.95 | A bare call bound to the caller's own class |
+| `receiver_same_file` | 0.93 | The receiver names a class in the calling file |
+| `receiver_typed_same_file` | 0.93 | The receiver's declared type is a class in this file |
+| `receiver_field_same_file` | 0.93 | The receiver is a field whose type is a class in this file |
+| `receiver_framework_same_file` | 0.93 | A framework decorator retyped the receiver to a class in this file |
+| `scoped_name` | 0.93 | C/C++ `Qualifier::name()`: the call names its class directly, and that class declares the method |
+| `receiver_extension_same_file` | 0.93 | An extension method in this file extends the receiver's type |
+| `receiver_chain_same_file` | 0.93 | Every hop of a chained field receiver resolves within this file |
+| `return_type_same_file` | 0.93 | The inner call's declared return type is a class in this file |
+| `same_package` | 0.90 | The target is in a sibling file that needs no import (Go, JVM) |
+| `import_scoped` | 0.90 | The name was imported from the file that defines it |
+| `receiver_same_package` | 0.90 | The receiver is a class in the same package (JVM) |
+| `receiver_typed_same_package` | 0.90 | The receiver's declared type is a class in the same package |
+| `receiver_field_same_package` | 0.90 | The receiver is a field whose type is a class in the same package |
+| `receiver_framework_same_package` | 0.90 | A framework decorator retyped the receiver to a class in the same package |
+| `return_type_same_package` | 0.90 | The inner call's declared return type is a class in the same package |
+| `self_inherited` | 0.90 | `self` / `this` or Python `super()` names a method declared by exactly one ancestor |
+| `enclosing_inherited` | 0.90 | A bare call names a method declared by exactly one ancestor |
+| `package_alias` | 0.88 | Go `pkg.Func`: the call is qualified by a package the repo declares, resolved across the whole package |
+| `module_alias` | 0.88 | The receiver is an imported module, or a Rust module path (`crate::index::open_ro()`, `super::f()`, a `mod` the file declares) walked down the module tree, with no `use` needed |
+| `crate_root` | 0.88 | The reference is scoped to its Rust crate |
+| `receiver_import` | 0.88 | The receiver's class was found in an imported file |
+| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file; or a Python local holds the module object a call returned |
+| `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
+| `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
+| `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
+| `receiver_chain_import` | 0.88 | A chained field receiver resolves through an imported type at its weakest hop |
+| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file; or a Python inner call returns an imported module object |
+| `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
+| `same_target` | 0.85 | C/C++: the target is a sibling translation unit in the same build target |
+| `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
+| `receiver_typed_global` | 0.75 | The inferred type and method pair exists somewhere in the repo |
+| `receiver_field_global` | 0.75 | The field's type and method pair exists somewhere in the repo |
+| `receiver_framework_global` | 0.75 | The framework type and method pair exists somewhere in the repo |
+| `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
+| `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
+| `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
+| `import_elsewhere` | 0.50 | Python: the name is imported only inside another function of the file, and that one import is read here. **A guess** |
+
+That is the complete vocabulary of 40. You can filter a graph by confidence, and
+both the MCP tools and the web UI surface which origin produced an edge, so an
+agent reading an execution flow can tell a fact from an inference. How an
+agent should read each confidence band, receiver typing, execution-flow
+terminations and the edge types are in [GRAPH.md](GRAPH.md#reading-the-results).
+
+### Known gaps
 
 - Template dialects (Django/Jinja, Go templates, ERB, Handlebars, Blade,
   Thymeleaf) parse as HTML and yield nothing.
@@ -378,7 +379,8 @@ the same architecture page.
 
 ## See also
 
-- [GRAPH.md](GRAPH.md): edge vocabulary, resolution origins, execution flows
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance
+- [GRAPH.md](GRAPH.md): edge vocabulary, receiver typing, execution flows
 - [architecture/language-support.md](../architecture/language-support.md): pipeline internals and per-language mechanics
 - [CODE_HEALTH.md](CODE_HEALTH.md): health markers
 - [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language): measured accuracy per language

@@ -134,7 +134,7 @@ async def _render_ambiguous(
     }
     if no_source:
         response.update(no_source_field())
-    _finish_ambiguous(response, whole_bodies, not_rendered, text_cache)
+    _finish_ambiguous(response, whole_bodies, not_rendered, repo_root, text_cache)
     return response
 
 
@@ -142,6 +142,7 @@ def _finish_ambiguous(
     response: dict[str, Any],
     whole_bodies: int,
     not_rendered: list[dict],
+    repo_root: Path,
     text_cache: dict[str, str | None],
 ) -> None:
     """Completeness, the not-rendered list and the replaced-read savings."""
@@ -155,11 +156,18 @@ def _finish_ambiguous(
         )
 
     from repowise.server.mcp_server._savings import declare_replaced
-    from repowise.server.mcp_server._savings.reads import read_tokens
+    from repowise.server.mcp_server._savings.reads import note_served, read_credit, read_tokens
 
-    full_tokens = sum(read_tokens(t) for t in text_cache.values() if t)
-    if full_tokens:
-        declare_replaced(response, full_tokens)
+    # Only a file with a rendered body was not opened; a fetch_with reference
+    # still sends the agent to the file.
+    rendered = {c["file"] for c in response.get("candidates", ()) if "source" in c}
+    for path, text in text_cache.items():
+        if text and path in rendered:
+            note_served(path, read_tokens(text))
+    declare_replaced(
+        response,
+        sum(read_credit(repo_root, path, text) for path, text in text_cache.items() if text),
+    )
 
 
 def _correct_ambiguity_note(result: dict[str, Any], _collector: Any) -> None:

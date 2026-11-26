@@ -17,7 +17,7 @@ from collections import OrderedDict
 from sqlalchemy import delete, select
 
 from repowise.core.persistence.crud.repository import index_synced_at
-from repowise.core.persistence.database import get_session
+from repowise.core.persistence.database import get_session, is_read_only
 from repowise.core.persistence.models import AnswerCache
 from repowise.server.mcp_server._helpers import is_excluded
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
@@ -192,6 +192,9 @@ async def _write_answer_cache(
     The row is a shallow copy taken here, so anything the caller attaches to the
     payload after this point reaches the caller and never the cache.
     """
+    bind = getattr(ctx.session_factory, "kw", {}).get("bind")
+    if bind is not None and is_read_only(bind):
+        return  # a host serving a published store: the write could only fail
     cache_payload = dict(payload)
     cache_payload["_schema_version"] = _ANSWER_SCHEMA_VERSION
     commit_now = getattr(repository, "head_commit", None)
@@ -239,6 +242,12 @@ def remember_keyless_reply(payload: dict, *, repository, repo_id, qhash: str) ->
     _KEYLESS_REPLIES.move_to_end(key)
     while len(_KEYLESS_REPLIES) > _KEYLESS_REPLIES_MAX:
         _KEYLESS_REPLIES.popitem(last=False)
+
+
+def drop_keyless_replies(repo_id: str) -> None:
+    """Forget every keyless reply kept for *repo_id*."""
+    for key in [k for k in _KEYLESS_REPLIES if k[0] == repo_id]:
+        del _KEYLESS_REPLIES[key]
 
 
 def serve_keyless_reply(*, repository, repo_id, qhash: str, exclude_spec, t0: float) -> dict | None:

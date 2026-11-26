@@ -76,6 +76,8 @@ export interface DecisionAgentHeroProps {
    * be read, and the hero renders nothing.
    */
   prompt: DecisionAgentHeroPrompt | null | undefined;
+  /** The small line over the heading. */
+  eyebrow?: string;
   /** The heading; the default names the pass the prompt asks for. */
   heading?: string;
   /** One sentence on what the agent does with it. */
@@ -102,6 +104,12 @@ export interface DecisionAgentHeroProps {
   readOnlyNote?: string;
   /** Lines of the prompt shown in the preview well. */
   previewLines?: number;
+  /**
+   * Called when the person clicks a copy button: `prompt` for the main one,
+   * `review_all` for the secondary. Lets a host count the handoff without
+   * reading the button's label.
+   */
+  onCopy?: (which: "prompt" | "review_all") => void;
   className?: string;
 }
 
@@ -129,6 +137,7 @@ function defaultDescription(prompt: DecisionAgentHeroPrompt): string {
  */
 export function DecisionAgentHero({
   prompt,
+  eyebrow = "Hand off to your agent",
   heading,
   description,
   copyLabel = "Copy prompt for your agent",
@@ -140,6 +149,7 @@ export function DecisionAgentHero({
   reviewAll,
   readOnlyNote,
   previewLines = 6,
+  onCopy,
   className,
 }: DecisionAgentHeroProps) {
   const headingId = React.useId();
@@ -170,6 +180,8 @@ export function DecisionAgentHero({
     setResult(ok ? "copied" : "failed");
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setResult(null), 2400);
+    // After the copy and its feedback, so a host callback that throws cannot stop either.
+    onCopy?.("prompt");
   };
 
   return (
@@ -181,7 +193,7 @@ export function DecisionAgentHero({
       )}
     >
       <div className="grid min-w-0 gap-1.5">
-        <p className={HERO_MICRO}>Hand off to your agent</p>
+        <p className={HERO_MICRO}>{eyebrow}</p>
         <h2
           id={headingId}
           className="text-base font-semibold text-[var(--color-text-primary)] [text-wrap:balance] sm:text-lg"
@@ -210,7 +222,13 @@ export function DecisionAgentHero({
           {result === "copied" ? <Check aria-hidden /> : <ClipboardCopy aria-hidden />}
           {copyLabel}
         </Button>
-        <DecisionAgentPrompts prompts={[reviewAll]} />
+        {reviewAll?.text ? (
+          <AiPromptButton
+            copyText={() => reviewAll.text}
+            label={reviewAll.label}
+            onClick={() => onCopy?.("review_all")}
+          />
+        ) : null}
         {handoff}
         <span role="status" aria-live="polite" className="text-xs text-[var(--color-text-secondary)]">
           {result === "copied" ? copiedLabel : result === "failed" ? failedLabel : ""}

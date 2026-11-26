@@ -34,7 +34,8 @@ from typing import Any
 from repowise.core.git_sha import is_full_sha
 
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument, EvidenceFormatError, parse_evidence
-from .ingest import FLAG_WORKLOAD_CLASSES, EvidenceCaps, RunProvenance
+from .ingest import PRODUCTION_FLAG_REFUSAL, EvidenceCaps, RunProvenance
+from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, evidence_kinds
 
 
 class EvidenceRefusedError(Exception):
@@ -65,8 +66,9 @@ class PreparedEvidence:
     format: str
     #: The checkout the run used; frames are placed on its source.
     checkout_root: Path
-    #: The commit the run measured.
-    commit: str
+    #: The commit the run measured; None only for a production-only kind
+    #: whose file names none (its window spans deploys).
+    commit: str | None
     #: ``--value-kind`` as given: the clock of a profile still to convert.
     value_kind: str | None
     #: Whether the tree was dirty, as given or as the v1 file says; None when unknown.
@@ -76,6 +78,9 @@ class PreparedEvidence:
     run: Any = None
     #: How many profile files the run was merged from.
     profiles: int = 1
+    #: The repo-relative directory the file (or every file) was read from
+    #: (:func:`evidence_report_dir`); ``""`` when unknown or the root.
+    report_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,16 +93,27 @@ class StoredEvidence:
     rows_kept: int = 0
 
 
-def check_options(workload: str, workload_class: str, environment: str, commit: str | None) -> None:
-    """Refuse a usage error in the options before anything is read."""
-    if workload_class == "production":
-        raise _bad_option(
-            "--class",
-            "production is set only by a verified source (a request-log or "
-            "statement ingest, a connector), never by a flag. Use entry_point for a "
-            "profiled command or request replay, load_test for a load test.",
-        )
-    if workload_class not in FLAG_WORKLOAD_CLASSES:
+def check_options(
+    workload: str,
+    workload_class: str | None,
+    environment: str,
+    commit: str | None,
+    *,
+    verified: bool = False,
+) -> None:
+    """Refuse a usage error in the options before anything is read.
+
+    *workload_class* None leaves the class to the file's kind (a production
+    kind needs none; any other kind is refused once read,
+    :func:`~.ingest.run_class`). ``production`` passes only when *verified*:
+    a host that checked who sent the run (CI with OIDC), never a flag.
+    """
+    if workload_class == "production" and not verified:
+        raise _bad_option("--class", PRODUCTION_FLAG_REFUSAL)
+    if workload_class is not None and workload_class not in (
+        *FLAG_WORKLOAD_CLASSES,
+        *(("production",) if verified else ()),
+    ):
         raise _bad_option(
             "--class", f"{workload_class!r} is not one of {', '.join(FLAG_WORKLOAD_CLASSES)}."
         )
@@ -143,12 +159,21 @@ def evidence_paths(paths: Sequence[Path]) -> list[Path]:
 
     A profiler that writes one file per process (``node --cpu-prof``) is
     pointed at a directory, and the directory is what ``evidence add``
-    takes. Hidden files are left out.
+    takes. Hidden files are left out. A glob that names no file as written
+    (``'**/target/surefire-reports/*.xml'``, one JUnit directory per module)
+    is expanded from the current directory, as ``coverage add`` expands its
+    reports, so no shell has to.
     """
+    from repowise.core.analysis.health.coverage.discovery import expand_report_patterns
+
     out: list[Path] = []
     seen: set[Path] = set()
     for path in paths:
-        if path.is_dir():
+        if not path.exists() and any(ch in str(path) for ch in "*?["):
+            found = expand_report_patterns([path.as_posix()], Path.cwd())
+            if not found:
+                raise _bad_option("FILE", f"{path} matches no file.")
+        elif path.is_dir():
             found = sorted(
                 p for p in path.iterdir() if p.is_file() and not p.name.startswith(".")
             )
@@ -254,7 +279,8 @@ def prepare_evidence(
         else:
             reader = profile_formats.get(fmt)
             if reader.to_v1 is not None:
-                text = json.dumps(reader.to_v1(data), sort_keys=True)
+                args = (data, checkout_root) if reader.needs_checkout else (data,)
+                text = json.dumps(reader.to_v1(*args), sort_keys=True)
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)
@@ -263,6 +289,15 @@ def prepare_evidence(
                 refuse_compiled_positions(run, str(checkout_root))
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
+    if doc is not None and doc.kind == "test_timing" and doc.entries and all(
+        e["outcome"] == "error" for e in doc.entries
+    ):
+        # A collection or session error fails every test before it runs: no time is a test's.
+        raise EvidenceRefusedError(
+            "invalid_evidence",
+            f"every one of the {len(doc.entries):,} tests in {name} errored, so the run timed no test",
+            "read the test run's output for the error that stopped every test, fix it, then run it again",
+        )
     _check_value_kind(fmt, doc, run, value_kind)
     return PreparedEvidence(
         format=fmt,
@@ -285,6 +320,7 @@ def prepare_evidence_files(
     input_format_name: str | None = None,
     value_kind: str | None = None,
     max_file_mb: float | None = None,
+    report_dir: str = "",
 ) -> PreparedEvidence:
     """*files* (name, bytes) read as one run.
 
@@ -292,13 +328,18 @@ def prepare_evidence_files(
     (a parent and its workers) and merge into one: they share the run's
     options (workload, class, commit, clock), and must share a format, unit
     and tool. A v1 file or benchmark results stand alone, and mixed formats,
-    units, tools or clocks are refused with the reason. The merged run does
-    not depend on the order the files are named in.
+    units, tools or clocks are refused with the reason. JUnit XML reports (a
+    Maven or Gradle report directory, one file per test class) read as one
+    report, and the other files beside them are left out
+    (:func:`_junit_reports_as_one`). The merged run does not depend on the
+    order the files are named in. *report_dir* is the repo-relative
+    directory the files were read from (:func:`evidence_report_dir`).
     """
     from .profile_convert import merge_runs
 
     if not files:
         raise _bad_option("FILE", "name at least one evidence file.")
+    files = _junit_reports_as_one(files, input_format_name)
     digests = [hashlib.sha256(data).hexdigest() for _, data in files]
     if len(set(digests)) < len(digests):
         raise EvidenceRefusedError(
@@ -321,7 +362,7 @@ def prepare_evidence_files(
         for name, data in ordered
     ]
     if len(parts) == 1:
-        return parts[0]
+        return replace(parts[0], report_dir=report_dir)
     formats = sorted({p.format for p in parts})
     if len(formats) > 1:
         raise EvidenceRefusedError(
@@ -351,6 +392,40 @@ def prepare_evidence_files(
     return replace(parts[0], run=run, profiles=len(parts))
 
 
+def evidence_report_dir(paths: Sequence[Path], checkout_root: Path) -> str:
+    """The repo-relative directory every file in *paths* is in; ``""`` when that is the
+    root, when they differ, or when one lies outside *checkout_root*."""
+    root = checkout_root.resolve()
+    try:
+        dirs = {p.resolve().parent.relative_to(root).as_posix() for p in paths}
+    except (OSError, ValueError):
+        return ""
+    return dirs.pop() if len(dirs) == 1 and dirs != {"."} else ""
+
+
+def _junit_reports_as_one(
+    files: Sequence[tuple[str, bytes]], input_format_name: str | None
+) -> Sequence[tuple[str, bytes]]:
+    """Several files holding JUnit XML reports as one report; *files* as given otherwise.
+
+    The files that are not JUnit XML (Surefire's ``.txt`` summaries,
+    ``failsafe-summary.xml``) are left out.
+    """
+    from .profile_formats import SNIFF_BYTES, junit
+
+    if len(files) < 2 or input_format_name not in (None, "junit"):
+        return files
+    reports = [(name, data) for name, data in files if junit.sniff(data[:SNIFF_BYTES])]
+    if not reports:
+        return files
+    try:
+        combined = junit.combine(data for _, data in reports)
+    except EvidenceFormatError as exc:
+        raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
+    name = reports[0][0] if len(reports) == 1 else f"{reports[0][0]} and {len(reports) - 1} more"
+    return [(name, combined)]
+
+
 def _check_value_kind(
     fmt: str, doc: EvidenceDocument | None, run: Any, value_kind: str | None
 ) -> None:
@@ -377,11 +452,15 @@ def _check_value_kind(
         )
 
 
-def _measured_commit(commit: str | None, fmt: str, doc: EvidenceDocument | None) -> str:
+def _measured_commit(
+    commit: str | None, fmt: str, doc: EvidenceDocument | None
+) -> str | None:
     """The commit the run measured: *commit* or the file's, which must agree.
 
     A converted file's commit is what its tool recorded, never taken on its
-    own: *commit* is required and the recorded one only cross-checks it.
+    own: *commit* is required and the recorded one only cross-checks it. A
+    production-only kind needs none: its window spans deploys, and a run that
+    does not say which commit ran reads "deployed commit unknown".
     """
     in_file = doc.commit_sha if doc is not None else None
     converted = fmt != EVIDENCE_FORMAT
@@ -394,6 +473,8 @@ def _measured_commit(commit: str | None, fmt: str, doc: EvidenceDocument | None)
             else f"the file says it measured {in_file}; pass the same commit or none.",
         )
     measured = commit or (None if converted else in_file)
+    if measured is None and doc is not None and evidence_kinds[doc.kind].production_only:
+        return None
     if measured is None:
         raise _bad_option(
             "--commit",
@@ -410,18 +491,22 @@ async def store_evidence(
     *,
     repo_path: Path,
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     environment: str = "unknown",
     allow_partial: bool = False,
     caps: EvidenceCaps,
     source: str = "cli",
+    verified: bool = False,
 ) -> StoredEvidence:
     """Join *prepared* to the index of *repo* (a repository row) and store the run.
 
     *repo_path* is the indexed checkout: its HEAD says whether the run is
-    stale, and its settings rank the refreshed read model. Raises
+    stale, and its settings rank the refreshed read model. *workload_class*
+    None takes the class from the kind; *verified* lets a host that verified
+    the sender store ``production`` (:func:`~.ingest.run_class`). Raises
     :class:`EvidenceRefusedError`, before anything is written, for a profile
-    that ran bundled or compiled code of the checkout.
+    that ran bundled or compiled code of the checkout or a class the kind
+    does not take.
     """
     from repowise.core.analysis.health.coverage import live_head_commit
     from repowise.core.analysis.health.coverage.discovery import mostly_unmapped
@@ -434,6 +519,7 @@ async def store_evidence(
         join_entries,
         load_origins,
         load_symbols,
+        run_class,
         run_fields,
         run_key,
         stamp_bodies,
@@ -453,6 +539,11 @@ async def store_evidence(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
 
+    stored_class, why = run_class(doc.kind, workload_class, verified=verified)
+    if stored_class is None:
+        raise _bad_option("--class", why or "")
+    spec = evidence_kinds[doc.kind]
+    doc = await _placed_tests(session, repo.id, doc, prepared.report_dir)
     paths = entry_paths(doc)
     origins = await load_origins(session, repo.id, paths)
     joined = join_entries(
@@ -461,14 +552,17 @@ async def store_evidence(
         origins,
         changed or frozenset(),
     )
-    # A benchmark or test keeps its row without its function, so only the
-    # kinds that need the join can be mostly unmapped.
-    partial = doc.kind in ("profile", "query_count") and mostly_unmapped(
-        joined.matched, len(doc.entries)
+    # A benchmark or test keeps its row without its function, and a route or
+    # statement names none, so only the kinds that need the join can be
+    # mostly unmapped.
+    partial = (
+        spec.join in LOCATION_JOINS
+        and not spec.keeps_unlinked
+        and mostly_unmapped(joined.matched, len(doc.entries))
     )
     provenance = RunProvenance(
         workload_name=workload,
-        workload_class=workload_class,
+        workload_class=stored_class,
         commit_sha=prepared.commit,
         checkout_root=str(root),
         dirty=dirty,
@@ -479,11 +573,18 @@ async def store_evidence(
     summary = _summary(doc, provenance, joined, partial, index_commit, head_sha)
     summary["input_format"] = prepared.format
     summary["profiles"] = prepared.profiles
+    warnings: list[dict[str, Any]] = []
     if conversion is not None:
         summary["conversion"] = conversion.summary()
         warning = _unprofiled_children(summary["conversion"], prepared.profiles)
         if warning is not None:
-            summary["warnings"] = [warning]
+            warnings.append(warning)
+    if stored_class == "production":
+        summary["window"] = _window(doc)
+        if prepared.commit is None:
+            warnings.append(_DEPLOYED_COMMIT_UNKNOWN)
+    if warnings:
+        summary["warnings"] = warnings
     if partial and not allow_partial:
         return StoredEvidence({**summary, "stored": False, "reason": "mostly_unmapped"})
     if not joined.rows:
@@ -504,7 +605,7 @@ async def store_evidence(
             doc,
             provenance,
             joined,
-            key=run_key(text, provenance, doc.kind, index_commit),
+            key=run_key(text, provenance, doc.kind, index_commit, prepared.report_dir),
             truncated=truncated,
             mapping_partial=partial,
             unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
@@ -529,6 +630,29 @@ async def store_evidence(
         "runs_pruned": write.runs_pruned,
     }
     return StoredEvidence(payload, rows_kept=len(rows))
+
+
+#: The warning a production run with no deployed commit gets.
+_DEPLOYED_COMMIT_UNKNOWN = {
+    "code": "deployed_commit_unknown",
+    "message": (
+        "The file does not say which commit was deployed, so its rows read as "
+        "measured at an unknown commit and never rank against code that changed since."
+    ),
+    "remedy": (
+        "Pass --commit with the deployed commit, or set commit_sha (the newest "
+        "deployed) and base_commit_sha (the oldest) in the file."
+    ),
+}
+
+
+def _window(doc: EvidenceDocument) -> dict[str, Any]:
+    """The window a production run covers, as the add result names it."""
+    return {
+        "start": doc.window_start.isoformat() if doc.window_start else None,
+        "end": doc.window_end.isoformat() if doc.window_end else None,
+        "base_commit_sha": doc.base_commit_sha,
+    }
 
 
 def _unprofiled_children(conversion: Mapping[str, Any], profiles: int) -> dict[str, Any] | None:
@@ -557,6 +681,26 @@ def _unprofiled_children(conversion: Mapping[str, Any], profiles: int) -> dict[s
     }
 
 
+async def _placed_tests(
+    session: Any, repo_id: str, doc: EvidenceDocument, report_dir: str = ""
+) -> EvidenceDocument:
+    """*doc* with each test placed on an indexed file: one named from *report_dir*, the
+    directory its report was read from (:func:`~.ingest.rebase_test_entries`), and one
+    named only by its classname (:func:`~.ingest.place_test_entries`).
+
+    The file list is read only when a test needs it.
+    """
+    rebase = bool(report_dir) and doc.kind == "test_timing"
+    if not rebase and not any(entry.get("classname") for entry in doc.entries):
+        return doc
+    from repowise.core.persistence.crud.analysis.health.metrics import health_file_paths
+
+    from .ingest import place_test_entries, rebase_test_entries
+
+    files = await health_file_paths(session, repo_id)
+    return place_test_entries(rebase_test_entries(doc, files, report_dir), files)
+
+
 async def ingest_evidence(
     session: Any,
     repo: Any,
@@ -564,7 +708,7 @@ async def ingest_evidence(
     *,
     repo_path: Path,
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     name: str = "the evidence file",
     checkout_root: Path | None = None,
     commit: str | None = None,
@@ -576,6 +720,7 @@ async def ingest_evidence(
     max_file_mb: float | None = None,
     caps: EvidenceCaps | None = None,
     source: str = "cli",
+    verified: bool = False,
 ) -> dict[str, Any]:
     """Read *data*, join it to the index of *repo* and store the run; what ``evidence add`` does.
 
@@ -591,7 +736,7 @@ async def ingest_evidence(
     option it will not take.
     """
     commit = commit.lower() if commit is not None else None
-    check_options(workload, workload_class, environment, commit)
+    check_options(workload, workload_class, environment, commit, verified=verified)
     root = (checkout_root or repo_path).resolve()
     if not root.is_dir():
         raise _bad_option("--checkout-root", f"{root} is not a directory.")
@@ -624,6 +769,7 @@ async def ingest_evidence(
         allow_partial=allow_partial,
         caps=caps,
         source=source,
+        verified=verified,
     )
     return stored.payload
 
@@ -640,7 +786,9 @@ async def _convert(
     from repowise.core.frame_resolver import checkout_reader, frame_paths, load_frame_symbols
 
     from .profile_convert import convert_profile
+    from .source_maps import remap_profile
 
+    reader = checkout_reader(root)
     symbols, origins = await load_frame_symbols(
         session,
         repo_id,
@@ -648,20 +796,31 @@ async def _convert(
         fold_case=sys.platform == "win32",
     )
     try:
+        mapped = remap_profile(run, root=str(root), read_lines=reader,
+                               origins=origins, dirty_paths=changed or ())
+        # Load original sources as well as the bundle paths in the profile.
+        extra = frame_paths(mapped.frames, root=str(root)) - frame_paths(run.frames, root=str(root))
+        if extra:
+            original_symbols, original_origins = await load_frame_symbols(
+                session, repo_id, extra, fold_case=sys.platform == "win32",
+            )
+            symbols.update(original_symbols)
+            origins.update(original_origins)
         return convert_profile(
-            run,
+            mapped,
             root=str(root),
             symbols_by_file=symbols,
             dirty_paths=changed or (),
             origins=origins,
-            read_lines=checkout_reader(root),
+            read_lines=reader,
             value_kind=value_kind,
+            map_sources=False,
         )
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
 
 
-def _tree_state(root: Path, commit: str, dirty: bool | None) -> tuple[Any, bool | None]:
+def _tree_state(root: Path, commit: str | None, dirty: bool | None) -> tuple[Any, bool | None]:
     """Files that differ from *commit*, and *dirty* filled in from them.
 
     Files that differ from the commit are skipped: their lines are not the
@@ -672,7 +831,7 @@ def _tree_state(root: Path, commit: str, dirty: bool | None) -> tuple[Any, bool 
 
     from .ingest import uncommitted_paths
 
-    at_head = live_head_commit(root, None) == commit
+    at_head = commit is not None and live_head_commit(root, None) == commit
     changed = uncommitted_paths(root) if at_head else None
     if dirty is None and changed is not None:
         dirty = bool(changed)
@@ -690,6 +849,8 @@ def _summary(
     """What the run held and how it mapped, stored or not."""
     from collections import Counter
 
+    from .status import low_signal
+
     commit = provenance.commit_sha
     return {
         "kind": doc.kind,
@@ -698,7 +859,7 @@ def _summary(
         "commit_sha": commit,
         "environment": provenance.environment,
         "index_commit": index_commit,
-        "stale": head_sha is not None and commit != head_sha,
+        "stale": head_sha is not None and commit is not None and commit != head_sha,
         "dirty": provenance.dirty,
         "entries": len(doc.entries),
         "matched": joined.matched,
@@ -707,6 +868,7 @@ def _summary(
         "mapping_partial": partial,
         "unmatched_sample": joined.unmatched_sample,
         "tests_failed": provenance.tests_failed,
+        "low_signal": low_signal(doc),
     }
 
 
@@ -719,6 +881,7 @@ __all__ = [
     "detect_environment",
     "evidence_caps",
     "evidence_paths",
+    "evidence_report_dir",
     "ingest_evidence",
     "input_format",
     "prepare_evidence",

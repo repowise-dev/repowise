@@ -35,6 +35,7 @@ from repowise.core.analysis.health.mocks.lexicon import MockDialect, mock_dialec
 from repowise.core.ingestion.languages.python_modules import build_python_module_index
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.typescript import resolve_ts_js_import
+from repowise.core.pyparse import parse_python
 
 from .mocks_java import replaced_java_files
 from .mocks_js import JS_SUFFIXES, replaced_specifiers
@@ -54,7 +55,7 @@ def replaced_modules(path: str, text: str | bytes) -> frozenset[str]:
     if not any(marker in text for marker in dialect.file_markers):
         return frozenset()
     try:
-        tree = ast.parse(text)
+        tree = parse_python(text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return frozenset()
     aliases = _import_aliases(tree)

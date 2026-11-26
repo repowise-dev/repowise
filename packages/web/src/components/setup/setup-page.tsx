@@ -1,21 +1,25 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
+import { useSWRConfig } from "swr";
 import Link from "next/link";
 import { useFormatter, useTranslations } from "next-intl";
 import { Callout } from "@repowise-dev/ui/shared/callout";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 import { firstPrompts } from "@repowise-dev/ui/onboarding/first-prompts";
+import { DecisionAgentHero } from "@repowise-dev/ui/decisions/decision-agent-prompts";
+import { buildFinishSetupPrompt } from "@repowise-dev/ui/health/ai-prompt-builder";
+import { setActionState } from "@/lib/api/actions";
 import { tourHref } from "@/lib/tour";
 import { SETTINGS_LINK, SettingsGroup, repoSettingsHref, type SettingsGroupId } from "@/components/settings/settings-groups";
 import type { SetupResponse } from "@/lib/api/setup";
 import { CopyQuestion } from "@/components/welcome/welcome-step-agent";
 import { HostedSetupCard } from "./hosted-setup-card";
-import { SetupRowView, useSetupText } from "./setup-row";
+import { SetupRowView, useLinkedRow, useSetupText } from "./setup-row";
 import { firstCallerName, type SetupRow, type SetupView } from "./setup-rows";
 import { useSetupControls } from "./setup-controls";
-import { rememberSetupDone, useSetupData, useSetupView } from "./use-setup";
+import { setupKey, useEvidenceConnected, useSetupData, useSetupView } from "./use-setup";
 
 const MICRO = "font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--color-text-tertiary)]";
 
@@ -46,11 +50,8 @@ function SettingsLink({ repoId, group }: { repoId: string; group: SettingsGroupI
 export function SetupPage({ repoId, repoName }: { repoId: string; repoName: string }) {
   const t = useTranslations("setup");
   const { data, error, isLoading, mutate } = useSetupData(repoId);
-  const view = useSetupView(repoId, repoName, data);
-
-  useEffect(() => {
-    if (view) rememberSetupDone(repoId, view.allDone);
-  }, [repoId, view]);
+  const view = useSetupView(repoId, repoName, data, useEvidenceConnected(repoId));
+  useLinkedRow(Boolean(view));
 
   if (!data || !view) {
     return (
@@ -137,6 +138,7 @@ function SetupLoaded({
           {t("writesOff")}
         </Callout>
       )}
+      {setup.setup?.offer === "finish_setup" && <FinishSetupHero repoId={repoId} setup={setup} />}
       <div>
         {(view.attention.length > 0 || view.checksUnreadable) && (
           <RowGroup label={t("attention")}>
@@ -162,6 +164,7 @@ function SetupLoaded({
           {rows(view.essentials)}
         </RowGroup>
         {view.allDone && <HostedSetupCard onboarding={setup.onboarding} />}
+        {view.depth.length > 0 && <RowGroup label={t("depth")}>{rows(view.depth)}</RowGroup>}
         <RowGroup label={t("optional")}>{rows(view.optional)}</RowGroup>
       </div>
       {controls.dialogs}
@@ -189,6 +192,62 @@ function RowGroup({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * The finish-setup pass, offered once an agent has called and steps are left
+ * (the server's `offer`, which it makes at most once per repo). One copy
+ * button; "Not now" dismisses it for this repo, as `repowise next --dismiss
+ * setup` does.
+ */
+function FinishSetupHero({ repoId, setup }: { repoId: string; setup: SetupResponse }) {
+  const t = useTranslations("setup.hero");
+  const ts = useTranslations("setup");
+  const format = useFormatter();
+  const { mutate } = useSWRConfig();
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  const firstCall = setup.setup?.first_call_at ?? setup.calls.first_call_at ?? null;
+  const agent = firstCallerName(setup);
+  const dismiss = async () => {
+    setHidden(true);
+    try {
+      await setActionState(repoId, "setup", { state: "dismissed" });
+      void mutate(setupKey(repoId));
+    } catch {
+      /* not saved: it stays hidden for this visit and may offer again */
+    }
+  };
+  return (
+    <DecisionAgentHero
+      className="mb-6"
+      prompt={{ kind: "finish_setup", text: buildFinishSetupPrompt(), count: setup.setup?.open ?? 0 }}
+      eyebrow={
+        firstCall
+          ? t("eyebrow", {
+              agent: agent ?? ts("yourAgent"),
+              when: format.relativeTime(new Date(firstCall)),
+            })
+          : t("eyebrowNoCall")
+      }
+      heading={t("title")}
+      description={t("body")}
+      copyLabel={t("copy")}
+      copiedLabel={t("copied")}
+      failedLabel={t("copyFailed")}
+      previewLines={3}
+      footnote={t.rich("footnote", { code: (c) => <code className="font-mono">{c}</code> })}
+      links={
+        <button
+          type="button"
+          onClick={() => void dismiss()}
+          className="font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] hover:decoration-[var(--color-text-primary)]"
+        >
+          {t("notNow")}
+        </button>
+      }
+    />
   );
 }
 

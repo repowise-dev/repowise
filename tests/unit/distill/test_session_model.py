@@ -105,3 +105,27 @@ def test_codex_session_outside_repo_is_ignored(tmp_path: Path) -> None:
     )
     assert resolved.model == "claude-opus-4-8"
     assert resolved.agent == "claude_code"
+
+
+def test_each_agent_keeps_its_own_newest_model(tmp_path: Path) -> None:
+    """The newer agent wins the headline; the older one's model is not lost."""
+    repo = tmp_path / "repo"
+    projects = tmp_path / "projects"
+    codex = tmp_path / "codex"
+    _write_claude(projects, repo, "claude-opus-4-8[1m]", mtime=1000.0)
+    _write_codex(codex, repo, "gpt-5-codex", mtime=3000.0)
+
+    resolved = resolve_session_model(repo, projects_root=projects, codex_sessions_root=codex)
+    assert resolved.agent == "codex"
+    assert {agent: m.model for agent, m in resolved.per_agent.items()} == {
+        "claude_code": "claude-opus-4-8",
+        "codex": "gpt-5-codex",
+    }
+
+
+def test_nothing_sighted_has_no_per_agent_models(tmp_path: Path) -> None:
+    resolved = resolve_session_model(
+        tmp_path / "repo", projects_root=tmp_path / "p", codex_sessions_root=tmp_path / "c"
+    )
+    assert resolved.model == DEFAULT_MODEL
+    assert dict(resolved.per_agent) == {}

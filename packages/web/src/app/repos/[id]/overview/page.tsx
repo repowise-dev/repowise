@@ -8,6 +8,7 @@ import { ApiClientError } from "@/lib/api/client";
 import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { getActions } from "@/lib/api/actions";
 import { getProviders } from "@/lib/api/providers";
+import { RepoReportCardHost } from "@/components/reports/repo-report-card-host";
 import { overviewAskSuggestions } from "@/lib/overview-ask";
 import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrapper";
@@ -165,7 +166,7 @@ export default async function OverviewPage({ params }: Props) {
         header: (
           <>
             {header}
-            <ReviewNudgeHost repoId={id} />
+            <RepoReportCardHost repoId={id} />
             {/* A dialog: renders in a portal, so its slot here is only a mount point. */}
             <WelcomeMoment
               repoId={id}
@@ -178,7 +179,13 @@ export default async function OverviewPage({ params }: Props) {
             />
           </>
         ),
-        ask: <AskAnythingRow repoId={id} suggestions={overviewAskSuggestions(summary, tOverview)} />,
+        // The "Your change" line follows the ask box, just above Explore.
+        ask: (
+          <>
+            <AskAnythingRow repoId={id} suggestions={overviewAskSuggestions(summary, tOverview)} />
+            <ReviewNudgeHost repoId={id} />
+          </>
+        ),
         beforeExplore: <PublishOverviewSection repoId={id} />,
         // A server that predates actions returns 404; the page then keeps the
         // attention areas in their old place rather than showing an empty list.

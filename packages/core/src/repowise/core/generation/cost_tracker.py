@@ -136,6 +136,19 @@ def is_local_model(model: str) -> bool:
     )
 
 
+def billing_kind(model: str | None) -> str:
+    """How a cost-ledger row was paid for: ``subscription``, ``local`` or ``metered``.
+
+    The two zero-priced kinds split :func:`is_local_model`: an agent-CLI
+    passthrough runs on the user's plan, anything else it matches runs on
+    their own machine. Lets a report say why a row cost $0 instead of
+    printing a zero that reads like free API usage.
+    """
+    if not model or not is_local_model(model):
+        return "metered"
+    return "subscription" if model.startswith(ZERO_COST_MODEL_PREFIXES) else "local"
+
+
 #: Family-tier fallback, tried before the flat ``_FALLBACK_PRICING`` when a
 #: model id isn't an exact ``_PRICING`` key. A dated or point-variant id — a
 #: session transcript reporting ``claude-opus-4-8-20260514`` or a future

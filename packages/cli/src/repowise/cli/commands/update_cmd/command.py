@@ -21,7 +21,12 @@ import click
 import structlog
 
 from repowise.cli._setup import configure_cli_logging
-from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
+from repowise.cli.commands._index_outcome import (
+    record_index_outcome,
+    refresh_read_snapshots,
+    refresh_repo_contracts,
+    refresh_stale_routes,
+)
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     adopt_moved_repo_best_effort,
@@ -93,6 +98,7 @@ from .reporting import (
     _render_update_report,
     render_changed_files,
     render_header,
+    render_slower,
     show_full_completion,
 )
 from .stale_targets import (
@@ -199,6 +205,10 @@ def _finish_outcome(
             keep_decisions_current(repo_path)
         with timed(timings, "read_snapshots"):
             refresh_read_snapshots(repo_path)
+        with timed(timings, "routes"):
+            refresh_stale_routes(repo_path)
+        # Opt-in; off, it reads one setting and writes nothing (no timing row).
+        refresh_repo_contracts(repo_path)
     with timed(timings, "editor_files"):
         _refresh_editor_stamp(repo_path, agents_md, degraded)
 
@@ -887,6 +897,11 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     # repair marker is written against ``last_sync_commit``, and --since wins.
     if opts.since is None and run.index_only:
         _widen_to_pending_repair(run)
+    else:
+        from repowise.core.pipeline.incremental.repair import unchecked_repair_marker
+
+        # Another base re-covers none of the marker's range: keep it.
+        run.unchecked_repair = unchecked_repair_marker(run.state, run.base_ref, None)
 
     _verify_sync_base(run)
 
@@ -919,7 +934,6 @@ def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
     raise reasoned_error(message, reason="missing_sync_base") from exc
 
 
-
 def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
@@ -940,9 +954,13 @@ def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
 
 
 def _widen_to_pending_repair(run: UpdateRun) -> None:
-    from .persistence import resolve_repair_base
+    from repowise.core.pipeline.incremental.repair import (
+        resolve_repair_base,
+        unchecked_repair_marker,
+    )
 
     repaired_ref, give_up = resolve_repair_base(run.repo_path, run.state, run.base_ref, run.head)
+    run.unchecked_repair = unchecked_repair_marker(run.state, repaired_ref, give_up)
     if give_up is not None:
         console.print(
             f"[yellow]Dropping the pending repair of an earlier update: {give_up}. "
@@ -1157,8 +1175,8 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         from .catch_up import catch_up_command
 
         console.print(
-            f"[dim]{run.stale_pages_planned} stale page(s) the last update at this commit "
-            "left stale refresh with the next commit, or now with "
+            f"[dim]{run.stale_pages_planned} page(s) the last update at this commit left "
+            "stale will refresh with the next commit, or now with "
             f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
         )
     if not opts.dry_run:
@@ -1316,9 +1334,11 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
 
     import atexit
 
+    from repowise.core.update_lock import release_own_update_lock
+
     # The lock now owns the hook's suppression window; drop the queued marker.
     clear_update_queued(repo_path)
-    atexit.register(release_update_lock, repo_path)
+    atexit.register(release_own_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
     return None
 
@@ -1409,9 +1429,14 @@ def _announce_upgrade_actions(verdict) -> None:
 
 
 def _nothing_to_do(run: UpdateRun) -> bool:
+    # ``generation_changed`` alone (a run after a deferred-docs one, with no
+    # file changes) is not nothing to do: the page generation the deferred run
+    # skipped is still pending, so the run must fall through to the full path
+    # that finishes it instead of stamping every bucket as current (#5944).
     return not (
         run.file_diffs
         or run.config.changed
+        or run.config.generation_changed
         or rework_pending(run)
         or run.stale_db_paths
         or run.stale_deterministic_ids
@@ -1436,8 +1461,9 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         ),
     }
     # The widened range held nothing, so the repair is done. Gated as the widening
-    # is: another base says nothing about the marker's range.
-    if opts.since is None and run.index_only:
+    # is: another base says nothing about the marker's range, and a marker git
+    # could not check widened nothing.
+    if opts.since is None and run.index_only and run.unchecked_repair is None:
         persisted.pop("pending_repair", None)
     if not run.index_only and head:
         persisted["last_docs_commit"] = head
@@ -2072,6 +2098,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         head_ts=run.head_ts,
         force_full_rescore=config.health_changed,
         full_git_summary=(run.full_git_summaries[0] if run.full_git_summaries else None),
+        unchecked_repair=run.unchecked_repair,
         # Only a history-window change invalidates mined decisions.
         history_window_changed=config.git_changed,
         reconcile_full_scope=config.traversal_changed,
@@ -2090,7 +2117,12 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
             if pages.docs_deferred
             else None
         ),
-        stamp_config=not (pages.docs_deferred and config.generation_changed),
+        # A deferred-docs run still finished the traversal, git and health
+        # work the config edit asked for; only the generation bucket stays
+        # stale, so the next run re-renders pages without re-indexing (#5944).
+        stale_config_buckets=(
+            ("generation",) if (pages.docs_deferred and config.generation_changed) else ()
+        ),
         timings=run.timings,
     )
 
@@ -2168,7 +2200,7 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     flush_cost_tracker(docs.cost_tracker)
     _enrich_knowledge_graph(run, docs)
     _persist_docs(run, docs)
-    _rescore_after_persist(run)
+    _rescore_after_persist(run, docs)
 
     # The persist above only rescanned the changed files.
     if run.scanner_changed:
@@ -2334,7 +2366,7 @@ def _full_rescore_this_run(run: UpdateRun) -> bool:
     )
 
 
-def _rescore_after_persist(run: UpdateRun) -> None:
+def _rescore_after_persist(run: UpdateRun, docs: DocsPass) -> None:
     """Re-score every file off this run's graph: weekly, or forced by a config or parser change."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
@@ -2351,7 +2383,9 @@ def _rescore_after_persist(run: UpdateRun) -> None:
                 run.exclude_patterns,
                 timings=run.timings,
             )
-    if rescored:
+    # Scored over git rows that did not land: not stamped, so the next update
+    # re-scores after the repair.
+    if rescored and "Git persist" not in docs.failed_steps:
         # No timestamp (git unavailable): keep the existing stamp.
         if run.head_ts is not None:
             run.state["last_full_rescore_at"] = run.head_ts
@@ -2624,7 +2658,6 @@ def run_update(
         return _emit_done(run, UpdateOutcome.DRY_RUN)
     _analyze_changes(run)
     _refresh_knowledge_graph_stage(run)
-    if run.index_only:
-        return _index_only_update(opts, run)
-
-    return _docs_update(opts, run)
+    outcome = _index_only_update(opts, run) if run.index_only else _docs_update(opts, run)
+    render_slower(run.repo_path)
+    return outcome

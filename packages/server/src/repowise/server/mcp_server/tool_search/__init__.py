@@ -90,6 +90,11 @@ from repowise.server.mcp_server._retrieval_rank import (
     boost_named_paths,
     rerank_pages_first,
 )
+from repowise.server.mcp_server.tool_search.concept_lift import (
+    definition_lifts,
+    entry_point_rows,
+    lift_named_rows,
+)
 from repowise.server.mcp_server.tool_search.ordering import (
     _FILE_WINDOW_OVERFETCH,
     _MERGED_SYMBOL_CAP,

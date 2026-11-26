@@ -70,16 +70,29 @@ def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -
 
 
 def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
-    """Fold one more import into an edge's ``type_only`` / ``deferred`` marks,
-    by :func:`~repowise.core.ingestion.models.combine_load_kinds` (one
-    load-time import makes the edge a runtime one). ``deferred`` is stored
-    only when true."""
-    edge = (bool(data.get("type_only")), bool(data.get("deferred")))
-    data["type_only"], deferred = combine_load_kinds(edge, (imp.type_only, imp.deferred))
-    if deferred:
-        data["deferred"] = True
-    else:
-        data.pop("deferred", None)
+    """Fold one more import into an edge's ``type_only`` / ``deferred`` /
+    ``guarded`` marks, by :func:`~repowise.core.ingestion.models.combine_load_kinds`
+    (one unguarded load-time import makes the edge a runtime one). ``deferred``
+    and ``guarded`` are stored only when true.
+
+    ``module_form`` holds while every load-time import along the edge is one:
+    a runtime import replaces the lazy imports' mark, a lazy one leaves a
+    runtime edge's mark alone."""
+    edge = (bool(data.get("type_only")), bool(data.get("deferred")), bool(data.get("guarded")))
+    kind = (imp.type_only, imp.deferred, imp.guarded)
+    module_form = bool(data.get("module_form"))
+    if not any(kind):
+        module_form = imp.module_form and (module_form or any(edge))
+    elif any(edge):
+        module_form = module_form and imp.module_form
+    data["type_only"], *lazy = combine_load_kinds(edge, kind)
+    for key, value in zip(
+        ("deferred", "guarded", "module_form"), (*lazy, module_form), strict=True
+    ):
+        if value:
+            data[key] = True
+        else:
+            data.pop(key, None)
 
 
 class GraphBuilder(
@@ -190,6 +203,8 @@ class GraphBuilder(
         self._symbol_pagerank_cache: dict[str, float] | None = None
         self._symbol_betweenness_cache: dict[str, float] | None = None
         self._execution_flow_cache: Any | None = None
+        # (key, parsed files, plans) of ``flow_pages.plans_for_index``.
+        self._flow_plan_cache: tuple[Any, ...] | None = None
         # Filtered-subgraph caches — rebuilt lazily; guarded by a lock because
         # the init pipeline computes metrics concurrently (asyncio.to_thread).
         import threading
@@ -222,6 +237,8 @@ class GraphBuilder(
         # restricted_view holds lambdas, which don't pickle; they rebuild lazily.
         state["_cycle_subgraph_cache"] = None
         state["_centrality_subgraph_cache"] = None
+        # Its key holds object ids, meaningless in another process.
+        state["_flow_plan_cache"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
@@ -253,6 +270,9 @@ class GraphBuilder(
         self._symbol_pagerank_cache = None
         self._symbol_betweenness_cache = None
         self._execution_flow_cache = None
+        # Set when a kernel fell back to an empty answer; see ``metric_memo``.
+        self._metric_failed = False
+        self._flow_plan_cache = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
@@ -765,6 +785,10 @@ class GraphBuilder(
         }
         if imp.deferred:
             edge_attrs["deferred"] = True
+        if imp.guarded:
+            edge_attrs["guarded"] = True
+        if imp.module_form:
+            edge_attrs["module_form"] = True
         # ``external:`` targets are excluded before the
         # directory test, not after: an external node id has no
         # directory, and a single-segment one such as

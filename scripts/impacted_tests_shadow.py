@@ -34,8 +34,10 @@ from repowise.core.ci.github import append_step_summary, notice
 from repowise.core.ci.markdown import ROW_LIMIT, code, details, more_line, plural
 from repowise.core.forges.ci import detect_ci
 
-#: Record layout version, bumped when a field changes meaning.
-RECORD_VERSION = 1
+#: Record layout version, bumped when a field changes meaning. 2: ``index_cache``
+#: is ``full``, ``early``, ``older`` or ``none``; version 1 said ``exact`` for
+#: the base's own index, saved once with its per-test map when there was one.
+RECORD_VERSION = 2
 
 
 def split_classname(dotted: str) -> tuple[str, list[str]]:
@@ -264,6 +266,11 @@ def render_summary(record: Mapping[str, Any]) -> str:
         lines.append(
             "- The index predates the base, so the pick may be smaller than a current "
             "index would make it."
+        )
+    elif record.get("index_cache") == "early":
+        lines.append(
+            "- The index is the base's, saved before its per-test map: the map is an "
+            "earlier commit's."
         )
     if record.get("selector_seconds") is not None:
         lines.append(

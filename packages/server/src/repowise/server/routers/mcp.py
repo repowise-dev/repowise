@@ -28,7 +28,11 @@ from repowise.server.mcp_server._tool_selection import (
     set_tool_override,
 )
 from repowise.server.schemas import McpToolSurfaceResponse, UpdateMcpToolsRequest
-from repowise.server.schemas.mcp import McpClientConfigResponse, McpClientRef
+from repowise.server.schemas.mcp import (
+    McpClientConfigResponse,
+    McpClientRef,
+    McpClientSurface,
+)
 from repowise.server.services import setup_cli
 
 # Both endpoints below are ``async def`` and call ``describe_tool_surface``
@@ -64,16 +68,46 @@ def _surface(repo_id: str | None, repo_path: str | None) -> McpToolSurfaceRespon
     return McpToolSurfaceResponse(repo_id=repo_id, **data)
 
 
+#: Agents one ``?clients=`` request resolves; ``repowise agents`` lists fewer.
+_MAX_CLIENTS = 32
+
+
+def _client_surfaces(repo_path: str | None, clients: str | None) -> dict[str, McpClientSurface]:
+    """Each asked-for agent's resolved tools, keyed by the id as asked.
+
+    An id the identity registry does not know is skipped: there is no client
+    to resolve a default for.
+    """
+    from repowise.core.agents.identity import identity_for_target_id
+
+    out: dict[str, McpClientSurface] = {}
+    for target in dict.fromkeys(c.strip() for c in (clients or "").split(",") if c.strip()):
+        if len(out) >= _MAX_CLIENTS:
+            break
+        identity = identity_for_target_id(target)
+        if identity is None:
+            continue
+        surface = client_tool_surface(repo_path, identity.slug)
+        out[target] = McpClientSurface(profile=surface["profile"], tools=surface["tools"])
+    return out
+
+
 @router.get("/tools", response_model=McpToolSurfaceResponse)
-async def get_tool_surface(request: Request, repo_id: str | None = None) -> McpToolSurfaceResponse:
+async def get_tool_surface(
+    request: Request, repo_id: str | None = None, clients: str | None = None
+) -> McpToolSurfaceResponse:
     """Return the configurable tool surface for a repo.
 
     Pass ``?repo_id=`` so the response reflects that repo's workspace mode and
     its ``mcp.tools`` override; without it, the default single-repo surface is
-    described.
+    described. ``?clients=claude-code,cursor`` adds the tools each of those
+    agents is listed, resolved from the override and that agent's default.
     """
     repo_path = await _repo_path_for(request, repo_id)
-    return _surface(repo_id, repo_path)
+    response = _surface(repo_id, repo_path)
+    if clients:
+        response.clients = _client_surfaces(repo_path, clients)
+    return response
 
 
 @router.patch("/tools", response_model=McpToolSurfaceResponse)

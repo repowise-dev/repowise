@@ -89,6 +89,25 @@ export interface ActionsResponse {
   summary: Record<string, string>;
   rules: ActionRuleStatus[];
   unavailable: Record<string, string>;
+  setup?: ActionsSetup | null;
+}
+
+/** Setup steps left, and whether the finish-setup agent pass is offered. */
+export interface ActionsSetup {
+  /** Visible improve_signal actions: what the pass works through. */
+  open: number;
+  /** Set from the first agent call while steps are left and the pass is not dismissed. */
+  offer: "finish_setup" | null;
+  dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed?: boolean;
+  /** Calls to this index from every agent. */
+  agent_calls: number | null;
+  claude_code_calls?: number;
+  first_call_at?: string | null;
+  /** Indexed commits made after the index was first built. */
+  synced_commits: number | null;
+  unlocks: SetupUnlocks;
 }
 
 /** The provider/model this scope resolves to; ``None`` when unset. */
@@ -411,6 +430,34 @@ export interface AreaWorstFile {
 
 export interface ArtifactUpdateRequest {
   pinned: boolean;
+}
+
+export interface BenchmarkGroup {
+  runs: BenchmarkRun[];
+  rows: BenchmarkRow[];
+  total: number;
+}
+
+/** One benchmark's result: what it measures and its numbers per operation. */
+export interface BenchmarkRow {
+  run_id: string;
+  benchmark: string;
+  benchmark_symbol_id: string | null;
+  measures: string | null;
+  time: number | null;
+  unit: string | null;
+  allocs_per_op: number | null;
+  bytes_per_op: number | null;
+}
+
+/** A workload's newest benchmark run. */
+export interface BenchmarkRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
 }
 
 export interface BlastRadiusRequest {
@@ -1395,12 +1442,54 @@ export interface CoordinatorHealthResponse {
   detail?: string | null;
 }
 
+/** Tests that run the same production files and take longer than the rest. */
+export interface CostCluster {
+  files: string[];
+  files_total: number;
+  tests: number;
+  mean_s: number;
+  others_mean_s: number;
+  excess_s: number;
+  share: number | null;
+  slowest: CostClusterTest[];
+  fixture: CostFixture | null;
+  within: CostGroup | null;
+}
+
+export interface CostClusterTest {
+  test_id: string;
+  duration_s: number;
+}
+
+export interface CostConcentration {
+  tests: number;
+  share: number;
+}
+
+/** The fixture most of a cluster's tests ask for and few other timed tests do. */
+export interface CostFixture {
+  name: string;
+  file_path: string;
+  line: number | null;
+  tests: number;
+  others: number;
+}
+
+/** A larger group of tests a cluster sits inside: code all of its tests run too. */
+export interface CostGroup {
+  files: string[];
+  files_total: number;
+  tests: number;
+}
+
 export interface CostGroupResponse {
   group: string;
   calls: number;
   input_tokens: number;
   output_tokens: number;
   cost_usd: number;
+  subscription_calls?: number;
+  local_calls?: number;
 }
 
 export interface CostSummaryResponse {
@@ -1409,6 +1498,8 @@ export interface CostSummaryResponse {
   total_input_tokens: number;
   total_output_tokens: number;
   since: string | null;
+  subscription_calls?: number;
+  local_calls?: number;
 }
 
 /** Two areas whose files change together; ``source == target`` for same-area pairs. */
@@ -1537,6 +1628,8 @@ export interface CoverageSummary {
   ingested_commit_sha: string | null;
   report_paths: CoverageReportPaths | null;
   freshness: CoverageSummaryFreshness | null;
+  unreported_file_count: number;
+  unreported_files: string[];
 }
 
 /** Whether the coverage was measured at the commit the index describes. */
@@ -2006,6 +2099,13 @@ export interface DocDriftSummaryResponse {
   new_since_last_update?: number | null;
 }
 
+/** Tests whose duration is at most ``le`` seconds and above the bucket before. */
+export interface DurationBucket {
+  le: number | null;
+  tests: number;
+  seconds: number;
+}
+
 export interface EgoGraphResponse {
   nodes: GraphNodeResponse[];
   links: GraphEdgeResponse[];
@@ -2114,6 +2214,58 @@ export interface EvidencePreview {
   verification: string;
   evidence_file?: string | null;
   evidence_line?: number | null;
+}
+
+/** One stored run: its workload, commit, freshness and where its time went. */
+export interface EvidenceRunSummary {
+  run_id: string;
+  kind: string;
+  workload: string;
+  class: string;
+  environment: string;
+  value_kind: string | null;
+  unit: string | null;
+  tool: string | null;
+  tool_version: string | null;
+  commit_sha: string | null;
+  freshness: "current" | "stale" | "unknown";
+  dirty: boolean | null;
+  ingested_at: string | null;
+  units: EvidenceUnits;
+  skipped: Record<string, number> | null;
+  total_value: number | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  unattributed_share?: number | null;
+  total_samples?: number | null;
+  low_signal?: "pruned_1pct" | "no_samples" | null;
+  mapping_partial: boolean;
+  tests_failed: number | null;
+}
+
+/** Every stored run, newest first (bounded by the store's prune caps). */
+export interface EvidenceRunsResponse {
+  reference_commit: string | null;
+  runs: EvidenceRunSummary[];
+}
+
+/** The newest run of every workload, and whether anything is ranked. */
+export interface EvidenceStatusResponse {
+  status: "measured" | "no_runtime_data" | "ahead_of_index" | "stale" | "not_ranked" | "needs_update";
+  command: string | null;
+  reference_commit: string | null;
+  runs_stored: Record<string, number>;
+  workloads: EvidenceRunSummary[];
+}
+
+/** How the run's own entries mapped at ingest; null when the writer did not know. */
+export interface EvidenceUnits {
+  total: number | null;
+  matched: number | null;
+  skipped: number | null;
+  outside_repo: number | null;
+  truncated: number | null;
 }
 
 export interface ExecutionFlowEntry {
@@ -2307,6 +2459,28 @@ export interface FileTrendPointResponse {
 export interface FindingStatusUpdate {
   /** open | acknowledged | resolved | false_positive */
   status: string;
+}
+
+export interface FirstLookMarkRequest {
+  status: "done" | "ack" | "false_positive" | "snooze";
+  reason?: string | null;
+  days?: number | null;
+}
+
+export interface FirstLookMarkResponse {
+  id: string;
+  status: "open" | "done" | "acknowledged" | "false_positive" | "snoozed" | "resolved";
+  store: string;
+  reason?: string | null;
+  until?: string | null;
+}
+
+export interface FirstLookResponse {
+  report: Record<string, unknown>;
+  report_prompt: string;
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  can_rewrite: boolean;
+  rewrite_cost_usd?: number | null;
 }
 
 export interface FixAction {
@@ -3032,6 +3206,12 @@ export interface McpClientRef {
   display_name: string;
 }
 
+/** The tools one agent is listed for this repo, resolved as its server resolves them. */
+export interface McpClientSurface {
+  profile?: string | null;
+  tools?: string[];
+}
+
 /** One tool in the configurable surface, with the flags a UI needs. */
 export interface McpToolInfo {
   name: string;
@@ -3068,6 +3248,149 @@ export interface McpToolSurfaceResponse {
   profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
   command?: string;
+  clients?: Record<string, McpClientSurface>;
+}
+
+/** What part of a measured function's time went to (``evidence.profile_convert``). */
+export interface MeasuredCallee {
+  name: string;
+  kind: "own" | "repo" | "wait" | "import" | "native" | "library";
+  share: number;
+  leaf?: MeasuredLeaf | null;
+}
+
+/** A caller that drove part of a measured function's time. */
+export interface MeasuredDriver {
+  name: string;
+  share: number;
+  symbol?: string | null;
+  path?: string | null;
+}
+
+/** What runtime evidence says about one function, from its basis run. */
+export interface MeasuredFunction {
+  symbol_id: string;
+  file_path: string;
+  tier: "measured" | "ranked";
+  rank: number | null;
+  self_share: number | null;
+  total_share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  samples: number | null;
+  run_samples: number | null;
+  run_id: string | null;
+  run_count: number | null;
+  workload_name: string | null;
+  workload_class: string | null;
+  value_kind: string | null;
+  ordering_only: boolean | null;
+  freshness: "current" | "body_unchanged" | "stale" | null;
+  evidence_commit_sha: string | null;
+  measured_at: string | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  run_unlisted: number | null;
+  inside?: MeasuredCallee[] | null;
+  drivers?: MeasuredDriver[] | null;
+  next_step?: MeasuredNextStep | null;
+}
+
+/** Measured functions of the asked symbol or file; empty means unknown. */
+export interface MeasuredFunctionsResponse {
+  functions: MeasuredFunction[];
+}
+
+export interface MeasuredGroup {
+  runs: MeasuredRun[];
+  rows: MeasuredRow[];
+  total: number;
+}
+
+/** The newest commit blame credits a current line of the function to. */
+export interface MeasuredLastChange {
+  sha: string;
+  date: string | null;
+  subject: string | null;
+  pr: number | null;
+}
+
+/** The frame a callee's stacks end in most: what the callee spends its time on. */
+export interface MeasuredLeaf {
+  name: string;
+  kind: "own" | "repo" | "wait" | "import" | "native" | "library";
+  share: number;
+}
+
+/** What a measured function's time is and what to do (``evidence.next_step``). */
+export interface MeasuredNextStep {
+  rule: string;
+  why: string;
+  next: string;
+  verify?: string | null;
+  callee: string;
+  share: number;
+  leaf?: string | null;
+  static?: string | null;
+}
+
+/** Who wrote most of the function's current lines, by line blame. */
+export interface MeasuredOwner {
+  name: string;
+  line_pct: number | null;
+}
+
+/** What each workload's newest run that ranks anything ranks, grouped by workload class. */
+export interface MeasuredResponse {
+  basis: "measured" | "unknown";
+  status: "measured" | "no_runtime_data" | "ahead_of_index" | "stale" | "not_ranked" | "needs_update";
+  command: string | null;
+  measured: MeasuredGroup | null;
+  measured_in_tests: MeasuredGroup | null;
+  benchmarks?: BenchmarkGroup | null;
+}
+
+/** One ranked production function of one run. */
+export interface MeasuredRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness: "current" | "body_unchanged" | "stale";
+  callers_total: number | null;
+  callers: string[];
+  owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
+  tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  verify?: string | null;
+  on_static_findings?: string[];
+}
+
+/** A run's basis: workload, commit, age, samples and where its time went. */
+export interface MeasuredRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  samples: number | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  unattributed_share?: number | null;
+  outside_production: number | null;
+  value_kind: string | null;
+  ordering_only: boolean;
+  newer_run?: NewerRun | null;
 }
 
 export interface ModuleEdgeResponse {
@@ -3152,6 +3475,14 @@ export interface NeighboringCommunity {
   community_id: number;
   label: string;
   cross_edge_count: number;
+}
+
+/** A workload's newer run that ranks nothing, listed in place of by an older one. */
+export interface NewerRun {
+  run_id: string;
+  commit: string | null;
+  measured_at: string | null;
+  reason: "ahead_of_index" | "not_ranked" | "stale";
 }
 
 export interface NextAction {
@@ -4280,6 +4611,40 @@ export interface SavingsBreakdownRow {
   group?: string | null;
   events?: number;
   saved_input_tokens?: number;
+  priced_input_savings_usd?: number;
+}
+
+/**
+ * One check tool: the calls agents made and what Repowise returned.
+ *
+ * Outcome fields are null when no call in the window recorded one (calls made
+ * before outcomes were kept, or a host that records none) and where a field
+ * does not apply to the tool. ``high``/``medium``/``low`` count changes by
+ * their repo-relative level for ``get_change_risk`` and assessed files for
+ * ``get_risk``. Counts of what was returned, never of what an agent did.
+ */
+export interface SavingsCheckRow {
+  tool: string;
+  calls?: number;
+  outcome_calls?: number;
+  high?: number | null;
+  medium?: number | null;
+  low?: number | null;
+  decisions_accepted?: number | null;
+  decisions_candidate?: number | null;
+  decisions_none?: number | null;
+  findings?: number | null;
+  files?: number | null;
+  items?: number | null;
+  high_confidence?: number | null;
+}
+
+/** Files not opened and tool calls answered in one day, agent or surface. */
+export interface SavingsFilesRow {
+  group?: string | null;
+  files_not_opened?: number;
+  files_not_opened_tokens?: number;
+  tool_calls_answered?: number;
 }
 
 /** One kind of observed opportunity. Never part of achieved savings. */
@@ -4287,6 +4652,33 @@ export interface SavingsOpportunityRow {
   kind: string;
   observations?: number;
   estimated_potential_input_tokens?: number;
+}
+
+/** Where the output estimate comes from, so the figure is reproducible. */
+export interface SavingsOutputCalibration {
+  source: string;
+  version: string;
+  per_question?: boolean;
+  questions_per_session_cap?: number;
+  formula?: string;
+  sessions?: number;
+  questions?: number;
+  unpriced_output_tokens_saved?: number;
+  per_model?: SavingsOutputModelRow[];
+}
+
+/** The output estimate for sessions on one model and output rate. */
+export interface SavingsOutputModelRow {
+  model?: string | null;
+  basis: string;
+  sessions?: number;
+  questions?: number;
+  mcp_calls_per_question?: number;
+  reduction?: number;
+  output_tokens_per_question?: number;
+  output_tokens_saved?: number;
+  output_rate_usd_per_million?: number | null;
+  output_usd_saved?: number | null;
 }
 
 /**
@@ -4349,6 +4741,21 @@ export interface SavingsResponse {
   missed_window_days?: number;
   reread_events?: number;
   reread_tokens_est?: number;
+  files_not_opened?: number;
+  files_not_opened_tokens?: number;
+  tool_calls_answered?: number;
+  files_per_day?: SavingsFilesRow[];
+  files_per_agent?: SavingsFilesRow[];
+  files_per_surface?: SavingsFilesRow[];
+  subagent_events?: number;
+  subagent_saved_input_tokens?: number;
+  backfilled_saved_input_tokens?: number;
+  backfilled_input_savings_usd?: number;
+  output_tokens_saved_estimated?: number | null;
+  output_usd_saved_estimated?: number | null;
+  total_usd_saved_estimated?: number | null;
+  calibration?: SavingsOutputCalibration | null;
+  checks?: SavingsCheckRow[];
 }
 
 export interface SearchResultResponse {
@@ -4559,6 +4966,18 @@ export interface SetupModel {
   configured_providers?: string[];
 }
 
+/**
+ * Whether each Read/search hook surface is on for this repo (``hooks.*`` flags).
+ *
+ * The flags only; the augment hook that carries them is the Claude Code
+ * agent row's hooks.
+ */
+export interface SetupReadHooks {
+  read_skeleton: boolean;
+  read_reread: boolean;
+  search_digest: boolean;
+}
+
 export interface SetupRegistration {
   method: string;
   scope: string;
@@ -4583,6 +5002,10 @@ export interface SetupResponse {
   checks?: SetupCheck[];
   onboarding: OnboardingState;
   writes_allowed: boolean;
+  setup_available?: boolean;
+  setup?: SetupSteps | null;
+  read_hooks_available?: boolean;
+  read_hooks?: SetupReadHooks | null;
 }
 
 export interface SetupRewriteHook {
@@ -4590,9 +5013,45 @@ export interface SetupRewriteHook {
   detail?: string;
 }
 
+/** Setup steps left (the same rows Do next shows) and the agent-pass offer. */
+export interface SetupSteps {
+  /** Visible improve_signal actions: what the pass works through. */
+  open: number;
+  /** Set from the first agent call while steps are left and the pass is not dismissed. */
+  offer: "finish_setup" | null;
+  dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed?: boolean;
+  /** Calls to this index from every agent. */
+  agent_calls: number | null;
+  claude_code_calls?: number;
+  first_call_at?: string | null;
+  /** Indexed commits made after the index was first built. */
+  synced_commits: number | null;
+  unlocks: SetupUnlocks;
+  actions?: NextAction[];
+  thresholds: SetupThresholds;
+}
+
 export interface SetupSync {
   installed?: boolean | null;
   detail?: string;
+}
+
+/** The usage each depth row unlocks at. */
+export interface SetupThresholds {
+  agent_calls: number;
+  synced_commits: number;
+}
+
+/**
+ * Depth rows usage has unlocked: Claude Code calls for the first two,
+ * synced commits for the last. Never a calendar.
+ */
+export interface SetupUnlocks {
+  always_load: boolean;
+  distill: boolean;
+  suggested_settings: boolean;
 }
 
 /** What a write did. ``ok`` is the command's own success. */
@@ -4610,6 +5069,54 @@ export interface SiloModule {
   owned_files: number;
   file_count: number;
   share: number;
+}
+
+/** One timed test, at its longest duration across the basis runs. */
+export interface SlowTest {
+  test_id: string;
+  test_file: string | null;
+  duration_s: number;
+  outcome: string | null;
+  first_in_class: boolean | null;
+  workload: string;
+}
+
+/** Where the suite's time goes (``evidence.suite_cost.cost_fold``). */
+export interface SuiteCost {
+  verdict: "small_suite" | "no_test_map" | "small_excess" | "clusters";
+  seconds: number;
+  timed: number;
+  concentration: CostConcentration | null;
+  clusters: CostCluster[];
+  command: string | null;
+}
+
+/** The slowest tests and where the suite's time goes, from stored JUnit timings. */
+export interface SuiteCostResponse {
+  status: "measured" | "no_test_timings";
+  command: string | null;
+  runs: EvidenceRunSummary[];
+  slow_tests: SlowTest[];
+  tests_total: number;
+  cost: SuiteCost | null;
+  suite?: SuiteSummary | null;
+}
+
+/** The summed duration of one test file's timed tests. */
+export interface SuiteFileTime {
+  test_file: string;
+  seconds: number;
+  tests: number;
+}
+
+/** Every test of the basis runs, including those the per-run row cap left out. */
+export interface SuiteSummary {
+  tests: number;
+  timed: number;
+  seconds: number;
+  histogram: DurationBucket[];
+  test_files: SuiteFileTime[];
+  test_files_total: number;
 }
 
 /** One change in reading order; ``signals`` holds each signal that fired. */
@@ -5503,6 +6010,32 @@ export interface WorkspaceServiceLinksTotal {
   kind: string;
   direction: "a_to_b" | "b_to_a" | "both";
   count: number;
+}
+
+/** One member's setup, as the workspace Setup table shows it. */
+export interface WorkspaceSetupRepo {
+  alias: string;
+  path: string;
+  repo_id: string | null;
+  status: "available" | "not_indexed" | "unavailable";
+  reason?: string;
+  index_state?: "up_to_date" | "behind" | "incomplete" | null;
+  agent_calls?: number | null;
+  first_call_at?: string | null;
+  sync?: boolean | null;
+  coverage?: "on" | "found" | "none" | null;
+  evidence?: "on" | "found" | "none" | null;
+  open?: number;
+  offer?: "finish_setup" | null;
+  essentials_done?: boolean;
+}
+
+export interface WorkspaceSetupResponse {
+  repos: WorkspaceSetupRepo[];
+  essentials_done: number;
+  open: number;
+  offer?: "finish_setup" | null;
+  prompt?: string | null;
 }
 
 export interface WorkspaceSymbolIdentity {

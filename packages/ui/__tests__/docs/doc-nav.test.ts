@@ -149,7 +149,7 @@ describe("computeDocNav", () => {
     const cycle = makePage({
       id: "scc_page:scc-1050",
       page_type: "scc_page",
-      title: "Circular Dependency: scc-1050",
+      title: "Static Import Cycle: scc-1050",
       // No back-ticked member paths in the content, so sccDisplayLabel has
       // nothing to derive from and falls back to the title.
       content: "These modules import each other.",
@@ -157,7 +157,7 @@ describe("computeDocNav", () => {
       parent_page_id: LAYER.id,
     });
     const nav = computeDocNav(cycle, [ROOT, LAYER, cycle]);
-    expect(nav.breadcrumbs.at(-1)?.label).toBe("Circular Dependency: scc-1050");
+    expect(nav.breadcrumbs.at(-1)?.label).toBe("Static Import Cycle: scc-1050");
   });
 
   it("shows a single label for a page with no path and no parent", () => {

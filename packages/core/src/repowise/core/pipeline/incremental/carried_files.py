@@ -19,6 +19,9 @@ from repowise.core.analysis.health.duplication.pair_index import (
 from repowise.core.analysis.health.duplication.token_cache import (
     _CACHE_FILENAME as _DUPLICATION_TOKENS,
 )
+from repowise.core.analysis.health.duplication.token_cache import (
+    _DELTA_FILENAME as _DUPLICATION_TOKENS_DELTA,
+)
 from repowise.core.analysis.health.walk_cache import _CACHE_FILENAME as _HEALTH_WALK
 from repowise.core.analysis.knowledge_graph import KNOWLEDGE_GRAPH_FILENAME
 from repowise.core.ingestion.dynamic_hints.scan_cache import _CACHE_NAME as _DYNAMIC_HINT_SCANS
@@ -29,7 +32,12 @@ from repowise.core.ingestion.git_indexer.fix_walk_cache import _CACHE_NAME as _F
 from repowise.core.ingestion.graph._centrality_cache import _CACHE_FILENAME as _CENTRALITY
 from repowise.core.ingestion.parse_cache import _CACHE_FILENAME as _PARSE
 from repowise.core.ingestion.source_reader import DOCUMENT_CACHE_DIRNAME
-from repowise.core.persistence.database import DB_FILENAME, LANCEDB_DIRNAME, STATE_FILENAME
+from repowise.core.persistence.database import (
+    DB_FILENAME,
+    LANCEDB_DIRNAME,
+    MCP_CACHE_DIRNAME,
+    STATE_FILENAME,
+)
 from repowise.core.pipeline.cleanup_debt import CLEANUP_DEBT_FILENAME
 from repowise.core.pipeline.incremental.graph_seed import _CACHE_NAME as _GRAPH_SEED
 from repowise.core.pipeline.incremental.resolution_cache import _FILENAME as _RESOLVED_IMPORTS
@@ -48,6 +56,7 @@ SEALED_FILES: tuple[str, ...] = (
     _RESOLVED_IMPORTS,
     _FRAMEWORK_SCAN,
     _DUPLICATION_TOKENS,
+    _DUPLICATION_TOKENS_DELTA,
     _DUPLICATION_PAIRS,
     _HEALTH_WALK,
     _DEAD_CODE_TOKENS,
@@ -76,4 +85,10 @@ CARRIED_GLOBS: tuple[str, ...] = (_DEEP_CACHE_GLOB,)
 #: Directories carried whole. ``episodes/`` holds a SQLite database (same copy
 #: rule as ``wiki.db``); ``document-cache/`` entries are sealed pickles whose seal
 #: binds the absolute checkout path, so they hit only when that path is unchanged.
-CARRIED_DIRS: tuple[str, ...] = (EPISODES_DIRNAME, DOCUMENT_CACHE_DIRNAME, LANCEDB_DIRNAME)
+#: ``mcp_cache/`` entries are sealed too, and hit until the index state moves.
+CARRIED_DIRS: tuple[str, ...] = (
+    EPISODES_DIRNAME,
+    DOCUMENT_CACHE_DIRNAME,
+    LANCEDB_DIRNAME,
+    MCP_CACHE_DIRNAME,
+)

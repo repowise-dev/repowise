@@ -34,6 +34,7 @@ HAPPY_ORDER = [
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
     "sweep_deselected_pages",
+    "sweep_deselected_flow_pages",
     "tombstone_candidates",
     "mark_tombstone_pages",
     "rebuild_page_tree",
@@ -150,6 +151,10 @@ async def test_graph_seed_persist_follows_the_switch(repo, monkeypatch, enabled:
         monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "0")
     rec = StepRecorder(monkeypatch)
     install_shared_steps(rec)
+    # A snapshot the update set aside: with no save to move it back, it goes.
+    kept = Path(repo) / ".repowise" / "graph_seed_edges.pkl.kept"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_bytes(b"set aside by this update")
 
     await _persist(repo, rec)
 
@@ -159,6 +164,7 @@ async def test_graph_seed_persist_follows_the_switch(repo, monkeypatch, enabled:
         assert calls[0][1].graph().has_node("src/a.py")
     else:
         assert calls == []
+        assert not kept.exists()
 
 
 async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked(repo, monkeypatch):
