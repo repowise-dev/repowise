@@ -487,7 +487,7 @@ they are joined.
 | `value_kind` | profile | `cpu` or `wall` |
 | `unit` | profile | One word naming what every value counts: `samples`, `ns`, `ms`, `s` |
 | `total`, `explained` | no | The whole run's value, and the part with a production frame anywhere on the stack |
-| `repo_self`, `waits`, `libraries` | no | Where the run's value went: production repo code itself, blocked waiting, in dependencies (see below) |
+| `repo_self`, `waits`, `libraries` | no | Where the run's value went: production repo code itself, blocked waiting, in libraries: dependencies and the standard library (see below) |
 | `commit_sha` | no | The full commit measured, from `git rev-parse HEAD` at measurement; for a production window, the newest commit deployed in it |
 | `base_commit_sha` | no | The oldest commit deployed in a production window |
 | `window` | no | `{"start", "end"}`, ISO 8601 times with their offset: what a production run's counters cover |
@@ -606,12 +606,15 @@ is counted there as `unplaced`.
   driver; a static finding on the function itself becomes the `why` when its
   boundary agrees with the callee.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
-  `libraries` (a dependency frame, including Go's module cache, runs below the
-  innermost repo frame, or on a stack with no repo frame),
-  `repo_self` (neither, and that frame is a production function by
-  `code_origin`: time in production repo code itself), or none of them (test or
+  `libraries` (a library frame runs below the innermost repo frame, or on a
+  stack with no repo frame: a dependency, including Go's module cache, or the
+  standard library: GOROOT, CPython's `Lib`, the JDK, Node's `node:` modules;
+  the frames `inside` calls `library`), `repo_self` (neither, and that frame is
+  a production function by `code_origin`: time in production repo code itself,
+  the built-ins and runtime it called included), or none of them (test or
   tooling code, module bodies, unjoined frames, stacks with no repo frame that
-  run only the runtime and standard library).
+  run only the runtime). A run stored by 0.62 or earlier counts the standard
+  library in `repo_self`: add the profile again, or let CI upload the next run.
   `add` prints the three shares beside the skip rate, the share of repo frame
   time that did not join, broken down by reason. `explained` (a production
   frame anywhere on the stack) is still written but says nothing about cost.

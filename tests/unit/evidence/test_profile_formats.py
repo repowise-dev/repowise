@@ -548,12 +548,13 @@ def test_waits_charge_no_self_time_and_libraries_stay_with_their_caller() -> Non
     assert [e["function"] for e in conv.document["symbols"]] == [
         "pkg.app.App.load", "pkg.app.App.run",
     ]
-    assert (conv.repo_self, conv.waits, conv.libraries) == (2, 6, 2)
+    # The split counts the standard library (json) as a library, like sqlalchemy.
+    assert (conv.repo_self, conv.waits, conv.libraries) == (0, 6, 4)
     summary = conv.summary()
     assert (summary["repo_self_share"], summary["wait_share"], summary["library_share"]) == (
-        0.2, 0.6, 0.2,
+        0.0, 0.6, 0.4,
     )
-    assert (conv.document["repo_self"], conv.document["waits"]) == (2, 6)
+    assert (conv.document["repo_self"], conv.document["waits"]) == (0, 6)
     assert parse_evidence(json.dumps(conv.document)).waits == 6
 
 
