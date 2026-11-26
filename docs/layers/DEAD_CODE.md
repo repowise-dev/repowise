@@ -141,6 +141,14 @@ dynamic `import(` and `require.context(`, `Class.forName(`, `ServiceLoader.load(
 `Activator.CreateInstance(`, and `dlopen(` / `LoadLibrary(` in C. Dynamic edges
 found by the language extractors count the same way.
 
+Two JavaScript and TypeScript loaders are read as imports instead. A Vite
+`import.meta.glob(...)` call gets an import edge to every indexed file its
+patterns match: relative patterns, `**` patterns, patterns rooted at an alias
+the repository's imports already use (tsconfig `paths`, Nuxt `~/`, SvelteKit
+`$lib`), and `!` patterns that remove files. Its `import:` option names the one
+export used. `new URL('./x', import.meta.url)` gets an edge to the file beside
+the caller.
+
 The cases where a finding is most likely wrong:
 
 - **Reflection and string-keyed dispatch** that matches no marker, naming
