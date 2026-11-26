@@ -202,6 +202,20 @@ async def test_execution_flow_never_steps_into_an_excluded_file(session, repo_id
 
 
 @pytest.mark.asyncio
+async def test_excluded_callees_do_not_fill_the_flow_fetch_cut(session, repo_id, tmp_path):
+    from repowise.server.mcp_server._graph_utils import _CALLEE_FETCH_LIMIT
+
+    entry = "src/e.py::main"
+    for i in range(_CALLEE_FETCH_LIMIT + 5):
+        _edge(session, repo_id, entry, f"archive/x{i}.py::f", conf=0.95)
+    _edge(session, repo_id, entry, "src/y.py::g", conf=0.6)
+    await session.flush()
+
+    trace = await bfs_trace(session, repo_id, entry, 3, exclude_spec=_spec(tmp_path))
+    assert trace == [entry, "src/y.py::g"]
+
+
+@pytest.mark.asyncio
 async def test_degrees_and_community_counts_skip_excluded_endpoints(session, repo_id, tmp_path):
     repository = SimpleNamespace(id=repo_id)
     _node(session, repo_id, "src/a.py", node_type="file", community_id=1)

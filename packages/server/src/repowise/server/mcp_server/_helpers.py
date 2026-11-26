@@ -936,14 +936,6 @@ def filter_edge_rows(
     return [r for r in rows if not any(node_is_excluded(n, spec) for n in endpoints(r))]
 
 
-# Pages a capped edge read takes past the first while excluded rows keep it
-# short. Ceiling: when excluded rows outnumber allowed ones about 8 to 1 at the
-# head of the ordering, the read serves fewer than its cap. The upgrade is
-# pushing the excluded node ids into the SQL; stale excluded rows are rare
-# enough that the first page almost always fills.
-_ALLOWED_EDGE_MAX_PAGES = 8
-
-
 async def fetch_allowed_edges(
     session: AsyncSession,
     stmt: Any,
@@ -955,21 +947,19 @@ async def fetch_allowed_edges(
     """Shape G: the first *limit* rows of an edge query with no excluded endpoint.
 
     The exclusion runs before the cap, so excluded rows never take the place of
-    allowed ones. With no spec this is one query with ``LIMIT``, as before; with
-    one it pages through the same ordering until *limit* allowed rows are found
-    or the rows run out. *stmt* must be fully ordered for the pages to be
-    disjoint.
+    allowed ones. It is one query with ``LIMIT``, as before, unless that page
+    was full and held an excluded row; then the rest of the same ordering is
+    read once and filtered, so the cap is filled whenever enough allowed rows
+    exist. Stale excluded rows are rare, so the second read almost never runs.
+    *stmt* must be fully ordered for the two reads to be disjoint.
     """
+    page = (await session.execute(stmt.limit(limit))).all()
     if not spec:
-        return list((await session.execute(stmt.limit(limit))).all())
-    kept: list = []
-    offset = 0
-    for _ in range(_ALLOWED_EDGE_MAX_PAGES):
-        page = (await session.execute(stmt.limit(limit).offset(offset))).all()
-        kept.extend(filter_edge_rows(page, spec, endpoints))
-        if len(kept) >= limit or len(page) < limit:
-            break
-        offset += limit
+        return list(page)
+    kept = filter_edge_rows(page, spec, endpoints)
+    if len(kept) < len(page) == limit:
+        rest = (await session.execute(stmt.offset(limit))).all()
+        kept.extend(filter_edge_rows(rest, spec, endpoints))
     return kept[:limit]
 
 

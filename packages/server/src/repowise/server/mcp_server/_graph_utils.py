@@ -10,6 +10,8 @@ import json
 from collections import Counter
 from typing import Any
 
+from sqlalchemy import select
+
 from repowise.core.analysis.communities import has_community
 from repowise.core.analysis.execution_flows import FlowTermination, classify_termination
 from repowise.core.analysis.execution_graph import (
@@ -19,11 +21,9 @@ from repowise.core.analysis.execution_graph import (
 from repowise.core.exclusion import node_is_excluded
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 from repowise.core.ingestion.symbol_identity import file_of_symbol
-from repowise.core.persistence.crud import (
-    get_graph_edges_for_node,
-    get_graph_nodes_by_ids,
-)
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.crud import get_graph_nodes_by_ids
+from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.server.mcp_server._helpers import fetch_allowed_edges
 
 # Callee rows per hop; a stop behind this cut is an unknown, not a leaf.
 _CALLEE_FETCH_LIMIT = 20
@@ -126,14 +126,28 @@ async def bfs_trace(
     for _ in range(max_depth):
         # One row over the limit, so a node with exactly the limit reads as
         # uncut rather than as a stop we cannot explain.
-        rows = await get_graph_edges_for_node(
-            session,
-            repo_id,
-            current,
-            direction="callees",
-            edge_types=sorted(EXECUTION_EDGE_TYPES),
-            limit=_CALLEE_FETCH_LIMIT + 1,
+        # The callee ranking ``get_graph_edges_for_node`` gives, read so that
+        # excluded targets leave before the cut and never take a walkable
+        # callee's place.
+        stmt = (
+            select(GraphEdge)
+            .where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.source_node_id == current,
+                GraphEdge.edge_type.in_(sorted(EXECUTION_EDGE_TYPES)),
+            )
+            .order_by(GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type)
         )
+        rows = [
+            e
+            for (e,) in await fetch_allowed_edges(
+                session,
+                stmt,
+                exclude_spec,
+                limit=_CALLEE_FETCH_LIMIT + 1,
+                endpoints=lambda row: (row[0].target_node_id,),
+            )
+        ]
         edges = rows[:_CALLEE_FETCH_LIMIT]
         # Rows arrive most-confident first, so a tail below the floor is
         # provably unwalkable and hides nothing: only a cut whose last kept row

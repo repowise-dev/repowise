@@ -176,7 +176,7 @@ async def test_graph_expansion_drops_excluded_neighbours_before_the_cap(monkeypa
         {p: 1 for p in [*archived, allowed, "src/seed.py"]},
     )
 
-    async def fake_graph(_session, _repo_id):
+    async def fake_graph(_session, _repo_id, _spec=None):
         return graph
 
     async def fake_pages(_session, neighbours):
@@ -196,6 +196,23 @@ async def test_graph_expansion_drops_excluded_neighbours_before_the_cap(monkeypa
     paths = {h["target_path"] for h in out}
     assert allowed in paths
     assert not any(p.startswith("archive/") for p in paths)
+
+
+@pytest.mark.asyncio
+async def test_hub_degree_counts_only_edges_between_allowed_files(monkeypatch, spec):
+    # src/near.py's edges mostly go to excluded files; they must not make it a hub.
+    pairs = [("src/near.py", f"archive/a{i}.py") for i in range(5)] + [("src/seed.py", "src/near.py")]
+
+    async def fake_pairs(_session, _repo_id):
+        return list(pairs)
+
+    monkeypatch.setattr(graph_expand, "_projected_edges", fake_pairs)
+    raw = await graph_expand._projected_graph(None, "r")
+    filtered = await graph_expand._projected_graph(None, "r", spec)
+    assert raw.degree["src/near.py"] == 6
+    assert filtered.degree["src/near.py"] == 1
+    assert not any(p.startswith("archive/") for p in filtered.degree)
+    assert filtered.neighbours["src/near.py"] == {"src/seed.py"}
 
 
 # --- entry trace ------------------------------------------------------------

@@ -267,7 +267,7 @@ async def file_adjacency(
         lambda: _load_file_adjacency(session, repo_id),
         persist=True,
     )
-    if exclude_spec is None:
+    if not exclude_spec:
         return raw
 
     async def _filtered() -> dict[str, list[str]]:
