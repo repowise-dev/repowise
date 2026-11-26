@@ -252,7 +252,9 @@ line. `analysis/module_hunks.py` matches it by the names it binds instead:
    docstring or a `TYPE_CHECKING` block of imports binds nothing that runs. An import,
    an assignment to plain names, and a `def` or `class` whose decorators only wrap
    (`property`, `dataclass`, `lru_cache` and the like) bind their names. Anything else
-   keeps the graph's answer: a call run for its effect, a store into an attribute or an
+   keeps the graph's answer: a call anywhere outside a function body (an assignment's
+   value, a class body, a default or a decorator argument) other than a pure builder
+   (`frozenset`, `re.compile`, `Path`, `field`, a logger), a store into an attribute or an
    item, control flow, a decorator that may register, a metaclass, a star import, or a
    load-time import the change gained that leads back to the file (a cycle that fails
    for some importers only).

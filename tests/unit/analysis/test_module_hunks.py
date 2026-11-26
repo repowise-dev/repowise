@@ -222,3 +222,32 @@ def test_a_test_helper_passes_the_change_to_every_test_importing_it() -> None:
     assert isinstance(out, Readers)
     assert out.tests == {"tests/test_h.py", "tests/test_i.py"}
     assert out.modules == {"app/settings.py"}
+
+
+@pytest.mark.parametrize(
+    "new",
+    [
+        "LIMIT = compute()",
+        "LIMIT = (n := 4)",
+        "LIMIT: int = registry.add(4)",
+    ],
+)
+def test_a_binding_whose_value_runs_code_keeps_the_graph(new: str) -> None:
+    out = _change(_swap("LIMIT = 3", new))
+    assert isinstance(out, str) and "runs at import" in out
+
+
+def test_a_binding_from_a_pure_builder_is_a_binding() -> None:
+    new = _swap("LIMIT = 3", "LIMIT = frozenset({3})")
+    assert _change(new) == ModuleChange(frozenset({"LIMIT"}), frozenset())
+
+
+def test_a_module_imported_by_name_from_its_package_is_imported_whole() -> None:
+    """``from app import settings`` then ``settings.LIMIT``: the edge names the module."""
+    graph = {
+        "app/settings.py": [("tests/test_direct.py", {"settings"})],
+        "app/__init__.py": [("tests/test_barrel.py", {"settings"}), ("tests/test_x.py", {"x"})],
+    }
+    out = _readers(LIMIT_ONLY, graph, {})
+    assert isinstance(out, Readers)
+    assert out.tests == {"tests/test_direct.py", "tests/test_barrel.py"}

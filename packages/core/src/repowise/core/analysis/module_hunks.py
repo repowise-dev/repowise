@@ -194,6 +194,47 @@ def _unbindable(stmt: ast.stmt, touched: Collection[int]) -> str | None:
         return "a decorator may register what it decorates"
     if isinstance(stmt, ast.ImportFrom) and any(a.name == "*" for a in stmt.names):
         return "a star import binds unknown names"
+    return _runs_code(stmt)
+
+
+#: Calls that build a value and touch nothing else, so binding their result is a
+#: binding: builtin containers and conversions, ``re.compile``, paths, typing and
+#: dataclass helpers, loggers.
+_PURE_CALLS = frozenset(
+    {
+        "Counter", "OrderedDict", "Path", "PurePath", "PurePosixPath", "PureWindowsPath",
+        "TypeVar", "NewType", "NamedTuple", "MappingProxyType", "bool", "bytes", "cast",
+        "compile", "defaultdict", "deque", "dict", "enumerate", "escape", "field", "float",
+        "frozenset", "getLogger", "get_logger", "getenv", "int", "list", "namedtuple",
+        "object", "range", "set", "sorted", "str", "timedelta", "tuple", "zip",
+    }
+)  # fmt: skip
+
+
+def _runs_code(stmt: ast.stmt) -> str | None:
+    """Why *stmt* runs repo code at import (a call, an ``await``, a walrus), else ``None``.
+
+    Function bodies are left out: they run when called. A call to a pure builder
+    or a pure decorator is not code that can store anything elsewhere.
+    """
+    bodies = {
+        id(n)
+        for f in ast.walk(stmt)
+        if isinstance(f, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
+        for n in (f.body if isinstance(f.body, list) else [f.body])
+    }
+    stack: list[ast.AST] = [stmt]
+    while stack:
+        node = stack.pop()
+        if id(node) in bodies:
+            continue
+        if isinstance(node, ast.Await | ast.NamedExpr | ast.Yield | ast.YieldFrom):
+            return f"a module-level {type(node).__name__.lower()} runs at import"
+        if isinstance(node, ast.Call):
+            name = _decorator_name(node.func)
+            if name not in _PURE_CALLS and name not in _PURE_DECORATORS:
+                return f"a module-level call to {name or 'an expression'} runs at import"
+        stack.extend(ast.iter_child_nodes(node))
     return None
 
 
@@ -329,7 +370,7 @@ async def readers(
     seen: set[tuple[str, frozenset[str] | None]] = set(queue)
     while queue:
         module, names = queue.pop()
-        for imp in await importers(module):
+        for imp in await _importers_of(module, importers):
             if "*" in imp.names:
                 return f"{imp.path} star-imports {module}"
             taken = imp.names if names is None else imp.names & names
@@ -354,6 +395,23 @@ async def readers(
                 seen.add(key)
                 queue.append(key)
     return Readers(frozenset(modules), frozenset(tests), frozenset(every))
+
+
+async def _importers_of(
+    module: str, importers: Callable[[str], Awaitable[Iterable[Importer]]]
+) -> list[Importer]:
+    """*module*'s importers, a ``from pkg import module`` counted as importing it whole.
+
+    That import names the module, not what it reads from it (``module.NAME``);
+    its edge may land on the module or on the package's ``__init__.py``.
+    """
+    stem = PurePosixPath(module)
+    own = stem.parent.name if stem.name == "__init__.py" else stem.stem
+    package = (stem.parent / "__init__.py").as_posix()
+    rows = list(await importers(module))
+    if package != module:
+        rows += [i for i in await importers(package) if own in i.names]
+    return [Importer(i.path, frozenset()) if own in i.names else i for i in rows]
 
 
 def _follow(
