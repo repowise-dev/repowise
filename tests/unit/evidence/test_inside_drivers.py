@@ -302,6 +302,10 @@ def test_library_frames_are_dependencies_and_the_standard_library() -> None:
     assert not library("", "com/acme/App.run", "unknown")
     assert not library("", "com.acme.App.run", "unknown")
     assert not library("", "gorm.(*DB).First", "unknown")
+    # Code built at run time has a placeholder, not a file; a frozen module is the stdlib's.
+    assert not library("<string>", "__init__", "python")
+    assert not library("<stdin>", "work", "python")
+    assert library("<frozen os>", "walk", "python")
     assert not library("", "(program)", "unknown")
     assert is_library_frame(_frame("vendor/x/y.go", "y.F"), "vendored")
     assert not is_library_frame(_frame("pkg/app.py", "App.run", "python"), "no_span")

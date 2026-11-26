@@ -244,15 +244,18 @@ def is_library_frame(frame: ProfileFrame, reason: str | None) -> bool:
     or import machinery (:func:`is_import_frame`, import time: the module it
     loads decides): a module cache or ``site-packages``, GOROOT, CPython's
     ``Lib`` and frozen modules, Node's ``node:`` modules. A frame with no file
-    (a collapsed stack's bare name) says only its name, which places it only
-    when it is the JDK's (:data:`_JDK_NAMES`, ``java/util/HashMap.get``); an
-    application's own pathless frames are not known to be library code.
+    (a collapsed stack's bare name, or a placeholder such as ``<string>`` for
+    code built at run time) says only its name, which places it only when it is
+    the JDK's (:data:`_JDK_NAMES`, ``java/util/HashMap.get``); an application's
+    own pathless frames are not known to be library code.
     """
     if reason in ("vendored", "generated"):
         return True
     if reason != "outside_root" or is_native_frame(frame) or is_import_frame(frame):
         return False
-    return bool(frame.path) or frame.function.startswith(_JDK_NAMES)
+    path = frame.path
+    has_file = bool(path) and (not path.startswith("<") or path.startswith("<frozen "))
+    return has_file or frame.function.startswith(_JDK_NAMES)
 
 
 def is_child_process_frame(frame: ProfileFrame) -> bool:
