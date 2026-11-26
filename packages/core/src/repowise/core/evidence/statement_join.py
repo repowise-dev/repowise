@@ -415,7 +415,9 @@ def match_statement(shape: StatementShape | None, sites: Sequence[StatementSite]
     found = tuple(s for s in sites if _agrees(s, shape))
     code = [s for s in found if not s.scheduled]
     if not code:
-        return StatementMatch("database_schedule" if found else None, sites=found)
+        # Only a schedule whose job names this table or function says it runs it.
+        named = any(s.name is not None for s in found)
+        return StatementMatch("database_schedule" if named else None, sites=found)
     named = {s.symbol_id for s in code if s.name is not None}
     # A site with no function, or one whose table the index could not read,
     # leaves the issuer open.

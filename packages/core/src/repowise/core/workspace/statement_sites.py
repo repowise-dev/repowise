@@ -1400,7 +1400,12 @@ def read_schedule_sites(path: str, text: str) -> list[StatementSite]:
         if len(args) <= index:
             continue
         line = text.count("\n", 0, match.start()) + 1
-        for statement in args[index].split(";"):
+        command = args[index]
+        if command is None:
+            # A command built at run time: the job may run any statement.
+            out.extend(_unknown_schedule(path, line))
+            continue
+        for statement in command.split(";"):
             shape = statement_shape(statement)
             if shape is None:
                 continue
@@ -1421,27 +1426,40 @@ def read_schedule_sites(path: str, text: str) -> list[StatementSite]:
     return out
 
 
-def _sql_arguments(text: str, start: int) -> list[str]:
-    """The string arguments of the call whose ``(`` ends at *start*, in order."""
-    args: list[str] = []
+def _unknown_schedule(path: str, line: int) -> list[StatementSite]:
+    """Sites for a job whose command the text does not spell: any table or function."""
+    return [
+        StatementSite(path, line, "sql", target, None, None, "schedule")
+        for target in ("table", "rpc")
+    ]
+
+
+def _sql_arguments(text: str, start: int) -> list[str | None]:
+    """The arguments of the call whose ``(`` ends at *start*, in order: each one's
+    text when it is a single string literal, else None (built at run time)."""
+    args: list[str | None] = []
+    parts: list[str | None] = []  # one argument's pieces: literals, None for anything else
     pos, depth = start, 1
     while pos < len(text) and depth > 0:
+        string = _SQL_STRING_RE.match(text, pos) if text[pos] in "'$" else None
+        if string is not None:
+            parts.append(_literal(string))
+            pos = string.end()
+            continue
         c = text[pos]
-        if c in "'$":
-            string = _SQL_STRING_RE.match(text, pos)
-            if string is not None:
-                if string.group("quoted") is not None:
-                    args.append(string.group("quoted").replace("''", "'"))
-                else:
-                    args.append(string.group("dollar"))
-                pos = string.end()
-                continue
-        if c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
+        depth += (c == "(") - (c == ")")
+        if depth == 0 or (c == "," and depth == 1):
+            args.append(parts[0] if len(parts) == 1 else None)
+            parts = []
+        elif not c.isspace():
+            parts.append(None)  # anything besides one string literal: built at run time
         pos += 1
     return args
+
+
+def _literal(string: re.Match[str]) -> str:
+    quoted = string.group("quoted")
+    return quoted.replace("''", "'") if quoted is not None else string.group("dollar")
 
 
 # ---------------------------------------------------------------------------

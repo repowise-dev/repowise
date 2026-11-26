@@ -183,3 +183,19 @@ def test_an_add_on_any_receiver_in_an_orm_file_keeps_inserts_open() -> None:
         "app/y.py": ("from app.m import U\n\n\ndef b(db):\n    db.add(U(name='x'))\n"),
     }
     assert _issuer(texts, "INSERT INTO users (name) VALUES ($1)")[0] == "ambiguous"
+
+
+def test_a_cron_job_built_at_run_time_keeps_plain_sql_open() -> None:
+    sql = (
+        "select cron.schedule('purge', '0 3 * * *', format('delete from %I', tbl));\n"
+        "select cron.schedule('nightly', '0 4 * * *', v_cmd);\n"
+    )
+    sites = read_schedule_sites("m.sql", sql)
+    assert {(s.name, s.via) for s in sites} == {(None, "schedule")}
+    statement = statement_shape("DELETE FROM sessions WHERE id = $1")
+    code = read_python_sites(
+        {"app/x.py": 'def purge(cur):\n    cur.execute("DELETE FROM sessions WHERE id = %s")\n'}
+    )
+    assert match_statement(statement, [*code, *sites]).issuer == "ambiguous"
+    # A job the text does not spell never claims a statement on its own.
+    assert match_statement(statement, sites).issuer is None
