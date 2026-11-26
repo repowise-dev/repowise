@@ -29,7 +29,7 @@ import json
 import re
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -41,8 +41,8 @@ from repowise.core.inventory.osv import (
     affected_ranges,
     affected_versions,
     cve_aliases,
-    dedupe_by_cve,
     fixed_versions,
+    group_by_cve,
     label_for_score,
     pick_fixed,
     severity_from_osv,
@@ -201,10 +201,9 @@ def _spdx(doc: dict) -> list[PackageMention]:
 def cyclonedx_transitive(doc: dict) -> dict[str, bool]:
     """``bom-ref`` to True (transitive) or False (direct) from a CycloneDX dependency graph.
 
-    Roots are refs with dependencies that nothing depends on, plus
-    ``metadata.component``. Direct means a root depends on it; anything else
-    depended on is transitive. A ref outside the graph is absent (unknown,
-    never guessed), and a document with no graph gives ``{}``.
+    The root is ``metadata.component``: direct means it depends on the ref;
+    anything else depended on is transitive. A ref outside the graph is absent
+    (unknown, never guessed), and a document whose graph lacks the root gives ``{}``.
     """
     deps = [
         d
@@ -213,12 +212,14 @@ def cyclonedx_transitive(doc: dict) -> dict[str, bool]:
     ]
     by_ref = {d["ref"]: [c for c in d.get("dependsOn") or [] if isinstance(c, str)] for d in deps}
     depended_on = {child for children in by_ref.values() for child in children}
-    roots = {ref for ref in by_ref if ref not in depended_on}
     meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
     component = meta.get("component") if isinstance(meta.get("component"), dict) else {}
-    if component.get("bom-ref") in by_ref:
-        roots.add(component["bom-ref"])
-    direct = {child for root in roots for child in by_ref.get(root, [])}
+    root = component.get("bom-ref")
+    if root not in by_ref:
+        # Without the application in the graph, a top-level ref may be a direct
+        # dependency itself, and its children would read as direct.
+        return {}
+    direct = set(by_ref[root])
     return {ref: ref not in direct for ref in direct | depended_on}
 
 
@@ -436,6 +437,22 @@ def _advisory_cves(a: Advisory) -> list[str]:
     return cve_aliases({"id": a.id, "aliases": list(a.aliases)})
 
 
+def _collapse(group: Sequence[Advisory]) -> Advisory:
+    """One advisory for records describing the same CVE: the best described one
+    (scored, then labelled, then GHSA), carrying every record's affected ranges,
+    versions, symbols and fixes, so no record's range is dropped from the check."""
+    best = max(group, key=lambda a: (a.score is not None, a.severity is not None, a.id.startswith("GHSA-")))
+    if len(group) == 1:
+        return best
+    return replace(
+        best,
+        affected=tuple(dict.fromkeys(i for a in group for i in a.affected)),
+        fixed=tuple(dict.fromkeys(f for a in group for f in a.fixed)),
+        ranges=tuple(dict.fromkeys(r for a in group for r in a.ranges)),
+        versions=tuple(dict.fromkeys(v for a in group for v in a.versions)),
+    )
+
+
 def merge_mentions(mentions: Sequence[PackageMention]) -> tuple[PackageAdvisories, ...]:
     """One entry per ``(ecosystem, name)``: its versions, and its advisories with
     records describing the same CVE collapsed to one (scored first, then GHSA)."""
@@ -455,11 +472,8 @@ def merge_mentions(mentions: Sequence[PackageMention]) -> tuple[PackageAdvisorie
             name,
             tuple(row["versions"]),
             tuple(
-                dedupe_by_cve(
-                    row["advisories"].values(),
-                    _advisory_cves,
-                    lambda a: (a.score is not None, a.severity is not None, a.id.startswith("GHSA-")),
-                )
+                _collapse(group)
+                for group in group_by_cve(row["advisories"].values(), _advisory_cves)
             ),
             _direct(row["direct"]),
         )
@@ -538,6 +552,8 @@ async def join_usage(
     declared = sorted({(d.ecosystem, d.name) for d in index.declarations})
     document = advisory_sources.get(source).read(location, packages=declared)
     packages = merge_mentions(document.mentions)
+    # An empty document says nothing: it leaves the stored one in place.
+    store = store and bool(packages)
     if store:
         from repowise.core.persistence.crud.package_advisories import replace_package_advisories
 
@@ -599,7 +615,8 @@ async def join_usage(
         "method": "joined by package name (and ecosystem when the file gives one); "
         "a document naming no version is checked against each exact version the "
         "manifests pin, and stays undecided (affected: null) for a range spec",
-        **({"stored": True, "sha256": document.sha256} if store else {}),
+        "stored": store,
+        **({"sha256": document.sha256} if store else {}),
     }
 
 

@@ -131,26 +131,32 @@ def severity_from_osv(vuln: dict) -> tuple[float | None, str]:
     Precedence CVSS_V4, CVSS_V3, CVSS_V2; then the ``database_specific.severity``
     label (GHSA's MODERATE becomes ``medium``); then ``(None, "unknown")``.
     """
-    vectors: dict[str, str] = {}
-    for entry in vuln.get("severity") or []:
-        if not isinstance(entry, dict):
-            continue
-        t, s = entry.get("type"), entry.get("score")
-        if isinstance(t, str) and isinstance(s, str) and t not in vectors:
-            vectors[t] = s
+    vectors = _vectors(vuln)
     for sev_type in ("CVSS_V4", "CVSS_V3", "CVSS_V2"):
         vector = vectors.get(sev_type)
         if vector and (score := cvss_base_score(sev_type, vector)) is not None:
             label = label_for_score(score)
             # CVSS v2 has no critical band: 7.0 to 10.0 is high.
             return score, "high" if sev_type == "CVSS_V2" and label == "critical" else label
+    return None, _db_label(vuln)
+
+
+def _vectors(vuln: dict) -> dict[str, str]:
+    """The first vector per CVSS type in ``severity[]``."""
+    vectors: dict[str, str] = {}
+    for entry in vuln.get("severity") or []:
+        t, s = (entry.get("type"), entry.get("score")) if isinstance(entry, dict) else (None, None)
+        if isinstance(t, str) and isinstance(s, str):
+            vectors.setdefault(t, s)
+    return vectors
+
+
+def _db_label(vuln: dict) -> str:
     db = vuln.get("database_specific")
-    db_label = str((db.get("severity") if isinstance(db, dict) else None) or "").lower()
-    if db_label in ("critical", "high", "low"):
-        return None, db_label
-    if db_label in ("moderate", "medium"):
-        return None, "medium"
-    return None, "unknown"
+    label = str((db.get("severity") if isinstance(db, dict) else None) or "").lower()
+    if label in ("critical", "high", "low"):
+        return label
+    return "medium" if label in ("moderate", "medium") else "unknown"
 
 
 # -- aliases ----------------------------------------------------------------
@@ -168,28 +174,37 @@ def cve_aliases(vuln: dict) -> list[str]:
     return out
 
 
+def group_by_cve(items: Iterable[_T], cves: Callable[[_T], Sequence[str]]) -> list[list[_T]]:
+    """Items linked by shared CVE ids, directly or through another item.
+
+    Items with no CVE stand alone. Groups follow their first item's order.
+    """
+    items = list(items)
+    parent = list(range(len(items)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    first: dict[str, int] = {}
+    for i, item in enumerate(items):
+        for c in cves(item):
+            j = first.setdefault(c, i)
+            a, b = root(i), root(j)
+            parent[max(a, b)] = min(a, b)
+    groups: dict[int, list[_T]] = {}
+    for i, item in enumerate(items):
+        groups.setdefault(root(i), []).append(item)
+    return list(groups.values())
+
+
 def dedupe_by_cve(
     items: Iterable[_T], cves: Callable[[_T], Sequence[str]], quality: Callable[[_T], Any]
 ) -> list[_T]:
-    """Collapse items that share any CVE id, keeping the highest *quality* one.
-
-    Items with no CVE pass through. Order follows each group's first item.
-    """
-    kept: list[_T] = []
-    by_cve: dict[str, int] = {}
-    for item in items:
-        ids = cves(item)
-        idx = next((by_cve[c] for c in ids if c in by_cve), None)
-        if idx is None:
-            kept.append(item)
-            for c in ids:
-                by_cve[c] = len(kept) - 1
-            continue
-        if quality(item) > quality(kept[idx]):
-            kept[idx] = item
-        for c in ids:
-            by_cve.setdefault(c, idx)
-    return kept
+    """One item per :func:`group_by_cve` group: the first with the highest *quality*."""
+    return [max(group, key=quality) for group in group_by_cve(items, cves)]
 
 
 def dedupe_by_alias(vulns: list[dict]) -> list[dict]:
@@ -215,23 +230,28 @@ def dedupe_by_alias(vulns: list[dict]) -> list[dict]:
 def affected_imports(entry: dict) -> tuple[AffectedImport, ...]:
     """The affected package paths and symbols one ``affected[]`` entry names."""
     out: list[AffectedImport] = []
-    eco = entry.get("ecosystem_specific")
-    for imp in (eco.get("imports") if isinstance(eco, dict) else None) or []:
+    for imp in _section(entry, "ecosystem_specific").get("imports") or []:
         if not isinstance(imp, dict):
             continue
         path = imp.get("path") if isinstance(imp.get("path"), str) else ""
-        symbols = tuple(
-            dict.fromkeys(s for s in imp.get("symbols") or [] if isinstance(s, str) and s)
-        )
+        symbols = _strings(imp.get("symbols") or [])
         if path or symbols:
             out.append(AffectedImport(path, symbols))
-    db = entry.get("database_specific")
-    if isinstance(db, dict):
-        hints = [*(db.get("symbols") or []), *(db.get("functions") or [])]
-        loose = tuple(dict.fromkeys(s for s in hints if isinstance(s, str) and s))
-        if loose:
-            out.append(AffectedImport("", loose))
+    db = _section(entry, "database_specific")
+    loose = _strings([*(db.get("symbols") or []), *(db.get("functions") or [])])
+    if loose:
+        out.append(AffectedImport("", loose))
     return tuple(out)
+
+
+def _section(entry: dict, name: str) -> dict:
+    value = entry.get(name)
+    return value if isinstance(value, dict) else {}
+
+
+def _strings(values: Iterable[Any]) -> tuple[str, ...]:
+    """The non-empty strings in *values*, first spelling kept."""
+    return tuple(dict.fromkeys(v for v in values if isinstance(v, str) and v))
 
 
 def affected_ranges(entry: dict) -> tuple[tuple[tuple[str, str], ...], ...]:
@@ -272,9 +292,9 @@ def fixed_versions(ranges: Iterable[Range]) -> tuple[str, ...]:
 def pick_fixed(ecosystem: str | None, fixed: Sequence[str], installed: str | None) -> str | None:
     """The version to upgrade to: the smallest of *fixed* above *installed*.
 
-    Ordered for *ecosystem*. With no fix above the installed version, the
-    ``None``; with no order known, the last fix listed (OSV lists events in
-    ascending order within a range). ``None`` when there is no fix.
+    Ordered for *ecosystem*. ``None`` when no fix is above the installed
+    version, or when there is no fix. With no order known, the only fix when
+    there is one, else ``None``: which branch applies cannot be told.
     """
     if not fixed:
         return None
@@ -284,7 +304,7 @@ def pick_fixed(ecosystem: str | None, fixed: Sequence[str], installed: str | Non
         above = [(k, raw) for k, raw in comparable if k > current]
         # No fix above the version in use: none of these fixes it.
         return min(above)[1] if above else None
-    return fixed[-1]
+    return fixed[0] if len(fixed) == 1 else None
 
 
 # -- purl-keyed helpers over a whole record ---------------------------------
@@ -343,6 +363,7 @@ __all__ = [
     "extract_affected_imports",
     "extract_fixed_version",
     "fixed_versions",
+    "group_by_cve",
     "label_for_score",
     "pick_fixed",
     "severity_from_osv",

@@ -165,7 +165,6 @@ def test_affected_imports_and_fixed_version_for_a_purl():
     assert extract_fixed_version(vuln, "pkg:golang/golang.org/x/net@v0.12.0", "v0.12.0") == "0.17.0"
     assert pick_fixed("npm", ["1.2.10", "1.2.9"], "1.2.5") == "1.2.9"
     assert pick_fixed("npm", ["1.2.9"], "1.3.0") is None  # no fix above it
-    assert pick_fixed("maven", ["1.0", "2.0"], "1.5") == "2.0"
     assert pick_fixed("npm", [], "1.0.0") is None
 
 
@@ -290,6 +289,16 @@ def test_cyclonedx_dependency_graph_marks_direct_and_transitive():
         }
     )
     assert [(m.name, m.direct) for m in doc.mentions] == [("a", True), ("b", False), ("c", None)]
+    # Without the application in the graph, nothing is guessed.
+    no_root = parse_document(
+        {
+            "bomFormat": "CycloneDX",
+            "metadata": {"component": {"bom-ref": "app"}},
+            "components": [{"name": "a", "purl": "pkg:npm/a@1.0.0", "bom-ref": "a"}],
+            "dependencies": [{"ref": "a", "dependsOn": ["b"]}],
+        }
+    )
+    assert [m.direct for m in no_root.mentions] == [None]
 
 
 def test_the_file_source_hashes_what_it_read(tmp_path):
@@ -344,7 +353,7 @@ async def test_scanner_matches_stand_and_carry_the_fix(session, tmp_path):  # no
     result = await join_usage(session, REPO, tmp_path, _write(tmp_path, scanner))
     (adv,) = result["matched"][0]["advisories"]
     assert adv["affected"] is True and adv["basis"] == "document" and adv["fix"] == "2.32.0"
-    assert "stored" not in result
+    assert result["stored"] is False
 
 
 async def test_import_stores_the_document_and_replaces_the_last(session, tmp_path):  # noqa: F811
@@ -376,3 +385,26 @@ async def test_import_stores_the_document_and_replaces_the_last(session, tmp_pat
     )
     again = await load_advisories(session, REPO)
     assert [p.name for p in again.packages] == ["Requests"] and again.sha256 != stored.sha256
+    # A document naming nothing leaves the stored one in place.
+    empty = await join_usage(
+        session, REPO, tmp_path, _write(tmp_path, {"vulns": []}, "e.json"), store=True
+    )
+    assert empty["stored"] is False
+    assert (await load_advisories(session, REPO)).sha256 == again.sha256
+
+
+def test_records_for_one_cve_collapse_and_keep_every_range():
+    a = Advisory("GHSA-a", ("CVE-1",), ranges=((("introduced", "0"), ("fixed", "1.0")),))
+    b = Advisory("PYSEC-b", ("CVE-2",))
+    c = Advisory("PYSEC-c", ("CVE-1", "CVE-2"), ranges=((("introduced", "2.0"), ("fixed", "2.1")),))
+    from repowise.core.inventory.advisories import PackageMention
+
+    (pkg,) = merge_mentions([PackageMention("x", "pypi", None, (a, b, c))])
+    (merged,) = pkg.advisories  # linked through c
+    assert merged.id == "GHSA-a"
+    assert merged.affects("pypi", "2.0.5") is True and merged.affects("pypi", "1.5") is False
+
+
+def test_unknown_order_gives_a_fix_only_when_there_is_one():
+    assert pick_fixed("maven", ["1.9.1", "2.0.5"], "2.1.0") is None
+    assert pick_fixed("maven", ["2.0"], "1.5") == "2.0"

@@ -107,7 +107,8 @@ Range = Sequence[tuple[str, str]]
 _EVENT_ORDER = {"introduced": 0, "fixed": 1, "last_affected": 1, "limit": 1}
 
 
-def _in_range(key: Any, events: Range, ecosystem: str) -> bool | None:
+def _keyed_events(events: Range, ecosystem: str) -> list[tuple] | None:
+    """``(sort key, tie order, kind, version key)`` per known event; None if a bound is unparseable."""
     keyed = []
     for kind, value in events:
         if kind not in _EVENT_ORDER:
@@ -119,8 +120,13 @@ def _in_range(key: Any, events: Range, ecosystem: str) -> bool | None:
         if k is None:
             return None
         keyed.append(((1, k), _EVENT_ORDER[kind], kind, k))
-    if not any(kind == "introduced" for _, _, kind, _ in keyed):
-        # The schema requires an introduced event; without one, claim nothing.
+    return keyed
+
+
+def _in_range(key: Any, events: Range, ecosystem: str) -> bool | None:
+    keyed = _keyed_events(events, ecosystem)
+    # The schema requires an introduced event; without one, claim nothing.
+    if keyed is None or not any(e[2] == "introduced" for e in keyed):
         return None
     affected = False
     # The OSV schema's evaluation: events in version order, each one switching
