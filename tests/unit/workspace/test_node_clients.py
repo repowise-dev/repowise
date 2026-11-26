@@ -395,3 +395,23 @@ def test_only_a_placeholder_host_after_a_scheme_placeholder_is_stripped() -> Non
     path, _ = strip_leading_base_expr("${s}//${tenant}.example.com/api/users")
     assert path.startswith("//${tenant}")
     assert strip_leading_base_expr("${a}//${b}") == ("/", "b")
+
+
+def test_a_trailing_hole_after_a_path_parameter_is_stripped() -> None:
+    from repowise.core.workspace.extractors.http.paths import strip_trailing_query_expr
+
+    assert strip_trailing_query_expr("${a}${b}") == "${a}"
+    path = "/api/repos/${id}/files/${encoded}"
+    assert strip_trailing_query_expr(path + "${qs}") == path
+    assert strip_trailing_query_expr("/x${path}") == "/x"
+    # A lone parameter segment, and one that is part of a composed value, stay.
+    assert strip_trailing_query_expr("/users/${id}") == "/users/${id}"
+    assert strip_trailing_query_expr("/users/user-${id}") == "/users/user-${id}"
+
+
+def test_a_hole_after_a_path_parameter_is_not_a_glued_wrapper_name() -> None:
+    from repowise.core.workspace.extractors.http.paths import trailing_glued_name
+
+    assert trailing_glued_name("/api/v1${endpoint}") == "endpoint"
+    assert trailing_glued_name("/users/${id}${qs}") is None
+    assert trailing_glued_name("${a}${b}") is None
