@@ -69,6 +69,8 @@ class ModuleChange:
 
     names: frozenset[str]
     removed: frozenset[str]
+    # The functions (enclosing names) whose bodies the change touches too.
+    bodies: frozenset[tuple[str, ...]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,18 @@ class _Side:
                 out.append(line)
         return out
 
+    def in_bodies(self, lines: Iterable[int]) -> set[tuple[str, ...]]:
+        """The functions whose bodies hold a code line of *lines*."""
+        out = set()
+        for line in lines:
+            if not 0 < line <= len(self.lines):
+                continue
+            text = self.lines[line - 1].strip()
+            code = line in self.strings or (text and not text.startswith("#"))
+            if code and (body := innermost(self.bodies, line)) is not None:
+                out.add(body.chain)
+        return out
+
     def statements(self, lines: Collection[int]) -> list[ast.stmt]:
         """The top-level statements holding any of *lines*, decorators included."""
         return [s for s in self.tree.body if any(line in _span(s) for line in lines)]
@@ -152,11 +166,13 @@ def module_change(
     if before is None or after is None:
         return "it does not parse on both sides"
     names: set[str] = set()
+    bodies: set[tuple[str, ...]] = set()
     for old_start, old_count, new_start, new_count in hunks:
         for side, lines in (
             (before, range(old_start, old_start + old_count)),
             (after, range(new_start, new_start + new_count)),
         ):
+            bodies |= side.in_bodies(lines)
             touched = side.module_level(lines)
             for stmt in side.statements(touched):
                 why = _unbindable(stmt, touched)
@@ -170,7 +186,7 @@ def module_change(
                     return "an import it gained leads back to it"
                 names |= _binds(stmt) or set()
     removed = _bound(before.tree) - _bound(after.tree)
-    return ModuleChange(frozenset(names), frozenset(removed))
+    return ModuleChange(frozenset(names), frozenset(removed), frozenset(bodies))
 
 
 def _unbindable(stmt: ast.stmt, touched: Collection[int]) -> str | None:
@@ -357,10 +373,16 @@ async def readers(
     :func:`~.function_hunks.run_once_symbols`), whose later callers run none
     of its lines.
     """
-    every = change.names | change.removed
     tree = _parse(new_text)
     if tree is None:
         return "it does not parse"
+    if fn := _once_function(path, tree.tree, change.bodies, once):
+        return f"{fn} changed and runs once for every later caller"
+    # Names the file itself derives from a changed one at import (``DOUBLE = LIMIT * 2``).
+    derived = _derived(tree.tree, change.names | change.removed)
+    if isinstance(derived, str):
+        return f"it reads a changed name at import: {derived}"
+    every = frozenset(derived) | change.names | change.removed
     if fn := _once_reader(path, tree.tree, every, once):
         return f"{fn} reads a changed name and runs once for every later caller"
     modules, tests = {path}, set()
@@ -386,7 +408,9 @@ async def readers(
             if is_support(imp.path):
                 key = (imp.path, None)
             else:
-                followed = _follow(imp, taken or names or frozenset(), read, once, change.removed)
+                followed = _follow(
+                    imp, module, taken or names or frozenset(), read, once, change.removed
+                )
                 if isinstance(followed, str):
                     return followed
                 modules.add(imp.path)
@@ -416,6 +440,7 @@ async def _importers_of(
 
 def _follow(
     imp: Importer,
+    module: str,
     names: frozenset[str],
     read: Callable[[str], str | None],
     once: Collection[str],
@@ -424,30 +449,73 @@ def _follow(
     """The names *imp* binds from *names*, or why it cannot be followed.
 
     Its aliases of the names it imports, and every name a top-level statement
-    reading one binds. A whole-module import has no alias of its own to pass
-    on; what it reads at module level as ``module.name`` still does.
+    reading one binds, to a fixpoint. A whole-module import passes on the name
+    it binds the module to (``import app.cfg as settings``) and what it reads
+    at module level as ``module.name``.
     """
     side = _parse(read(imp.path))
     if side is None:
         return f"{imp.path} does not parse"
+    stem = PurePosixPath(module)
+    own = stem.parent.name if stem.name == "__init__.py" else stem.stem
     aliases = set()
     for node in ast.walk(side.tree):
         if isinstance(node, ast.ImportFrom):
             aliases |= {a.asname or a.name for a in node.names if a.name in names}
+            if not imp.names:
+                aliases |= {a.asname or a.name for a in node.names if a.name == own}
+        elif isinstance(node, ast.Import) and not imp.names:
+            aliases |= {
+                a.asname or a.name.split(".")[0]
+                for a in node.names
+                if a.name.rsplit(".", 1)[-1] == own
+            }
     reads = aliases | (set(names) if not imp.names else set())
     if fn := _once_reader(imp.path, side.tree, reads, once):
         return f"{imp.path}: {fn} reads a changed name and runs once for every later caller"
-    bound = set(aliases)
-    for stmt in side.tree.body:
-        if isinstance(stmt, ast.Import | ast.ImportFrom) or not _reads_at_top(stmt, reads):
-            continue
-        if not imp.names and _reads_at_top(stmt, removed):
-            return f"{imp.path} reads a removed name at import"
-        why = _unbindable(stmt, _span(stmt))
-        if why:
-            return f"{imp.path} reads a changed name at import: {why}"
-        bound |= _binds(stmt) or set()
-    return bound
+    if not imp.names and any(_reads_at_top(s, removed) for s in side.tree.body):
+        return f"{imp.path} reads a removed name at import"
+    derived = _derived(side.tree, reads)
+    if isinstance(derived, str):
+        return f"{imp.path} reads a changed name at import: {derived}"
+    return aliases | derived
+
+
+def _derived(tree: ast.Module, reads: Collection[str]) -> set[str] | str:
+    """The names *tree*'s top-level statements bind from *reads*, to a fixpoint, or why
+    a statement reading one does more than bind."""
+    known, bound = set(reads), set()
+    while True:
+        grew = False
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Import | ast.ImportFrom) or not _reads_at_top(stmt, known):
+                continue
+            why = _unbindable(stmt, _span(stmt))
+            if why:
+                return why
+            new = (_binds(stmt) or set()) - known
+            if new:
+                known |= new
+                bound |= new
+                grew = True
+        if not grew:
+            return bound
+
+
+def _once_function(
+    path: str, tree: ast.Module, chains: Collection[tuple[str, ...]], once: Collection[str]
+) -> str | None:
+    """A changed function (or one around it) that runs once for every later caller."""
+    nodes = dict(_functions(tree))
+    for chain in chains:
+        for i in range(1, len(chain) + 1):
+            node = nodes.get(chain[:i])
+            memo = node is not None and any(
+                _decorator_name(d) in _MEMO_DECORATORS for d in node.decorator_list
+            )
+            if memo or "::".join((path, *chain[:i])) in once:
+                return ".".join(chain[:i])
+    return None
 
 
 def _reads_at_top(stmt: ast.stmt, names: Collection[str]) -> bool:
@@ -463,8 +531,11 @@ def _reads_at_top(stmt: ast.stmt, names: Collection[str]) -> bool:
         node = stack.pop()
         if id(node) in bodies:
             continue
-        if (isinstance(node, ast.Name) and node.id in names) or (
-            isinstance(node, ast.Attribute) and node.attr in names
+        if (
+            (isinstance(node, ast.Name) and node.id in names)
+            or (isinstance(node, ast.Attribute) and node.attr in names)
+            # ``getattr(module, "NAME")`` reads it by its name.
+            or (isinstance(node, ast.Constant) and node.value in names)
         ):
             return True
         stack.extend(ast.iter_child_nodes(node))

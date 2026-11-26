@@ -251,3 +251,57 @@ def test_a_module_imported_by_name_from_its_package_is_imported_whole() -> None:
     out = _readers(LIMIT_ONLY, graph, {})
     assert isinstance(out, Readers)
     assert out.tests == {"tests/test_direct.py", "tests/test_barrel.py"}
+
+
+def test_a_name_the_file_derives_at_import_is_changed_too() -> None:
+    new = OLD.replace("LIMIT = 3", "LIMIT = 3\nDOUBLE = LIMIT * 2")
+    graph = {"app/settings.py": [("tests/test_double.py", {"DOUBLE"})]}
+    out = _readers(LIMIT_ONLY, graph, {}, new_text=new)
+    assert isinstance(out, Readers) and out.tests == {"tests/test_double.py"}
+
+
+def test_derived_names_chain_inside_an_importer() -> None:
+    graph = {
+        "app/settings.py": [("app/x.py", {"LIMIT"})],
+        "app/x.py": [("tests/test_second.py", {"SECOND"})],
+    }
+    src = {"app/x.py": "from app.settings import LIMIT\nFIRST = LIMIT\nSECOND = FIRST + 1\n"}
+    out = _readers(LIMIT_ONLY, graph, src)
+    assert isinstance(out, Readers) and out.tests == {"tests/test_second.py"}
+
+
+def test_a_module_re_exported_under_an_alias_passes_the_change_on() -> None:
+    graph = {
+        "app/settings.py": [("app/wrap.py", set())],
+        "app/wrap.py": [("tests/test_wrap.py", {"cfg"})],
+    }
+    out = _readers(LIMIT_ONLY, graph, {"app/wrap.py": "import app.settings as cfg\n"})
+    assert isinstance(out, Readers) and out.tests == {"tests/test_wrap.py"}
+
+
+def test_a_name_read_by_its_string_counts_as_read() -> None:
+    graph = {
+        "app/settings.py": [("app/wrap.py", set())],
+        "app/wrap.py": [("tests/test_value.py", {"VALUE"})],
+    }
+    src = {"app/wrap.py": "import app.settings as s\nVALUE = getattr(s, 'LIMIT')\n"}
+    assert "runs at import" in _readers(LIMIT_ONLY, graph, src)
+
+
+def test_a_changed_memoized_function_keeps_the_graph() -> None:
+    old = "from functools import cache\n\n\n@cache\ndef table():\n    return 1\n\n\nX = 1\n"
+    new = old.replace("return 1", "return 2").replace("X = 1", "X = 2")
+    change = module_change(old, new, _hunks(old, new), lambda: False)
+    assert isinstance(change, ModuleChange) and change.bodies == {("table",)}
+    out = asyncio.run(
+        readers(
+            "app/m.py",
+            change,
+            lambda m: asyncio.sleep(0, result=[]),
+            {}.get,
+            new_text=new,
+            is_test=lambda p: False,
+            is_support=lambda p: False,
+        )
+    )
+    assert isinstance(out, str) and "table" in out

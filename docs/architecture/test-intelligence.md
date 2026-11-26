@@ -258,14 +258,18 @@ line. `analysis/module_hunks.py` matches it by the names it binds instead:
    item, control flow, a decorator that may register, a metaclass, a star import, or a
    load-time import the change gained that leads back to the file (a cycle that fails
    for some importers only).
-2. `readers` follows those names through the index's import edges and the names each
-   importer takes. A test file importing one is a reader. A production module importing
-   one is a reader, and the names it binds at module level from it (a re-export,
-   `DOUBLE = LIMIT * 2`) are followed in turn. A test helper passes the change to every
-   test importing it. It stops, keeping the graph's answer, at a conftest taking a
+2. `readers` adds the names the file itself derives from a changed one at import
+   (`DOUBLE = LIMIT * 2`), then follows them through the index's import edges and the
+   names each importer takes. A test file importing one is a reader. A production module
+   importing one is a reader, and the names it binds at module level from it (a re-export,
+   a derived constant, to a fixpoint) are followed in turn; `from pkg import mod` and
+   `import pkg.mod as alias` count as importing the module whole, and a name read by its
+   string (`getattr(mod, "NAME")`) counts as read. A test helper passes the change to
+   every test importing it. It stops, keeping the graph's answer, at a conftest taking a
    changed name, a removed name still imported, a module-level statement reading a
-   changed name for its effect, and a memo or once-per-process function reading one
-   (`run_once_symbols`), whose later callers run none of its lines.
+   changed name for its effect, and a memo or once-per-process function
+   (`run_once_symbols`) that reads a changed name or whose body the change edits: its
+   later callers run none of its lines.
 3. The answer is the test files the map shows running any line of the file or of a
    reader module, plus the reader test files (`module_covered`). Selection keeps of the
    graph's tests those in the answer and those the map never ran (`module-readers` in
@@ -276,8 +280,9 @@ new value cannot change what it does. One exception reads the source as text ins
 running it: a test importing a test helper that lists and reads files under a source
 directory (the walk `always_run` detects in a test itself). For function-scoped and
 module-level matching alike, such a test counts as unmeasured and keeps the graph's
-answer. Ceiling: Python only; a name read with `getattr(module, "name")` or through
-`globals()` is not seen.
+answer. An import-time error the change brings (a builder that now raises) breaks every
+reader's import too, so the run fails all the same. Ceiling: Python only; a name built at
+run time (`getattr(module, prefix + "name")`, `globals()`) is not seen.
 
 ## Coverage re-ingest hook
 
