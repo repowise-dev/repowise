@@ -15,19 +15,29 @@ its thresholds are calibrated: it reads as ranked.
 Stale evidence (the body changed since the run) is flagged, never ranked: the
 line says the measurement predates the body, so the agent knows to measure
 again rather than trust an old rank.
+
+A function's line then adds what its action row (``evidence.action_row``)
+holds: ``why:`` when its next step fired on what the run measured inside it,
+and ``driven by:`` with up to three production callers the run measured, each
+with the share of the function's time it drove. Each part only with its data,
+and never on a file's line or a stale one.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.evidence.action_row import action_row, row_step, row_why_drivers
+from repowise.core.evidence.next_step import STEP_CLASSES
+from repowise.core.evidence.payloads import json_list
 from repowise.core.ingestion.symbol_identity import file_of_symbol
-from repowise.core.persistence.crud import hotness_for_symbols
+from repowise.core.persistence.crud import hotness_for_symbols, measured_callers, step_findings
 
 _log = logging.getLogger("repowise.mcp.context")
 
@@ -84,26 +94,79 @@ async def attach_measured(
     if not rows:
         return
     now = now or datetime.now(UTC)
+    extra = await _why_and_drivers(
+        session,
+        repository_id,
+        [rows[k] for kind, k in wanted.values() if kind == "symbol" and k in rows],
+    )
     for name, (kind, key) in wanted.items():
-        line = _line_for(kind, key, rows, now)
+        line = _line_for(kind, key, rows, now, extra)
         if line:
             cards[name]["measured"] = line
 
 
-def _line_for(kind: str, key: str, rows: dict[str, Any], now: datetime) -> str | None:
+async def _why_and_drivers(
+    session: AsyncSession, repository_id: str, rows: list[Any]
+) -> dict[str, list[str]]:
+    """``{symbol id: [why, driven by]}`` from each fresh row's action row,
+    reading only for rows whose run measured inside or calling the function."""
+    fresh = [r for r in rows if r.freshness != "stale" and (r.inside_json or r.drivers_json)]
+    if not fresh:
+        return {}
+    try:
+        # A step reads static findings only for a class it can fire on.
+        findings = await step_findings(
+            session,
+            repository_id,
+            [r for r in fresh if r.inside_json and r.workload_class in STEP_CLASSES],
+        )
+        callers = await measured_callers(session, repository_id, fresh)
+    except SQLAlchemyError:
+        # The line stands without them.
+        _log.debug("get_context: measured why/drivers read failed", exc_info=True)
+        return {}
+    out: dict[str, list[str]] = {}
+    for r in fresh:
+        step = row_step(
+            r.symbol_id,
+            json_list(r.inside_json),
+            json_list(r.drivers_json),
+            r.workload_name,
+            r.workload_class,
+            findings,
+        )
+        row = action_row(
+            r,
+            workload_name=r.workload_name,
+            workload_class=r.workload_class,
+            next_step=step,
+            callers=callers.get(r.symbol_id, ()),
+            drivers_json=r.drivers_json,
+        ).as_dict()
+        parts = row_why_drivers(row)
+        if parts:
+            out[r.symbol_id] = parts
+    return out
+
+
+def _line_for(
+    kind: str, key: str, rows: dict[str, Any], now: datetime, extra: dict[str, list[str]]
+) -> str | None:
     if kind == "symbol":
-        return symbol_line(rows[key], now) if key in rows else None
+        return symbol_line(rows[key], now, extra.get(key, ())) if key in rows else None
     return file_line([r for sid, r in rows.items() if file_of_symbol(sid) == key], now)
 
 
-def symbol_line(row: Any, now: datetime) -> str:
+def symbol_line(row: Any, now: datetime, extra: Sequence[str] = ()) -> str:
     """One symbol's line, e.g. ``rank 3 of repo code in entry_point "cli build"
-    (12% self, 9-15%; repo code itself 40%), 2d old``."""
+    (12% self, 9-15%; repo code itself 40%), 2d old``, then *extra* (its
+    ``why:`` and ``driven by:``), each after ``; ``."""
     if row.freshness == "stale":
         return f"stale: measured {_basis(row)} before the body changed, {_age(row, now)}"
     details = "; ".join(d for d in (_share(row), _repo_self(row)) if d)
     paren = f" ({details})" if details else ""
-    return f"{_place(row)} {_basis(row)}{paren}, {_age(row, now)}{_earlier(row)}"
+    line = f"{_place(row)} {_basis(row)}{paren}, {_age(row, now)}{_earlier(row)}"
+    return "; ".join((line, *extra))
 
 
 def file_line(rows: list[Any], now: datetime) -> str | None:
