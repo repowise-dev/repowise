@@ -633,17 +633,19 @@ def _jvm(frame: ProfileFrame, symbols: Sequence[IndexedSymbol], *, kotlin: bool)
     if symbol is None:
         return _jvm_off_method(call, frame.line, symbols, callables)
     if call.enclosing is None and not call.anonymous:
-        if symbol.name == call.wanted and _id_parent(symbol) == call.owner:
-            # The line found the method; the frame's parameters, where it has them, must
-            # agree, or a line that drifted onto a neighbouring overload would join it.
-            siblings = [
-                s for s in callables
-                if s is not symbol and s.name == symbol.name and _id_parent(s) == call.owner
-            ]
-            agree = _params_agree(symbol, name.params, call.by_count, siblings)
-            return (symbol, False) if agree else "second_signal_mismatch"
-        return "second_signal_mismatch"
+        return _jvm_method(call, symbol, callables)
     return _jvm_nested(call, symbol)
+
+
+def _jvm_method(call: _JvmCall, symbol: IndexedSymbol, callables: Sequence[IndexedSymbol]) -> _Hit | SkipReason:
+    """A named method's frame at a line *symbol* holds."""
+    if symbol.name != call.wanted or _id_parent(symbol) != call.owner:
+        return "second_signal_mismatch"
+    # The line found the method; the frame's parameters, where it has them, must
+    # agree, or a line that drifted onto a neighbouring overload would join it.
+    siblings = [s for s in callables if s is not symbol and s.name == symbol.name and _id_parent(s) == call.owner]
+    agree = _params_agree(symbol, call.name.params, call.by_count, siblings)
+    return (symbol, False) if agree else "second_signal_mismatch"
 
 
 def _jvm_synthetic(name: JvmFrameName) -> bool:
