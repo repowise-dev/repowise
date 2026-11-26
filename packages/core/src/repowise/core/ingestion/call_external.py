@@ -34,7 +34,7 @@ _MOCK_METHODS = frozenset({"mock", "doMock", "unstable_mockModule"})
 #: The method name at a call's ``start_byte``, then a plain string first argument.
 _MOCK_SPEC = re.compile(rb"[\w$]+\s*\(\s*(['\"`])([^'\"`\\\r\n]+)\1")
 #: A partial mock keeps the real module, so it replaces nothing provably: a
-#: factory with a parameter (Vitest's ``importOriginal``), or a file that reads
+#: factory with a parameter (Vitest's ``importOriginal``), or one that reads
 #: the original through ``requireActual("m")`` / ``importActual("m")``.
 _FACTORY_TAKES_ORIGINAL = re.compile(
     rb"\s*,\s*(?:async\s*)?(?:\(\s*[\w${\[]|[\w$]+\s*=>|function\s*[\w$]*\s*\(\s*[\w${\[])"
@@ -137,7 +137,8 @@ class ExternalCallsMixin:
                     if m is None or _FACTORY_TAKES_ORIGINAL.match(data, m.end()):
                         continue
                     spec = m.group(2)
-                    if re.search(_ACTUAL_OF % re.escape(spec), data) is None:
+                    factory = data[m.end() : _call_end(data, m.end())]
+                    if re.search(_ACTUAL_OF % re.escape(spec), factory) is None:
                         found.add(spec.decode("utf-8", "replace"))
             specs = cache[file_path] = frozenset(found)
         return specs
@@ -239,6 +240,25 @@ class ExternalCallsMixin:
         start, end = max(holders)
         span = self._spans_for(file_path).get(caller_id)  # type: ignore[attr-defined]
         return span is not None and start <= span[0] and span[1] <= end
+
+
+def _call_end(data: bytes, pos: int) -> int:
+    """The offset of the ``)`` closing the call whose arguments continue at *pos*.
+
+    Ceiling: brackets inside strings and comments are counted too, so a
+    factory holding an unbalanced one ends early or late; that only narrows or
+    widens the text searched for ``requireActual``.
+    """
+    depth = 0
+    for i in range(pos, len(data)):
+        byte = data[i]
+        if byte in b"([{":
+            depth += 1
+        elif byte in b")]}":
+            if depth == 0:
+                return i
+            depth -= 1
+    return len(data)
 
 
 def _site(

@@ -262,6 +262,18 @@ def test_a_partial_mock_keeps_the_package(tmp_path: Path, mock: str) -> None:
     assert {s[3] for s in _sites(_build(tmp_path, {"a.test.js": src}))} == {"axios"}
 
 
+def test_a_full_mock_stays_a_mock_when_the_file_reads_the_original_elsewhere(
+    tmp_path: Path,
+) -> None:
+    src = (
+        "const axios = require('axios');\n"
+        "jest.mock('axios', () => ({ get: jest.fn() }));\n"
+        "const real = jest.requireActual('axios');\n"
+        "axios.get('/u');\n"
+    )
+    assert _sites(_build(tmp_path, {"a.test.js": src})) == []
+
+
 def test_a_manual_mock_directory_replaces_the_package_in_tests_only(tmp_path: Path) -> None:
     files = {
         "commands/__mocks__/@scope/output.js": "module.exports = jest.fn();\n",
