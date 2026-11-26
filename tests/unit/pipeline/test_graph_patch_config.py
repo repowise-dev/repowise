@@ -209,10 +209,11 @@ def test_edits_no_graph_step_reads_are_patched(
         pytest.param(
             {"package.json": _package(exports={".": "./src/fmt.ts"})}, "package.json: a field", id="package-exports"
         ),
-        # A framework dependency changes the tech stack and so the framework edges.
+        # A new dependency name can mark a framework that loads files by
+        # convention, so the digest moves before the tech stack is compared.
         pytest.param(
             {"package.json": _package(dependencies={"express": "^4.0.0"})},
-            "tech stack changed",
+            "package.json: a field",
             id="framework-dependency",
         ),
         pytest.param(
