@@ -28,7 +28,8 @@ vi.mock("@/components/model-upgrade/model-upgrade", () => ({
   useModelUpgrade: () => ({ openSheet: vi.fn(), sheet: null }),
 }));
 
-import { RepoAgentRows, RepoDepthRows, RepoSetupRows } from "./setup-settings";
+import type { RepoResponse } from "@/lib/api/types";
+import { RepoAgentRows, RepoDepthRows, RepoSetupRows, SetupRepoLinks } from "./setup-settings";
 
 function wrap(setup: SetupResponse, node: React.ReactNode) {
   mocks.getRepoSetup.mockResolvedValue(setup);
@@ -122,5 +123,34 @@ describe("Suggested from your usage", () => {
     expect(screen.getByText("Load the four read tools up front")).toBeTruthy();
     expect(screen.getByText("Shorter command output")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /^Copy prompt/ })).toHaveLength(2);
+  });
+});
+
+describe("Repository links", () => {
+  const repo = (fields: Partial<RepoResponse>): RepoResponse => ({
+    id: "r1",
+    name: "svc-02",
+    url: "",
+    local_path: "/ws/services/svc-02",
+    default_branch: "main",
+    head_commit: null,
+    settings: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    ...fields,
+  });
+
+  it("names a repo by its workspace display name and still links by its id", () => {
+    render(
+      <SetupRepoLinks
+        repos={[repo({ display_name: "Billing API" }), repo({ id: "r2", name: "web-legacy" })]}
+      />,
+    );
+    const link = screen.getByRole("link", { name: "Open Setup for Billing API" });
+    expect(link.getAttribute("href")).toBe("/repos/r1/settings/setup");
+    expect(screen.getByText("Billing API")).toBeTruthy();
+    expect(screen.queryByText("svc-02")).toBeNull();
+    // A repo without a label keeps the name it showed before.
+    expect(screen.getByRole("link", { name: "Open Setup for web-legacy" })).toBeTruthy();
   });
 });

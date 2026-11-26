@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { repoLabel } from "@repowise-dev/types/repos";
 import { getRepo } from "@/lib/api/repos";
 import { ActiveJobBannerWrapper as ActiveJobBanner } from "@/components/dashboard/active-job-banner-wrapper";
 import { PageTransition } from "@/components/layout/page-transition";
@@ -18,7 +19,7 @@ export default async function RepoLayout({ children, params }: RepoLayoutProps) 
   let docsMode: "none" | "deterministic" | "llm" | null = null;
   try {
     const repo = await getRepo(id);
-    repoName = repo.name;
+    repoName = repoLabel(repo, repo.name);
     docsMode = repo.docs_mode ?? null;
   } catch {
     redirect("/");

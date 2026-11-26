@@ -1698,8 +1698,36 @@ checkout.
 ## Workspace config (`.repowise-workspace.yaml`)
 
 A multi-repo [workspace](../scale/WORKSPACES.md) is configured at its root.
-Beside the repo list it takes `repos[].tags`, `conformance:`, and a
-`contracts:` block that tunes cross-repo contract detection.
+Beside the repo list it takes `repos[].display_name`, `repos[].tags`,
+`conformance:`, and a `contracts:` block that tunes cross-repo contract
+detection.
+
+### `repos[].display_name`
+
+The name the dashboard shows for a repo in place of its alias or folder name:
+the workspace repository list, the sidebar, the command palette, the repo
+header, breadcrumb and page titles. Use it when folder names such as
+`svc-02` or `web-legacy` do not say what a repo is:
+
+```yaml
+repos:
+  - path: services/svc-02
+    alias: svc-02
+    display_name: Billing API
+  - path: web-legacy
+    alias: web-legacy
+    display_name: Customer portal
+```
+
+It changes nothing but the label. Commands, MCP tools (`repo=`),
+`default_repo`, conformance rules and the API keep naming the repo by its
+alias, and views that report cross-repo analysis (contracts, co-changes, the
+system map) show aliases, the names those rules and filters use. Leave it out,
+or empty, to show the alias or folder name as before. Quote a label YAML would
+read as a boolean (`display_name: "No"`), because an unquoted `Yes`, `No`, `On`
+or `Off` loads as true or false and counts as no label. Repowise keeps the field
+when it rewrites the file. The server reads the file when `repowise serve`
+starts, so restart a running server to see an edit.
 
 ### `repos[].tags`
 

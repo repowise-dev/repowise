@@ -6,6 +6,9 @@ import type { ContractOriginWire, LinkStrategyWire } from "@repowise-dev/types/w
 
 export interface WorkspaceRepoEntry {
   alias: string;
+  // The config's label for the repo, for display only (see `repoLabel`).
+  // Requests keep naming the repo by `alias`. Absent on an older server.
+  display_name?: string | null;
   path: string;
   is_primary: boolean;
   indexed_at: string | null;

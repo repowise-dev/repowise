@@ -25,7 +25,13 @@ from repowise.core.persistence.models import (
     Repository,
 )
 from repowise.server.auth import Action, authorize_repo, checks_repo_access, read_route
-from repowise.server.deps import get_db_session, get_fts, request_principal, verify_api_key
+from repowise.server.deps import (
+    get_db_session,
+    get_fts,
+    request_principal,
+    verify_api_key,
+    workspace_display_name,
+)
 from repowise.server.job_executor import execute_job
 from repowise.server.routers._repo_generate import (
     GenerateRequestBody,
@@ -310,16 +316,20 @@ async def repos_summary(
 @router.get("/{repo_id}", response_model=RepoResponse)
 async def get_repo(
     repo_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Get a single repository by ID."""
-    return repo_response(await _get_repo_or_404(session, repo_id))
+    response = repo_response(await _get_repo_or_404(session, repo_id))
+    response.display_name = workspace_display_name(request.app.state, response.local_path)
+    return response
 
 
 @router.patch("/{repo_id}", response_model=RepoResponse)
 async def update_repo(
     repo_id: str,
     body: RepoUpdate,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Update repository fields.
@@ -346,7 +356,9 @@ async def update_repo(
     if row_settings is not None:
         repo.settings_json = json.dumps(crud.keep_analysis_ran(repo.settings_json, row_settings))
     await session.flush()
-    return repo_response(repo)
+    response = repo_response(repo)
+    response.display_name = workspace_display_name(request.app.state, response.local_path)
+    return response
 
 
 def _forget_workspace_member(app_state: Any, alias: str) -> bool:

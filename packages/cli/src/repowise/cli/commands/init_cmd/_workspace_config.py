@@ -96,7 +96,8 @@ def _read_quietly(root: Path) -> Any | None:
 
 
 def _picked_entries(pick: WorkspacePick, previous: dict[str, Any]) -> dict[str, Any]:
-    """One entry per picked repo, keyed by real path, carrying its existing tags."""
+    """One entry per picked repo, keyed by real path, carrying its existing tags
+    and display name."""
     from repowise.core.workspace import RepoEntry
 
     picked: dict[str, Any] = {}
@@ -107,6 +108,7 @@ def _picked_entries(pick: WorkspacePick, previous: dict[str, Any]) -> dict[str, 
             path=repo.path.relative_to(pick.root).as_posix(),
             alias=repo.alias,
             tags=list(before.tags) if before else [],
+            display_name=before.display_name if before else None,
         )
     return picked
 

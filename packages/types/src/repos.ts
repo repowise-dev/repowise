@@ -55,6 +55,17 @@ export interface ReposSummaryResponse {
 }
 
 /**
+ * The name a surface shows for a repository: the `display_name` a workspace
+ * gives it, else `fallback`, the name that surface showed before labels
+ * existed (`name`, or the workspace alias). For display only: ids, aliases,
+ * filters, links and copied commands keep using the identity, since commands,
+ * MCP tools and the API never see the label.
+ */
+export function repoLabel(repo: { display_name?: string | null }, fallback: string): string {
+  return repo.display_name?.trim() || fallback;
+}
+
+/**
  * Normalizes a repo path (e.g. a server-reported `local_path`) for equality
  * comparison: forward slashes, no trailing slash, and lowercase on Windows,
  * where paths are case-insensitive. On Windows both `\` and `/` count as

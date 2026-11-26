@@ -122,6 +122,7 @@ async def get_workspace(
         repo_entries.append(
             WorkspaceRepoEntry(
                 alias=r.alias,
+                display_name=r.display_name,
                 path=r.path,
                 is_primary=r.is_primary,
                 indexed_at=indexed_at,

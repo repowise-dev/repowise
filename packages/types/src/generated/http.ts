@@ -4432,6 +4432,7 @@ export interface RepoResponse {
   workspace_alias?: string | null;
   workspace_status?: string | null;
   is_primary?: boolean | null;
+  display_name?: string | null;
   docs_enabled?: boolean | null;
   docs_mode?: "none" | "deterministic" | "llm" | null;
   docs_skip_reason?: string | null;
@@ -5967,6 +5968,7 @@ export interface WorkspaceRepoDiagnostics {
 
 export interface WorkspaceRepoEntry {
   alias: string;
+  display_name?: string | null;
   path: string;
   is_primary?: boolean;
   indexed_at?: string | null;

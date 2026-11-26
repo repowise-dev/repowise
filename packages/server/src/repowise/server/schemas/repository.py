@@ -62,6 +62,11 @@ class RepoResponse(BaseModel):
     workspace_alias: str | None = None
     workspace_status: str | None = None
     is_primary: bool | None = None
+    # The workspace config's ``display_name`` for this repo: a label for
+    # people to read in place of ``name``. Display only, since ``name`` and
+    # ``workspace_alias`` stay the identities requests use. None when the
+    # config sets none, and always in single-repo mode.
+    display_name: str | None = None
     # ``docs_enabled`` only says whether pages exist; ``docs_mode`` says who
     # wrote them, which is what a client needs to offer the "upgrade to
     # model-written pages" path.

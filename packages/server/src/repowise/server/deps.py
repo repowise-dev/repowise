@@ -123,6 +123,23 @@ def workspace_alias_for(app_state, repo_id: str) -> str | None:
     return None
 
 
+def workspace_display_name(app_state, local_path: str | None) -> str | None:
+    """The ``display_name`` the workspace config gives the member at *local_path*.
+
+    None outside a workspace, for a repo that is not a member and for a member
+    with no label. A label for people to read: never look a repo up by it.
+    """
+    ws_config = getattr(app_state, "workspace_config", None)
+    ws_root = getattr(app_state, "workspace_root", None)
+    if ws_config is None or ws_root is None or not local_path:
+        return None
+    target = Path(local_path).resolve()
+    for entry in ws_config.repos:
+        if (Path(ws_root) / entry.path).resolve() == target:
+            return getattr(entry, "display_name", None)
+    return None
+
+
 def cross_repo_cut_inputs(request: Request, repo_id: str) -> dict:
     """``lookup`` and ``alias`` for the dead-code cross-repo cut (``serve_findings``)
     on *repo_id*; both ``None`` outside a workspace, which cuts nothing."""

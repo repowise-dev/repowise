@@ -41,6 +41,10 @@ export interface RepoResponse {
   workspace_alias?: string | null;
   workspace_status?: "indexed" | "needs_index" | "missing_dir" | null;
   is_primary?: boolean | null;
+  /** The workspace's label for the repo, shown in place of `name` (see
+   * `repoLabel`). Display only: `name` and `workspace_alias` stay the
+   * identities. Null when none is set, and in single-repo mode. */
+  display_name?: string | null;
   /** Whether any pages exist. `docs_mode` says who wrote them: "deterministic"
    * pages are rendered from templates and can be upgraded to model-written
    * ones. */
