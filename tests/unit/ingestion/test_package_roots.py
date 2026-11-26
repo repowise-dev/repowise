@@ -314,6 +314,7 @@ def test_cargo_manifest_publishes() -> None:
     assert cargo_manifest_publishes({"package": {"name": "foo"}}) is True
     assert cargo_manifest_publishes({"package": {"name": "foo", "publish": True}}) is True
     assert cargo_manifest_publishes({"package": {"name": "foo", "publish": ["crates-io"]}}) is True
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": ["none"]}}) is False
     assert cargo_manifest_publishes({"package": {"name": "foo", "publish": False}}) is False
     assert cargo_manifest_publishes({"package": {"name": "foo", "publish": []}}) is False
 
@@ -322,6 +323,8 @@ def test_traverser_package_root_cargo_published(tmp_path: Path) -> None:
     _write(tmp_path, "crates/pub/Cargo.toml", '[package]\nname = "pub"\nversion = "0.1.0"\n')
     _write(tmp_path, "crates/unpub/Cargo.toml", '[package]\nname = "unpub"\npublish = false\n')
     _write(tmp_path, "crates/unpub_list/Cargo.toml", '[package]\nname = "unpub_list"\npublish = []\n')
+    _write(tmp_path, "crates/unpub_none/Cargo.toml", '[package]\nname = "unpub_none"\npublish = ["none"]\n')
+    _write(tmp_path, "crates/virtual_ws/Cargo.toml", '[workspace]\nmembers = ["a", "b"]\n')
     _write(tmp_path, "crates/mixed/Cargo.toml", '[package]\nname = "mixed"\npublish = false\n')
     _write(tmp_path, "crates/mixed/package.json", '{"name": "mixed-node"}\n')
     _write(tmp_path, "crates/corrupt/Cargo.toml", "not valid toml ::: [[\n")
@@ -330,6 +333,8 @@ def test_traverser_package_root_cargo_published(tmp_path: Path) -> None:
     assert traverser._is_package_root_dir("crates/pub") is True
     assert traverser._is_package_root_dir("crates/unpub") is False
     assert traverser._is_package_root_dir("crates/unpub_list") is False
+    assert traverser._is_package_root_dir("crates/unpub_none") is False
+    assert traverser._is_package_root_dir("crates/virtual_ws") is True
     assert traverser._is_package_root_dir("crates/mixed") is True
     assert traverser._is_package_root_dir("crates/corrupt") is False
 

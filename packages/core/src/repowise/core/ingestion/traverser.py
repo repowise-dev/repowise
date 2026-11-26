@@ -390,6 +390,8 @@ def _cargo_is_published(manifest_path: Path) -> bool:
 
     try:
         data = tomllib.loads(manifest_path.read_text(encoding="utf-8", errors="ignore"))
+        if "package" not in data:
+            return True
         return cargo_manifest_publishes(data)
     except Exception:
         return False

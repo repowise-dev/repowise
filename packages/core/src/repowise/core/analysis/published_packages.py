@@ -230,7 +230,7 @@ def cargo_manifest_publishes(data: dict[str, Any]) -> bool:
     package = data.get("package")
     if not isinstance(package, dict):
         return False
-    return package.get("publish", True) not in (False, [])
+    return package.get("publish", True) not in (False, [], ["none"])
 
 
 def cargo_published(facts: BuildFacts) -> dict[str, str | None]:
