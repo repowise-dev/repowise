@@ -76,7 +76,7 @@ def _served_file(module_path: str, importer_path: str, ctx: ResolverContext) -> 
             candidate = posixpath.normpath(posixpath.join(root, public, tail))
             if candidate in ctx.path_set:
                 return candidate
-            if src == "." or tail.startswith(src + "/"):
+            if src == "." or tail.startswith(("src/", src + "/")):
                 candidate = posixpath.normpath(posixpath.join(root, tail))
                 if candidate in ctx.path_set:
                     return candidate
