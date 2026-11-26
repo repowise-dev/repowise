@@ -2,7 +2,9 @@
 
 Only checkout-relative external maps are read. Inline, remote and indexed
 maps are refused explicitly; no source content embedded in a map is trusted
-as checkout source. Positions remain subject to the normal frame resolver.
+as checkout source. Sources are checkout-relative paths, or webpack's
+``webpack://<namespace>/<path>`` form. Positions remain subject to the normal
+frame resolver.
 """
 
 from __future__ import annotations
@@ -49,6 +51,41 @@ def _relative(base: str, reference: str) -> str:
     return path
 
 
+def _webpack_source(
+    map_path: str, reference: str, exists: Callable[[str], bool] | None
+) -> str | None:
+    """A ``webpack://<namespace>/<path>`` source as a checkout path, else None.
+
+    Webpack names a source relative to its build context, a directory the map
+    sits under (the project root, or a package root in a monorepo), not to the
+    map. The deepest ancestor of the map where the file exists wins; with none,
+    the path reads from the map's directory like a plain relative source.
+    """
+    parsed = urlsplit(reference)
+    if parsed.scheme != "webpack" or parsed.fragment:
+        return None
+    decoded = unquote(parsed.path).lstrip("/").replace("\\", "/")
+    if not decoded or ":" in decoded:
+        raise _refuse("an absolute path is outside the map's checkout")
+    candidates: list[str] = []
+    base = posixpath.dirname(map_path)
+    while True:
+        path = posixpath.normpath(posixpath.join(base, decoded))
+        if path != ".." and not path.startswith("../"):
+            candidates.append(path)
+        if not base:
+            break
+        base = posixpath.dirname(base)
+    if not candidates:
+        raise _refuse("a path escapes the checkout")
+    return next((c for c in candidates if exists and exists(c)), candidates[0])
+
+
+def _named(exc: EvidenceFormatError, rel: str) -> EvidenceFormatError:
+    """Name the bundle: one unusable map or position refuses the whole profile."""
+    return EvidenceFormatError(f"{exc} (in {rel})", exc.hint)
+
+
 def _vlq(segment: str) -> list[int]:
     values: list[int] = []
     value = shift = 0
@@ -76,7 +113,9 @@ class _Position:
     name: str = ""
 
 
-def _decode(text: str, map_path: str) -> list[list[_Position]]:
+def _decode(
+    text: str, map_path: str, exists: Callable[[str], bool] | None = None
+) -> list[list[_Position]]:
     try:
         data = json.loads(text)
     except (ValueError, RecursionError):
@@ -91,7 +130,8 @@ def _decode(text: str, map_path: str) -> list[list[_Position]]:
         raise _refuse("invalid sources, names or mappings")
     # Check sourceRoot separately so an absolute source cannot hide it.
     prefix = _relative(map_path, source_root + "/") if source_root else posixpath.dirname(map_path)
-    paths = [_relative(posixpath.join(prefix, "_"), source) for source in sources]
+    paths = [_webpack_source(map_path, source, exists)
+             or _relative(posixpath.join(prefix, "_"), source) for source in sources]
     return _decode_lines(mappings, paths, names)
 
 
@@ -134,10 +174,10 @@ def _load_map(
 ) -> tuple[str, list[list[_Position]]] | None:
     try:
         return _read_map(rel, read_lines)
-    except EvidenceFormatError:
+    except EvidenceFormatError as exc:
         if generated:
             return None  # Unusable build output stays a library frame, as before.
-        raise
+        raise _named(exc, rel) from None
 
 
 def _read_map(
@@ -203,7 +243,10 @@ def remap_profile(
         map_path, lines = mapping
         if is_dirty(rel) or is_dirty(map_path):
             raise _refuse("the bundle or map differs from the indexed commit")
-        position = _position(frame, lines)
+        try:
+            position = _position(frame, lines)
+        except EvidenceFormatError as exc:
+            raise _named(exc, rel) from None
         assert position.source is not None
         frames.append(replace(frame, path=root.replace("\\", "/").rstrip("/") + "/" + position.source,
                               line=position.line, column=position.original_column,

@@ -70,9 +70,50 @@ def test_bad_maps_are_explicit_refusals(bundle, change):
         else:
             data["mappings"] = "S"
         (root / "bundle.js.map").write_text(json.dumps(data))
-    with pytest.raises(EvidenceFormatError, match="source map"):
+    # The refusal names the bundle whose map could not be used.
+    with pytest.raises(EvidenceFormatError, match=r"source map.*\(in bundle\.js\)"):
         convert_profile(_run(root, "cpuprofile"), root=str(root), value_kind="cpu",
                         symbols_by_file={}, read_lines=checkout_reader(root))
+
+
+@pytest.mark.parametrize("source", ["webpack://_N_E/./src/app.ts", "webpack:///src/app.ts"])
+def test_webpack_sources_join_the_original_file(bundle, source):
+    root, data = bundle
+    data["sources"] = [source]
+    (root / "bundle.js.map").write_text(json.dumps(data))
+    result = convert_profile(
+        _run(root, "cpuprofile"), root=str(root), value_kind="cpu",
+        symbols_by_file={"src/app.ts": [_sym("src/app.ts", "original", 1, 1, "function")]},
+        read_lines=checkout_reader(root),
+    )
+    assert [s["path"] for s in result.document["symbols"]] == ["src/app.ts"]
+
+
+@pytest.mark.parametrize(("source", "found"), [
+    # Next.js: relative to the app's build context, not to the chunk's map.
+    ("webpack://_N_E/./src/x.ts", "apps/web/src/x.ts"),
+    # A monorepo package outside the app's context.
+    ("webpack://_N_E/../../packages/ui/b.ts", "packages/ui/b.ts"),
+    # A module that is not a checkout file reads from the map's directory.
+    ("webpack://_N_E/webpack/runtime/load", "apps/web/.next/static/webpack/runtime/load"),
+])
+def test_webpack_sources_resolve_against_the_build_context(source, found):
+    from repowise.core.evidence.source_maps import _decode
+
+    files = {"apps/web/src/x.ts", "packages/ui/b.ts"}
+    lines = _decode(json.dumps({"version": 3, "sources": [source], "mappings": "AAAA"}),
+                    "apps/web/.next/static/a.js.map", files.__contains__)
+    assert lines[0][0].source == found
+
+
+@pytest.mark.parametrize("source", ["webpack:///../outside.ts", "webpack://ns/C:/x.ts",
+                                    "https://example.com/src/x.ts"])
+def test_webpack_paths_stay_inside_the_checkout(source):
+    from repowise.core.evidence.source_maps import _decode
+
+    with pytest.raises(EvidenceFormatError, match="source map"):
+        _decode(json.dumps({"version": 3, "sources": [source], "mappings": "AAAA"}),
+                "a.js.map", lambda _: True)
 
 
 def test_ingestion_loads_the_original_symbols_before_joining(bundle):
@@ -133,15 +174,15 @@ def test_dirty_bundle_or_map_is_not_used(bundle, dirty):
                         symbols_by_file={}, read_lines=checkout_reader(root), dirty_paths=[dirty])
 
 
-@pytest.mark.parametrize("problem", ["inline", "remote", "webpack", "indexed", "invalid"])
+@pytest.mark.parametrize("problem", ["inline", "remote", "webpack-internal", "indexed", "invalid"])
 def test_unusable_generated_maps_remain_library_frames(bundle, problem):
     root, data = bundle
     if problem in ("inline", "remote"):
         url = "data:application/json;base64,e30=" if problem == "inline" else "https://example.com/a.map"
         (root / "bundle.js").write_text(f"//# sourceMappingURL={url}\n")
     else:
-        if problem == "webpack":
-            data["sources"] = ["webpack:///./src/app.ts"]
+        if problem == "webpack-internal":
+            data["sources"] = ["webpack-internal:///./src/app.ts"]
         elif problem == "indexed":
             data["sections"] = []
         else:
