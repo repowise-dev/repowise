@@ -320,6 +320,17 @@ def is_relative(consumer: Contract) -> bool:
     return not consumer.meta.get("host") and not consumer.meta.get("base_token")
 
 
+def reaches_own_origin(consumer: Contract) -> bool:
+    """Whether *consumer* is a relative native ``fetch``, which the page's own server receives.
+
+    A wrapper (``apiRequest('/api/x')``) is left out: it may prepend a backend
+    origin the extractor did not read. Ceiling: an axios or HttpClient call
+    with no configured base reaches its origin too; reading that needs the
+    instance's config.
+    """
+    return is_relative(consumer) and consumer.meta.get("client") == "fetch"
+
+
 def aims_elsewhere(consumer: Contract) -> bool:
     """Whether *consumer*'s base or host points at a service nothing in the workspace places.
 
@@ -684,6 +695,7 @@ __all__ = [
     "gateway_route_links",
     "is_deferred",
     "is_relative",
+    "reaches_own_origin",
     "segment_pass",
     "service_pass",
 ]

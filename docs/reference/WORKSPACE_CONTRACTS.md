@@ -46,7 +46,7 @@ follows from the strategy.
 | 1.0 | `gateway_route` | exact | A gateway's config forwards the path to the service: the gateway's own edge, and a call through it linked on the forwarded path |
 | 1.0 | `manual` | manual | Declared in the workspace config |
 
-A relative call (no host, no base) whose own service declares the route is served
+A relative `fetch` (no host, no base) whose own service declares the route is served
 there and linked to no other service, so a browser call to a Next.js route handler is not linked past
 it to the API the handler forwards to; the handler's own forwarding call links there.
 

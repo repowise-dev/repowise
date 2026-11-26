@@ -153,7 +153,7 @@ links are appended after it.
    resolved target repo, or with none to its own repo when its base or host does not
    point elsewhere (`aims_elsewhere`: an unresolved base token or an unmapped,
    non-local host). Such a consumer also skips `candidate_pass` and `segment_pass`.
-   In the exact pass, a relative HTTP call (no host, no base) whose own service
+   In the exact pass, a relative `fetch` (no host, no base) whose own service
    declares its id links to no other service (`TypeMatcher.own_service_first`).
 5. **Service links**: `service_pass` gives each HTTP consumer whose target is a
    workspace repo, but whose path no provider serves, one `host_only` link with no

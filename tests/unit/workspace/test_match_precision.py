@@ -86,12 +86,21 @@ def test_a_relative_call_its_own_service_serves_links_to_no_other() -> None:
     contracts = [
         _http("provider", "/api/v1/mindmaps", "frontend"),
         _http("provider", "/api/v1/mindmaps", "backend"),
-        _http("consumer", "/api/v1/mindmaps", "frontend"),
+        _http("consumer", "/api/v1/mindmaps", "frontend", client="fetch"),
     ]
     assert _links(contracts) == []
     diag = build_diagnostics(contracts, match_contracts(contracts))
     assert diag.unmatched_consumers == []
     assert [u.reason for u in diag.in_service_consumers] == [UnmatchedReason.INTERNAL_ONLY]
+
+
+def test_a_wrapper_call_may_carry_a_backend_origin_so_it_keeps_its_link() -> None:
+    contracts = [
+        _http("provider", "/api/v1/mindmaps", "frontend"),
+        _http("provider", "/api/v1/mindmaps", "backend"),
+        _http("consumer", "/api/v1/mindmaps", "frontend", client="wrapper"),
+    ]
+    assert _links(contracts) == [("backend/provider.ts", LinkStrategy.EXACT_ID)]
 
 
 def test_the_handler_forwarding_through_its_base_still_links_to_the_api() -> None:

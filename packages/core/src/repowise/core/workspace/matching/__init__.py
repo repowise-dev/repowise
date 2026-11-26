@@ -47,8 +47,8 @@ class TypeMatcher:
     #: tables, where every repo on the id is a true end.
     one_provider_repo: bool = False
     #: A consumer this returns True for is served by a provider in its own
-    #: service when one declares its id, and links to no other: a relative HTTP
-    #: call reaches its own origin (a Next.js route handler in front of an API).
+    #: service when one declares its id, and links to no other: a relative
+    #: ``fetch`` reaches its own origin (a Next.js route handler in front of an API).
     own_service_first: Callable[[Contract], bool] | None = None
 
 
@@ -57,7 +57,7 @@ MATCHERS: dict[str, TypeMatcher] = {
         deferred=http.is_deferred,
         accepts=http.accepts,
         one_provider_repo=True,
-        own_service_first=http.is_relative,
+        own_service_first=http.reaches_own_origin,
         passes=(
             http.gateway_pass,
             http.base_resolved_pass,
