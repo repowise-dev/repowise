@@ -284,7 +284,7 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 | Kind | Entries | Input formats read |
 |---|---|---|
 | `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, V8 `.cpuprofile`, collapsed stacks, or a v1 document |
-| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, `go test -bench` output, hyperfine JSON, Vitest benchmark JSON, or a v1 document |
+| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, Google Benchmark JSON, `go test -bench` output, hyperfine JSON, Vitest benchmark JSON, or a v1 document |
 | `test_timing` | Per test: duration and outcome | JUnit XML, `go test -json`, or a v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 | `route_latency` | Per method and route template: requests, p50, p95, total time, errors | A v1 document |
@@ -292,7 +292,7 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`,
+`pprof`, `cpuprofile`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`,
 `junit`, `pg-stat-statements`, `collapsed`, or one a plugin registers).
 
 Every kind is one entry of the kind registry (`repowise.core.evidence.kinds`):
@@ -343,6 +343,7 @@ migration.
 | `pytest-benchmark` | `pytest --benchmark-only --benchmark-json=PATH` | `fullname` (the pytest node id, parameters included) names the series; `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds`, `iterations` |
 | `go-bench` | `go test -bench . -benchmem` saved to a file, as text or `-json` | the package import path and benchmark name (`example.com/m/strs.BenchmarkJoin/n=5`) name the series; time per op in `ns`, `allocs_per_op`, `bytes_per_op`, `iterations`; `-count=N` repeats fold into one value with `rounds` |
 | `hyperfine` | `hyperfine --export-json PATH` | one series per result, named `command 1`, `command 2`, ... (the command line is never stored); `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds` (the number of timed runs) |
+| `google-benchmark` | a C++ binary built with Google Benchmark, run with `--benchmark_format=json` | `name` (``BM_Sort/1024``) names the series; a plain run carries `mean` from `real_time` with its `iterations`; a run with `--benchmark_repetitions` folds its `mean`, `median` and `stddev` aggregate rows into the entry, and `iterations` is the repetition count. The row's `time_unit` is the unit; the file carries no source path, so no entry claims a function |
 | `vitest-bench` | `vitest bench --outputJson=PATH` | `fullName > name` names the series, with a numeric suffix on repeated names; `min`, `max`, `mean`, `median` in milliseconds, lower is better, and `rounds` from `sampleCount` |
 
 - The node id without its parameters is the benchmark function's symbol id, so

@@ -38,6 +38,7 @@ from . import (
     cpuprofile,
     go_bench,
     go_test_json,
+    google_benchmark,
     hyperfine,
     junit,
     pg_stat_statements,
@@ -99,6 +100,10 @@ profile_formats.register(
     ProfileFormat(pg_stat_statements.sniff, to_v1=pg_stat_statements.to_v1),
 )
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
+profile_formats.register(
+    "google-benchmark",
+    ProfileFormat(google_benchmark.sniff, to_v1=google_benchmark.to_v1),
+)
 
 
 def detect_profile_format(head: bytes) -> str | None:

@@ -1962,6 +1962,23 @@ def range_element_types(
     return None
 
 
+def go_named_container(line: str, name: str) -> str | None:
+    """The container a Go declaration line of named type *name* stands for, if any.
+
+    ``type methodTrees []methodTree``, ``type Index = map[string]*Doc`` or the
+    same inside a ``type (...)`` block: a range over a ``methodTrees`` walks a
+    ``[]methodTree``. The line must be the type's own declaration (its
+    symbol's first line), so a struct field of the same shape is never read.
+    A generic type (``type Set[T any] []T``) or a named type over another
+    named type is no shape here: one level, spelled on the line, or nothing.
+    """
+    code = line.split("//", 1)[0].strip()
+    match = re.fullmatch(
+        rf"(?:type\s+)?{re.escape(name)}\s+(?:=\s*)?(?P<type>{_GO_CONTAINER})", code
+    )
+    return match.group("type") if match else None
+
+
 def clauses_in_span(
     clauses: tuple[RangeClause, ...], start_line: int, end_line: int
 ) -> tuple[RangeClause, ...]:
