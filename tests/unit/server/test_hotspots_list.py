@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 
 from repowise.core.analysis.finding_registry import stored_origin
+from repowise.core.analysis.health.models import HealthFileMetricData, HealthReport
+from repowise.core.ingestion.traverser import TraversalStats
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import HealthFileMetric
+from repowise.core.pipeline.persist.health import save_full_health_report
 from repowise.server.services.hotspots import (
     accelerating_clause,
+    count_hotspots,
     is_accelerating,
     origin_clause,
 )
@@ -254,3 +259,73 @@ async def test_every_hotspot_count_is_the_lists_count(client: AsyncClient, app) 
     # The overview's top rows are the list's first rows.
     first = _paths(await _list(client, repo_id, hold="map", limit=8))
     assert [h["file_path"] for h in overview["top_hotspots"]] == first
+
+
+@pytest.mark.asyncio
+async def test_banner_generated_hotspot_is_held_out(
+    client: AsyncClient, app, tmp_path: Path
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    repo_id = repo["id"]
+    repo_dir = tmp_path / "test-repo"
+
+    schema_file = repo_dir / "db" / "schema.rb"
+    schema_file.parent.mkdir(parents=True, exist_ok=True)
+    schema_file.write_text(
+        "# This file is auto-generated from the current state of the database.\n"
+        "ActiveRecord::Schema.define(version: 2026_01_01) do\nend\n"
+    )
+    prod_file = repo_dir / "app" / "models" / "order.rb"
+    prod_file.parent.mkdir(parents=True, exist_ok=True)
+    prod_file.write_text("class Order\nend\n")
+
+    async with get_session(app.state.session_factory) as session:
+        for path in ("db/schema.rb", "app/models/order.rb"):
+            await crud.upsert_git_metadata(
+                session,
+                repository_id=repo_id,
+                file_path=path,
+                commit_count_total=20,
+                commit_count_90d=10,
+                commit_count_30d=5,
+                age_days=100,
+                bus_factor=1,
+                primary_owner_name="Ada",
+                is_hotspot=True,
+                is_stable=False,
+                churn_percentile=0.9,
+                temporal_hotspot_score=9.0,
+            )
+        hr = HealthReport(
+            repo_id=repo_id,
+            analyzed_at=datetime.now(UTC),
+            metrics=[
+                HealthFileMetricData(
+                    file_path="app/models/order.rb",
+                    score=9.0,
+                    max_ccn=1,
+                    max_nesting=0,
+                    nloc=10,
+                    has_test_file=True,
+                    code_origin="production",
+                )
+            ],
+        )
+        await save_full_health_report(
+            session,
+            repo_id,
+            hr,
+            analyzed_commit="abc",
+            repo_path=repo_dir,
+            traversal_stats=TraversalStats(generated_files=["db/schema.rb"]),
+        )
+
+    # In count_hotspots: banner-generated file is absent, production file is present
+    async with get_session(app.state.session_factory) as session:
+        assert await count_hotspots(session, repo_id) == 1
+
+    # In list_hotspots with hold=map: banner-generated file is absent, production file is present
+    page = await _list(client, repo_id, hold="map")
+    assert _paths(page) == ["app/models/order.rb"]
+    assert "db/schema.rb" not in _paths(page)
+

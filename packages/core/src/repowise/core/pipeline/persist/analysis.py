@@ -66,6 +66,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             hr,
             analyzed_commit=head_sha,
             repo_path=getattr(result, "repo_path", None),
+            traversal_stats=getattr(result, "traversal_stats", None),
         )
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)

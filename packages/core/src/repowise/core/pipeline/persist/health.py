@@ -113,6 +113,8 @@ async def save_full_health_report(
     analyzed_commit: str | None,
     repo_path: Any = None,
     refresh_governance: bool = False,
+    traversal_stats: Any = None,
+    skipped_generated_files: list[str] | None = None,
 ) -> None:
     """Full-replace a repository's health rows and everything derived from them.
 
@@ -153,6 +155,58 @@ async def save_full_health_report(
         # open plan a person has triaged, and empty both queues on the strength
         # of a parse failure or an exclude pattern that matched everything.
         return
+
+    # Store origin for skipped generated files so origin_clause holds them out (#6303).
+    skipped_paths: list[str] = list(skipped_generated_files or ())
+    if traversal_stats is not None:
+        skipped_paths.extend(getattr(traversal_stats, "generated_files", ()) or ())
+    if repo_path is not None:
+        skipped_file = Path(repo_path) / ".repowise" / "skipped_files.txt"
+        if skipped_file.is_file():
+            try:
+                for line in skipped_file.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("#"):
+                        continue
+                    parts = line.split("\t")
+                    if len(parts) >= 3 and parts[2].strip() == "generated":
+                        skipped_paths.append(parts[0].strip())
+            except OSError:
+                pass
+
+    if skipped_paths:
+        from repowise.core.analysis.health.models import HealthFileMetricData
+        from repowise.core.code_origin import code_origin
+
+        existing = {m.file_path for m in metrics}
+        for rel_path in sorted(set(skipped_paths)):
+            if rel_path in existing:
+                continue
+            abs_p = (Path(repo_path) / rel_path) if repo_path is not None else None
+            head = None
+            if abs_p is not None and abs_p.is_file():
+                try:
+                    head = abs_p.read_bytes()[:4096]
+                except OSError:
+                    head = None
+            origin = (
+                code_origin(rel_path, head, repo_root=repo_path)
+                if head is not None
+                else "generated"
+            )
+            if origin == "generated":
+                metrics.append(
+                    HealthFileMetricData(
+                        file_path=rel_path,
+                        score=None,
+                        max_ccn=None,
+                        max_nesting=None,
+                        nloc=0,
+                        has_test_file=False,
+                        is_test=False,
+                        code_origin="generated",
+                    )
+                )
+
     await save_health_metrics(session, repo_id, metrics, analyzed_commit=analyzed_commit)
     # One savepoint over the findings and everything derived from them, so a
     # rebuild that failed halfway cannot leave the queue describing findings
