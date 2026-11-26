@@ -119,6 +119,25 @@ def _extract_references(
     return references
 
 
+def _assigned_through(name_node: Node) -> bool:
+    """Is *name_node* the base of a member written to (``X.displayName = ...``)?
+
+    Setting a property on a binding is no read of it: a component nothing
+    renders but whose ``displayName`` is set is still unused.
+    """
+    member = name_node.parent
+    if member is None or member.type not in ("member_expression", "subscript_expression"):
+        return False
+    if member.child_by_field_name("object") != name_node:
+        return False
+    target = member.parent
+    return (
+        target is not None
+        and target.type in ("assignment_expression", "augmented_assignment_expression")
+        and target.child_by_field_name("left") == member
+    )
+
+
 def _macro_argument_allowed(capture_dict: dict, plain_nodes: list[Node], src: str) -> bool:
     """A registration-macro argument needs a SCREAMING_CASE callee and to be its only argument."""
     via_nodes = capture_dict.get("reference.via", [])
@@ -149,6 +168,8 @@ class _ReferenceScope:
         if not name or name in self.builtins:
             return None
         if self.bindable is not None and receiver is None and name not in self.bindable:
+            return None
+        if _assigned_through(name_node):
             return None
         line = name_node.start_point[0] + 1
         enclosing = _find_enclosing_symbol(line, self.symbol_ranges)

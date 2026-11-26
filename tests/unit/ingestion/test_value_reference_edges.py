@@ -629,6 +629,8 @@ class TestModuleBindingReads:
             "const val = make();\nexport const out = [1].map((val) => val);\n",
             # A write is not a read.
             "let val = make();\nexport function f() { val = 2; }\n",
+            # Nor is setting a property on it.
+            "const val = make();\nval.displayName = 'V';\nval['k'] = 1;\nexport { val };\n",
         ],
     )
     def test_shadowed_or_written_names_are_no_reference(
