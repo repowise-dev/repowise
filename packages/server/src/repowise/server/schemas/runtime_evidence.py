@@ -198,9 +198,13 @@ class MeasuredRow(_Strict):
     #: Self samples on the function; null when not counted.
     samples: int | None
     freshness: MeasuredFreshness
-    #: Callers outside test code; null when the graph does not know the function.
+    #: Callers in production code; null when the graph does not know the function.
     callers_total: int | None
+    #: At most three production callers: the ones the run measured first, heaviest first.
     callers: list[str]
+    #: The share of the function's time each listed caller drove, for the ones
+    #: the run measured; empty when the run recorded no callers.
+    caller_shares: dict[str, float] = Field(default_factory=dict)
     #: Owner and last change come from the function's own lines; null without
     #: its blame row (never the file's owner).
     owner: MeasuredOwner | None

@@ -315,6 +315,8 @@ class ReceiverTypingMixin(
         self._returned_modules: dict[str, str | None] = {}
         # {file: {type name: [type symbol ids]}}, built once on first use.
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
+        # {directory: its Go files}, built once on first use, as ``_type_ids``.
+        self._go_files_by_dir: dict[str, tuple[str, ...]] | None = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._binding_positions: dict[str, tuple[tuple[int, int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
@@ -1128,8 +1130,12 @@ class ReceiverTypingMixin(
 
         Neither binds the name, so the file's own free-call tiers say which
         class a written name means. A nullable ``T?`` is the class ``T``; a
-        generic or prefixed spelling types nothing.
+        generic or prefixed spelling types nothing. A Go package sibling is
+        the one type of the name another file of the directory declares:
+        Go's package is its directory, and an unqualified name is in it.
         """
+        if self._language_of(file_path) == "go":
+            return self._go_package_type(file_path, type_name)
         scope = self._symbols_by_id.get(scope_id or "")
         written = type_name.rstrip("?")
         if (
@@ -1140,6 +1146,29 @@ class ReceiverTypingMixin(
             return None
         found = self._class_seen_from(file_path, scope.id, written, scope.start_line)
         return None if found is None else self._located(file_path, found.callee_id)
+
+    def _go_package_type(self, file_path: str, type_name: str) -> tuple[str, str, str] | None:
+        """``(file, class id, "import")`` for the one Go type *type_name* names in
+        *file_path*'s directory, outside the file itself; two refuse."""
+        if not type_name.isidentifier():
+            return None
+        package = file_path.rpartition("/")[0]
+        found = [
+            (path, class_id)
+            for path in self._go_package_files(package)
+            if path != file_path and (class_id := self._only_type_in(path, type_name))
+        ]
+        return (found[0][0], found[0][1], "import") if len(found) == 1 else None
+
+    def _go_package_files(self, package: str) -> tuple[str, ...]:
+        """The Go files directly in directory *package*, indexed once per resolver."""
+        if self._go_files_by_dir is None:
+            by_dir: dict[str, list[str]] = {}
+            for path, parsed in self._parsed_files.items():
+                if parsed.file_info.language == "go":
+                    by_dir.setdefault(path.rpartition("/")[0], []).append(path)
+            self._go_files_by_dir = {d: tuple(paths) for d, paths in by_dir.items()}
+        return self._go_files_by_dir.get(package, ())
 
     def _only_type_in(self, file_path: str, type_name: str) -> str | None:
         """The id of the single type *file_path* declares as *type_name*."""
