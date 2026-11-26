@@ -21,7 +21,7 @@ for $0.07 of cloud compute.
 Every MCP tool works on a keyless index. `get_answer` returns ranked, cited
 evidence from the index (marked `"degraded": "no-llm-provider"`); a model
 adds a written answer on top. See [Modes and
-upgrades](QUICKSTART.md#modes-and-upgrades).
+upgrades](MODES.md#modes-and-upgrades).
 
 ## Local semantic search with Ollama
 

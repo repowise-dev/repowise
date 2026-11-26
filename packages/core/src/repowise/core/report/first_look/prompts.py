@@ -10,7 +10,7 @@ value: the ``live_secret`` action holds its location and kind only.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from repowise.core.agent_prompts import (
@@ -61,6 +61,60 @@ def perf_detail(row: Any) -> dict[str, Any]:
     }
 
 
+async def _item_renderer(
+    session: Any,
+    repository_id: str,
+    item: Item,
+    repo_name: str | None,
+    setup: Any | None,
+    actions: Mapping[str, Any] | None,
+) -> Callable[[str], str]:
+    """Render *item*'s prompt for a flavor, its payload read from the store once."""
+    ref = item.prompt
+    if ref.renderer == "action" and ref.payload_ref:
+        from repowise.core.persistence.crud.analysis.actions import load_action
+
+        action = (
+            actions.get(ref.payload_ref)
+            if actions is not None
+            else await load_action(session, repository_id, ref.payload_ref, setup=setup)
+        )
+        if action is not None:
+            return lambda flavor: render_action(action.as_dict(), flavor, repo_name)
+    elif ref.renderer == "fix_item" and ref.payload_ref:
+        from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+
+        queue = await load_fix_first(session, repository_id, limit=None, item_id=ref.payload_ref)
+        if queue.items:
+            fix = queue.items[0]
+            return lambda flavor: render_fix_item(fix.as_dict(), flavor, repo_name)
+    elif ref.renderer == "perf_opportunity" and ref.payload_ref:
+        from repowise.core.persistence.crud.analysis.performance import (
+            get_performance_opportunity,
+        )
+
+        row = await get_performance_opportunity(session, repository_id, ref.payload_ref)
+        if row is not None and row.status == "open":
+            return lambda flavor: render_perf_opportunity(perf_detail(row), flavor, repo_name)
+    return lambda flavor: render_first_look_item(item.to_json(), flavor, repo_name)
+
+
+async def render_item_prompts(
+    session: Any,
+    repository_id: str,
+    item: Item,
+    *,
+    flavors: Sequence[str],
+    repo_name: str | None = None,
+    setup: Any | None = None,
+    actions: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """*item*'s prompt for each of *flavors*, its payload read once: see
+    :func:`render_item_prompt`."""
+    render = await _item_renderer(session, repository_id, item, repo_name, setup, actions)
+    return {flavor: render(flavor) for flavor in flavors}
+
+
 async def render_item_prompt(
     session: Any,
     repository_id: str,
@@ -78,32 +132,8 @@ async def render_item_prompt(
     *actions* is :func:`~repowise.core.analysis.actions.engine.actions_by_id`
     when the caller renders many prompts, so the facts are read once.
     """
-    ref = item.prompt
-    if ref.renderer == "action" and ref.payload_ref:
-        from repowise.core.persistence.crud.analysis.actions import load_action
-
-        action = (
-            actions.get(ref.payload_ref)
-            if actions is not None
-            else await load_action(session, repository_id, ref.payload_ref, setup=setup)
-        )
-        if action is not None:
-            return render_action(action.as_dict(), flavor, repo_name)
-    elif ref.renderer == "fix_item" and ref.payload_ref:
-        from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
-
-        queue = await load_fix_first(session, repository_id, limit=None, item_id=ref.payload_ref)
-        if queue.items:
-            return render_fix_item(queue.items[0].as_dict(), flavor, repo_name)
-    elif ref.renderer == "perf_opportunity" and ref.payload_ref:
-        from repowise.core.persistence.crud.analysis.performance import (
-            get_performance_opportunity,
-        )
-
-        row = await get_performance_opportunity(session, repository_id, ref.payload_ref)
-        if row is not None and row.status == "open":
-            return render_perf_opportunity(perf_detail(row), flavor, repo_name)
-    return render_first_look_item(item.to_json(), flavor, repo_name)
+    render = await _item_renderer(session, repository_id, item, repo_name, setup, actions)
+    return render(flavor)
 
 
 def render_report_prompt(
@@ -126,4 +156,4 @@ def render_report_prompt(
     return render_first_look_report(items, flavor, repo_name or report.repo.get("name"))
 
 
-__all__ = ["perf_detail", "render_item_prompt", "render_report_prompt"]
+__all__ = ["perf_detail", "render_item_prompt", "render_item_prompts", "render_report_prompt"]

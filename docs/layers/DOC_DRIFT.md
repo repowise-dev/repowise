@@ -11,7 +11,22 @@ on a repository of about 4,800 files and 190 documents it adds about 7 seconds
 to `init` and 1 to 4 seconds to an `update`, which re-resolves only the
 references the update could have changed.
 
-## What it checks
+## Quick start
+
+Nothing to turn on: `init` and `update` run the check.
+
+```bash
+repowise doc-drift                        # everything above the floor
+repowise doc-drift --kind anchor          # just the renamed-heading links
+repowise doc-drift --min-confidence 0.9   # the ones worth fixing blind
+```
+
+From an agent, `get_health(include=["doc_drift"])`. In the dashboard, open the
+repository's Docs section and its **Doc drift** view.
+
+## Reading the results
+
+### What it checks
 
 Five classes of reference, all of them things the repository itself can settle:
 
@@ -27,7 +42,7 @@ The anchor case is the one people are most surprised by, because it is the one
 that rots silently: renaming a heading breaks every link into it, and nothing
 in an ordinary toolchain notices.
 
-### Symbols
+#### Symbols
 
 Backticks in prose mean "this is literal text", not "this is code", so a
 backticked word the code does not define is usually just a word: `string`,
@@ -55,38 +70,18 @@ This kind needs an index and git history. `init` and `update` run it; in CI it
 runs only when asked for with `--kind symbol`. Its git work has fixed limits
 per run, and anything past them is counted as uncheckable (`over-budget`).
 
-## What it deliberately does not check
-
-Most sentences in a repository are not checkable, and this analysis does not
-guess at them. It says nothing about whether prose is accurate, current,
-well-written or complete. It has no opinion on a paragraph describing how a
-system works.
-
-**A clean run is not a claim that your documentation is true.** It is a claim
-that the references it could resolve, resolved. That distinction is the whole
-design: a checker that guessed would be wrong often enough that nobody would
-trust the findings that matter.
-
-## Reading a finding
+### Reading a finding
 
 Every finding carries the line as the document wrote it, the heading trail
 locating the passage, and what the resolver checked. You should be able to
 decide whether it is real without opening the file.
 
-Findings carry a confidence, and the analysis stores everything at or above
-0.4. Raise the floor when you want only the near-certain ones:
-
-```bash
-repowise doc-drift                        # everything above the floor
-repowise doc-drift --kind anchor          # just the renamed-heading links
-repowise doc-drift --min-confidence 0.9   # the ones worth fixing blind
-```
-
-Confidence is about resolution, not importance. A high-confidence finding is
+Findings carry a confidence, stored at or above 0.4 ([Tuning](#tuning) raises the
+floor). Confidence is about resolution, not importance. A high-confidence finding is
 one the analysis is sure it resolved correctly. Whether that broken link
 matters is your call.
 
-### Likely replacements
+#### Likely replacements
 
 When the tree says where a reference probably went, the finding says so too:
 
@@ -104,10 +99,38 @@ finding's confidence, and Repowise never rewrites your documents.
 A path that exists on disk but sits outside the index (a test fixture, an
 excluded directory) counts as uncheckable, not missing, so it is not reported.
 A path the surrounding prose places in the reader's own project ("add this to
-your project's `src/setupTests.ts`") is uncheckable the same way, since it was
-never a claim about this repository.
+your project's `src/setupTests.ts`") or in another repository ("run that
+repository's `tools/validate.py`", "the upstream repo keeps `src/x.py`", "in the
+acme/scanner repo, `tools/lint.py`") is uncheckable the same way, since it was
+never a claim about this repository. A path that climbs out of the repository
+(`../other-repo/x.py`) and a link to another site are never checked either.
 
-## Silencing a finding you mean to keep
+### The reverse view
+
+The question "which documents talk about this file?" is worth asking before
+you change the file, and it is the same evidence read the other way:
+
+```
+get_context(targets=["src/auth.py"], include=["doc_drift"])
+```
+
+That returns the documents naming it, where in each, and whether those
+documents already carry drift of their own. Useful when you are about to move
+or rename something and want to know what will go stale.
+
+The dependency graph holds a narrower copy of the same evidence as
+`documents` edges: one per document and file, only for links and backticked
+paths that resolve to exactly one file, with no drift state. A bare backticked
+name such as `package.json` never reaches a root-level file. `include=["doc_drift"]`
+reads the drift tables (`doc_drift_references`), not those edges. See
+[GRAPH.md](GRAPH.md#edge-types).
+
+## Tuning
+
+The analysis stores findings at or above 0.4; `--min-confidence` raises the floor,
+and `--kind` keeps one class of reference.
+
+### Silencing a finding you mean to keep
 
 Some references are deliberate: an invented path in a tutorial, a link to a
 file generated at build time. Mark them in the document itself, so the
@@ -182,36 +205,29 @@ A bare ref means `REF...HEAD`, and when the range ends at `HEAD` uncommitted and
 untracked changes count too, since the check reads the working tree. Anything
 left out is counted in the summary.
 
-## The reverse view
+## Accuracy and limits
 
-The question "which documents talk about this file?" is worth asking before
-you change the file, and it is the same evidence read the other way:
+Most sentences in a repository are not checkable, and this analysis does not
+guess at them. It says nothing about whether prose is accurate, current,
+well-written or complete. It has no opinion on a paragraph describing how a
+system works.
 
-```
-get_context(targets=["src/auth.py"], include=["doc_drift"])
-```
-
-That returns the documents naming it, where in each, and whether those
-documents already carry drift of their own. Useful when you are about to move
-or rename something and want to know what will go stale.
-
-The dependency graph holds a narrower copy of the same evidence as
-`documents` edges: one per document and file, only for links and backticked
-paths that resolve to exactly one file, with no drift state. A bare backticked
-name such as `package.json` never reaches a root-level file. `include=["doc_drift"]`
-reads the drift tables (`doc_drift_references`), not those edges. See
-[GRAPH.md](GRAPH.md#edge-types).
+**A clean run is not a claim that your documentation is true.** It is a claim
+that the references it could resolve, resolved. That distinction is the whole
+design: a checker that guessed would be wrong often enough that nobody would
+trust the findings that matter.
 
 ## Where it shows up
 
 - `repowise doc-drift` for the report, with `--format json` for a script
 - `repowise doc-drift --check` for CI, with no index
 - `get_health(include=["doc_drift"])` for an agent
-- The Code Health tab in the dashboard
+- The dashboard: the Docs section's **Doc drift** view
 - Refreshed on every `update`, not only on a clean index
 
 ## See also
 
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance
 - [CODE_HEALTH.md](CODE_HEALTH.md): the layer this belongs to
 - [`repowise doc-drift`](../reference/CLI_REFERENCE.md#repowise-doc-drift-path): every flag
 - [MCP_TOOLS.md](../agent/MCP_TOOLS.md): the agent-facing surface

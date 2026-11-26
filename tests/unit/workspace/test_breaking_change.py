@@ -6,6 +6,8 @@ the load-bearing ones: the guard must stay silent on non-breaking changes.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from repowise.core.workspace.breaking_change import (
     SEVERITY_BREAKING,
     SEVERITY_WARNING,
@@ -375,3 +377,97 @@ def test_legacy_empty_string_stamp_reads_as_never_ran():
     restored = BreakingChangeReport.from_dict({"generated_at": "", "changes": []})
     assert restored.generated_at is None
     assert not restored.ran
+
+
+# ---------------------------------------------------------------------------
+# Single repo: the (repo, service) filter
+# ---------------------------------------------------------------------------
+
+
+def _mono_store(*, route: bool, caller_service: str) -> ContractStore:
+    """One repo: ``api`` serves GET /users, a caller in *caller_service* uses it."""
+    cid = "http::GET::/users"
+    contracts = [
+        Contract("mono", cid, "http", "consumer", "web/a.ts", "call", 0.9, service=caller_service)
+    ]
+    links = []
+    if route:
+        contracts.append(Contract("mono", cid, "http", "provider", "api/app.py", "h", 0.9, "api"))
+        links.append(
+            ContractLink(
+                cid, "http", "exact", 0.9,
+                "mono", "api/app.py", "h", "api",
+                "mono", "web/a.ts", "call", caller_service,
+            )
+        )  # fmt: skip
+    return ContractStore(contracts=contracts, contract_links=links)
+
+
+def test_mono_a_removed_route_breaks_a_caller_in_another_service() -> None:
+    from repowise.core.workspace.repo_contracts import diff_repo_contracts
+
+    change = diff_repo_contracts(
+        _mono_store(route=True, caller_service="web"),
+        _mono_store(route=False, caller_service="web"),
+    )
+
+    assert change.changed == 1
+    [brk] = change.breaking
+    assert (brk.provider_service, [ic.service for ic in brk.impacted_consumers]) == (
+        "api",
+        ["web"],
+    )
+
+
+def test_mono_a_removed_route_only_its_own_service_calls_breaks_no_other() -> None:
+    from repowise.core.workspace.repo_contracts import diff_repo_contracts
+
+    change = diff_repo_contracts(
+        _mono_store(route=True, caller_service="api"),
+        _mono_store(route=False, caller_service="api"),
+    )
+
+    assert (change.changed, change.breaking) == (1, [])
+
+
+def _mono_link(cid: str, provider_service: str = "api") -> ContractLink:
+    """web -> *provider_service*, both inside the repo ``mono``."""
+    link = _link(cid, c_repo="mono", c_service="web")
+    return replace(link, provider_repo="mono", provider_service=provider_service)
+
+
+def test_mono_a_route_that_lost_two_response_fields_is_one_break() -> None:
+    from repowise.core.workspace.repo_contracts import diff_repo_contracts
+
+    cid = "http::GET::/users"
+    fields = [SchemaField("id", "string"), SchemaField("name", "string")]
+    before = _store(
+        [_provider(cid, repo="mono", service="api", schema=_schema(response=fields))],
+        [_mono_link(cid)],
+    )
+    after = _store(
+        [_provider(cid, repo="mono", service="api", schema=_schema(response=[]))],
+        [_mono_link(cid)],
+    )
+
+    change = diff_repo_contracts(before, after)
+
+    assert (change.changed, len(change.breaking)) == (1, 1)
+
+
+def test_mono_a_route_two_services_serve_breaks_when_one_drops_it() -> None:
+    from repowise.core.workspace.repo_contracts import diff_repo_contracts
+
+    cid = "http::GET::/users"
+
+    def store(*services: str) -> ContractStore:
+        providers = [_provider(cid, repo="mono", service=s) for s in services]
+        return _store(providers, [_mono_link(cid, s) for s in services])
+
+    # admin is listed last, so a shared-id index would keep it on both sides.
+    change = diff_repo_contracts(store("api", "admin"), store("admin"))
+
+    assert change.changed == 1
+    [brk] = change.breaking
+    assert (brk.kind, brk.provider_service) == ("removed_endpoint", "api")
+    assert [ic.service for ic in brk.impacted_consumers] == ["web"]

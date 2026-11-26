@@ -5,6 +5,10 @@ what to build and fix. It is **impossible to tie any event to you, your
 machine, or your code**. There are no usernames, no IP addresses, no file
 paths, and no source content anywhere in what we send.
 
+Telemetry is **on by default** (anonymous, opt-out). Any one of four switches
+turns it off: `repowise telemetry disable`, `REPOWISE_TELEMETRY_DISABLED=1`,
+`DO_NOT_TRACK=1` or `REPOWISE_OFFLINE=1` ([details](#how-to-opt-out)).
+
 This page documents exactly what is collected, what is never collected, how to
 verify it yourself, and how to turn it off.
 
@@ -31,7 +35,7 @@ Every event, whatever its type, carries the same anonymous envelope:
 | `event` | `command_run` / `mcp_tool_call` | Event type |
 | `anon_id` | `194639…d48a` | Random per-install id (see below) |
 | `session_id` | `e2ecb2…1158` | Random per-process id, groups one run |
-| `cli_version` | `0.21.0` | Version adoption |
+| `cli_version` | `0.62.0` | Version adoption |
 | `os` | `darwin` / `linux` / `windows` | Platform priorities |
 | `arch` | `arm64` / `x86_64` | Architecture priorities |
 | `python_version` | `3.12` | **major.minor only** |
@@ -122,7 +126,7 @@ Example `command_run` payload:
   "event": "command_run",
   "anon_id": "194639251e854669ae2f56081620d48a",
   "session_id": "e2ecb2aeb4df422883c5af451f2b1158",
-  "cli_version": "0.21.0",
+  "cli_version": "0.62.0",
   "os": "darwin",
   "arch": "arm64",
   "python_version": "3.12",

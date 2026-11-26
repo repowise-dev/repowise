@@ -44,6 +44,7 @@ from .patterns import (
 from .refinements import (
     _interpolates_sql_value,
     _is_html_type_annotation,
+    _lower_committed_keystore_passwords,
     _match_starting_in,
     _weak_hash_is_an_id,
 )
@@ -137,7 +138,7 @@ def scan_source(
     # Line-by-line pattern scan. A line's edges and the newline around it read
     # alike to every lookaround in ``_ANY_PATTERN``, so a file the whole-source
     # search rejects has no matching line, and most files are such.
-    is_low_sev_file = _is_low_severity_path(file_path)
+    is_low_sev_file = _is_low_severity_path(file_path, origin)
     is_python = file_path.lower().endswith((".py", ".pyi"))
     tls_lines: list[set[int] | None] = []
     scan_lines = lines if _ANY_PATTERN.search(source) else []
@@ -279,6 +280,9 @@ def scan_source(
     for finding in findings:
         if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
             finding["severity"] = "low"
+    _lower_committed_keystore_passwords(
+        findings, file_path, lines, lambda: mask()[1], repo_root
+    )
 
     # Symbol-name scan (informational / low). Machine output and declarations
     # hold no written code, so their names are not ours to flag.

@@ -316,7 +316,7 @@ class ChangeHealthDeltaService:
             1 for r in skipped.values() if r.removeprefix("base_") in {"parse_failed", "unreadable"}
         )
         match = _match(sides, subject, gone, FindingMatcher(sides.rename, _hunks(eligible), moves))
-        findings = self._surface(match, eligible, sides.head_run.findings_for(subject), pair)
+        findings = self._surface(match, eligible, sides, subject, pair)
 
         status, explanation = _status_for(scope, skipped, findings, deleted=len(gone))
         delta = ChangeHealthDelta(
@@ -447,16 +447,19 @@ class ChangeHealthDeltaService:
         self,
         match: MatchResult,
         eligible: list[FileChange],
-        head_findings: list[HealthFindingData],
+        sides: _Sides,
+        subject: set[str],
         pair: RevisionPair,
     ) -> list[ChangeFinding]:
         """The introduced and worsened findings, attributed and in priority order."""
         by_file: dict[str, list[HealthFindingData]] = {}
-        for finding in head_findings:
+        for finding in sides.head_run.findings_for(subject):
             by_file.setdefault(finding.file_path, []).append(finding)
         change_map = {c.head_path: c for c in eligible if c.head_path}
         attributor = FindingAttributor(change_map)
-        changed_symbols = changed_symbols_for(change_map, by_file)
+        changed_symbols = changed_symbols_for(
+            change_map, by_file, sides.head_run.symbols, sides.base_run.symbols
+        )
 
         surfaced = match.of_kind("introduced", "worsened")
         perf_views = opportunities_for([m.head for m in surfaced])

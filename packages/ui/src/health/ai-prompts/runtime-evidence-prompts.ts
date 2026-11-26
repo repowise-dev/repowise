@@ -1,5 +1,5 @@
 import type {
-  FileTestCost,
+  CostCluster,
   SlowTest,
 } from "@repowise-dev/types/runtime-evidence";
 
@@ -42,6 +42,10 @@ const FIX: Record<LowSignalCause["kind"], string> = {
     "Profile from the repository root at the indexed commit, with no uncommitted changes, so frames map to indexed functions, and run a workload long enough to reach most of the code.",
 };
 
+/** Said once when a fix names py-spy: its file does not say which clock it sampled, and ingest refuses it without one. */
+const PY_SPY_CLOCK =
+  "A py-spy profile does not say which clock it sampled: add it with `--value-kind cpu` (`value_kind=cpu` on a CI upload), or it is refused.";
+
 /**
  * Re-profile a workload whose stored run ranks too little. Names each cause
  * the run showed and its fix, and leaves the ingest step to wherever the
@@ -54,6 +58,7 @@ export function buildRichProfilePrompt({
   flavor = "generic",
 }: BuildRichProfilePromptOptions): string {
   const fixes = Array.from(new Set(causes.map((c) => FIX[c.kind])));
+  if (fixes.some((fix) => fix.includes("py-spy"))) fixes.push(PY_SPY_CLOCK);
   return joinSections([
     `${REPO_ROLE[flavor]} Repowise stores a runtime profile of \`${workload}\`${tool ? ` (${tool})` : ""}, but the run carries too little signal to rank functions by measured time.`,
     "",
@@ -106,7 +111,7 @@ const TEST_EXPECTED = [
 
 export type SlowTestsSubject =
   | { kind: "tests"; tests: readonly SlowTest[] }
-  | { kind: "file"; file: FileTestCost; basis: "measured" | "inferred" };
+  | { kind: "cluster"; cluster: CostCluster };
 
 export interface BuildSlowTestsPromptOptions {
   subject: SlowTestsSubject;
@@ -120,7 +125,31 @@ function testLine(t: SlowTest, i: number): string {
   return `${i + 1}. \`${t.test_id}\`${where}: ${secondsText(t.duration_s)}${outcome} (workload \`${t.workload}\`)`;
 }
 
-/** Make slow tests faster, or the tests that run one production file, without losing coverage. */
+function clusterLines(c: CostCluster, repoName?: string): string[] {
+  const more = c.files_total - c.files.length;
+  const files = `${c.files.map((f) => `\`${f}\``).join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
+  const fx = c.fixture;
+  const others = fx
+    ? fx.others === 0
+      ? "no other timed test does"
+      : `${fx.others} other timed test${fx.others === 1 ? "" : "s"} do`
+    : "";
+  return [
+    `## ${c.tests} tests that run the same code and take longer than the rest${repoSuffix(repoName)}`,
+    "",
+    bulletList([
+      `They take ${secondsText(c.mean_s)} each against ${secondsText(c.others_mean_s)} for the other tests: ${secondsText(c.excess_s)} over that pace${c.share != null ? `, ${Math.round(c.share * 100)}% of the suite` : ""}.`,
+      `The production code exactly these tests run, from the per-test coverage map: ${files}.`,
+      c.within &&
+        `They are part of the ${c.within.tests} tests that run \`${c.within.files[0]}\`.`,
+      fx &&
+        `Start with fixture \`${fx.name}\` (\`${fx.file_path}${fx.line != null ? `:${fx.line}` : ""}\`): ${fx.tests} of them ask for it and ${others}. Check what it builds per test and whether a wider scope or a lighter setup keeps every assertion.`,
+      `Slowest of them: ${c.slowest.map((t) => `\`${t.test_id}\` ${secondsText(t.duration_s)}`).join(", ")}.`,
+    ]),
+  ];
+}
+
+/** Make slow tests faster, or a group of tests that share slow setup, without losing coverage. */
 export function buildSlowTestsPrompt({
   subject,
   flavor = "generic",
@@ -133,17 +162,7 @@ export function buildSlowTestsPrompt({
           "",
           subject.tests.map(testLine).join("\n"),
         ]
-      : [
-          `## Tests that run \`${subject.file.file_path}\`${repoSuffix(repoName)}`,
-          "",
-          bulletList([
-            `Their summed duration: ${secondsText(subject.file.test_seconds)} over ${subject.file.timed_tests} timed test${subject.file.timed_tests === 1 ? "" : "s"} (${subject.file.tests} run the file).`,
-            subject.basis === "inferred"
-              ? "Which tests run the file is inferred from the call graph, not from a coverage map."
-              : "Which tests run the file comes from the per-test coverage map.",
-            "Find those tests, then make the slowest of them faster without losing what they cover.",
-          ]),
-        ];
+      : clusterLines(subject.cluster, repoName);
   return joinSections([
     preamble(flavor, TEST_PARTS),
     "",

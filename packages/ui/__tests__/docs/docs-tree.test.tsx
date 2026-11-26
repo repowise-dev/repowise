@@ -250,7 +250,7 @@ describe("DocsTree", () => {
     const cycle = makePage({
       id: "scc_page:scc-1",
       page_type: "scc_page",
-      title: "Circular Dependency: Pipeline Persist",
+      title: "Static Import Cycle: Pipeline Persist",
       target_path: "scc-1",
       parent_page_id: ROOT.id,
     });
@@ -262,7 +262,7 @@ describe("DocsTree", () => {
       cycle,
     ]);
     fireEvent.click(screen.getByText("Reference"));
-    const folders = ["API", "Files", "Infrastructure", "Dependency cycles"].map((name) =>
+    const folders = ["API", "Files", "Infrastructure", "Static import cycles"].map((name) =>
       rowLabels().findIndex((l) => l.startsWith(name)),
     );
     expect(folders.every((i) => i >= 0)).toBe(true);
@@ -272,7 +272,7 @@ describe("DocsTree", () => {
     expect(screen.getByText("routers/pages")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Infrastructure"));
     expect(screen.getByText("docker/Dockerfile")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Dependency cycles"));
+    fireEvent.click(screen.getByText("Static import cycles"));
     expect(screen.getByText("Pipeline Persist")).toBeInTheDocument();
   });
 

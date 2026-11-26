@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,7 +34,9 @@ if TYPE_CHECKING:
     from repowise.core.workspace.code_api import CodeSurface
     from repowise.core.workspace.extractors.masstransit import MessageTypeIndex
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
+    from repowise.core.workspace.matching.common import MatchState
     from repowise.core.workspace.repo_index import RepoIndex, WorkspaceIndex
+    from repowise.core.workspace.service_names import ServiceNameMap
 
 _log = logging.getLogger("repowise.workspace.contracts")
 
@@ -504,13 +507,16 @@ def _build_manual_links(
 
 def save_contract_store(store: ContractStore, workspace_root: Path) -> Path:
     """Write contract store to ``.repowise-workspace/contracts.json``."""
-    data_dir = ensure_workspace_data_dir(workspace_root)
-    out_path = data_dir / CONTRACTS_FILENAME
+    return write_contract_store(
+        store, ensure_workspace_data_dir(workspace_root) / CONTRACTS_FILENAME
+    )
+
+
+def write_contract_store(store: ContractStore, out_path: Path) -> Path:
+    """Write *store* to *out_path* atomically and return the path."""
     # Atomic: the MCP enricher reads these artifacts from a separate
     # process and must never observe a half-written file.
-    atomic_write_text(
-        out_path, json.dumps(store.to_dict(), indent=2, ensure_ascii=False)
-    )
+    atomic_write_text(out_path, json.dumps(store.to_dict(), indent=2, ensure_ascii=False))
     return out_path
 
 
@@ -519,7 +525,11 @@ def load_contract_store(workspace_root: Path) -> ContractStore | None:
 
     Returns ``None`` if the file is missing or unparseable.
     """
-    path = workspace_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
+    return read_contract_store(workspace_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME)
+
+
+def read_contract_store(path: Path) -> ContractStore | None:
+    """The store at *path*, or ``None`` if it is missing or unparseable."""
     if not path.is_file():
         return None
     try:
@@ -610,9 +620,6 @@ async def run_contract_extraction(
     from .extractors import build_message_type_index
     from .extractors.base import make_exclude_predicate
     from .extractors.masstransit import MessageTypeIndex
-    from .matching import annotate_consumer_targets, run_matching
-    from .matching.base_paths import apply_base_paths
-    from .matching.third_party import mark_third_party_calls
     from .service_names import ServiceNameMap, build_service_name_map, service_names_fingerprint
 
     contract_config = ws_config.contracts
@@ -694,10 +701,7 @@ async def run_contract_extraction(
         names = ServiceNameMap.from_dict(prior.service_names)
     else:
         names = await asyncio.to_thread(build_service_name_map, repo_paths, workspace_root)
-    apply_base_paths(all_contracts, names.base_paths)
-    annotate_consumer_targets(all_contracts, contract_config.service_bases, names)
-    mark_third_party_calls(all_contracts)
-    matched = run_matching(all_contracts, names.routes)
+    matched = link_contracts(all_contracts, contract_config.service_bases, names)
     links = matched.links
 
     # Merge manual links
@@ -731,6 +735,23 @@ async def run_contract_extraction(
     )
 
     return store
+
+
+def link_contracts(
+    contracts: list[Contract], service_bases: dict[str, str], names: ServiceNameMap
+) -> MatchState:
+    """Resolve each consumer's target service or third-party host, then match.
+
+    Shared by the workspace run and the single-repo run, so both link alike.
+    """
+    from .matching import annotate_consumer_targets, run_matching
+    from .matching.base_paths import apply_base_paths
+    from .matching.third_party import mark_third_party_calls
+
+    apply_base_paths(contracts, names.base_paths)
+    annotate_consumer_targets(contracts, service_bases, names)
+    mark_third_party_calls(contracts)
+    return run_matching(contracts, names.routes)
 
 
 def _indexed_repo_paths(ws_config: WorkspaceConfig, workspace_root: Path) -> dict[str, Path]:
@@ -893,7 +914,8 @@ async def _production_ends(
 ) -> tuple[list[Contract], int]:
     """*contracts* without the ends in non-production code, and how many were left out.
 
-    The origin is the stored ``code_origin`` when the repo's index has one,
+    The origin is the stored ``code_origin`` when the repo's index has one
+    (handed to :meth:`RepoIndex.from_symbols`, else read through its session),
     else :func:`~repowise.core.code_origin.path_origin`. Only source code is
     judged: a schema document (an OpenAPI spec under ``docs/``, a ``.proto``,
     SQL) and a schema migration describe the contract wherever they sit.
@@ -914,7 +936,11 @@ async def _production_ends(
 
     origins: dict[str, str] = {}
     session = repo_index.session if repo_index is not None else None
-    if session is not None:
+    held = getattr(repo_index, "origins", None)
+    if isinstance(held, Mapping):
+        # Handed in by a caller with no health rows to read (load_origins' rule).
+        origins = {p: held.get(p) or path_origin(p) for p in judged}
+    elif session is not None:
         try:
             origins = await load_origins(session, repo_index.repo_id, judged)
         except (SQLAlchemyError, AttributeError, TypeError):

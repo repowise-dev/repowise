@@ -1008,6 +1008,13 @@ _SERVED_SCRIPTS_DIR = "scripts"
 _BENCHMARK_DIR = "benchmark"
 _TOOLS_DIR = "tools"
 _TOOLS_PARENT_DIRS = frozenset({"eng", "hack", "ci", "dev"})
+# ``build/`` and ``devtools/`` inside a ``src/`` tree are modules of the product:
+# Next.js ships its build pipeline from ``packages/next/src/build``, React its
+# DevTools UI from ``react-devtools-shared/src/devtools``. Outside one (a root
+# ``build/`` of scripts, ``cmd/build``, ``tools/build``) they stay tooling.
+# Ceiling: path-only, so a source tree without a ``src/`` root (Go's ``pkg/``)
+# still reads its ``build/`` as tooling.
+_SOURCE_MODULE_TOKENS = frozenset({"build", "devtools"})
 
 
 def _is_tooling_dir(i: int, d: str, dirs: list[str]) -> bool:
@@ -1017,6 +1024,8 @@ def _is_tooling_dir(i: int, d: str, dirs: list[str]) -> bool:
         return i == 0
     if d == _TOOLS_DIR:
         return i == 0 or dirs[i - 1] in _TOOLS_PARENT_DIRS
+    if d in _SOURCE_MODULE_TOKENS:
+        return _SOURCE_ROOT not in dirs[:i]
     return d != _SERVED_SCRIPTS_DIR or _SERVED_DIRS.isdisjoint(dirs[:i])
 
 

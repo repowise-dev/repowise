@@ -40,8 +40,7 @@ _ANDROID_NAME_RE = re.compile(r"""android:name\s*=\s*['"]([\w.$]+)['"]""")
 _APPLICATION_CLASS_ATTR_RE = re.compile(
     r"""(?:android:backupAgent|android:manageSpaceActivity|android:appComponentFactory)\s*=\s*['"]([\w.$]+)['"]"""
 )
-_ANDROID_COMPONENT_TAGS = ("<activity", "<service", "<receiver",
-                           "<provider", "<application")
+_ANDROID_COMPONENT_TAGS = ("<activity", "<service", "<receiver", "<provider", "<application")
 
 
 _MANIFEST_PACKAGE_RE = re.compile(r"""<manifest\b[^>]*?\bpackage\s*=\s*['"]([\w.]+)['"]""")
@@ -64,7 +63,9 @@ def _add_android_edges(graph: nx.DiGraph, path_set: set[str], ctx: ResolverConte
 
     count = 0
     root = ctx.repo_path.resolve()
-    names = set(_registered_class_names(root, ctx)) | set(_resource_and_proguard_class_names(root, ctx))
+    names = set(_registered_class_names(root, ctx)) | set(
+        _resource_and_proguard_class_names(root, ctx)
+    )
     for name in names:
         for target in jvm_index.files_for_fqn(name):
             if target not in path_set:
@@ -100,7 +101,9 @@ def _manifest_package(manifest: Path, text: str) -> str:
     """
     if m := _MANIFEST_PACKAGE_RE.search(text):
         return m.group(1)
-    module = manifest.parent.parent.parent if manifest.parent.parent.name == "src" else manifest.parent
+    module = (
+        manifest.parent.parent.parent if manifest.parent.parent.name == "src" else manifest.parent
+    )
     for build_name in ("build.gradle.kts", "build.gradle"):
         try:
             build_text = (module / build_name).read_text(encoding="utf-8", errors="ignore")
@@ -136,6 +139,92 @@ def _component_class_names(text: str) -> Iterator[str]:
                         yield m.group(1)
 
 
+# Launcher detection. The home screen (or a TV's) starts an activity whose
+# intent filter pairs the MAIN action with a LAUNCHER category: only an
+# application declares one, a library module never does.
+_XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_ACTIVITY_ELEMENT_RE = re.compile(
+    r"<(activity(?:-alias)?)\b([^>]*?)(?:/>|>(.*?)</\1\s*>)", re.DOTALL
+)
+_INTENT_FILTER_RE = re.compile(r"<intent-filter\b[^>]*>(.*?)</intent-filter\s*>", re.DOTALL)
+_MAIN_ACTION_RE = re.compile(r"""android:name\s*=\s*['"]android\.intent\.action\.MAIN['"]""")
+_LAUNCHER_CATEGORY_RE = re.compile(
+    r"""android:name\s*=\s*['"]android\.intent\.category\.(?:LEANBACK_)?LAUNCHER['"]"""
+)
+_TARGET_ACTIVITY_RE = re.compile(r"""android:targetActivity\s*=\s*['"]([\w.$]+)['"]""")
+# ``<module>/src/main/java|kotlin/<package path>/<Class>.java|kt``.
+_JVM_MAIN_SOURCE_RE = re.compile(r"^(?:(.+)/)?src/main/(?:java|kotlin)/(.+)\.(?:java|kt)$")
+
+
+def launcher_activity_names(text: str) -> list[str]:
+    """Activity names a launcher starts, as the manifest writes them.
+
+    An ``<activity-alias>`` launches its ``targetActivity``. A filter inside an
+    XML comment is switched off.
+    """
+    names: list[str] = []
+    for m in _ACTIVITY_ELEMENT_RE.finditer(_XML_COMMENT_RE.sub("", text)):
+        kind, attrs, body = m.group(1), m.group(2), m.group(3) or ""
+        if not any(
+            _MAIN_ACTION_RE.search(f) and _LAUNCHER_CATEGORY_RE.search(f)
+            for f in _INTENT_FILTER_RE.findall(body)
+        ):
+            continue
+        attr_re = _TARGET_ACTIVITY_RE if kind == "activity-alias" else _ANDROID_NAME_RE
+        if (name := attr_re.search(attrs)) and name.group(1).strip("."):
+            names.append(name.group(1))
+    return names
+
+
+def launcher_application_mains(repo_root: Path, paths: list[str]) -> set[str]:
+    """Source files of the launcher activities production Android modules declare.
+
+    A module is the folder above ``src/main/java`` or ``src/main/kotlin``; its
+    main manifest is ``<module>/src/main/AndroidManifest.xml``. A module whose
+    manifest is not production code (a sample, a test fixture) by
+    :func:`~repowise.core.code_origin.path_origin` never counts. A launcher
+    activity's class resolves to the source at its package path in the same
+    module, else to the module's only source file of that class name (Kotlin
+    does not tie the folder to the package).
+    """
+    modules: dict[str, dict[str, str]] = {}
+    for path in paths:
+        if m := _JVM_MAIN_SOURCE_RE.match(path):
+            modules.setdefault(m.group(1) or "", {})[m.group(2)] = path
+    return {
+        found
+        for module, sources in modules.items()
+        for found in _module_launcher_sources(repo_root, module, sources)
+    }
+
+
+def _module_launcher_sources(
+    repo_root: Path, module: str, sources: dict[str, str]
+) -> Iterator[str]:
+    """The launcher activity sources of one module, *sources* keyed by class path."""
+    from repowise.core.code_origin import path_origin
+
+    manifest_rel = f"{module}/src/main/AndroidManifest.xml".lstrip("/")
+    if path_origin(manifest_rel) != "production":
+        return
+    manifest = repo_root / manifest_rel
+    try:
+        text = manifest.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    names = launcher_activity_names(text)
+    package = _manifest_package(manifest, text) if names else ""
+    for name in names:
+        class_path = _qualify(name, package).split("$", 1)[0].replace(".", "/")
+        if (found := sources.get(class_path)) is not None:
+            yield found
+            continue
+        stem = class_path.rpartition("/")[2]
+        same_name = [p for rel, p in sources.items() if rel.rpartition("/")[2] == stem]
+        if len(same_name) == 1:
+            yield same_name[0]
+
+
 class _AndroidManifestHandler:
     def detect(self, dctx: DetectionContext) -> bool:
         return _has_jvm_sources(dctx.parsed_files)
@@ -160,10 +249,15 @@ _PROGUARD_KEEP_RE = re.compile(
     r"-(?:keep|keepnames|keepclassmembers|keepclasseswithmembers)\b[^{;]*\b(?:class|interface|enum)\s+([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)"
 )
 
+
 def _res_module_package(res_dir: Path) -> str:
     """The package or namespace for resources under *res_dir* (the ``res`` folder)."""
     parent = res_dir.parent
-    module = parent.parent if parent.name == "src" or (parent.parent and parent.parent.name == "src") else parent
+    module = (
+        parent.parent
+        if parent.name == "src" or (parent.parent and parent.parent.name == "src")
+        else parent
+    )
     for mpath in (
         parent / "AndroidManifest.xml",
         module / "src" / "main" / "AndroidManifest.xml",
@@ -192,7 +286,9 @@ def _resource_and_proguard_class_names(root: Path, ctx: ResolverContext) -> Iter
     pkg_cache: dict[Path, str] = {}
 
     # 1. XML resources
-    for res_xml in glob_via(ctx.walk_snapshot, root, "*.xml", prune_nested_git=ctx.prune_nested_git):
+    for res_xml in glob_via(
+        ctx.walk_snapshot, root, "*.xml", prune_nested_git=ctx.prune_nested_git
+    ):
         parent = res_xml.parent
         # Require parent directory to be layout*, xml*, menu*, or navigation* under a "res" parent
         if parent.parent.name != "res" or not parent.name.startswith(

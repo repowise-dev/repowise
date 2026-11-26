@@ -45,11 +45,12 @@ const ingestedAt = (run: EvidenceRunSummary) =>
   run.ingested_at ? Date.parse(run.ingested_at) : Number.NaN;
 
 /**
- * `ahead` when the run was added after the newest run at the indexed commit,
- * `older` when before it, `other` when no stored run is at the indexed commit
- * to compare with. Ceiling: this reads ingest order, which is commit order for
- * runs a CI job adds on each push; a run of an old commit added late reads as
- * ahead. The engine naming it (0.63) replaces this.
+ * `ahead` when the run was added after the newest run of the same workload
+ * (kind, name, environment) at the indexed commit, `older` when before it,
+ * `other` when no such run is at the indexed commit to compare with. Another
+ * workload's run never places it, as in the engine's `commit_position`.
+ * Ceiling: this reads ingest order, which is commit order for runs a CI job
+ * adds on each push; a run of an old commit added late reads as ahead.
  */
 export function commitPosition(
   run: EvidenceRunSummary,
@@ -60,7 +61,13 @@ export function commitPosition(
     return run.freshness === "stale" ? "other" : "unknown";
   if (run.commit_sha === reference) return "indexed";
   const anchors = runs
-    .filter((r) => r.commit_sha === reference)
+    .filter(
+      (r) =>
+        r.commit_sha === reference &&
+        r.kind === run.kind &&
+        r.workload === run.workload &&
+        r.environment === run.environment,
+    )
     .map(ingestedAt)
     .filter(Number.isFinite);
   const at = ingestedAt(run);

@@ -44,7 +44,7 @@ Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
 | `timing_ms` | Tool wall time |
 | `block_timing_ms` | `get_change_risk` only: wall ms per block (`score`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `cross_repo`, `branch_overlap`, `health_delta`). Some blocks overlap, so they need not sum to `timing_ms` |
 | `index_age_days` | Whole days since the index last synced, the same time `repowise status` reports |
-| `indexed_commit`, `live_head` | Short SHAs of the index and of the checkout |
+| `indexed_commit`, `live_head` | Short SHAs of the index and of the checkout. A lean reply keeps `indexed_commit` when the index is behind HEAD or more than 7 days old and no `stale_warning` names it |
 | `index_behind` | `true` if HEAD moved, `false` if not; absent if the comparison could not run |
 | `working_tree_dirty` | Served targets with uncommitted edits no `repowise update --working-tree` has indexed |
 | `embedder_degraded`, `embedder` | The embedder state behind `degraded` |
@@ -161,6 +161,7 @@ In workspace mode, `get_context`, `get_symbol`, `get_risk` and `get_health` serv
 | `candidates` | With `include=["evidence"]`: the top 5 files as `{path, lines?, defines?}` |
 | `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a reason |
 | `episodes` | Dated facts about this checkout; `still_true` says how current |
+| `fix_history` | When the question names a file and asks why or how often it breaks or changes: per file `{path, fix_count, window, last_fix_days_ago, bug_magnet?, top_symbols}`, the defect profile `get_risk` reports |
 | `degraded` | Synthesis could not run (no provider, or the call failed) |
 | `grounding` | No-synthesis answers: `exact_symbol` or `extracted` |
 | `note`, `next_action_hint` | How the answer was built; on weak retrieval, which `best_guesses` row to start from |
@@ -172,7 +173,8 @@ Notes:
 - **`answer`:** a quoted code block found in a cited file carries that file's line range in its citation (`(src/compose.ts:50-60)`).
 - **`confidence`:** `high` is content-grounded on a top hit covering the question, or states the value on the verified definition line of a constant the question names, wherever that line ranked. A why-answer whose mechanism is absent from the source drops to `medium`.
 - **`retrieval_quality`:** `weak` when the top hit leaves out most of the question.
-- **`candidate_files`:** served at every confidence; absent when retrieval resolved no file.
+- **`candidate_files`:** served at every confidence; absent when retrieval resolved no file, or when the reply is not found (below).
+- **Not found:** when a word the question asks about is in nothing retrieved and the synthesized reply uses none of the retrieved text (no file, name, word or number from it), the reply is `low` with an `answer` saying so, and no `citations`, `fallback_targets` or `candidate_files`.
 - **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; on a keyed reply `include=["evidence"]` restores it.
 - **`degraded`:** built from retrieval and mined rationale with no LLM; `confidence` is `medium` on a dominant covering top hit, else `low`, never `high`. With `weak` retrieval too, the reply is `best_guesses`, `candidate_files` and one guidance line, with no `citations`.
 - **`grounding`:** `exact_symbol` serves the bodies of an exactly named symbol; `extracted` quotes a live source line verbatim.
@@ -270,9 +272,9 @@ Never complete for:
 
 On a directory or module card: every indexed file under it (git rows and graph file nodes), recursively, code files first, then other files, then tests, each group by path, with the test evidence `get_risk` reads for its test gaps.
 
-- `total`, `complete`, `counts` (listed rows per state: `tested`, `untested`, `type_only`, `test`, `not_code`), `rows`, `basis`.
+- `total`, `complete`, `listed_counts` (the listed rows per state, not the whole directory: `tested`, `untested`, `type_only`, `test`, `not_code`), `rows`, `basis`.
 - Over 100 files: the first 100, `complete: false`, `omitted` and a `hint`. A cap cuts test files first; name a subdirectory as a target for the rest.
-- A code row is `{path, has_test}` plus, when found, `named_tests` (test files with its file name, nearest directory first; one in another directory is a weaker match), `reached_by` (other tests reaching it through calls or imports) and `covered_by` (per-test coverage rows from `repowise coverage add`), 3 each with `*_total` beyond.
+- A code row is `{path, has_test}` plus, when found, `named_tests` (test files with its file name, nearest directory first; a test that mirrors the directories of another file with that name goes to that file), `reached_by` (other tests reaching it through calls or imports) and `covered_by` (per-test coverage rows from `repowise coverage add`), 3 each with `*_total` beyond.
 - `has_test: false` means none of the three exists. `type_only: true` marks a file that declares only types and needs no test.
 - A test file is `{path, is_test: true}`; a file that is not code is `{path, code: false}`.
 - `note` appears when the index holds no test files, so `has_test: false` is not evidence there.
@@ -345,6 +347,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | `outlined`, `members`, `more_members`, `members_total` | A class or other container, served as its members |
 | fallback lines | On a miss, closest matches from a live grep |
 | `kind: "file"`, `symbols`, `symbols_total` | A bare file path: its top-level symbol names in source order (15 max; `symbols_total` when there are more), no source |
+| `symbols` on a range | Served with no checkout: the ids of the indexed symbols the lines overlap (15 max), each one `get_symbol` call |
 | `source`, `created_at`, `original_tokens`, `lines_total` | Omission ref: where the stored content came from (`lines_total` only when the query matched nothing) |
 
 `outlined: true` puts the header in `source` and `members` (each `name`, `signature`, `lines`, docstring `summary`; `kind` when not a method; `symbol_id` when it is not the container's id plus `::<name>`) in place of the body, with no `_meta.complete`. Past a budget the rest are named with their first line in `more_members`; `members_total` counts any beyond that. A container whose body is no larger than its outline is served whole.
@@ -449,7 +452,7 @@ With `changed_files`, the response leads with `directive`:
 | `tests_to_run` | The `repowise impacted-tests` selection, max 10, in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec) |
 | `tests_to_run_basis` | `measured` (coverage decided a file), `inferred` (graph or rule), `none` |
 | `tests_to_run_why` | Per listed file: changed file and evidence |
-| `tests_run_all`, `tests_run_all_reasons` | No subset can be vouched for; the list is what to run first |
+| `tests_run_all`, `tests_run_all_reasons` | No subset can be vouched for, or the selection holds over half of a suite of 10+ test files (`selection_covers_most_of_suite: <n> of <total> test files.`); the list is what to run first |
 | `tests_broadcast_total`, `tests_import_closure_total`, `tests_always_run_total` | Tests left out of the list that still run (`always_run`: run with every subset, nothing links them to the change) |
 | `tests_status`, `tests_status_reason` | Failed selection; names nothing |
 | `tests_to_update` | Up to 3 test files to edit, `{path, reason}` |
@@ -534,7 +537,7 @@ The `repowise impacted-tests` selection over every touched path, ignoring the sc
 | Field | Meaning |
 |-------|---------|
 | `status` | `selected`, `run_all`, `degraded`, or a nothing-selected reason |
-| `run_all`, `reasons`, `reasons_total` | No subset can be vouched for; up to 3 reasons |
+| `run_all`, `reasons`, `reasons_total` | No subset can be vouched for, or the selection holds over half of a suite of 10+ test files (`selection_covers_most_of_suite`, as on `get_risk`; a lagging index reads `degraded` instead); up to 3 reasons |
 | `tests_to_run`, `total`, `truncated` | Max 10: first the tests that call an edited function directly (pytest node ids or JS/TS test files), then the rest in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec). A listed id stands for its file, and the list takes no more characters than the first ten files would. Tests that run with every subset are counted in `total` and `always_run_total`, never listed |
 | `broadcast_total`, `import_closure_total` | Left out of the list and `total`, still run (as in `get_risk`) |
 | `tests_to_run_kind` | `test_id` when a coverage node id is listed, else `test_file` |
@@ -664,6 +667,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | `kind` | `refactor` (one file's composed refactoring), `perf_fix` (one intervention and its sinks), `finding` (code-shape, no plan) |
 | `totals` | `candidates`, `eligible`, `shown`, `dormant` (functions kept out as `gated_off`) |
 | `by_improves`, `detail_call` | Rollup; call that opens the lead |
+| `order` | The sort key in one line: value band, then tier, then worth x confidence / effort. `gain` is the target file's health delta, not the key, so it need not fall down the list |
 
 - **Paging:** with `only=["fix_first"]`, `items` pages from `cursor` (`recovery.fix_first` names the next page) and `limit` sets the size, up to 25.
 - **Due items:** a `now`/`next` lead carries `first_step` (`action`, `line`, `file` if not the target's) and `verify` (`command`, or `prerequisite` when no test reaches it); with `only=["fix_first"]`, so do due items among the page's first five. `get_health(fix_id=...)` returns one in full.
@@ -679,6 +683,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | `kpis` | Averages and worst-file pointers |
 | `kpis.band`, `kpis.analysed_share` | Band (`null` under half analysed); scored share when some left out |
 | `unanalysed_file_count` | Files with no health dialect, unscored and excluded; absent when none |
+| `import_cycles` | Stored import cycles in scope, every size (`total`; the first-look report lists only those of 2 to 4 files), and `static_only`: Python cycles made only of `import b` edges whose name no module-level code reads, unlikely to fail at import; absent when none |
 | `gap_analysis` | Recovery to 8.0: points, files below, `files_to_reach_target`, `files_for_half_gap`, `weighted_gap_points`, `weighted_gross_gap_points` |
 | `worst_files`, `test_worst_files` | Lowest raw scores, production and test |
 | `high_leverage_files` | By `weighted_deficit`, with `share_of_repo_gap_pct` |
@@ -746,7 +751,7 @@ Findings carry `health_impact: 0` and never blend into the score. `perf_rank` is
 - Ids are stable per model version; older ones resolve to `model_state.state: "stale_model"` with `refresh_required`. `lifecycle_status` is `open` or `resolved`.
 - `performance_opportunities` holds `cost_proof` `proven` causes. `unproven` (loop size unknown) never sets `may_lead` and no list shows it; counted in `performance_summary.default_queue.excluded.unmeasured_cost`, `performance_summary.proof` and the `proof` facet. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
 - The `growth_source` facet (`loop`, `registry`, `cold_path`, `none`, `n/a`) names the loop showing growth. `fix_first`, Do next and `performance_summary.lead` take only `plan_ready` causes with `loop` (or per-call causes an entry point reaches); `fix_first.totals.excluded.unconfirmed_cost` counts the rest.
-- `performance_measured` (dashboard only) lists what each workload's newest stored profile run measured, ranked by self time: what a function costs itself, built-ins and libraries it calls included, time blocked in waits (event-loop selects, joins, queue gets, sleeps) excluded. `basis: "measured"`: `rows` (workload classes that may lead) and `in_tests` (`unit_test` runs, never leading) give each function's `rank` in its run, `share` (its self time) with its interval (`share_low`, `share_high`), `inclusive` (with its callees, context only), `samples`, `lines` (`"start-end"`), `freshness`, `callers_total` (callers outside test code) and, when an open static cause with production evidence sits on it, `on_static_findings` (cause ids for `get_health(opportunity_id=...)`). A function two workloads rank is listed under each. `runs` gives each row's basis: `workload_class`, `workload_name`, `commit`, `age_days`, `samples`, where the run's time went (`repo_self_share` in production repo code itself, `wait_share`, `library_share`; `null` for a run stored before they were recorded), `outside_production` (functions counted, not listed) and, for a tracer's run only, `ordering_only: true` (order, no share). Three rows per run, `limit` up to 10. Without ranked evidence: `basis: "unknown"` and `status` `no_runtime_data` or `stale` (both with `command`, the setup call), `needs_update` (an index from before the per-workload view; `command` is `repowise update`), or `not_ranked` (too few samples in production code).
+- `performance_measured` (dashboard only) lists what each workload's newest stored profile run that ranks any function measured (a newer run that ranks nothing leaves the run before it listed), ranked by self time: what a function costs itself, built-ins and libraries it calls included, time blocked in waits (event-loop selects, joins, queue gets, sleeps) excluded. `basis: "measured"`: `rows` (workload classes that may lead) and `in_tests` (`unit_test` runs, never leading) give each function's `rank` in its run, `share` (its self time) with its interval (`share_low`, `share_high`), `inclusive` (with its callees, context only), `samples`, `lines` (`"start-end"`), `freshness`, `callers_total` (callers outside test code) and, when an open static cause with production evidence sits on it, `on_static_findings` (cause ids for `get_health(opportunity_id=...)`). A function two workloads rank is listed under each. `runs` gives each row's basis: `workload_class`, `workload_name`, `commit`, `age_days`, `samples`, where the run's time went (`repo_self_share` in production repo code itself, `wait_share`, `library_share`; `null` for a run stored before they were recorded), `outside_production` (functions counted, not listed) and, for a tracer's run only, `ordering_only: true` (order, no share), and, for a run listed in place of a newer one that ranks nothing, `newer_run` (`commit`, `reason`: `ahead_of_index`, `not_ranked` or `stale`). Three rows per run, `limit` up to 10. Without ranked evidence: `basis: "unknown"` and `status` `no_runtime_data` or `stale` (both with `command`, the setup call), `needs_update` (an index from before the per-workload view; `command` is `repowise update`), `ahead_of_index` (the newest run was added after the indexed commit's run and ranks once the index reaches its commit; `command` is `repowise update`), or `not_ranked` (too few samples in production code). A benchmark profile ranks nothing; with benchmark results stored, `benchmarks` lists each workload's newest run per result (`benchmark`, `measures`: the production function it measures, left out when its name and direct calls do not say; `time` and `unit` per operation; `allocs_per_op`; `run_id`, its run listed in `runs` with `workload_class`, `workload_name`, `commit` and `age_days`) beside `benchmarks_total`, three per run, `limit` up to 10.
 - With the queue in the same response, `performance_summary` drops its `next_call` (it would return that queue).
 
 ### Coverage
@@ -766,7 +771,8 @@ Per-file `covered_line_count`, `total_coverable_lines` (targeted adds `covered_l
 | Field | Meaning |
 |-------|---------|
 | `headline` | What is shown, of how many match, and how many were withheld and of which kind |
-| `tiers` | `high` (0.7+), `medium` (0.4 to 0.7), `low`: path, kind, confidence, lines, cleanup impact, stable `id`; an empty tier has no `description` |
+| `tiers` | `high` (0.7+), `medium` (0.4 to 0.7), `low`, 10 per tier by default: path, symbol, kind, confidence, reason, lines, `safe_to_delete`, `last_commit_at`, owner, stable `id`; an empty tier has no `description` |
+| `finding` | With `finding_id`, at any triage status: the listed fields plus `status`, triage `note`, `repository`, `symbol_kind`, `start_line`, `end_line`, `commit_count_90d`, `age_days` (the file's age) and `last_meaningful_change` |
 | `summary` | Totals over all open findings; `filtered_findings`, `filters` (non-default), `scope` |
 | `summary.withheld_types` | Provisional types; ask with `kind=` to see them, marked unverified |
 | `summary.gated` | Gated-language findings per language; `include_unverified=true` shows them |

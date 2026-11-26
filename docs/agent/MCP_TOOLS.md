@@ -417,7 +417,7 @@ Unreachable files, unused exports, unused internals and zombie packages, tiered 
 | `min_confidence` | float or string | `0.4` | Floor; or `"high"` (0.7), `"medium"` (0.4), `"low"` (0.0) |
 | `tier` | string | all | `high` (0.7+), `medium` (0.4 to 0.7), `low` |
 | `safe_only` | bool | `false` | Deletion-ready only: drops runtime-load risk such as dynamic imports and framework-registered functions |
-| `limit` | int | `20` | Per tier, clamped to 25 |
+| `limit` | int | `10` | Per tier, clamped to 25 |
 | `directory` | string | none | Path-prefix filter |
 | `owner` | string | none | Primary-owner filter |
 | `group_by` | string | none | `directory` or `owner` rollup |
@@ -426,7 +426,7 @@ Unreachable files, unused exports, unused internals and zombie packages, tiered 
 | `no_unreachable` | bool | `false` | Skip unreachable-file findings |
 | `no_unused_exports` | bool | `false` | Skip unused-export findings |
 | `include_unverified` | bool | `false` | Also show provisional types and gated-language findings |
-| `finding_id` | string | none | Open one finding |
+| `finding_id` | string | none | Open one finding, whatever its triage status, with every field |
 | `repo` | string | default repo | Or `"all"` to aggregate across repos |
 
 **Returns** `tiers`, `summary`, and `by_directory` or `by_owner` with `group_by` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_dead_code)).

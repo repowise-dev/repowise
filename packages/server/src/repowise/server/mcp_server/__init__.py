@@ -467,7 +467,9 @@ def _tool_definition(entry: Any) -> Any:
     return tool
 
 
-def tool_definitions(names: Iterable[str], *, workspace: bool = True) -> list[dict[str, Any]]:
+def tool_definitions(
+    names: Iterable[str], *, workspace: bool = True, no_checkout: bool = False
+) -> list[dict[str, Any]]:
     """The ``tools/list`` entries for *names*, byte for byte as the server lists them.
 
     Built from the tool registry with the server's own wrapping and schema
@@ -476,7 +478,10 @@ def tool_definitions(names: Iterable[str], *, workspace: bool = True) -> list[di
     ``mcp.always_load`` hint is a per-repository setting, so it is not here;
     a server that honours it adds it per session (``mark_always_loaded``).
     ``workspace=False`` lists them as a single-repo server does, with no
-    ``repo="all"`` offer.
+    ``repo="all"`` offer. ``no_checkout=True`` words them for a server that
+    answers from a stored index with no checkout of the repository: phrases
+    promising live files, verified source or uncommitted work are replaced
+    (``_no_checkout.NO_CHECKOUT_WORDING``).
     """
     from mcp.types import Tool as MCPTool
 
@@ -505,7 +510,12 @@ def tool_definitions(names: Iterable[str], *, workspace: bool = True) -> list[di
     ]
     if not workspace:
         listed = [without_repo_all(tool) for tool in listed]
-    return [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in listed]
+    dumped = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in listed]
+    if no_checkout:
+        from repowise.server.mcp_server._no_checkout import without_checkout
+
+        dumped = [without_checkout(tool) for tool in dumped]
+    return dumped
 
 
 def ensure_full_surface() -> Any:

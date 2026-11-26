@@ -873,10 +873,40 @@ def test_tests_lists_the_slowest_tests_of_the_stored_junit_run(indexed) -> None:
     (slowest,) = payload["slow_tests"]
     assert (slowest["test_id"].endswith("::test_slow"), slowest["duration_s"]) == (True, 4.5)
     assert payload["tests_total"] == 2
-    assert payload["file_costs"]["basis"] == "inferred"
+    assert payload["cost"]["verdict"] == "small_suite"
     table = _tests()
     assert table.exit_code == 0
-    assert f"4.50s  {slowest['test_id']}" in table.stdout
+    # A suite under a minute is one line: no list to read.
+    assert table.stdout.strip() == (
+        "Tests take 4.8 s in all (2 timed): under a minute, nothing to speed up."
+    )
+
+
+def test_a_capped_junit_run_keeps_its_slowest_tests_and_folds_them_all(indexed) -> None:
+    root, head = indexed
+    (root / ".repowise" / "config.yaml").write_text("evidence:\n  max_rows_per_run: 1\n")
+    report = root / "junit.xml"
+    report.write_text(
+        '<testsuite name="pytest">'
+        '<testcase classname="tests.test_app" name="test_fast" time="2.5"/>'
+        '<testcase classname="tests.test_app" name="test_slow" time="45"/>'
+        '<testcase classname="tests.test_app" name="test_mid" time="12.5"/>'
+        "</testsuite>"
+    )
+    added = _add(str(report), "--workload", "pytest", "--class", "unit_test", "--commit", head,
+                 "--format", "json")
+    assert added.exit_code == 0, added.output
+    assert _json(added)["truncated"] == 2
+
+    payload = _json(_tests("--format", "json"))
+
+    # The report lists the slow test second; the cap keeps it, not the first.
+    assert [t["test_id"].rsplit("::", 1)[1] for t in payload["slow_tests"]] == ["test_slow"]
+    suite = payload["suite"]
+    assert (suite["tests"], suite["timed"], suite["seconds"]) == (3, 3, 60.0)
+    # A minute of tests and no per-test map: the slow list, and what the cap left out.
+    assert "2 faster or untimed tests were left out at the per-run cap" in _tests().stdout
+
 
 
 @pytest.mark.parametrize("elsewhere", [False, True])
@@ -924,15 +954,170 @@ def test_a_vitest_report_below_the_root_lands_on_the_units_test_files(
     assert (row.test_id, row.test_file) == ("web/src/cart.test.ts::cart > adds", "web/src/cart.test.ts")
 
 
-def test_tests_says_how_many_files_every_timed_test_runs() -> None:
+_NO_MAP = {"verdict": "no_test_map", "seconds": 90.0, "timed": 4,
+           "concentration": {"tests": 1, "share": 0.5}, "clusters": [],
+           "command": "pytest --cov --cov-context=test"}
+
+
+def test_tests_leads_with_the_first_group_what_it_costs_and_its_fixture() -> None:
+    cluster = {
+        "files": ["src/db.py", "src/store.py"], "files_total": 4, "tests": 29,
+        "mean_s": 1.44, "others_mean_s": 0.09, "excess_s": 39.2, "share": 0.55,
+        "slowest": [{"test_id": "tests/unit/test_add.py::test_a", "duration_s": 3.73}],
+        "fixture": {"name": "indexed", "file_path": "tests/unit/test_add.py", "line": 48,
+                    "tests": 15, "others": 0},
+        "within": {"files": ["src/plugins.py"], "files_total": 1, "tests": 161},
+    }
+    histogram = [{"le": le, "tests": n, "seconds": 0.0}
+                 for le, n in zip([0.001, 0.01, 0.1, 1.0, 10.0, 100.0, None], [0, 0, 311, 39, 22, 0, 0], strict=True)]
     payload = {
-        "runs": [], "tests_total": 2, "slow_tests": [],
-        "file_costs": {
-            "basis": "measured", "files_total": 1, "not_production": 0, "every_test": 3,
-            "files": [{"file_path": "src/app.py", "test_seconds": 3.0, "timed_tests": 1, "tests": 1}],
-        },
+        "runs": [], "tests_total": 372, "slow_tests": [],
+        "suite": {"timed": 372, "seconds": 71.0, "histogram": histogram},
+        "cost": {"verdict": "clusters", "seconds": 71.0, "timed": 372,
+                 "concentration": {"tests": 37, "share": 0.735}, "clusters": [cluster], "command": None},
+    }
+
+    lines = evidence_cmd._tests_lines(payload)
+
+    assert lines[0] == (
+        "[bold]Start with the 29 tests that run src/db.py and 3 more files[/bold]: they take "
+        "39.2 s more than the rest's pace (55% of the suite), 15 of them through fixture "
+        "[cyan]indexed[/cyan] (tests/unit/test_add.py:48)."
+    )
+    assert lines[1] == (
+        "Tests take 71.0 s (372 timed); the slowest 37 take 74% of it. "
+        "[dim]By duration: 311 at 10-100 ms, 39 at 0.1-1 s, 22 at 1-10 s.[/dim]"
+    )
+    text = "\n".join(lines)
+    assert "29 tests at 1.44 s each vs 0.09 s: +39.2 s (55%)" in text
+    assert "run: src/db.py, src/store.py and 2 more files" in text
+    assert "inside the 161 tests that run src/plugins.py" in text
+    assert "asked for by 15 of them and no other timed test" in text
+    assert "slowest: test_add.py::test_a 3.73 s" in text
+
+
+def test_tests_without_a_map_says_how_to_record_one() -> None:
+    payload = {"runs": [], "tests_total": 4, "slow_tests": [], "suite": None, "cost": _NO_MAP}
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "Tests take 90.0 s (4 timed); the slowest 1 take 50% of it." in text
+    assert "record a per-test coverage map: [cyan]pytest --cov --cov-context=test[/cyan]" in text
+
+
+def test_tests_with_no_group_worth_a_list_is_one_line() -> None:
+    payload = {"runs": [], "tests_total": 4, "slow_tests": [{"test_id": "t", "duration_s": 30.0}],
+               "cost": {**_NO_MAP, "verdict": "small_excess", "command": None}}
+
+    assert evidence_cmd._tests_lines(payload) == [
+        "Tests take 90.0 s (4 timed), spread evenly: no group of tests runs 5 s over the rest."
+    ]
+
+
+def test_tests_says_how_many_the_cap_left_out_without_a_fold() -> None:
+    run = {"workload": "pytest", "freshness": "current", "commit_sha": "a" * 40,
+           "units": {"truncated": 7}}
+    payload = {
+        "runs": [run], "tests_total": 2, "slow_tests": [], "suite": None, "cost": _NO_MAP,
     }
 
     text = " ".join(evidence_cmd._tests_lines(payload))
 
-    assert "src/app.py" in text and "3 more run in every timed test that reaches production code" in text
+    assert "7 faster or untimed tests were left out at the per-run cap." in text
+
+
+def test_tests_names_a_suite_total_over_several_workloads_as_a_sum() -> None:
+    def run(name: str) -> dict:
+        return {"workload": name, "freshness": "current", "commit_sha": "a" * 40,
+                "units": {"truncated": 1}}
+
+    payload = {
+        "runs": [run("pytest"), run("vitest")], "tests_total": 2, "slow_tests": [],
+        "suite": {"timed": 4, "seconds": 9.0, "histogram": []}, "cost": _NO_MAP,
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "the 4 timed tests take 9.0s, summed over 2 workloads." in text
+
+
+_PRODUCTION = Path(__file__).parents[1] / "evidence" / "fixtures" / "production"
+
+
+def test_a_statement_export_is_stored_as_production_with_no_class(indexed) -> None:
+    root, _head = indexed
+    csv = root / "statements.csv"
+    csv.write_bytes((_PRODUCTION / "pg_stat_statements.csv").read_bytes())
+
+    result = _add(str(csv), "--workload", "prod db")
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert "in production" in result.stderr + result.stdout
+    assert "unknown deployed commit" in result.stderr + result.stdout
+    (run,), _ = _stored(root)
+    # Production ran where users are, not on the machine adding the file.
+    assert (run.kind, run.workload_class, run.environment) == (
+        "statement_stats", "production", "production",
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--class", "production"], "never from --class"),
+        (["--class", "load_test"], "production by what it measures"),
+    ],
+)
+def test_a_production_file_refuses_a_typed_class_in_one_line(indexed, args, message) -> None:
+    root, _head = indexed
+    path = root / "statements.json"
+    path.write_bytes((_PRODUCTION / "statement_stats.json").read_bytes())
+
+    result = _add(str(path), "--workload", "prod db", *args)
+
+    assert result.exit_code == 2
+    error = [line for line in result.stderr.splitlines() if line.startswith("Error")]
+    assert len(error) == 1 and message in error[0]
+
+
+def test_a_profile_still_needs_its_class(indexed) -> None:
+    root, head = indexed
+    result = _add(str(_write(root)), "--workload", "w", "--commit", head)
+    assert result.exit_code == 2
+    assert "name the workload class" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+def test_add_and_status_compare_a_run_with_its_band(indexed) -> None:
+    import git as gitpython
+
+    root, _ = indexed
+    base = _go_bench_repo(root)
+    text = (_GO_BENCH / "bench.txt").read_text()
+    workload = ("--workload", "go bench results ./strs", "--class", "benchmark")
+    for i, ns in enumerate(("50.75", "50.80", "50.70")):
+        path = root / f"band{i}.txt"
+        path.write_text(text.replace("50.75 ns/op", f"{ns} ns/op"))
+        result = _add(str(path), *workload, "--commit", base, "--format", "json")
+        assert result.exit_code == 0, result.output
+        # Runs of one commit have no earlier run to compare with.
+        assert "compare" not in _json(result)
+    repo = gitpython.Repo(root)
+    head = repo.index.commit("strs: join twice").hexsha
+    repo.close()
+    slow = root / "slow.txt"
+    slow.write_text(text.replace("56.20 ns/op", "156.2 ns/op").replace("50.75 ns/op", "150.7 ns/op"))
+
+    added = _add(str(slow), *workload, "--commit", head, "--format", "json")
+
+    assert added.exit_code == 0, added.output
+    compared = _json(added)["compare"]
+    assert (compared["verdict"], compared["band_runs"], compared["head_commit"]) == (
+        "slower", 3, head,
+    )
+    assert compared["slower"][0]["name"] == "example.com/gobench/strs.BenchmarkJoin"
+    assert compared["cause"]["commits_in_range"] == 1
+    status = _json(_status("--compare", "--format", "json"))
+    assert [c["verdict"] for c in status["compare"]] == ["slower"]
+    assert "BenchmarkJoin 2.87x" in _status("--compare").stdout
+    assert "compare" not in _json(_status("--format", "json"))
