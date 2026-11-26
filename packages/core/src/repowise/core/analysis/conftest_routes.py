@@ -45,7 +45,8 @@ app.models  # registers them``) is imported for its side effects, which every
 test sees, so it keeps every test.
 
 Fails closed, keeping every test under the conftest with the reason, when the
-conftest does not parse, loads plugins, star-imports a module on the route, has
+conftest does not parse, loads a plugin that may be a module of the repository
+(:mod:`.plugin_loaders`), star-imports a module on the route, has
 a route the analysis cannot tie to one of its imports, when some file imports
 a conftest by a name the index could not resolve, or when the index predates
 fixture-request edges.
@@ -89,6 +90,7 @@ from ..ingestion.framework_edges.pytest_edges import (
 )
 from ..ingestion.languages.python_modules import module_parts
 from ..ingestion.languages.python_strings import PY_DYNAMIC_LOAD_MARKERS
+from .plugin_loaders import plugin_names
 from .test_reach.db import _in_clause
 from .test_selection import BROADCAST_VIA, is_runnable_test, scope_kind
 
@@ -763,7 +765,12 @@ class ConftestFacts:
     exported: set[str] = field(default_factory=set)
 
     @classmethod
-    def parse(cls, source: str, path: str) -> ConftestFacts:
+    def parse(
+        cls, source: str, path: str, local_plugin: Callable[[str], bool] | None = None
+    ) -> ConftestFacts:
+        """*local_plugin* (:func:`~.plugin_loaders.local_module_check`) tells a plugin
+        module of the repository from an installed one; without it, any plugin
+        the conftest loads keeps every test under it."""
         try:
             tree = parse_python(source)
         except (SyntaxError, ValueError):
@@ -781,7 +788,15 @@ class ConftestFacts:
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Name):
                     facts._read_module_name(sub)
+        if facts.error == facts._plugins_error and local_plugin is not None:
+            names = plugin_names(tree)
+            if names is not None and not any(local_plugin(n) for n in names):
+                facts.error = None  # installed plugins only: no local fixture to follow
         return facts
+
+    @property
+    def _plugins_error(self) -> str:
+        return f"{self.path} loads pytest plugins"
 
     def _read_unit_body(self, name: str, unit: _Unit) -> None:
         """Record the imports in *unit*'s body, the names it reads, and the units it names."""
@@ -798,7 +813,7 @@ class ConftestFacts:
         if isinstance(sub.ctx, ast.Load):
             self.code_loads.append(sub)
         if sub.id == "pytest_plugins":
-            self.error = f"{self.path} loads pytest plugins"
+            self.error = self._plugins_error
         if sub.id == "__all__":
             # Re-exported for the tests that import the conftest, which
             # the selection adds as its importers.
@@ -1064,6 +1079,7 @@ async def scoped_candidates(
     read: Callable[[str], str | None],
     *,
     plugin_loader: str | None = None,
+    local_plugin: Callable[[str], bool] | None = None,
     read_source: Callable[[str], str | None] | None = None,
 ) -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
     """Each target's ``[(test file, via)]`` with conftest routes narrowed, and the notes.
@@ -1072,12 +1088,14 @@ async def scoped_candidates(
     reached through; *parents* the test files importing each test file and
     *parent_entries* the files each importer reached it through; *read* returns
     a conftest's text and *read_source* any file's, for the local names a
-    conftest reads (without it, every read counts as reaching). Every conftest
+    conftest reads (without it, every read counts as reaching); *local_plugin*
+    (:meth:`ConftestFacts.parse`) lets a conftest loading only installed plugins
+    be narrowed. Every conftest
     on a route that this module cannot narrow keeps today's answer: every test
     under it.
     """
     routes = _conftest_routes(found, entries, parents, parent_entries)
-    _judge_routes(routes, read, plugin_loader, read_source)
+    _judge_routes(routes, read, plugin_loader, read_source, local_plugin)
     scope = await _load_scope(session, repo_id, routes, parents, test_files)
     out: dict[str, list[tuple[str, str]]] = {}
     notes: dict[tuple[str, str], list[str]] = {}
@@ -1122,6 +1140,7 @@ def _judge_routes(
     read: Callable[[str], str | None],
     plugin_loader: str | None,
     read_source: Callable[[str], str | None] | None = None,
+    local_plugin: Callable[[str], bool] | None = None,
 ) -> None:
     """Set each route's use and reason. One parse per conftest and per entry; each distinct
     route through it is matched against it once."""
@@ -1133,7 +1152,9 @@ def _judge_routes(
     for target, conf, route in ((t, c, r) for t, by in routes.items() for c, r in by.items()):
         if conf not in facts:
             source = read(conf)
-            facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
+            facts[conf] = (
+                None if source is None else ConftestFacts.parse(source, conf, local_plugin)
+            )
         # The changed file's own local names may be what changed.
         others = route.entries - {target}
         for e in others - set(consts) if source_of else ():

@@ -805,8 +805,9 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
   sits beside.
 - A route through a test helper no test imports, unless every known test is
   selected anyway (the reasons say so).
-- Any Python test helper while a conftest or pytest config loads plugins by
-  name.
+- Any Python test helper while a conftest or pytest config loads by name a
+  plugin that may be a module of the repository (`pytest_plugins`, `-p name`).
+  An installed plugin or a pytest builtin (`pytester`) does not count.
 - A missing or unreadable index, or a per-test map at its row cap.
 - A deleted file no known test used.
 - A query or data file no code names.
@@ -899,8 +900,8 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
   effects (`selected.broadcast`).
 - Everything runs when a fixture request is unreadable (computed name, mark in
   a variable, a request name in a string, `exec`/`eval`/`compile`, config
-  `usefixtures`), the conftest loads plugins or is
-  unreadable, or the index predates this; the reasons name the cause.
+  `usefixtures`), the conftest loads a plugin that may be a repository module
+  or is unreadable, or the index predates this; the reasons name the cause.
 
 <details><summary>Edge cases and ceilings</summary>
 

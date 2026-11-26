@@ -514,6 +514,38 @@ async def test_a_conftest_reached_through_its_imports_runs_only_the_tests_it_can
     assert any("only through its imports" in n for n in out["conftest_notes"])
 
 
+@pytest.mark.parametrize(
+    ("plugins", "narrowed"),
+    [
+        ('pytest_plugins = ("pytest_aiohttp.plugin", "pytester")\n', True),
+        ('pytest_plugins = ["pytester", "app.store"]\n', False),
+    ],
+)
+async def test_a_conftest_loading_only_installed_plugins_is_still_narrowed(
+    async_session, plugins, narrowed
+) -> None:
+    """A plugin no indexed file can be leaves the conftest's fixtures readable."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/app/util.py": None},
+        set(),
+        out,
+        pytest_texts={"tests/conftest.py": _CONFTEST + plugins},
+    )
+
+    picks = _pairs(out, "src/app/util.py")
+    if narrowed:
+        assert picks == {"tests/test_a.py": "conftest-fixture"}
+    else:
+        assert "tests/conftest.py" in picks
+        assert any("loads pytest plugins" in n for n in out["conftest_notes"])
+
+
 async def test_an_index_without_stamped_fixture_requests_keeps_every_test(async_session) -> None:
     repo = await insert_repo(async_session)
     await _conftest_graph(async_session, repo.id, stamped=False)

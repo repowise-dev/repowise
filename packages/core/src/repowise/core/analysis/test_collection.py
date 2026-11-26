@@ -1102,10 +1102,15 @@ async def _graph_candidates(
     *changed* files (every target when not given; :func:`_test_hops`).
     """
     from .conftest_routes import scoped_candidates
-    from .test_reachability import cached_import_graphs, cached_test_files
+    from .plugin_loaders import local_module_check
+    from .test_reachability import cached_file_paths, cached_import_graphs, cached_test_files
     from .test_selection import is_code_file, plugin_loader
 
     texts = pytest_texts or {}
+    # Plugins are judged against the indexed files and the targets, which hold
+    # the files changed since the index. Ceiling: a file the index excludes
+    # counts as installed here; selection's helper rule reads the checkout.
+    files = {*await cached_file_paths(session, repo_id), *targets} if texts else set()
     indexed_tests = await cached_test_files(session, repo_id)
     test_files = {f for f in indexed_tests if is_code_file(f)}
     graph, wide = await cached_import_graphs(session, repo_id)
@@ -1126,7 +1131,8 @@ async def _graph_candidates(
         parent_entries,
         test_files,
         texts.get,
-        plugin_loader=plugin_loader(texts.items()),
+        plugin_loader=plugin_loader(texts.items(), files),
+        local_plugin=local_module_check(files),
         read_source=read_source,
     )
     importers = {test: sorted(found_by) for test, found_by in parents.items()}
@@ -1330,7 +1336,7 @@ def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Sele
             go_test_dirs=go_test_dirs,
             known_tests=known_tests,
             doc_readers={p: n[0] for p, n in plan.namers.items() if is_documentation(p)},
-            plugin_loader=plugin_loader(checkout.pytest_texts),
+            plugin_loader=plugin_loader(checkout.pytest_texts, tracked),
             unplaced_tests=[] if placed is None else [t for t in known_tests if t not in placed],
             always_run_tests=result["always_run_tests"],
             scopes=plan.scopes,
