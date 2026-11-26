@@ -96,7 +96,7 @@ def split_unscored(rows: Iterable[Any]) -> tuple[list[Any], int]:
         row
         for row in rows
         if field(row, "score", None) is None
-        and field(row, "code_origin", None) not in ("generated", "vendored")
+        and field(row, "code_origin", None) != "generated"
     ]
     return scored, len(unscored)
 

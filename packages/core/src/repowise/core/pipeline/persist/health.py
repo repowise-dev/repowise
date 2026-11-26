@@ -185,7 +185,8 @@ async def save_full_health_report(
             head = None
             if abs_p is not None and abs_p.is_file():
                 try:
-                    head = abs_p.read_bytes()[:4096]
+                    with abs_p.open("rb") as fh:
+                        head = fh.read(4096)
                 except OSError:
                     head = None
             origin = (

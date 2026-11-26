@@ -42,3 +42,17 @@ def test_each_shape_reads_the_same_on_every_call() -> None:
             assert field(row, "score") == 1.0
             assert field(row, "missing", "d") == "d"
     assert field(_Pairs(), "missing", 0) == 0
+
+
+def test_split_unscored_excludes_only_generated_from_unanalysed() -> None:
+    from repowise.core.analysis.health.rows import split_unscored
+
+    rows = [
+        {"file_path": "prod.py", "score": 8.0, "code_origin": "production"},
+        {"file_path": "unscored_prod.txt", "score": None, "code_origin": "production"},
+        {"file_path": "unscored_vendored.js", "score": None, "code_origin": "vendored"},
+        {"file_path": "skipped_gen.rb", "score": None, "code_origin": "generated"},
+    ]
+    scored, unanalysed_count = split_unscored(rows)
+    assert len(scored) == 1
+    assert unanalysed_count == 2
