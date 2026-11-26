@@ -203,8 +203,8 @@ def test_a_site_whose_table_is_only_known_at_run_time_keeps_the_join_open() -> N
     runtime = _site("h.py::save_any", name=None, via="runtime")
     match = match_statement(shape, [_site("a.py::write"), runtime])
     assert match.issuer == "ambiguous"
-    # Alone it names nothing.
-    assert match_statement(shape, [runtime]).issuer is None
+    # Alone too: it may be the issuer, never a guess.
+    assert match_statement(shape, [runtime]).issuer == "ambiguous"
 
 
 def test_postgrest_text_never_joins_a_literal_sql_site_and_back() -> None:

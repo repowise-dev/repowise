@@ -426,8 +426,8 @@ def match_statement(shape: StatementShape | None, sites: Sequence[StatementSite]
         and not any(s.scheduled for s in found)
     ):
         return StatementMatch("function", next(iter(named)), found)
-    if all(s.name is None for s in code):
-        return StatementMatch(None, sites=found)
+    # Several functions, or one whose table is only known at run time (alone
+    # too): it may be the issuer, so none is named.
     return StatementMatch("ambiguous", sites=found)
 
 
