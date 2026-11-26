@@ -69,12 +69,30 @@ JEST_SETUP = b"""<?xml version="1.0" encoding="UTF-8"?>
 </testsuite></testsuites>
 """
 
+# RSpec writes with rspec_junit_formatter: file on each testcase.
+RSPEC = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="rspec" tests="2" failures="0" errors="0" time="0.12">
+<testcase classname="spec.models.user_spec" name="User valid" file="./spec/models/user_spec.rb" time="0.012" />
+<testcase classname="spec.models.user_spec" name="User invalid" file="./spec/models/user_spec.rb" time="0.045" />
+</testsuite>
+"""
+
+# PHPUnit / Pest: file on testsuite and testcase.
+PHPUNIT = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+<testsuite name="Tests\\Unit\\ExampleTest" file="tests/Unit/ExampleTest.php" tests="2" assertions="2" errors="0" warnings="0" failures="0" skipped="0" time="0.05">
+<testcase name="test_that_true_is_true" class="Tests\\Unit\\ExampleTest" classname="Tests.Unit.ExampleTest" file="tests/Unit/ExampleTest.php" line="12" assertions="1" time="0.02" />
+<testcase name="test_that_false_is_false" class="Tests\\Unit\\ExampleTest" classname="Tests.Unit.ExampleTest" file="tests/Unit/ExampleTest.php" line="18" assertions="1" time="0.03" />
+</testsuite>
+</testsuites>
+"""
+
 
 def _doc(data: bytes):
     return parse_evidence(json.dumps(junit.to_v1(data)))
 
 
-@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST])
+@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST, RSPEC, PHPUNIT])
 def test_every_runner_shape_is_detected_as_junit(data: bytes) -> None:
     assert detect_profile_format(data) == "junit"
 
@@ -148,6 +166,25 @@ def test_placing_joins_dotted_names_to_indexed_files() -> None:
             "CartTest::Totals::totals",
         ),
     ]
+
+
+def test_rspec_and_phpunit_fixtures_place_on_test_files() -> None:
+    files = {"spec/models/user_spec.rb", "tests/Unit/ExampleTest.php"}
+
+    rspec_doc = place_test_entries(_doc(RSPEC), files)
+    phpunit_doc = place_test_entries(_doc(PHPUNIT), files)
+
+    assert [e["test_id"] for e in rspec_doc.entries] == [
+        "spec/models/user_spec.rb::user_spec::User valid",
+        "spec/models/user_spec.rb::user_spec::User invalid",
+    ]
+    assert {e["test_file"] for e in rspec_doc.entries} == {"spec/models/user_spec.rb"}
+
+    assert [e["test_id"] for e in phpunit_doc.entries] == [
+        "tests/Unit/ExampleTest.php::test_that_true_is_true",
+        "tests/Unit/ExampleTest.php::test_that_false_is_false",
+    ]
+    assert {e["test_file"] for e in phpunit_doc.entries} == {"tests/Unit/ExampleTest.php"}
 
 
 def test_a_name_two_files_end_with_is_not_guessed() -> None:

@@ -1313,29 +1313,42 @@ _RUBY = re.compile(r"(?<![\w-])(?:rspec|rake\s+(?:test|spec)|rails\s+test)(?![\w
 
 def _ruby(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     gemfile = files.get("Gemfile", "")
+    notes: list[str] = []
     if "simplecov-cobertura" in gemfile:
-        reports, notes = "coverage/coverage.xml", ()
+        reports = "coverage/coverage.xml"
     elif "simplecov-lcov" in gemfile:
-        reports, notes = "coverage/lcov/*.lcov coverage/lcov.info", ()
+        reports = "coverage/lcov/*.lcov coverage/lcov.info"
     else:
         reports = "coverage/coverage.xml"
-        notes = ("Ruby writes coverage through SimpleCov, which has to start inside the test process. "
-                 "Add `gem \"simplecov\"` and `gem \"simplecov-cobertura\"` to the Gemfile's test group, and "
-                 "put this at the very top of `spec/spec_helper.rb` (or `test/test_helper.rb`):\n\n"
-                 "  ```ruby\n  require \"simplecov\"\n  require \"simplecov-cobertura\"\n"
-                 "  SimpleCov.formatter = SimpleCov::Formatter::CoberturaFormatter\n  SimpleCov.start\n  ```\n\n"
-                 "  Until then the upload step finds no report and says so.",)
+        notes.append(
+            "Ruby writes coverage through SimpleCov, which has to start inside the test process. "
+            "Add `gem \"simplecov\"` and `gem \"simplecov-cobertura\"` to the Gemfile's test group, and "
+            "put this at the very top of `spec/spec_helper.rb` (or `test/test_helper.rb`):\n\n"
+            "  ```ruby\n  require \"simplecov\"\n  require \"simplecov-cobertura\"\n"
+            "  SimpleCov.formatter = SimpleCov::Formatter::CoberturaFormatter\n  SimpleCov.start\n  ```\n\n"
+            "  Until then the upload step finds no report and says so."
+        )
     if "rspec" in gemfile or any(p.startswith("spec/") for p in paths):
         test, runner = "bundle exec rspec", "rspec"
+        junit_report = "junit.xml"
+        junit_flag = "--format progress --format RspecJunitFormatter --out junit.xml"
+        if "rspec_junit_formatter" not in gemfile:
+            notes.append(
+                "RSpec writes test timings through the `rspec_junit_formatter` gem. "
+                "Add `gem \"rspec_junit_formatter\"` to the Gemfile's test group."
+            )
     elif "bin/rails" in paths:
         test, runner = "bin/rails test", "rails test"
+        junit_report, junit_flag = "", ""
     else:
         test, runner = "bundle exec rake test", "rake test"
+        junit_report, junit_flag = "", ""
     version = () if root & {".ruby-version", ".tool-versions"} else ("    ruby-version: \"3.3\"   # adjust to your version",)
     return Stack(
         "ruby", runner, "bundler", reports,
         setup=("- uses: ruby/setup-ruby@v1", "  with:", *version, "    bundler-cache: true"),
-        test=test, notes=notes, pattern=_RUBY, editor=lambda line, m: CommandEdit(line, reports),
+        test=test, notes=tuple(notes), pattern=_RUBY, editor=lambda line, m: CommandEdit(line, reports),
+        junit_report=junit_report, junit_flag=junit_flag,
     )
 
 
@@ -1368,6 +1381,8 @@ def _php(files: dict[str, str]) -> Stack:
         test=f"vendor/bin/{runner} --coverage-clover clover.xml",
         pattern=_PHPUNIT, job_requires=re.compile(r"coverage:\s*['\"]?(pcov|xdebug)|XDEBUG_MODE"),
         editor=_edit_phpunit,
+        junit_report="junit.xml",
+        junit_flag="--log-junit junit.xml",
     )
 
 # ---------------------------------------------------------------------------

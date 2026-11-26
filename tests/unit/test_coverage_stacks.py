@@ -1009,6 +1009,66 @@ def test_other_runners_need_no_junit_environment():
     assert stack.junit_vars() == "" and stack.junit_flag.startswith("--reporter=default")
 
 
+def test_php_writes_junit_timings():
+    phpunit_files = {"composer.json": json.dumps({"require-dev": {"phpunit/phpunit": "^11"}})}
+    (phpunit_stack,) = detect_stacks(["composer.json"], phpunit_files)
+    assert phpunit_stack.runner == "phpunit"
+    assert (phpunit_stack.junit_report, phpunit_stack.junit_flag) == ("junit.xml", "--log-junit junit.xml")
+    assert phpunit_stack.with_junit(phpunit_stack.test) == (
+        "vendor/bin/phpunit --coverage-clover clover.xml --log-junit junit.xml"
+    )
+
+    pest_files = {"composer.json": json.dumps({"require-dev": {"pestphp/pest": "^2"}})}
+    (pest_stack,) = detect_stacks(["composer.json"], pest_files)
+    assert pest_stack.runner == "pest"
+    assert (pest_stack.junit_report, pest_stack.junit_flag) == ("junit.xml", "--log-junit junit.xml")
+    assert pest_stack.with_junit(pest_stack.test) == (
+        "vendor/bin/pest --coverage-clover clover.xml --log-junit junit.xml"
+    )
+
+
+def test_ruby_rspec_writes_junit_timings():
+    # With rspec_junit_formatter present in Gemfile: no extra note.
+    files_with_gem = {"Gemfile": 'gem "rspec"\ngem "rspec_junit_formatter"\ngem "simplecov-cobertura"\n'}
+    (stack_with_gem,) = detect_stacks(["Gemfile", "spec/a_spec.rb"], files_with_gem)
+    assert stack_with_gem.runner == "rspec"
+    assert (stack_with_gem.junit_report, stack_with_gem.junit_flag) == (
+        "junit.xml",
+        "--format progress --format RspecJunitFormatter --out junit.xml",
+    )
+    assert stack_with_gem.with_junit(stack_with_gem.test) == (
+        "bundle exec rspec --format progress --format RspecJunitFormatter --out junit.xml"
+    )
+    assert not any("rspec_junit_formatter" in n for n in stack_with_gem.notes)
+
+    # Without rspec_junit_formatter in Gemfile: note directing to add it.
+    files_without_gem = {"Gemfile": 'gem "rspec"\ngem "simplecov-cobertura"\n'}
+    (stack_without_gem,) = detect_stacks(["Gemfile", "spec/a_spec.rb"], files_without_gem)
+    assert (stack_without_gem.junit_report, stack_without_gem.junit_flag) == (
+        "junit.xml",
+        "--format progress --format RspecJunitFormatter --out junit.xml",
+    )
+    assert any("rspec_junit_formatter" in n for n in stack_without_gem.notes)
+
+
+def test_ruby_minitest_and_rake_stay_without_timings():
+    # Rake test / Minitest
+    files = {"Gemfile": 'gem "minitest"\ngem "simplecov-cobertura"\n'}
+    (stack,) = detect_stacks(["Gemfile", "test/a_test.rb"], files)
+    assert stack.runner == "rake test"
+    assert (stack.junit_report, stack.junit_flag) == ("", "")
+    assert stack.with_junit(stack.test) is None
+    assert not any("rspec_junit_formatter" in n for n in stack.notes)
+
+    # Rails test
+    rails_files = {"Gemfile": 'gem "rails"\ngem "simplecov-cobertura"\n'}
+    (rails_stack,) = detect_stacks(["Gemfile", "bin/rails", "test/a_test.rb"], rails_files)
+    assert rails_stack.runner == "rails test"
+    assert (rails_stack.junit_report, rails_stack.junit_flag) == ("", "")
+    assert rails_stack.with_junit(rails_stack.test) is None
+    assert not any("rspec_junit_formatter" in n for n in rails_stack.notes)
+
+
 @pytest.mark.parametrize(
     ("lock", "script", "command"),
     [
