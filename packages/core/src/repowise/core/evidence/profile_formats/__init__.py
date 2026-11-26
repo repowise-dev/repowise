@@ -35,6 +35,7 @@ from typing import Any
 from repowise.core.registry.plugins import SeamRegistry
 
 from . import (
+    benchmarkdotnet,
     collapsed,
     cpuprofile,
     criterion,
@@ -124,6 +125,9 @@ profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.r
 profile_formats.register(
     "google-benchmark",
     ProfileFormat(google_benchmark.sniff, to_v1=google_benchmark.to_v1),
+)
+profile_formats.register(
+    "benchmarkdotnet", ProfileFormat(benchmarkdotnet.sniff, to_v1=benchmarkdotnet.to_v1)
 )
 profile_formats.register(
     "criterion",
