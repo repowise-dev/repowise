@@ -240,9 +240,9 @@ _QUALIFIED_SUPPORT_NAME_WORDS: frozenset[str] = frozenset({"utils", "util"})
 class _Conventions:
     """The registry-declared halves of the rules, resolved once."""
 
-    stem_prefixes: tuple[str, ...]
-    stem_suffixes: tuple[str, ...]
-    infixes: tuple[str, ...]
+    ext_stem_prefixes: dict[str, tuple[str, ...]]
+    ext_stem_suffixes: dict[str, tuple[str, ...]]
+    ext_infixes: dict[str, tuple[str, ...]]
     test_exts: frozenset[str]
     source_exts: frozenset[str]
     exact_stem_exts: frozenset[str]
@@ -275,10 +275,14 @@ def _conventions() -> _Conventions:
     from .ingestion.languages.registry import REGISTRY
     from .ingestion.models import TS_JS_LANGUAGES
 
+    ext_prefixes = REGISTRY.test_stem_prefixes_by_extension()
+    for ruby_ext in REGISTRY.extensions_for(("ruby",)):
+        ext_prefixes[ruby_ext] = tuple(sorted({*ext_prefixes.get(ruby_ext, ()), "spec_"}))
+
     return _Conventions(
-        stem_prefixes=tuple(sorted({*REGISTRY.test_stem_prefixes(), "spec_"})),
-        stem_suffixes=REGISTRY.test_stem_suffixes(),
-        infixes=REGISTRY.test_infixes(),
+        ext_stem_prefixes=ext_prefixes,
+        ext_stem_suffixes=REGISTRY.test_stem_suffixes_by_extension(),
+        ext_infixes=REGISTRY.test_infixes_by_extension(),
         test_exts=REGISTRY.test_extensions(),
         source_exts=REGISTRY.all_code_extensions(),
         exact_stem_exts=REGISTRY.extensions_for(("python", "rust")),
@@ -377,11 +381,14 @@ def _is_test_name(filename: str) -> bool:
     if ext in rules.exact_stem_exts and PurePosixPath(filename).stem in _TEST_EXACT_STEMS:
         return True
     stem = PurePosixPath(lowered).stem
-    if (
-        stem.startswith(rules.stem_prefixes)
-        or stem.endswith(rules.stem_suffixes)
-        or any(infix in lowered for infix in rules.infixes)
-    ):
+    prefixes = rules.ext_stem_prefixes.get(ext)
+    if prefixes is not None and stem.startswith(prefixes):
+        return True
+    suffixes = rules.ext_stem_suffixes.get(ext)
+    if suffixes is not None and stem.endswith(suffixes):
+        return True
+    infixes = rules.ext_infixes.get(ext)
+    if infixes is not None and any(infix in lowered for infix in infixes):
         return True
     original_stem = PurePosixPath(filename).stem
     camel_re = rules.camel_res.get(ext)
@@ -557,7 +564,9 @@ def _classify(
     """
     if roots is None and dotnet_projects is None and phpunit_roots is None and package_root is None:
         return _classify_without_context(path, language)
-    return _classify_with_context(path, language, roots, dotnet_projects, phpunit_roots, package_root)
+    return _classify_with_context(
+        path, language, roots, dotnet_projects, phpunit_roots, package_root
+    )
 
 
 # Bounded so a long-lived server sees a fixed ceiling (~65k short keys); a
@@ -715,7 +724,9 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "support"
+    return (
+        _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "support"
+    )
 
 
 def is_test_related_path(

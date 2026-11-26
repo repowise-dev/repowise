@@ -9,6 +9,7 @@ SPEC = LanguageSpec(
     entry_stems=("manage", "wsgi", "asgi", "__main__"),
     entry_flag_stems=("wsgi", "asgi"),
     test_stem_prefixes=("test_",),
+    test_stem_suffixes=("_test",),
     test_fixture_stems=("conftest",),
     suite_anchor_stems=("conftest",),
     # Perl-style t/: a Python file under t/ is test material whatever its
