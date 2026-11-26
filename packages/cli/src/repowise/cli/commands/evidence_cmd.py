@@ -138,13 +138,14 @@ def evidence_add(
     FILE is a repowise-evidence-v1 document, or a profile, benchmark
     results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
     V8 .cpuprofile, collapsed stacks, pytest-benchmark or hyperfine JSON,
-    go test -bench output, JUnit XML), detected from its content. Several
+    go test -bench or go test -json output, JUnit XML), detected from its content. Several
     profiles (a parent process and its workers, or a directory holding one file
     per process) merge into one run; they must share a format, unit, tool and
     clock.
     A single profile that spent time starting or waiting on other processes
     gets a warning that their work is not in it. JUnit XML reports (a Maven or
-    Gradle report directory) read as one run; other files beside them are left out.
+    Gradle report directory, or a quoted glob such as '**/target/surefire-reports/*.xml'
+    for one directory per module) read as one run; other files beside them are left out.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
@@ -433,7 +434,8 @@ def evidence_setup_command(repo: str | None, write: bool, ci: str | None, fmt: s
     suite, each with a profiler command that needs no privileges and the exact
     ``evidence add`` line. ``next_call`` lists the steps to run next, each
     with its directory: a coverage report on disk first, then the best
-    profile, then the tests with coverage. ``stack: unknown`` when repowise is
+    profile, then the tests with coverage, which also write and ingest the
+    test timings. ``stack: unknown`` when repowise is
     not sure how a unit runs. Works before the repository is indexed.
 
     --write adds one CI file (``.github/workflows/repowise-evidence.yml`` or
@@ -508,7 +510,8 @@ def _print_next(plan: dict[str, Any], notices: Any) -> None:
         return
     notices.print(f"[bold]Next[/bold]: {escape(call['purpose'])}")
     for step in call["steps"]:
-        notices.print(f"  [dim]in {escape(step['cwd'])}[/dim]\n    [cyan]{escape(step['run'])}[/cyan]")
+        env = f" with {_env_words(step['env'])} in its environment" if step.get("env") else ""
+        notices.print(f"  [dim]in {escape(step['cwd'])}{escape(env)}[/dim]\n    [cyan]{escape(step['run'])}[/cyan]")
     if call.get("optional"):
         optional = call["optional"]
         notices.print(f"[bold]Optional[/bold]: {escape(', '.join(optional['workloads']))}. "
@@ -565,6 +568,11 @@ def _print_written(snippet: dict[str, Any], notices: Any) -> None:
         )
 
 
+def _env_words(env: dict[str, str]) -> str:
+    """An environment mapping as ``NAME=value`` words."""
+    return " ".join(f"{name}={value}" for name, value in env.items())
+
+
 def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
     """How a unit's tests write JUnit XML, and the line that ingests it."""
     if not timings:
@@ -575,7 +583,7 @@ def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
         else "written by default"
     )
     if timings.get("env"):
-        how += f" with [cyan]{escape(timings['env'])}[/cyan] in its environment"
+        how += f" with [cyan]{escape(_env_words(timings['env']))}[/cyan] in its environment"
     lines = [f"  test timings: {how}, report {escape(timings['report'])}"]
     if timings["ingest"]:
         lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
@@ -591,6 +599,8 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
     if cov["command"]:
         lines += [f"  needs: [cyan]{escape(p)}[/cyan]" for p in cov["prerequisites"]]
         lines.append(f"  coverage: [cyan]{escape(cov['command'])}[/cyan]")
+        if cov.get("env"):
+            lines.append(f"    with [cyan]{escape(_env_words(cov['env']))}[/cyan] in its environment")
     elif cov["reason"]:
         lines.append(f"  [yellow]{escape(cov['reason'])}[/yellow]")
     # The reason is the last note when there is no command; the rest say what the command installs or skips.

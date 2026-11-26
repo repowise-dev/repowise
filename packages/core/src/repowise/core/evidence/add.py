@@ -146,12 +146,21 @@ def evidence_paths(paths: Sequence[Path]) -> list[Path]:
 
     A profiler that writes one file per process (``node --cpu-prof``) is
     pointed at a directory, and the directory is what ``evidence add``
-    takes. Hidden files are left out.
+    takes. Hidden files are left out. A glob that names no file as written
+    (``'**/target/surefire-reports/*.xml'``, one JUnit directory per module)
+    is expanded from the current directory, as ``coverage add`` expands its
+    reports, so no shell has to.
     """
+    from repowise.core.analysis.health.coverage.discovery import expand_report_patterns
+
     out: list[Path] = []
     seen: set[Path] = set()
     for path in paths:
-        if path.is_dir():
+        if not path.exists() and any(ch in str(path) for ch in "*?["):
+            found = expand_report_patterns([path.as_posix()], Path.cwd())
+            if not found:
+                raise _bad_option("FILE", f"{path} matches no file.")
+        elif path.is_dir():
             found = sorted(
                 p for p in path.iterdir() if p.is_file() and not p.name.startswith(".")
             )
@@ -267,6 +276,15 @@ def prepare_evidence(
                 refuse_compiled_positions(run, str(checkout_root))
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
+    if doc is not None and doc.kind == "test_timing" and doc.entries and all(
+        e["outcome"] == "error" for e in doc.entries
+    ):
+        # A collection or session error fails every test before it runs: no time is a test's.
+        raise EvidenceRefusedError(
+            "invalid_evidence",
+            f"every one of the {len(doc.entries):,} tests in {name} errored, so the run timed no test",
+            "read the test run's output for the error that stopped every test, fix it, then run it again",
+        )
     _check_value_kind(fmt, doc, run, value_kind)
     return PreparedEvidence(
         format=fmt,

@@ -381,3 +381,35 @@ def test_a_profile_stores_inside_and_drivers_and_the_read_model_serves_them(inde
     ]
     assert served["src/app.py::build"]["inside"][0]["name"] == "f"
     assert served["src/app.py::build"]["drivers"] is None
+
+
+def test_a_glob_names_every_modules_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.evidence.add import evidence_paths
+
+    for module in ("a", "b"):
+        reports = tmp_path / module / "target" / "surefire-reports"
+        reports.mkdir(parents=True)
+        (reports / f"TEST-{module}.xml").write_text("<testsuite/>")
+        (reports / f"{module}.txt").write_text("summary")
+    monkeypatch.chdir(tmp_path)
+
+    got = evidence_paths([Path("**/target/surefire-reports/*.xml")])
+
+    assert sorted(p.name for p in got) == ["TEST-a.xml", "TEST-b.xml"]
+    with pytest.raises(EvidenceRefusedError, match="matches no file"):
+        evidence_paths([Path("**/build/test-results/test/*.xml")])
+
+
+def test_a_run_where_every_test_errored_is_refused(tmp_path: Path) -> None:
+    from repowise.core.evidence.add import prepare_evidence
+
+    errored = (
+        '<testsuite><testcase classname="tests.test_a" name="test_x" time="0"><error/></testcase>'
+        '<testcase classname="tests.test_a" name="test_y" time="0"><error/></testcase></testsuite>'
+    )
+
+    with pytest.raises(EvidenceRefusedError, match=r"every one of the 2 tests in junit.xml errored"):
+        prepare_evidence(errored.encode(), name="junit.xml", checkout_root=tmp_path, commit="a" * 40)
+    # One test that ran is a run: kept.
+    ran = errored.replace("<error/></testcase></testsuite>", "</testcase></testsuite>")
+    assert prepare_evidence(ran.encode(), name="junit.xml", checkout_root=tmp_path, commit="a" * 40).doc

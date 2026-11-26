@@ -33,7 +33,17 @@ from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, cpuprofile, go_bench, hyperfine, junit, pprof, pytest_benchmark, speedscope
+from . import (
+    collapsed,
+    cpuprofile,
+    go_bench,
+    go_test_json,
+    hyperfine,
+    junit,
+    pprof,
+    pytest_benchmark,
+    speedscope,
+)
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
@@ -67,6 +77,12 @@ profile_formats.register("cpuprofile", ProfileFormat(cpuprofile.sniff, cpuprofil
 profile_formats.register(
     "pytest-benchmark",
     ProfileFormat(pytest_benchmark.sniff, to_v1=pytest_benchmark.to_v1),
+)
+# Before go-bench, which claims every test2json head: go-test-json declines a head that
+# shows a benchmark run, and hands go-bench a file whose results come later.
+profile_formats.register(
+    "go-test-json",
+    ProfileFormat(go_test_json.sniff, to_v1=go_test_json.to_v1, needs_checkout=True),
 )
 profile_formats.register(
     "go-bench", ProfileFormat(go_bench.sniff, to_v1=go_bench.to_v1, needs_checkout=True)

@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import re
 import statistics
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -229,10 +229,21 @@ def _entry(
 
 
 class _Locator:
-    """``(path, function, line)`` of a package's benchmark function, read from the checkout."""
+    """``(path, function, line)`` of a package's benchmark function, read from the checkout.
 
-    def __init__(self, root: Path | None) -> None:
+    *declared* finds the functions in a ``_test.go`` file and *accept* keeps the
+    ones wanted (by default the benchmarks; :mod:`.go_test_json` finds tests).
+    """
+
+    def __init__(
+        self,
+        root: Path | None,
+        declared: re.Pattern[str] = _DECLARED,
+        accept: Callable[[str, str], bool] = is_benchmark_function,
+    ) -> None:
         self._root = root
+        self._find = declared
+        self._accept = accept
         self._modules: tuple[tuple[str, str], ...] | None = None
         self._declared: dict[str, dict[str, tuple[str, int]]] = {}
 
@@ -260,7 +271,7 @@ class _Locator:
         return None
 
     def _scan(self, rel_dir: str) -> dict[str, tuple[str, int]]:
-        """Benchmark function -> (file, start line) for the package's ``_test.go`` files."""
+        """Function -> (file, start line) for the package's ``_test.go`` files."""
         assert self._root is not None
         directory = self._root / rel_dir if rel_dir else self._root
         out: dict[str, tuple[str, int]] = {}
@@ -274,8 +285,8 @@ class _Locator:
                 source = file.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            for match in _DECLARED.finditer(source):
-                if is_benchmark_function(path, match.group(1)):
+            for match in self._find.finditer(source):
+                if self._accept(path, match.group(1)):
                     line = source.count("\n", 0, match.start()) + 1
                     out.setdefault(match.group(1), (path, line))
         return out

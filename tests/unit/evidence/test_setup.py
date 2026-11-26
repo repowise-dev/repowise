@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
+from repowise.core.evidence.runtime_setup import RuntimeInputs
 from repowise.core.evidence.setup import (
     INIT_COMMAND,
     SETUP_COMMAND,
@@ -43,13 +45,16 @@ def test_an_indexed_repository_runs_then_ingests(tmp_path: Path) -> None:
     plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
 
     steps = plan["next_call"]["steps"]
-    assert [s["run"] for s in steps][-2:] == [
+    # One run gives coverage and test timings, and both are ingested.
+    assert [s["run"] for s in steps][-3:] == [
         "repowise coverage add coverage.xml .coverage",
+        f'repowise evidence add junit.xml --workload "pytest tests" --class unit_test --commit {"a" * 40}',
         "repowise coverage status",
     ]
     # The tests import the project, so it is installed with the test tools.
     assert steps[0]["run"] == "python -m pip install -e . pytest pytest-cov"
     assert steps[1]["run"].startswith("pytest --cov=app")
+    assert steps[1]["run"].endswith(" --junitxml=junit.xml")
     assert all(s["cwd"] == str(tmp_path) for s in steps)
     assert plan["commit"] == "a" * 40
 
@@ -127,15 +132,23 @@ def test_the_ingest_line_resolves_from_the_repository_root(tmp_path: Path, monke
     assert [p.resolve() for p in expand_report_args(args, Path())] == [(svc / "coverage.out").resolve()]
 
 
-def test_coverage_measured_at_head_ends_the_loop(tmp_path: Path) -> None:
+def test_coverage_and_test_timings_measured_at_head_end_the_loop(tmp_path: Path) -> None:
     _python(tmp_path)
     (tmp_path / "coverage.xml").write_text("<coverage/>")
+    timed = RuntimeInputs(measured=frozenset({("pytest tests", "a" * 40)}))
 
-    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40, coverage_commit="a" * 40)
+    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40, coverage_commit="a" * 40, coverage_only=True)
 
     assert plan["next_call"] is None
     assert plan["reason"].endswith("nothing left to run.")
     assert evidence_setup(tmp_path, indexed=True, head="a" * 40, coverage_commit="b" * 40)["next_call"]
+    # Coverage alone at HEAD still runs the tests once more, for their timings.
+    again = evidence_setup(tmp_path, indexed=True, head="a" * 40, coverage_commit="a" * 40,
+                           runtime=RuntimeInputs(measured=frozenset({("python tests", "a" * 40)})))
+    assert again["next_call"]["steps"][-2]["run"].startswith('repowise evidence add junit.xml --workload "pytest tests"')
+    done = evidence_setup(tmp_path, indexed=True, head="a" * 40, coverage_commit="a" * 40,
+                          runtime=replace(timed, measured=timed.measured | {("python tests", "a" * 40)}))
+    assert done["next_call"] is None
 
 
 def _commit(root: Path, message: str, when: str) -> str:
@@ -202,14 +215,18 @@ def test_each_unit_says_how_its_tests_write_junit_timings(tmp_path: Path) -> Non
         "flag": "--junitxml=junit.xml",
         "env": None,
         "report": "junit.xml",
+        "command": "pytest --cov=app --cov-report=xml --cov-context=test --junitxml=junit.xml",
+        "workload": "pytest tests",
         "ingest": 'repowise evidence add junit.xml --workload "pytest tests" --class unit_test '
         "--commit " + "a" * 40,
     }
     # Surefire writes its reports by default.
     assert timings["svc"]["flag"] is None
     assert timings["svc"]["report"] == "svc/target/surefire-reports"
-    # Timings rank tests; they are never a step of the loop.
-    assert "junit" not in json.dumps(plan["next_call"])
+    assert timings["svc"]["command"] == plan["units"][1]["coverage"]["command"]
+    # The loop's test step is that command: one run, coverage and timings.
+    steps = [s["run"] for s in plan["next_call"]["steps"]]
+    assert timings[""]["command"] in steps and timings[""]["ingest"] in steps
 
 
 def test_a_jest_unit_says_how_jest_junit_writes_its_timings(tmp_path: Path) -> None:
@@ -226,12 +243,17 @@ def test_a_jest_unit_says_how_jest_junit_writes_its_timings(tmp_path: Path) -> N
     (unit,) = plan["units"]
     assert unit["test_timings"] == {
         "flag": "--reporters=default --reporters=jest-junit",
-        "env": "JEST_JUNIT_CLASSNAME={filepath} JEST_JUNIT_FILE_PATH_PREFIX=web/",
+        "env": {"JEST_JUNIT_CLASSNAME": "{filepath}", "JEST_JUNIT_FILE_PATH_PREFIX": "web/"},
         "report": "web/junit.xml",
+        "command": "npm test -- --coverage --coverageReporters=lcov --reporters=default --reporters=jest-junit",
+        "workload": "web: jest tests",
         "ingest": 'repowise evidence add web/junit.xml --workload "web: jest tests" --class unit_test '
         "--commit " + "a" * 40,
     }
     assert "npm install --no-save jest-junit@16" in unit["coverage"]["prerequisites"]
+    # The loop's test step sets the environment itself: one spelling for every shell.
+    (run,) = [s for s in plan["next_call"]["steps"] if s["run"] == unit["test_timings"]["command"]]
+    assert run["env"] == unit["test_timings"]["env"]
 
 
 def test_coverage_setup_leaves_test_timings_out(tmp_path: Path) -> None:
@@ -254,3 +276,47 @@ def test_the_per_test_map_file_sits_in_the_unit_root_and_needs_a_command() -> No
     assert _coverage_unit(no_command, [], False)["coverage"]["per_test_map"] is None
     no_contexts = Stack("python", "pytest", test="pytest --cov --cov-report=xml", root="svc")
     assert _coverage_unit(no_contexts, [], False)["coverage"]["per_test_map"] is None
+
+
+def test_go_and_a_multi_module_build_ingest_their_timings_in_the_same_loop(tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/x\n\ngo 1.22\n")
+    (tmp_path / "x_test.go").write_text("package x\n")
+    svc = tmp_path / "svc"
+    (svc / "a" / "src" / "test" / "java").mkdir(parents=True)
+    (svc / "pom.xml").write_text("<project><modules><module>a</module></modules></project>")
+    (svc / "a" / "src" / "test" / "java" / "ATest.java").write_text("class ATest {}")
+
+    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
+
+    go, java = plan["units"]
+    assert go["test_timings"]["workload"] == "go tests"
+    steps = [s["run"] for s in plan["next_call"]["steps"]]
+    assert "go test -coverprofile=coverage.out ./... -json > go-test.json" in steps
+    assert 'repowise evidence add go-test.json --workload "go tests"' in steps[-2]
+    # The glob reaches ``evidence add`` whole, which expands it itself.
+    assert java["test_timings"]["ingest"].startswith(
+        "repowise evidence add 'svc/**/target/surefire-reports/*.xml' --workload \"svc: maven tests\""
+    )
+
+
+def test_the_test_step_sets_its_environment_in_the_step(tmp_path: Path) -> None:
+    _python(tmp_path)
+
+    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
+
+    (run,) = [s for s in plan["next_call"]["steps"] if "--junitxml" in s["run"]]
+    assert run["env"] == {"COVERAGE_CORE": "ctrace"} == plan["units"][0]["coverage"]["env"]
+    # Never in the command text: sh and PowerShell spell an assignment differently.
+    assert "COVERAGE_CORE" not in run["run"]
+
+
+def test_a_timings_report_written_at_head_ends_the_rerun(tmp_path: Path) -> None:
+    _python(tmp_path)
+    head = {"indexed": True, "head": "a" * 40, "coverage_commit": "a" * 40}
+    assert evidence_setup(tmp_path, **head)["next_call"] is not None
+
+    # The run wrote its report and the ingest was refused (every test errored, say):
+    # running the suite again would write the same, so the loop ends instead of repeating.
+    (tmp_path / "junit.xml").write_text("<testsuite/>")
+
+    assert evidence_setup(tmp_path, **head)["next_call"] is None

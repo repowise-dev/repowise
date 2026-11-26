@@ -39,7 +39,15 @@ the stack, the coverage command and its ingest line, then the runtime targets
 profiler command that needs no elevated privileges, its prerequisites, where the
 profile lands (under `.repowise/`) and the exact `evidence add` line. `next_call`
 is the sequence to run next: a coverage report already on disk, then the best
-profile, then the tests with coverage. Workloads already measured at HEAD are
+profile, then the tests with coverage. The test step also writes the unit's test
+timings (JUnit XML, or `go test -json` for Go) and ingests them, so one run gives
+coverage and timings, and `evidence tests` has something to rank. A step that
+needs environment variables carries them under `env` (name to value), never in
+the command text, since sh and PowerShell spell an assignment differently; a
+pytest run with per-test contexts sets `COVERAGE_CORE=ctrace`, because
+coverage.py's default tracer from Python 3.14 records no contexts. Coverage
+stored at HEAD without the unit's timings still runs the tests once more.
+Workloads already measured at HEAD are
 not asked for again, so rerunning `setup` after each step comes to an end:
 `next_call` is `null` and `reason` says why. A target with no ingest line carries
 a `reason` instead (no commit to stamp, a recipe whose output this build does not
@@ -80,6 +88,16 @@ read, a program with no profiler flag).
   names that directory, so the run's files merge into one run. Node writes a
   profile even when the program throws or exits nonzero, so check the exit code
   before ingesting.
+- A JavaScript test suite whose test script is the runner alone (Mocha, Jest
+  or Vitest and plain arguments, past an exec wrapper such as `npx`) gets a
+  `node tests` target (`unit_test`): `node --cpu-prof` runs the runner's own
+  script from the unit's `node_modules` (`node_modules/mocha/bin/mocha.js`),
+  so the profile holds the tests and not the package manager. A unit whose
+  test files are mostly TypeScript gets a reason only.
+- A `package.json` whose `packageManager` names a tool Repowise does not know
+  (not npm, pnpm, Yarn or Bun) gets one note saying so and no install step:
+  install the dependencies with that tool. The test command runs the runner
+  through `npx --no`, which stops at once when the runner is not installed.
 - `repowise coverage setup` prints the same plan with the coverage part only.
 
 ### Python example
@@ -150,7 +168,7 @@ The "Connect evidence" prompt hands an agent the loop instead of stack
 commands, so the commands always come from `setup`:
 
 ```text
-Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
+Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in and any environment variables (`env`) it sets. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
 ```
 
 From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
@@ -267,12 +285,12 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 |---|---|---|
 | `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, V8 `.cpuprofile`, collapsed stacks, or a v1 document |
 | `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, `go test -bench` output, hyperfine JSON, or a v1 document |
-| `test_timing` | Per test: duration and outcome | JUnit XML, or a v1 document |
+| `test_timing` | Per test: duration and outcome | JUnit XML, `go test -json`, or a v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `cpuprofile`, `pytest-benchmark`, `go-bench`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
+`pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
 
 #### Profiles as the profiler wrote them
 
@@ -337,10 +355,25 @@ The format is detected from the content, never the file name;
 
 | Format | Written by | What a test carries |
 |---|---|---|
-| `junit` | `pytest --junitxml=junit.xml`, Maven Surefire (`target/surefire-reports`) and Gradle (`build/test-results/test`) by default, Vitest `--reporter=junit`, jest with `jest-junit` | `classname`, `name`, `time` in seconds, and the outcome from a `failure`, `error` or `skipped` child; `file` when the runner writes it |
+| `junit` | `pytest --junitxml=junit.xml`, Maven Surefire (`target/surefire-reports`) and Gradle (`build/test-results/test`) by default, Vitest `--reporter=junit`, jest with `jest-junit`, Mocha `--reporter xunit` | `classname`, `name`, `time` in seconds, and the outcome from a `failure`, `error` or `skipped` child; `file` when the runner writes it |
+
+| `go-test-json` | `go test -json` saved to a file (`> go-test.json`) | each top-level test's `pass`, `fail` or `skip` event with its `Elapsed` seconds; subtests are inside their parent's time and are not stored |
 
 - A Maven or Gradle report directory, one file per test class, is one run:
-  pass the directory (or several report files) as FILE. The files in it that
+  pass the directory (or several report files) as FILE. A multi-module build
+  writes one directory per module; a quoted glob
+  (`'**/target/surefire-reports/*.xml'`) names them all, and `evidence add`
+  expands it from the current directory itself.
+- A run in which every test errored (a collection or session error) is
+  refused: it timed no test.
+- **Go.** A test links to the `TestX` function in its package's `_test.go`
+  file, found as for benchmarks; one outside the checkout keeps its timing
+  under `<package>::<name>`. A `go test -json` file holding benchmark results
+  is read as benchmarks (`go-bench`). UTF-16 output from PowerShell 5 reads
+  the same.
+- Mocha 11.6 and later write each test's file relative to where Mocha runs
+  (`showRelativePaths`); older releases write it absolute, and those tests keep
+  their timing without a file. The files in it that
   are not JUnit XML (Surefire's `.txt` summaries, `failsafe-summary.xml`, a
   file that declares a document type) are left out.
 - A test is stored under its `path::qualname` id, the id coverage contexts
