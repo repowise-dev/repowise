@@ -106,7 +106,10 @@ Go route groups, Laravel `Route::prefix(...)->group(...)` and `Route::group(['pr
 Fastify `register(plugin, {prefix})`, Koa `new Router({prefix})` and nested `router.use()`,
 hapi `register({plugin, routes: {prefix}})`) is stitched onto each handler path before matching.
 A Fastify, Koa or hapi prefix that does not resolve to a string, or a plugin mounted at two
-different prefixes, leaves those routes out rather than at a guessed path. Laravel's `routes/api.php` is
+different prefixes, leaves those routes out rather than at a guessed path. A Go route group
+handed to a package-level register function (`articles.Register(v1.Group("/articles"))`) serves
+that function's routes under the group, and a function registered under two groups serves its
+routes at both. Laravel's `routes/api.php` is
 served under `/api` unless `bootstrap/app.php` (`apiPrefix`) or a route provider says
 otherwise, and `Route::resource` / `apiResource` expand into the routes they register. A NestJS
 route is served at the app's `setGlobalPrefix` (unless its `exclude` list names the route), then
