@@ -150,7 +150,11 @@ links are appended after it.
    `binding_pass` (`binding_routed`); data `shared_table_pass` (`shared_table`).
    HTTP's `accepts` (`matching/http.py`) holds every pass to one rule: a generic
    operational path (`/health`, `/metrics`, the root) links only to the consumer's
-   resolved target repo, or with none to its own repo.
+   resolved target repo, or with none to its own repo when its base or host does not
+   point elsewhere (`aims_elsewhere`: an unresolved base token or an unmapped,
+   non-local host). Such a consumer also skips `candidate_pass` and `segment_pass`.
+   In the exact pass, a relative HTTP call (no host, no base) whose own service
+   declares its id links to no other service (`TypeMatcher.own_service_first`).
 5. **Service links**: `service_pass` gives each HTTP consumer whose target is a
    workspace repo, but whose path no provider serves, one `host_only` link with no
    provider file. These live in `ContractStore.service_links`, apart from

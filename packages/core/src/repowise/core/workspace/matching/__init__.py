@@ -46,6 +46,10 @@ class TypeMatcher:
     #: them (:meth:`.common.MatchState.refuse`). Off for broadcasts and shared
     #: tables, where every repo on the id is a true end.
     one_provider_repo: bool = False
+    #: A consumer this returns True for is served by a provider in its own
+    #: service when one declares its id, and links to no other: a relative HTTP
+    #: call reaches its own origin (a Next.js route handler in front of an API).
+    own_service_first: Callable[[Contract], bool] | None = None
 
 
 MATCHERS: dict[str, TypeMatcher] = {
@@ -53,6 +57,7 @@ MATCHERS: dict[str, TypeMatcher] = {
         deferred=http.is_deferred,
         accepts=http.accepts,
         one_provider_repo=True,
+        own_service_first=http.is_relative,
         passes=(
             http.gateway_pass,
             http.base_resolved_pass,
@@ -77,7 +82,8 @@ _NO_RULES = TypeMatcher()
 def _servers(state: MatchState, consumer: Contract, rules: TypeMatcher) -> list[Contract]:
     """Providers outside *consumer*'s own service that may serve it on its id.
 
-    A provider in its own service marks it served instead.
+    A provider in its own service marks it served instead, and is its only
+    server when the type's ``own_service_first`` holds for it.
     """
     if rules.keys is not None:
         keys = rules.keys(consumer, state.provider_index)
@@ -85,11 +91,16 @@ def _servers(state: MatchState, consumer: Contract, rules: TypeMatcher) -> list[
         keys = find_matching_keys(consumer.contract_id, state.provider_index)
     providers = [p for k in keys for p in state.provider_index[k]]
     servers: list[Contract] = []
+    served = False
     for provider in prefer_target_repo(providers, consumer):
         if internal(provider, consumer):
-            state.mark_served(consumer)
+            served = True
         elif rules.accepts is None or rules.accepts(provider, consumer):
             servers.append(provider)
+    if served:
+        state.mark_served(consumer)
+        if rules.own_service_first is not None and rules.own_service_first(consumer):
+            return []
     return servers
 
 

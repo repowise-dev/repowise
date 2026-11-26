@@ -240,10 +240,9 @@ def _through_gateway(
     separate frontend repo is not routed; it would need the frontend's own
     proxy or base config to say which gateway it talks to.
     """
-    meta = consumer.meta
     if target is not None:
         gateway = target
-    elif not meta.get("host") and not meta.get("base_token"):
+    elif is_relative(consumer):
         gateway = consumer.repo
     else:
         return None
@@ -316,17 +315,40 @@ def _is_generic_path(path: str) -> bool:
     return all(s in _GENERIC_SEGMENTS for s in segments)
 
 
+def is_relative(consumer: Contract) -> bool:
+    """Whether *consumer* names neither a host nor a base, so it calls its own origin."""
+    return not consumer.meta.get("host") and not consumer.meta.get("base_token")
+
+
+def aims_elsewhere(consumer: Contract) -> bool:
+    """Whether *consumer*'s base or host points at a service nothing in the workspace places.
+
+    An unresolved env var or SDK ``baseURL`` (``${RAG_API_URL}/health``) or an
+    unmapped hostname may name another program entirely. The local machine is
+    no such evidence, and a target the host or base resolved settles it.
+    """
+    meta = consumer.meta
+    if meta.get("target_repo"):
+        return False
+    host = meta.get("host")
+    return bool(meta.get("base_token")) or (bool(host) and host not in LOCALHOST_HOSTS)
+
+
 def accepts(provider: Contract, consumer: Contract) -> bool:
     """Whether *provider* may serve *consumer* when the path alone joins them.
 
     A generic path (:func:`_is_generic_path`) links only to the consumer's
     resolved target repo, or, with no target, to a provider in the consumer's
-    own repo (a script probing the server it ships beside). Any other path
-    is accepted.
+    own repo (a script probing the server it ships beside) when nothing in the
+    call points elsewhere (:func:`aims_elsewhere`): every service answers
+    ``/health``, so an unplaced base says nothing about which one. Any other
+    path is accepted.
     """
     split = _split_http_id(normalize_contract_id(consumer.contract_id))
     if split is None or not _is_generic_path(consumer.meta.get("route_path", split[1]).lower()):
         return True
+    if aims_elsewhere(consumer):
+        return False
     return provider.repo == (consumer.meta.get("target_repo") or consumer.repo)
 
 
@@ -452,7 +474,10 @@ def _one_repo_strategy(providers: list[Contract]) -> LinkStrategy:
 def candidate_pass(state: MatchState) -> None:
     """Retry unmatched consumers after collapsing mount/version/base prefixes on both sides.
 
-    A collapsed path two or more repos serve links to none of them.
+    A collapsed path two or more repos serve links to none of them. A consumer
+    whose base or host points elsewhere (:func:`aims_elsewhere`) is not
+    retried: with the host open, a path that only meets a route once rewritten
+    is no evidence (an SDK's ``${baseURL}/files`` is not ``/{id}/files``).
     """
     candidate_index: dict[str, list[Contract]] = defaultdict(list)
     for key, providers in state.provider_index.items():
@@ -466,7 +491,7 @@ def candidate_pass(state: MatchState) -> None:
 
     for consumer in state.unmatched("http"):
         split = _split_http_id(normalize_contract_id(consumer.contract_id))
-        if split is None:
+        if split is None or aims_elsewhere(consumer):
             continue
         method, path = split
         path = consumer.meta.get("route_path", path)
@@ -575,7 +600,8 @@ def segment_pass(state: MatchState) -> None:
     Of the routes a call fits, only the most literal stand: ``/users/me`` leaves
     ``/users/{param}`` out when both are declared. A provider with no literal naming a
     resource (:func:`_names_a_resource`) is never a target. Routes in two or more repos
-    link to none of them, as in :func:`candidate_pass`.
+    link to none of them, and a consumer whose base or host points elsewhere is not
+    tried, as in :func:`candidate_pass`.
     """
     routes: dict[int, list[tuple[str, list[str], Contract]]] = defaultdict(list)
     for key, providers in state.provider_index.items():
@@ -589,7 +615,7 @@ def segment_pass(state: MatchState) -> None:
 
     for consumer in state.unmatched("http"):
         split = _split_http_id(normalize_contract_id(consumer.contract_id))
-        if split is None:
+        if split is None or aims_elsewhere(consumer):
             continue
         method, path = split
         path = consumer.meta.get("route_path", path)
@@ -657,6 +683,7 @@ __all__ = [
     "gateway_pass",
     "gateway_route_links",
     "is_deferred",
+    "is_relative",
     "segment_pass",
     "service_pass",
 ]
