@@ -650,6 +650,22 @@ describe("Runtime evidence prompts", () => {
     expect(prompt).not.toMatch(/\u2014/);
   });
 
+  it("names the clock a py-spy profile must be added with, once", () => {
+    const withPySpy = buildRichProfilePrompt({
+      workload: "w",
+      tool: "pyinstrument",
+      causes: lowSignalCauses(indexedRun, measuredRun({ samples: null })),
+    });
+    expect(withPySpy.split("--value-kind cpu").length).toBe(2);
+    expect(withPySpy).toContain("`value_kind=cpu` on a CI upload");
+    const pruned = buildRichProfilePrompt({
+      workload: "w",
+      tool: "pyinstrument",
+      causes: [{ kind: "pruned", tool: "pyinstrument" }],
+    });
+    expect(pruned).not.toContain("--value-kind");
+  });
+
   it("hands over slow tests, or a group of tests and the fixture they share", () => {
     const tests = buildSlowTestsPrompt({
       subject: {
