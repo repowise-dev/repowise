@@ -14,13 +14,14 @@ for the same reason - they can no longer describe the current tree.
 from __future__ import annotations
 
 import json
+import logging
 from bisect import bisect_left
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import case, delete, false, func, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...batches import chunked
@@ -33,7 +34,7 @@ from ...models import (
     _new_uuid,
     _now_utc,
 )
-from ...sql import order_by, rule_predicate
+from ...sql import json_text, order_by, rule_predicate
 from .refactoring import _refactoring_row_kwargs
 from .shown import gated_counts, ungated
 
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
     from ....evidence.measured_fold import MeasuredFold
 
 _PLAN_TYPE = "performance_fix"
+
+logger = logging.getLogger(__name__)
 
 _EVIDENCE_LIMIT = 8
 """Evidence rows folded into a persisted plan's affected-location list.
@@ -106,7 +109,45 @@ def opportunity_details(
         "may_lead": opportunity.may_lead,
         **({"fix_api": opportunity.fix.api} if opportunity.fix and opportunity.fix.api else {}),
         "siblings": [dict(entry) for entry in opportunity.siblings],
+        **(
+            {"measured_row": opportunity.measured_row}
+            if opportunity.measured_row is not None
+            else {}
+        ),
+        # Top level, so SQL can tell a measured item that leads (``agent_hidden``).
+        **({LEADS_WITH_STEP: step["rule"]} if (step := _lead_step(opportunity)) else {}),
     }
+
+
+#: The ``details_json`` key a measured hotspot that may lead stores its next
+#: step's rule under; absent on every other cause.
+LEADS_WITH_STEP = "measured_step"
+
+
+def _lead_step(opportunity: OpportunityModel) -> dict[str, Any] | None:
+    """A measured hotspot's next step when the item may lead with it."""
+    if not opportunity.may_lead or opportunity.measured_row is None:
+        return None
+    return opportunity.measured_row.get("next_step") or None
+
+
+def agent_hidden(model: Any = PerformanceOpportunity) -> Any:
+    """SQL: a cause the agent surfaces leave out, a measured hotspot with no
+    next step to lead with (``perf.opportunities._measured_hotspot``). One that
+    leads Fix first with a next step and a verify command is work an agent can
+    do, so ``get_health`` (Fix first, the perf page, the headline counts) and
+    ``get_overview``'s Do next keep it. A hotspot stored before hotspots
+    carried a row reads as hidden until the next update."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    # CASE, so PostgreSQL parses the details of measured hotspots only.
+    return case(
+        (
+            model.biomarker_type == MEASURED_HOTSPOT,
+            json_text(model.details_json, LEADS_WITH_STEP).is_(None),
+        ),
+        else_=false(),
+    )
 
 
 def _row_kwargs(
@@ -268,6 +309,7 @@ async def finalize_performance_opportunities(
         hot_in_tests=measured.hot_in_tests,
         ranks=measured.ranks,
         queries=await _query_readings(session, repository_id),
+        measured_rows=await _hotspot_rows(session, repository_id, measured),
     )
 
     plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
@@ -328,6 +370,44 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> Meas
     from .evidence import ranked_by_workload
 
     return fold_measured(await ranked_by_workload(session, repository_id))
+
+
+async def _hotspot_rows(
+    session: AsyncSession, repository_id: str, measured: MeasuredFold
+) -> dict[str, dict[str, Any]]:
+    """The action row (``evidence.action_row``, JSON form) of each function a
+    leading workload measured above the lead bar, from the run ``measured``
+    names for it: what a measured hotspot carries onto Fix first and the
+    performance queue. Built by :func:`measured_costs`, the reader every
+    measured surface uses, so the item and the measured table say the same.
+    Nothing is read when no function is hot. A read that fails leaves every
+    hotspot without a row (listed, never leading), never the health write.
+
+    Ceiling: the row is stored as of this finalize, which runs before the
+    index writes function blame and the per-test map and before this finalize
+    reconciles the causes, so its ``owner``, ``last_change``, map-backed
+    ``tests`` and ``on_static_findings`` can lag one update (none of them
+    decides the step or the lead; Fix first shows no owner). No ``slower``:
+    comparisons are read per request. Upgrade path: build the rows after the
+    blame and map writes.
+    """
+    if not measured.hot:
+        return {}
+    try:
+        async with session.begin_nested():
+            view = await measured_costs(
+                session, repository_id, limit=len(measured.hot), symbol_ids=measured.hot
+            )
+    except Exception as exc:  # best effort: the row is an addition to the item
+        logger.warning("measured hotspot rows unavailable: %s", exc)
+        return {}
+    block = (view or {}).get("measured") or {}
+    workload = {run["run_id"]: run["workload_name"] for run in block.get("runs", ())}
+    return {
+        row["symbol_id"]: row
+        for row in block.get("rows", ())
+        if workload.get(row["run_id"]) == measured.measured.get(row["symbol_id"])
+    }
 
 
 async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str, Any]:
@@ -649,10 +729,9 @@ def _predicates(
 
     Opportunities on a file of a language the registry gates for performance
     are left out unless ``include_unverified``; causes minted from runtime
-    evidence alone (:func:`measured_hotspot_ids`) unless
-    ``include_measured_hotspots``.
+    evidence alone with no next step to lead with (:func:`agent_hidden`)
+    unless ``include_measured_hotspots``.
     """
-    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....analysis.health.perf.serving import FILTERS
     from ....analysis.health.queue_rules import active_filters
 
@@ -661,7 +740,7 @@ def _predicates(
         *(
             ()
             if include_measured_hotspots
-            else (PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,)
+            else (not_(agent_hidden()),)
         ),
         ungated(
             "performance",
@@ -794,17 +873,30 @@ class PerformanceHeadline(NamedTuple):
         return self._asdict()
 
 
-async def measured_hotspot_ids(session: AsyncSession, repository_id: str) -> frozenset[str]:
+async def measured_hotspot_ids(
+    session: AsyncSession, repository_id: str, *, without_step: bool = False
+) -> frozenset[str]:
     """The open causes minted from runtime evidence alone
     (``perf.opportunities.measured_hotspots``), for a surface that shows no
-    evidence. One indexed lookup."""
+    evidence. One indexed lookup.
+
+    ``without_step=True`` keeps only those an agent surface leaves out
+    (:func:`agent_hidden`): no rule fired on what their run measured, so
+    their one step is "profile it". The generated agent files, a push, leave
+    out every one.
+    """
     from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
 
+    which = (
+        agent_hidden()
+        if without_step
+        else PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT
+    )
     result = await session.execute(
         select(PerformanceOpportunity.opportunity_id).where(
             PerformanceOpportunity.repository_id == repository_id,
             PerformanceOpportunity.status == "open",
-            PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+            which,
         )
     )
     return frozenset(result.scalars().all())
@@ -813,10 +905,9 @@ async def measured_hotspot_ids(session: AsyncSession, repository_id: str) -> fro
 async def measured_hotspot_counts(
     session: AsyncSession, repository_id: str, *, include_unverified: bool = False
 ) -> tuple[int, int]:
-    """``(open, in the default queue)`` over the causes runtime evidence alone
-    minted that a language gate does not hold back, for a surface that shows
-    no evidence to take out of a stored rollup. One aggregate."""
-    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+    """``(open, in the default queue)`` over the causes an agent surface
+    leaves out (:func:`agent_hidden`) that a language gate does not hold
+    back, to take out of a stored rollup. One aggregate."""
 
     row = (
         await session.execute(
@@ -825,7 +916,7 @@ async def measured_hotspot_counts(
                 func.count().filter(PerformanceOpportunity.queue_eligible.is_(True)),
             ).where(
                 *_predicates(repository_id, include_unverified=include_unverified),
-                PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+                agent_hidden(),
             )
         )
     ).one()
@@ -845,8 +936,8 @@ async def performance_headline(
     The scope sizes the Performance view's scope control shows, from the same
     grouped aggregate, so a headline never states a number that view
     contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
-    ``include_measured_hotspots=False`` leaves out the causes runtime evidence alone
-    minted, for a surface that shows no evidence.
+    ``include_measured_hotspots=False`` leaves out the causes an agent surface
+    does not show (:func:`agent_hidden`).
     """
     from ....analysis.health.perf.serving import scope_counts
     from .queue_counts import any_unjudged
@@ -1161,12 +1252,15 @@ async def measured_costs(
     now: datetime | None = None,
     run_id: str | None = None,
     comparisons: Iterable[Any] = (),
+    symbol_ids: Collection[str] | None = None,
 ) -> dict[str, Any] | None:
     """What each workload's newest stored run that ranks any function
     measured, ranked by what it costs.
 
     *run_id* keeps that one run (a workload's listed run); any other id ranks
-    nothing here and gives ``None``.
+    nothing here and gives ``None``. *symbol_ids* keeps those functions' rows
+    only, before the *limit* cut (the rows a measured hotspot carries); each
+    group's ``total`` then counts the kept rows.
 
     Read at request time from ``workload_hotness``, which every ingest and
     update rebuilds, so nothing new is stored and an index without evidence
@@ -1207,6 +1301,8 @@ async def measured_costs(
     ranked = await ranked_by_workload(session, repository_id)
     if run_id is not None:
         ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
+    if symbol_ids is not None:
+        ranked = [(run, [r for r in rows if r.symbol_id in symbol_ids]) for run, rows in ranked]
     benchmarks = await _benchmark_group(session, repository_id, limit, now, run_id)
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
     for run, rows in ranked:
@@ -1773,7 +1869,9 @@ def _measured_row(
 
 
 __all__ = [
+    "LEADS_WITH_STEP",
     "PerformanceHeadline",
+    "agent_hidden",
     "fill_static_costs",
     "finalize_performance_opportunities",
     "gated_performance_counts",

@@ -229,6 +229,21 @@ a `plan_ready` default-queue cause whose growth a loop outside a registry and a 
 Every other cause stays in the Performance view and is counted in Fix first as
 `unconfirmed_cost`.
 
+A function an entry point, load test or production run measured above the lead
+bar, with no static cause inside it, becomes a measured hotspot: a work item
+that carries the function's measured row from
+[Runtime Evidence](RUNTIME_EVIDENCE.md). Its step is the row's next step, its
+why is what the run measured inside the function, its gain is its self share of
+the run ("up to 13% of the `repowise status` run"), its facts name the callers
+that drove the time, and its verify block holds the row's tests and its one
+verify command. A measured hotspot whose row has a next step leads Fix first:
+of several, the one with the largest self share. Without a next step (no rule
+names what the time is) it keeps the generic "find the repeated work" step and
+never leads. Unit-test and benchmark runs never make a measured hotspot. The
+agent surfaces (`get_health`'s Fix first, performance list and counts, and
+`get_overview`'s Do next) carry only the measured hotspots that lead with a next
+step; the generated CLAUDE.md and AGENTS.md list none.
+
 Every headline counts causes the same way, in the three scopes of the Performance
 tab: `now` (the default queue, worth fixing now), `production` (every open
 production cause) and `all`, plus `per_10k_loc` (every cause per 10K lines a

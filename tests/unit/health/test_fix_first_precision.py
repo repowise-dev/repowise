@@ -12,6 +12,7 @@ import re
 import pytest
 
 from repowise.core.analysis.health.fix_first import build_fix_first, text
+from repowise.core.analysis.health.fix_first.model import FixTarget
 from repowise.core.analysis.health.worth import SIZE_MARKERS
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS
 
@@ -602,3 +603,60 @@ def test_a_span_that_awaits_is_extracted_into_an_awaited_async_helper() -> None:
     assert text.signature(None, ["db"], [], is_async=True) == (
         "async <name>(db), awaited at the call site; name it for what the lines do"
     )
+
+
+# --- a measured hotspot with a next step leads (founder D2) ---------------------
+
+
+def _hotspot(opp: str, fn: str, share: float, step: bool) -> dict:
+    from tests.unit.health.fix_first_rows import _perf
+
+    row = _perf(opp, "", biomarker_type="measured_hotspot", boundary_kind=None,
+                execution_role="unknown", fix_strategy="reduce_measured_self_time",
+                intervention_symbol=f"src/repo.py::{fn}", affected_call_sites_total=1,
+                affected_files_total=1)
+    row["details"] = {
+        **row["details"],
+        "facets": {"confirmed": "measured", "measured": "serve", "loop_magnitude": "unknown",
+                   "actionability_confidence": "high"},
+        "may_lead": step,
+        "plan": {"effort_bucket": "M", "steps": [
+            {"order": 1, "action": f"Find the work {fn} repeats", "symbol": f"src/repo.py::{fn}",
+             "file_path": "src/repo.py", "line": None, "applicability": "judgment"}]},
+        "measured_row": {
+            "symbol_id": f"src/repo.py::{fn}", "share": share, "tests": None,
+            "caller_shares": {"src/main.py::main": 0.9},
+            "next_step": {"rule": "filesystem", "why": "stat per entry", "next": "use scandir"}
+            if step else None,
+            "verify": "repowise perf measure -- serve",
+        },
+    }
+    return row
+
+
+def test_the_largest_measured_hotspot_with_a_step_leads_over_static_work() -> None:
+    big = _finding("src/core.py", ccn=40, nloc=300)
+    queue = build_fix_first(
+        metrics=[_metric(), _metric("src/repo.py")], findings=[big],
+        performance=[_hotspot("perf4_a", "small", 0.06, True),
+                     _hotspot("perf4_b", "large", 0.2, True),
+                     _hotspot("perf4_c", "nostep", 0.5, False)],
+    )
+    lead = queue.lead
+    assert lead.target == FixTarget("src/repo.py", "large", None)
+    assert lead.action.steps[0].text == "Use scandir"
+    assert lead.why == "stat per entry."
+    assert lead.verify.command == "repowise perf measure -- serve"
+    assert ("driven by", "main 90%") in [(f.label, f.value) for f in lead.facts]
+    # The rest keep their places by value: none moves ahead of the finding by D2.
+    assert [i.target.symbol for i in queue.items].index("nostep") > 0
+    assert queue.items[1].kind == "finding"
+
+
+def test_no_measured_hotspot_with_a_step_leaves_the_order_alone() -> None:
+    big = _finding("src/core.py", ccn=40, nloc=300)
+    queue = build_fix_first(
+        metrics=[_metric(), _metric("src/repo.py")], findings=[big],
+        performance=[_hotspot("perf4_c", "nostep", 0.5, False)],
+    )
+    assert queue.lead.kind == "finding"

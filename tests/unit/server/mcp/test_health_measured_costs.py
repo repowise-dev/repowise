@@ -423,3 +423,51 @@ async def test_a_row_says_what_to_do_from_what_its_run_measured_inside_it(
     assert not {"why", "owner", "tests", "lines", "share_low", "verify"} & set(login)
     (run,) = block["runs"]
     assert run["verify"].startswith("repowise perf measure --save before -- w-r1")
+
+
+@pytest.mark.asyncio
+async def test_a_measured_cause_that_leads_with_a_next_step_is_on_the_agent_surface(
+    setup_mcp, session, materialized
+):
+    """A cause minted from a measurement whose run says what to do leads Fix
+    first, and get_health (Fix first, the perf page, the counts) and
+    get_overview's Do next carry it; the generated agent files do not."""
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.core.persistence.crud.analysis.fix_first import clear_fix_first_cache
+    from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
+    from repowise.core.persistence.models import EvidenceSymbolCost
+    from repowise.server.mcp_server import get_health, get_overview
+
+    before = await get_health(include=["performance"], limit=50)
+    hot = "src/app.py::decode"
+    await _seed(session, materialized, [_hot(hot, tier="lead_candidate")])
+    inside = [
+        {"name": "is_file", "kind": "library", "share": 0.6,
+         "leaf": {"name": "stat", "kind": "native", "share": 0.6}},
+        {"name": "rglob", "kind": "library", "share": 0.3},
+    ]
+    session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=hot, repository_id=materialized,
+            inside_json=json.dumps(inside),
+        )
+    )
+    await session.flush()
+    await finalize_performance_opportunities(session, materialized, analyzed_commit="c" * 40)
+    await session.commit()
+    clear_fix_first_cache()
+
+    (minted,) = await measured_hotspot_ids(session, materialized)
+    assert await measured_hotspot_ids(session, materialized, without_step=True) == frozenset()
+
+    after = await get_health(include=["performance"], limit=50)
+    lead = after["fix_first"]["lead"]
+    assert lead["next_call"]["arguments"]["opportunity_id"] == minted
+    assert "os.scandir" in lead["first_step"]["action"] and lead["verify"]["command"]
+    # The perf page and its counts carry it too: one more cause than before.
+    assert minted in json.dumps(after["performance_opportunities"])
+    assert (
+        after["performance_opportunities_total"] == before["performance_opportunities_total"] + 1
+    )
+    week = (await get_overview())["next_actions"]["week"]["actions"]
+    assert week[0]["title"] == "Speed up decode"
