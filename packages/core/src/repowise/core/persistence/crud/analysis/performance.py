@@ -1273,6 +1273,16 @@ async def measured_costs(
       workloads rank is listed under each.
     - ``measured_in_tests``: the same for ``unit_test`` runs, listed apart and
       never leading.
+    - ``statements``: each production statement workload's newest run
+      (``crud.statement_costs``) with the functions that issue its statements,
+      by statement time: a row's ``share`` is of the window's stored
+      statement time and its ``statements`` holds calls, total and mean ms.
+      Only a statement the join put on exactly one function counts toward
+      it; each run counts the rest by label in ``unattributed``. Listed only
+      when a run names a function. No rule reads a statement's cost into a
+      next step yet, so these rows never lead or mint a hotspot; their
+      ``verify`` is the next production window, never a benchmark (a local
+      benchmark does not measure a production statement).
     - Each group carries ``total``: its ranked rows before the *limit* cut.
 
     Each run names its basis (workload class and name, commit, age, samples)
@@ -1296,13 +1306,21 @@ async def measured_costs(
     """
     from ....evidence.hotness import LEAD_CLASSES
     from ....ingestion.symbol_identity import file_of_symbol
-    from .evidence import newer_unranked, ranked_by_workload, step_findings
+    from .evidence import newer_unranked, ranked_by_workload, statement_costs, step_findings
 
     ranked = await ranked_by_workload(session, repository_id)
     if run_id is not None:
         ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
     if symbol_ids is not None:
         ranked = [(run, [r for r in rows if r.symbol_id in symbol_ids]) for run, rows in ranked]
+    statements = [
+        found._replace(
+            rows=[r for r in found.rows if symbol_ids is None or r.symbol_id in symbol_ids]
+        )
+        for found in await statement_costs(session, repository_id)
+        if run_id in (None, found.run.id)
+    ]
+    statements = [found for found in statements if found.rows]
     benchmarks = await _benchmark_group(session, repository_id, limit, now, run_id)
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
     for run, rows in ranked:
@@ -1310,13 +1328,17 @@ async def measured_costs(
             groups["measured"].append((run, rows))
         elif run.workload_class == "unit_test":
             groups["measured_in_tests"].append((run, rows))
-    if not any(groups.values()):
+    if not any(groups.values()) and not statements:
         return {"benchmarks": benchmarks} if benchmarks else None
     # ``limit=0`` keeps each group's runs and total with no rows.
     shown = {
         key: [(run, rows[: max(limit, 0)]) for run, rows in runs] for key, runs in groups.items()
     }
-    ids = sorted({r.symbol_id for runs in shown.values() for _, rows in runs for r in rows})
+    statement_rows = [r for found in statements for r in found.rows[: max(limit, 0)]]
+    ids = sorted(
+        {r.symbol_id for runs in shown.values() for _, rows in runs for r in rows}
+        | {r.symbol_id for r in statement_rows}
+    )
     spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
     covered = await _static_causes_on(session, repository_id, set(ids), spans)
     context = await _function_context(session, repository_id, ids, spans)
@@ -1355,6 +1377,16 @@ async def measured_costs(
                 ],
                 "total": sum(len(rows) for _, rows in groups[key]),
             }
+    if statements:
+        by_run = {found.run.id: found.run for found in statements}
+        view["statements"] = {
+            "runs": [_statement_run(found, at) for found in statements],
+            "rows": [
+                _statement_row(r, by_run[r.run_id], spans, context, covered, comparisons)
+                for r in statement_rows
+            ],
+            "total": sum(len(found.rows) for found in statements),
+        }
     if benchmarks:
         view["benchmarks"] = benchmarks
     return view or None
@@ -1865,6 +1897,59 @@ def _measured_row(
         benchmark=context.benchmark.get(symbol_id),
         compare=comparisons,
         static_causes=covered.get(symbol_id, ()),
+    ).as_dict()
+
+
+def _statement_run(found: Any, at: datetime) -> dict[str, Any]:
+    """A production statement run's basis: workload, commit, age, its window,
+    the statement time it stored and the statements on no single function
+    (``evidence.measured_fold.StatementRun``)."""
+    run = found.run
+    basis = _benchmark_run(run, at)
+    return {
+        **basis,
+        "window_start": _iso(run.window_start),
+        "window_end": _iso(run.window_end),
+        "total_ms": found.total_ms,
+        "statements": found.statements,
+        "unattributed": found.unattributed,
+    }
+
+
+def _iso(at: datetime | None) -> str | None:
+    # SQLite hands back the stored UTC time without its zone.
+    return at.replace(tzinfo=at.tzinfo or UTC).isoformat() if at is not None else None
+
+
+def _statement_row(
+    cost: Any,
+    run: Any,
+    spans: dict[str, list[Any]],
+    context: _FunctionContext,
+    covered: dict[str, set[str]],
+    comparisons: list[Any],
+) -> dict[str, Any]:
+    """One function's production statements (``evidence.measured_fold.StatementCost``)
+    as ``evidence.action_row`` builds it: no next step (no rule reads a
+    statement's cost yet) and the next window as its verify, never a benchmark."""
+    from ....evidence.action_row import action_row, statement_facts
+    from ....ingestion.symbol_identity import file_of_symbol
+
+    symbol_id = cost.symbol_id
+    held = spans.get(file_of_symbol(symbol_id), ())
+    span = next((s for s in held if s.symbol_id == symbol_id), None)
+    return action_row(
+        cost,
+        lines=(span.start_line, span.end_line) if span is not None else None,
+        workload_name=run.workload_name,
+        workload_class=run.workload_class,
+        callers=context.callers.get(symbol_id, ()),
+        callers_total=context.callers_total.get(symbol_id),
+        tests=context.tests[symbol_id],
+        history=context.history.get(symbol_id),
+        compare=comparisons,
+        static_causes=covered.get(symbol_id, ()),
+        statements=statement_facts(cost),
     ).as_dict()
 
 

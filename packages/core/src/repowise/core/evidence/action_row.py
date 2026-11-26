@@ -159,6 +159,10 @@ class ActionRow:
     #: ``import time`` for a module body's row (the time to import the file),
     #: ``None`` for a function's: its name says what it is.
     label: str | None = None
+    #: A production statement row's numbers (:func:`statement_facts`): what
+    #: the statements the function issues did in the run's window. ``share``
+    #: is then of the window's statement time. ``None`` on a profile row.
+    statements: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON form (``MeasuredRow``). ``on_static_findings`` and
@@ -196,12 +200,17 @@ class ActionRow:
             out["slower"] = self.slower
         if self.label is not None:
             out["label"] = self.label
+        if self.statements is not None:
+            out["statements"] = self.statements
         out["sources"] = self._sources()
         return out
 
     def _sources(self) -> dict[str, str]:
         held = {
-            "share": ("workload_hotness", self.share is not None),
+            "share": (
+                "statement_stats" if self.statements is not None else "workload_hotness",
+                self.share is not None,
+            ),
             "lines": ("symbols", self.lines is not None),
             "callers": ("call_graph", self.callers_total is not None),
             "caller_shares": ("run_drivers", bool(self.caller_shares)),
@@ -234,6 +243,7 @@ def action_row(
     benchmark: str | None = None,
     compare: Iterable[Any] = (),
     static_causes: Collection[str] = (),
+    statements: Mapping[str, Any] | None = None,
 ) -> ActionRow:
     """The row for one ranked function.
 
@@ -251,7 +261,9 @@ def action_row(
     the one verify command. *compare* are the workloads'
     :class:`.compare.Comparison`; only the row's own workload's can mark it
     slower (:func:`row_slower`). *static_causes* the
-    open static performance causes on it.
+    open static performance causes on it. *statements* makes it a production
+    statement row (:func:`statement_facts`); *measured* is then the
+    function's ``evidence.measured_fold.StatementCost``.
     """
     symbol_id = measured.symbol_id
     listed, shares = weighted_callers(callers, drivers_json, ROW_CALLERS)
@@ -281,7 +293,22 @@ def action_row(
         on_static_findings=sorted(static_causes),
         slower=row_slower(symbol_id, compare, workload_name),
         label=IMPORT_TIME if is_import_row(symbol_id) else None,
+        statements=dict(statements) if statements is not None else None,
     )
+
+
+def statement_facts(cost: Any) -> dict[str, Any]:
+    """A production statement row's numbers from its
+    ``evidence.measured_fold.StatementCost``: ``calls``, ``total_ms``, the
+    ``mean_ms`` per call across its statements, and how many distinct
+    ``statements`` the function issues."""
+    calls = int(cost.calls)
+    return {
+        "calls": calls,
+        "total_ms": cost.total_ms,
+        "mean_ms": cost.total_ms / calls if calls else None,
+        "statements": cost.statements,
+    }
 
 
 # --- the compact forms, read from the JSON form so any host's rows render ------
@@ -336,7 +363,9 @@ def _tests_words(row: Mapping[str, Any]) -> str:
 def _facts(row: Mapping[str, Any]) -> str:
     """The measurement and who and what stands behind it, on one line."""
     parts = []
-    if row.get("share") is not None:
+    if row.get("statements"):
+        parts.extend(_statement_words(row))
+    elif row.get("share") is not None:
         interval = ""
         if row.get("share_low") is not None and row.get("share_high") is not None:
             interval = f" ({_pct(row['share_low'])} to {_pct(row['share_high'])})"
@@ -356,6 +385,21 @@ def _facts(row: Mapping[str, Any]) -> str:
     if row.get("on_static_findings"):
         parts.append(f"static cause {', '.join(row['on_static_findings'])}")
     return " · ".join(parts)
+
+
+def _statement_words(row: Mapping[str, Any]) -> list[str]:
+    """``12% of the window's statement time``, calls, the mean per call and
+    how many statements: a production statement row's measurement."""
+    facts = row["statements"]
+    parts = []
+    if row.get("share") is not None:
+        parts.append(f"{_pct(row['share'])} of the window's statement time")
+    parts.append(f"{facts['calls']:,} call{'s' if facts['calls'] != 1 else ''}")
+    if facts.get("mean_ms") is not None:
+        parts.append(f"{facts['mean_ms']:.3g} ms mean")
+    n = facts["statements"]
+    parts.append(f"{n} statement{'s' if n != 1 else ''}")
+    return parts
 
 
 def row_text(row: Mapping[str, Any]) -> list[str]:
@@ -431,6 +475,11 @@ def row_compact(row: Mapping[str, Any]) -> dict[str, Any]:
         out["on_static_findings"] = row["on_static_findings"]
     if row.get("label"):
         out["label"] = row["label"]  # "import time": a module body's row
+    facts = row.get("statements")
+    if facts:
+        # A production statement row: ``share`` is of the window's statement time.
+        out["calls"] = facts["calls"]
+        out["mean_ms"] = facts["mean_ms"]
     return out
 
 
@@ -452,4 +501,5 @@ __all__ = [
     "row_verify",
     "row_why_drivers",
     "run_verify",
+    "statement_facts",
 ]

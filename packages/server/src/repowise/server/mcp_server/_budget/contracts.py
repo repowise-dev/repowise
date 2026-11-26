@@ -342,6 +342,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "refactoring_summary",
             "performance_opportunities[]",
             "performance_summary",
+            "performance_measured.statements[]",
             "performance_measured.rows[]",
             "high_leverage_files[]",
             "secondary_rankings",

@@ -173,3 +173,27 @@ def test_an_import_row_reads_as_the_file_and_import_time() -> None:
     out = _rendered({"measured": {"runs": [RUN], "rows": [row]}})
     assert "1. src/app.py import time" in out
     assert "<module>" not in out
+
+
+def test_production_statements_say_their_window_and_what_is_on_no_function() -> None:
+    from repowise.core.evidence.action_row import action_row, statement_facts
+    from repowise.core.evidence.measured_fold import StatementCost
+
+    cost = StatementCost("src/app.py::save", "s1", 1, 0.6, 600.0, 40, 2)
+    row = action_row(
+        cost, workload_name="orders-db", workload_class="production",
+        statements=statement_facts(cost),
+    ).as_dict()
+    run = {
+        "run_id": "s1", "workload_class": "production", "workload_name": "orders-db",
+        "commit": "d" * 40, "window_start": "2026-11-01T00:00:00+00:00",
+        "window_end": "2026-11-26T00:00:00+00:00", "total_ms": 1000.0, "statements": 5,
+        "unattributed": {"ambiguous": {"statements": 2, "total_ms": 300.0, "share": 0.3}},
+    }
+    out = _rendered({"statements": {"runs": [run], "rows": [row], "total": 1}})
+    assert (
+        'Production statements (production "orders-db" at ddddddd over 2026-11-01 to '
+        "2026-11-26: 1,000 ms in 5 statements, 30% on no single function)"
+    ) in out
+    assert "60% of the window's statement time · 40 calls · 15 ms mean · 2 statements" in out
+    assert "verify: compare this row in the next orders-db window" in out

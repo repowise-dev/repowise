@@ -471,3 +471,63 @@ async def test_a_measured_cause_that_leads_with_a_next_step_is_on_the_agent_surf
     )
     week = (await get_overview())["next_actions"]["week"]["actions"]
     assert week[0]["title"] == "Speed up decode"
+
+
+async def _seed_statements(session, repo_id: str, rows: list[tuple]) -> None:
+    from repowise.core.persistence.models import EvidenceStatementStats
+
+    session.add(
+        EvidenceRun(
+            id="s1", repository_id=repo_id, run_key="s1", kind="statement_stats",
+            format="repowise-evidence-v1", source="plugin", workload_name="orders-db",
+            workload_class="production", value_kind="wall", unit="ms", environment="prod",
+            commit_sha="d" * 40, measured_at=MEASURED_AT,
+        )
+    )
+    await session.flush()
+    session.add_all(
+        EvidenceStatementStats(
+            run_id="s1", statement_fp=f"{i:016x}", repository_id=repo_id, symbol_id=sid,
+            issuer=issuer, calls=calls, total_ms=ms, mean_ms=ms / calls,
+        )
+        for i, (sid, issuer, calls, ms) in enumerate(rows)
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_production_statements_list_compactly_beside_no_profile(setup_mcp, session, materialized):
+    """Only a production statement run: its functions are measured rows with
+    calls and mean, the next window is the run's verify, and the share on no
+    single function is named by what the join found."""
+    await _seed_statements(
+        session,
+        materialized,
+        [
+            (LOGIN, "function", 40, 600.0),
+            (SHARED, "function", 10, 200.0),
+            (None, "ambiguous", 3, 150.0),
+            (None, "database_schedule", 1, 50.0),
+        ],
+    )
+    block = await _measured()
+    assert block["basis"] == "measured" and "rows" not in block
+    login, shared = block["statements"]
+    assert login == {"symbol_id": LOGIN, "run_id": "s1", "share": 0.6, "calls": 40, "mean_ms": 15.0}
+    assert (shared["symbol_id"], shared["share"], shared["mean_ms"]) == (SHARED, 0.2, 20.0)
+    # A production static cause on the function is named, as on a profile row.
+    assert shared["on_static_findings"][0].startswith("perf")
+    assert block["statements_total"] == 2
+    (run,) = block["runs"]
+    assert run == {
+        "run_id": "s1", "workload_class": "production", "workload_name": "orders-db",
+        "commit": "d" * 12, "age_days": run["age_days"],
+        "verify": "compare this row in the next orders-db window",
+        "unattributed": {"ambiguous": 0.15, "database_schedule": 0.05},
+    }
+
+
+@pytest.mark.asyncio
+async def test_statements_on_no_single_function_read_not_ranked(setup_mcp, session, materialized):
+    await _seed_statements(session, materialized, [(None, "ambiguous", 3, 150.0)])
+    assert await _measured() == {"basis": "unknown", "status": "not_ranked"}

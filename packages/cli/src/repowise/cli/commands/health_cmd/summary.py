@@ -100,7 +100,11 @@ def _render_performance_section(report: Any, coverage: Any, causes: Any | None) 
     )
 
 
-_MEASURED_GROUPS = (("measured", "Measured"), ("measured_in_tests", "Measured in tests"))
+_MEASURED_GROUPS = (
+    ("measured", "Measured"),
+    ("measured_in_tests", "Measured in tests"),
+    ("statements", "Production statements"),
+)
 
 
 def _render_measured_costs(view: dict[str, Any] | None) -> None:
@@ -123,8 +127,9 @@ def _render_measured_costs(view: dict[str, Any] | None) -> None:
         group = view.get(key)
         if not group:
             continue
+        basis = _statement_basis if key == "statements" else _run_basis
         for run in group["runs"]:
-            console.print(f"\n[bold]{title}[/bold] [dim]({escape(_run_basis(run))})[/dim]")
+            console.print(f"\n[bold]{title}[/bold] [dim]({escape(basis(run))})[/dim]")
             rows = [r for r in group["rows"] if r["run_id"] == run["run_id"]]
             for row in rows:
                 # An import row reads "<file> import time", not "<file>::<module>".
@@ -203,6 +208,21 @@ def _run_basis(run: dict[str, Any]) -> str:
     if run.get("ordering_only"):
         where += "; traced, so the order counts and no share is given"
     return f"{basis}: {where}"
+
+
+def _statement_basis(run: dict[str, Any]) -> str:
+    """``production "orders-db" at abc1234 over 2026-11-01 to 2026-11-26: 1,234 ms
+    in 50 statements, 20% on no single function``."""
+    parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
+    if run.get("commit"):
+        parts.append(f"at {run['commit'][:7]}")
+    if run.get("window_start") and run.get("window_end"):
+        parts.append(f"over {run['window_start'][:10]} to {run['window_end'][:10]}")
+    where = f"{run['total_ms']:,.0f} ms in {run['statements']:,} statements"
+    off = sum(v["share"] or 0.0 for v in run["unattributed"].values())
+    if off:
+        where += f", {off * 100:.0f}% on no single function"
+    return f"{' '.join(parts)}: {where}"
 
 
 def _render_split_line(kpis: dict) -> None:

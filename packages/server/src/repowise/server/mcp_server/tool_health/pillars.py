@@ -87,8 +87,9 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     """The ``performance_measured`` block: ranked functions with their runs.
 
     One run per workload, its newest. Each group (``rows`` from workload
-    classes that may lead, ``in_tests`` from unit-test runs, ``benchmarks``
-    from benchmark results with the function each measures) lists
+    classes that may lead, ``in_tests`` from unit-test runs, ``statements``
+    from production statement runs with the function that issues them,
+    ``benchmarks`` from benchmark results with the function each measures) lists
     :data:`_MEASURED_CAP` rows per run, or ``limit`` up to
     :data:`_MEASURED_PAGE_CAP`, beside its total. A row an open static cause
     with production evidence sits on names it in ``on_static_findings``.
@@ -128,6 +129,15 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
         for run in found["runs"]:
             if run["run_id"] in shown:
                 runs.setdefault(run["run_id"], _measured_run(run))
+    statements = view.get("statements")
+    if statements:
+        rows = statements["rows"] if cap else []
+        block["statements"] = [row_compact(row) for row in rows]
+        block["statements_total"] = statements["total"]
+        shown = {row["run_id"] for row in rows}
+        for run in statements["runs"]:
+            if run["run_id"] in shown:
+                runs.setdefault(run["run_id"], _statement_run(run))
     benchmarks = view.get("benchmarks")
     if benchmarks:
         rows = benchmarks["rows"] if cap else []
@@ -154,6 +164,20 @@ def _benchmark_run(run: dict[str, Any]) -> dict[str, Any]:
     out = {f: run[f] for f in ("run_id", "workload_class", "workload_name", "commit", "age_days")}
     if out["commit"]:
         out["commit"] = out["commit"][:12]
+    return out
+
+
+def _statement_run(run: dict[str, Any]) -> dict[str, Any]:
+    """A production statement run: its basis, the next window as how its rows
+    check a fix, and the share of its statement time on no single function,
+    by what the join found (``ambiguous``, ``database_schedule``, ``unjoined``)."""
+    out = _benchmark_run(run)
+    verify = run_verify(run)
+    if verify:
+        out["verify"] = verify
+    unattributed = {k: v["share"] for k, v in run["unattributed"].items() if v["share"]}
+    if unattributed:
+        out["unattributed"] = unattributed
     return out
 
 

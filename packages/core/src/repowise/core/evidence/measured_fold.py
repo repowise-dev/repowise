@@ -7,7 +7,10 @@ Two pure folds over rows a host already holds, with no store or session:
   ``analysis.health.perf.opportunities.build_performance_opportunities``
   takes as ``measured``, ``hot``, ``in_tests``, ``hot_in_tests`` and ``ranks``;
 - :func:`fold_query_readings`: ``query_count`` runs and their rows into each
-  call site's strongest reading (``evidence.query_counts``), its ``queries``.
+  call site's strongest reading (``evidence.query_counts``), its ``queries``;
+- :func:`fold_statements`: each production ``statement_stats`` workload's newest
+  run and its statements into what each issuing function's statements cost in
+  that window (``crud.measured_costs``'s ``statements`` group).
 
 The engine's own writer reads the rows from its store and calls these, so a
 host that keeps evidence elsewhere builds the same queue from the same rows.
@@ -20,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any, NamedTuple
 
-from .hotness import LEAD_CLASSES, newest_runs
+from .hotness import LEAD_CLASSES, _age_key, newest_runs
 from .query_counts import QueryReading, read_statement, strongest
 
 
@@ -134,10 +137,126 @@ def fold_query_readings(
     return {site: strongest(readings) for site, readings in by_site.items()}
 
 
+#: What a statement the join did not put on one function is, by its stored
+#: ``issuer``: several functions could issue it, only a ``cron.schedule`` job
+#: runs it, or nothing matched (``evidence.statement_join``).
+UNJOINED = "unjoined"
+
+
+class StatementCost(NamedTuple):
+    """One function's production statements in one run: the ``measured`` row
+    ``evidence.action_row.action_row`` reads, plus what the statements did.
+
+    ``self_share`` is the function's statement time as a share of all the
+    statement time the run stored (the window's top statements when the
+    source cut them); a statement window has no interval, samples or
+    freshness, so those are ``None``.
+    """
+
+    symbol_id: str
+    run_id: str
+    #: 1-based place among the run's functions by statement time.
+    rank: int
+    self_share: float | None
+    total_ms: float
+    calls: int
+    #: Distinct statements the function issues in the run.
+    statements: int
+    share_low: float | None = None
+    share_high: float | None = None
+    total_share: float | None = None
+    samples: int | None = None
+    freshness: str | None = None
+
+
+class StatementRun(NamedTuple):
+    """One production statement run, folded."""
+
+    run: Any
+    #: Every function exactly one statement site names, costliest first.
+    rows: list[StatementCost]
+    #: All the statement time and statements the run stored.
+    total_ms: float
+    statements: int
+    #: Statements on no single function, by what the join found
+    #: (``ambiguous``, ``database_schedule``, :data:`UNJOINED`):
+    #: ``{"statements", "total_ms", "share"}`` each.
+    unattributed: dict[str, dict[str, Any]]
+
+
+#: One ``evidence_statement_stats`` row: ``(run_id, symbol_id, issuer, calls, total_ms)``.
+StatementPoint = tuple[str, "str | None", "str | None", int, "float | None"]
+
+
+def fold_statements(runs: Iterable[Any], points: Iterable[StatementPoint]) -> list[StatementRun]:
+    """Each production statement workload's newest run, newest first, with what
+    each issuing function's statements cost in its window.
+
+    *runs* are the repository's ``statement_stats`` runs (``id``,
+    ``workload_name``, ``environment``, ``measured_at``, ``ingested_at``,
+    ``mapping_partial``); *points* their rows as :data:`StatementPoint`
+    tuples. Only each workload's newest complete run speaks
+    (:func:`query_runs_to_read`): a window's counters are the workload's
+    latest word, and an older window never adds to it.
+
+    A statement counts toward a function only when the join named exactly
+    that function (``issuer == "function"``): an ``ambiguous`` statement
+    (several functions could issue it), a ``database_schedule`` one (only a
+    ``cron.schedule`` job runs it) or an unjoined one is never put on a
+    function; each is counted under its label in ``unattributed``. Shares
+    are of all the statement time the run stored, so they sum to at most 1
+    with ``unattributed``. A run that names no function still folds (rows
+    empty), so a reader can tell joined-nothing from no run.
+    """
+    runs = list(runs)
+    keep = set(query_runs_to_read(runs))
+    if not keep:
+        return []
+    by_fn: dict[str, dict[str, list[float]]] = {rid: {} for rid in keep}
+    other: dict[str, dict[str, list[float]]] = {rid: {} for rid in keep}
+    totals: dict[str, list[float]] = {rid: [0.0, 0] for rid in keep}
+    for run_id, symbol_id, issuer, calls, total_ms in points:
+        if run_id not in keep:
+            continue
+        ms = float(total_ms or 0.0)
+        totals[run_id][0] += ms
+        totals[run_id][1] += 1
+        if issuer == "function" and symbol_id:
+            acc = by_fn[run_id].setdefault(symbol_id, [0.0, 0, 0])
+            acc[1] += calls or 0
+        else:
+            acc = other[run_id].setdefault(issuer or UNJOINED, [0.0, 0])
+        acc[0] += ms
+        acc[-1] += 1
+
+    def share(ms: float, whole: float) -> float | None:
+        return ms / whole if whole > 0 else None
+
+    out = []
+    for run in sorted((r for r in runs if r.id in keep), key=_age_key, reverse=True):
+        whole, count = totals[run.id]
+        ranked = sorted(by_fn[run.id].items(), key=lambda kv: (-kv[1][0], kv[0]))
+        rows = [
+            StatementCost(sid, run.id, rank, share(ms, whole), ms, int(calls), int(n))
+            for rank, (sid, (ms, calls, n)) in enumerate(ranked, start=1)
+        ]
+        unattributed = {
+            label: {"statements": int(n), "total_ms": ms, "share": share(ms, whole)}
+            for label, (ms, n) in sorted(other[run.id].items())
+        }
+        out.append(StatementRun(run, rows, whole, int(count), unattributed))
+    return out
+
+
 __all__ = [
+    "UNJOINED",
     "MeasuredFold",
     "QueryPoint",
+    "StatementCost",
+    "StatementPoint",
+    "StatementRun",
     "fold_measured",
     "fold_query_readings",
+    "fold_statements",
     "query_runs_to_read",
 ]
