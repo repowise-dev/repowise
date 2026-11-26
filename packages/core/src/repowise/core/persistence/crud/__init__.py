@@ -40,6 +40,7 @@ from .page_archive import *  # noqa: F403
 from .page_rekey import *  # noqa: F403
 from .pages import *  # noqa: F403
 from .repository import *  # noqa: F403
+from .statement_sites import *  # noqa: F403
 
 
 def __getattr__(name: str) -> Any:

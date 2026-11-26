@@ -155,6 +155,24 @@ async def persist_routes(result: Any, session: Any, repo_id: str) -> None:
         logger.warning("route_table_not_written", error=repr(exc))
 
 
+async def persist_statement_sites(result: Any, session: Any, repo_id: str) -> None:
+    """Store the repo's statement sites (``statement_sites``) from its working tree.
+
+    After symbols and analysis, like :func:`persist_routes`: each site binds
+    to the stored function holding it, and the ``code_origin`` rule reads the
+    stored origins. Best-effort: the write is a savepoint.
+    """
+    repo_path = getattr(result, "repo_path", "")
+    if not repo_path:
+        return
+    from repowise.core.workspace.statement_sites import refresh_statement_sites
+
+    try:
+        await refresh_statement_sites(session, repo_id, repo_path)
+    except Exception as exc:  # a derived table never fails an index
+        logger.warning("statement_sites_not_written", error=repr(exc))
+
+
 async def persist_pipeline_result(
     result: Any,
     session: Any,
@@ -235,6 +253,7 @@ async def persist_pipeline_result(
         await persist_git(result, session, repo_id)
     await persist_analysis(result, session, repo_id)
     await persist_routes(result, session, repo_id)
+    await persist_statement_sites(result, session, repo_id)
     await persist_generation(result, session, repo_id)
 
     # What each recent commit did to health. Needs the working tree, so it

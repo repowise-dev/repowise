@@ -3368,8 +3368,11 @@ class EvidenceStatementStats(Base):
     ``statement_fp`` is the source's statement id as hex (``pg_stat_statements``
     ``queryid``) or a digest of the text. ``query_text`` is normalized, cut
     short and has every value masked (``evidence.format_v1.statement_text``).
-    ``symbol_id`` is the function that issues it once the statement-site
-    index links it; NULL until then.
+    ``symbol_id`` is the function that issues it, when the statement-site
+    join (``evidence.statement_join``) finds exactly one. ``issuer`` says
+    what the join found: ``function``, ``ambiguous`` (several could),
+    ``database_schedule`` (only a ``cron.schedule`` job runs it), NULL when
+    nothing matched.
     """
 
     __tablename__ = "evidence_statement_stats"
@@ -3379,6 +3382,7 @@ class EvidenceStatementStats(Base):
     repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), nullable=False)
     query_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    issuer: Mapped[str | None] = mapped_column(String(32), nullable=True)
     lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     calls: Mapped[int] = mapped_column(BigInteger, nullable=False)
     total_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -3544,6 +3548,52 @@ class HttpRoutesStamp(Base):
 
     repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
     fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class StatementSiteRow(Base):
+    """One place that issues a database statement (``evidence.statement_join.StatementSite``).
+
+    Replaced whole by every read (``crud.statement_sites``). ``ordinal`` is
+    the row's place in that read. ``name`` is the table or database function,
+    NULL when only known at run time; ``symbol_id`` the function holding the
+    site, NULL at module level or for a database schedule. ``columns_json``
+    and ``filters_json`` hold ``Columns`` as JSON, NULL when the code does not
+    say.
+    """
+
+    __tablename__ = "statement_sites"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    line: Mapped[int] = mapped_column(Integer, nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    target: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schema_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verb: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    via: Mapped[str] = mapped_column(String(16), nullable=False)
+    symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    columns_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class StatementSitesStamp(Base):
+    """Which read last wrote a repository's ``statement_sites``.
+
+    ``statement_sites.sites_fingerprint()`` of that read, and ``inputs_json``
+    what it used (``{"files": [...], "names": [...]}``); an update re-reads
+    when a changed path touches those or this differs. No row (or NULL)
+    means read again.
+    """
+
+    __tablename__ = "statement_sites_stamp"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class BuildUnitDep(Base):
