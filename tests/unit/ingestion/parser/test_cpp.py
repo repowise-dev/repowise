@@ -770,6 +770,22 @@ class TestCppParser:
         module_paths = [i.module_path for i in result.imports]
         assert any("calculator.hpp" in p or "stdexcept" in p for p in module_paths)
 
+    def test_angle_bracket_includes_are_unwrapped(self, parser: ASTParser) -> None:
+        # Issue #6297: angle include must reach resolver unwrapped.
+        source = b"""#include <vector>
+#include <cfg.hpp>
+#include <engine/util.hpp>
+#include "local.h"
+"""
+        fi = _make_file_info("cpp_pkg/a.cpp", "cpp")
+        result = parser.parse_file(fi, source)
+        module_paths = [i.module_path for i in result.imports]
+        assert "vector" in module_paths
+        assert "cfg.hpp" in module_paths
+        assert "engine/util.hpp" in module_paths
+        assert "local.h" in module_paths
+        assert not any("<" in p or ">" in p for p in module_paths)
+
     def test_finds_types_declared_through_export_macros(self, parser: ASTParser) -> None:
         fi = _make_file_info("cpp_pkg/options.hpp", "cpp")
         result = parser.parse_file(fi, CPP_EXPORT_MACRO_TYPES)
