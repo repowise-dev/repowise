@@ -18,6 +18,7 @@ _spec.loader.exec_module(report)
 def _record(run_id: int, sha: str, **fields) -> dict:
     base = {
         "run_id": str(run_id),
+        "event": "pull_request",
         "sha": sha,
         "pr": run_id,
         "complete": True,
@@ -45,6 +46,7 @@ def test_a_rerun_counts_once_and_incomplete_records_are_left_out(tmp_path) -> No
         _record(1, "a", estimated_seconds_saved=10.0),
         _record(2, "a", estimated_seconds_saved=30.0),
         _record(3, "b", complete=False),
+        _record(4, "c", event="push"),
     )
     (tmp_path / "junk").mkdir()
     (tmp_path / "junk" / "impacted-shadow.json").write_text("{not json", encoding="utf-8")
@@ -52,6 +54,7 @@ def test_a_rerun_counts_once_and_incomplete_records_are_left_out(tmp_path) -> No
     records = report.load(tmp_path)
 
     assert [r["run_id"] for r in records] == ["2"]
+    assert [r["run_id"] for r in report.load(tmp_path, ("pull_request", "push"))] == ["2", "4"]
 
 
 def test_summary_counts_full_runs_saving_and_first_failure_position() -> None:
@@ -84,7 +87,10 @@ def test_a_miss_that_failed_on_another_pull_request_reads_as_likely_flaky() -> N
         ("t/test_slow.py", ["2"]),
         ("t/test_new.py", []),
     ]
-    assert "t/test_slow.py (PR 1, a); also failed on 2, so likely flaky." in text
+    assert (
+        "t/test_slow.py (PR 1, a); it also failed on 1 other change(s), so flaky or already failing."
+        in text
+    )
     assert "t/test_new.py (PR 3, c)." in text
 
 

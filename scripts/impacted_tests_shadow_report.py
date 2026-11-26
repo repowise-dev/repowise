@@ -9,9 +9,11 @@ where the first failing file sat in the prioritized order.
     python scripts/impacted_tests_shadow_report.py records/ --fetch   # gh download first
 
 Records are read from ``<dir>/**/impacted-shadow.json``. A commit recorded by
-several runs (a rerun) counts once, from its latest complete run. A failing
-file outside the selection that also failed on another pull request is marked
-as such: a test failing on unrelated changes is more likely flaky than missed.
+several runs (a rerun) counts once, from its latest complete run. Only pull
+request runs count unless ``--event`` names others (``push``, ``schedule``):
+a red main branch fails the same tests on every push. A failing file outside
+the selection that also failed on another change is marked as such: a test
+failing on unrelated changes is flaky or already failing, not missed.
 """
 
 from __future__ import annotations
@@ -21,15 +23,17 @@ import json
 import statistics
 import subprocess
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 ARTIFACT = "impacted-shadow"
+#: Files left out of a selection the text report lists before summing up the rest.
+MISS_ROWS = 20
 
 
-def load(root: Path) -> list[dict[str, Any]]:
-    """Every readable record under *root*, one per commit: its latest complete run."""
+def load(root: Path, events: Collection[str] = ("pull_request",)) -> list[dict[str, Any]]:
+    """Every readable record of *events* under *root*, one per commit: its latest complete run."""
     latest: dict[str, dict[str, Any]] = {}
     for path in sorted(root.rglob(f"{ARTIFACT}.json")):
         try:
@@ -37,6 +41,8 @@ def load(root: Path) -> list[dict[str, Any]]:
         except (OSError, ValueError):
             continue
         if not isinstance(record, dict) or not record.get("complete") or not record.get("sha"):
+            continue
+        if record.get("event") not in events:
             continue
         kept = latest.get(record["sha"])
         if kept is None or _run_id(record) > _run_id(kept):
@@ -117,14 +123,17 @@ def render(s: Mapping[str, Any]) -> str:
         f"Runs with a failing test: {s['failing_runs']} ({s['failing_runs_selective']} selective); "
         f"every failing file selected in {s['failing_runs_caught']}.",
     ]
-    for m in s["misses"]:
+    for m in s["misses"][:MISS_ROWS]:
+        others = len(m["also_failed_on"])
         also = (
-            f"; also failed on {', '.join(m['also_failed_on'])}, so likely flaky"
-            if m["also_failed_on"]
+            f"; it also failed on {others} other change(s), so flaky or already failing"
+            if others
             else ""
         )
         where = f"PR {m['pr']}, " if m["pr"] else ""
         lines.append(f"  Outside the selection: {m['file']} ({where}{str(m['sha'])[:8]}){also}.")
+    if len(s["misses"]) > MISS_ROWS:
+        lines.append(f"  {len(s['misses']) - MISS_ROWS} more outside the selection (see --json).")
     if s["ordered_runs"]:
         lines.append(
             f"First failing file in the prioritized order, over {s['ordered_runs']} runs: median "
@@ -168,6 +177,11 @@ def main(argv: list[str] | None = None) -> int:
         "--fetch", action="store_true", help="download missing records with gh first"
     )
     parser.add_argument("--repo", help="owner/name for --fetch; needed outside a GitHub checkout")
+    parser.add_argument(
+        "--event",
+        action="append",
+        help="a CI event whose runs count; repeat for several (default: pull_request)",
+    )
     parser.add_argument("--json", action="store_true", help="print the numbers as JSON")
     args = parser.parse_args(argv)
     if args.fetch:
@@ -177,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, subprocess.CalledProcessError) as exc:
             print(f"Could not list the records with gh: {exc}", file=sys.stderr)
             return 1
-    summary = summarize(load(args.dir))
+    summary = summarize(load(args.dir, args.event or ("pull_request",)))
     print(json.dumps(summary, indent=2, sort_keys=True) if args.json else render(summary))
     return 0
 
