@@ -25,10 +25,10 @@ from .compare import (
     Comparison,
     History,
     benchmark_profiles,
+    benchmark_reach,
     cause_for,
     compare_runs,
     comparison_pairs,
-    reached_functions,
     runs_to_read,
 )
 
@@ -36,8 +36,12 @@ log = logging.getLogger(__name__)
 
 #: Commits listed per range; an older band is a stale band, not a longer list.
 MAX_RANGE_COMMITS = 200
-#: Callee hops from a benchmark's own function, and the most functions reached.
-CALLEE_DEPTH = 4
+#: Callee hops walked from a benchmark's own function, and the most production
+#: functions kept, nearest first. Ceiling: gin's benchmarks reach their router
+#: lookup in 4 hops (benchmark, request helper, ``ServeHTTP``, the handler, the
+#: tree); a function past the depth or the cap is not reached, and a call the
+#: graph does not hold (a handler run through a slice of funcs) is not walked.
+CALLEE_DEPTH = 6
 MAX_CALLEES = 500
 
 _SYMBOL_KINDS = ("function", "method")
@@ -106,7 +110,7 @@ async def load_history(
                 for path in changed:
                     files.setdefault(path, set()).add(sha)
     touched = await _touched(session, repository_id, files)
-    callees = await _callees(session, repository_id, benchmark_functions)
+    callees = await _callees(session, repository_id, [f for f in benchmark_functions if f])
     return History(ranges=ranges, touched=touched, callees=callees, truncated=truncated)
 
 
@@ -145,35 +149,68 @@ async def _touched(
     return out
 
 
-async def _callees(session: Any, repository_id: str, roots: Collection[str]) -> dict[str, set[str]]:
-    """Each root's callees within :data:`CALLEE_DEPTH` hops (at most :data:`MAX_CALLEES`)."""
+async def _callees(
+    session: Any, repository_id: str, roots: Collection[str]
+) -> dict[str, tuple[str, ...]]:
+    """Each root's production callees within :data:`CALLEE_DEPTH` hops, nearest
+    first (by name within a hop), at most :data:`MAX_CALLEES`.
+
+    The walk goes through every function (a benchmark reaches the code under
+    test through test helpers) but keeps only production ones, by each file's
+    ``code_origin``. A root the graph knows calls from is present even when it
+    keeps none; one with no call edge is absent (no reach known)."""
     from sqlalchemy import select
 
+    from ..ids import SYMBOL_SEP
     from ..ingestion.models import EXECUTION_EDGE_TYPES
+    from ..ingestion.symbol_identity import file_of_symbol
     from ..persistence.batches import chunked
     from ..persistence.models import GraphEdge
+    from .ingest import load_origins
 
-    out: dict[str, set[str]] = {}
-    for root in sorted(set(roots)):
-        seen: set[str] = set()
-        frontier = {root}
-        for _ in range(CALLEE_DEPTH):
-            found: set[str] = set()
-            for batch in chunked(sorted(frontier)):
-                result = await session.execute(
-                    select(GraphEdge.target_node_id).where(
-                        GraphEdge.repository_id == repository_id,
-                        GraphEdge.source_node_id.in_(batch),
-                        GraphEdge.edge_type.in_(sorted(EXECUTION_EDGE_TYPES)),
-                    )
+    targets: dict[str, set[str]] = {}
+
+    async def load(nodes: Collection[str]) -> None:
+        wanted = sorted(n for n in nodes if n not in targets)
+        for node in wanted:
+            targets[node] = set()
+        for batch in chunked(wanted):
+            result = await session.execute(
+                select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                    GraphEdge.repository_id == repository_id,
+                    GraphEdge.source_node_id.in_(batch),
+                    GraphEdge.edge_type.in_(sorted(EXECUTION_EDGE_TYPES)),
                 )
-                found.update(result.scalars())
-            frontier = found - seen - {root}
-            seen |= frontier
-            if not frontier or len(seen) >= MAX_CALLEES:
+            )
+            for source, target in result:
+                targets[source].add(target)
+
+    origins: dict[str, str] = {}
+
+    async def production(nodes: Sequence[str]) -> list[str]:
+        # A function's id starts with its file; ``external:`` and file nodes are no function.
+        funcs = [n for n in nodes if SYMBOL_SEP in n and not n.startswith("external:")]
+        files = {file_of_symbol(n) for n in funcs} - origins.keys()
+        if files:
+            origins.update(await load_origins(session, repository_id, files))
+        return [n for n in funcs if origins.get(file_of_symbol(n)) == "production"]
+
+    out: dict[str, tuple[str, ...]] = {}
+    for root in sorted(set(roots)):
+        seen = {root}
+        frontier = [root]
+        kept: list[str] = []
+        for _ in range(CALLEE_DEPTH):
+            await load(frontier)
+            frontier = sorted({t for node in frontier for t in targets[node]} - seen)
+            if not frontier:
                 break
-        if seen:
-            out[root] = set(sorted(seen)[:MAX_CALLEES])
+            seen.update(frontier)
+            kept.extend(await production(frontier))
+            if len(kept) >= MAX_CALLEES:
+                break
+        if targets[root]:
+            out[root] = tuple(kept[:MAX_CALLEES])
     return out
 
 
@@ -225,10 +262,10 @@ async def benchmark_cause(
     repo_path: Path | str | None,
     base: str | None,
     head: str | None,
-    benchmark_functions: Sequence[str],
+    benchmark_functions: Sequence[str | None],
 ) -> Cause | None:
     """The commits between *base* and *head* that changed what *benchmark_functions*
-    ran (their callees, and the functions the newest benchmark profiles measured):
+    ran (``None`` for a benchmark not placed; :func:`~.compare.benchmark_reach`):
     the cause line ``perf check`` shares with :func:`load_comparisons`."""
     from ..persistence.crud.analysis.evidence import EVIDENCE_ROW_TABLES, list_evidence_runs
 
@@ -240,7 +277,7 @@ async def benchmark_cause(
     history = await load_history(
         session, repository_id, repo_path, [(base, head)], benchmark_functions
     )
-    reached = reached_functions(list(benchmark_functions), history, rows.values())
+    reached = benchmark_reach(list(benchmark_functions), history, rows.values())
     return cause_for(base, head, reached, history)
 
 

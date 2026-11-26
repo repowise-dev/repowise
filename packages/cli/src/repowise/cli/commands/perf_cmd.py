@@ -565,9 +565,13 @@ def _regression_causes(
                 if before is None or now is None:
                     continue
                 rows = await benchmark_results(session, [now["run_id"]])
-                functions = sorted(
-                    {r.symbol_id for r in rows if r.benchmark_key in benchmarks and r.symbol_id}
+                placed = {r.benchmark_key: r.symbol_id for r in rows if r.symbol_id}
+                functions: list[str | None] = sorted(
+                    {placed[b] for b in benchmarks if b in placed}
                 )
+                if any(b not in placed for b in benchmarks):
+                    # A benchmark not placed: the benchmark profiles fill its reach.
+                    functions.append(None)
                 cause = await benchmark_cause(
                     session,
                     repo_id,

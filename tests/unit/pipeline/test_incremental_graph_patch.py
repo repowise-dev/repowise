@@ -527,6 +527,57 @@ def test_go_interface_edges_survive_a_body_patch(tmp_path: Path) -> None:
     _assert_equals_full(tree, patched, tmp_path)
 
 
+# gin's shape: ``engine.trees`` is a ``methodTrees``, declared in a sibling file
+# of the package, and a range over it types ``tree.root.getValue``.
+_GO_TREE = (
+    "package gin\n\ntype node struct{}\n\n"
+    "func (n *node) getValue(path string) int { return 0 }\n\n"
+    "type leaf struct{}\n\nfunc (l *leaf) getValue(path string) int { return 1 }\n\n"
+    "type methodTree struct {\n\tmethod string\n\troot   *node\n}\n\n"
+    "type leafTree struct {\n\tmethod string\n\troot   *leaf\n}\n\n"
+    "type methodTrees []methodTree\n"
+)
+_GO_ENGINE = (
+    "package gin\n\ntype Engine struct {\n\ttrees methodTrees\n}\n\n"
+    "func (engine *Engine) handle(p string) {\n"
+    "\tfor _, tree := range engine.trees {\n"
+    "\t\tif v := tree.root.getValue(p); v > 0 {\n\t\t\treturn\n\t\t}\n\t}\n}\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "patched_scope"),
+    [
+        # The named container's element changes: the unedited sibling's range
+        # now yields a ``leafTree``. Fields, parameters and return types carry
+        # the type, so no name scopes it: the update builds in full.
+        ("type methodTrees []methodTree", "type methodTrees []leafTree", None),
+        # A field's type changes: the sibling spells the field and is re-resolved.
+        ("\troot   *node\n}\n\ntype leafTree", "\troot   *leaf\n}\n\ntype leafTree", ("gin.go", "tree.go")),
+        # A body edit changes no declaration: only the edited file is resolved.
+        ("return 0 }", "return 2 }", ("tree.go",)),
+    ],
+    ids=["named-container", "field-type", "body"],
+)
+def test_go_sibling_declaration_edit_matches_full_build(
+    tmp_path: Path, old: str, new: str, patched_scope: tuple[str, ...] | None
+) -> None:
+    tree = tmp_path / "repo"
+    _write(tree, {"go.mod": "module example.com/gin\n\ngo 1.22\n", "tree.go": _GO_TREE, "gin.go": _GO_ENGINE})
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert first.graph().has_edge("gin.go::Engine::handle", "tree.go::node::getValue")
+    (tree / "tree.go").write_text(_GO_TREE.replace(old, new))
+
+    patched = _patched(tree, _seed_rows(first))
+
+    if patched_scope is None:
+        assert not patched.patch_plan.eligible
+    else:
+        assert patched.patch_plan.eligible, patched.patch_plan.reason
+        assert patched.patch_plan.scope == patched_scope
+    _assert_equals_full(tree, patched, tmp_path)
+
+
 def test_go_method_moved_above_its_type_drops_the_seeded_has_method(tmp_path: Path) -> None:
     """The parse owns an edited file's containment edges; the seed must not restore them."""
     tree = tmp_path / "repo"

@@ -60,12 +60,15 @@ def changed_field_names(
 
     Compares each file's fields now with the record the last build saved. A
     file with no record to compare, or no source, makes the answer unknown
-    (``None``). Added and removed files count every field they declare. A
+    (``None``), and so does a Go named container type whose container changed
+    (``type methodTrees []methodTree``): a range over it reads the declaration
+    through fields, parameters and return types no name of the edit spells.
+    Added and removed files count every field they declare. A
     C/C++ file's other source-read facts are compared the same way
     (:mod:`repowise.core.ingestion.cpp_cross_file_facts`), adding the names
     that reach a fact that changed.
     """
-    from .resolution_cache import field_types
+    from .resolution_cache import GO_CONTAINER_FIELD, field_types
     from .surface import is_inert
 
     names: set[str] = set()
@@ -80,7 +83,10 @@ def changed_field_names(
             return None
         for class_id in set(before) | set(after):
             old, new = before.get(class_id, {}), after.get(class_id, {})
-            names.update(field for field in set(old) | set(new) if old.get(field, 0) != new.get(field, 0))
+            changed = {field for field in set(old) | set(new) if old.get(field, 0) != new.get(field, 0)}
+            if GO_CONTAINER_FIELD in changed:
+                return None
+            names |= changed
         fact_names = _changed_fact_names(path, parsed, entry, source_map)
         if fact_names is None:
             return None

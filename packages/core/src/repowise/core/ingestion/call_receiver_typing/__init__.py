@@ -30,6 +30,7 @@ from ..languages.receiver_types import (
     ScopeMarks,
     bound_types,
     external_type_name,
+    go_named_container,
     in_spans,
     merge_spans,
     names_in_span,
@@ -243,6 +244,25 @@ def class_field_types(parsed: ParsedFile, text: str) -> dict[str, dict[str, str 
     if not _type_symbols(parsed.symbols):
         return {}
     return _fields_by_class(scan_declarations(text, language), parsed.symbols, language)
+
+
+def go_named_containers(parsed: ParsedFile, text: str) -> dict[str, str]:
+    """``{type id: container}`` for the Go named container types *parsed* declares.
+
+    ``type methodTrees []methodTree``: the same reading a range over a
+    ``methodTrees`` makes (``RangeVariableTypes._go_underlying_container``), so
+    a caller can tell whether an edit changed what such a range yields.
+    """
+    if parsed.file_info.language != "go":
+        return {}
+    lines = text.splitlines()
+    out: dict[str, str] = {}
+    for symbol in parsed.symbols:
+        if symbol.kind == "type_alias" and 0 < symbol.start_line <= len(lines):
+            container = go_named_container(lines[symbol.start_line - 1], symbol.name)
+            if container:
+                out[symbol.id] = container
+    return out
 
 
 def _type_symbols(symbols: Sequence[Symbol]) -> list[Symbol]:

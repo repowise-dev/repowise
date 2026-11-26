@@ -649,8 +649,11 @@ slower. A CPU profile compares each production function's self seconds, and a
 test run the seconds of the tests every run has (suites of 60 s or more), against 3
 or more earlier runs; a benchmark profile never compares. A slower workload names
 the commits between the band and this run that changed a function it ran (the
-slower benchmark's function and its callees, what the newest benchmark profile
-measured, a slower profile's functions), from function-level blame; without a
+slower benchmark's function and the production functions it calls, up to 6
+calls deep, nearest first; what the newest benchmark profile measured only for
+a benchmark the call graph knows no calls from; a slower profile's functions),
+from function-level blame. A commit outside what a slower benchmark calls is
+never named for it, so one noisy benchmark does not blame unrelated work. Without a
 checkout only the range is named. `evidence add` prints the same line for the
 workload it stored, `repowise update` prints one line when a workload is slower,
 and MCP `get_health(include=["performance"])` lists the lines under
