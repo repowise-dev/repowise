@@ -425,9 +425,25 @@ def route_breaks(
         return None
 
 
+def _head_sources(source: Any, pair: Any, linked: dict[str, list[dict]]) -> dict[str, bytes]:
+    """Head-side bytes of the changed files a route dialect reads, linked ones first."""
+    from repowise.core.workspace.extractors.http import HttpExtractor
+
+    extensions = HttpExtractor.source_extensions()
+    # The linked files' own head sides first, so the cap never drops one.
+    changes = sorted(pair.changes, key=lambda c: c.base_path not in linked)
+    paths = [
+        c.head_path
+        for c in changes
+        if c.head_path and PurePosixPath(c.head_path).suffix.lower() in extensions
+    ][:_HEAD_FILES_LIMIT]
+    if pair.working_tree:
+        return source.read_working_tree(paths)
+    return source.read(pair.head_sha, paths)
+
+
 def _compare(root: Path, store: RepoContracts, revspec: str | None) -> list[_Break] | None:
     from repowise.core.analysis.change_health.sources import GitRevisionSource
-    from repowise.core.workspace.extractors.http import HttpExtractor
 
     source = GitRevisionSource(str(root), hunks=False)
     pair = source.resolve(revspec)
@@ -436,47 +452,27 @@ def _compare(root: Path, store: RepoContracts, revspec: str | None) -> list[_Bre
     linked = {
         c.base_path: links
         for c in pair.changes
-        if c.base_path
-        and (links := [lk for lk in store.provided(c.base_path) if lk.get("match_type") == _EXACT])
+        if c.base_path and (links := _exact(store.provided(c.base_path)))
     }
     if not linked:
         return None
-    extensions = HttpExtractor.source_extensions()
-    # The linked files' own head sides first, so the cap never drops one.
-    changes = sorted(pair.changes, key=lambda c: c.base_path not in linked)
-    head_paths = [
-        c.head_path
-        for c in changes
-        if c.head_path and PurePosixPath(c.head_path).suffix.lower() in extensions
-    ][:_HEAD_FILES_LIMIT]
-    head_sources = (
-        source.read_working_tree(head_paths)
-        if pair.working_tree
-        else source.read(pair.head_sha, head_paths)
-    )
-    head = _http_providers(root, store.repo, head_sources)
-    gone = _gone_routes(
-        _http_providers(root, store.repo, source.read(pair.base_sha, list(linked))), head
-    )
+    head = _http_providers(root, store.repo, _head_sources(source, pair, linked))
+    base = _http_providers(root, store.repo, source.read(pair.base_sha, list(linked)))
     head_keys = {_segments(c.contract_id) for c in head}
     edited = {p for c in pair.changes for p in (c.base_path, c.head_path) if p}
     breaks: dict[str, _Break] = {}
-    for route in gone:
+    for route in _gone_routes(base, head):
         links = linked.get(route.file_path, [])
         hit = _stored_for(store, route, links)
-        if hit is None or hit.get("contract_id") in breaks:
-            continue
+        cid = (hit or {}).get("contract_id") or ""
         # A head-side route that can still be the stored one (a deleted `/{id}`
         # beside a kept `/users/{id}`) means the callers' route may be served.
-        if any(_ends_with(k, hit.get("contract_id") or "") for k in head_keys):
+        if not cid or cid in breaks or any(_ends_with(k, cid) for k in head_keys):
             continue
-        same = [lk for lk in links if lk.get("contract_id") == hit.get("contract_id")]
-        sites = _sites(store, same, "consumer")
+        sites = _sites(store, [lk for lk in links if lk.get("contract_id") == cid], "consumer")
         callers = [r for r in sites if r["file"] not in edited]
         if callers:
-            breaks[hit["contract_id"]] = _Break(
-                hit["contract_id"], route.file_path, callers, len(sites) - len(callers)
-            )
+            breaks[cid] = _Break(cid, route.file_path, callers, len(sites) - len(callers))
     return list(breaks.values())
 
 
