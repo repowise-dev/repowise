@@ -62,11 +62,9 @@ class FindingTypeStatus:
 
 _VALIDATED = FindingTypeStatus("validated")
 
-_LABELLED = "hand-labelled findings from one TS/Python monorepo"
-
 REGISTRY: dict[str, FindingTypeStatus] = {
-    # No measurement recorded: the held-out sample was too small to publish a
-    # figure, so the type stays hidden until a re-measure clears the floor.
+    # No type below has a recorded precision figure, so their measurement
+    # fields stay unset; each stays hidden until a re-measure clears the floor.
     "unused_internal": FindingTypeStatus(
         "hidden",
         reason=(
@@ -76,8 +74,6 @@ REGISTRY: dict[str, FindingTypeStatus] = {
     ),
     "duplicated_assertion_block": FindingTypeStatus(
         "hidden",
-        corpus=f"{_LABELLED}, 1,168 in all",
-        measured_on="2026-09-29",
         reason="Clones are matched on token shape only, so unrelated assertions pair up.",
     ),
     # The failing subset is clones over import blocks and data literals. A
@@ -87,8 +83,6 @@ REGISTRY: dict[str, FindingTypeStatus] = {
     # re-measure and flip this back).
     "dry_violation": FindingTypeStatus(
         "hidden",
-        corpus=_LABELLED,
-        measured_on="2026-09-29",
         reason="Flags duplicated import blocks and data literals as design duplication.",
     ),
 }
