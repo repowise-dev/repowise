@@ -204,6 +204,7 @@ def test_coverage_add_stamps_live_head_not_stored_column(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
 
     async def _no_reconcile(_url):
         return None
@@ -305,6 +306,7 @@ def test_coverage_add_stamps_a_leftover_report_at_the_commit_it_measured(
 
     monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
 
     async def _no_reconcile(_url):
         return None
@@ -357,6 +359,7 @@ def _fake_ingest(monkeypatch: pytest.MonkeyPatch, tmp_path, keys: set[str]) -> l
     monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda _p: tmp_path)
     monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _keys)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
     monkeypatch.setattr(coverage_cmd, "reconcile_schema_best_effort", _noop)
     monkeypatch.setattr("repowise.core.persistence.crud.get_repository_by_path", _repo)
     monkeypatch.setattr("repowise.core.persistence.crud.save_coverage_files", _save)
@@ -827,6 +830,7 @@ def test_coverage_status_names_indexed_production_files_the_report_leaves_out(
     url = _status_index(tmp_path)
     monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda repo, fmt="table": tmp_path)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: url)
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
 
     text = CliRunner().invoke(cli, ["coverage", "status"])
     assert text.exit_code == 0, text.output
@@ -850,6 +854,30 @@ def test_coverage_status_names_indexed_production_files_the_report_leaves_out(
         "src/calc/gen/keep.py",
     ]
     assert coverage["file_count"] == 3
+
+
+def test_coverage_unindexed_repo_reports_no_index_and_creates_no_store(tmp_path) -> None:
+    cov_file = tmp_path / "coverage.lcov"
+    cov_file.write_text("TN:\nSF:src/a.py\nDA:1,1\nend_of_record\n")
+
+    # 1. coverage add returns exit code 1 and prints warning
+    add_result = CliRunner().invoke(cli, ["coverage", "add", str(cov_file), "--path", str(tmp_path)])
+    assert add_result.exit_code == 1, add_result.output
+    assert "No index yet. Run `repowise init`" in add_result.output
+
+    # 2. coverage status returns exit code 0 and prints notice
+    status_result = CliRunner().invoke(cli, ["coverage", "status", "--path", str(tmp_path)])
+    assert status_result.exit_code == 0, status_result.output
+    assert "No index yet. Run `repowise init`." in status_result.output
+
+    # 3. coverage status --format json returns exit code 0 with indexed: False
+    json_result = CliRunner().invoke(cli, ["coverage", "status", "--path", str(tmp_path), "--format", "json"])
+    assert json_result.exit_code == 0, json_result.output
+    data = json.loads(json_result.output[json_result.output.index("{") :])
+    assert data["indexed"] is False
+
+    # 4. No .repowise/wiki.db file is created
+    assert not (tmp_path / ".repowise" / "wiki.db").exists()
 
 
 def test_a_dot_coverage_beside_its_report_is_named_for_the_map_it_built(
@@ -883,6 +911,7 @@ def test_the_per_test_map_hint_names_pytest_only_where_pytest_runs(
     url = _status_index(tmp_path)
     monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda repo, fmt="table": tmp_path)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: url)
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
     (tmp_path / "package.json").write_text('{"name": "w", "scripts": {"test": "mocha"}}')
 
     node = CliRunner().invoke(cli, ["coverage", "status"])
