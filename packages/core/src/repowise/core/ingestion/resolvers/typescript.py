@@ -6,6 +6,7 @@ import posixpath
 from collections.abc import Iterable
 from pathlib import Path
 
+from ..languages.js_config_values import string_literals, value_spans
 from .context import ResolverContext
 from .lwc import lwc_bundle_dir, resolve_lwc_module
 from .nuxt import resolve_nuxt_alias
@@ -230,8 +231,9 @@ def resolve_ts_js_glob(
     pattern removes what it matches. Vite never loads the importer itself.
 
     Only files in ``ctx.path_set`` match, so excluded and unindexed files get
-    no edge. A ``/``-rooted pattern (from the Vite root) is not read: the root
-    comes from the bundler config, so it matches nothing here.
+    no edge. A ``/``-rooted pattern is read against the Vite root: the nearest
+    ``vite.config.*`` directory (a literal ``root:`` in it honoured), else the
+    nearest ``package.json`` directory, else the repository root.
     """
     matched: set[str] = set()
     removed: set[str] = set()
@@ -250,9 +252,89 @@ def _glob_files(pattern: str, importer_path: str, ctx: ResolverContext) -> set[s
     if pattern.startswith(("./", "../")):
         joined = posixpath.normpath(posixpath.join(posixpath.dirname(importer_path), pattern))
         return set() if joined.startswith("../") else _regex_matches(joined, ctx)
-    if not pattern or pattern.startswith("/"):
+    if pattern.startswith("/"):
+        # Vite reads a leading ``/`` against its own root: the directory of
+        # the nearest ``vite.config.*``, else of the nearest ``package.json``,
+        # else the repository root. A literal ``root:`` in the config moves it.
+        joined = posixpath.normpath(posixpath.join(_vite_root(importer_path, ctx), pattern[1:]))
+        return _regex_matches(joined, ctx)
+    if not pattern:
         return set()
     return _alias_glob_files(pattern, importer_path, ctx)
+
+
+_VITE_CONFIG_NAMES: tuple[str, ...] = (
+    "vite.config.ts",
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.mts",
+    "vite.config.cjs",
+    "vite.config.cts",
+)
+
+
+def _vite_root(importer_path: str, ctx: ResolverContext) -> str:
+    """The directory a ``/``-rooted Vite glob is relative to, posix and repo-relative.
+
+    Vite's root is the nearest ``vite.config.*``'s directory (a literal
+    ``root:`` in it overrides, still relative to the config), else the nearest
+    ``package.json``'s, else the repository root. A config is found on disk as
+    well as in the index: the traverser does not index every config file.
+    """
+    config_dir, config_rel = _nearest_config(_VITE_CONFIG_NAMES, importer_path, ctx)
+    if config_rel:
+        text = _config_text(config_rel, ctx)
+        if text:
+            spans = value_spans(text, ("root",))
+            if spans:
+                literals = string_literals(spans[0])
+                if literals:
+                    root = literals[0].strip()
+                    if root:
+                        return (
+                            posixpath.normpath(posixpath.join(config_dir, root))
+                            if not root.startswith("/")
+                            else posixpath.normpath(root)
+                        )
+        return config_dir
+    package_dir, package_rel = _nearest_config(("package.json",), importer_path, ctx)
+    return package_dir if package_rel else ""
+
+
+def _nearest_config(
+    names: tuple[str, ...], importer_path: str, ctx: ResolverContext
+) -> tuple[str, str]:
+    """The nearest of *names* at or above the importer's directory.
+
+    Returns ``(directory, repo-relative path)``; ``("", "")`` when absent.
+    The indexed set is checked first, then the disk, so a config the
+    traverser skipped is still found.
+    """
+    directory = posixpath.dirname(importer_path)
+    while True:
+        for name in names:
+            rel = posixpath.join(directory, name)
+            if rel in ctx.path_set:
+                return directory, rel
+            if ctx.repo_path is not None and (ctx.repo_path / rel).is_file():
+                return directory, rel
+        if not directory:
+            return "", ""
+        directory = posixpath.dirname(directory)
+
+
+def _config_text(config_rel: str, ctx: ResolverContext) -> bytes | None:
+    if ctx.source_map is not None:
+        text = ctx.source_map.get(config_rel)
+        if text is not None:
+            return text
+    if ctx.repo_path is not None:
+        path = ctx.repo_path / config_rel
+        try:
+            return path.read_bytes()
+        except OSError:
+            return None
+    return None
 
 
 def _regex_matches(repo_glob: str, ctx: ResolverContext) -> set[str]:
