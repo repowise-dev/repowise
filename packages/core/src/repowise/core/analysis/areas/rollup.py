@@ -22,7 +22,7 @@ from repowise.core.analysis.health.aggregation import group_rollup, severity_bre
 from repowise.core.analysis.health.grading import BAND_ORDER, band_for, distribution
 from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.health.rows import scored_rows
-from repowise.core.analysis.held_origins import counts_as_hotspot
+from repowise.core.analysis.held_origins import HOTSPOT_HELD_ORIGINS, counts_as_hotspot
 
 from .owners import FileOwner, owner_breakdown, primary_owner
 from .paths import ancestors, area_depth, area_name, area_parent
@@ -69,14 +69,19 @@ class AreaIndex:
     deductions: Mapping[str, float] = field(default_factory=dict)
     #: Open findings as :func:`finding_row` dicts, in the finding lists' priority order.
     findings: Sequence[dict[str, Any]] = ()
+    #: Stored origins the reader's hotspot list holds out.
+    held_origins: frozenset[str] = HOTSPOT_HELD_ORIGINS
 
 
 def is_counted_hotspot(index: AreaIndex, row: Any) -> bool:
     """Whether the scored file *row* is a hotspot the hotspot list shows: flagged
-    in git, and its stored origin not one the list holds out."""
+    in git, and its stored origin not one the reader holds out."""
     git = index.git_by_path.get(row_field(row, "file_path"), {})
     return counts_as_hotspot(
-        git.get("is_hotspot"), row_field(row, "code_origin"), row_field(row, "is_test")
+        git.get("is_hotspot"),
+        row_field(row, "code_origin"),
+        row_field(row, "is_test"),
+        index.held_origins,
     )
 
 
@@ -174,6 +179,7 @@ def build_area_index(
     owners: Mapping[str, FileOwner] | None = None,
     findings: Iterable[Any] = (),
     deductions: Mapping[str, float] | None = None,
+    held_origins: frozenset[str] = HOTSPOT_HELD_ORIGINS,
 ) -> AreaIndex:
     """Fold every scored file into each directory above it, then roll each one up.
 
@@ -200,6 +206,7 @@ def build_area_index(
         },
         owners=owners or {},
         deductions=deductions or {},
+        held_origins=held_origins,
     )
     index.findings = [finding_row(f) for f in findings]
     severities = severity_by_file(index.findings)

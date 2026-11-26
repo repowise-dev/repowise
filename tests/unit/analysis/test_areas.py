@@ -190,3 +190,16 @@ def test_hotspot_counts_leave_out_the_origins_the_hotspot_list_holds():
     detail = area_detail(index, "svc")
     assert detail["hotspots"]["total"] == 1
     assert [f["path"] for f in detail["hotspots"]["files"]] == ["svc/core.py"]
+
+
+def test_hotspot_count_uses_the_readers_held_scope():
+    metrics = [
+        _m("svc/core.py", 6.0, code_origin="production"),
+        _m("svc/test_core.py", 6.0, code_origin="test"),
+        _m("svc/core_pb2.py", 6.0, code_origin="generated"),
+    ]
+    git = [{"file_path": m["file_path"], "is_hotspot": True, "bus_factor": 1} for m in metrics]
+    index = build_area_index(metrics, git_rows=git, held_origins=frozenset())
+    assert index.nodes["svc"]["hotspot_count"] == 3
+    detail = area_detail(index, "svc")
+    assert detail["hotspots"]["total"] == 3

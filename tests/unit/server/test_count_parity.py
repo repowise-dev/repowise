@@ -182,9 +182,9 @@ async def test_every_hotspot_count_matches_the_hotspot_list(client: AsyncClient,
     assert module["hotspot_count"] == shown
     assert module["top_hotspots"] == ["src/core.py"]
 
-    tree = await get(f"/api/repos/{rid}/areas/tree")
+    tree = await get(f"/api/repos/{rid}/areas/tree", hold="map")
     assert tree["root"]["hotspot_count"] == shown
-    area = await get(f"/api/repos/{rid}/areas/src")
+    area = await get(f"/api/repos/{rid}/areas/src", hold="map")
     assert area["area"]["hotspot_count"] == area["hotspots"]["total"] == shown
 
     graph = await get(f"/api/graph/{rid}")
