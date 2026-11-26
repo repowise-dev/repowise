@@ -15,6 +15,8 @@ from typing import Any
 
 from repowise.core.attribution import AGENT, HUMAN_ATTESTED, UNKNOWN
 
+from .category import classify_change
+
 SCHEMA_VERSION = 1
 IN_TOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 PREDICATE_TYPE = "https://repowise.dev/ChangeRecord/v1"
@@ -59,6 +61,13 @@ def change_record(row: Any, *, attribution: bool = True) -> dict[str, Any]:
     out even if an older index stored it.
     """
     commits = _loads(row.commit_shas_json) or []
+    files = _loads(row.files_json) or []
+    labels = _loads(row.labels_json)
+    basis = classify_change(
+        row.title or "",
+        [(f.get("path", ""), f.get("added") or 0, f.get("deleted") or 0) for f in files],
+        labels,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "id": row.change_id,
@@ -71,11 +80,14 @@ def change_record(row: Any, *, attribution: bool = True) -> dict[str, Any]:
         "head_sha": row.head_sha,
         "author": {"name": row.author_name, "email": row.author_email},
         "commits": commits,
-        "files": _loads(row.files_json) or [],
+        "files": files,
         "files_changed": row.files_changed,
         "lines_added": row.lines_added,
         "lines_deleted": row.lines_deleted,
         "category": row.category,
+        # Where the category came from: a changelog fragment the change adds,
+        # a forge label, or the title.
+        "category_basis": {"signal": basis.signal, "value": basis.value},
         "provenance": (
             provenance_block(
                 row.provenance, row.provenance_agent, row.provenance_known, len(commits)
@@ -87,7 +99,7 @@ def change_record(row: Any, *, attribution: bool = True) -> dict[str, Any]:
             "source": row.metadata_source,
             "reviewers": _loads(row.reviewers_json),
             "approvals": row.approvals,
-            "labels": _loads(row.labels_json),
+            "labels": labels,
             "linked_issues": _loads(row.linked_issues_json),
         },
     }

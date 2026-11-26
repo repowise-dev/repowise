@@ -636,3 +636,81 @@ async def test_persist_git_builds_changes_over_the_commit_window_it_walked(tmp_p
             assert total == 9
     finally:
         await engine.dispose()
+
+
+def test_record_names_what_decided_the_category():
+    files = json.dumps(
+        [
+            {"path": "src/b.py", "added": 3, "deleted": 1},
+            {"path": "CHANGES/13.bugfix.rst", "added": 1, "deleted": 0},
+        ]
+    )
+    record = change_record(_row(files_json=files, category="fix"))
+    assert record["category_basis"] == {
+        "signal": "changelog_fragment",
+        "value": "CHANGES/13.bugfix.rst",
+    }
+    assert change_record(_row())["category_basis"] == {"signal": "title", "value": None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_changelog_fragment_makes_a_change_a_fix_and_survives_reconcile(tmp_path):
+    from sqlalchemy import update
+
+    from repowise.core.changes.store import reconcile_categories
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Change
+
+    r = _Repo(tmp_path / "repo")
+    r.commit("src/a.py", "Initial layout")
+    for path in ("src/proxy.py", "CHANGES/41.bugfix.rst"):
+        (r.root / path).parent.mkdir(parents=True, exist_ok=True)
+        (r.root / path).write_text("x\n", encoding="utf-8")
+    r.git("add", "-A")
+    r.git("commit", "-q", "-m", "Close the proxy connection when the tunnel fails (#41)")
+
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        async with get_session(factory) as session:
+            await refresh_changes(session, repo_id, r.root, rebuild=True)
+        async with get_session(factory) as session:
+            assert (await get_change(session, repo_id, "pr-41")).category == "fix"
+            # An index written before fragments were read holds the title's label.
+            await session.execute(
+                update(Change).where(Change.change_id == "pr-41").values(category="other")
+            )
+            assert await reconcile_categories(session, repo_id) >= 1
+        async with get_session(factory) as session:
+            assert (await get_change(session, repo_id, "pr-41")).category == "fix"
+    finally:
+        await engine.dispose()
+
+
+def test_change_row_reads_labels_a_metadata_source_filled():
+    from repowise.core.changes.reconstruct import ReconstructedChange
+    from repowise.core.changes.source import ChangeMetadata
+    from repowise.core.changes.store import change_row
+
+    change = ReconstructedChange(
+        change_id="pr-5",
+        identity_kind="pr",
+        identity_value="5",
+        shape="squash",
+        forge="github",
+        forge_ref="#5",
+        title="Handle empty headers",
+        merged_at=None,
+        head_sha="c" * 40,
+        author_name="Ann",
+        author_email="ann@example.com",
+        commit_shas=["c" * 40],
+        files=[("src/h.py", 2, 1)],
+        category="other",
+    )
+    labelled = change_row(
+        change, provenance=None, source="forge", metadata=ChangeMetadata(labels=("type: bug",))
+    )
+    assert labelled["category"] == "fix"
+    assert change_row(change, provenance=None, source="git", metadata=None)["category"] == "other"
