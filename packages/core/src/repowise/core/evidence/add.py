@@ -222,6 +222,16 @@ def evidence_caps(config: Any) -> tuple[float, EvidenceCaps, list[str]]:
     return max_file_mb, caps, problems
 
 
+_V1_OBJECT_HEAD = re.compile(
+    rb'^\{\s*(?:.*,\s*)?"format"\s*:\s*"' + re.escape(EVIDENCE_FORMAT.encode()) + rb'"',
+    re.DOTALL,
+)
+
+
+def _is_v1_head(head: bytes) -> bool:
+    return _V1_OBJECT_HEAD.match(head.lstrip(b"\xef\xbb\xbf").lstrip()) is not None
+
+
 def input_format(given: str | None, data: bytes) -> str:
     """*given* checked against the registry, else the format sniffed from *data*.
 
@@ -236,7 +246,7 @@ def input_format(given: str | None, data: bytes) -> str:
             raise _bad_option("--input-format", f"{given!r} is not one of {', '.join(names)}.")
         return given
     head = data[:SNIFF_BYTES]
-    if EVIDENCE_FORMAT.encode() in head:
+    if _is_v1_head(head):
         return EVIDENCE_FORMAT
     return detect_profile_format(head) or EVIDENCE_FORMAT
 
