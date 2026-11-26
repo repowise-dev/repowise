@@ -3,7 +3,9 @@
 ``impacted_tests_shadow.py`` writes one ``impacted-shadow.json`` per run. This
 reads a folder of them and reports how often the selection ran everything, the
 test time it would have saved, which failing test files fell outside it, and
-where the first failing file sat in the prioritized order.
+where the first failing file sat in the prioritized order, and how many
+selections had a per-test map measured at their base (fresh) rather than an
+earlier commit (stale).
 
     python scripts/impacted_tests_shadow_report.py records/
     python scripts/impacted_tests_shadow_report.py records/ --fetch   # gh download first
@@ -127,6 +129,9 @@ def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "failing_runs_selective": sum(not r["run_all"] for r in failing),
         "failing_runs_caught": sum(not r.get("missed") for r in failing),
         "misses": _misses(failing, _elsewhere(records)),
+        # Records before version 3 do not say which commit their map came from.
+        "map_known": sum(r.get("map_at_base") is not None for r in selected),
+        "map_at_base": sum(r.get("map_at_base") is True for r in selected),
         **_ordering(failing),
     }
 
@@ -144,6 +149,12 @@ def render(s: Mapping[str, Any]) -> str:
         f"Runs with a failing test: {s['failing_runs']} ({s['failing_runs_selective']} selective); "
         f"every failing file selected in {s['failing_runs_caught']}.",
     ]
+    if s.get("map_known"):
+        lines.append(
+            f"Per-test map measured at the base: {s['map_at_base']} of {s['map_known']} runs "
+            f"({_pct(s['map_at_base'], s['map_known'])}); the rest used an earlier commit's map "
+            "or none."
+        )
     for m in s["misses"][:MISS_ROWS]:
         others = len(m["also_failed_on"])
         also = (

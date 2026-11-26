@@ -87,9 +87,13 @@ skipping any.
   the per-test map it restored. It then waits for the three Python 3.12
   shards (not 3.11 or 3.13), combines their `.coverage` data, adds the
   per-test coverage map with `repowise coverage add` and saves
-  `repowise-index-<sha>-full`. When a shard did not pass there is no full
-  save, since a map missing a shard's tests would leave them out of every
-  selection. It keeps the entries of the three newest commits, drops an early
+  `repowise-index-<sha>-full`, also published as the run's
+  `repowise-index-full` artifact (zstd tar, kept 3 days). A shard with a
+  failing test still ran every test and counts; when a shard was cancelled,
+  wrote no report or coverage, or its report names a crashed worker or a
+  collection error, there is
+  no full save, since a map missing a shard's tests would leave them out of
+  every selection. It keeps the cache entries of the three newest commits, drops an early
   entry once its full one exists, and keeps an early entry with no full one
   while its job may still save it. It sets
   `REPOWISE_COMMIT_HEALTH_BACKGROUND=0`: a detached commit-health drain still
@@ -98,11 +102,18 @@ skipping any.
   (`--cov-context=test`, on the C tracer, since sysmon drops contexts). Pull
   requests and the nightly run keep sysmon without contexts, so their wall
   time does not change.
-- `Test selection (recorded only)` restores the base's full index, else its
-  early one, else the newest older one, and runs
+- `Test selection (recorded only)` starts once the tests have run. It waits up
+  to 25 minutes for the base's `repowise-index-full` artifact, stopping early
+  once the base's index job has ended, and uses it. Otherwise it restores the
+  base's cached index (its early one), else the full artifact of the nearest
+  first-parent ancestor of the base (up to 10 back), else the newest cached
+  index. It then runs
   `repowise impacted-tests <base>...HEAD --format json --runner pytest --prioritize`.
-  The record's `index_cache` says which: `full`, `early`, `older` or `none`
-  (record version 2).
+  The record's `index_cache` says which: `full`, `early`, `ancestor`, `older`
+  or `none`, and `map_commit` / `map_at_base` name the commit the per-test map
+  was measured at and whether it is the base (record version 3).
+  `scripts/impacted_tests_shadow_report.py` counts the runs whose map was at
+  the base.
 - `Test selection compared (recorded only)` reads the shards' JUnit reports
   and writes its job summary: selected test files out of those that ran, the
   test time the selection would have saved, every failing test the selection
