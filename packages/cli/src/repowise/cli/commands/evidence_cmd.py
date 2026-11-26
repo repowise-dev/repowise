@@ -318,6 +318,10 @@ async def _store(
             payload["truncated"],
             payload["index_commit"],
         )
+        compared = await _compare_stored(session, target.repo.id, repo_path, payload)
+        if compared is not None:
+            payload["compare"] = compared
+            notices.print(_comparison_markup(compared))
     elif payload["reason"] == "mostly_unmapped":
         refuse_partial(
             "evidence file",
@@ -328,6 +332,41 @@ async def _store(
     else:
         notices.print("[red]No entry matched an indexed function, so nothing was stored.[/red]")
     return payload
+
+
+async def _compare_stored(
+    session: Any, repo_id: str, repo_path: Path, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The stored run's workload against its band of earlier runs, when it has one.
+
+    Never fails the add: the run is stored whatever the comparison meets (a
+    reading the store or git could not finish is logged and left out).
+    """
+    import logging
+
+    from repowise.core.evidence.compare import comparison_payload
+    from repowise.core.evidence.compare_history import load_comparisons
+
+    try:
+        # A savepoint, so a failed read cannot abort the transaction holding the run.
+        async with session.begin_nested():
+            comparisons = await load_comparisons(session, repo_id, repo_path)
+    except Exception:  # a comparison must never undo the stored run
+        logging.getLogger(__name__).warning(
+            "Could not compare the run with earlier runs.", exc_info=True
+        )
+        return None
+    # Only a comparison about the run just stored: a partially mapped run has none.
+    for found in comparisons:
+        if found.head_run_id == payload.get("run_id"):
+            return comparison_payload(found)
+    return None
+
+
+def _comparison_markup(compared: dict[str, Any]) -> str:
+    """A comparison's line (``comparison_payload``), yellow when it is slower."""
+    line = escape(compared["line"])
+    return line if compared["verdict"] == "within_noise" else f"[yellow]{line}[/yellow]"
 
 
 def _report_conversion(notices: Any, name: str, summary: dict[str, Any], profiles: int) -> None:
@@ -711,17 +750,35 @@ async def _index_read_error(repo_path: Path) -> str | None:
 
 @evidence_group.command("status")
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--compare",
+    "compare",
+    is_flag=True,
+    default=False,
+    help="Also compare each workload's newest run with its earlier runs: what got slower, "
+    "and the commits in between that changed what it ran.",
+)
 @format_option()
-def evidence_status_command(repo: str | None, fmt: str) -> None:
+def evidence_status_command(repo: str | None, compare: bool, fmt: str) -> None:
     """Show the runtime evidence stored: the newest run of each workload.
 
     Each run says how fresh it is against the indexed commit (current, stale
     or unknown), where its time went (production repo code itself, waits,
     libraries), and what was skipped.
+
+    With --compare, each workload with an earlier run at another commit is
+    compared with a band of up to 5 of them. Against 3 or more earlier runs, a
+    benchmark is slower when its median is past the band's own spread and at
+    least 25% worse (10% when two or more runs of the new commit pool their
+    samples), with no sample overlapping; against fewer it only looks slower,
+    to confirm with perf measure. Allocations per op and query counts are exact:
+    any growth is slower. Profiles compare CPU self seconds and suites their
+    seconds, against 3 or more runs. A slower workload names the commits in
+    between that changed a function it ran.
     """
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
-    payload = run_async(_status(repo_path))
+    payload = run_async(_status(repo_path, compare=compare))
     if fmt == "json":
         emit_json(payload)
         return
@@ -736,6 +793,12 @@ def evidence_status_command(repo: str | None, fmt: str) -> None:
         return
     for run in payload["workloads"]:
         notices.print(_status_line(run))
+    if compare:
+        compared = payload["compare"]
+        if not compared:
+            notices.print("No workload has an earlier run at another commit to compare with.")
+        for found in compared:
+            notices.print(_comparison_markup(found))
 
 
 def _status_line(run: dict[str, Any]) -> str:
@@ -801,15 +864,24 @@ async def _read_store(repo_path: Path, read: Any, empty: dict[str, Any]) -> dict
         await engine.dispose()
 
 
-async def _status(repo_path: Path) -> dict[str, Any]:
+async def _status(repo_path: Path, *, compare: bool = False) -> dict[str, Any]:
+    from repowise.core.evidence.compare import comparison_payload
+    from repowise.core.evidence.compare_history import load_comparisons
     from repowise.core.evidence.status import evidence_status
     from repowise.core.persistence.crud import list_evidence_runs
 
     async def read(session: Any, repo_row: Any) -> dict[str, Any]:
         runs = await list_evidence_runs(session, repo_row.id)
-        return evidence_status(runs, repo_row.head_commit)
+        out = evidence_status(runs, repo_row.head_commit)
+        if compare:
+            found = await load_comparisons(session, repo_row.id, repo_path)
+            out["compare"] = [comparison_payload(c) for c in found]
+        return out
 
-    return await _read_store(repo_path, read, evidence_status([], None))
+    empty = evidence_status([], None)
+    if compare:
+        empty["compare"] = []
+    return await _read_store(repo_path, read, empty)
 
 
 @evidence_group.command("tests")

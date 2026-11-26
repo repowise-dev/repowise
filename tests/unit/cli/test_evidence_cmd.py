@@ -1086,3 +1086,38 @@ def test_a_profile_still_needs_its_class(indexed) -> None:
     assert result.exit_code == 2
     assert "name the workload class" in result.stderr
     assert _stored(root) == ([], [])
+
+
+def test_add_and_status_compare_a_run_with_its_band(indexed) -> None:
+    import git as gitpython
+
+    root, _ = indexed
+    base = _go_bench_repo(root)
+    text = (_GO_BENCH / "bench.txt").read_text()
+    workload = ("--workload", "go bench results ./strs", "--class", "benchmark")
+    for i, ns in enumerate(("50.75", "50.80", "50.70")):
+        path = root / f"band{i}.txt"
+        path.write_text(text.replace("50.75 ns/op", f"{ns} ns/op"))
+        result = _add(str(path), *workload, "--commit", base, "--format", "json")
+        assert result.exit_code == 0, result.output
+        # Runs of one commit have no earlier run to compare with.
+        assert "compare" not in _json(result)
+    repo = gitpython.Repo(root)
+    head = repo.index.commit("strs: join twice").hexsha
+    repo.close()
+    slow = root / "slow.txt"
+    slow.write_text(text.replace("56.20 ns/op", "156.2 ns/op").replace("50.75 ns/op", "150.7 ns/op"))
+
+    added = _add(str(slow), *workload, "--commit", head, "--format", "json")
+
+    assert added.exit_code == 0, added.output
+    compared = _json(added)["compare"]
+    assert (compared["verdict"], compared["band_runs"], compared["head_commit"]) == (
+        "slower", 3, head,
+    )
+    assert compared["slower"][0]["name"] == "example.com/gobench/strs.BenchmarkJoin"
+    assert compared["cause"]["commits_in_range"] == 1
+    status = _json(_status("--compare", "--format", "json"))
+    assert [c["verdict"] for c in status["compare"]] == ["slower"]
+    assert "BenchmarkJoin 2.87x" in _status("--compare").stdout
+    assert "compare" not in _json(_status("--format", "json"))
