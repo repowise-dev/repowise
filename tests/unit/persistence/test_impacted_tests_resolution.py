@@ -144,7 +144,7 @@ async def test_import_graph_answers_before_the_filename_pattern(async_session) -
 
 
 async def test_a_changed_test_file_is_its_own_candidate(async_session) -> None:
-    """"That test has no test" is true and useless; run the test you changed."""
+    """ "That test has no test" is true and useless; run the test you changed."""
     from repowise.core.persistence.models import GraphNode
 
     repo = await insert_repo(async_session)
@@ -236,9 +236,7 @@ async def test_graph_candidates_are_not_capped(async_session) -> None:
 
     repo = await insert_repo(async_session)
     tests = {f"tests/test_{i:03}.py" for i in range(MAX_TESTS_PER_TARGET + 5)}
-    await _graph(
-        async_session, repo.id, tests, {"src/hub.py"}, [(t, "src/hub.py") for t in tests]
-    )
+    await _graph(async_session, repo.id, tests, {"src/hub.py"}, [(t, "src/hub.py") for t in tests])
 
     out = _empty_result(1)
     await _resolve_impacted(async_session, repo.id, {"src/hub.py": {1}}, set(), out)
@@ -254,7 +252,13 @@ async def test_a_package_init_reaching_the_change_reaches_every_module_under_it(
         async_session,
         repo.id,
         tests={"tests/test_leaf.py", "tests/test_other.py", "tests/test_core.py"},
-        files={"pkg/__init__.py", "pkg/a/__init__.py", "pkg/a/leaf.py", "pkg/core.py", "other/x.py"},
+        files={
+            "pkg/__init__.py",
+            "pkg/a/__init__.py",
+            "pkg/a/leaf.py",
+            "pkg/core.py",
+            "other/x.py",
+        },
         imports=[
             ("pkg/__init__.py", "pkg/core.py"),
             ("tests/test_leaf.py", "pkg/a/leaf.py"),
@@ -284,8 +288,12 @@ async def test_a_python_type_checking_import_is_no_route_but_a_typescript_one_is
         files={"pkg/__init__.py", "pkg/a/leaf.py", "pkg/core.py", "web/types.ts"},
         imports=[("tests/test_leaf.py", "pkg/a/leaf.py"), ("tests/test_core.py", "pkg/core.py")],
     )
-    await _add_edge(async_session, repo.id, "pkg/__init__.py", "pkg/core.py", "imports", type_only=True)
-    await _add_edge(async_session, repo.id, "web/a.test.ts", "web/types.ts", "imports", type_only=True)
+    await _add_edge(
+        async_session, repo.id, "pkg/__init__.py", "pkg/core.py", "imports", type_only=True
+    )
+    await _add_edge(
+        async_session, repo.id, "web/a.test.ts", "web/types.ts", "imports", type_only=True
+    )
 
     out = _empty_result(2)
     await _resolve_impacted(
@@ -418,7 +426,7 @@ async def test_data_files_are_not_routes_and_helper_importers_are_reported(
     assert out["helper_importers"]["tests/helpers.py"] == ["tests/test_a.py"]
 
 
-_CONFTEST = '''
+_CONFTEST = """
 import pytest
 from app import store
 
@@ -431,7 +439,7 @@ def _isolate(monkeypatch):
 @pytest.fixture
 def db():
     return store.open()
-'''
+"""
 
 
 async def _conftest_graph(session, repo_id, *, stamped: bool) -> None:
@@ -444,7 +452,10 @@ async def _conftest_graph(session, repo_id, *, stamped: bool) -> None:
         repo_id,
         tests={*tests, "tests/conftest.py"},
         files={"src/app/store.py", "src/app/util.py"},
-        imports=[("src/app/store.py", "src/app/util.py"), ("tests/conftest.py", "src/app/store.py")],
+        imports=[
+            ("src/app/store.py", "src/app/util.py"),
+            ("tests/conftest.py", "src/app/store.py"),
+        ],
     )
     for sym in ("tests/conftest.py::db", "tests/conftest.py::_isolate", "tests/test_a.py::test_x"):
         session.add(GraphNode(repository_id=repo_id, node_id=sym, node_type="symbol"))
@@ -802,8 +813,12 @@ async def test_a_reaching_fixture_nobody_requests_selects_only_the_import_check(
     )
     # Another fixture request elsewhere shows the index records them.
     await _add_edge(
-        async_session, repo.id, "tests/test_b.py::test_x", "tests/other.py::f",
-        "framework_binds", "pytest_fixture",
+        async_session,
+        repo.id,
+        "tests/test_b.py::test_x",
+        "tests/other.py::f",
+        "framework_binds",
+        "pytest_fixture",
     )
 
     out = await _narrowed(async_session, repo.id)
@@ -1106,3 +1121,130 @@ async def test_a_map_measured_before_the_base_matches_by_moved_line(
     assert not out["map_current"]
     assert set(out["covered"]) == {"tests/test_foo.py::test_b|run"}
     assert out["matched_by_file"] == []
+
+
+_F = "def f():\n    return 1\n\n\ndef other():\n    return 2\n"
+_G = "def g():\n    return 10\n"
+
+
+async def _older_map(
+    async_session, tmp_path, gap: dict[str, str], *, bar: str = _G, bar_rows: bool = True
+) -> dict:
+    """``src/foo.py``'s ``f`` changes after a base that changed *gap* since the map.
+
+    The map, measured two commits back: ``test_foo`` runs ``f``, ``test_wide``
+    only ``other``, and ``test_bar`` runs ``g`` and ``other``. All three import
+    ``src/foo.py``; ``test_bar`` also imports ``src/bar.py``.
+    """
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.test_collection import collect
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+
+    def commit(files: dict[str, str], message: str) -> str:
+        for path, text in files.items():
+            target = tmp_path / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        _git(tmp_path, "add", "-A")
+        _git(tmp_path, "commit", "-qm", message)
+        return _git(tmp_path, "rev-parse", "HEAD")
+
+    measured = commit({"src/foo.py": _F, "src/bar.py": bar}, "map")
+    commit(gap, "gap")
+    foo = (tmp_path / "src/foo.py").read_text(encoding="utf-8")
+    commit({"src/foo.py": foo.replace("return 1", "return 3")}, "change")
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+
+    repo = await insert_repo(async_session)
+    await save_test_coverage(
+        async_session,
+        repo.id,
+        [
+            _rec("tests/test_foo.py::test_f|run", "src/foo.py", [2], "tests/test_foo.py"),
+            _rec("tests/test_wide.py::test_w|run", "src/foo.py", [6], "tests/test_wide.py"),
+            *(
+                [_rec("tests/test_bar.py::test_g|run", "src/bar.py", [2, 3], "tests/test_bar.py")]
+                if bar_rows
+                else []
+            ),
+            _rec("tests/test_bar.py::test_g|run", "src/foo.py", [6], "tests/test_bar.py"),
+        ],
+        source_format="coverage.py",
+        ingested_commit_sha=measured,
+    )
+    tests = {"tests/test_foo.py", "tests/test_wide.py", "tests/test_bar.py"}
+    await _graph(
+        async_session,
+        repo.id,
+        tests=tests,
+        files={"src/foo.py", "src/bar.py"},
+        imports=[*((t, "src/foo.py") for t in sorted(tests)), ("tests/test_bar.py", "src/bar.py")],
+    )
+    return await collect(async_session, repo.id, str(tmp_path), change)
+
+
+async def test_a_map_measured_before_the_base_still_answers_a_change_by_its_functions(
+    async_session, tmp_path
+) -> None:
+    """``test_bar`` ran ``g``, which changed since the map, so its measurement is not used."""
+    out = await _older_map(async_session, tmp_path, {"src/bar.py": _G.replace("10", "11")})
+    assert not out["map_current"]
+    assert out["function_covered"] == ["src/foo.py"]
+    assert set(out["covered"]) == {"tests/test_foo.py::test_f|run"}
+    assert out["measured_test_files"] == ["tests/test_foo.py", "tests/test_wide.py"]
+
+
+async def test_a_module_level_change_since_the_map_keeps_every_test_reaching_it(
+    async_session, tmp_path
+) -> None:
+    out = await _older_map(async_session, tmp_path, {"src/bar.py": _G + "\nLIMIT = g()\n"})
+    assert out["function_covered"] == ["src/foo.py"]
+    assert out["measured_test_files"] == ["tests/test_foo.py", "tests/test_wide.py"]
+
+
+async def test_code_added_since_the_map_leaves_the_change_to_the_graph(
+    async_session, tmp_path
+) -> None:
+    out = await _older_map(async_session, tmp_path, {"src/new.py": "def h():\n    return 0\n"})
+    assert out["function_covered"] == []
+    assert out["measured_test_files"] == []
+
+
+async def test_a_function_the_map_never_saw_leaves_the_change_to_the_graph(
+    async_session, tmp_path
+) -> None:
+    """``f`` is defined twice at the base, so no one body at the map's commit stands for it."""
+    gap = {"src/foo.py": "def f():\n    return 0\n\n\n" + _F}
+    out = await _older_map(async_session, tmp_path, gap)
+    assert out["function_covered"] == []
+
+
+async def test_a_body_change_the_map_has_no_row_for_keeps_every_test_reaching_it(
+    async_session, tmp_path
+) -> None:
+    out = await _older_map(
+        async_session, tmp_path, {"src/bar.py": _G.replace("10", "11")}, bar_rows=False
+    )
+    assert out["function_covered"] == ["src/foo.py"]
+    assert out["measured_test_files"] == ["tests/test_foo.py", "tests/test_wide.py"]
+
+
+async def test_two_functions_under_one_name_changed_since_the_map_keep_their_reach(
+    async_session, tmp_path
+) -> None:
+    """``test_bar`` ran the first ``g``; the gap edits both, which one name cannot tell apart."""
+    two = "if X:\n    def g():\n        return 10\nelse:\n    def g():\n        return 20\n"
+    gap = {"src/bar.py": two.replace("10", "11").replace("20", "21")}
+    out = await _older_map(async_session, tmp_path, gap, bar=two)
+    assert out["function_covered"] == ["src/foo.py"]
+    assert out["measured_test_files"] == ["tests/test_foo.py", "tests/test_wide.py"]
+
+
+async def test_build_config_changed_since_the_map_leaves_the_change_to_the_graph(
+    async_session, tmp_path
+) -> None:
+    out = await _older_map(async_session, tmp_path, {"pyproject.toml": "[project]\n"})
+    assert out["function_covered"] == []

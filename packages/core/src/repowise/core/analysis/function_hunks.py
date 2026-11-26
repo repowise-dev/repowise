@@ -27,6 +27,7 @@ import ast
 import builtins
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ from pathlib import Path
 from ..persistence.index_cache import IndexStampCache
 from ..pyparse import parse_python
 from ..test_paths import is_test_related_path
-from .changed_lines import working_tree_label
+from .changed_lines import diff_since, working_tree_label
 
 #: Methods Python calls on a class's or instance's behalf, so a class
 #: instantiated, subclassed or hashed at import runs them then.
@@ -181,6 +182,14 @@ def touched_functions(
     there (for a pure insertion, its two neighbours). A file with none, such as
     one that only adds new functions, keeps the graph's answer.
     """
+    found = _touched(hunks, side, old, new)
+    return FileFunctions(path, tuple(found.values())) if found else None
+
+
+def _touched(
+    hunks, side: str, old: str | None, new: str | None
+) -> dict[tuple[str, ...], Body] | None:
+    """:func:`touched_functions`' bodies by name; empty when no hunk touches a function."""
     before, after = _Source.parse(old), _Source.parse(new)
     if before is None or after is None or not hunks:
         return None
@@ -193,7 +202,7 @@ def touched_functions(
         if hit is None:
             return None
         found.update(hit)
-    return FileFunctions(path, tuple(found.values())) if found else None
+    return found
 
 
 def _hunk_functions(
@@ -757,3 +766,186 @@ async def function_scoped_lines(
     if once is None:
         return {}
     return {p: f for p, f in found.items() if not (f.symbol_ids() & once)}
+
+
+@dataclass(frozen=True)
+class OlderMap:
+    """How a per-test map measured at an ancestor of the change's base answers by function.
+
+    *functions* are the changed files answered by their touched functions,
+    numbered as the map's commit numbers them. Between that commit and the
+    base, *gap_bodies* are the function bodies (in the map's numbering) that
+    changed while nothing that runs at import did, and *gap_reach* the files
+    that changed any other way. A measured test that ran one of those bodies,
+    or that the graph reaches from one of those files, may run differently at
+    the base, so its measurement says nothing about the change.
+    """
+
+    functions: dict[str, FileFunctions]
+    gap_bodies: dict[str, set[int]]
+    gap_reach: tuple[str, ...]
+
+
+async def older_map_functions(
+    session,
+    repo_id: str,
+    repo_path,
+    change,
+    measured: str | None,
+    asked: Mapping[str, set[int] | None],
+) -> OlderMap | None:
+    """:func:`function_scoped_lines` for a map measured at an ancestor of the base.
+
+    The touched functions are read at the base and looked up at the map's
+    commit by name; a file whose function is not there exactly once keeps the
+    graph's answer. The files changed since the map are sorted into
+    :class:`OlderMap`'s two kinds, so selection can keep every measured test
+    they may have changed. ``None`` when nothing qualifies, or when the map's
+    commit is not an ancestor of the base, git cannot list what changed since,
+    more than :data:`~.test_selection.MAX_INDEX_GAP` files did, or code was
+    added since: a new module can be loaded with no import naming it (a plugin
+    scan), so no measured test is known to stay clear of it.
+
+    Ceiling: a test that reads a file changed since the map by a path no
+    recorded edge names (a directory listing) is still read off the map.
+    """
+    from ..git_refs import is_ancestor
+    from .test_selection import (
+        _GAP_TRACED,
+        MAX_INDEX_GAP,
+        TestSelectionConfig,
+        _gap_kind,
+        is_code_file,
+        is_runnable_test,
+    )
+
+    base = change.base
+    if not (measured and base and repo_path) or measured in (base, change.head):
+        return None
+    paths = [
+        p
+        for p, lines in asked.items()
+        if lines is not None and p in change.files and is_python_source(p)
+    ]
+    if not paths or not is_ancestor(str(repo_path), measured, base):
+        return None
+    gap = _changed_since(repo_path, measured, base)
+    if gap is None or len(gap) > MAX_INDEX_GAP:
+        return None
+    if any(s == "A" and is_code_file(p) and not is_runnable_test(p) for p, s in gap.items()):
+        return None
+    # Build, dependency or test configuration changed since: selection runs everything.
+    if any(_gap_kind(p, TestSelectionConfig(), None) not in _GAP_TRACED for p in gap):
+        return None
+    texts = read_sides(repo_path, change, paths)
+    found = {
+        p: f
+        for p in paths
+        if (f := touched_functions(p, change.files[p].hunks, "old", *texts[p])) is not None
+    }
+    if not found:
+        return None
+    edited = sorted(p for p, s in gap.items() if s == "M" and is_python_source(p))
+    then = _texts_at(repo_path, measured, {*found, *edited})
+    functions = {
+        p: moved
+        for p, f in found.items()
+        if (moved := _bodies_at(f, texts[p][0], then.get(p))) is not None
+    }
+    if not functions:
+        return None
+    now = _texts_at(repo_path, base, edited)
+    try:
+        hunks = diff_since(str(repo_path), measured, base, edited) if edited else {}
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+    bodies: dict[str, FileFunctions] = {}
+    reach: list[str] = []
+    for p, status in sorted(gap.items()):
+        if p in edited:
+            diff = hunks.get(p)
+            touched = _touched(diff.hunks, "old", then.get(p), now.get(p)) if diff else {}
+            # Two bodies under one name collapse into one, so the other's tests go unseen.
+            if touched is not None and _named_once(touched, then.get(p), now.get(p)):
+                bodies[p] = FileFunctions(p, tuple(touched.values()))
+                continue
+        # An added test or data file was never measured; the code reading it changed too.
+        if status != "A":
+            reach.append(p)
+    once = await run_once_symbols(session, repo_id, repo_path)
+    if once is None:
+        return None
+    functions = {p: f for p, f in functions.items() if not (f.symbol_ids() & once)}
+    if not functions:
+        return None
+    # A body run once per process is credited to one test, so its users are unknown.
+    reach += [p for p, f in bodies.items() if f.symbol_ids() & once]
+    gap_bodies = {p: f.lines for p, f in bodies.items() if f.bodies and p not in reach}
+    return OlderMap(functions, gap_bodies, tuple(sorted(reach)))
+
+
+def _changed_since(repo_path, since: str, until: str) -> dict[str, str] | None:
+    """``{path: status letter}`` for every file changed from *since* to *until*; ``None``
+    when git cannot say. Paths are relative to *repo_path*, as the index names them."""
+    from .doc_drift.suggest import git_run
+    from .git_cli import checkout_relative
+
+    ran = git_run(
+        Path(repo_path), "diff", "--name-status", "-z", "--no-renames", since, until, "--"
+    )
+    if ran is None or ran[0] != 0:
+        return None
+    fields = ran[1].decode("utf-8", "replace").split("\0")
+    pairs = {
+        path: status[:1] for status, path in zip(fields[::2], fields[1::2], strict=False) if path
+    }
+    try:
+        return checkout_relative(str(repo_path), pairs)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _texts_at(repo_path, rev: str, paths: Collection[str]) -> dict[str, str]:
+    """``{path: text at rev}`` for those of *paths* git can read there."""
+    from .change_health.sources import read_blobs
+
+    blobs = read_blobs(str(repo_path), [(rev, f"./{p}") for p in sorted(paths)]) or {}
+    return {
+        p: blob.decode("utf-8", errors="replace")
+        for (_, spec), blob in blobs.items()
+        if (p := spec.removeprefix("./"))
+    }
+
+
+def _bodies_at(found: FileFunctions, base: str | None, text: str | None) -> FileFunctions | None:
+    """*found*'s functions (read at *base*) as *text* holds them, matched by their
+    enclosing names; ``None`` when a name is not one function in both."""
+    before, after = _Source.parse(base), _Source.parse(text)
+    if before is None or after is None:
+        return None
+    named, there = _by_chain(before), _by_chain(after)
+    out = []
+    for body in found.bodies:
+        if len(named.get(body.chain, ())) != 1 or len(there.get(body.chain, ())) != 1:
+            return None
+        out.append(there[body.chain][0])
+    return FileFunctions(found.path, tuple(out))
+
+
+def _by_chain(source: _Source) -> dict[tuple[str, ...], list[Body]]:
+    out: dict[tuple[str, ...], list[Body]] = {}
+    for body in source.bodies:
+        out.setdefault(body.chain, []).append(body)
+    return out
+
+
+def _named_once(found: Mapping[tuple[str, ...], Body], *texts: str | None) -> bool:
+    """Whether each of *found*'s names is one function in every one of *texts*."""
+    for text in texts:
+        source = _Source.parse(text)
+        if source is None:
+            return not found
+        names = _by_chain(source)
+        if any(len(names.get(chain, ())) > 1 for chain in found):
+            return False
+    return True

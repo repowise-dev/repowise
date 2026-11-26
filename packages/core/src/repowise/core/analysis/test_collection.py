@@ -30,7 +30,7 @@ from typing import Any, NamedTuple
 import structlog
 
 from ..pytest_roots import PytestRoots
-from .function_hunks import FileFunctions
+from .function_hunks import FileFunctions, OlderMap
 from .test_selection import Selection, TestSelectionConfig, project_dirs
 
 log = structlog.get_logger(__name__)
@@ -58,6 +58,7 @@ class Checkout:
     read: Callable[[str], str | None]
     exists: Callable[[str], bool]
     holding: Callable[[Collection[str]], Collection[str] | None] | None = None
+
 
 def read_checkout(repo_path, head: str | None = None) -> Checkout:
     """Tracked files, their conftests and pytest configs, and pytest's collection roots.
@@ -171,9 +172,7 @@ class Plan(NamedTuple):
     project_dirs: frozenset[str] | None = None
 
 
-def plan_scopes(
-    change, config, checkout: Checkout, cancelled: Callable[[], bool] = _never
-) -> Plan:
+def plan_scopes(change, config, checkout: Checkout, cancelled: Callable[[], bool] = _never) -> Plan:
     """The change's scopes, reading the sources once and only when a file needs its namers.
 
     *cancelled* is polled between file reads, so an abandoned selection stops
@@ -326,7 +325,7 @@ async def collect(
     from ..persistence.crud import get_test_coverage_summary
     from ..persistence.crud.analysis.coverage_map import map_is_truncated
     from ..persistence.crud.analysis.health.metrics import health_file_paths
-    from .function_hunks import function_scoped_lines
+    from .function_hunks import function_scoped_lines, older_map_functions
 
     out = empty_result(len(change.files) + len(change.deleted))
     if not out["changed_files"]:
@@ -353,13 +352,15 @@ async def collect(
     routes = sorted({*routes, *scope_routes})
     # git runs off the event loop when the map's commit needs moving to the base.
     out["query_lines"] = lines = await asyncio.to_thread(query_lines, change, measured, repo_path)
-    functions = (
-        await function_scoped_lines(
-            session, repo_id, repo_path, change, measured_side(change, measured), lines
-        )
-        if out["map_current"] and not (out["map_empty"] or out["map_truncated"])
-        else {}
-    )
+    functions: dict[str, FileFunctions] = {}
+    older: OlderMap | None = None
+    if out["map_empty"] or out["map_truncated"]:
+        pass
+    elif out["map_current"]:
+        side = measured_side(change, measured)
+        functions = await function_scoped_lines(session, repo_id, repo_path, change, side, lines)
+    elif older := await older_map_functions(session, repo_id, repo_path, change, measured, lines):
+        functions = older.functions
     await resolve_impacted(
         session,
         repo_id,
@@ -373,13 +374,12 @@ async def collect(
         groups=scope_groups,
         cancelled=cancelled,
         functions=functions,
+        older=older,
     )
     # Changed files with lines whose covering tests were matched by file all the same.
     covered = {f for row in out["covered"].values() for f in row["source_files"]}
     out["matched_by_file"] = sorted(
-        p
-        for p, diff in change.files.items()
-        if diff.hunks and lines[p] is None and p in covered
+        p for p, diff in change.files.items() if diff.hunks and lines[p] is None and p in covered
     )
     await _place_tests(session, repo_id, out)
     if explain:
@@ -484,7 +484,14 @@ async def _gap_routes(
             }
             seeds = [*change.files, *change.deleted, *scope_routes]
             rewired, unreached = split_rewired(
-                plan, rewired, rewirings, (imports.importers, calls.importers), seeds, indexed, tests, added
+                plan,
+                rewired,
+                rewirings,
+                (imports.importers, calls.importers),
+                seeds,
+                indexed,
+                tests,
+                added,
             )
         except Exception as exc:  # unsplit: every rewired file is walked
             log.debug("gap_split_skipped", error=str(exc))
@@ -747,6 +754,7 @@ async def resolve_impacted(
     groups: Mapping[str, Sequence[str]] | None = None,
     cancelled: Callable[[], bool] = _never,
     functions: Mapping[str, FileFunctions] | None = None,
+    older: OlderMap | None = None,
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -788,6 +796,10 @@ async def resolve_impacted(
     (``measured_test_files``): selection keeps of its graph tests only those
     the map never ran, since a measured test that does not cover the change
     only imports it. One the map has no test for is decided like any other.
+    With a map measured before the base (*older*,
+    :func:`~.function_hunks.older_map_functions`), a test whose run the code
+    changed since may have altered (:func:`_stale_tests`) counts as one the
+    map never ran.
     """
     from ..persistence.crud import measured_test_files
 
@@ -798,7 +810,12 @@ async def resolve_impacted(
     has_rows = await _record_coverage(session, repo_id, asked, route_only, out, groups)
     out["function_covered"] = answered = sorted(p for p in functions if p in has_rows)
     if answered:
-        out["measured_test_files"] = sorted(await measured_test_files(session, repo_id))
+        measured = await measured_test_files(session, repo_id)
+        if older is not None:
+            measured -= await _stale_tests(
+                session, repo_id, older, measured, roots, pytest_texts, read_source, cancelled
+            )
+        out["measured_test_files"] = sorted(measured)
     if not graph_targets:
         return out
     try:
@@ -824,6 +841,64 @@ async def resolve_impacted(
     out["test_hops"] = graph.hops
     _record_inferred(graph_targets, graph.candidates, changed, has_rows, repo_keys, out)
     return out
+
+
+async def _stale_tests(
+    session,
+    repo_id: str,
+    older: OlderMap,
+    measured: set[str],
+    roots: PytestRoots | None,
+    pytest_texts: dict | None,
+    read_source: Callable[[str], str | None] | None,
+    cancelled: Callable[[], bool],
+) -> set[str]:
+    """The measured test files whose run may differ at the base from the map's.
+
+    Those that ran a function body changed since the map, and those the graph
+    reaches from a file changed since in any other way, or from one whose
+    changed bodies the map has no row for (a directory-scoped
+    file stands for every test under it), the changed files themselves
+    included. Every measured test when the graph cannot be read.
+    """
+    from ..persistence.crud import covered_source_files, tests_covering
+    from .test_reachability import cached_test_files
+    from .test_selection import scope_kind
+
+    # A body the map has no row for at all was never measured: its file's reach decides.
+    rows = await covered_source_files(session, repo_id, set(older.gap_bodies))
+    reach = sorted({*older.gap_reach, *(p for p in older.gap_bodies if p not in rows)})
+    stale = set(reach)
+    for path, lines in sorted(older.gap_bodies.items()):
+        for row in await tests_covering(session, repo_id, path, lines=lines):
+            stale.add(row["test_file"] or row["test_id"].split("::", 1)[0])
+    if not reach:
+        return stale
+    try:
+        graph = await _graph_candidates(
+            session,
+            repo_id,
+            reach,
+            roots,
+            pytest_texts=pytest_texts,
+            read_source=read_source,
+            cancelled=cancelled,
+        )
+        reached = {t for picks in graph.candidates.values() for t, _ in picks}
+        dirs = {str(PurePosixPath(t).parent) for t in reached if scope_kind(t)}
+        if dirs:
+            under = await cached_test_files(session, repo_id)
+            reached |= {t for t in under if _below(t, dirs)}
+    except SelectionCancelledError:
+        raise
+    except Exception as exc:  # unreadable graph: no measured test is dropped
+        log.debug("stale_tests_failed", error=str(exc))
+        return set(measured)
+    return stale | reached
+
+
+def _below(path: str, dirs: Collection[str]) -> bool:
+    return any(d in ("", ".") or path.startswith(f"{d}/") for d in dirs)
 
 
 async def _record_coverage(

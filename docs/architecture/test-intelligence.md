@@ -238,8 +238,21 @@ The per-test map is keyed in the line numbers of the commit it was measured at
 
 Matching by file never selects fewer tests than matching by line. A changed file whose
 covering tests were matched by file is listed in `matched_by_file`, and the selection
-and the CLI name it. Function-scoped matching (a change wholly inside function bodies)
-still needs a map at the base or head.
+and the CLI name it.
+
+Function-scoped matching (a change wholly inside function bodies) works from a map at
+the base, the head or an ancestor of the base. From an ancestor, each touched function
+is read at the base and found at the map's commit by its enclosing names; one missing
+there, or defined twice, keeps the graph's answer for its file. The files changed
+between the map's commit and the base decide which measured tests the map can still
+speak for:
+
+- A Python file whose every edit sits inside function bodies: a test that ran one of
+  those functions at the map's commit may run differently now, so it is never left out.
+- Any other file, deleted, edited at module level or not Python: no test the graph
+  reaches from it is left out.
+- Code added since the map: no function-scoped matching for the change at all, since a
+  new module can be loaded with no import naming it.
 
 ## Coverage re-ingest hook
 
