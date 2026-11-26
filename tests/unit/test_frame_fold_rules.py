@@ -264,7 +264,8 @@ def test_ruby_rescue_folds_into_its_method() -> None:
 
 def test_ruby_class_body_attributes_to_the_file() -> None:
     assert _hit(_run(_rb(2, "<class:Cart>"), RB)) == (None, False)
-    assert _hit(_run(_rb(2, "Cart"), RB)) == (None, False)
+    assert _run(_rb(2, "Cart#total"), RB).skipped == {"no_span": 1}
+    assert _run(_rb(2, "Cart"), RB).skipped == {"no_span": 1}
 
 
 def test_ruby_main_attributes_to_the_file() -> None:

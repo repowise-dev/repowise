@@ -450,13 +450,10 @@ _RUBY_BODY_NAMES = frozenset({"<main>", "<top (required)>"})
 
 
 def _is_ruby_body(base_name: str) -> bool:
-    return base_name in _RUBY_BODY_NAMES or base_name.startswith(("<class:", "<module:"))
+    return base_name in _RUBY_BODY_NAMES
 
 
 def _matches_ruby_container(container: IndexedSymbol, base_name: str) -> bool:
-    clean_base = base_name.replace("::", ".").replace("#", ".")
-    if clean_base == container.name or clean_base.endswith("." + container.name):
-        return True
     return base_name.startswith((f"<class:{container.name}>", f"<module:{container.name}>"))
 
 
