@@ -37,9 +37,12 @@ The rules (PLAN S5, S6; probe P3):
   join here as further :class:`Slower` items once they land.
 - **Cause.** The commits between the band's newest run and the current one
   that changed a function the slower workload reached: the slower benchmarks'
-  own functions and their callees, the functions a benchmark profile of the
-  same commit range measured, a profile's slower functions and its other
-  rows. Function level only (``git_function_blame``), never a file: without
+  own functions and the production functions they call (a bounded walk of the
+  call graph, nearest first), a profile's slower functions and its other
+  rows. The functions the newest benchmark profile measured, the union over
+  every benchmark, only fill a gap: a slower benchmark the graph knows no
+  calls from. So one noisy benchmark is never blamed on a commit outside what
+  it calls. Function level only (``git_function_blame``), never a file: without
   that history the range and its commit count are all that is said.
 """
 
@@ -145,8 +148,9 @@ class History:
     ``ranges`` maps ``(base, head)`` to the range's commits ``(sha, subject)``,
     newest first; a pair the host could not list is absent. ``touched`` maps a
     commit to the functions (symbol ids) it changed, from function-level
-    history. ``callees`` maps a function to the functions it reaches (the host
-    bounds the walk).
+    history. ``callees`` maps a function to the production functions it reaches,
+    nearest first (the host bounds the walk; an unordered collection is read by
+    name); a function with no production callee known is absent.
     """
 
     ranges: Mapping[tuple[str, str], Sequence[tuple[str, str | None]]] = field(default_factory=dict)
@@ -594,27 +598,52 @@ def _reached(
     history: History,
 ) -> list[str]:
     """The functions the slower workload ran, most direct first."""
-    first = [s.symbol_id for s in slower if s.symbol_id]
     if kind == "benchmark":
-        return reached_functions(first, history, reach_profiles)
+        return benchmark_reach([s.symbol_id for s in slower], history, reach_profiles)
+    first = [s.symbol_id for s in slower if s.symbol_id]
     if kind == "profile":
         return reached_functions(first, history, [rows.get(sides.current[0].id, ())])
     return reached_functions(first, history, ())
 
 
+def benchmark_reach(
+    benchmarks: Sequence[str | None], history: History, profiles: Iterable[Iterable[Any]]
+) -> list[str]:
+    """What slower *benchmarks* (their functions; ``None`` for one not placed) ran,
+    most direct first: each one's own function and callees, then the functions
+    the benchmark *profiles* measured only when the graph knows no production
+    callee of any of them. A profile of every benchmark is no reach of one: a
+    single noisy benchmark would take the blame for every function the others
+    ran. Ceiling: a profile holds no per-benchmark split, so a benchmark the
+    graph does not reach, slower beside one it does, names only its own
+    function's commits."""
+    placed = [b for b in benchmarks if b]
+    gap = not any(history.callees.get(b) for b in placed)
+    return reached_functions(placed, history, profiles if gap else ())
+
+
 def reached_functions(
     first: Sequence[str], history: History, measured: Iterable[Iterable[Any]]
 ) -> list[str]:
-    """*first* (the slower functions or benchmarks), then their callees, then the
-    functions of *measured* profile rows by self value: what a slower workload ran,
-    most direct first."""
-    then: list[str] = []
-    for symbol_id in first:
-        then.extend(sorted(history.callees.get(symbol_id, ())))
+    """*first* (the slower functions or benchmarks), then their callees, taken
+    in turn by rank (each one's first, then each one's second, ...), then the
+    functions of *measured* profile rows by self value: what a slower workload
+    ran, most direct first."""
+    reach = [_ordered(history.callees.get(symbol_id, ())) for symbol_id in first]
+    then = [
+        callees[i]
+        for i in range(max((len(c) for c in reach), default=0))
+        for callees in reach
+        if i < len(callees)
+    ]
     for profile in measured:
         ranked = sorted(profile, key=lambda r: -(_pick(r, "self_value") or 0.0))
         then.extend(r.symbol_id for r in ranked)
     return list(dict.fromkeys([*first, *then]))
+
+
+def _ordered(callees: Collection[str]) -> Sequence[str]:
+    return callees if isinstance(callees, Sequence) else sorted(callees)
 
 
 def benchmark_profiles(runs: Iterable[Any]) -> list[Any]:
@@ -799,6 +828,7 @@ __all__ = [
     "History",
     "Slower",
     "benchmark_profiles",
+    "benchmark_reach",
     "cause_for",
     "cause_words",
     "compare_runs",

@@ -133,6 +133,49 @@ async def test_a_slower_benchmark_names_the_commit_that_changed_its_callee(
     assert cause == found.cause
 
 
+async def test_the_callee_walk_keeps_production_functions_nearest_first(async_session) -> None:
+    """Through a test helper to the router and the tree; the helper is no reach of its own."""
+    from repowise.core.evidence.compare_history import _callees
+
+    repo = await insert_repo(async_session)
+    chain = [
+        ("bench_test.go::BenchmarkRoute", "bench_test.go::runRequest"),
+        ("bench_test.go::runRequest", "gin.go::Engine::ServeHTTP"),
+        ("bench_test.go::runRequest", "external:net/http/httptest.NewRecorder"),
+        ("gin.go::Engine::ServeHTTP", "gin.go::Engine::handleHTTPRequest"),
+        ("gin.go::Engine::handleHTTPRequest", "tree.go::node::getValue"),
+        ("tree.go::node::getValue", "gin.go::Engine::ServeHTTP"),
+        ("bench_test.go::BenchmarkJSON", "context.go::Context::JSON"),
+        ("bench_test.go::BenchmarkHelperOnly", "bench_test.go::runRequest2"),
+        ("bench_test.go::BenchmarkHelperOnly", "external:testing.B.ResetTimer"),
+    ]
+    async_session.add_all(
+        GraphEdge(repository_id=repo.id, source_node_id=a, target_node_id=b, edge_type="calls")
+        for a, b in chain
+    )
+    await async_session.flush()
+
+    found = await _callees(
+        async_session,
+        repo.id,
+        [
+            "bench_test.go::BenchmarkRoute",
+            "bench_test.go::BenchmarkJSON",
+            "x_test.go::BenchmarkNone",
+            "bench_test.go::BenchmarkHelperOnly",
+        ],
+    )
+
+    assert found == {
+        "bench_test.go::BenchmarkRoute": (
+            "gin.go::Engine::ServeHTTP",
+            "gin.go::Engine::handleHTTPRequest",
+            "tree.go::node::getValue",
+        ),
+        "bench_test.go::BenchmarkJSON": ("context.go::Context::JSON",),
+    }
+
+
 async def test_without_a_checkout_the_slowdown_stands_without_commits(
     async_session, tmp_path
 ) -> None:
