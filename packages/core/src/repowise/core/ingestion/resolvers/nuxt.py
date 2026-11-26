@@ -13,15 +13,19 @@ component file Nuxt names ``RecipeCard`` under ``components/``, and
 resolves like written ones, so file reachability, unused exports, the call
 graph and test links all see them.
 
-A project is a directory holding ``nuxt.config.*`` whose ``package.json`` (that
-directory's, else the nearest above it) depends on ``nuxt``. Nothing here runs
-for any other repository.
+A project is a ``package.json`` that :data:`~..framework_facts.NUXT` matches,
+with a ``nuxt.config.*`` beside it, rooted at the source directory
+:func:`~..framework_facts.nuxt_src_dir` names. The config is required here
+and not for the convention anchors: a Nuxt module repository declares ``nuxt``
+as a devDependency, and its root ``components/`` must not bind as an app's.
+Nothing here runs for any other repository.
 
 Ceilings, each falling back to today's behaviour (no edge):
 
-* ``nuxt.config`` is read as text, never evaluated. ``srcDir`` and
-  ``pathPrefix: false`` are read when written as literals; custom ``alias``,
-  component ``prefix`` and extra ``imports.dirs`` entries are not.
+* ``nuxt.config`` is read as text, never evaluated. ``srcDir`` (by
+  ``framework_facts``) and ``pathPrefix: false`` are read when written as
+  literals; custom ``alias``, component ``prefix`` and extra ``imports.dirs``
+  entries are not.
 * A component or auto-import name two files claim gets no edge: Nuxt warns and
   keeps one, and which one is not ours to guess.
 * A default export is auto-imported under the camel-cased file name; only named
@@ -32,13 +36,13 @@ Ceilings, each falling back to today's behaviour (no edge):
 
 from __future__ import annotations
 
-import json
 import posixpath
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from ..framework_facts import NUXT, NUXT_CONFIGS, npm_manifests, nuxt_src_dir
 from ..sfc_source import vue_component_name_from_stem
 from .ts_workspace import _probe_path
 
@@ -46,17 +50,13 @@ if TYPE_CHECKING:
     from ..models import CallSite, Import, ParsedFile
     from .context import ResolverContext
 
-_CONFIG_NAMES = ("nuxt.config.ts", "nuxt.config.js", "nuxt.config.mjs", "nuxt.config.mts")
 _SFC_EXTENSIONS = (".vue",)
 _COMPONENT_EXTENSIONS = (".vue", ".tsx", ".jsx", ".ts", ".js", ".mts", ".mjs")
 _SCRIPT_EXTENSIONS = (".ts", ".js", ".mts", ".mjs", ".tsx", ".jsx")
 # Nuxt's default ``ignore``: never a component or an auto-import.
 _IGNORED_RE = re.compile(r"\.(?:spec|test|stories)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$")
-_SRC_DIR_RE = re.compile(r"""\bsrcDir\s*:\s*["'`]([^"'`]+)["'`]""")
 _PATH_PREFIX_OFF_RE = re.compile(r"\bpathPrefix\s*:\s*false\b")
 _COMPONENTS_KEY_RE = re.compile(r"(?m)^\s*components\s*:")
-_COMPAT_V4_RE = re.compile(r"\bcompatibilityVersion\s*:\s*4\b")
-_VERSION_MAJOR_RE = re.compile(r"(\d+)")
 # scule's splitByCase: separators, then lower->Upper and UPPER->Upperlower boundaries.
 _SPLIT_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A-Z]+|\d+")
 
@@ -86,49 +86,6 @@ def _read_text(ctx: ResolverContext, rel: str) -> str | None:
         return (Path(ctx.repo_path) / rel).read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return None
-
-
-def _nearest_manifest(ctx: ResolverContext, root: str) -> str | None:
-    """Text of the ``package.json`` in *root* or the nearest directory above it."""
-    current = root
-    while (text := _read_text(ctx, _join(current, "package.json"))) is None:
-        if not current:
-            return None
-        current = posixpath.dirname(current)
-    return text
-
-
-def _nuxt_version(ctx: ResolverContext, root: str) -> str | None:
-    """The ``nuxt`` version spec from the nearest ``package.json``, or None when not a dependency."""
-    text = _nearest_manifest(ctx, root)
-    try:
-        manifest = json.loads(text) if text is not None else None
-    except ValueError:
-        return None
-    if not isinstance(manifest, dict):
-        return None
-    for key in ("dependencies", "devDependencies"):
-        deps = manifest.get(key)
-        version = deps.get("nuxt") if isinstance(deps, dict) else None
-        if isinstance(version, str):
-            return version
-    return None
-
-
-def _src_dir(ctx: ResolverContext, root: str, config: str, version: str) -> str:
-    """Nuxt's ``srcDir``: the literal in the config, else ``app/`` on Nuxt 4, else the root."""
-    match = _SRC_DIR_RE.search(config)
-    if match:
-        return _join(root, match.group(1).strip().rstrip("/"))
-    major = _VERSION_MAJOR_RE.search(version)
-    v4 = (major is not None and int(major.group(1)) >= 4) or bool(_COMPAT_V4_RE.search(config))
-    app = _join(root, "app")
-    if v4 and any(p.startswith(app + "/") for p in ctx.sorted_paths):
-        # Nuxt 4 keeps a Nuxt 3 layout (pages/ or app.vue at the root) at the root.
-        legacy = (_join(root, "app.vue"), _join(root, "pages") + "/")
-        if not any(p == legacy[0] or p.startswith(legacy[1]) for p in ctx.sorted_paths):
-            return app
-    return root
 
 
 def _split(name: str) -> list[str]:
@@ -227,18 +184,15 @@ def nuxt_projects(ctx: ResolverContext) -> tuple[NuxtProject, ...]:
     if cached is not None:
         return cached
     projects: list[NuxtProject] = []
-    for path in ctx.sorted_paths:
-        directory, _, name = path.rpartition("/")
-        if name not in _CONFIG_NAMES:
+    configs = [p for p in ctx.sorted_paths if p.rpartition("/")[2] in NUXT_CONFIGS]
+    for manifest in npm_manifests(ctx.repo_path, configs) if ctx.repo_path and configs else ():
+        config = NUXT.config(manifest) if NUXT.matches_npm(manifest) else None
+        if config is None:
             continue
-        version = _nuxt_version(ctx, directory)
-        config = _read_text(ctx, path)
-        if version is None or config is None:
-            continue
-        src = _src_dir(ctx, directory, config, version)
+        src = nuxt_src_dir(manifest, ctx.sorted_paths) or manifest.rel_dir
         projects.append(
             NuxtProject(
-                root=directory,
+                root=manifest.rel_dir,
                 src_dir=src,
                 components=_components(ctx, src, config),
                 auto_imports=_auto_imports(ctx, src),

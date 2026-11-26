@@ -242,6 +242,48 @@ def test_nuxt3_root_src_dir_and_alias_to_root(tmp_path: Path) -> None:
     assert ("app.vue", "components/form/Input.vue") in edges
 
 
+def _write_tree(root: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+
+
+def test_src_dir_roots_aliases_and_auto_imports(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "nuxt.config.ts": 'export default defineNuxtConfig({ srcDir: "src" });\n',
+            "src/pages/index.vue": (
+                '<script setup lang="ts">\nimport { a } from "~/lib/a";\nconst x = a() + useB();\n'
+                "</script>\n<template><RecipeCard /></template>\n"
+            ),
+            "src/lib/a.ts": "export function a() { return 1; }\n",
+            "src/composables/use-b.ts": "export function useB() { return 2; }\n",
+            "src/components/RecipeCard.vue": "<template><p /></template>\n",
+        },
+    )
+    _, graph, _ = _build(tmp_path)
+    edges = _imports(graph)
+    assert ("src/pages/index.vue", "src/lib/a.ts") in edges
+    assert ("src/pages/index.vue", "src/composables/use-b.ts") in edges
+    assert ("src/pages/index.vue", "src/components/RecipeCard.vue") in edges
+
+
+def test_a_nuxt_module_repo_binds_nothing(tmp_path: Path) -> None:
+    """``nuxt`` as a devDependency with no ``nuxt.config`` is a module, not an app."""
+    _write_tree(
+        tmp_path,
+        {
+            "package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "src/runtime/plugin.ts": "export default () => useThing();\n",
+            "composables/use-thing.ts": "export function useThing() { return 1; }\n",
+        },
+    )
+    builder, _, _ = _build(tmp_path)
+    assert builder._implicit_imports == {}
+
+
 @pytest.mark.parametrize(
     ("rel", "prefix", "expected"),
     [

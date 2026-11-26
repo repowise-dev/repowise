@@ -30,12 +30,12 @@ from .npm import (
     npm_manifests,
     parse_npm_manifest,
 )
-from .nuxt import NUXT, NUXT_I18N
+from .nuxt import NUXT, NUXT_CONFIGS, NUXT_I18N, nuxt_src_dir
 from .php import LARAVEL, PHP_FRAMEWORKS, SYMFONY, TYPO3, detect_php_framework
 from .platforms import ANDROID, LWC, SALESFORCE
 from .react_email import REACT_EMAIL
 from .remix import REMIX
-from .sveltekit import SVELTEKIT
+from .sveltekit import SVELTE_CONFIGS, SVELTEKIT, KitFiles, kit_files, sveltekit_lib_dir
 
 __all__ = [
     "ANDROID",
@@ -49,21 +49,27 @@ __all__ = [
     "NEXT_PAGES",
     "NPM_DEP_FIELDS",
     "NUXT",
+    "NUXT_CONFIGS",
     "NUXT_I18N",
     "PHP_FRAMEWORKS",
     "REACT_EMAIL",
     "REMIX",
     "SALESFORCE",
     "SVELTEKIT",
+    "SVELTE_CONFIGS",
     "SYMFONY",
     "TYPO3",
     "FrameworkFacts",
+    "KitFiles",
     "NpmManifest",
     "angular_entry_files",
     "convention_load_reasons",
     "detect_php_framework",
     "js_frameworks",
+    "kit_files",
     "npm_dependency_names",
     "npm_manifests",
+    "nuxt_src_dir",
     "parse_npm_manifest",
+    "sveltekit_lib_dir",
 ]

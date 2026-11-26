@@ -7,7 +7,11 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .nuxt import NUXT_I18N, _nuxt_lang_dirs
+from .nuxt import NUXT
+from .sveltekit import SVELTEKIT
+
+#: Frameworks whose config file beside the manifest the rules read.
+_CONFIGURED = (NUXT, SVELTEKIT)
 
 #: The ``package.json`` fields that name dependencies.
 NPM_DEP_FIELDS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
@@ -20,8 +24,11 @@ class NpmManifest:
     rel_dir: str  # directory holding the manifest, '' for the repo root
     dependencies: frozenset[str] = frozenset()
     scripts: Mapping[str, str] = field(default_factory=dict)
-    #: ``i18n.langDir`` values written in a ``nuxt.config.*`` beside the manifest.
-    nuxt_lang_dirs: tuple[str, ...] = ()
+    #: Dependency name -> version spec, for the specs written as strings.
+    versions: Mapping[str, str] = field(default_factory=dict)
+    #: File name -> text of each framework config beside the manifest
+    #: (:attr:`~.base.FrameworkFacts.config_files`) a declared framework reads.
+    configs: Mapping[str, str] = field(default_factory=dict)
 
 
 def npm_dependency_names(data: object) -> frozenset[str]:
@@ -45,6 +52,13 @@ def parse_npm_manifest(data: object, rel_dir: str = "") -> NpmManifest | None:
     return NpmManifest(
         rel_dir=rel_dir,
         dependencies=npm_dependency_names(data),
+        versions={
+            name: spec
+            for key in NPM_DEP_FIELDS
+            if isinstance(block := data.get(key), dict)
+            for name, spec in block.items()
+            if isinstance(name, str) and isinstance(spec, str)
+        },
         scripts={k: v for k, v in scripts.items() if isinstance(k, str) and isinstance(v, str)}
         if isinstance(scripts, dict)
         else {},
@@ -69,7 +83,19 @@ def npm_manifests(repo_root: str | Path, paths: Iterable[str]) -> list[NpmManife
         except (OSError, ValueError):
             continue
         if (manifest := parse_npm_manifest(data, rel)) is not None:
-            if NUXT_I18N in manifest.dependencies:
-                manifest = replace(manifest, nuxt_lang_dirs=_nuxt_lang_dirs(root / rel))
+            if configs := _configs(root / rel, manifest):
+                manifest = replace(manifest, configs=configs)
             found.append(manifest)
     return found
+
+
+def _configs(app_dir: Path, manifest: NpmManifest) -> dict[str, str]:
+    """The config files of the frameworks *manifest* declares, read from *app_dir*."""
+    names = [n for f in _CONFIGURED if f.matches_npm(manifest) for n in f.config_files]
+    out: dict[str, str] = {}
+    for name in dict.fromkeys(names):
+        try:
+            out[name] = (app_dir / name).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+    return out

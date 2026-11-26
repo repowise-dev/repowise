@@ -392,6 +392,14 @@ def test_digest_tracks_dependency_names_not_versions(tmp_path: Path) -> None:
     assert _digest(tmp_path, "package.json") != before
 
 
+def test_digest_tracks_the_nuxt_version(tmp_path: Path) -> None:
+    """Nuxt's major version says whether its default source directory is ``app/``."""
+    (tmp_path / "package.json").write_text(_package(devDependencies={"nuxt": "^3.12.0"}))
+    before = _digest(tmp_path, "package.json")
+    (tmp_path / "package.json").write_text(_package(devDependencies={"nuxt": "^4.1.0"}))
+    assert _digest(tmp_path, "package.json") != before
+
+
 def test_manifest_edit_the_diff_missed_falls_back(
     indexed: tuple[Path, dict[str, list]], tmp_path: Path
 ) -> None:

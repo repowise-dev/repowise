@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import glob
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,30 +12,37 @@ from .base import FrameworkFacts, _js
 from .expo_router import EXPO_ROUTER
 from .next import NEXT_PAGES
 from .npm import NpmManifest, npm_manifests
-from .nuxt import NUXT, NUXT_I18N, _nuxt_i18n_globs
+from .nuxt import NUXT, nuxt_facts
 from .react_email import REACT_EMAIL, _react_email_dirs
 from .remix import REMIX
-from .sveltekit import SVELTEKIT
+from .sveltekit import SVELTEKIT, sveltekit_facts
 
 JS_FRAMEWORKS: tuple[FrameworkFacts, ...] = (
     REACT_EMAIL, NEXT_PAGES, REMIX, NUXT, SVELTEKIT, ASTRO, EXPO_ROUTER,
 )
 
 
-def js_frameworks(manifest: NpmManifest) -> list[tuple[FrameworkFacts, str]]:
+def js_frameworks(
+    manifest: NpmManifest, paths: Collection[str] | None = None
+) -> list[tuple[FrameworkFacts, str]]:
     """``(facts, the dependency that marks it)`` for each JS framework *manifest* uses.
 
     The facts' globs are relative to the manifest's directory. A React Email
-    project's are rooted at every directory its ``email`` scripts read.
+    project's are rooted at every directory its ``email`` scripts read, a
+    Nuxt app's at its source directory (told apart by the repository's
+    *paths* when its config names none), a SvelteKit app's at its
+    ``kit.files`` directories.
     """
     out: list[tuple[FrameworkFacts, str]] = []
     for facts in JS_FRAMEWORKS:
         pkg = facts.matches_npm(manifest)
         if pkg is None:
             continue
-        if facts is NUXT and NUXT_I18N in manifest.dependencies:
-            facts = replace(facts, entry_globs=facts.entry_globs + _nuxt_i18n_globs(manifest))
-        if facts is REACT_EMAIL:
+        if facts is NUXT:
+            facts = nuxt_facts(manifest, paths)
+        elif facts is SVELTEKIT:
+            facts = sveltekit_facts(manifest)
+        elif facts is REACT_EMAIL:
             dirs = _react_email_dirs(manifest)
             if not dirs:
                 continue

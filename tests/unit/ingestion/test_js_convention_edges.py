@@ -193,6 +193,86 @@ def test_a_nuxt_4_app_s_convention_dirs_and_i18n_locales_are_loaded(tmp_path: Pa
     assert all("Nuxt" in r for r in reasons.values())
 
 
+_VUE = "<template><slot /></template>\n"
+
+
+def test_a_nuxt_src_dir_roots_every_convention_dir(tmp_path: Path) -> None:
+    """``srcDir: 'src'`` moves layouts, plugins and middleware; ``server/`` stays at the root."""
+    repo = _write(
+        tmp_path,
+        {
+            "web/package.json": _pkg({"nuxt": "^3.12.0"}),
+            "web/nuxt.config.ts": "export default defineNuxtConfig({ srcDir: 'src/' });\n",
+            "web/src/layouts/default.vue": _VUE,
+            "web/src/plugins/analytics.ts": _NONE,
+            "web/src/middleware/auth.ts": _NONE,
+            "web/src/pages/index.vue": _VUE,
+            "web/src/app.vue": _VUE,
+            "web/server/api/ping.ts": _NONE,
+            # Not where this app keeps its code, so nothing loads it.
+            "web/layouts/stray.vue": _VUE,
+            "web/src/components/Card.vue": _VUE,
+        },
+    )
+    graph, findings = _analyze(repo)
+    for path in (
+        "web/src/layouts/default.vue",
+        "web/src/plugins/analytics.ts",
+        "web/src/middleware/auth.ts",
+        "web/src/pages/index.vue",
+        "web/src/app.vue",
+        "web/server/api/ping.ts",
+    ):
+        assert graph.has_edge("framework:nuxt", path), path
+    assert not graph.has_edge("framework:nuxt", "web/layouts/stray.vue")
+    flagged = {f.file_path for f in findings}
+    assert "web/src/layouts/default.vue" not in flagged
+    assert "web/layouts/stray.vue" in flagged
+    reasons = convention_load_reasons(repo, ["web/src/components/Card.vue", "web/layouts/stray.vue"])
+    assert set(reasons) == {"web/src/components/Card.vue"}
+
+
+def test_a_default_nuxt_4_app_is_rooted_at_app(tmp_path: Path) -> None:
+    """No ``srcDir``: Nuxt 4 reads ``app/``, told apart by the files the app holds."""
+    repo = _write(
+        tmp_path,
+        {
+            "package.json": _pkg({"nuxt": "^4.1.0"}),
+            "nuxt.config.ts": "export default defineNuxtConfig({});\n",
+            "app/app.vue": _VUE,
+            "app/layouts/default.vue": _VUE,
+            "app/plugins/theme.ts": _NONE,
+            "plugins/legacy.ts": _NONE,
+        },
+    )
+    graph, _findings = _analyze(repo)
+    assert graph.has_edge("framework:nuxt", "app/layouts/default.vue")
+    assert graph.has_edge("framework:nuxt", "app/plugins/theme.ts")
+    assert not graph.has_edge("framework:nuxt", "plugins/legacy.ts")
+
+
+def test_sveltekit_kit_files_move_the_convention_dirs(tmp_path: Path) -> None:
+    config = (
+        "export default {\n  kit: {\n    adapter: adapter(),\n"
+        "    files: { routes: 'app/routes', hooks: { server: 'app/hooks.server' } },\n  },\n};\n"
+    )
+    repo = _write(
+        tmp_path,
+        {
+            "package.json": _pkg({"@sveltejs/kit": "2"}, dev=True),
+            "svelte.config.js": config,
+            "app/routes/+page.ts": "export function load() { return {}; }\n",
+            "app/hooks.server.ts": "export async function handle() { return null; }\n",
+            "src/params/slug.ts": "export function match() { return true; }\n",
+            "src/routes/+page.ts": "export function load() { return {}; }\n",
+        },
+    )
+    graph, _findings = _analyze(repo)
+    for path in ("app/routes/+page.ts", "app/hooks.server.ts", "src/params/slug.ts"):
+        assert graph.has_edge("framework:sveltekit", path), path
+    assert not graph.has_edge("framework:sveltekit", "src/routes/+page.ts")
+
+
 def test_nuxt_locales_need_the_i18n_module(tmp_path: Path) -> None:
     repo = _write(tmp_path, {"package.json": _pkg({"nuxt": "4"})})
     assert convention_load_reasons(repo, ["i18n/locales/en.ts"]) == {}

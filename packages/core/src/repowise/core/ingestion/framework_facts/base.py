@@ -30,6 +30,9 @@ class FrameworkFacts:
     #: auto-imports). Not entries, since an unused one is never loaded, but no
     #: importer is not proof of disuse either, so none is deletion-ready.
     review_globs: tuple[str, ...] = ()
+    #: Config files beside the ``package.json`` whose literals move where the
+    #: framework looks (Nuxt ``srcDir``, SvelteKit ``kit.files``), first wins.
+    config_files: tuple[str, ...] = ()
 
     def matches(self, manifest: ComposerManifest) -> bool:
         if manifest.type in self.composer_types:
@@ -40,6 +43,10 @@ class FrameworkFacts:
     def matches_npm(self, manifest: NpmManifest) -> str | None:
         """The first of :attr:`npm_packages` *manifest* depends on, or None."""
         return next((pkg for pkg in self.npm_packages if pkg in manifest.dependencies), None)
+
+    def config(self, manifest: NpmManifest) -> str | None:
+        """The text of the first of :attr:`config_files` beside *manifest*, or None."""
+        return next((manifest.configs[n] for n in self.config_files if n in manifest.configs), None)
 
     def entry_files(self, root: str, paths: Iterable[str]) -> list[str]:
         """The members of *paths* that match an entry glob under *root*, sorted.
