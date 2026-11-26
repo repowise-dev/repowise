@@ -9,8 +9,8 @@ Local SQLite stores never run Alembic -- ``init_db``'s reconciler issues
 additive DDL for missing columns -- so this migration exists for managed
 Postgres.
 
-Revision ID: 0145
-Revises: 0143
+Revision ID: 0148
+Revises: 0147
 Create Date: 2026-11-26
 """
 
@@ -22,8 +22,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
-revision: str = "0145"
-down_revision: str | None = "0143"
+revision: str = "0148"
+down_revision: str | None = "0147"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
