@@ -85,7 +85,9 @@ def history(tmp_path):
     return _git(tmp_path, "rev-parse", "HEAD~1")
 
 
-async def _seed_change(session, sha: str) -> None:
+async def _seed_change(
+    session, sha: str, *, forge: str = "github", number: int = 7, forge_ref: str = "#7"
+) -> None:
     from repowise.core.persistence.crud import upsert_changes
 
     await upsert_changes(
@@ -93,12 +95,12 @@ async def _seed_change(session, sha: str) -> None:
         "repo1",
         [
             {
-                "change_id": "pr-7",
+                "change_id": f"pr-{number}",
                 "identity_kind": "pr",
-                "identity_value": "7",
+                "identity_value": str(number),
                 "shape": "squash",
-                "forge": "github",
-                "forge_ref": "#7",
+                "forge": forge,
+                "forge_ref": forge_ref,
                 "title": "Add the auth service",
                 "merged_at": datetime(2026, 3, 1, tzinfo=UTC),
                 "head_sha": sha,
@@ -352,3 +354,33 @@ async def test_a_use_before_the_definition_is_not_the_origin(setup_mcp, tmp_path
     defined = _git(tmp_path, "rev-parse", "HEAD")
     result = await get_answer("Who added AuthService?")
     assert result["origin"]["commit"] == defined
+
+
+@pytest.mark.parametrize(
+    ("forge", "subject", "question"),
+    [
+        ("gitlab", "Add the auth service (!12)", "Which MR introduced AuthService?"),
+        (
+            "azure",
+            "Merged PR 12: Add the auth service",
+            "Which pull request introduced AuthService?",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_other_forges_name_their_own_change_ref(
+    setup_mcp, session, history, forge, subject, question
+):
+    from repowise.core.changes.reconstruct import change_identity
+    from repowise.server.mcp_server import get_answer
+
+    # The ref exactly as change reconstruction stores it for that forge.
+    kind, number, forge_ref = change_identity(subject, "", history, False, forge)
+    assert (kind, number) == ("pr", "12")
+    await _seed_change(session, history, forge=forge, number=12, forge_ref=forge_ref)
+    result = await get_answer(question)
+    assert result["confidence"] == "high"
+    assert result["answer"].startswith(
+        f'`AuthService` was introduced by {forge_ref} "Add the auth service"'
+    )
+    assert result["origin"]["change"] == "pr-12"
