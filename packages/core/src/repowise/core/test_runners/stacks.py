@@ -1242,6 +1242,7 @@ def _gradle(root: set[str], files: dict[str, str]) -> Stack:
 
 _DOTNET = re.compile(r"(?<![\w-])dotnet\s+test(?![\w-])")
 _DOTNET_FLAGS = '--collect:"XPlat Code Coverage" --results-directory coverage'
+_DOTNET_JUNIT = '--logger "junit;LogFilePath=junit.xml"'
 
 
 def _edit_dotnet(line: str, m: re.Match) -> CommandEdit:
@@ -1284,6 +1285,9 @@ def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, f
     if tests and not any("coverlet.collector" in t for p, t in files.items() if p in tests):
         notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
                      "test project (`dotnet add package coverlet.collector`).")
+    if tests and not any("junitxml.testlogger" in t.lower() for p, t in files.items() if p in tests):
+        notes.append(f"`{_DOTNET_JUNIT}` needs the `JunitXml.TestLogger` package in each "
+                     "test project (`dotnet add package JunitXml.TestLogger`).")
     if target:
         return notes
     if found:
@@ -1305,6 +1309,7 @@ def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     return Stack(
         "dotnet", "dotnet test", "dotnet", "coverage/*/coverage.cobertura.xml", setup=tuple(setup),
         test=test, notes=tuple(notes), pattern=_DOTNET, editor=_edit_dotnet,
+        junit_report="junit.xml" if target else "", junit_flag=_DOTNET_JUNIT if target else "",
     )
 
 

@@ -376,3 +376,26 @@ def test_a_timings_report_written_at_head_ends_the_rerun(tmp_path: Path) -> None
     (tmp_path / "junit.xml").write_text("<testsuite/>")
 
     assert evidence_setup(tmp_path, **head)["next_call"] is None
+
+
+def test_dotnet_unit_says_how_its_tests_write_junit_timings(tmp_path: Path) -> None:
+    proj = tmp_path / "tests" / "App.Tests"
+    proj.mkdir(parents=True)
+    (proj / "App.Tests.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"></Project>')
+    (proj / "CartTest.cs").write_text("class CartTest {}")
+
+    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
+    (unit,) = plan["units"]
+    assert unit["test_timings"] == {
+        "flag": '--logger "junit;LogFilePath=junit.xml"',
+        "env": None,
+        "report": "junit.xml",
+        "command": (
+            'dotnet test tests/App.Tests/App.Tests.csproj --collect:"XPlat Code Coverage" '
+            '--results-directory coverage --logger "junit;LogFilePath=junit.xml"'
+        ),
+        "workload": "dotnet tests",
+        "ingest": 'repowise evidence add junit.xml --workload "dotnet tests" --class unit_test --commit '
+        + "a" * 40,
+    }
+

@@ -141,8 +141,8 @@ ran in; that directory is the `root` the test passes.
 
 ### How a stack declares a report
 
-Python, Node, Maven, Gradle and Go (`go test -json`, read as test timings
-too) set a report today; `_rust`, `_dotnet`, `_ruby` and `_php` do not. Each
+Python, Node, Maven, Gradle, Go (`go test -json`, read as test timings
+too) and .NET (`JunitXml.TestLogger`) set a report today; `_rust`, `_ruby` and `_php` do not. Each
 stack is built by one function in
 `packages/core/src/repowise/core/test_runners/stacks.py`, listed in
 `_BUILDERS` (`_python`, `_go`, `_rust`, `_dotnet`, `_ruby`, `_php`, ...), and
