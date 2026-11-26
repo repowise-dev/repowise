@@ -72,41 +72,40 @@ def _unit(raw_unit: Any) -> str | None:
     return unit
 
 
+def _entry_name(benchmark: str, mode: str | None, raw_params: Any) -> str:
+    name = f"{benchmark}:{mode}" if mode else benchmark
+    if isinstance(raw_params, dict) and raw_params:
+        param_str = ",".join(f"{k}={v}" for k, v in sorted(raw_params.items()))
+        return f"{name}({param_str})"
+    return name
+
+
+def _rounds(metric: dict[str, Any], raw: dict[str, Any]) -> int | None:
+    raw_data = metric.get("rawData")
+    if isinstance(raw_data, list):
+        return sum(len(sub) for sub in raw_data if isinstance(sub, list)) or len(raw_data)
+    forks = raw.get("forks")
+    return forks if isinstance(forks, int) else None
+
+
+def _entry_metrics(
+    metric: dict[str, Any],
+) -> tuple[float | None, float | None, float | None, float | None]:
+    score = metric.get("score") if isinstance(metric.get("score"), (int, float)) else None
+    pcts = metric.get("scorePercentiles") if isinstance(metric.get("scorePercentiles"), dict) else {}
+    med = pcts.get("50.0") if isinstance(pcts.get("50.0"), (int, float)) else score
+    min_v = pcts.get("0.0") if isinstance(pcts.get("0.0"), (int, float)) else None
+    max_v = pcts.get("100.0") if isinstance(pcts.get("100.0"), (int, float)) else None
+    return score, med, min_v, max_v
+
+
 def _entry(raw: dict[str, Any]) -> dict[str, Any]:
     benchmark = str(raw["benchmark"]).strip()
     mode = str(raw.get("mode") or "").strip() or None
-    params = raw.get("params") if isinstance(raw.get("params"), dict) else None
-
-    name = f"{benchmark}:{mode}" if mode else benchmark
-    if params:
-        param_str = ",".join(f"{k}={v}" for k, v in sorted(params.items()))
-        name = f"{name}({param_str})"
+    name = _entry_name(benchmark, mode, raw.get("params"))
 
     metric = raw.get("primaryMetric") if isinstance(raw.get("primaryMetric"), dict) else {}
-    score = metric.get("score") if isinstance(metric.get("score"), (int, float)) else None
-    percentiles = (
-        metric.get("scorePercentiles")
-        if isinstance(metric.get("scorePercentiles"), dict)
-        else {}
-    )
-
-    median = (
-        percentiles.get("50.0")
-        if isinstance(percentiles.get("50.0"), (int, float))
-        else score
-    )
-    mean = score
-    min_val = (
-        percentiles.get("0.0")
-        if isinstance(percentiles.get("0.0"), (int, float))
-        else None
-    )
-    max_val = (
-        percentiles.get("100.0")
-        if isinstance(percentiles.get("100.0"), (int, float))
-        else None
-    )
-
+    mean, median, min_val, max_val = _entry_metrics(metric)
     unit = _unit(metric.get("scoreUnit"))
     lower_is_better = mode != "thrpt"
 
@@ -115,12 +114,7 @@ def _entry(raw: dict[str, Any]) -> dict[str, Any]:
         if isinstance(raw.get("measurementIterations"), int)
         else None
     )
-    raw_data = metric.get("rawData")
-    if isinstance(raw_data, list):
-        rounds = sum(len(sub) for sub in raw_data if isinstance(sub, list)) or len(raw_data)
-    else:
-        forks = raw.get("forks")
-        rounds = forks if isinstance(forks, int) else None
+    rounds = _rounds(metric, raw)
 
     return {
         "name": name,
