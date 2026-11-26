@@ -198,7 +198,7 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # package qualifier never reaches the typed fallback.
     "go": _LanguageCallStrategies(
         free=("_resolve_go_same_package",),
-        member=("_resolve_go_package_call",),
+        member=("_resolve_go_package_call", "_resolve_go_package_var_call"),
         member_fallback=_TYPED_RECEIVER,
     ),
     # Kotlin shares the JVM tiers and the typed-receiver fallback. Java takes
