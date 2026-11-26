@@ -14,6 +14,7 @@ deletion-ready on "no importer" alone.
 from __future__ import annotations
 
 import fnmatch
+import glob
 import json
 import posixpath
 import re
@@ -413,15 +414,21 @@ def _nuxt_i18n_globs(manifest: NpmManifest) -> tuple[str, ...]:
             if (inside := _inside(posixpath.join(base, lang_dir))) is not None:
                 dirs.add(inside)
     configs = _js("i18n.config", "i18n/i18n.config", "app/i18n.config")
-    return (*(f"{d}/*" for d in sorted(dirs)), *configs)
+    return (*(f"{glob.escape(d)}/*" for d in sorted(dirs)), *configs)
 
 
 _EMAIL_COMMANDS = frozenset({"dev", "build", "export"})
 
 
+#: Tokens that end one shell command, so a later command's flags are not read.
+_SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
+
+
 def _email_script_dir(args: list[str]) -> str:
     """The ``--dir`` among one ``email`` command's *args*, else the default ``emails``."""
     for j, arg in enumerate(args):
+        if arg in _SHELL_SEPARATORS:
+            break
         if arg in ("--dir", "-d") and j + 1 < len(args):
             return posixpath.normpath(args[j + 1])
         if arg.startswith("--dir="):
@@ -433,8 +440,8 @@ def _react_email_dirs(manifest: NpmManifest) -> list[str]:
     """Every directory an ``email dev|build|export`` script reads, sorted.
 
     A command without ``--dir`` reads the default ``emails``, as does a
-    package with no such script. A directory outside the package is dropped:
-    nothing under the package can be anchored to it.
+    package with no such script. ``.`` is the package itself; a directory
+    outside the package is dropped, since nothing in it can be anchored.
     """
     dirs: set[str] = set()
     for script in manifest.scripts.values():
@@ -445,9 +452,7 @@ def _react_email_dirs(manifest: NpmManifest) -> list[str]:
         for i in range(len(words) - 1):
             if words[i] == "email" and words[i + 1] in _EMAIL_COMMANDS:
                 dirs.add(_email_script_dir(words[i + 2 :]))
-    return sorted(
-        d for d in (dirs or {"emails"}) if d != "." and not d.startswith(("..", "/"))
-    )
+    return sorted(d for d in (dirs or {"emails"}) if not d.startswith(("..", "/")))
 
 
 def js_frameworks(manifest: NpmManifest) -> list[tuple[FrameworkFacts, str]]:
@@ -467,7 +472,9 @@ def js_frameworks(manifest: NpmManifest) -> list[tuple[FrameworkFacts, str]]:
             dirs = _react_email_dirs(manifest)
             if not dirs:
                 continue
-            facts = replace(facts, entry_globs=_js(*(f"{d}/*" for d in dirs)))
+            # Escaped: a directory named ``emails[v2]`` is a name, not a pattern.
+            stems = ("*" if d == "." else f"{glob.escape(d)}/*" for d in dirs)
+            facts = replace(facts, entry_globs=_js(*stems))
         out.append((facts, pkg))
     return out
 

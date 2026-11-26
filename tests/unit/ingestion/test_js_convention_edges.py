@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.framework_facts import (
@@ -194,3 +196,19 @@ def test_a_nuxt_4_app_s_convention_dirs_and_i18n_locales_are_loaded(tmp_path: Pa
 def test_nuxt_locales_need_the_i18n_module(tmp_path: Path) -> None:
     repo = _write(tmp_path, {"package.json": _pkg({"nuxt": "4"})})
     assert convention_load_reasons(repo, ["i18n/locales/en.ts"]) == {}
+
+
+@pytest.mark.parametrize(
+    ("script", "paths", "expected"),
+    [
+        ("email dev --dir .", ["a.tsx", "src/b.tsx"], ["a.tsx", "src/b.tsx"]),
+        ("email dev && tsc -d out", ["emails/a.tsx", "out/b.tsx"], ["emails/a.tsx"]),
+        ("email dev --dir emails[v2]", ["emails[v2]/a.tsx", "emails2/a.tsx"], ["emails[v2]/a.tsx"]),
+    ],
+    ids=["package-root", "later-command-flag", "literal-brackets"],
+)
+def test_react_email_dir_edge_cases(script: str, paths: list[str], expected: list[str]) -> None:
+    manifest = parse_npm_manifest({"dependencies": {"react-email": "6"}, "scripts": {"dev": script}})
+    assert manifest is not None
+    ((facts, _pkg),) = js_frameworks(manifest)
+    assert facts.entry_files("", paths) == expected
