@@ -69,6 +69,12 @@ _WRAPPER_SKIP = frozenset({"fetch", "ofetch", "if", "for", "while", "switch", "c
 _FACTORY_NAME_RE = re.compile(r"(?i)^(?:create|make|build)")
 
 
+def _bare_prefix(literal: str) -> bool:
+    """A factory's base argument: rooted, and free of path parameters or a query."""
+    return literal.startswith("/") and "${" not in literal and "?" not in literal
+
+
+
 def _enclosing_paren(content: str, before: int) -> int:
     """Index of the `(` that opens the call *before* is inside, or -1.
 
@@ -157,10 +163,11 @@ def wrapper_calls(content: str, clients: frozenset[str]) -> Iterator[ClientCallM
             if clients and _receiver(content, head2.start(1)) in clients:
                 continue
             head, callee = head2, callee2
-        elif _FACTORY_NAME_RE.search(callee) and not method and m.group(1).startswith("/"):
+        elif _FACTORY_NAME_RE.search(callee) and not method and _bare_prefix(m.group(1)):
             # `createUsersApi('/api/v1')`: an HTTP-sounding factory name with a
             # bare prefix argument and no method option builds a client, it
-            # does not call one.
+            # does not call one. A bare prefix carries no path parameter and
+            # no query, so a template like `/overview/${id}?x=1` still reads.
             continue
         # No `method:` option: the callee name is the only verb evidence there
         # is, and `apiPost`/`apiDelete` carry it.

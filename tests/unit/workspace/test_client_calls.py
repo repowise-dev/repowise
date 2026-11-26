@@ -523,3 +523,10 @@ class TestWrapperDetectionGates:
         content = "makeRequest('/api/v1', { method: 'POST' });"
         (row,) = wrapper_calls(content, frozenset())
         assert row.method == "POST"
+
+    def test_a_make_call_with_a_path_parameter_and_query_still_reads(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        content = "makeRequest<Overview>(`/overview/${userId}?date_range=30`)"
+        (row,) = wrapper_calls(content, frozenset())
+        assert row.url == "`/overview/${userId}?date_range=30`"
