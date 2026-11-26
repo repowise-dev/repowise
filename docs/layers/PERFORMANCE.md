@@ -194,7 +194,8 @@ changes the work in five ways. Only a *leading* run counts: the newest run of an
 entry point, load test or production workload. A unit-test run says what the
 tests cost, not the product, and a benchmark profile gives each benchmark about
 the same time, so a function's share of it tracks how many benchmarks target it,
-not what it costs; neither creates, keeps, confirms or orders work. Benchmark
+not what it costs; neither creates, keeps, confirms or orders work, and nor does
+a tracer's run (cProfile gives an order, no share) or a stale one. Benchmark
 results still show under `benchmarks`, each with the function it measures.
 
 **1. A measured function becomes work.** A function a leading run measured
