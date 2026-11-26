@@ -222,14 +222,83 @@ def evidence_caps(config: Any) -> tuple[float, EvidenceCaps, list[str]]:
     return max_file_mb, caps, problems
 
 
-_V1_OBJECT_HEAD = re.compile(
-    rb'^\{\s*(?:.*,\s*)?"format"\s*:\s*"' + re.escape(EVIDENCE_FORMAT.encode()) + rb'"',
-    re.DOTALL,
-)
+_WS = frozenset(b" \t\r\n")
+_V1_VALUE = EVIDENCE_FORMAT.encode()
+
+
+def _skip_json_ws(data: bytes, idx: int) -> int:
+    while idx < len(data) and data[idx] in _WS:
+        idx += 1
+    return idx
+
+
+def _read_json_string_bytes(data: bytes, idx: int) -> tuple[bytes | None, int]:
+    if idx >= len(data) or data[idx] != 0x22:  # '"'
+        return None, idx
+    start = idx + 1
+    i = start
+    while i < len(data):
+        ch = data[i]
+        if ch == 0x5C:  # '\\'
+            i += 2
+            continue
+        if ch == 0x22:  # '"'
+            return data[start:i], i + 1
+        i += 1
+    return None, len(data)
+
+
+def _skip_json_value(data: bytes, idx: int) -> int:
+    idx = _skip_json_ws(data, idx)
+    if idx >= len(data):
+        return idx
+    ch = data[idx]
+    if ch == 0x22:  # '"'
+        _, end = _read_json_string_bytes(data, idx)
+        return end
+    if ch in (0x7B, 0x5B):  # '{' or '['
+        depth = 1
+        i = idx + 1
+        while i < len(data) and depth > 0:
+            cur = data[i]
+            if cur == 0x22:
+                _, i = _read_json_string_bytes(data, i)
+                continue
+            if cur in (0x7B, 0x5B):
+                depth += 1
+            elif cur in (0x7D, 0x5D):
+                depth -= 1
+            i += 1
+        return i
+    while idx < len(data) and data[idx] not in b",}] \t\r\n":
+        idx += 1
+    return idx
 
 
 def _is_v1_head(head: bytes) -> bool:
-    return _V1_OBJECT_HEAD.match(head.lstrip(b"\xef\xbb\xbf").lstrip()) is not None
+    buf = head.lstrip(b"\xef\xbb\xbf").lstrip()
+    if not buf.startswith(b"{"):
+        return False
+    i = _skip_json_ws(buf, 1)
+    while i < len(buf):
+        if buf[i] == 0x7D:  # '}'
+            return False
+        key, after_key = _read_json_string_bytes(buf, i)
+        if key is None:
+            return False
+        i = _skip_json_ws(buf, after_key)
+        if i >= len(buf) or buf[i] != 0x3A:  # ':'
+            return False
+        i = _skip_json_ws(buf, i + 1)
+        if key == b"format":
+            val, _ = _read_json_string_bytes(buf, i)
+            return val == _V1_VALUE
+        i = _skip_json_value(buf, i)
+        i = _skip_json_ws(buf, i)
+        if i >= len(buf) or buf[i] != 0x2C:  # ','
+            return False
+        i = _skip_json_ws(buf, i + 1)
+    return False
 
 
 def input_format(given: str | None, data: bytes) -> str:

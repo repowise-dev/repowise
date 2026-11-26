@@ -444,7 +444,11 @@ def test_input_format_sniffs_junit_when_test_name_mentions_v1(tmp_path: Path) ->
         b'{"results": [{"command": "repowise evidence add --input-format repowise-evidence-v1", '
         b'"mean": 0.1}]}'
     )
+    hyperfine_nested_format = (
+        b'{"results": [{"command": "bench", "meta": {"n": 1, "format": "repowise-evidence-v1"}}]}'
+    )
     assert input_format(None, v1_first) == EVIDENCE_FORMAT
     assert input_format(None, v1_later) == EVIDENCE_FORMAT
     assert input_format(None, hyperfine_mention) == "hyperfine"
+    assert input_format(None, hyperfine_nested_format) == "hyperfine"
     assert input_format(None, b"unclaimed plain text") == EVIDENCE_FORMAT
