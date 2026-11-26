@@ -231,6 +231,9 @@ def evidence_caps(config: Any) -> tuple[float, EvidenceCaps, list[str]]:
     return max_file_mb, caps, problems
 
 
+_V1_HEAD = re.compile(rb'^\s*\{\s*.*?"format"\s*:\s*"repowise-evidence-v1"', re.DOTALL)
+
+
 def input_format(given: str | None, data: bytes) -> str:
     """*given* checked against the registry, else the format sniffed from *data*.
 
@@ -245,7 +248,7 @@ def input_format(given: str | None, data: bytes) -> str:
             raise _bad_option("--input-format", f"{given!r} is not one of {', '.join(names)}.")
         return given
     head = data[:SNIFF_BYTES]
-    if EVIDENCE_FORMAT.encode() in head:
+    if _V1_HEAD.match(head.lstrip(b"\xef\xbb\xbf").lstrip()):
         return EVIDENCE_FORMAT
     return detect_profile_format(head) or EVIDENCE_FORMAT
 

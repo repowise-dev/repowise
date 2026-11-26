@@ -411,3 +411,32 @@ def test_a_run_where_every_test_errored_is_refused(tmp_path: Path) -> None:
     # One test that ran is a run: kept.
     ran = errored.replace("<error/></testcase></testsuite>", "</testcase></testsuite>")
     assert prepare_evidence(ran.encode(), name="junit.xml", checkout_root=tmp_path, commit="a" * 40).doc
+
+
+def test_input_format_detects_junit_containing_v1_format_name_and_v1_documents() -> None:
+    from repowise.core.evidence.add import EVIDENCE_FORMAT, input_format
+
+    junit_with_v1_name = (
+        b'<?xml version="1.0" encoding="utf-8"?>\n'
+        b'<testsuite name="pytest" tests="1">\n'
+        b'  <testcase classname="tests.test_sniff" name="test_sniff[repowise-evidence-v1]" time="0.01"/>\n'
+        b'</testsuite>'
+    )
+    assert input_format(None, junit_with_v1_name) == "junit"
+
+    # v1 with format first
+    v1_first = b'{\n  "format": "repowise-evidence-v1",\n  "kind": "profile"\n}'
+    assert input_format(None, v1_first) == EVIDENCE_FORMAT
+
+    # v1 with format later in the object
+    v1_later = b'{\n  "kind": "profile",\n  "format": "repowise-evidence-v1"\n}'
+    assert input_format(None, v1_later) == EVIDENCE_FORMAT
+
+    # UTF-8 BOM
+    v1_bom = b'\xef\xbb\xbf{\n  "kind": "profile",\n  "format": "repowise-evidence-v1"\n}'
+    assert input_format(None, v1_bom) == EVIDENCE_FORMAT
+
+    # Unclaimed file still falls back to v1
+    unclaimed = b'{"hello": "world"}'
+    assert input_format(None, unclaimed) == EVIDENCE_FORMAT
+
