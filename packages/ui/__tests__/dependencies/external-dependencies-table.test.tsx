@@ -174,6 +174,45 @@ describe("ExternalDependenciesTable", () => {
     expect(within(dialog).getByText(/1 declaration/)).toBeInTheDocument();
   });
 
+  it("lists a selected package's advisories only when there are some", () => {
+    const selected = entry(7, { display_name: "requests" });
+    const props = {
+      data: summary([selected]),
+      state: DEFAULT_EXTERNAL_DEPENDENCY_STATE,
+      onStateChange: () => {},
+      selected,
+      onSelectedChange: () => {},
+    };
+    const { rerender } = render(<ExternalDependenciesTable {...props} />);
+    expect(within(screen.getByRole("dialog")).queryByText("Advisories")).not.toBeInTheDocument();
+
+    rerender(
+      <ExternalDependenciesTable
+        {...props}
+        advisories={[
+          {
+            package: "requests",
+            ecosystem: "pypi",
+            id: "GHSA-9wx4-h78v-vm56",
+            tier: "package_called",
+            basis: "call",
+            aliases: [],
+            severity: "medium",
+            fix: "2.32.0",
+            affected: true,
+            sites: [{ path: "app/client.py", line: 5, symbol: "requests.get" }],
+          },
+        ]}
+      />,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Advisories")).toBeInTheDocument();
+    expect(within(dialog).getByText("GHSA-9wx4-h78v-vm56")).toBeInTheDocument();
+    expect(within(dialog).getByText("A production function calls into this package")).toBeInTheDocument();
+    expect(within(dialog).getByText("fixed in 2.32.0")).toBeInTheDocument();
+    expect(within(dialog).getByText("app/client.py:5")).toBeInTheDocument();
+  });
+
   it("opens relationships from the inspector and exposes loading and error states", () => {
     const onShowRelationships = vi.fn();
     const selected = entry(7, { display_name: "React" });

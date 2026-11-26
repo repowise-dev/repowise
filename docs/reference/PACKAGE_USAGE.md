@@ -39,3 +39,5 @@ What each tier rests on:
 `repowise packages check pypi:requests@2.31.0` answers from the stored document before a package is added: `has_advisories` (with the fix above that version), `ok` (the document names the package and no advisory covers the version), or `unknown_no_source` (no document, or it does not name the package). Repowise does not look the package up anywhere; an `advisory-source` plugin can supply a feed.
 
 Agents get the same answers. `get_context(targets=["package:pypi:requests"])` adds `advisories` (up to 5: id, tier, severity, fix, sites) to the card, and `package:pypi:requests@2.31.0` adds a `check`. `get_risk` adds one `advisory_call` line to a file holding a `package_called` call site. A package or file with no stored advisory gets neither.
+
+In the web UI, the Dependencies view lists a package's advisories, with their tier, in its inspector, read from `GET /api/repos/{id}/external-systems/{package}/advisories` (`imported: false` when no document was imported).
