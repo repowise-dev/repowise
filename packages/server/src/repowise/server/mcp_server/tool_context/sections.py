@@ -44,6 +44,7 @@ from repowise.server.mcp_server._changes import (
     file_provenance,
     load_file_meta,
     symbol_changes,
+    symbol_last_change,
 )
 from repowise.server.mcp_server._directory import _git_rows_under
 from repowise.server.mcp_server._edit_sites import edit_set_block
@@ -457,8 +458,43 @@ async def _last_change_section(card: CardState) -> None:
     if card.dir_path is not None:
         card.data["last_change"] = await _directory_last_change(card)
         return
+    if card.resolved.target_type == "symbol" and card.git_path:
+        own = await _symbol_last_change(card, card.git_path)
+        if own is not None:
+            card.data["last_change"] = own
+            return
     meta = await _git_meta_row(card, card.git_path)
-    card.data["last_change"] = await _change_of(card, meta)
+    change = await _change_of(card, meta)
+    if card.resolved.target_type == "symbol":
+        # Git could not walk the symbol's lines: never pass the file's off as its own.
+        change["scope"] = "file"
+    card.data["last_change"] = change
+
+
+async def _symbol_last_change(card: CardState, file_path: str) -> dict[str, Any] | None:
+    """The newest commit that edited the symbol's lines, in the file shape
+    plus ``ref``, the stored change that landed it."""
+    repository = card.query.repository
+    found = await symbol_last_change(
+        card.session,
+        repository,
+        served_root(repository, card.query.repo_root),
+        file_path,
+        _symbol_lines(card),
+    )
+    if found is None:
+        return None
+    moment = found["committed_at"]
+    change: dict[str, Any] = {
+        "date": moment.isoformat(),
+        "days_ago": await _days_since_last_change(
+            card.session, card.repo_id, moment, card.query.as_of_ts
+        ),
+        "author": found["author"],
+    }
+    if found["ref"]:
+        change["ref"] = found["ref"]
+    return change
 
 
 async def _directory_last_change(card: CardState) -> dict[str, Any]:
@@ -534,10 +570,15 @@ async def _file_changes_section(card: CardState, file_path: str | None) -> None:
         card.data["provenance"] = file_provenance(meta, attribution)
 
 
-async def _symbol_changes_section(card: CardState, file_path: str) -> None:
+def _symbol_lines(card: CardState) -> tuple[int, int] | None:
+    """The symbol's line range as indexed; None when the index has none."""
     sym = card.resolved.sym_matches[0] if card.resolved.sym_matches else card.resolved.graph_symbol
     start, end = getattr(sym, "start_line", None), getattr(sym, "end_line", None)
-    lines = (start, end) if start and end and end >= start else None
+    return (start, end) if start and end and end >= start else None
+
+
+async def _symbol_changes_section(card: CardState, file_path: str) -> None:
+    lines = _symbol_lines(card)
     repository = card.query.repository
     card.data.update(
         await symbol_changes(
