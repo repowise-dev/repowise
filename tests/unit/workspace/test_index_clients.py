@@ -1091,6 +1091,17 @@ export class HostedApiClient {
         contracts, _u, _c = _run(self.QUERY_SUFFIX_TS)
         assert "http::GET::/repos/{param}/files/{param}" in _ids(contracts)
 
+    def test_a_trailing_query_hole_after_a_parameter_hole_is_dropped(self):
+        code = """\
+export class Client {
+  getFile(id: string, encoded: string, qs: string) {
+    return fetch(`/api/repos/${id}/files/${encoded}${qs}`);
+  }
+}
+"""
+        contracts, _u, _c = _run(code)
+        assert "http::GET::/api/repos/{param}/files/{param}" in _ids(contracts)
+
     def test_it_now_reaches_the_provider_that_exists(self):
         """End to end against a provider built by the product's own normalizer."""
         from repowise.core.workspace.extractors.http.dialect import build_provider_contract

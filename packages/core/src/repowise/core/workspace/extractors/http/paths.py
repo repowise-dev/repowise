@@ -171,21 +171,23 @@ def strip_leading_base_expr(path: str) -> tuple[str, str]:
 
 
 # A trailing interpolated suffix, e.g. ``/repos${qs}``. Anchored, and required
-# to follow an alphanumeric so a real parameter segment (``/users/${id}``) and a
-# separator-composed value (``/users/user-${id}``) are both left alone.
-_TRAILING_QUERY_EXPR_RE = re.compile(r"(?<=[A-Za-z0-9])(?:\$\{[^}]*\})+$")
+# to follow an alphanumeric or another hole so a real parameter segment
+# (``/users/${id}``) and a separator-composed value (``/users/user-${id}``) are both left alone.
+_TRAILING_QUERY_EXPR_RE = re.compile(r"(?<=[A-Za-z0-9\}])(?:\$\{[^}]*\})+$")
 
 
 def strip_trailing_query_expr(path: str) -> str:
     """Drop a trailing interpolated query string from a consumer URL path.
 
-    ``/snapshots/${id}/graph${q}`` becomes ``/snapshots/${id}/graph``. The
-    expression holds ``?limit=...`` at run time, but the ``?`` is inside it, so
-    :func:`normalize_http_path` cannot see it and the call normalizes to
-    ``/snapshots/{param}/graph{param}`` — a path no provider declares.
+    ``/snapshots/${id}/graph${q}`` becomes ``/snapshots/${id}/graph``, and
+    ``/api/repos/${id}/files/${encoded}${qs}`` becomes
+    ``/api/repos/${id}/files/${encoded}``. The expression holds ``?limit=...`` at
+    run time, but the ``?`` is inside it, so :func:`normalize_http_path` cannot see
+    it and the call normalizes to ``/snapshots/{param}/graph{param}`` or
+    ``.../{param}{param}`` — a path no provider declares.
 
     Ceiling: the only signal available is that the expression is glued onto a
-    complete segment, so an optional *path* suffix built the same way
+    complete segment or parameter hole, so an optional *path* suffix built the same way
     (``/docs${path}`` where ``path`` is ``/${slug}`` or ``""``) also reduces to
     its empty-suffix form. That is the route the call makes when the suffix is
     empty, so it is still a path the caller reaches; what is lost is the

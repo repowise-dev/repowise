@@ -395,3 +395,23 @@ def test_only_a_placeholder_host_after_a_scheme_placeholder_is_stripped() -> Non
     path, _ = strip_leading_base_expr("${s}//${tenant}.example.com/api/users")
     assert path.startswith("//${tenant}")
     assert strip_leading_base_expr("${a}//${b}") == ("/", "b")
+
+
+def test_strip_trailing_query_expr() -> None:
+    from repowise.core.workspace.extractors.http.paths import strip_trailing_query_expr
+
+    assert strip_trailing_query_expr("/snapshots/${id}/graph${q}") == "/snapshots/${id}/graph"
+    assert (
+        strip_trailing_query_expr("/api/repos/${id}/files/${encoded}${qs}")
+        == "/api/repos/${id}/files/${encoded}"
+    )
+    assert strip_trailing_query_expr("${a}${b}") == "${a}"
+    assert strip_trailing_query_expr("${id}${qs}") == "${id}"
+    assert strip_trailing_query_expr("/x${path}") == "/x"
+    assert strip_trailing_query_expr("/docs${path}") == "/docs"
+    # Parameter segments separated by / or - are left alone
+    assert strip_trailing_query_expr("/users/${id}") == "/users/${id}"
+    assert strip_trailing_query_expr("/users/user-${id}") == "/users/user-${id}"
+    assert strip_trailing_query_expr("/users/${id}/${name}") == "/users/${id}/${name}"
+    assert strip_trailing_query_expr("${id}") == "${id}"
+    assert strip_trailing_query_expr("/${id}") == "/${id}"
