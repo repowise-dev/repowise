@@ -383,19 +383,28 @@ def _commit_leaders(
     total = sum(a["commit_count"] for a in rows)
     lead = rows[0]  # stored most-commits first
     leaders = {"all_time": f"{lead.get('name')} {lead['commit_count']} of {total}{more}"}
-    recent_total = sum(a.get("recent_commit_count") or 0 for a in rows)
-    if more and recent_owner and all(a.get("name") != recent_owner for a in rows):
-        # The recent leader is outside the 50 kept authors: no count to give.
-        return leaders
-    if recent_total:
-        top = max(a.get("recent_commit_count") or 0 for a in rows)
-        # Ties go to the stored recent owner, so the two fields never disagree.
-        tied = [a for a in rows if (a.get("recent_commit_count") or 0) == top]
-        pick = next((a for a in tied if a.get("name") == recent_owner), tied[0])
-        leaders["last_90d"] = f"{pick.get('name')} {top} of {recent_total}{more}"
-    elif all("recent_commit_count" in a for a in rows):
-        leaders["last_90d"] = "no commits"
+    recent = _recent_leader(rows, recent_owner, more)
+    if recent:
+        leaders["last_90d"] = recent
     return leaders
+
+
+def _recent_leader(rows: list[dict], recent_owner: str | None, more: str) -> str | None:
+    """The 90-day line of :func:`_commit_leaders`; None when no count can be given."""
+    if any("recent_commit_count" not in a for a in rows):
+        return None  # indexed before per-author recent counts were stored
+    names = [a.get("name") for a in rows]
+    if more and recent_owner and recent_owner not in names:
+        return None  # the recent leader is outside the kept authors
+    counts = [a["recent_commit_count"] or 0 for a in rows]
+    total = sum(counts)
+    if not total:
+        return "no commits"
+    top = max(counts)
+    tied = [name for name, n in zip(names, counts, strict=True) if n == top]
+    # Ties go to the stored recent owner, so the two fields never disagree.
+    name = recent_owner if recent_owner in tied else tied[0]
+    return f"{name} {top} of {total}{more}"
 
 
 def _directory_ownership(rows: list[Any]) -> dict[str, Any]:
