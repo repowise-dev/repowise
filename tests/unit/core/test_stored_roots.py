@@ -45,10 +45,10 @@ async def _reachability(session, tmp_path) -> dict[str, dict[str, str]]:  # noqa
 
 @pytest.mark.parametrize(("framework", "registered_in", "handler"), _FAMILIES)
 async def test_a_stored_route_handler_is_a_production_root(
-    session,
+    session,  # noqa: F811
     framework,
     registered_in,
-    handler,  # noqa: F811
+    handler,
 ):
     session.add(_route(framework, registered_in, handler))
     # An inline handler names no function, so it starts nothing.
@@ -77,8 +77,8 @@ async def test_a_handler_outside_production_code_starts_nothing(session):  # noq
 
 
 async def test_package_usage_reaches_a_file_through_its_route_handler(
-    session,
-    tmp_path,  # noqa: F811
+    session,  # noqa: F811
+    tmp_path,
 ):
     # Nothing imports worker.py, so the import graph alone cannot reach it.
     assert (await _reachability(session, tmp_path))["src/jobs/worker.py"]["state"] == "unknown"
@@ -91,8 +91,8 @@ async def test_package_usage_reaches_a_file_through_its_route_handler(
 
 
 async def test_a_framework_loaded_file_is_a_root_and_a_bound_symbol_is_not(
-    session,
-    tmp_path,  # noqa: F811
+    session,  # noqa: F811
+    tmp_path,
 ):
     session.add_all(
         [
@@ -138,3 +138,21 @@ async def test_a_root_flag_without_the_entry_flag_counts(session):  # noqa: F811
     )
     await session.commit()
     assert "src/jobs/worker.py" in (await load_stored_roots(session, REPO)).files
+
+
+async def test_a_handler_file_missing_from_the_graph_is_no_usage_root(
+    session,  # noqa: F811
+    tmp_path,
+):
+    await session.execute(
+        GraphNode.__table__.update()
+        .where(GraphNode.node_id == "src/app/main.py")
+        .values(is_entry_point=False)
+    )
+    session.add(_route("flask", "src/gone.py", "src/gone.py::index"))
+    await session.commit()
+    # No root is in the graph, so nothing is judged against roots.
+    assert (await _reachability(session, tmp_path))["src/jobs/worker.py"] == {
+        "state": "unknown",
+        "basis": "no_entry_points",
+    }

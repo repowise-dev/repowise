@@ -364,7 +364,8 @@ async def _file_nodes(
         )
     ).all()
     language = {n: lang for n, lang in nodes if n in files and lang}
-    roots = (await load_stored_roots(session, repository_id)).all_files
+    # A route row can outlive its file until the next update reads routes again.
+    roots = (await load_stored_roots(session, repository_id)).all_files & {n for n, _l in nodes}
     return sorted(roots), language
 
 
