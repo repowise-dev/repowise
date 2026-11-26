@@ -1218,6 +1218,19 @@ def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:
     assert is_runnable_test("src/pkg/test_paths.py")
 
 
+@pytest.mark.parametrize(
+    ("path", "runnable"),
+    [
+        ("src/test_mode.go", False),
+        ("tests/test_mode.go", False),
+        ("src/mode_test.go", True),
+        ("tests/test_x.py", True),
+    ],
+)
+def test_go_runnable_names_require_test_suffix(path, runnable) -> None:
+    assert is_runnable_test(path) is runnable
+
+
 def test_a_test_named_php_class_phpunit_does_not_collect_is_not_runnable() -> None:
     """``src/Testing/Attributes/UnitTest.php`` is test-shaped, but PHPUnit never collects it."""
     config = (

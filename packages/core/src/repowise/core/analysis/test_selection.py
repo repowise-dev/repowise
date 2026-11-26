@@ -524,8 +524,11 @@ def is_runnable_test(
 @functools.lru_cache(maxsize=_PATH_MEMO)
 def _runnable_name(path: str) -> bool:
     p = PurePosixPath(path)
+    suffix = p.suffix.lower()
+    if suffix == ".go":
+        return p.name.endswith("_test.go")
     return (
-        p.suffix.lower() in TEST_CODE_SUFFIXES
+        suffix in TEST_CODE_SUFFIXES
         and not is_test_support_module(path)
         and is_test_path(p.name)
     )
