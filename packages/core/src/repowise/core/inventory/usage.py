@@ -13,8 +13,10 @@ A node counts for a package in one of two ways, and every row says which:
   name differs (``PyYAML`` / ``yaml``) is found only by asking for the import
   name, and then only as inferred.
 
-Reachability per importing file, from the stored graph: ``reachable`` when an
-entry point or other reachability root imports it, directly or transitively;
+Reachability per importing file, from the stored graph: ``reachable`` when a
+stored root (:mod:`.roots`: an entry point or other reachability root, a file a
+framework loads, a file holding a route handler) is it or imports it, directly
+or transitively;
 ``unreachable`` when dead-code analysis reported the file as ``unreachable_file``;
 ``test`` for test files; otherwise ``unknown``. A file no import path reaches
 may still be loaded by a framework, a script or reflection, so that is never
@@ -348,23 +350,22 @@ async def load_file_facts(
 async def _file_nodes(
     session: Any, repository_id: str, files: set[str]
 ) -> tuple[list[str], dict[str, str]]:
-    """The reachability roots (entry points and other roots), and each of
+    """The stored root files (:func:`.roots.load_stored_roots`), and each of
     *files*' language."""
     from repowise.core.persistence.models import GraphNode
 
+    from .roots import load_stored_roots
+
     nodes = (
         await session.execute(
-            select(
-                GraphNode.node_id,
-                GraphNode.language,
-                GraphNode.is_entry_point,
-                GraphNode.is_reachability_root,
-            ).where(GraphNode.repository_id == repository_id, GraphNode.node_type == "file")
+            select(GraphNode.node_id, GraphNode.language).where(
+                GraphNode.repository_id == repository_id, GraphNode.node_type == "file"
+            )
         )
     ).all()
-    language = {n: lang for n, lang, _e, _r in nodes if n in files and lang}
-    roots = [n for n, _l, entry, root in nodes if entry or root]
-    return roots, language
+    language = {n: lang for n, lang in nodes if n in files and lang}
+    roots = (await load_stored_roots(session, repository_id)).all_files
+    return sorted(roots), language
 
 
 async def _reached_from(session: Any, repository_id: str, roots: list[str]) -> set[str]:
