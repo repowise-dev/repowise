@@ -586,3 +586,17 @@ async def test_default_responses_are_byte_identical_with_change_records(setup_mc
     )
     await session.commit()
     assert await defaults() == before
+
+
+@pytest.mark.parametrize("out", [None, "", "abc\x1fDev", "abc\x1fDev\x1fnot-a-date"])
+def test_a_failed_newest_line_walk_is_not_cached(monkeypatch, out):
+    from repowise.server.mcp_server import _changes
+
+    key = ("root", "c" * 40, f"x{out!r}.py", (1, 2))
+    monkeypatch.setattr(_changes, "_line_log", lambda *a, **k: out)
+    with pytest.raises(_changes._LineHistoryError):
+        _changes._newest_line_commit(*key)
+    # The next call walks again rather than replaying the failure.
+    good = "abc\x1fDev\x1f2026-09-29T14:28:33+05:30\n"
+    monkeypatch.setattr(_changes, "_line_log", lambda *a, **k: good)
+    assert _changes._newest_line_commit(*key) == ("abc", "Dev", datetime(2026, 9, 29, 8, 58, 33))
