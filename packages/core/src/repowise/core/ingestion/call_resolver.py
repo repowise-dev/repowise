@@ -41,6 +41,7 @@ from .call_barrel_forwarding import (  # noqa: F401
 )
 from .call_cobol import CobolCallsMixin
 from .call_cpp_class_scope import CppClassScopeMixin
+from .call_external import ExternalCallsMixin
 from .call_inheritance import (  # noqa: F401
     _EXTERNAL_PREFIX,
     _MAX_ANCESTOR_EXPAND_DEPTH,
@@ -88,6 +89,7 @@ from .call_receiver_typing import (
 )
 from .call_rust_paths import RustPathCallsMixin
 from .decorator_names import is_property_accessor, property_mutator_role
+from .external_calls import ExternalCallSite
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
     get_builtin_methods,
@@ -339,6 +341,7 @@ class CallResolver(
     InheritanceMixin,
     CppClassScopeMixin,
     RustPathCallsMixin,
+    ExternalCallsMixin,
 ):
     """Resolve raw CallSites to symbol-level edges.
 
@@ -1040,8 +1043,18 @@ class CallResolver(
             cache[file_path] = merged
         return merged
 
-    def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
-        """Resolve all calls in a single file to symbol-level edges."""
+    def resolve_file(
+        self,
+        file_path: str,
+        calls: list[CallSite],
+        external: list[ExternalCallSite] | None = None,
+    ) -> list[ResolvedCall]:
+        """Resolve all calls in a single file to symbol-level edges.
+
+        With *external*, a call bound to no repo symbol whose callee an import
+        provably binds to a package is appended there instead
+        (:meth:`_external_call_site`); it never becomes an edge.
+        """
         results: list[ResolvedCall] = []
         self._chain_inner_resolved.clear()
 
@@ -1054,6 +1067,14 @@ class CallResolver(
             resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
             if resolved:
                 resolved = self._settle_callee(resolved, call)
+            if resolved is None and external is not None:
+                try:
+                    site = self._external_call_site(file_path, call)
+                except Exception as exc:  # a derived record never fails the graph
+                    log.debug("external_call_site_failed", path=file_path, error=repr(exc))
+                    site = None
+                if site is not None:
+                    external.append(site)
             if resolved:
                 # The edge type is a property of the call syntax, not of the
                 # tier that answered, so it is stamped once here.

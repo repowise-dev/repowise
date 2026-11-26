@@ -14,6 +14,7 @@ import structlog
 
 from ...cancellation import check_cancelled
 from ..decorator_names import decorator_base
+from ..external_calls import ExternalCallSite
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ..models import REGISTRATION_HINT, CallSite, ParsedFile
 from ..symbol_identity import make_symbol_id
@@ -687,10 +688,16 @@ class ResolveMixin:
         total_referenced = 0
 
         files_with_calls = [(p, pf) for p, pf in self._scoped_items(scope) if pf.calls]
+        # Package calls are kept beside the graph, never in it, so no metric moves.
+        external_sites: dict[str, list[ExternalCallSite]] = {}
+        self.external_call_sites, self.external_call_scope = external_sites, scope
         if progress:
             progress.on_phase_start("graph.calls", len(files_with_calls))
         for path, parsed in files_with_calls:
-            resolved = resolver.resolve_file(path, parsed.calls)
+            external: list[ExternalCallSite] = []
+            resolved = resolver.resolve_file(path, parsed.calls, external)
+            if external:
+                external_sites[path] = external
             for rc in resolved:
                 if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
                     continue
