@@ -39,7 +39,10 @@ Optional ``include`` parameter widens the response:
   - include=["symbols"]   → every symbol in a file card, not the ranked top 15
   - include=["facts"]     → a symbol card's fact row (awaits, assigned fields,
                             complexity, resolved callers) and direct test links
-  - include=["changes"]   → recent Change Records touching a file target
+  - include=["changes"]   → recent Change Records touching a file target; on a
+                            symbol, the ones that edited its lines
+                            (``changes_scope: "symbol"``), or the file's with
+                            ``changes_scope: "file"`` and the reason
   - include=["suspects"]  → changes merged in the last 14 days ranked against the
                             targets' files and the typed ``symptom`` text (the
                             targets' path words without one), each with the

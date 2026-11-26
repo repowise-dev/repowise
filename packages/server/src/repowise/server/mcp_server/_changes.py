@@ -1,8 +1,8 @@
 """Change Records on the MCP surface.
 
-``change:<id>`` cards for get_context, recent changes per file behind
-``include=["changes"]`` (get_context, get_risk), ranked suspects behind
-get_context's ``include=["suspects"]`` and the get_overview change summary.
+``change:<id>`` cards for get_context, recent changes per file (or per
+symbol, by its lines) behind ``include=["changes"]`` (get_context, get_risk),
+ranked suspects behind get_context's ``include=["suspects"]`` and the get_overview change summary.
 All of it is opt-in.
 
 Provenance follows :mod:`repowise.core.attribution`: three-state, coverage
@@ -12,13 +12,16 @@ attribution is off for the repo.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import subprocess
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, or_, select
 
+from repowise.core.analysis.git_cli import run_git
 from repowise.core.attribution import (
     AGENT,
     COVERAGE_FLOOR,
@@ -167,17 +170,31 @@ async def file_changes(
     Ceiling: a change keeps only its first ``MAX_STORED_FILES`` files, and the
     newest ``_FILE_SCAN_CAP`` candidate rows are read.
     """
+    hits = await _rows_touching(session, repository, paths)
+    return {path: _changes_block(matched, attribution) for path, matched in hits.items()}
+
+
+def _changes_block(matched: list[Any], attribution: bool) -> dict[str, Any]:
+    block: dict[str, Any] = {
+        "recent_changes": [change_row(r, attribution) for r in matched[:FILE_CHANGES_CAP]]
+    }
+    if len(matched) > FILE_CHANGES_CAP:
+        block["recent_changes_total"] = len(matched)
+    return block
+
+
+async def _rows_touching(session: Any, repository: Any, paths: list[str]) -> dict[str, list[Any]]:
+    """Per path, the stored changes whose file list names it, newest first."""
     wanted = list(dict.fromkeys(paths))
     if not wanted:
         return {}
-    rows = (
-        await session.execute(
-            select(Change)
-            .where(Change.repository_id == repository.id, or_(*(_touches(p) for p in wanted)))
-            .order_by(Change.merged_at.desc().nulls_last(), Change.change_id)
-            .limit(_FILE_SCAN_CAP)
-        )
-    ).scalars().all()
+    result = await session.execute(
+        select(Change)
+        .where(Change.repository_id == repository.id, or_(*(_touches(p) for p in wanted)))
+        .order_by(Change.merged_at.desc().nulls_last(), Change.change_id)
+        .limit(_FILE_SCAN_CAP)
+    )
+    rows = result.scalars().all()
     hits: dict[str, list[Any]] = {p: [] for p in wanted}
     for row in rows:
         try:
@@ -187,15 +204,91 @@ async def file_changes(
         for path in wanted:
             if path in files:
                 hits[path].append(row)
-    out: dict[str, dict[str, Any]] = {}
-    for path, matched in hits.items():
-        block: dict[str, Any] = {
-            "recent_changes": [change_row(r, attribution) for r in matched[:FILE_CHANGES_CAP]]
+    return hits
+
+
+# -- include=["changes"] on a symbol: the changes that edited its lines --------
+
+#: A symbol's line history is one ``git log -L`` walk; past this it is served
+#: at file level with the reason.
+_LINE_LOG_TIMEOUT_SECONDS = 15
+
+
+async def symbol_changes(
+    session: Any,
+    repository: Any,
+    repo_root: str | None,
+    file_path: str,
+    lines: tuple[int, int] | None,
+    *,
+    attribution: bool,
+) -> dict[str, Any]:
+    """The stored changes that edited a symbol's lines, with ``changes_scope``.
+
+    The records keep files, not hunks, so the symbol's lines (as indexed, at
+    the indexed commit) are walked with ``git log -L`` and its commits matched
+    to the changes touching the file. With no line range, no checkout or a
+    failed walk, the file's changes are served with ``changes_scope: "file"``
+    and the reason, never passed off as the symbol's.
+    """
+    matched = (await _rows_touching(session, repository, [file_path])).get(file_path, [])
+    reason = None
+    if lines is None:
+        reason = "no_line_range"
+    elif not repository.head_commit:
+        # The lines are the indexed ones; walking live HEAD could name other code.
+        reason = "no_indexed_commit"
+    elif matched:
+        shas = await asyncio.to_thread(
+            _line_log_shas, repo_root, repository.head_commit, file_path, lines
+        )
+        if shas is None:
+            reason = "git_history_unavailable"
+        else:
+            # A merge change lists its branch commits; a squash or lone commit is its head.
+            matched = [r for r in matched if shas & _change_shas(r)]
+    if reason is not None:
+        return {
+            **_changes_block(matched, attribution),
+            "changes_scope": "file",
+            "changes_scope_reason": reason,
         }
-        if len(matched) > FILE_CHANGES_CAP:
-            block["recent_changes_total"] = len(matched)
-        out[path] = block
-    return out
+    return {**_changes_block(matched, attribution), "changes_scope": "symbol"}
+
+
+def _change_shas(row: Any) -> set[str]:
+    try:
+        shas = set(json.loads(row.commit_shas_json or "[]"))
+    except (TypeError, ValueError):
+        shas = set()
+    if row.head_sha:
+        shas.add(row.head_sha)
+    return shas
+
+
+def _line_log_shas(
+    repo_root: str | None,
+    at_commit: str,
+    file_path: str,
+    lines: tuple[int, int],
+) -> set[str] | None:
+    """Full shas of the commits that changed *lines* of *file_path*; None when git cannot say.
+
+    Unbounded by date: a merged branch's commits can predate the oldest stored
+    change by weeks. The walk only diffs commits that touch the file, and the
+    timeout turns a history too long to walk into the file-level answer.
+    """
+    if not repo_root:
+        return None
+    start, end = lines
+    args = ["log", f"-L{start},{end}:{file_path}", "--no-patch", "--format=%H", at_commit]
+    try:
+        proc = run_git(args, repo_root, timeout=_LINE_LOG_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
 
 # -- include=["provenance"]: a file's three-state attribution ------------------
@@ -274,7 +367,11 @@ async def overview_changes(session: Any, repository: Any) -> dict[str, Any]:
     weeks: Counter[str] = Counter(
         _week(m if m.tzinfo else m.replace(tzinfo=UTC)) for m, _, _ in rows
     )
-    window: dict[str, Any] = {"days": OVERVIEW_WINDOW_DAYS, "since": _iso(since), "until": _iso(until)}
+    window: dict[str, Any] = {
+        "days": OVERVIEW_WINDOW_DAYS,
+        "since": _iso(since),
+        "until": _iso(until),
+    }
     # The index keeps a bounded commit window: weeks before its oldest change
     # are unknown, not zero, so the weekly series starts there.
     if oldest > since:
@@ -319,7 +416,9 @@ async def suspects_block(
     from repowise.core.suspects.index import find_suspects, repo_terms
     from repowise.core.suspects.signals import path_terms
 
-    symptom_targets = [t for t in targets if not is_change_target(t) and not t.startswith("component:")]
+    symptom_targets = [
+        t for t in targets if not is_change_target(t) and not t.startswith("component:")
+    ]
     files = tuple(dict.fromkeys(t.split("::", 1)[0] for t in symptom_targets))
     if not (symptom and symptom.strip()):
         quiet = repo_terms(repository.local_path)

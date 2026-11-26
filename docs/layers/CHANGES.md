@@ -21,6 +21,7 @@ From an agent:
 ```python
 get_context(targets=["change:pr-123"])     # a change card
 get_context(targets=["src/billing/invoice.py"], include=["changes"])
+get_context(targets=["src/billing/invoice.py::total"], include=["changes"])  # that function's changes
 ```
 
 In the dashboard, open the Commits page and switch to the "By change" view.
@@ -186,6 +187,7 @@ as correct when its file set matches the forge's:
 | REST detail | `GET /api/repos/{id}/changes/{change_id}`; `evidence=true` adds the checklist, `refresh=true` rebuilds it |
 | MCP | `get_context(targets=["change:<id>"])`: a change card with its first 25 files |
 | MCP | `get_context(include=["changes"])` and `get_risk(include=["changes"])` on a file: its 5 newest changes, with `recent_changes_total` when there are more |
+| MCP | `get_context(include=["changes"])` on a symbol (`path::Class.method`): the changes that edited its lines, `changes_scope: "symbol"`; the file's changes with `changes_scope: "file"` and the reason when git cannot walk them |
 | MCP | `get_overview(include=["changes"])`: changes by category and by week over the 90 days to the newest change, with the agent share when attribution is on |
 | MCP | `get_change_risk(include=["evidence"])`: the checklist for a revspec, the kept one when the revspec names a stored change |
 | Chat | Charts of changes by category, by week and by provenance, from the `get_overview` block |

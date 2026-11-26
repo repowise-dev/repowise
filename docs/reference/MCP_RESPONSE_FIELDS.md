@@ -196,7 +196,7 @@ Per target, under `targets`:
 | `parent_page` | The concept page above this target: `title`, `target_path` |
 | `freshness` | Only when the page is stale or the file has uncommitted edits: `freshness_status`, `is_stale`, `confidence_score`, `working_tree` |
 | `hotspot_files` | Directory card: hotspot files under it, absent at zero |
-| `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`. A cue to call `get_risk` |
+| `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`. A cue to call `get_risk`. Counted per file: on a symbol card it carries `scope: "file"` |
 | `episodes` | Count of dated records; `get_why` serves them |
 | `measured` | Symbol or file a stored profile run measured: one line with rank among repo code, workload class and name (`in tests` for a unit-test run), share of samples with its interval (`ordering only` for a tracer), how much of the run repo code explains, and age. A file names up to 3 functions from one run and counts the rest, with other runs and stale ones counted apart. `stale:` when the body changed since the run. Rows are per function, so a class card has none. Absent with no runtime evidence |
 | decisions | Titles; with `include=["decisions"]` the lanes `decisions`, `candidates` (max 3), `history` (max 2) |
@@ -256,6 +256,8 @@ Never complete for:
 ### changes
 
 `recent_changes`: the newest five Change Records touching the file, each `{id, ref, title, merged_at, category, provenance}`; `recent_changes_total` when more exist.
+
+On a symbol target the rows are the changes that edited the symbol's lines (a `git log -L` walk over its indexed lines at the indexed commit), with `changes_scope: "symbol"`. When that walk cannot run (no line range, no indexed commit, no git history under the repo root, or a timeout) the file's changes are served with `changes_scope: "file"` and `changes_scope_reason` (`no_line_range`, `no_indexed_commit` or `git_history_unavailable`).
 
 - `ref` is the forge number (`#123`, `!12`), absent for an unnamed change.
 - `provenance` is `{label, coverage}`, label `agent`, `human_attested` or `unknown`; absent when stored without a label, when coverage is below 30% (where the file and overview shares are withheld too), or when attribution is off.
