@@ -122,6 +122,7 @@ class TestExpressRecognition:
         src = (
             "var fn = app.get('etag fn');\n"
             "var env = app.get('env');\n"
+            "var trailing = app.get('env',);\n"
             "if (app.get('trust proxy fn')(addr)) {}\n"
             "app.get('/users/:id', show);\n"
             "router.get('*', fallback);\n"

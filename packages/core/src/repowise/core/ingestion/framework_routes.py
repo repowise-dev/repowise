@@ -195,11 +195,16 @@ def _is_express_setting_read(
     close = match_paren(content, paren_offset)
     if close == -1:
         return False
+    saw_comma = False
     for i, ch, _depth in scan_code(content, arg_end):
         if i >= close:
             break
-        if not ch.isspace():
-            return False
+        if ch.isspace():
+            continue
+        if ch == "," and not saw_comma:
+            saw_comma = True
+            continue
+        return False
     return True
 
 
