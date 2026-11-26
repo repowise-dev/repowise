@@ -197,6 +197,20 @@ def augment_command(
         sys.exit(0)
 
 
+def _handle_claude_lifecycle_event(event: str, cwd: str, payload: dict) -> None:
+    session_id = payload.get("session_id", "")
+    session_id = session_id if isinstance(session_id, str) else ""
+    if event == "SessionStart":
+        result = _handle_claude_session_start(cwd, session_id)
+    elif event == "SubagentStart":
+        result = _handle_claude_subagent_start(cwd)
+    else:
+        return
+    if result:
+        _emit_response(event, result, session_id)
+    _count_run(cwd, session_id, event, "", emitted=bool(result))
+
+
 def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> None:
     """Main entry point — reads stdin, dispatches to hook handlers."""
     raw = sys.stdin.read()
@@ -237,26 +251,8 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
         _count_run(cwd, session_id, event, "", emitted=bool(result))
         return
 
-    if event == "SessionStart":
-        # Claude Code lifecycle hook: live index-freshness + trust context,
-        # plus the relevance-ranked standing-decisions block.
-        session_id = payload.get("session_id", "")
-        session_id = session_id if isinstance(session_id, str) else ""
-        result = _handle_claude_session_start(cwd, session_id)
-        if result:
-            _emit_response(event, result, session_id)
-        _count_run(cwd, session_id, event, "", emitted=bool(result))
-        return
-
-    if event == "SubagentStart":
-        # Claude Code subagent hook: injects the deferred repowise steer
-        # directly into the subagent, skipping parent-only freshness/decisions.
-        session_id = payload.get("session_id", "")
-        session_id = session_id if isinstance(session_id, str) else ""
-        result = _handle_claude_subagent_start(cwd)
-        if result:
-            _emit_response(event, result, session_id)
-        _count_run(cwd, session_id, event, "", emitted=bool(result))
+    if event in ("SessionStart", "SubagentStart"):
+        _handle_claude_lifecycle_event(event, cwd, payload)
         return
 
     if event == "PostToolUseFailure":
