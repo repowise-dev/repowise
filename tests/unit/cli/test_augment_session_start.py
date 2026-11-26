@@ -47,6 +47,24 @@ def test_current_index_is_silent(repo, monkeypatch) -> None:
     assert _handle(repo) is None
 
 
+def test_subagent_start_in_indexed_repo_emits_steer(repo) -> None:
+    result = session_start._handle_claude_subagent_start(str(repo))
+    assert result is not None
+    assert session_start.AGENT_STEER_DEFERRED in result
+    assert result.startswith(f"[repowise {session_start.emitting_build()}]")
+
+
+def test_subagent_start_in_indexed_repo_with_claude_md_still_emits_steer(repo) -> None:
+    _write_agent_block(repo)
+    result = session_start._handle_claude_subagent_start(str(repo))
+    assert result is not None
+    assert session_start.AGENT_STEER_DEFERRED in result
+
+
+def test_subagent_start_outside_indexed_repo_is_silent(tmp_path: Path) -> None:
+    assert session_start._handle_claude_subagent_start(str(tmp_path)) is None
+
+
 def test_current_index_without_agent_block_gives_only_the_call_first_line(
     repo, monkeypatch
 ) -> None:

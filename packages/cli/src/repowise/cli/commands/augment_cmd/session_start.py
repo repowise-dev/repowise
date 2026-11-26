@@ -103,6 +103,28 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     return f"[repowise {emitting_build()}] " + "\n".join(lines)
 
 
+def _handle_claude_subagent_start(cwd: str) -> str | None:
+    """Return the steer for a subagent, or None outside indexed repos.
+
+    Subagents have no CLAUDE.md block and skip parent instructions that tell
+    them to call repowise first. This hook injects the steer directly into the
+    subagent before its first prompt. Freshness, decisions and setup lines are
+    omitted: the parent already has them, and every line costs subagent tokens.
+    """
+    repo_path = _find_repo_root(Path(cwd))
+    if repo_path is None:
+        return None
+    try:
+        state = json.loads((repo_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    last_sync = state.get("last_sync_commit")
+    if not isinstance(last_sync, str) or not last_sync:
+        return None
+
+    return f"[repowise {emitting_build()}] {AGENT_STEER_DEFERRED}"
+
+
 def _setup_line(repo_path: Path) -> str | None:
     """One line while the finish-setup pass is offered, from the last full read.
 

@@ -146,6 +146,44 @@ def test_claude_user_prompt_submit_stays_silent(runner: CliRunner, tmp_path: Pat
     assert result.output == ""
 
 
+def test_claude_subagent_start_payload_returns_steer_in_indexed_repo(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.agent_steer import AGENT_STEER_DEFERRED
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.augment_cmd.command._claim_emission", lambda e, c: True
+    )
+    _init_repowise_repo(tmp_path)
+
+    result = _invoke_augment(
+        runner,
+        {
+            "hook_event_name": "SubagentStart",
+            "cwd": str(tmp_path),
+        },
+    )
+
+    assert result.exit_code == 0
+    context = _hook_context(result.output)
+    assert AGENT_STEER_DEFERRED in context
+
+
+def test_claude_subagent_start_outside_repo_returns_empty(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    result = _invoke_augment(
+        runner,
+        {
+            "hook_event_name": "SubagentStart",
+            "cwd": str(tmp_path),
+        },
+    )
+
+    assert result.exit_code == 0
+    assert result.output.strip() == ""
+
+
 def test_codex_post_tool_use_bash_detects_stale_wiki(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

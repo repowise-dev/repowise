@@ -407,6 +407,7 @@ _LEGACY_AUGMENT_MATCHERS = (
 # is excluded on purpose: the block usually survives compaction in the summary,
 # and re-emitting it there would double it up.
 _SESSION_START_MATCHER = "startup|resume|clear"
+_SUBAGENT_START_MATCHER = ".*"
 
 #: Hook commands run through a shell, so absence of the console script is a
 #: ``command not found`` on *every* matched tool call — non-blocking, but
@@ -579,7 +580,14 @@ def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
 #: Where :func:`claude_code_hook_commands` says a user-level hook lives. Only
 #: these commands carry a pinned path that ``repowise agents refresh`` rewrites.
 CLAUDE_SETTINGS_LABEL = "~/.claude/settings.json"
-_PLUGIN_EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop")
+_PLUGIN_EVENTS = (
+    "SessionStart",
+    "SubagentStart",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+)
 
 
 def claude_code_hook_commands(repo_path: Path | None = None) -> list[tuple[str, str]]:
@@ -793,6 +801,20 @@ def claude_code_capture_hook_installed() -> bool:
 def _session_start_entry() -> dict:
     return {
         "matcher": _SESSION_START_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _augment_hook_command(),
+                "timeout": 10,
+                "statusMessage": "Loading repowise context...",
+            }
+        ],
+    }
+
+
+def _subagent_start_entry() -> dict:
+    return {
+        "matcher": _SUBAGENT_START_MATCHER,
         "hooks": [
             {
                 "type": "command",
@@ -1064,11 +1086,13 @@ def install_claude_code_hooks() -> Path | None:
             post_hooks.append(post_hook_entry)
 
         # SessionStart: live index-freshness context at session start.
+        # SubagentStart: deferred steer context for subagents.
         # PostToolUseFailure: the wrong-path rescue.
-        # Both go through the same helper as the self-heal, which leaves a
+        # All three go through the same helper as the self-heal, which leaves a
         # hand-written non-list value alone instead of iterating it into an
         # AttributeError the OSError handler below would not catch.
         _backfill_event(hooks, "SessionStart", _session_start_entry)
+        _backfill_event(hooks, "SubagentStart", _subagent_start_entry)
         _backfill_event(hooks, "PostToolUseFailure", _failure_entry)
         if not _plugin_ships_stop_hook():
             _backfill_event(hooks, "Stop", _stop_entry)
@@ -1699,6 +1723,8 @@ def migrate_claude_code_hooks() -> bool:
     # purpose.
     if isinstance(post, list) and _has_repowise_hook(post):
         if _backfill_event(hooks, "SessionStart", _session_start_entry):
+            changed = True
+        if _backfill_event(hooks, "SubagentStart", _subagent_start_entry):
             changed = True
         if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
             changed = True
