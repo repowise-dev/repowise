@@ -1414,7 +1414,10 @@ class TestNoProviderNameBranches:
 
 # A hex character class with a quantifier, its bounds captured. The owner of
 # the commit-id shape is ``git_sha.FULL_SHA_PATTERN``.
-_HEX_RUN = re.compile(r"\[(?=[^\]]*(?:a-f|A-F))(?=[^\]]*0-9)[0-9a-fA-F-]+\]\{(\d*)(,?)(\d*)\}")
+# Ceiling: one quantified class per match, so a run split across classes
+# (``[0-9a-f]{20}[0-9a-f]{20}``) passes. Nobody writes a commit id that way;
+# summing adjacent runs is the upgrade if one appears.
+_HEX_RUN = re.compile(r"\[(?=[^\]]*(?:a-f|A-F))(?=[^\]]*(?:0-9|\\d))(?:[0-9a-fA-F-]|\\d)+\]\{(\d*)(,?)(\d*)\}")
 
 
 def _admits_a_full_sha(text: str) -> bool:
@@ -1598,6 +1601,7 @@ class TestNoOwnerCopies:
             ('R = re.compile(r"[0-9a-f]{4,41}")', "full-sha-regex"),
             ('R = re.compile(r"[0-9a-f]{40,}")', "full-sha-regex"),
             ('R = re.compile(r"[0-9A-F]{40}")', "full-sha-regex"),
+            ('R = re.compile(r"[\\da-f]{40}")', "full-sha-regex"),
             ('s = f"{path}::__module__"', "module-symbol-id"),
             ('NAMES = ("package.json", "Cargo.toml")', "manifest-list"),
         ],
