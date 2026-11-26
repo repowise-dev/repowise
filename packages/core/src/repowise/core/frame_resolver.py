@@ -449,6 +449,31 @@ _RUBY_BLOCK_PREFIX_RE = re.compile(r"^(?:(?:block(?:\s*\([^)]*\))?|rescue)\s+in\
 _RUBY_BODY_NAMES = frozenset({"<main>", "<top (required)>"})
 
 
+def _is_ruby_body(base_name: str) -> bool:
+    return base_name in _RUBY_BODY_NAMES or base_name.startswith(("<class:", "<module:"))
+
+
+def _matches_ruby_container(container: IndexedSymbol, base_name: str) -> bool:
+    clean_base = base_name.replace("::", ".").replace("#", ".")
+    if clean_base == container.name or clean_base.endswith("." + container.name):
+        return True
+    return base_name.startswith((f"<class:{container.name}>", f"<module:{container.name}>"))
+
+
+def _matches_ruby_symbol(symbol: IndexedSymbol, normalized: str) -> bool:
+    qual_parts = symbol.qualified_name.split(".")
+    if len(qual_parts) >= 2 and symbol.kind == "method":
+        parent = qual_parts[-2]
+        expected_suffix = f"{parent}.{symbol.name}"
+        if normalized == expected_suffix or symbol.qualified_name.endswith("." + normalized):
+            return True
+    return (
+        normalized == symbol.name
+        or symbol.qualified_name == normalized
+        or symbol.qualified_name.endswith("." + normalized)
+    )
+
+
 def _ruby(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipReason:
     raw_name = frame.function
     if not raw_name:
@@ -458,8 +483,7 @@ def _ruby(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipR
     folded = fold_match is not None
     base_name = raw_name[fold_match.end() :] if fold_match else raw_name
 
-    # Check for script or class/module body execution: "<main>", "<top (required)>", "<class:X>", "<module:X>"
-    if base_name in _RUBY_BODY_NAMES or base_name.startswith(("<class:", "<module:")):
+    if _is_ruby_body(base_name):
         return (None, folded)
 
     # Find the innermost callable symbol holding the line
@@ -468,29 +492,12 @@ def _ruby(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipR
     if symbol is None:
         # A frame on a class or module body line resolves to the file, like Python's <module>
         container = symbol_at((s for s in symbols if s.kind in ("class", "module")), frame.line)
-        if container is not None:
-            clean_base = base_name.replace("::", ".").replace("#", ".")
-            if clean_base == container.name or clean_base.endswith("." + container.name):
-                return (None, folded)
-            if base_name.startswith(f"<class:{container.name}>") or base_name.startswith(
-                f"<module:{container.name}>"
-            ):
-                return (None, folded)
+        if container is not None and _matches_ruby_container(container, base_name):
+            return (None, folded)
         return "no_span"
 
     normalized = base_name.replace("::", ".").replace("#", ".")
-
-    qual_parts = symbol.qualified_name.split(".")
-    if len(qual_parts) >= 2 and symbol.kind == "method":
-        parent = qual_parts[-2]
-        expected_suffix = f"{parent}.{symbol.name}"
-        if normalized == expected_suffix or symbol.qualified_name.endswith("." + normalized):
-            return (symbol, folded)
-    elif (
-        normalized == symbol.name
-        or symbol.qualified_name == normalized
-        or symbol.qualified_name.endswith("." + normalized)
-    ):
+    if _matches_ruby_symbol(symbol, normalized):
         return (symbol, folded)
 
     return "second_signal_mismatch"
