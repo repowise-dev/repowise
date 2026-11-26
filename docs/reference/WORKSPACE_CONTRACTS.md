@@ -111,7 +111,10 @@ handed to a package-level register function (`articles.Register(v1.Group("/artic
 that function's routes under the group, and a function registered under two groups serves its
 routes at both. Laravel's `routes/api.php` is
 served under `/api` unless `bootstrap/app.php` (`apiPrefix`) or a route provider says
-otherwise, and `Route::resource` / `apiResource` expand into the routes they register. A NestJS
+otherwise, and `Route::resource` / `apiResource` expand into the routes they register. An
+Express router handed to a module's exported function (`require('./routes/users')(api)`) serves
+that function's routes under the handed router's mount; a function handed routers at two
+different prefixes keeps its routes' in-function paths. A NestJS
 route is served at the app's `setGlobalPrefix` (unless its `exclude` list names the route), then
 its URI version (`enableVersioning`, `@Version`), then the `@Controller` prefix. A call through an
 axios, ky, got or ofetch instance is read with the instance's `baseURL` / `prefixUrl`, also when
