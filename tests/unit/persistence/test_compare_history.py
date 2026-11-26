@@ -146,6 +146,8 @@ async def test_the_callee_walk_keeps_production_functions_nearest_first(async_se
         ("gin.go::Engine::handleHTTPRequest", "tree.go::node::getValue"),
         ("tree.go::node::getValue", "gin.go::Engine::ServeHTTP"),
         ("bench_test.go::BenchmarkJSON", "context.go::Context::JSON"),
+        ("bench_test.go::BenchmarkHelperOnly", "bench_test.go::runRequest2"),
+        ("bench_test.go::BenchmarkHelperOnly", "external:testing.B.ResetTimer"),
     ]
     async_session.add_all(
         GraphEdge(repository_id=repo.id, source_node_id=a, target_node_id=b, edge_type="calls")
@@ -160,6 +162,7 @@ async def test_the_callee_walk_keeps_production_functions_nearest_first(async_se
             "bench_test.go::BenchmarkRoute",
             "bench_test.go::BenchmarkJSON",
             "x_test.go::BenchmarkNone",
+            "bench_test.go::BenchmarkHelperOnly",
         ],
     )
 

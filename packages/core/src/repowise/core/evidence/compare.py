@@ -149,14 +149,13 @@ class History:
     newest first; a pair the host could not list is absent. ``touched`` maps a
     commit to the functions (symbol ids) it changed, from function-level
     history. ``callees`` maps a function to the production functions it reaches,
-    nearest first (the host bounds the walk); a function the graph knows calls
-    from is present even when none of them is production, and one it knows
-    nothing of is absent.
+    nearest first (the host bounds the walk; an unordered collection is read by
+    name); a function with no production callee known is absent.
     """
 
     ranges: Mapping[tuple[str, str], Sequence[tuple[str, str | None]]] = field(default_factory=dict)
     touched: Mapping[str, Collection[str]] = field(default_factory=dict)
-    callees: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    callees: Mapping[str, Collection[str]] = field(default_factory=dict)
     #: Pairs whose listing stopped at the host's cap: the count is unknown, and the
     #: oldest commits are not listed.
     truncated: Collection[tuple[str, str]] = field(default_factory=frozenset)
@@ -613,23 +612,24 @@ def benchmark_reach(
     """What slower *benchmarks* (their functions; ``None`` for one not placed) ran,
     most direct first: each one's own function and callees, then the functions
     the benchmark *profiles* measured only when the graph leaves a gap (a
-    benchmark not placed, or one the graph knows no calls from). A profile of
-    every benchmark is no reach of one: a single noisy benchmark would take the
-    blame for every function the others ran."""
+    benchmark not placed, or one the graph knows no production callee of). A
+    profile of every benchmark is no reach of one: a single noisy benchmark
+    would take the blame for every function the others ran. Ceiling: a profile
+    holds no per-benchmark split, so one gap fills the whole set's reach."""
     placed = [b for b in benchmarks if b]
     gap = not placed or len(placed) < len(benchmarks)
-    gap = gap or any(b not in history.callees for b in placed)
+    gap = gap or any(not history.callees.get(b) for b in placed)
     return reached_functions(placed, history, profiles if gap else ())
 
 
 def reached_functions(
     first: Sequence[str], history: History, measured: Iterable[Iterable[Any]]
 ) -> list[str]:
-    """*first* (the slower functions or benchmarks), then their callees nearest
-    first (each one's nearest before any one's farther), then the functions of
-    *measured* profile rows by self value: what a slower workload ran, most
-    direct first."""
-    reach = [history.callees.get(symbol_id, ()) for symbol_id in first]
+    """*first* (the slower functions or benchmarks), then their callees, taken
+    in turn by rank (each one's first, then each one's second, ...), then the
+    functions of *measured* profile rows by self value: what a slower workload
+    ran, most direct first."""
+    reach = [_ordered(history.callees.get(symbol_id, ())) for symbol_id in first]
     then = [
         callees[i]
         for i in range(max((len(c) for c in reach), default=0))
@@ -640,6 +640,10 @@ def reached_functions(
         ranked = sorted(profile, key=lambda r: -(_pick(r, "self_value") or 0.0))
         then.extend(r.symbol_id for r in ranked)
     return list(dict.fromkeys([*first, *then]))
+
+
+def _ordered(callees: Collection[str]) -> Sequence[str]:
+    return callees if isinstance(callees, Sequence) else sorted(callees)
 
 
 def benchmark_profiles(runs: Iterable[Any]) -> list[Any]:

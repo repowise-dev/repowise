@@ -38,11 +38,14 @@ log = logging.getLogger(__name__)
 MAX_RANGE_COMMITS = 200
 #: Callee hops walked from a benchmark's own function, and the most production
 #: functions kept, nearest first. Ceiling: gin's benchmarks reach their router
-#: lookup in 4 hops (benchmark, request helper, ``ServeHTTP``, the handler, the
-#: tree); a function past the depth or the cap is not reached, and a call the
+#: lookup in 4 hops (request helper, ``ServeHTTP``, the request handler, the
+#: tree lookup); a function past the depth or the cap is not reached, and a call the
 #: graph does not hold (a handler run through a slice of funcs) is not walked.
 CALLEE_DEPTH = 6
 MAX_CALLEES = 500
+#: Functions a walk visits at most (test helpers and production alike): a hub's
+#: fan-out stops the walk at the hop that passes it.
+MAX_WALKED = 5000
 
 _SYMBOL_KINDS = ("function", "method")
 
@@ -157,8 +160,7 @@ async def _callees(
 
     The walk goes through every function (a benchmark reaches the code under
     test through test helpers) but keeps only production ones, by each file's
-    ``code_origin``. A root the graph knows calls from is present even when it
-    keeps none; one with no call edge is absent (no reach known)."""
+    ``code_origin``. A root that keeps none is absent: no reach known."""
     from sqlalchemy import select
 
     from ..ids import SYMBOL_SEP
@@ -171,7 +173,7 @@ async def _callees(
     targets: dict[str, set[str]] = {}
 
     async def load(nodes: Collection[str]) -> None:
-        wanted = sorted(n for n in nodes if n not in targets)
+        wanted = sorted(n for n in nodes if n not in targets and not n.startswith("external:"))
         for node in wanted:
             targets[node] = set()
         for batch in chunked(wanted):
@@ -202,14 +204,14 @@ async def _callees(
         kept: list[str] = []
         for _ in range(CALLEE_DEPTH):
             await load(frontier)
-            frontier = sorted({t for node in frontier for t in targets[node]} - seen)
+            frontier = sorted({t for node in frontier for t in targets.get(node, ())} - seen)
             if not frontier:
                 break
             seen.update(frontier)
             kept.extend(await production(frontier))
-            if len(kept) >= MAX_CALLEES:
+            if len(kept) >= MAX_CALLEES or len(seen) >= MAX_WALKED:
                 break
-        if targets[root]:
+        if kept:
             out[root] = tuple(kept[:MAX_CALLEES])
     return out
 

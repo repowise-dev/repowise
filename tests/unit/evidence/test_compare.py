@@ -253,6 +253,23 @@ def test_the_profile_fills_a_benchmark_the_graph_knows_no_calls_from() -> None:
     assert found.cause.commits[0].functions == (GET_VALUE,)
 
 
+def test_the_profile_fills_a_benchmark_with_no_production_callee_known() -> None:
+    runs, rows = _series([100, 101, 99], [160])
+    _with_bench_profile(runs, rows, GET_VALUE)
+    history = History(
+        ranges={(BASE, HEAD): [(HEAD, "plant")]},
+        touched={HEAD: {GET_VALUE}},
+        callees={BENCH_FN: ()},
+    )
+    found = next(c for c in compare_runs(runs, rows, history) if c.kind == "benchmark")
+    assert found.cause.commits[0].functions == (GET_VALUE,)
+
+
+def test_unordered_callees_rank_by_name() -> None:
+    history = History(callees={"a": {"a2", "a1"}})
+    assert reached_functions(["a"], history, ()) == ["a", "a1", "a2"]
+
+
 def test_reach_ranks_each_benchmarks_nearest_callees_first() -> None:
     history = History(callees={"a": ("a1", "a2", "a3"), "b": ("b1",)})
     assert reached_functions(["a", "b"], history, [[NS(symbol_id="p", self_value=1.0)]]) == [

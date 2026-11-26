@@ -37,7 +37,7 @@ from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 log = structlog.get_logger(__name__)
 
 _FILENAME = "resolved_imports.pkl"
-_VERSION = 4
+_VERSION = 5
 
 _Entry = tuple[str | None, tuple[str | None, ...], tuple[str, ...]]
 
@@ -71,7 +71,7 @@ def field_types(parsed: Any, source: bytes | None) -> FieldTypes | None:
     text = _resolver_text(source)
     out: FieldTypes = class_field_types(parsed, text)
     for type_id, container in go_named_containers(parsed, text).items():
-        out[type_id] = {GO_CONTAINER_FIELD: container}
+        out.setdefault(type_id, {})[GO_CONTAINER_FIELD] = container
     return out
 
 

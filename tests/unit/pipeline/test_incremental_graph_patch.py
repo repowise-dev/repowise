@@ -552,12 +552,14 @@ _GO_ENGINE = (
         # now yields a ``leafTree``. Fields, parameters and return types carry
         # the type, so no name scopes it: the update builds in full.
         ("type methodTrees []methodTree", "type methodTrees []leafTree", None),
+        # The type stops being a container: the range yields nothing typed.
+        ("type methodTrees []methodTree", "type methodTrees struct{}", None),
         # A field's type changes: the sibling spells the field and is re-resolved.
         ("\troot   *node\n}\n\ntype leafTree", "\troot   *leaf\n}\n\ntype leafTree", ("gin.go", "tree.go")),
         # A body edit changes no declaration: only the edited file is resolved.
         ("return 0 }", "return 2 }", ("tree.go",)),
     ],
-    ids=["named-container", "field-type", "body"],
+    ids=["named-container", "container-dropped", "field-type", "body"],
 )
 def test_go_sibling_declaration_edit_matches_full_build(
     tmp_path: Path, old: str, new: str, patched_scope: tuple[str, ...] | None

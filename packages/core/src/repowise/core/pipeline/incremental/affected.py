@@ -83,7 +83,7 @@ def changed_field_names(
             return None
         for class_id in set(before) | set(after):
             old, new = before.get(class_id, {}), after.get(class_id, {})
-            changed = {field for field in set(old) | set(new) if old.get(field, 0) != new.get(field, 0)}
+            changed = {f for f in set(old) | set(new) if old.get(f, 0) != new.get(f, 0)}
             if GO_CONTAINER_FIELD in changed:
                 return None
             names |= changed

@@ -395,7 +395,7 @@ def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) 
     )
     if names is None or others is None:
         return PatchPlan(
-            False, reason="an edited file's field types cannot be compared or scoped by name"
+            False, reason="an edited file's field record cannot be compared or scoped by name"
         )
     if not names and not others:
         return patch_plan
