@@ -145,7 +145,11 @@ def _request(cursor: str | None = None, **settings: Any) -> SourceRequest:
     )
 
 
-def _fetch(root: Path, source: Any, request: SourceRequest) -> FetchOutcome:
+def _fetch(
+    root: Path, source: Any, request: SourceRequest, repo_path: Path | None = None
+) -> FetchOutcome:
+    """Fetch into *root*'s store; *repo_path* is the checkout the host names (default *root*)."""
+
     async def run() -> FetchOutcome:
         engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
         try:
@@ -154,7 +158,7 @@ def _fetch(root: Path, source: Any, request: SourceRequest) -> FetchOutcome:
                 return await run_fetch(
                     source,
                     request,
-                    lambda batch: ingest_batch(session, repo, batch, repo_path=root),
+                    lambda batch: ingest_batch(session, repo, batch, repo_path=repo_path or root),
                 )
         finally:
             await engine.dispose()
@@ -858,3 +862,103 @@ def test_a_statement_batch_names_the_issuing_function_an_upload_names(
         "4" * 16: (None, None),
         "5" * 16: (None, "ambiguous"),
     }
+
+
+# --- A host with no checkout (hosted) ------------------------------------------------
+
+
+def test_a_host_with_no_checkout_stores_entries_batches_with_no_checkout_root(
+    double, indexed, tmp_path
+) -> None:
+    root, head = indexed
+    no_checkout = tmp_path / "no-checkout"  # never created, like hosted's
+    double.batches = [_statement_batch(), _profile_batch(head, workload_class="production")]
+
+    outcome = _fetch(root, double, _request(), repo_path=no_checkout)
+
+    assert outcome.status == "ok", outcome.error
+    assert [p["stored"] for p in outcome.stored] == [True, True]
+    runs, _costs = _stored(root)
+    assert sorted((r.kind, r.checkout_root) for r in runs) == [
+        ("profile", None),
+        ("statement_stats", None),
+    ]
+
+
+def test_a_batch_of_profile_bytes_still_needs_its_checkout(double, indexed, tmp_path) -> None:
+    root, head = indexed
+    double.batches = [
+        SourceBatch(
+            kind="profile",
+            workload="cli",
+            workload_class="load_test",
+            commit=head,
+            data=_speedscope(root),
+            format="speedscope",
+        )
+    ]
+
+    outcome = _fetch(root, double, _request(), repo_path=tmp_path / "no-checkout")
+
+    assert outcome.status == "failed" and "is not a directory" in outcome.error
+    assert _stored(root) == ([], [])
+
+
+# --- A production run names its window ------------------------------------------------
+
+
+def _served(root: Path, head: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The ``runs`` and ``measured`` routes' bodies, built and serialized as the server does."""
+    from repowise.core.evidence.payloads import measured_payload, runs_payload
+    from repowise.core.persistence import crud
+    from repowise.server.schemas.runtime_evidence import EvidenceRunsResponse, MeasuredResponse
+
+    async def read() -> tuple[dict[str, Any], dict[str, Any]]:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                runs = await crud.list_evidence_runs(session, "r1")
+                view = await crud.measured_costs(session, "r1", limit=10)
+                status = await crud.measured_status(session, "r1")
+        finally:
+            await engine.dispose()
+        return (
+            EvidenceRunsResponse(**runs_payload(runs, head)).model_dump(mode="json", by_alias=True),
+            MeasuredResponse(**measured_payload(view, status)).model_dump(
+                mode="json", by_alias=True
+            ),
+        )
+
+    return asyncio.run(read())
+
+
+def test_only_production_runs_name_their_window_on_the_wire(double, indexed) -> None:
+    root, head = indexed
+    db = sqlite3.connect(root / ".repowise" / "wiki.db")
+    with db:  # indexed at the profiled commit, so its rows rank
+        db.execute("UPDATE repositories SET head_commit = ?", (head,))
+    db.close()
+    double.batches = [
+        _statement_batch(),
+        _profile_batch(head, workload="api", workload_class="production"),
+        _profile_batch(head),
+    ]
+    assert _fetch(root, double, _request()).status == "ok"
+
+    runs, measured = _served(root, head)
+
+    by_workload = {r["workload"]: r for r in runs["runs"]}
+    window = {name: r.get("window") for name, r in by_workload.items()}
+    # Absent, not null: a run of any other class serializes as it did.
+    assert "window" not in by_workload["app"]
+    assert window["prod db"] == {
+        "start": "2026-10-01T00:00:00Z",
+        "end": "2026-10-02T00:00:00Z",
+        "base_commit": None,
+        "claim": "in production over 2026-10-01 to 2026-10-02, deployed commit unknown",
+    }
+    # A production profile with no window in its file still says it ran in production.
+    assert window["api"]["claim"] == f"in production, window unknown, deployed {head[:12]}"
+    ranked = {r["workload_name"]: r for r in measured["measured"]["runs"]}
+    assert ranked["api"]["window"] == window["api"]
+    assert "window" not in ranked["app"]

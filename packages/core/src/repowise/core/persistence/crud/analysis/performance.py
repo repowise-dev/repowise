@@ -1829,15 +1829,16 @@ def _measured_run(
     """A run's basis: workload, commit, age, samples and where its time went.
 
     *rows* are all the run's ranked functions, not the ones a limit kept;
-    *newer* is the workload's newer run this one is listed in place of.
+    *newer* is the workload's newer run this one is listed in place of. A
+    production run also names its ``window`` (``evidence.status.production_window``).
     """
     from ....evidence.hotness import run_samples
-    from ....evidence.status import time_split, unattributed_share
+    from ....evidence.status import production_window, time_split, unattributed_share
 
     measured_at = run.measured_at or run.ingested_at
     if measured_at is not None and measured_at.tzinfo is None:
         measured_at = measured_at.replace(tzinfo=UTC)
-    return {
+    out = {
         "run_id": run.id,
         "workload_class": run.workload_class,
         "workload_name": run.workload_name,
@@ -1852,6 +1853,11 @@ def _measured_run(
         "ordering_only": any(r.ordering_only for r in rows),
         "newer_run": newer,
     }
+    # Production only, so other runs do not grow.
+    window = production_window(run)
+    if window is not None:
+        out["window"] = window
+    return out
 
 
 def _measured_row(

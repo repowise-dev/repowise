@@ -390,7 +390,10 @@ A host runs a fetch with `run_fetch(source, request, store)`, where `store`
 stores one batch. Against a repowise index, `store` is
 `repowise.core.evidence.add.ingest_batch`, which reads the batch the way
 `evidence add` reads a file of the same entries, so the stored rows,
-hotness and payloads are the same. `fetch` is a plain iterable, so a source
+hotness and payloads are the same. A host with no checkout (a server that
+keeps only the index) passes a `repo_path` that does not exist: a batch of
+entries is stored with no checkout root, while a batch of profile bytes is
+refused, since its frames are placed on the checkout's source. `fetch` is a plain iterable, so a source
 that waits on the network holds the caller's event loop while it reads; a
 server runs `run_fetch` in its own task or worker. `repowise plugins` lists
 each registered source under `evidence-source`; repowise has no command that

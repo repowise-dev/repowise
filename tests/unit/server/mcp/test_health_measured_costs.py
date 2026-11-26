@@ -327,6 +327,23 @@ def test_a_run_names_its_newer_unranked_run_only_when_it_has_one() -> None:
     }
 
 
+def test_only_a_production_run_names_its_window_as_its_rows_claim() -> None:
+    from repowise.server.mcp_server.tool_health.pillars import _measured_run
+
+    run = {
+        "run_id": "r1", "workload_class": "load_test", "workload_name": "api", "commit": None,
+        "age_days": 1, "samples": 10, "repo_self_share": 0.1, "wait_share": 0.5,
+        "library_share": 0.0, "outside_production": 0, "value_kind": "wall",
+        "ordering_only": False, "newer_run": None,
+    }
+    assert "window" not in _measured_run(run)
+    claim = "in production over 2026-10-30 to 2026-11-26, deployed commit unknown"
+    window = {"start": None, "end": None, "base_commit": None, "claim": claim}
+    production = _measured_run({**run, "workload_class": "production", "window": window})
+    # One short string, not the REST object: the agent reads the claim.
+    assert production["window"] == claim
+
+
 async def test_benchmarks_list_compact_with_the_function_each_measures(monkeypatch) -> None:
     from types import SimpleNamespace
 

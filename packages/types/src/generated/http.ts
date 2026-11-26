@@ -2249,6 +2249,7 @@ export interface EvidenceRunSummary {
   low_signal?: "pruned_1pct" | "no_samples" | null;
   mapping_partial: boolean;
   tests_failed: number | null;
+  window?: ProductionWindow | null;
 }
 
 /** Every stored run, newest first (bounded by the store's prune caps). */
@@ -3422,6 +3423,7 @@ export interface MeasuredRun {
   value_kind: string | null;
   ordering_only: boolean;
   newer_run?: NewerRun | null;
+  window?: ProductionWindow | null;
 }
 
 export interface ModuleEdgeResponse {
@@ -4059,6 +4061,14 @@ export interface PopulationBreakdown {
   include_tests?: boolean;
   include_examples?: boolean;
   include_docs?: boolean;
+}
+
+/** The window a production run covers: ``evidence.status.production_window``. */
+export interface ProductionWindow {
+  start: string | null;
+  end: string | null;
+  base_commit: string | null;
+  claim: string;
 }
 
 /** One provider in the catalog, as the settings picker renders it. */

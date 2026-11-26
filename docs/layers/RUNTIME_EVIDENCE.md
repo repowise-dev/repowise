@@ -530,8 +530,12 @@ production window spans deploys. A file that names the window (`window`) and
 the commits deployed in it (`commit_sha` the newest, `base_commit_sha` the
 oldest) keeps them on the run; one that names no commit is stored with a
 "deployed commit unknown" warning, and its rows never rank against code
-changed since. A route row is stored without a function until the route table
-joins it, and nothing reads route rows yet.
+changed since. Every run listing names a production run's window and deploy
+as its rows' claim, `window`: "in production over 2026-10-30 to 2026-11-26,
+deployed commit unknown" (`evidence status`, the REST `status`, `runs` and
+`measured` routes, and `get_health`'s measured `runs`). A run of any other
+class has no `window` key. A route row is stored without a function until the
+route table joins it, and nothing reads route rows yet.
 
 A statement row names the function that issues it. Every index stores the
 repo's statement sites (`statement_sites`): each PostgREST client call
@@ -888,7 +892,8 @@ Evidence lives in the local index (`evidence_runs` and one table per kind:
 | Per statement: its id, the text cut short with every value masked, calls, total and mean time, rows | Literal values, comments |
 | Per production run: its window and the commits deployed in it | |
 
-Entry paths are repo-relative; the checkout root is stored as given. Retention is by kind: each workload and environment
+Entry paths are repo-relative; the checkout root is stored as given, and not
+at all for a source batch of entries stored where there is no checkout. Retention is by kind: each workload and environment
 keeps its newest `history_runs` runs, and the kind keeps `max_runs` overall,
 oldest first, though every workload always keeps its newest run.
 

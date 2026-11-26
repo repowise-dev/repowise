@@ -190,12 +190,18 @@ def _benchmark_numbers(row: dict[str, Any]) -> str:
 
 def _run_basis(run: dict[str, Any]) -> str:
     """``entry_point "api" at abc1234, 3 days old: repo code itself 47%, waits 30%,
-    libraries 12% of 5,300 samples``."""
+    libraries 12% of 5,300 samples``. A production run names its window and
+    deploy instead: ``"api" in production over 2026-10-30 to 2026-11-26,
+    deployed commit unknown, 1 day old: ...``."""
     from repowise.core.evidence.status import split_words
 
-    parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
-    if run.get("commit"):
-        parts.append(f"at {run['commit'][:7]}")
+    window = run.get("window")
+    if window:
+        parts = [f'"{run["workload_name"]}" {window["claim"]}']
+    else:
+        parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
+        if run.get("commit"):
+            parts.append(f"at {run['commit'][:7]}")
     if run.get("age_days") is not None:
         parts.append(f"{run['age_days']} day{'s' if run['age_days'] != 1 else ''} old")
     basis = ", ".join(parts)

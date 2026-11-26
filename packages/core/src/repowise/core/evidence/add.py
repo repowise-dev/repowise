@@ -73,8 +73,9 @@ class PreparedEvidence:
     """The file as read and checked: a v1 document (written or converted), or a profile run still to convert."""
 
     format: str
-    #: The checkout the run used; frames are placed on its source.
-    checkout_root: Path
+    #: The checkout the run used; frames are placed on its source. None for
+    #: a source batch of entries with no checkout (:func:`ingest_batch`).
+    checkout_root: Path | None
     #: The commit the run measured; None only for a production-only kind
     #: whose file names none (its window spans deploys).
     commit: str | None
@@ -254,7 +255,7 @@ def prepare_evidence(
     data: bytes,
     *,
     name: str | Path,
-    checkout_root: Path,
+    checkout_root: Path | None,
     commit: str | None = None,
     dirty: bool | None = None,
     input_format_name: str | None = None,
@@ -323,7 +324,7 @@ def prepare_evidence(
 def prepare_evidence_files(
     files: Sequence[tuple[str | Path, bytes]],
     *,
-    checkout_root: Path,
+    checkout_root: Path | None,
     commit: str | None = None,
     dirty: bool | None = None,
     input_format_name: str | None = None,
@@ -556,6 +557,8 @@ async def store_evidence(
 
     text, doc, conversion = prepared.text, prepared.doc, None
     if prepared.run is not None:
+        # Profile bytes always come with a checkout: ingest_evidence requires one for them.
+        assert root is not None
         conversion = await _convert(
             session, repo.id, prepared.run, root, changed, prepared.value_kind
         )
@@ -588,7 +591,7 @@ async def store_evidence(
         workload_name=workload,
         workload_class=stored_class,
         commit_sha=prepared.commit,
-        checkout_root=str(root),
+        checkout_root=str(root) if root is not None else None,
         dirty=dirty,
         environment=environment,
         source=source,
@@ -753,6 +756,7 @@ async def ingest_evidence(
     verified: bool = False,
     measured_at: datetime | None = None,
     expect_kind: str | None = None,
+    require_checkout: bool = True,
 ) -> dict[str, Any]:
     """Read *data*, join it to the index of *repo* and store the run; what ``evidence add`` does.
 
@@ -766,12 +770,16 @@ async def ingest_evidence(
     repository's ``evidence`` settings. Returns the result ``evidence add
     --format json`` prints. Raises :class:`EvidenceRefusedError` for a file or
     option it will not take, and for a file that is not of *expect_kind* when given.
+    *require_checkout* False takes a checkout that is not a directory as none
+    (stored as no ``checkout_root``): only for v1 entries, which read no source.
     """
     commit = commit.lower() if commit is not None else None
     check_options(workload, workload_class, environment, commit, verified=verified)
-    root = (checkout_root or repo_path).resolve()
+    root: Path | None = (checkout_root or repo_path).resolve()
     if not root.is_dir():
-        raise _bad_option("--checkout-root", f"{root} is not a directory.")
+        if require_checkout:
+            raise _bad_option("--checkout-root", f"{root} is not a directory.")
+        root = None
     if repo is None:
         return {"stored": False, "reason": "no_index"}
     if max_file_mb is None or caps is None:
@@ -831,6 +839,10 @@ async def ingest_batch(
     the kind allows it; a typed ``--class`` never can. Everything is written in
     one savepoint: a batch is stored whole or not at all. Raises
     :class:`EvidenceRefusedError` like :func:`ingest_evidence`.
+
+    Only a batch of profile bytes needs the checkout (its frames are placed on
+    the source). A batch of entries names its files already, so a host with no
+    checkout (hosted) passes one that does not exist and the run stores none.
     """
     from .sources import SOURCE_COLUMN, batch_v1
 
@@ -877,6 +889,7 @@ async def ingest_batch(
                 verified=True,
                 measured_at=batch.measured_at,
                 expect_kind=batch.kind,
+                require_checkout=batch.data is not None,
             )
     except EvidenceRefusedError as exc:
         field = _BATCH_FIELDS.get(exc.option or "")
@@ -962,17 +975,21 @@ async def _convert(
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
 
 
-def _tree_state(root: Path, commit: str | None, dirty: bool | None) -> tuple[Any, bool | None]:
+def _tree_state(
+    root: Path | None, commit: str | None, dirty: bool | None
+) -> tuple[Any, bool | None]:
     """Files that differ from *commit*, and *dirty* filled in from them.
 
     Files that differ from the commit are skipped: their lines are not the
     ones measured. Known only when the commit is the checkout's HEAD and git
-    can say; otherwise the tree's state stays unknown.
+    can say; otherwise (and with no checkout) the tree's state stays unknown.
     """
     from repowise.core.analysis.health.coverage import live_head_commit
 
     from .ingest import uncommitted_paths
 
+    if root is None:
+        return None, dirty
     at_head = commit is not None and live_head_commit(root, None) == commit
     changed = uncommitted_paths(root) if at_head else None
     if dirty is None and changed is not None:

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
 
@@ -52,7 +52,30 @@ class EvidenceUnits(_Strict):
     truncated: int | None
 
 
-class EvidenceRunSummary(_Strict):
+class ProductionWindow(_Strict):
+    """The window a production run covers: ``evidence.status.production_window``."""
+
+    start: UTCDateTime | None
+    end: UTCDateTime | None
+    #: The oldest commit deployed in the window, when the source knows it.
+    base_commit: str | None
+    #: What the run's rows claim: ``in production over 2026-10-30 to
+    #: 2026-11-26, deployed commit unknown``.
+    claim: str
+
+
+class _OmitAbsentWindow(_Strict):
+    """A run model whose ``window`` is sent only on a production run, so other runs do not grow."""
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_window(self, handler):  # no return annotation: keeps the schema
+        data = handler(self)
+        if getattr(self, "window", None) is None:
+            data.pop("window", None)
+        return data
+
+
+class EvidenceRunSummary(_OmitAbsentWindow):
     """One stored run: its workload, commit, freshness and where its time went."""
 
     run_id: str
@@ -93,6 +116,8 @@ class EvidenceRunSummary(_Strict):
     #: Fewer than half the entries mapped: stored, not a basis for ranking.
     mapping_partial: bool
     tests_failed: int | None
+    #: A production run's window; absent for every other class.
+    window: ProductionWindow | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -131,7 +156,7 @@ class NewerRun(_Strict):
     reason: Literal["ahead_of_index", "not_ranked", "stale"]
 
 
-class MeasuredRun(_Strict):
+class MeasuredRun(_OmitAbsentWindow):
     """A run's basis: workload, commit, age, samples and where its time went."""
 
     run_id: str
@@ -157,6 +182,8 @@ class MeasuredRun(_Strict):
     #: The workload's newer run this one is listed in place of (it ranks
     #: nothing); null when this is the workload's newest run.
     newer_run: NewerRun | None = None
+    #: A production run's window; absent for every other class.
+    window: ProductionWindow | None = None
 
 
 class MeasuredOwner(_Strict):
