@@ -22,6 +22,7 @@ from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.attribution import attribution_enabled, file_share
 from repowise.core.generation.layers import is_fallback_layer
 from repowise.core.generation.page_selection import is_stale_status
+from repowise.core.ingestion.git_indexer._constants import _MAX_TOP_AUTHORS
 from repowise.core.persistence.crud import (
     accepted_predicate,
     decision_currencies,
@@ -347,6 +348,9 @@ async def _ownership_section(card: CardState) -> None:
         if recent and recent != meta.primary_owner_name:
             ownership["recent_owner"] = recent
             ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
+        commits = _commit_leaders(meta.top_authors_json, recent)
+        if commits:
+            ownership["commits"] = commits
         _agent_provenance(card, meta, ownership)
     else:
         ownership["primary_owner"] = None
@@ -354,6 +358,43 @@ async def _ownership_section(card: CardState) -> None:
         ownership["contributor_count"] = 0
         ownership["bus_factor"] = 0
     card.data["ownership"] = ownership
+
+
+def _commit_leaders(top_authors_json: str | None, recent_owner: str | None) -> dict[str, str]:
+    """Who made the most commits to a file, all time and in the last 90 days.
+
+    ``primary_owner`` is the blame owner on a standard index, so it can rank
+    someone other than the top committer first, and ``recent_owner`` is only
+    shown when it differs. These two lines carry the counts behind both, so
+    "who should review" needs no ``git log``. The 90 days run back from the
+    newest indexed commit. Bots never reach ``top_authors_json``. Each file
+    keeps its top 50 authors, so a longer tail marks its total with ``+``.
+    Empty on rows indexed before per-author recent counts were stored.
+    """
+    try:
+        authors = json.loads(top_authors_json or "[]")
+    except (TypeError, ValueError):
+        return {}
+    rows = [a for a in authors if isinstance(a, dict) and isinstance(a.get("commit_count"), int)]
+    if not rows:
+        return {}
+    more = "+" if len(rows) >= _MAX_TOP_AUTHORS else ""
+    total = sum(a["commit_count"] for a in rows)
+    lead = rows[0]  # stored most-commits first
+    leaders = {"all_time": f"{lead.get('name')} {lead['commit_count']} of {total}{more}"}
+    recent_total = sum(a.get("recent_commit_count") or 0 for a in rows)
+    if more and recent_owner and all(a.get("name") != recent_owner for a in rows):
+        # The recent leader is outside the 50 kept authors: no count to give.
+        return leaders
+    if recent_total:
+        top = max(a.get("recent_commit_count") or 0 for a in rows)
+        # Ties go to the stored recent owner, so the two fields never disagree.
+        tied = [a for a in rows if (a.get("recent_commit_count") or 0) == top]
+        pick = next((a for a in tied if a.get("name") == recent_owner), tied[0])
+        leaders["last_90d"] = f"{pick.get('name')} {top} of {recent_total}{more}"
+    elif all("recent_commit_count" in a for a in rows):
+        leaders["last_90d"] = "no commits"
+    return leaders
 
 
 def _directory_ownership(rows: list[Any]) -> dict[str, Any]:
