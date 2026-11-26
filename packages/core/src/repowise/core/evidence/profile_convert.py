@@ -691,9 +691,10 @@ class _Tally:
 
     def _unmaintained_kind(self, segment: Sequence[int]) -> str:
         """A run of frames nobody here maintains: a wait or an import anywhere in it,
-        else what its first frame is: ``native`` only for the runtime or a built-in, so a
-        pathless name the split cannot place (:func:`is_library_frame`) still reads as
-        ``library``."""
+        else what its first frame is: ``native`` for the runtime or a built-in
+        (:func:`is_native_frame`, which takes an unqualified pathless name for one), so a
+        qualified pathless name the split cannot place (:func:`is_library_frame`) still
+        reads as ``library``."""
         if any(self._wait[i] for i in segment):
             return "wait"
         if any(self._import[i] for i in segment):
