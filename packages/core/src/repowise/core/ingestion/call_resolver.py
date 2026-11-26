@@ -1135,12 +1135,14 @@ class CallResolver(
         return self._with_props(self._resolve_bare_call(file_path, call, caller_id), call)
 
     def _chain_from_repo_function(
-        self, file_path: str, call: CallSite, caller_id: str, *, values: bool = False
+        self, file_path: str, call: CallSite, caller_id: str, *, value_of: str | None = None
     ) -> bool:
         """Whether the inner call of chained *call* resolves to a repo function or method.
 
-        With *values*, a repo variable counts too: Go calls a function value
-        the repo declares (``var engine = sync.OnceValue(...)``; ``engine()``).
+        With *value_of*, a repo variable counts too when its declaration line
+        writes a function literal returning that type: Go calls a function
+        value the repo declares (``var engine = sync.OnceValue(func() *gin.Engine
+        {...})``; ``engine()``). One holding a library function does not.
         """
         assert call.receiver_call is not None
         language = self._language_of(file_path) or ""
@@ -1148,8 +1150,29 @@ class CallResolver(
         # repo function needs no return type, so every language gets the carve-out.
         inner = self._chain_inner_link(file_path, call, call.receiver_call, caller_id, language)
         symbol = self._symbols_by_id.get(inner.callee_id) if inner is not None else None
-        kinds = ("function", "method", "variable") if values else ("function", "method")
-        return symbol is not None and symbol.kind in kinds
+        if symbol is None:
+            return False
+        if symbol.kind in ("function", "method"):
+            return True
+        return symbol.kind == "variable" and value_of is not None and self._returns_from_literal(
+            symbol, value_of
+        )
+
+    def _returns_from_literal(self, variable: Symbol, type_name: str) -> bool:
+        """Whether *variable*'s declaration line writes ``func(...) [*][pkg.]T``
+        with ``T`` *type_name* or a repo type embedding it (Go's ancestors)."""
+        path = self._symbol_paths_by_id.get(variable.id)
+        lines = self._text_of(path).splitlines() if path else []
+        if not 0 < variable.start_line <= len(lines):
+            return False
+        literal = re.search(
+            r"\bfunc\s*\([^)]*\)\s*\*?(?:\w+\.)?(?P<type>[A-Za-z_]\w*)\b",
+            lines[variable.start_line - 1],
+        )
+        if literal is None:
+            return False
+        returned = literal.group("type")
+        return returned == type_name or type_name in self._ancestor_names(returned, "go")
 
     def _through_kotlin_alias(
         self, alias: Symbol, call: CallSite, caller_id: str
@@ -1198,12 +1221,14 @@ class CallResolver(
             # (``_lazy_mod().helper()``, ``self._backend().helper()``), so only
             # its result keeps the name. A Go chain is always a method on that
             # value, so a method hit needs the result of a repo function (or
-            # of a function value the repo declares) too:
-            # ``http.FileServer(fs).ServeHTTP(w, r)`` is the library handler's.
+            # of a function value the repo declares returning the method's
+            # type) too: ``http.FileServer(fs).ServeHTTP(w, r)`` is the
+            # library handler's.
             go = self._language_of(file_path) == "go"
             narrowed = alias is not None and (alias.kind == "function" or go)
+            owner = bare_type_name(alias.parent_name or "") if go and alias is not None else ""
             if narrowed and not self._chain_from_repo_function(
-                file_path, call, caller_id, values=go
+                file_path, call, caller_id, value_of=owner or None
             ):
                 return None
             return hit

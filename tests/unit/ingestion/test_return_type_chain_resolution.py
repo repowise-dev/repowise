@@ -509,6 +509,18 @@ def test_go_chain_on_a_repo_function_value_keeps_the_bare_name(tmp_path: Path) -
     assert _go_web_chain(tmp_path, caller, "ServeHTTP") == ["web/engine.go::Engine::ServeHTTP"]
 
 
+def test_go_chain_on_a_variable_holding_a_library_function_is_not_a_repo_method(
+    tmp_path: Path,
+) -> None:
+    """``var h = http.NotFoundHandler``: ``h()`` returns the library's handler."""
+    caller = (
+        'package web\n\nimport "net/http"\n\n'
+        "var h = http.NotFoundHandler\n\n"
+        "func serve(w http.ResponseWriter, r *http.Request) {\n\th().ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == []
+
+
 def test_go_chain_on_a_repository_return_type_binds_its_method(tmp_path: Path) -> None:
     """The same shape over a type the repository declares resolves to that type's method."""
     parsed = _go_packages(
