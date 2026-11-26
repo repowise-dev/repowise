@@ -1407,6 +1407,9 @@ class _Evidence:
     # Test files evidence or a changed scope file reached, and ``{test file:
     # (changed file, scope on its route)}`` for those a route's scope expanded to.
     reached: set[str] = field(default_factory=set, compare=False)
+    # ``{test helper no test imports: the test code naming it}`` (``helper_readers``);
+    # a helper absent was not read for, so its users stay unknown.
+    readers: Mapping[str, Collection[str]] = field(default_factory=dict)
     broadcast: dict[str, tuple[str, str]] = field(default_factory=dict, compare=False)
 
     @classmethod
@@ -1430,6 +1433,7 @@ class _Evidence:
             gap=frozenset(inp.index_gap or ()),
             functions=frozenset(inp.tiers.get("function_covered") or ()),
             measured=frozenset(inp.tiers.get("measured_test_files") or ()),
+            readers=inp.tiers.get("helper_readers") or {},
             every_subset=frozenset(inp.unplaced_tests) | frozenset(inp.always_run_tests),
         )
 
@@ -1486,12 +1490,15 @@ def _file_tests(
     helpers = sorted(
         {f for _, f in found if not is_runnable_test(f)} - ev.deleted - scopes - {path}
     )
+    read_by = _read_by_tests([path] if is_test_helper(path) else helpers, ev)
+    tests += ev.present([(t, t) for found in read_by.values() for t in found])
     drop = {*helpers, path} if is_test_helper(path) else set(helpers)
     tests = [(t, f) for t, f in tests if f is None or f not in drop]
     if is_test_helper(path):
-        return tests, "helper-importers", _own_helper_reasons(path, ev)
+        return tests, "helper-importers", _own_helper_reasons(path, ev, read_by)
 
-    reasons = _helper_route_reasons(path, helpers, tests, ev) + _unfiled_reasons(path, tests)
+    reasons = _helper_route_reasons(path, helpers, tests, ev, read_by)
+    reasons += _unfiled_reasons(path, tests)
     # A deleted test needs no run of its own; the tests importing it do.
     if path in ev.deleted and is_runnable_test(path):
         basis = "deleted-test"
@@ -1574,11 +1581,47 @@ def _known_under(ev: _Evidence, dirs: Collection[str]) -> list[str]:
     return ev.under_memo[key]
 
 
-def _own_helper_reasons(path: str, ev: _Evidence) -> list[str]:
-    """A changed helper stands for its importers; one no test imports is unknown."""
+def _read_by_tests(helpers: list[str], ev: _Evidence) -> dict[str, list[str]]:
+    """``{helper no test imports: the tests naming it}`` for each only runnable tests name.
+
+    Those tests are all its users (:func:`~.fixture_readers.helper_readers`), and
+    none may be one (a type-check input, a script run by hand). A helper other
+    test code names (a conftest, another helper), or that was not read for,
+    keeps its users unknown.
+    """
+    out: dict[str, list[str]] = {}
+    for h in helpers:
+        if ev.importers.get(h) or h not in ev.readers:
+            continue
+        found = list(ev.readers[h])
+        if all(is_runnable_test(r) for r in found):
+            out[h] = found
+    return out
+
+
+def _read_by_notes(read_by: Mapping[str, list[str]], ev: _Evidence) -> None:
+    """Say once per helper why it forces no full run."""
+    for h, found in read_by.items():
+        note = (
+            f"{h} is a test helper no test imports; the {len(found)} test file(s) naming it "
+            f"run for it (e.g. {found[0]})."
+            if found
+            else f"{h} is a test helper no test imports or names, so no test runs it."
+        )
+        if note not in ev.notes:
+            ev.notes.append(note)
+
+
+def _own_helper_reasons(
+    path: str, ev: _Evidence, read_by: Mapping[str, list[str]] | None = None
+) -> list[str]:
+    """A changed helper stands for its importers, or the tests naming it; else it is unknown."""
     if plugin := _plugin_reason(path, ev):
         return [plugin]
     if ev.importers.get(path):
+        return []
+    if read_by and path in read_by:
+        _read_by_notes(read_by, ev)
         return []
     return [
         f"{path} is a test helper no test imports; tests that use it without an "
@@ -1597,19 +1640,26 @@ def _plugin_reason(helper: str, ev: _Evidence) -> str | None:
 
 
 def _helper_route_reasons(
-    path: str, helpers: list[str], tests: list[_TestRef], ev: _Evidence
+    path: str,
+    helpers: list[str],
+    tests: list[_TestRef],
+    ev: _Evidence,
+    read_by: Mapping[str, list[str]] | None = None,
 ) -> list[str]:
     """A helper on a route stands for its importers, which the walk adds beside it.
 
     One no test imports is used some other way (a fixture, a plugin), so its
-    users are unknown, unless every known test already runs for *path*: then
-    no user it could have is left out. Any language counts, since a test can
+    users are unknown, unless only runnable tests name it (*read_by*, which
+    the caller adds), or every known test already runs for *path*: then no
+    user it could have is left out. Any language counts, since a test can
     start a helper in another language by path.
     """
     plugins = [r for h in helpers if (r := _plugin_reason(h, ev))]
     if plugins:
         return [f"{path} is reached through a test helper: {plugins[0]}"]
-    unimported = [h for h in helpers if not ev.importers.get(h)]
+    read_by = {h: t for h, t in (read_by or {}).items() if h in helpers}
+    _read_by_notes(read_by, ev)
+    unimported = [h for h in helpers if not ev.importers.get(h) and h not in read_by]
     if unimported and _all_tests_selected(tests, ev):
         ev.notes.extend(
             f"{path} is reached through the test helper {h}, which no test imports, "

@@ -724,6 +724,8 @@ def empty_result(changed_files: int) -> dict:
         "test_hops": {},  # test file -> fewest hops from the change, for ordering only
         "changed_files": changed_files,
         "covered": {},  # test_id -> {test_file, source_files: [...]}
+        # test helper no test imports -> the test code naming it (``helper_readers``)
+        "helper_readers": {},
         # changed files whose covering tests answer them (``function_hunks``),
         # and every test file the per-test map measured, read only for those
         "function_covered": [],
@@ -818,8 +820,9 @@ async def resolve_impacted(
     except Exception as exc:
         # Nothing the graph said can be trusted; selection runs everything.
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
-        graph = GraphCandidates({}, {}, [], {})
+        graph = GraphCandidates({}, {}, [], {}, {})
     out["helper_importers"] = graph.importers
+    out["helper_readers"] = graph.readers
     out["conftest_notes"] = graph.notes
     out["test_hops"] = graph.hops
     _record_inferred(graph_targets, graph.candidates, changed, has_rows, repo_keys, out)
@@ -906,12 +909,14 @@ def _record_inferred(
 
 
 class GraphCandidates(NamedTuple):
-    """What :func:`_graph_candidates` found: per-target picks, importers, notes, hops."""
+    """What :func:`_graph_candidates` found: per-target picks, importers, notes, hops,
+    and the test code naming each helper no test imports."""
 
     candidates: dict[str, list]
     importers: dict[str, list[str]]
     notes: list[str]
     hops: dict[str, int]
+    readers: dict[str, list[str]]
 
 
 async def _graph_candidates(
@@ -951,7 +956,8 @@ async def _graph_candidates(
     from .test_selection import is_code_file, plugin_loader
 
     texts = pytest_texts or {}
-    test_files = {f for f in await cached_test_files(session, repo_id) if is_code_file(f)}
+    indexed_tests = await cached_test_files(session, repo_id)
+    test_files = {f for f in indexed_tests if is_code_file(f)}
     graph, wide = await cached_import_graphs(session, repo_id)
     found, entries, calls = await _tier_picks(
         session, repo_id, targets, test_files, roots, graph, wide, groups, cancelled
@@ -976,7 +982,35 @@ async def _graph_candidates(
     importers = {test: sorted(found_by) for test, found_by in parents.items()}
     sources = targets if changed is None else [t for t in targets if t in changed]
     hops = _test_hops(out, calls, wide.hops(sources), set(sources))
-    return GraphCandidates(out, importers, notes, hops)
+    readers = _unimported_helper_readers(out, importers, indexed_tests, read_source)
+    return GraphCandidates(out, importers, notes, hops, readers)
+
+
+def _unimported_helper_readers(
+    candidates: Mapping[str, list],
+    importers: Mapping[str, list[str]],
+    test_files: Collection[str],
+    read_source: Callable[[str], str | None] | None,
+) -> dict[str, list[str]]:
+    """``{test helper the walk met that no test imports: the test files naming it}``.
+
+    *test_files* are every file the index flags as a test, data included: a case
+    list naming the helper is a reader too. Read only when such a helper is met,
+    since selection otherwise runs everything for it; without *read_source*
+    nothing is read and it still does.
+    """
+    from .fixture_readers import helper_readers
+    from .test_selection import is_test_helper
+
+    if read_source is None:
+        return {}
+    helpers = {
+        t
+        for picks in candidates.values()
+        for t, _ in picks
+        if t in test_files and not importers.get(t) and is_test_helper(t)
+    }
+    return helper_readers(helpers, test_files, read_source) if helpers else {}
 
 
 def _test_hops(

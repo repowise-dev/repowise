@@ -106,6 +106,127 @@ def with_data_file_readers(
     return out
 
 
+#: File stems naming an entry point rather than the file; its directory carries the name.
+_ENTRY_STEMS = frozenset({"main", "index", "__init__", "__main__", "mod", "lib"})
+
+
+def helper_readers(
+    helpers: Collection[str],
+    test_files: Collection[str],
+    read: Callable[[str], str | None],
+) -> dict[str, list[str]]:
+    """``{helper: the test files that may start it by path}`` for each of *helpers*.
+
+    A test helper no test imports is used, if at all, by a test file naming it:
+    a subprocess, a fixture runner, a mock, a case list. Its readers are the test
+    files (code or data) naming its file name or its name up to the first dot
+    (a module path, a fixture runner adding ``.input.tsx``), comments aside; those
+    writing its directory or the one above as a path (``"typing"``,
+    ``./cmd/tool``), a listing; the runnable tests under the directory above it,
+    which may list it unnamed; and code beside it that lists its directory. An
+    empty list means no test file can reach it.
+
+    A helper a runner or build config at or above its directory names (an
+    alias, a setup file, a plugin), or one at the repository root, is left out,
+    so its users stay unknown. Ceiling: a module outside the test trees that a
+    test imports and that starts the helper by path is not read.
+    """
+    from .test_selection import is_runnable_test
+
+    names = {
+        h: _helper_names(h)
+        for h in helpers
+        if str(PurePosixPath(h).parent) != "." and not _configured(h, read)
+    }
+    wanted = {n.lower() for words, dirs in names.values() for n in (*words, *dirs)}
+    texts: dict[str, str] = {}
+    for p in sorted(test_files):
+        text = (read(p) or "").lower()
+        if any(map(text.__contains__, wanted)) or _LISTING.search(text):
+            texts[p] = code_text(p, text)
+    out: dict[str, list[str]] = {}
+    for h, (words, dirs) in names.items():
+        parent = PurePosixPath(h).parent
+        home, near = f"{parent}/", f"{parent.parent}/" if str(parent.parent) != "." else f"{parent}/"
+        out[h] = [
+            p
+            for p in sorted(test_files)
+            if p != h
+            and (
+                (p.startswith(near) and is_runnable_test(p))
+                or (p.startswith(home) and p in texts and _LISTING.search(texts[p]) is not None)
+                or (
+                    p in texts
+                    and (
+                        _names_either(texts[p], *words)
+                        or any(_writes_dir(texts[p], d) for d in dirs)
+                    )
+                )
+            )
+        ]
+    return out
+
+
+#: Code listing a directory, which reaches a file it never names.
+_LISTING = re.compile(r"\b(?:glob|rglob|listdir|scandir|iterdir|walk|readdir(?:sync)?)\b")
+
+
+#: Configs that can hand a test a helper without an import: an alias, a setup
+#: file, a plugin. Ceiling: probed by name in each directory above the helper,
+#: so a config under another name (``tsconfig.e2e.json``) is not read; listing
+#: the checkout's configs is the upgrade.
+_CONFIG_NAMES = (
+    "package.json",
+    "tsconfig.json",
+    "tsconfig.spec.json",
+    "tsconfig.test.json",
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "karma.conf.js",
+    *(
+        f"{tool}.{kind}.{ext}"
+        for tool in ("vitest", "vite", "jest", "playwright")
+        for kind in ("config", "workspace")
+        for ext in ("ts", "js", "mts", "mjs", "cts", "cjs", "json")
+    ),
+)
+
+
+def _configured(helper: str, read: Callable[[str], str | None]) -> bool:
+    """Whether a config at or above *helper*'s directory names its file name or stem."""
+    words, _ = _helper_names(helper)
+    folder = PurePosixPath(helper).parent
+    for d in (folder, *folder.parents):
+        for name in _CONFIG_NAMES:
+            text = read(name if str(d) == "." else f"{d}/{name}")
+            if text and _names_either(text.lower(), *words):
+                return True
+    return False
+
+
+def _helper_names(helper: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """*helper*'s file name and stem (unless an entry-point stem), and the names of
+    its directory and the one above."""
+    path = PurePosixPath(helper)
+    stem = path.name.split(".")[0]
+    words = (path.name,) if stem.lower() in _ENTRY_STEMS else (path.name, stem)
+    dirs = (path.parent.name, path.parent.parent.name)
+    return tuple(dict.fromkeys(w for w in words if w)), tuple(d for d in dirs if d)
+
+
+def _writes_dir(text: str, name: str) -> bool:
+    """Whether *text* writes directory *name* as a path: next to a quote or a slash.
+
+    ``from typing import`` names a module, ``"typing"`` or ``tests/typing/`` a directory.
+    """
+    if not name:
+        return False
+    n = re.escape(name.lower())
+    return re.search(rf"[\"'/\\]{n}(?![\w\-])|(?<![\w\-]){n}[\"'/\\]", text) is not None
+
+
 def _stand_ins(namer: str, readers: Mapping[str, list[str]]) -> list[str]:
     root = fixture_root(namer)
     return readers.get(root, [namer]) if root else [namer]

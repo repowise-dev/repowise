@@ -416,6 +416,29 @@ async def test_data_files_are_not_routes_and_helper_importers_are_reported(
         "tests/test_a.py": "import-graph",
     }
     assert out["helper_importers"]["tests/helpers.py"] == ["tests/test_a.py"]
+    # Imported, so not read for; with no reader the selection keeps today's answer.
+    assert out["helper_readers"] == {}
+
+
+async def test_a_helper_no_test_imports_lists_the_test_code_naming_it(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/e2e/tools/client.py", "tests/test_a.py", "tests/test_b.py"},
+        files={"src/a.py"},
+        imports=[("tests/e2e/tools/client.py", "src/a.py"), ("tests/test_a.py", "src/a.py")],
+    )
+    files = {
+        "tests/e2e/tools/client.py": "import a",
+        "tests/test_a.py": "import a",
+        "tests/test_b.py": 'RUN = ["python", "tests/e2e/tools/client.py"]',
+    }
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session, repo.id, {"src/a.py": {1}}, set(), out, read_source=files.get
+    )
+    assert out["helper_readers"] == {"tests/e2e/tools/client.py": ["tests/test_b.py"]}
 
 
 _CONFTEST = '''
