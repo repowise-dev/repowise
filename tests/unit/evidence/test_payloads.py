@@ -54,3 +54,19 @@ def test_functions_sorted_by_id_and_tiers_above_ranked_read_ranked() -> None:
         ("b.py::g", "b.py", "measured"),
     ]
     assert function_payload(_hot("c.py::h", "ranked"))["tier"] == "ranked"
+
+
+def test_inside_and_drivers_read_from_their_json_and_unreadable_reads_as_none() -> None:
+    from repowise.server.schemas.runtime_evidence import MeasuredFunction
+
+    row = _hot("a.py::f", "ranked")
+    row.inside_json = '[{"name": "open", "kind": "library", "share": 0.6, "leaf": {"name": "stat", "kind": "native", "share": 0.5}}]'
+    row.drivers_json = '[{"name": "main", "share": 1.0, "symbol": "a.py::main"}]'
+    out = function_payload(row)
+    assert out["inside"][0]["leaf"]["name"] == "stat"
+    assert out["drivers"] == [{"name": "main", "share": 1.0, "symbol": "a.py::main"}]
+    MeasuredFunction.model_validate(out)
+    row.inside_json, row.drivers_json = "not json", "[]"
+    assert (function_payload(row)["inside"], function_payload(row)["drivers"]) == (None, None)
+    # A host row from before the columns existed has neither.
+    assert function_payload(_hot("b.py::g", "ranked"))["inside"] is None

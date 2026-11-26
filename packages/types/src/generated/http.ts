@@ -3199,6 +3199,22 @@ export interface McpToolSurfaceResponse {
   clients?: Record<string, McpClientSurface>;
 }
 
+/** What part of a measured function's time went to (``evidence.profile_convert``). */
+export interface MeasuredCallee {
+  name: string;
+  kind: "own" | "repo" | "wait" | "import" | "native" | "library";
+  share: number;
+  leaf?: MeasuredLeaf | null;
+}
+
+/** A caller that drove part of a measured function's time. */
+export interface MeasuredDriver {
+  name: string;
+  share: number;
+  symbol?: string | null;
+  path?: string | null;
+}
+
 /** What runtime evidence says about one function, from its basis run. */
 export interface MeasuredFunction {
   symbol_id: string;
@@ -3224,6 +3240,8 @@ export interface MeasuredFunction {
   wait_share: number | null;
   library_share: number | null;
   run_unlisted: number | null;
+  inside?: MeasuredCallee[] | null;
+  drivers?: MeasuredDriver[] | null;
 }
 
 /** Measured functions of the asked symbol or file; empty means unknown. */
@@ -3235,6 +3253,13 @@ export interface MeasuredGroup {
   runs: MeasuredRun[];
   rows: MeasuredRow[];
   total: number;
+}
+
+/** The frame a callee's stacks end in most: what the callee spends its time on. */
+export interface MeasuredLeaf {
+  name: string;
+  kind: "own" | "repo" | "wait" | "import" | "native" | "library";
+  share: number;
 }
 
 export interface MeasuredOwner {

@@ -62,6 +62,7 @@ Two read models come out of one derivation (:class:`Hotness`):
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -145,6 +146,9 @@ class CostFacts:
     total_samples: int | None
     call_count: int | None
     self_samples: int | None = None
+    #: What the function's time went to and what drove it (JSON, as stored).
+    inside_json: str | None = None
+    drivers_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -229,7 +233,9 @@ def derive_hotness(
             for r in leading:
                 r.tier = "lead_candidate"
         basis = min(rows, key=_basis_order)
-        symbols.append(_stored(basis, run_count=len({r.run.id for r in rows})))
+        stored = _stored(basis, run_count=len({r.run.id for r in rows}))
+        stored["drivers_json"] = _current_drivers(stored["drivers_json"], current)
+        symbols.append(stored)
     listed = [r for rows in rows_by_symbol.values() for r in rows if r.tier != "measured"]
     # A newer run that ranks nothing never hides the run before it that does.
     newest = newest_runs({r.run.id: r.run for r in listed}.values())
@@ -513,6 +519,22 @@ def _share(value: float | None, total: float | None) -> float | None:
     return min(value / total, 1.0)
 
 
+def _current_drivers(drivers_json: str | None, current: CurrentFunctions) -> str | None:
+    """*drivers_json* with each caller's ``symbol`` checked against the index: one
+    the index no longer holds (renamed, moved, deleted) keeps only its file, as a
+    caller that never joined does. The caller's own lineage is not stored, so it
+    is never followed. With no indexed bodies to check against, kept as stored."""
+    if not drivers_json or not current.digest:
+        return drivers_json
+    drivers = json.loads(drivers_json)
+    for driver in drivers:
+        symbol = driver.get("symbol")
+        if symbol is not None and symbol not in current.digest:
+            del driver["symbol"]
+            driver["path"] = file_of_symbol(symbol)
+    return json.dumps(drivers, sort_keys=True)
+
+
 def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
     run, cost = row.run, row.cost
     shares = not row.ordering_only
@@ -539,6 +561,8 @@ def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
         "run_count": run_count,
         "evidence_commit_sha": run.commit_sha,
         "measured_at": run.measured_at,
+        "inside_json": cost.inside_json,
+        "drivers_json": cost.drivers_json,
     }
 
 

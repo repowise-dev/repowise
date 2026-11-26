@@ -215,6 +215,43 @@ class MeasuredResponse(_Strict):
     measured_in_tests: MeasuredGroup | None
 
 
+InsideKind = Literal["own", "repo", "wait", "import", "native", "library"]
+
+
+class MeasuredLeaf(_Strict):
+    """The frame a callee's stacks end in most: what the callee spends its time on."""
+
+    name: str
+    kind: InsideKind
+    #: Share of the measured function's inclusive time.
+    share: float
+
+
+class MeasuredCallee(_Strict):
+    """What part of a measured function's time went to (``evidence.profile_convert``)."""
+
+    #: The callee's name, or ``(own code)`` for the function's own body.
+    name: str
+    #: ``own``, ``repo``, ``wait``, ``import``, ``native`` or ``library``.
+    kind: InsideKind
+    #: Share of the function's inclusive time.
+    share: float
+    #: The callee's heaviest leaf, when its stacks end below it.
+    leaf: MeasuredLeaf | None = None
+
+
+class MeasuredDriver(_Strict):
+    """A caller that drove part of a measured function's time."""
+
+    name: str
+    #: Share of the function's inclusive time.
+    share: float
+    #: The caller's symbol id at the evidence commit, when it joined exactly.
+    symbol: str | None = None
+    #: The caller's repo-relative file, when it is repo code that did not join.
+    path: str | None = None
+
+
 class MeasuredFunction(_Strict):
     """What runtime evidence says about one function, from its basis run."""
 
@@ -244,6 +281,10 @@ class MeasuredFunction(_Strict):
     library_share: float | None
     #: Functions the basis run measured outside production code.
     run_unlisted: int | None
+    #: Up to three callees by share; null when the basis run did not record them.
+    inside: list[MeasuredCallee] | None = None
+    #: Up to three callers by share; null when the basis run did not record them.
+    drivers: list[MeasuredDriver] | None = None
 
 
 class MeasuredFunctionsResponse(_Strict):

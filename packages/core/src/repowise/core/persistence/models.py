@@ -3189,6 +3189,12 @@ class EvidenceSymbolCost(Base):
     # the commit it measured; NULL otherwise. A later index compares it to
     # tell an unchanged body from an edited one.
     body_digest: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # What the symbol's time went to and what drove it, as shares of ``total``
+    # (``evidence.profile_convert``): JSON lists of up to three ``{name, kind,
+    # share}`` callees and ``{name, share, symbol | path}`` callers; NULL when
+    # the run did not say.
+    inside_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    drivers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 
@@ -3371,6 +3377,9 @@ class SymbolHotness(Base):
     ordering_only: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # ``current``, ``body_unchanged`` (older commit, same body) or ``stale``.
     freshness: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The basis run's ``evidence_symbol_costs.inside_json`` and ``drivers_json``.
+    inside_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    drivers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 
