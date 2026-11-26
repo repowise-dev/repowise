@@ -18,6 +18,7 @@ PowerShell 5.1's ``>`` writes UTF-16, which is read too.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
 from repowise.core.frame_resolver import ProfileFrame
 
@@ -55,39 +56,20 @@ def read(data: bytes) -> ProfileRun:
     index: dict[tuple[str, int], int] = {}
     tally = StackTally()
     other = 0
-    event: str | None = None
-    in_stack = False
-    stack: list[int] = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if event is None:
-            m = _EVENT_RE.fullmatch(line)
-            if m is not None:
-                event, in_stack, stack = m["type"], False, []
+    for event, stack_lines in _events(text):
+        if event != _SAMPLE:
+            other += 1
             continue
-        if raw.rstrip() == "}":  # an event closes at the line start; a nested value is indented
-            if event == _SAMPLE:
-                # Leaf first in the file; root first in a stack.
-                tally.add(tuple(reversed(stack)), 1.0, 1)
-            else:
-                other += 1
-            event = None
-        elif line.startswith("stackTrace = ["):
-            in_stack = True
-        elif in_stack and line == "]":
-            in_stack = False
-        elif in_stack and event == _SAMPLE and line != "...":
-            m = _FRAME_RE.fullmatch(line)
-            if m is None:
-                continue
-            name, at = m["name"], max(int(m["line"] or 0), 0)
-            key = (name, at)
-            if key not in index:
-                index[key] = len(frames)
+        stack: list[int] = []
+        for name, at in stack_lines:
+            if (name, at) not in index:
+                index[name, at] = len(frames)
                 frames.append(
                     ProfileFrame(path="", line=at, language=frame_language("", name), function=name)
                 )
-            stack.append(index[key])
+            stack.append(index[name, at])
+        # Leaf first in the file; root first in a stack.
+        tally.add(tuple(reversed(stack)), 1.0, 1)
     if not frames:
         raise EvidenceFormatError(
             f"no {_SAMPLE} event with a stack in the file",
@@ -102,6 +84,27 @@ def read(data: bytes) -> ProfileRun:
         tool_name="jfr",
         skipped={"other_event": other} if other else {},
     )
+
+
+def _events(text: str) -> Iterator[tuple[str, list[tuple[str, int]]]]:
+    """Each event's type and its stack's ``(name, line)`` frames, leaf first."""
+    event: str | None = None
+    in_stack = False
+    stack: list[tuple[str, int]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if event is None:
+            if (m := _EVENT_RE.fullmatch(line)) is not None:
+                event, in_stack, stack = m["type"], False, []
+        elif raw.rstrip() == "}":  # an event closes at the line start; a nested value is indented
+            yield event, stack
+            event = None
+        elif line.startswith("stackTrace = ["):
+            in_stack = True
+        elif in_stack and line == "]":
+            in_stack = False
+        elif in_stack and (m := _FRAME_RE.fullmatch(line)) is not None:
+            stack.append((m["name"], max(int(m["line"] or 0), 0)))
 
 
 __all__ = ["read", "sniff"]

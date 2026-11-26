@@ -530,17 +530,7 @@ def place_jvm_frames(
         outer = name.cls.split("$", 1)[0]
         key = (*name.package, outer)
         if key not in placed:
-            stems = [outer, outer[:-2]] if outer.endswith("Kt") and len(outer) > 2 else [outer]
-            tails = ["/".join((*name.package, stem + ext)) for stem in stems for ext in JVM_SOURCE_SUFFIXES]
-            found = {
-                rel
-                for tail in tails
-                for rel in by_name.get(tail.rsplit("/", 1)[-1], ())
-                if (rel == tail or rel.endswith("/" + tail))
-                and (name.package or _at_source_root(rel))
-                and path_origin(rel) not in ("vendored", "generated")
-            }
-            placed[key] = found.pop() if len(found) == 1 else None
+            placed[key] = _class_file(name.package, outer, by_name)
         rel = placed[key]
         if rel is None:
             out.append(frame)
@@ -548,6 +538,21 @@ def place_jvm_frames(
         language: FrameLanguage = "kotlin" if rel.endswith(".kt") else "java"
         out.append(replace(frame, path=f"{base}/{rel}", language=language, line=frame.line or name.line))
     return tuple(out)
+
+
+def _class_file(package: tuple[str, ...], outer: str, by_name: Mapping[str, Sequence[str]]) -> str | None:
+    """The one maintained indexed file of class *outer* in *package*, or None."""
+    stems = [outer, outer[:-2]] if outer.endswith("Kt") and len(outer) > 2 else [outer]
+    tails = ["/".join((*package, stem + ext)) for stem in stems for ext in JVM_SOURCE_SUFFIXES]
+    found = {
+        rel
+        for tail in tails
+        for rel in by_name.get(tail.rsplit("/", 1)[-1], ())
+        if (rel == tail or rel.endswith("/" + tail))
+        and (package or _at_source_root(rel))
+        and path_origin(rel) not in ("vendored", "generated")
+    }
+    return found.pop() if len(found) == 1 else None
 
 
 #: Where a class in the default package can sit: a JVM source root, or the checkout's root.
@@ -752,7 +757,7 @@ def _name_join(
     frame's. Still several: ``ambiguous``; none: ``no_span``. One of several
     overloads is never picked by name alone.
     """
-    from repowise.core.ingestion.symbol_identity import local_symbol_id, split_symbol_id
+    from repowise.core.ingestion.symbol_identity import local_symbol_id
 
     # Direct members only: an anonymous class's method is ided under the method
     # that declares it (``C::m::Impl::f``), and its supertype's name is no owner.
@@ -767,15 +772,25 @@ def _name_join(
         return "no_span"
     if params is None:
         return "ambiguous"
+    chosen = _overload(found, params, by_count)
+    return (chosen, False) if chosen is not None else "ambiguous"
+
+
+def _overload(
+    found: Sequence[IndexedSymbol], params: Sequence[str], by_count: bool
+) -> IndexedSymbol | None:
+    """The one overload in *found* whose id count, then types, fit *params*; None for several or none."""
+    from repowise.core.ingestion.symbol_identity import split_symbol_id
+
     payloads = {s.symbol_id: split_symbol_id(s.symbol_id)[1] or "" for s in found}
     # Narrow only when every member carries its count: an id without one is not an overload.
     if by_count and all(payloads[s.symbol_id][:1].isdigit() for s in found):
         found = [s for s in found if payloads[s.symbol_id].partition("(")[0] == str(len(params))]
         if len(found) == 1:
-            return (found[0], False)
+            return found[0]
     types = ",".join(params) + ")"
     typed = [s for s in found if payloads[s.symbol_id].partition("(")[1:] == ("(", types)]
-    return (typed[0], False) if len(typed) == 1 else "ambiguous"
+    return typed[0] if len(typed) == 1 else None
 
 
 def _params_agree(symbol: IndexedSymbol, params: Sequence[str] | None, by_count: bool) -> bool:
