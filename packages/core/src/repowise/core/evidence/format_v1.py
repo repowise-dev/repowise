@@ -15,7 +15,7 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
       "explained": 580,                   # profile, optional: value with a repo frame on the stack
       "repo_self": 310,                   # profile, optional: value in production repo code itself
       "waits": 900,                       # profile, optional: value blocked waiting
-      "libraries": 120,                   # profile, optional: value in dependencies
+      "libraries": 120,                   # profile, optional: value in libraries
       "total_samples": 5300,              # profile, optional: samples in the whole run, any unit
       "skipped": {"outside_repo": 812},   # optional: entries the converter dropped, by reason
       "symbols": [{"path": "src/app/cli.py", "function": "build", "line": 40,

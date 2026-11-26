@@ -92,7 +92,8 @@ export function RunSplitSentence({ run }: { run: MeasuredRun | null }) {
         {run.samples != null ? ` of ${formatNumber(run.samples)} samples` : ""}
       </strong>{" "}
       in <code className="font-mono text-[0.9em]">{run.workload_name}</code>. The rest is libraries,
-      waits and time outside indexed code, so a fix in repo code moves at most that share of this run.
+      waits and time outside indexed code; a fix in repo code moves that share and the library calls
+      it makes.
     </p>
   );
 }
@@ -307,9 +308,7 @@ function rowsCaption(run: MeasuredRun, shown: number, total: number): string {
     outside > 0
       ? `${plural(outside, "function")} measured in test and tooling code ${outside === 1 ? "is" : "are"} counted, not listed.`
       : null,
-    run.repo_self_share != null && !run.ordering_only
-      ? "Bars are scaled to the repo-code share of the run."
-      : null,
+    !run.ordering_only ? "Bars are scaled to the costliest function." : null,
   ]
     .filter(Boolean)
     .join(" ");
@@ -386,9 +385,9 @@ function MeasuredRows({
   const group = data?.measured ?? data?.measured_in_tests ?? null;
   const rows = group?.rows ?? [];
   const total = group?.total ?? 0;
-  // One scale for every bar: the repo-code share of the run, else the widest interval.
-  const scale =
-    run.repo_self_share ?? Math.max(0, ...rows.map((r) => r.share_high ?? r.share ?? 0));
+  // One scale for every bar: the widest interval. A row counts the libraries it
+  // called, so it can be larger than the run's repo-code share.
+  const scale = Math.max(0, ...rows.map((r) => r.share_high ?? r.share ?? 0));
   const promptFor = (subset: MeasuredRow[]): AiPromptRequest => ({
     title: "Prompt for your agent",
     description: `${plural(subset.length, "function")} measured in ${run.workload_name}, in rank order.`,

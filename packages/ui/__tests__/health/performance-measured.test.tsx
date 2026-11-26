@@ -42,7 +42,7 @@ describe("PerformanceView runtime evidence", () => {
     expect(within(strip).getByText("at 4f9c2a1, the indexed commit")).toBeTruthy();
     expect(within(strip).getByText("3 runs")).toBeTruthy();
     // The lede names how much of the run repo code can move.
-    expect(screen.getByText(/so a fix in repo code moves at most that share/)).toBeTruthy();
+    expect(screen.getByText(/a fix in repo code moves that share and the library calls/)).toBeTruthy();
     expect(screen.getByRole("list", { name: "Where the cli build run spent its time" })).toBeTruthy();
     expect(
       screen.getByText(/41 functions measured in test and tooling code are counted, not listed/),

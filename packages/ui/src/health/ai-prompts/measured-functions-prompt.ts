@@ -106,7 +106,7 @@ export function buildMeasuredFunctionsPrompt({
         run.samples != null ? `, ${formatNumber(run.samples)} samples` : ""
       }.`,
       run.repo_self_share != null
-        ? `Repo code itself explains ${shareText(run.repo_self_share)} of the run; the rest is libraries and waits, so a change here moves at most that share.`
+        ? `Repo code itself explains ${shareText(run.repo_self_share)} of the run; the rest is libraries and waits. A change here moves that share and the library calls the function makes.`
         : null,
       run.ordering_only
         ? "A deterministic tracer ran, so the rank orders the functions and no share is given."

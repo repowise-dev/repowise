@@ -500,7 +500,9 @@ def test_a_collapsed_profile_is_converted_and_stored(indexed, tmp_path_factory) 
     assert (run.value_kind, run.unit, run.total_value, run.explained_value) == (
         "cpu", "samples", 10.0, 6.0,
     )
-    assert (run.repo_self_value, run.wait_value, run.library_value) == (6.0, 0.0, 0.0)
+    # The stack with no repo frame (runpy, then another checkout's file) runs only
+    # code this repo does not maintain: libraries.
+    assert (run.repo_self_value, run.wait_value, run.library_value) == (6.0, 0.0, 3.0)
     assert (cost.symbol_id, cost.total_value, cost.self_value, cost.total_samples) == (
         "src/app.py::build", 6.0, 6.0, 6,
     )

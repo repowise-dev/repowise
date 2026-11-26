@@ -11,7 +11,7 @@ import json
 from repowise.core.evidence import parse_evidence
 from repowise.core.evidence.profile_convert import (
     convert_profile,
-    is_dependency_path,
+    is_library_frame,
     is_native_frame,
 )
 from repowise.core.evidence.profile_formats import profile_formats
@@ -262,20 +262,58 @@ def test_pprof_names_runtime_frames_native_and_module_cache_frames_library() -> 
             "leaf": {"name": "runtime.cgocall", "kind": "native", "share": 0.6},
         },
     ]
-    # The module cache is a dependency in the run's split; GOROOT stays with the caller.
-    assert (conv.libraries, conv.repo_self) == (60, 40)
+    # The run's split books a library the way ``inside`` names one: the module
+    # cache and GOROOT's strings.Index are libraries, the runtime stays with Find.
+    assert (conv.libraries, conv.repo_self) == (70, 30)
 
 
-def test_dependency_and_native_frames_by_path() -> None:
-    assert is_dependency_path(GORM)
-    assert is_dependency_path("/home/u/go/pkg/mod/github.com/gin-gonic/gin@v1.10.0/gin.go")
-    assert is_dependency_path("/venv/lib/python3.12/site-packages/sa/engine.py")
-    assert not is_dependency_path(f"{GOROOT}\\net\\http\\server.go")
-    assert not is_dependency_path("/srv/app/pkg/mod/notes.go")
+def _frame(path: str, name: str, language: str = "go") -> ProfileFrame:
+    return ProfileFrame(path=path, line=1, language=language, function=name)
 
-    def frame(path: str, name: str, language: str = "go") -> ProfileFrame:
-        return ProfileFrame(path=path, line=1, language=language, function=name)
 
+def test_library_frames_are_dependencies_and_the_standard_library() -> None:
+    def library(path: str, name: str, language: str = "go") -> bool:
+        return is_library_frame(_frame(path, name, language), "outside_root")
+
+    assert library(GORM, "gorm.io/gorm.(*DB).First")
+    assert library("/venv/lib/python3.12/site-packages/sa/engine.py", "execute", "python")
+    assert library(f"{GOROOT}\\net\\http\\server.go", "net/http.(*conn).serve")
+    toolchain = "/home/u/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.4.linux-amd64/src"
+    assert library(f"{toolchain}/net/http/server.go", "net/http.(*conn).serve")
+    assert library("C:\\Python312\\Lib\\json\\decoder.py", "JSONDecoder.decode", "python")
+    assert library("node:fs", "readFileSync", "javascript")
+    for jdk in (
+        "java/util/HashMap.get",
+        "java.util.HashMap.get",
+        "jdk.internal.misc.Unsafe.park",
+        "sun.nio.ch.SocketDispatcher.read",
+        "javax.crypto.Cipher.doFinal",
+    ):
+        assert library("", jdk, "unknown"), jdk
+    # The runtime, built-ins and import machinery (import time) are not; a frame
+    # the checkout maintains never is.
+    assert not library("<frozen importlib._bootstrap>", "_find_and_load", "python")
+    assert not library("node:internal/modules/cjs/loader", "Module._load", "javascript")
+    assert not library(f"{GOROOT}\\runtime\\cgocall.go", "runtime.cgocall")
+    assert not library("<built-in>", "posix.stat", "python")
+    assert not library("~", "<built-in method builtins.len>", "unknown")  # cProfile
+    # A pathless name places a frame only when it is the JDK's: an application's
+    # own frames in a collapsed JVM stack, or a pathless dependency, are not known.
+    assert not library("", "com/acme/App.run", "unknown")
+    assert not library("", "com.acme.App.run", "unknown")
+    assert not library("", "gorm.(*DB).First", "unknown")
+    # Code built at run time has a placeholder, not a file; a frozen module is the stdlib's.
+    assert not library("<string>", "__init__", "python")
+    assert not library("<stdin>", "work", "python")
+    assert library("<frozen os>", "walk", "python")
+    assert not library("", "(program)", "unknown")
+    assert is_library_frame(_frame("vendor/x/y.go", "y.F"), "vendored")
+    assert not is_library_frame(_frame("pkg/app.py", "App.run", "python"), "no_span")
+    assert not is_library_frame(_frame("pkg/app.py", "App.run", "python"), None)
+
+
+def test_native_frames_by_path() -> None:
+    frame = _frame
     assert is_native_frame(frame(f"{GOROOT}\\runtime\\cgocall.go", "runtime.cgocall"))
     assert is_native_frame(frame(f"{GOROOT}\\internal\\bytealg\\equal_amd64.s", "memeqbody"))
     assert is_native_frame(frame("", "(garbage collector)", "unknown"))
@@ -321,12 +359,6 @@ def test_cpuprofile_splits_node_internals_natives_and_dependencies() -> None:
         "share": round(7 / 8, 4),
         "leaf": {"name": "update", "kind": "native", "share": round(3 / 8, 4)},
     }
-
-
-def test_a_downloaded_go_toolchain_is_the_standard_library_not_a_dependency() -> None:
-    toolchain = "/home/u/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.4.linux-amd64/src"
-    assert not is_dependency_path(f"{toolchain}/net/http/server.go")
-    assert is_dependency_path("pkg/mod/gorm.io/gorm@v1.25.12/callbacks.go")
 
 
 def test_a_bare_library_name_in_a_collapsed_stack_is_a_library() -> None:
@@ -398,3 +430,19 @@ def test_a_dotted_bare_name_is_a_library_and_a_runtime_marker_is_native() -> Non
     assert not is_native_frame(frame("requests.get"))
     assert is_native_frame(frame("runtime.mallocgc"))
     assert is_native_frame(frame("(program)"))
+
+
+def test_a_pathless_frame_counts_as_a_library_in_the_split_only_when_it_is_the_jdks() -> None:
+    text = "\n".join(
+        [
+            f"App.run ({_APP}:10);java/util/HashMap.get 3",
+            f"App.run ({_APP}:10);com/acme/Helper.work 2",
+            "com/acme/Main.main;com/acme/Helper.work 5",
+        ]
+    )
+    conv = _convert("collapsed", text.encode())
+    # The JDK call is a library; the application's own pathless frames are not
+    # known to be, so run keeps them and the stack with no repo frame is neither.
+    assert (conv.libraries, conv.repo_self) == (3, 2)
+    inside = {i["name"]: i["kind"] for i in _entries(conv)["pkg.app.App.run"]["inside"]}
+    assert inside == {"java/util/HashMap.get": "library", "com/acme/Helper.work": "library"}
