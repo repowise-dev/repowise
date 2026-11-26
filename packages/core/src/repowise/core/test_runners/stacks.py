@@ -1551,6 +1551,20 @@ class _Units:
     workspaces: frozenset[str] = frozenset()
 
 
+def _grouped_roots(
+    paths: list[str],
+    groups: str | tuple[str, ...],
+    projects: str | tuple[str, ...],
+    repo_root: str | None,
+) -> set[str]:
+    """The kept directories holding a *groups* file (a solution), else the root
+    of a repository with *projects* files near the top."""
+    grouped = {_dir(p) for p in paths if p.endswith(groups) and _kept(p, repo_root)}
+    if grouped:
+        return grouped
+    return {""} if any(p.endswith(projects) and p.count("/") <= 2 for p in paths) else set()
+
+
 def _units(
     paths: list[str], units: BuildUnitIndex | None, repo_root: str | None = None
 ) -> _Units:
@@ -1568,16 +1582,12 @@ def _units(
     if any("/" not in p and _PIP_REQUIREMENTS.fullmatch(p) for p in paths):
         roots.setdefault("", set()).add("python")
         workspaces.discard("")
-    solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and _kept(p, repo_root)}
-    has_projects = any(p.endswith(".csproj") and p.count("/") <= 2 for p in paths)
-    for root in solutions or ({""} if has_projects else set()):
-        roots.setdefault(root, set()).add("dotnet")
-    # A Delphi unit is the directory of its group project, else the root of a
-    # repository with project files near the top.
-    groups = {_dir(p) for p in paths if p.endswith(".groupproj") and _kept(p, repo_root)}
-    projects = any(p.endswith(_DELPHI_PROJECTS) and p.count("/") <= 2 for p in paths)
-    for root in groups or ({""} if projects else set()):
-        roots.setdefault(root, set()).add("delphi")
+    for stack, groups, projects in (
+        ("dotnet", _SOLUTIONS, ".csproj"),
+        ("delphi", ".groupproj", _DELPHI_PROJECTS),
+    ):
+        for root in _grouped_roots(paths, groups, projects, repo_root):
+            roots.setdefault(root, set()).add(stack)
     return _Units(roots, frozenset(workspaces))
 
 
