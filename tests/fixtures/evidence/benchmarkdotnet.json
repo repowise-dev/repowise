@@ -1,0 +1,63 @@
+{
+  "Title": "Shop.CartBench-20261126-110000",
+  "HostEnvironmentInfo": {
+    "BenchmarkDotNetCaption": "BenchmarkDotNet",
+    "BenchmarkDotNetVersion": "0.14.0",
+    "OsVersion": "Windows 11",
+    "ProcessorName": "13th Gen Intel Core i7",
+    "RuntimeVersion": ".NET 8.0.0",
+    "Architecture": "X64",
+    "Configuration": "Release"
+  },
+  "Benchmarks": [
+    {
+      "DisplayInfo": "Shop.CartBench.Total: DefaultJob",
+      "Namespace": "Shop",
+      "Type": "CartBench",
+      "Method": "Total",
+      "MethodTitle": "Total",
+      "Parameters": "",
+      "FullName": "Shop.CartBench.Total",
+      "Statistics": {
+        "N": 15,
+        "Min": 120.5,
+        "LowerFence": 118.0,
+        "Q1": 122.0,
+        "Median": 123.45,
+        "Mean": 124.0,
+        "Q3": 126.0,
+        "UpperFence": 130.0,
+        "Max": 128.5,
+        "StandardDeviation": 2.34
+      },
+      "Memory": {
+        "Gen0Collections": 0,
+        "Gen1Collections": 0,
+        "Gen2Collections": 0,
+        "TotalOperations": 1000,
+        "BytesAllocatedPerOperation": 64
+      }
+    },
+    {
+      "DisplayInfo": "Shop.CartBench.Parse: DefaultJob",
+      "Namespace": "Shop",
+      "Type": "CartBench",
+      "Method": "Parse",
+      "MethodTitle": "Parse",
+      "Parameters": "",
+      "FullName": "Shop.CartBench.Parse",
+      "Statistics": {
+        "N": 15,
+        "Min": 50.0,
+        "LowerFence": 48.0,
+        "Q1": 51.0,
+        "Median": 52.3,
+        "Mean": 52.5,
+        "Q3": 54.0,
+        "UpperFence": 56.0,
+        "Max": 55.0,
+        "StandardDeviation": 1.5
+      }
+    }
+  ]
+}
