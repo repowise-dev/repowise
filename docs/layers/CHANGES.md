@@ -86,6 +86,29 @@ rolled up over its commits, with the counts and coverage behind it:
 
 With `attribution.enabled: false` the block is `null`.
 
+### Category
+
+Each change gets one category (`feature`, `fix`, `refactor`, `docs`, `test`, `deps`,
+`chore`, `other`). The project's own signals decide first, then the title:
+
+1. **Changelog fragment.** A towncrier-style file the change adds under a
+   `changes/`, `changelog/`, `changelog.d/`, `newsfragments/`, `news/` or
+   `fragments/` directory, named `<id>.<type>[.<n>][.<ext>]`. `bugfix` reads `fix`,
+   `feature` reads `feature`, `doc` reads `docs`. Types such as `misc`, `contrib`,
+   `breaking` and `trivial` read `other`, so a "Fix ..." title does not make that
+   change a fix. A change that only deletes fragments (a release) is not read.
+2. **Forge label**, when the metadata source reads labels: `bug`, `type: bug` and
+   `kind/bug` read `fix`; `enhancement` reads `feature`.
+3. **Title**: the fix keyword rule, then a conventional-commit type, then keywords.
+
+When one change carries several kinds, a fix wins. A type or label with no
+mapping falls through to the next signal. Changesets declare a semver bump, not a
+kind, so they are not read. The record's `category_basis` names the deciding
+signal and the fragment path or label (`{"signal": "changelog_fragment", "value":
+"CHANGES/13743.bugfix.rst"}`). It is `null` on a row an older index stored until
+the next update re-labels it. Per-file fix counts and `prior_defect` still read
+commit subjects; see [Bug history](BUG_HISTORY.md).
+
 ### Metadata
 
 Reviewers, approvals, labels and linked issues come through the
@@ -97,7 +120,7 @@ message closes (`Fixes #12`). A field it cannot read is `null`, which means unkn
 
 Every surface serves one versioned JSON shape (`schema_version: 1`): id, identity,
 shape, forge reference, title, merge time, head sha, author, commits, files with
-added and deleted lines, category, provenance and metadata. Each record keeps up to
+added and deleted lines, category and its basis, provenance and metadata. Each record keeps up to
 1,000 files; `files_changed` carries the full count.
 
 `--format in-toto` wraps the same record as the predicate of an
