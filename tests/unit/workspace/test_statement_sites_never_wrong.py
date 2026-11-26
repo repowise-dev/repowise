@@ -172,3 +172,14 @@ def test_a_dollar_quoted_cron_job_and_its_filters_are_read() -> None:
 def test_a_from_inside_a_function_call_is_not_the_table() -> None:
     shape = statement_shape("SELECT extract(year FROM created_at) FROM orders WHERE id = $1")
     assert shape is not None and shape.name == "orders"
+
+
+def test_an_add_on_any_receiver_in_an_orm_file_keeps_inserts_open() -> None:
+    texts = {
+        "app/m.py": "class U(Base):\n    __tablename__ = 'users'\n",
+        "app/x.py": (
+            "from sqlalchemy.orm import Session\n\n\ndef a(db: Session, u):\n    db.add(u)\n"
+        ),
+        "app/y.py": ("from app.m import U\n\n\ndef b(db):\n    db.add(U(name='x'))\n"),
+    }
+    assert _issuer(texts, "INSERT INTO users (name) VALUES ($1)")[0] == "ambiguous"

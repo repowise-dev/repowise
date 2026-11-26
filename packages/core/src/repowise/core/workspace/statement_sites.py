@@ -63,6 +63,7 @@ _SUFFIXES = (".py", ".sql")
 #: A file worth parsing: it names a client call, a model, SQL or a schedule.
 _PREFILTER_RE = re.compile(
     r"\.(?:rpc|table|from_|query)\s*\(|__tablename__|\bTable\s*\(|cron\.schedule"
+    r"|\b(?:sqlalchemy|sqlmodel|flask_sqlalchemy)\b"
     r"|(?<![.\w])(?:select|insert|update|delete)\s*\("
     r"|(?i:[\"']\s*(?:SELECT\s[^\"']*?\bFROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)\b)"
 )
@@ -785,12 +786,13 @@ def _orm_site(repo: _Repo, mod: _Module, call: ast.Call) -> StatementSite | None
                 for name, _link in _chain(mod, call)[0]:
                     if name in ("delete", "update"):
                         verb = name
-        elif func.attr in ("add", "add_all", "delete", "merge") and _session_like(func.value):
-            first = call.args[0] if call.args else None
+        elif func.attr in ("add", "add_all", "delete", "merge") and call.args:
+            first = call.args[0]
             model = _orm_model(repo, mod, first.func) if isinstance(first, ast.Call) else None
             verb = {"add": "insert", "add_all": "insert", "delete": "delete"}.get(func.attr)
-            if model is None:
-                # ``session.add(user)``: a model the code does not name here.
+            if model is None and (_session_like(func.value) or _uses_orm(repo, mod)):
+                # ``db.add(user)``: a model the code does not name here. Any
+                # receiver in a file that uses the ORM (``db``, ``s``, ``self.db``).
                 return StatementSite(mod.path, call.lineno, "sql", "table", None, verb, "runtime")
         elif func.attr in _ORM_VERBS and isinstance(func.value, (ast.Name, ast.Attribute)):
             # ``users.insert()`` on a ``Table("users", ...)``, or ``sa.select(M)``.
@@ -802,6 +804,17 @@ def _orm_site(repo: _Repo, mod: _Module, call: ast.Call) -> StatementSite | None
     if verb is None or model is None:
         return None
     return StatementSite(mod.path, call.lineno, "sql", "table", model.lower(), verb, "model")
+
+
+_ORM_PACKAGES = ("sqlalchemy", "sqlmodel", "flask_sqlalchemy")
+
+
+def _uses_orm(repo: _Repo, mod: _Module) -> bool:
+    """Whether *mod* imports an ORM package or one of the repo's models."""
+    sources = [s for s, _ in mod.imports.values()] + list(mod.module_aliases.values())
+    return any(s.split(".")[0] in _ORM_PACKAGES for s in sources) or any(
+        repo.models.get(name) for name in mod.imports
+    )
 
 
 def _session_like(owner: ast.expr) -> bool:
