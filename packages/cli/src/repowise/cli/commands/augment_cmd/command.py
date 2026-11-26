@@ -203,6 +203,9 @@ def _handle_claude_lifecycle_event(event: str, cwd: str, payload: dict) -> None:
     if event == "SessionStart":
         result = _handle_claude_session_start(cwd, session_id)
     elif event == "SubagentStart":
+        agent_id = payload.get("agent_id", "")
+        if isinstance(agent_id, str) and agent_id:
+            session_id = agent_id
         result = _handle_claude_subagent_start(cwd)
     else:
         return

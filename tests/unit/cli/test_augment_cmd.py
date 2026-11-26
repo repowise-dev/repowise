@@ -169,6 +169,36 @@ def test_claude_subagent_start_payload_returns_steer_in_indexed_repo(
     assert AGENT_STEER_DEFERRED in context
 
 
+def test_claude_subagent_start_parallel_emits_for_each_agent(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    from repowise.core.agent_steer import AGENT_STEER_DEFERRED
+
+    _init_repowise_repo(tmp_path)
+    res1 = _invoke_augment(
+        runner,
+        {
+            "hook_event_name": "SubagentStart",
+            "cwd": str(tmp_path),
+            "session_id": "parent-session-123",
+            "agent_id": "agent-sub-1",
+        },
+    )
+    res2 = _invoke_augment(
+        runner,
+        {
+            "hook_event_name": "SubagentStart",
+            "cwd": str(tmp_path),
+            "session_id": "parent-session-123",
+            "agent_id": "agent-sub-2",
+        },
+    )
+    assert res1.exit_code == 0
+    assert res2.exit_code == 0
+    assert AGENT_STEER_DEFERRED in _hook_context(res1.output)
+    assert AGENT_STEER_DEFERRED in _hook_context(res2.output)
+
+
 def test_claude_subagent_start_outside_repo_returns_empty(
     runner: CliRunner, tmp_path: Path
 ) -> None:
