@@ -636,7 +636,11 @@ def _jvm(frame: ProfileFrame, symbols: Sequence[IndexedSymbol], *, kotlin: bool)
         if symbol.name == call.wanted and _id_parent(symbol) == call.owner:
             # The line found the method; the frame's parameters, where it has them, must
             # agree, or a line that drifted onto a neighbouring overload would join it.
-            agree = _params_agree(symbol, name.params, call.by_count)
+            siblings = [
+                s for s in callables
+                if s is not symbol and s.name == symbol.name and _id_parent(s) == call.owner
+            ]
+            agree = _params_agree(symbol, name.params, call.by_count, siblings)
             return (symbol, False) if agree else "second_signal_mismatch"
         return "second_signal_mismatch"
     return _jvm_nested(call, symbol)
@@ -692,6 +696,10 @@ def _jvm_off_method(
         return _name_join(
             callables, owner=call.owner, name=call.wanted, params=call.name.params, by_count=call.by_count
         )
+    if call.enclosing == "new":
+        # A lambda in an instance field initializer folds into the constructor, when there is one.
+        hit = _name_join(callables, owner=call.owner, name=call.named[-1], params=None, by_count=False)
+        return (hit[0], True) if isinstance(hit, tuple) else hit
     if call.enclosing is None and (
         call.anonymous or any(s.start_line == line and s.name == call.named[-1] for s in symbols)
     ):
@@ -772,42 +780,81 @@ def _name_join(
         return "no_span"
     if params is None:
         return "ambiguous"
-    chosen = _overload(found, params, by_count)
-    return (chosen, False) if chosen is not None else "ambiguous"
+    left = _overloads(found, params, by_count)
+    if not left:
+        return "no_span"
+    return (left[0], False) if len(left) == 1 else "ambiguous"
 
 
-def _overload(
+def _overloads(
     found: Sequence[IndexedSymbol], params: Sequence[str], by_count: bool
-) -> IndexedSymbol | None:
-    """The one overload in *found* whose id count, then types, fit *params*; None for several or none."""
+) -> list[IndexedSymbol]:
+    """The overloads in *found* that fit *params*: by id count, then by the types the id spells.
+
+    Empty when none has the frame's count; several when nothing tells them apart.
+    """
     from repowise.core.ingestion.symbol_identity import split_symbol_id
 
     payloads = {s.symbol_id: split_symbol_id(s.symbol_id)[1] or "" for s in found}
     # Narrow only when every member carries its count: an id without one is not an overload.
     if by_count and all(payloads[s.symbol_id][:1].isdigit() for s in found):
         found = [s for s in found if payloads[s.symbol_id].partition("(")[0] == str(len(params))]
-        if len(found) == 1:
-            return found[0]
-    types = ",".join(params) + ")"
-    typed = [s for s in found if payloads[s.symbol_id].partition("(")[1:] == ("(", types)]
-    return typed[0] if len(typed) == 1 else None
+        if len(found) <= 1:
+            return list(found)
+    typed = [s for s in found if _id_types(s) == tuple(params)]
+    return typed if len(typed) == 1 else list(found)
 
 
-def _params_agree(symbol: IndexedSymbol, params: Sequence[str] | None, by_count: bool) -> bool:
+def _params_agree(
+    symbol: IndexedSymbol,
+    params: Sequence[str] | None,
+    by_count: bool,
+    siblings: Sequence[IndexedSymbol] = (),
+) -> bool:
     """Whether the frame's parameters fit the count and types *symbol*'s id spells.
 
-    Checked only where a compiled count is the source's (*by_count*); an id
-    with no count says nothing, and a frame with no parameters is not checked.
+    Where a compiled count is the source's (*by_count*), the count and any
+    spelled types must equal the frame's. Where it is not (Kotlin, a nested
+    class's constructor), types the compiler may spell otherwise (``T`` as
+    ``Object``) cannot refute a join on their own: the frame disagrees only
+    when its types differ from *symbol*'s and equal a sibling overload's.
+    An id with no count says nothing, and a frame with no parameters is not checked.
     """
     from repowise.core.ingestion.symbol_identity import split_symbol_id
 
     payload = split_symbol_id(symbol.symbol_id)[1]
-    if params is None or not by_count or not payload or not payload[:1].isdigit():
+    if params is None or not payload or not payload[:1].isdigit():
         return True
+    if not by_count:
+        frame = tuple(params)
+        return _id_types(symbol) in (None, frame) or not any(_id_types(s) == frame for s in siblings)
     count, paren, types = payload.partition("(")
     if int(count) != len(params):
         return False
     return not paren or types == ",".join(params) + ")"
+
+
+#: Kotlin's names for the JVM types a frame spells (``Int`` is ``int``).
+_KOTLIN_JVM_TYPES = {
+    "Int": "int", "Long": "long", "Short": "short", "Byte": "byte", "Char": "char",
+    "Boolean": "boolean", "Float": "float", "Double": "double", "Any": "Object",
+    "IntArray": "int[]", "LongArray": "long[]", "ByteArray": "byte[]", "CharArray": "char[]",
+    "BooleanArray": "boolean[]", "DoubleArray": "double[]", "FloatArray": "float[]", "ShortArray": "short[]",
+}
+
+
+def _id_types(symbol: IndexedSymbol) -> tuple[str, ...] | None:
+    """The parameter types *symbol*'s id spells, as a JVM frame spells them; None when it spells none."""
+    from repowise.core.ingestion.symbol_identity import split_symbol_id
+
+    payload = split_symbol_id(symbol.symbol_id)[1] or ""
+    _, paren, types = payload.partition("(")
+    if not paren:
+        return None
+    spelled = [t for t in types.removesuffix(")").split(",") if t]
+    if symbol.file_path.endswith(".kt"):
+        spelled = [_KOTLIN_JVM_TYPES.get(t.rstrip("?"), t.rstrip("?")) for t in spelled]
+    return tuple(spelled)
 
 
 # -- JavaScript ----------------------------------------------------------------

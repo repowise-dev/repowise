@@ -435,7 +435,8 @@ def test_javacs_access_constructor_and_local_classes() -> None:
         ProfileFrame(f"{ROOT}/{REL}", 0, "java", "calc.Calc.sum(int, int, int)"),
     ]
     res = resolve_frames(frames, root=ROOT, symbols_by_file=_symbols())
-    assert res.reasons == ("generated", "ambiguous")
+    # No overload takes three parameters: nothing to join, not a choice between two.
+    assert res.reasons == ("generated", "no_span")
 
 
 def test_a_frame_with_a_path_keeps_its_own_language() -> None:
@@ -448,3 +449,65 @@ def test_a_frame_with_a_path_keeps_its_own_language() -> None:
 def test_an_unbalanced_parenthesis_splits_as_before() -> None:
     run = _collapsed("a(b;c;d 1")
     assert [f.function for f in run.frames] == ["a(b", "c", "d"]
+
+
+FIELD_LAMBDA = b"""package p;
+
+public class F {
+  private final java.util.function.IntUnaryOperator f = x -> x + 1;
+
+  F() {}
+
+  int run(int x) {
+    return f.applyAsInt(x);
+  }
+}
+"""
+
+
+def test_a_lambda_in_an_instance_field_folds_into_the_constructor() -> None:
+    rel = "src/main/java/p/F.java"
+    frame = ProfileFrame(f"{ROOT}/{rel}", 4, "java", "p.F.lambda$new$0(int)")
+    res = resolve_frames([frame], root=ROOT, symbols_by_file=_symbols(rel, FIELD_LAMBDA))
+    (hit,) = res.resolved
+    assert (_local(hit.symbol.symbol_id), hit.folded) == ("F::F", True)
+
+
+KOTLIN_OVERLOADS = b"""package com.acme
+
+fun twice(n: Int): Int = n * 2
+
+fun twice(s: String): String = s + s
+"""
+
+
+def test_a_kotlin_frame_on_a_neighbouring_overload_is_a_mismatch() -> None:
+    rel = "src/main/kotlin/com/acme/Util.kt"
+    parsed = ASTParser().parse_file(_make_file_info(rel, "kotlin"), KOTLIN_OVERLOADS)
+    symbols = {
+        rel: [
+            IndexedSymbol(
+                symbol_id=s.id,
+                name=s.name,
+                qualified_name=s.qualified_name,
+                kind=s.kind,
+                signature="",
+                file_path=rel,
+                start_line=s.start_line,
+                end_line=s.end_line,
+                visibility="public",
+            )
+            for s in parsed.symbols
+        ]
+    }
+    ids = sorted(s.symbol_id.split("::", 1)[1] for s in symbols[rel])
+    assert ids == ["twice#1(Int)", "twice#1(String)"]
+    frames = [
+        ProfileFrame(
+            f"{ROOT}/{rel}", 5, "kotlin", "com.acme.UtilKt.twice(int)"
+        ),  # line 5 is twice(String)
+        ProfileFrame(f"{ROOT}/{rel}", 3, "kotlin", "com.acme.UtilKt.twice(int)"),
+    ]
+    res = resolve_frames(frames, root=ROOT, symbols_by_file=symbols)
+    assert res.reasons[0] == "second_signal_mismatch"
+    assert _local(res.resolved[0].symbol.symbol_id) == "twice#1(Int)"
