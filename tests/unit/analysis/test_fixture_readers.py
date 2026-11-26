@@ -382,3 +382,10 @@ def test_a_helper_a_runner_config_names_keeps_its_users_unknown() -> None:
         "web/src/a.test.tsx": "import { render } from '@render'",
     }
     assert helper_readers(["web/src/test/render.tsx"], list(sources), sources.get) == {}
+
+
+def test_an_unreadable_test_file_keeps_every_helper_unknown() -> None:
+    """It may be the file naming the helper, so no helper is cleared."""
+    sources = {"suite/cases/sub/case.py": "x = 1", "e2e/test_ok.py": "import os"}
+    files = [*sources, "e2e/test_locked.py"]
+    assert helper_readers(["suite/cases/sub/case.py"], files, sources.get) == {}

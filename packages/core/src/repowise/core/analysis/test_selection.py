@@ -1644,7 +1644,7 @@ def _helper_route_reasons(
     helpers: list[str],
     tests: list[_TestRef],
     ev: _Evidence,
-    read_by: Mapping[str, list[str]] | None = None,
+    read_by: Mapping[str, list[str]],
 ) -> list[str]:
     """A helper on a route stands for its importers, which the walk adds beside it.
 
@@ -1657,7 +1657,6 @@ def _helper_route_reasons(
     plugins = [r for h in helpers if (r := _plugin_reason(h, ev))]
     if plugins:
         return [f"{path} is reached through a test helper: {plugins[0]}"]
-    read_by = {h: t for h, t in (read_by or {}).items() if h in helpers}
     _read_by_notes(read_by, ev)
     unimported = [h for h in helpers if not ev.importers.get(h) and h not in read_by]
     if unimported and _all_tests_selected(tests, ev):

@@ -129,42 +129,57 @@ def helper_readers(
     A helper a runner or build config at or above its directory names (an
     alias, a setup file, a plugin), or one at the repository root, is left out,
     so its users stay unknown. Ceiling: a module outside the test trees that a
-    test imports and that starts the helper by path is not read.
+    test imports and that starts the helper by path is not read. So is every
+    helper when a test file cannot be read: it may be the one naming it.
     """
-    from .test_selection import is_runnable_test
-
     names = {
         h: _helper_names(h)
         for h in helpers
         if str(PurePosixPath(h).parent) != "." and not _configured(h, read)
     }
     wanted = {n.lower() for words, dirs in names.values() for n in (*words, *dirs)}
+    texts = _naming_texts(test_files, wanted, read)
+    if texts is None:
+        return {}
+    files = sorted(test_files)
+    return {
+        h: [p for p in files if p != h and _reads(p, h, found, texts)] for h, found in names.items()
+    }
+
+
+def _naming_texts(
+    test_files: Collection[str], wanted: Collection[str], read: Callable[[str], str | None]
+) -> dict[str, str] | None:
+    """``{test file: its code text}`` for each holding one of *wanted* or a listing;
+    ``None`` when one cannot be read."""
     texts: dict[str, str] = {}
     for p in sorted(test_files):
-        text = (read(p) or "").lower()
+        raw = read(p)
+        if raw is None:
+            return None
+        text = raw.lower()
         if any(map(text.__contains__, wanted)) or _LISTING.search(text):
             texts[p] = code_text(p, text)
-    out: dict[str, list[str]] = {}
-    for h, (words, dirs) in names.items():
-        parent = PurePosixPath(h).parent
-        home, near = f"{parent}/", f"{parent.parent}/" if str(parent.parent) != "." else f"{parent}/"
-        out[h] = [
-            p
-            for p in sorted(test_files)
-            if p != h
-            and (
-                (p.startswith(near) and is_runnable_test(p))
-                or (p.startswith(home) and p in texts and _LISTING.search(texts[p]) is not None)
-                or (
-                    p in texts
-                    and (
-                        _names_either(texts[p], *words)
-                        or any(_writes_dir(texts[p], d) for d in dirs)
-                    )
-                )
-            )
-        ]
-    return out
+    return texts
+
+
+def _reads(
+    p: str, helper: str, found: tuple[tuple[str, ...], tuple[str, ...]], texts: Mapping[str, str]
+) -> bool:
+    """Whether test file *p* may reach *helper* (:func:`helper_readers`)."""
+    from .test_selection import is_runnable_test
+
+    parent = PurePosixPath(helper).parent
+    near = parent.parent if str(parent.parent) != "." else parent
+    if p.startswith(f"{near}/") and is_runnable_test(p):
+        return True
+    text = texts.get(p)
+    if text is None:
+        return False
+    if p.startswith(f"{parent}/") and _LISTING.search(text):
+        return True
+    words, dirs = found
+    return _names_either(text, *words) or any(_writes_dir(text, d) for d in dirs)
 
 
 #: Code listing a directory, which reaches a file it never names.
