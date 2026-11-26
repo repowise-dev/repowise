@@ -182,7 +182,7 @@ def test_sentence_ending_after_code_span_does_not_leak_reader_context():
 
 
 def test_repeated_path_on_previous_line_does_not_steal_current_context():
-    text = "In the acme/scanner repo, `src/x.py`.\\nAlso `src/x.py` is listed."
+    text = "In the acme/scanner repo, `src/x.py`.\nAlso `src/x.py` is listed."
     ref = next(ref for ref in extract(text, "docs/guide.md") if ref.raw == "src/x.py" and ref.line == 2)
     assert ref.previous_context == "In the acme/scanner repo, `src/x.py`."
     res = resolve(_index(), ref)
@@ -190,7 +190,7 @@ def test_repeated_path_on_previous_line_does_not_steal_current_context():
 
 
 def test_heading_does_not_become_previous_repository_context():
-    text = "## Your project setup\\nSee `src/gone.py` for details."
+    text = "## Your project setup\nSee `src/gone.py` for details."
     ref = next(ref for ref in extract(text, "docs/guide.md") if ref.raw == "src/gone.py")
     assert ref.previous_context == ""
     res = resolve(_index(), ref)
