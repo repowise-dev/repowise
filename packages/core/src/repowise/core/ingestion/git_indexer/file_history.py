@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -487,6 +488,36 @@ def _add_windows(
     meta["avg_commit_size"] = total_churn / c90 if c90 > 0 else 0.0
 
 
+_BACKPORT_MARKER_RE = re.compile(r"\bbackport\b", re.IGNORECASE)
+_PR_PAREN_RE = re.compile(r"\(#(\d+)\)")
+_PR_TAG_RE = re.compile(r"#(\d+)")
+
+
+def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool]:
+    """Return ``(change_id, is_backport)`` for *subject*.
+
+    A backport subject carries the original PR number alongside the backport PR,
+    e.g. ``[PR #13930/b1f6c87b backport][3.14] ... (#13942)`` or
+    ``... (#13833) (#13836)``.
+    """
+    is_backport = bool(_BACKPORT_MARKER_RE.search(subject))
+    parens = _PR_PAREN_RE.findall(subject)
+    if len(parens) >= 2:
+        is_backport = True
+        return f"pr:{parens[0]}", is_backport
+
+    if is_backport:
+        all_prs = _PR_TAG_RE.findall(subject)
+        if all_prs:
+            return f"pr:{all_prs[0]}", True
+        return f"backport:{subject}", True
+
+    if len(parens) == 1:
+        return f"pr:{parens[0]}", False
+
+    return f"sha:{sha}", False
+
+
 @dataclass
 class _Authors:
     """Per-identity commit counts and first/last commit times.
@@ -522,15 +553,25 @@ class _Authors:
         if resolve is None:
             resolve = build_identity_resolver(credited)
         authors = cls(resolve)
+
+        # Count one commit per change: backports to release branches of the same
+        # change/fix must not count as multiple commits for the author.
+        by_author_change: dict[tuple[str, str], list[_CommitRec]] = {}
         for c, (name, email) in zip(authored, credited, strict=True):
             key = resolve(name, email)
-            authors.counts[key] += 1
             authors.seen_names.setdefault(key, name)
-            if c.ts >= recent_since_ts:
+            ckey, _ = _commit_change_key(c.subject, c.sha)
+            by_author_change.setdefault((key, ckey), []).append(c)
+
+        for (key, _ckey), group in by_author_change.items():
+            authors.counts[key] += 1
+            if any(c.ts >= recent_since_ts for c in group):
                 authors.recent_counts[key] += 1
-            if c.ts > 0:
-                authors.last_ts[key] = max(authors.last_ts.get(key, c.ts), c.ts)
-                authors.first_ts[key] = min(authors.first_ts.get(key, c.ts), c.ts)
+            valid_ts = [c.ts for c in group if c.ts > 0]
+            if valid_ts:
+                authors.last_ts[key] = max(authors.last_ts.get(key, 0), max(valid_ts))
+                authors.first_ts[key] = min(authors.first_ts.get(key, valid_ts[0]), min(valid_ts))
+
         return authors
 
     def name(self, key: str) -> str:
