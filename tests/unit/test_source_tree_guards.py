@@ -1412,9 +1412,27 @@ class TestNoProviderNameBranches:
 # exist today, each with its reason. The list only shrinks: an entry whose
 # file no longer holds the copy fails until it is removed.
 
-# A hex character class quantified to admit exactly 40 digits: ``{40}``,
-# ``{7,40}``, ``{40,64}``. The owner is ``git_sha.FULL_SHA_PATTERN``.
-_FULL_SHA_REGEX = re.compile(r"\[(?=[^\]]*a-f)(?=[^\]]*0-9)[0-9a-fA-F-]+\]\{(?:40|\d*,40|40,\d*)\}")
+# A hex character class with a quantifier, its bounds captured. The owner of
+# the commit-id shape is ``git_sha.FULL_SHA_PATTERN``.
+_HEX_RUN = re.compile(r"\[(?=[^\]]*a-f)(?=[^\]]*0-9)[0-9a-fA-F-]+\]\{(\d*)(,?)(\d*)\}")
+
+
+def _admits_a_full_sha(text: str) -> bool:
+    """Whether *text* holds a hex run that takes a 40-digit commit id.
+
+    ``{40}``, ``{40,}`` and any closed range from at most 40 up to at most 64
+    (``{7,40}``, ``{7,64}``, ``{40,64}``). Open ranges below 40 (``{8,}``) and
+    ranges past 64 read any hex token, not a commit id, so they pass.
+    """
+    for low, comma, high in _HEX_RUN.findall(text):
+        least = int(low or 0)
+        if not (comma and high):  # ``{n}`` or ``{n,}``
+            if least == 40:
+                return True
+        elif least <= 40 <= int(high) <= 64:
+            return True
+    return False
+
 
 _OWNER_HOMES: dict[str, str] = {
     "full-sha-regex": "packages/core/src/repowise/core/git_sha.py",
@@ -1425,6 +1443,10 @@ _MANIFEST_HOME = "packages/core/src/repowise/core/ingestion/languages/"
 
 _KNOWN_COPIES: dict[tuple[str, str], str] = {
     # full-sha-regex
+    (
+        "full-sha-regex",
+        "packages/cli/src/repowise/cli/commands/decision_batch.py",
+    ): "a decision id or prefix (4 to 64 hex digits), not a commit id",
     (
         "full-sha-regex",
         "packages/cli/src/repowise/cli/platform/decision_sync.py",
@@ -1525,7 +1547,7 @@ def _owner_copies(tree: ast.AST) -> set[str]:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if id(node) in docstrings:
                 continue
-            if _FULL_SHA_REGEX.search(node.value):
+            if _admits_a_full_sha(node.value):
                 kinds.add("full-sha-regex")
             if "::__module__" in node.value:
                 kinds.add("module-symbol-id")
@@ -1572,6 +1594,9 @@ class TestNoOwnerCopies:
         [
             ('R = re.compile(r"^[0-9a-f]{40}$")', "full-sha-regex"),
             ('R = re.compile(r"[0-9a-fA-F]{7,40}")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9a-f]{7,64}")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9a-f]{4,41}")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9a-f]{40,}")', "full-sha-regex"),
             ('s = f"{path}::__module__"', "module-symbol-id"),
             ('NAMES = ("package.json", "Cargo.toml")', "manifest-list"),
         ],
@@ -1584,6 +1609,8 @@ class TestNoOwnerCopies:
         [
             'R = re.compile(r"[0-9a-f]{64}")',  # a sha256 content hash
             'R = re.compile(r"[0-9a-f]{12}")',
+            'R = re.compile(r"[0-9a-f]{8,}")',  # any hex token
+            'R = re.compile(r"[0-9a-f]{8,128}")',
             'def f():\n    """Owns ``a.py::__module__``."""',
             'NAMES = ("build.gradle", "build.gradle.kts")',  # one ecosystem's names
         ],
