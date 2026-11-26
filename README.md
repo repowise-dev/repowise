@@ -705,9 +705,10 @@ your company under the AGPL creates no obligation to publish your own code.
 ## Privacy
 
 - **Deterministic or offline mode:** with `--no-prose`, code-derived content stays on
-  your infrastructure. The CLI reports **anonymous, opt-out** usage telemetry (command
-  names and coarse environment only); turn it off with `repowise telemetry disable`,
-  `REPOWISE_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`, or `REPOWISE_OFFLINE=1`.
+  your infrastructure. The CLI reports **anonymous, opt-out** usage telemetry (command,
+  MCP tool and client names, status, duration and coarse environment, never code,
+  paths or repo names; raw events deleted after 90 days); turn it off with
+  `repowise telemetry disable`, `REPOWISE_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`, or `REPOWISE_OFFLINE=1`.
   [What's collected →](docs/reference/TELEMETRY.md)
 - **Optional LLM features:** generated prose, decision extraction and refactoring code
   generation send code-derived prompts directly to the provider configured with your
