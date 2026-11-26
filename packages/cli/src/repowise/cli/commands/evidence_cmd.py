@@ -138,7 +138,7 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile, benchmark
     results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
-    V8 .cpuprofile, collapsed stacks, pytest-benchmark or hyperfine JSON,
+    V8 .cpuprofile, collapsed stacks, pytest-benchmark, hyperfine or Vitest benchmark JSON,
     go test -bench or go test -json output, JUnit XML, a pg_stat_statements CSV from
     psql --csv), detected from its content. Several
     profiles (a parent process and its workers, or a directory holding one file

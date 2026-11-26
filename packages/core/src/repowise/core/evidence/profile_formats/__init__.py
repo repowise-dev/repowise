@@ -45,6 +45,7 @@ from . import (
     pprof,
     pytest_benchmark,
     speedscope,
+    vitest_bench,
 )
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
@@ -90,6 +91,9 @@ profile_formats.register(
     "go-bench", ProfileFormat(go_bench.sniff, to_v1=go_bench.to_v1, needs_checkout=True)
 )
 profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
+profile_formats.register(
+    "vitest-bench", ProfileFormat(vitest_bench.sniff, to_v1=vitest_bench.to_v1),
+)
 profile_formats.register("junit", ProfileFormat(junit.sniff, to_v1=junit.to_v1))
 profile_formats.register(
     "pg-stat-statements",
