@@ -244,27 +244,34 @@ def test_is_raw_in_an_attribute_value_keeps_the_body_markup() -> None:
     assert scan("astro", src).component_tags == (("Card", 2), ("Other", 4))
 
 
-def _scans_in_linear_time(page: Callable[[int], bytes], n: int) -> None:
+def _scans_in_linear_time(page: Callable[[int], bytes], n: int, factor: int = 4) -> None:
     # The scan is memoised per source; clear it so every run scans.
     assert_linear_growth(
         lambda src: prepare_source("astro", src),
         page(n),
-        page(4 * n),
+        page(factor * n),
         reset=_cached_scan.cache_clear,
+        factor=factor,
     )
-
-
-def test_an_unclosed_quote_scans_in_linear_time() -> None:
-    _scans_in_linear_time(lambda n: b'<a "' * n, 20_000)
 
 
 @pytest.mark.parametrize(
     ("page", "n"),
     [
-        # The whole page is one start tag, so the regex engine's backtrack stack
-        # holds a frame per byte. On Linux its cost per byte steps up once, at
-        # around 200 KB, and is linear on either side: both sizes sit above it.
-        pytest.param(lambda n: b"<b " * n + b"{{{", 80_000, id="unbalanced-brace"),
+        pytest.param(lambda n: b'<a "' * n, 8_000, id="unclosed-quote"),
+        pytest.param(lambda n: b"<b " * n + b"{{{", 11_000, id="unbalanced-brace"),
+    ],
+)
+def test_one_start_tag_page_scans_in_linear_time(page: Callable[[int], bytes], n: int) -> None:
+    # The whole page is one start tag, so the regex engine's backtrack stack holds
+    # a frame per byte (about 140 bytes each) and outgrows the CPU cache between
+    # sizes. Over a 16x input that 2-3x step stays far below quadratic growth.
+    _scans_in_linear_time(page, n, factor=16)
+
+
+@pytest.mark.parametrize(
+    ("page", "n"),
+    [
         pytest.param(lambda n: b"{/* c */}<Card />\n" * n, 2_500, id="many-hidden-ranges"),
         pytest.param(lambda n: b"<Card />\n" * n, 10_000, id="many-tags"),
         pytest.param(

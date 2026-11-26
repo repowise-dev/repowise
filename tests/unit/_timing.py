@@ -6,6 +6,12 @@ times larger takes about 4x as long when it is linear and about 16x when it is
 quadratic. :func:`assert_linear_growth` times both sizes, alternating, keeps
 the best of five runs of each, and holds off garbage collection so a pause
 lands on neither side.
+
+Work that holds a frame per input byte (one regex match over a whole page) can
+step up in cost per byte once its memory outgrows a CPU cache, about 2-3x on a
+CI runner. Over a 4x input that step alone reads as 8-12x, so such a test
+passes ``factor=16``: linear then measures 16-50x against a bound of 64, and
+quadratic about 256x.
 """
 
 from __future__ import annotations
@@ -17,10 +23,6 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-#: A 4x input may cost at most this many times the 1x input: between linear
-#: (about 4x) and quadratic (about 16x).
-MAX_GROWTH = 8
-
 
 def assert_linear_growth(
     run: Callable[[T], object],
@@ -29,13 +31,15 @@ def assert_linear_growth(
     *,
     reset: Callable[[], object] | None = None,
     rounds: int = 5,
+    factor: int = 4,
 ) -> None:
-    """Fail when ``run(large)`` costs ``MAX_GROWTH`` times ``run(small)`` or more.
+    """Fail when ``run(large)`` costs ``factor ** 1.5`` times ``run(small)`` or more.
 
-    *large* should be about four times *small*, and *small* big enough to take
-    a few milliseconds. *reset* runs before every timed call, outside the
-    timing: pass the ``cache_clear`` of a per-input memo so every run does the
-    work.
+    *large* should be about *factor* times *small*, and *small* big enough to
+    take a few milliseconds. The bound sits midway, on a log scale, between
+    linear (*factor*) and quadratic (*factor* squared): 8 for the default 4x.
+    *reset* runs before every timed call, outside the timing: pass the
+    ``cache_clear`` of a per-input memo so every run does the work.
     """
     best = [float("inf"), float("inf")]
     enabled = gc.isenabled()
@@ -52,6 +56,6 @@ def assert_linear_growth(
         if enabled:
             gc.enable()
     ratio = best[1] / best[0]
-    assert ratio < MAX_GROWTH, (
-        f"4x input took {ratio:.2f}x as long ({best[1] * 1e3:.1f} ms vs {best[0] * 1e3:.1f} ms)"
+    assert ratio < factor**1.5, (
+        f"{factor}x input took {ratio:.2f}x as long ({best[1] * 1e3:.1f} ms vs {best[0] * 1e3:.1f} ms)"
     )
