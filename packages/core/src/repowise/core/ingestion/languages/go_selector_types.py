@@ -72,6 +72,10 @@ class GoFileFacts:
     variables: dict[str, VarSpec | None]
     structs: dict[str, tuple[Field, ...]]  # struct type name -> fields
     types: frozenset[str]  # every type name the file declares
+    interfaces: frozenset[str] = frozenset()  # the interface types among them
+    #: local names of unaliased imports, read off the path rather than declared
+    guessed_imports: frozenset[str] = frozenset()
+    package: str = ""  # the file's package clause
 
 
 _NO_FACTS = GoFileFacts({}, {}, {}, frozenset())
@@ -86,13 +90,18 @@ def go_file_facts(text: str) -> GoFileFacts:
     if root is None:
         return _NO_FACTS
     imports: dict[str, str] = {}
+    guessed: set[str] = set()
+    package = ""
     variables: dict[str, VarSpec | None] = {}
     structs: dict[str, tuple[Field, ...]] = {}
     types: set[str] = set()
+    interfaces: set[str] = set()
     for node in root.children:
-        if node.type == "import_declaration":
+        if node.type == "package_clause":
+            package = next((_text(c) for c in node.named_children), "")
+        elif node.type == "import_declaration":
             for spec in _specs(node, "import_spec", "import_spec_list"):
-                _add_import(spec, imports)
+                _add_import(spec, imports, guessed)
         elif node.type == "var_declaration":
             for spec in _specs(node, "var_spec", "var_spec_list"):
                 for name, value in var_spec_values(spec):
@@ -109,7 +118,17 @@ def go_file_facts(text: str) -> GoFileFacts:
                 body = spec.child_by_field_name("type")
                 if spec.type == "type_spec" and body is not None and body.type == "struct_type":
                     structs[name] = _struct_fields(body)
-    return GoFileFacts(imports, variables, structs, frozenset(types))
+                elif body is not None and body.type == "interface_type":
+                    interfaces.add(name)
+    return GoFileFacts(
+        imports,
+        variables,
+        structs,
+        frozenset(types),
+        frozenset(interfaces),
+        frozenset(guessed),
+        package,
+    )
 
 
 def var_spec_values(spec: Node) -> list[tuple[str, VarSpec | None]]:
@@ -146,8 +165,32 @@ _BINDING_LEFT = {
     "type_switch_statement": "alias",
 }
 
-#: ``(first line, last line, {name: [spec per binding]})`` of one top-level function.
-FunctionBindings = tuple[int, int, dict[str, list[VarSpec | None]]]
+#: Nodes that open a scope a binding inside them is confined to.
+_SCOPES = frozenset(
+    {
+        "block", "if_statement", "for_statement", "expression_switch_statement",
+        "type_switch_statement", "select_statement", "expression_case", "type_case",
+        "communication_case", "default_case", "func_literal", "function_declaration",
+        "method_declaration",
+    }
+)  # fmt: skip
+
+
+@dataclass(frozen=True)
+class Binding:
+    """One binding of a name: its spec, its line, and the lines its scope spans."""
+
+    spec: VarSpec | None
+    line: int
+    scope: tuple[int, int]
+
+    def reaches(self, line: int) -> bool:
+        """Whether a use on *line* can see this binding: in its scope, at or after it."""
+        return self.line <= line and self.scope[0] <= line <= self.scope[1]
+
+
+#: ``(first line, last line, {name: [each binding]})`` of one top-level function.
+FunctionBindings = tuple[int, int, dict[str, list[Binding]]]
 
 
 def function_bindings(text: str) -> tuple[FunctionBindings, ...]:
@@ -170,8 +213,16 @@ def function_bindings(text: str) -> tuple[FunctionBindings, ...]:
     )
 
 
-def _bindings_in(function: Node) -> dict[str, list[VarSpec | None]]:
-    bound: dict[str, list[VarSpec | None]] = {}
+def _bindings_in(function: Node) -> dict[str, list[Binding]]:
+    bound: dict[str, list[Binding]] = {}
+
+    def add(name: str, spec: VarSpec | None, node: Node) -> None:
+        scope = node.parent
+        while scope is not None and scope.type not in _SCOPES:
+            scope = scope.parent
+        span = (scope or function).start_point[0] + 1, (scope or function).end_point[0] + 1
+        bound.setdefault(name, []).append(Binding(spec, node.start_point[0] + 1, span))
+
     stack = [function]
     while stack:
         node = stack.pop()
@@ -179,10 +230,10 @@ def _bindings_in(function: Node) -> dict[str, list[VarSpec | None]]:
         kind = node.type
         if kind in ("var_spec", "short_var_declaration"):
             for name, spec in var_spec_values(node):
-                bound.setdefault(name, []).append(spec)
+                add(name, spec, node)
         elif kind in ("parameter_declaration", "variadic_parameter_declaration", "const_spec"):
             for name_node in node.children_by_field_name("name"):
-                bound.setdefault(_text(name_node), []).append(None)
+                add(_text(name_node), None, node)
         elif kind in _BINDING_LEFT and any(c.type == ":=" for c in node.children):
             left = node.child_by_field_name(_BINDING_LEFT[kind])
             if left is None:
@@ -190,7 +241,7 @@ def _bindings_in(function: Node) -> dict[str, list[VarSpec | None]]:
             idents = [left] if left.type == "identifier" else left.named_children
             for ident in idents:
                 if ident.type == "identifier":
-                    bound.setdefault(_text(ident), []).append(None)
+                    add(_text(ident), None, node)
     return bound
 
 
@@ -275,7 +326,7 @@ def _specs(node: Node, spec_type: str, list_type: str) -> list[Node]:
     return out
 
 
-def _add_import(spec: Node, imports: dict[str, str]) -> None:
+def _add_import(spec: Node, imports: dict[str, str], guessed: set[str]) -> None:
     path_node = spec.child_by_field_name("path")
     if path_node is None:
         return
@@ -283,14 +334,32 @@ def _add_import(spec: Node, imports: dict[str, str]) -> None:
     name_node = spec.child_by_field_name("name")
     if name_node is not None:
         local = _text(name_node)
-        if local in ("_", "."):
-            return
-    else:
-        # The package name, which by convention is the path's last element.
-        # The ceiling: a package declaring another name (``gopkg.in/yaml.v3``
-        # as ``yaml``) is not read here; its chains stay unresolved.
-        local = path.rsplit("/", 1)[-1]
-    imports[local] = path
+        if local not in ("_", "."):
+            imports[local] = path
+        return
+    # Unaliased, the local name is whatever the package declares, which the
+    # importing file does not say. Each name it may be is kept, and a chain
+    # through one is followed only once the package's own clause confirms it.
+    for local in _package_names_of(path):
+        imports.setdefault(local, path)
+        guessed.add(local)
+
+
+def _package_names_of(import_path: str) -> list[str]:
+    """The names a package at *import_path* may declare.
+
+    Its last element, and the one before a major-version suffix
+    (``x/foo/v2`` is ``foo``, ``gopkg.in/yaml.v3`` is ``yaml``); a directory
+    named ``v1`` holding ``package v1`` keeps the first.
+    """
+    parts = import_path.split("/")
+    names = [parts[-1]]
+    if len(parts) > 1 and parts[-1][:1] == "v" and parts[-1][1:].isdigit():
+        names.append(parts[-2])
+    head, dot, version = parts[-1].rpartition(".")
+    if dot and version[:1] == "v" and version[1:].isdigit():
+        names.append(head)
+    return names
 
 
 def _text(node: Node) -> str:
@@ -353,19 +422,21 @@ class GoSelectorTypes(Generic[T]):
     ) -> GoType | None:
         """The type *chain* holds on *line* of *path*.
 
-        Its head is a local of the function holding the line when that
-        function binds it exactly once, from a followable spec; a name bound
-        any other way there refuses, since it may shadow a package name. A
-        head the function never binds is a package variable or an import.
+        Its head is a local when exactly one binding of it in the function
+        holding the line is visible there (in its scope, at or above the
+        line), typed from a followable spec; any other visible binding
+        refuses, since it shadows the package name. A head with no visible
+        binding is a package variable or an import.
         """
         if not chain:
             return None
         bindings = self._function_at(path, line)
         if bindings is None:
             return None  # a package-level initializer: no function scope is read
-        if chain[0] not in bindings:
+        visible = [b for b in bindings.get(chain[0], ()) if b.reaches(line)]
+        if not visible:
             return self.chain_type(path, chain)
-        local = self._local(path, line, chain[0])
+        local = visible[0].spec if len(visible) == 1 else None
         if local is None or budget <= 0:
             return None
         if local.written is not None:
@@ -375,11 +446,12 @@ class GoSelectorTypes(Generic[T]):
         return self.walk_fields(owner, chain[1:])
 
     def _local(self, path: str, line: int, name: str) -> VarSpec | None:
-        """The spec of *name*'s one binding in the function holding *line*, or None."""
-        specs = (self._function_at(path, line) or {}).get(name, ())
-        return specs[0] if len(specs) == 1 else None
+        """The spec of the one binding of *name* visible on *line*, or None."""
+        found = (self._function_at(path, line) or {}).get(name, ())
+        visible = [b for b in found if b.reaches(line)]
+        return visible[0].spec if len(visible) == 1 else None
 
-    def _function_at(self, path: str, line: int) -> dict[str, list[VarSpec | None]] | None:
+    def _function_at(self, path: str, line: int) -> dict[str, list[Binding]] | None:
         functions = self._functions.get(path)
         if functions is None:
             if len(self._functions) >= _MAX_BINDING_FILES:
@@ -398,11 +470,17 @@ class GoSelectorTypes(Generic[T]):
         if not chain or budget <= 0:
             return None
         head, rest = chain[0], list(chain[1:])
-        if head in self.facts(path).imports:
-            package = self._imported_dir(path, head)
-            if package is None or not rest:
+        facts = self.facts(path)
+        imported = self._imported_dir(path, head) if head in facts.imports else None
+        if imported is not None and head in facts.guessed_imports:
+            names = {self.facts(p).package for p in self._files_in(imported)}
+            imported = imported if names == {head} else None
+        if imported is not None:
+            if not rest:
                 return None
-            head, rest = rest[0], rest[1:]
+            package, head, rest = imported, rest[0], rest[1:]
+        elif head in facts.imports and head not in facts.guessed_imports:
+            return None  # an import outside the repository
         else:
             package = posixpath.dirname(path)
         return self.walk_fields(self.variable_type(package, head, budget - 1), rest)
@@ -451,8 +529,23 @@ class GoSelectorTypes(Generic[T]):
         return hit if isinstance(hit, tuple) else None
 
     def promoted_method(self, owner: GoType, method: str) -> T | None:
-        """*owner*'s method *method*, its own or promoted from one embedding."""
-        return self._promoted(owner, lambda t: self._method_of(t[0], t[1], method))
+        """*owner*'s method *method*, its own or promoted from one embedding.
+
+        A field of the name at the same depth is what Go selects, so it refuses.
+        So does an interface: the call dispatches to whatever implements it,
+        which no declaration names, so no method spec is offered as the callee.
+        """
+
+        def lookup(t: GoType) -> Any:
+            path = self._declaring_file(*t)
+            if path is None or t[1] in self.facts(path).interfaces:
+                return None
+            found = self._method_of(t[0], t[1], method)
+            if found is None and self._own_field(t, method) is not None:
+                return _UNTYPED
+            return found
+
+        return self._promoted(owner, lookup)
 
     def _own_field(self, owner: GoType, field: str) -> Any:
         path = self._declaring_file(*owner)
@@ -465,8 +558,9 @@ class GoSelectorTypes(Generic[T]):
     def _promoted(self, owner: GoType, lookup: Callable[[GoType], Any]) -> Any:
         """Go's selector rule: the shallowest depth with a match, and one match there.
 
-        An embedded type outside the repository may hold the member at its
-        depth, so a level with one stops the search going deeper.
+        An embedded type outside the repository, or one that is not a struct
+        (an interface, whose method specs no lookup reads), may hold the member
+        at its depth, so a level with one and no match stops the search there.
         """
         level, seen = [owner], {owner}
         for _ in range(_MAX_EMBED_DEPTH + 1):
@@ -476,6 +570,8 @@ class GoSelectorTypes(Generic[T]):
             deeper: list[GoType] = []
             for t in level:
                 path = self._declaring_file(*t)
+                if path is None or t[1] not in self.facts(path).structs:
+                    return None
                 for f in self.facts(path).structs.get(t[1], ()) if path else ():
                     if not f.embedded:
                         continue

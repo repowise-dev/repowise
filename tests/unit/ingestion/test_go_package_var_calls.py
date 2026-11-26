@@ -99,6 +99,17 @@ class TestResolvedThroughAPackageVariable:
         edges = _pairs(tmp_path, _files("", {"initialize/router.go": ("go", caller)}))
         assert ("initialize/router.go::Routers", _INIT_SKILLS, "receiver_chain_import") in edges
 
+    def test_an_unaliased_import_named_by_its_package_clause(self, tmp_path: Path) -> None:
+        """``m/api/v1`` declares ``package v1``: the version-looking element is the name."""
+        caller = (
+            'package initialize\n\nimport "m/api/v1"\n\n'
+            "func Routers() {\n\tv1.ApiGroupApp.SystemApiGroup.SkillsApi.GetTools()\n}\n"
+        )
+        files = _files("", {"initialize/router.go": ("go", caller)})
+        links = {**_LINKS, "initialize/router.go": {"m/api/v1": "api/v1/enter.go"}}
+        edges = _pairs(tmp_path, files, links)
+        assert ("initialize/router.go::Routers", _GET_TOOLS, "receiver_chain_import") in edges
+
     def test_a_local_bound_once_from_a_chain_types_the_call(self, tmp_path: Path) -> None:
         caller = (
             'package initialize\n\nimport "m/router"\n\n'
@@ -188,6 +199,57 @@ class TestRefused:
         files = _files("\tskillsApi.GetTools()\n", {"api/v1/system/twin.go": twin})
         assert not any(e[1] == _GET_TOOLS for e in _pairs(tmp_path, files))
 
+    def test_an_interface_typed_variable(self, tmp_path: Path) -> None:
+        """``var decoders Decoder`` dispatches at run time: no method spec is the callee."""
+        source = (
+            "package app\n\ntype Decoder interface {\n\tDecode()\n}\n\n"
+            "var decoders Decoder\n\nfunc run() {\n\tdecoders.Decode()\n}\n"
+        )
+        edges = _pairs(tmp_path, {"app/app.go": ("go", source)}, {})
+        assert not any(e[2] == "receiver_chain_import" for e in edges)
+
+    def test_a_local_bound_in_a_block_types_only_calls_inside_it(self, tmp_path: Path) -> None:
+        """Inside the ``if`` ``skillsApi`` is a ``UserApi``; after it, the package variable."""
+        user = "api.ApiGroupApp.SystemApiGroup.UserApi"
+        inside = f"\tif skillsApi := {user}; true {{\n\t\tskillsApi.GetTools()\n\t}}\n"
+        after = f"\tif skillsApi := {user}; true {{\n\t}}\n\tskillsApi.GetTools()\n"
+        router = 'package system\n\nimport api "m/api/v1"\n\ntype SkillsRouter struct{}\n\n'
+        for body, bound in ((inside, False), (after, True)):
+            files = _files(
+                "",
+                {
+                    "router/system/skills.go": (
+                        "go",
+                        router + (f"func (s *SkillsRouter) InitSkillsRouter() {{\n{body}}}\n"),
+                    )
+                },
+            )
+            links = {**_LINKS, "router/system/skills.go": {"m/api/v1": "api/v1/enter.go"}}
+            edges = _pairs(tmp_path / str(bound), files, links)
+            assert ((_INIT_SKILLS, _GET_TOOLS, "receiver_chain_import") in edges) is bound
+
+    def test_a_field_named_like_the_promoted_method(self, tmp_path: Path) -> None:
+        """``Run func()`` sits at depth 0 and ``Base.Run`` at depth 1: Go calls the field."""
+        source = (
+            "package app\n\ntype Base struct{}\n\nfunc (b *Base) Run() {}\n\n"
+            "type S struct {\n\tBase\n\tRun func()\n}\n\n"
+            "var s = S{}\n\nfunc run() {\n\ts.Run()\n}\n"
+        )
+        edges = _pairs(tmp_path, {"app/app.go": ("go", source)}, {})
+        assert not any(e[2] == "receiver_chain_import" for e in edges)
+
+    def test_an_embedded_interface_stops_a_deeper_search(self, tmp_path: Path) -> None:
+        """``Runner`` promotes ``Run`` at depth 1, ahead of ``Inner.Run`` at depth 2."""
+        source = (
+            "package app\n\ntype Runner interface {\n\tRun()\n}\n\n"
+            "type Inner struct{}\n\nfunc (i *Inner) Run() {}\n\n"
+            "type Middle struct {\n\tInner\n}\n\n"
+            "type Outer struct {\n\tRunner\n\tMiddle\n}\n\n"
+            "var outer = new(Outer)\n\nfunc run() {\n\touter.Run()\n}\n"
+        )
+        edges = _pairs(tmp_path, {"app/app.go": ("go", source)}, {})
+        assert ("app/app.go::run", "app/app.go::Inner::Run", "receiver_chain_import") not in edges
+
 
 class TestFacts:
     def test_imports_variables_and_struct_fields(self) -> None:
@@ -197,6 +259,14 @@ class TestFacts:
             'type T struct {\n\t*Base\n\tpkg.Embedded\n\tF, G *pkg.T `json:"f"`\n\tH []T\n}\n'
         )
         assert facts.imports == {"api": "m/api/v1", "router": "m/router"}
+        major = go_file_facts('package p\n\nimport (\n\t"x/foo/v2"\n\t"gopkg.in/yaml.v3"\n)\n')
+        assert major.imports == {
+            "v2": "x/foo/v2",
+            "foo": "x/foo/v2",
+            "yaml.v3": "gopkg.in/yaml.v3",
+            "yaml": "gopkg.in/yaml.v3",
+        }
+        assert major.guessed_imports == {"v2", "foo", "yaml.v3", "yaml"}
         assert facts.variables == {
             "a": None,  # declared twice
             "b": VarSpec(written=(None, "int")),  # no repository type: no hop follows it
@@ -221,5 +291,6 @@ class TestFacts:
         )
         ((first, last, bound),) = function_bindings(source)
         assert (first, last) == (3, 12)
-        assert bound["x"] == [VarSpec(chain=("router", "App", "System"))]
+        assert [b.spec for b in bound["x"]] == [VarSpec(chain=("router", "App", "System"))]
+        assert bound["e"][0].scope == (11, 11)  # the ``if`` it is bound in
         assert set(bound) == {"s", "a", "b", "r", "x", "k", "v", "t", "q", "w", "e"}
