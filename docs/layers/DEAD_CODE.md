@@ -31,7 +31,9 @@ Cleanup-candidate lines: 14 · findings by confidence: high 2, medium 1
 From an agent, `get_dead_code()` or `get_dead_code(tier="high", safe_only=True)`.
 In the dashboard, open the **Dead code** view of a repository.
 
-## What it finds
+## Reading the results
+
+### What it finds
 
 | Kind | Meaning | Shown by default |
 |------|---------|------------------|
@@ -44,8 +46,6 @@ Methods, fields, properties and enum members are never reported as unused
 exports: they are reached through their container. `unused_internal` is
 withheld from the dashboard and default MCP responses because its precision is
 very low ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
-
-## Reading the results
 
 ### Confidence
 
@@ -122,33 +122,7 @@ repository has no dead code. The CLI prints how many findings were hidden below
 the floor. An index whose dead-code pass failed also reads as empty; pass
 `--min-confidence 0.0` to compute live.
 
-## Tuning and suppressing
-
-- **Confidence floor.** `--min-confidence` (CLI) or `min_confidence` (MCP).
-  The index stores findings at `0.4` and above, so the CLI answers from the
-  index at that floor or higher and computes a fresh analysis below it.
-- **Scope.** `--kind`, `--no-unreachable`, `--no-unused-exports`,
-  `--include-internals`, `--no-include-zombie-packages`. Passing `--kind`
-  overrides the individual toggles.
-- **Triage in the dashboard.** Each finding has a status: `open`,
-  `acknowledged`, `resolved` or `false_positive`. Set it per row or resolve in
-  bulk. A finding you have acted on stays out of the open list across later
-  `repowise update` runs; it is not re-opened.
-- **Excluding paths.** `.repowiseIgnore` files and `exclude_patterns` in
-  `.repowise/config.yaml` remove paths from indexing (see
-  [CONFIG.md](../reference/CONFIG.md)). An excluded file's own imports leave
-  the graph too, so a file only it imported can then surface as unreachable.
-- **In source.** A Java or Kotlin symbol annotated `@SuppressWarnings("unused")`
-  is treated as deliberately unused and is not reported. An unused export
-  marked deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or
-  `_COMPAT` name suffix) starts at `0.30`, below the default floor. An unused
-  internal keeps `0.65`, since a private symbol has no outside consumer.
-- **Turning the MCP tool off.** `mcp: {tools: ["-get_dead_code"]}` in
-  `.repowise/config.yaml`.
-
-There is no allowlist file for dead-code findings; use the dashboard status.
-
-## False positives and dynamic code
+### False positives and dynamic code
 
 When a file contains a runtime loader, Repowise assumes its neighbours in the
 same directory may be reached through it and caps their confidence at `0.40`.
@@ -187,7 +161,7 @@ The cases where a finding is most likely wrong:
 The evidence list on each finding says which signals applied. Read it before
 deleting anything.
 
-## Workspaces
+### Workspaces
 
 In a workspace, a file dead inside its own repo may be the surface another repo
 depends on. The CLI, the dashboard and `get_dead_code` check each finding
@@ -216,6 +190,32 @@ the cut. The file page, Overview's attention list, Do next (web, `repowise next`
 --full` and the assessment report read the same cut. Fix first and plan annotations
 are built per repo before the workspace pass, so they read stored values. See
 [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
+
+## Tuning and suppressing
+
+- **Confidence floor.** `--min-confidence` (CLI) or `min_confidence` (MCP).
+  The index stores findings at `0.4` and above, so the CLI answers from the
+  index at that floor or higher and computes a fresh analysis below it.
+- **Scope.** `--kind`, `--no-unreachable`, `--no-unused-exports`,
+  `--include-internals`, `--no-include-zombie-packages`. Passing `--kind`
+  overrides the individual toggles.
+- **Triage in the dashboard.** Each finding has a status: `open`,
+  `acknowledged`, `resolved` or `false_positive`. Set it per row or resolve in
+  bulk. A finding you have acted on stays out of the open list across later
+  `repowise update` runs; it is not re-opened.
+- **Excluding paths.** `.repowiseIgnore` files and `exclude_patterns` in
+  `.repowise/config.yaml` remove paths from indexing (see
+  [CONFIG.md](../reference/CONFIG.md)). An excluded file's own imports leave
+  the graph too, so a file only it imported can then surface as unreachable.
+- **In source.** A Java or Kotlin symbol annotated `@SuppressWarnings("unused")`
+  is treated as deliberately unused and is not reported. An unused export
+  marked deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or
+  `_COMPAT` name suffix) starts at `0.30`, below the default floor. An unused
+  internal keeps `0.65`, since a private symbol has no outside consumer.
+- **Turning the MCP tool off.** `mcp: {tools: ["-get_dead_code"]}` in
+  `.repowise/config.yaml`.
+
+There is no allowlist file for dead-code findings; use the dashboard status.
 
 ## Accuracy and limits
 
@@ -272,6 +272,7 @@ MCP parameters and response shape: [`get_dead_code` in MCP_TOOLS.md](../agent/MC
 
 ## See also
 
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
 - [architecture/dead-code.md](../architecture/dead-code.md): exemption lists,
   risk tokens, per-language rescues and confidence scoring internals.
 - [CODE_HEALTH.md](CODE_HEALTH.md): the health layer, built on the same graph

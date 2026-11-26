@@ -453,14 +453,17 @@ def _fragile_why(f: FileFacts, facts: RepoFacts) -> tuple[tuple[WhyFact, ...], s
     """A fragile file's why facts and impact line."""
     why = [
         WhyFact("commits in 90 days", str(f.commits_90d)),
-        WhyFact("bug-fix commits", str(f.fix_commits_90d)),
+        WhyFact("bug-fix commits in 90 days", str(f.fix_commits_90d)),
         _coverage_fact(f, facts),
     ]
     if f.line_coverage_pct is None:
         why.append(_reach_fact(f))
+    # Named for what ``build_files`` counts (fix commits whose diff changed this
+    # file's code), so it never reads as commit-subject prefixes or get_risk's
+    # 6-month ``fix_count``.
     impact = (
-        f"Changed {f.commits_90d} times in 90 days, and {f.fix_commits_90d} "
-        "of those commits were bug fixes."
+        f"Changed {f.commits_90d} times in 90 days; {f.fix_commits_90d} of those "
+        "were bug fixes that changed its code."
     )
     if f.dependents and f.dependents >= 5:
         why.append(WhyFact("files that import it", str(f.dependents)))

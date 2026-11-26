@@ -62,7 +62,11 @@ function entry(row: MeasuredRow, index: number, orderingOnly: boolean): string {
     lines.push(`   - Callers outside tests: ${row.callers.map((c) => `\`${c}\``).join(", ")}`);
   }
   if (row.tests && row.tests.length > 0) {
-    lines.push(`   - Nearest tests: ${row.tests.map((t) => `\`${t}\``).join(", ")}`);
+    const label = row.tests_basis === "per_test_map" ? "Tests that ran it" : "Nearest tests by call graph";
+    lines.push(`   - ${label}: ${row.tests.map((t) => `\`${t}\``).join(", ")}`);
+  }
+  if (row.verify) {
+    lines.push(`   - Benchmark to run before and after: \`${row.verify}\``);
   }
   if (row.on_static_findings && row.on_static_findings.length > 0) {
     lines.push(

@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type {
+  CostCluster,
   EvidenceRunSummary,
   MeasuredResponse,
   SuiteCostResponse,
@@ -441,6 +442,25 @@ describe("Runtime evidence: runs table", () => {
   });
 });
 
+const cluster: CostCluster = {
+  files: ["packages/core/src/persistence/database.py", "packages/core/src/persistence/models.py"],
+  files_total: 4,
+  tests: 29,
+  mean_s: 1.44,
+  others_mean_s: 0.09,
+  excess_s: 39.2,
+  share: 0.55,
+  slowest: [{ test_id: "tests/unit/evidence/test_add.py::test_a", duration_s: 3.7 }],
+  fixture: {
+    name: "indexed",
+    file_path: "tests/unit/evidence/test_add.py",
+    line: 48,
+    tests: 15,
+    others: 0,
+  },
+  within: { files: ["packages/core/src/registry/plugins.py"], files_total: 1, tests: 161 },
+};
+
 describe("Runtime evidence: test time", () => {
   const suite = (limit: number): SuiteCostResponse => ({
     status: "measured",
@@ -455,21 +475,17 @@ describe("Runtime evidence: test time", () => {
       workload: "pytest tests/unit",
     })),
     tests_total: 30000,
-    file_costs: {
-      basis: "inferred",
-      files: Array.from({ length: limit }, (_, i) => ({
-        file_path: `packages/core/src/mod_${i}.py`,
-        test_seconds: 84 - i,
-        timed_tests: 120,
-        tests: 130,
-      })),
-      files_total: 240,
-      not_production: 12,
-      every_test: 2,
+    cost: {
+      verdict: "clusters",
+      seconds: 71,
+      timed: 372,
+      concentration: { tests: 37, share: 0.735 },
+      clusters: [cluster],
+      command: null,
     },
   });
 
-  it("ranks test time by file, lists slow tests with their file, says what the row cap cut, and reads 50 on asking", async () => {
+  it("ranks the groups of slow tests with their fixture, lists slow tests with their file, says what the row cap cut, and reads 50 on asking", async () => {
     const getEvidenceTests = vi.fn(
       async ({ limit = 10 }: { limit?: number } = {}) => suite(limit),
     );
@@ -483,18 +499,20 @@ describe("Runtime evidence: test time", () => {
       />,
     );
     fireEvent.click(await screen.findByRole("button", { name: /Test time/ }));
-    const files = screen.getByRole("list", {
-      name: "Test time by production file",
-    });
-    expect(within(files).getAllByRole("listitem")).toHaveLength(10);
-    expect(within(files).getByText("84.0 s")).toBeTruthy();
-    expect(within(files).getAllByRole("link")[0]!.getAttribute("href")).toBe(
-      "/files/packages/core/src/mod_0.py",
-    );
-    expect(screen.getByText(/inferred from the call graph/)).toBeTruthy();
     expect(
-      screen.getByText(/2 files every timed test runs are counted, not listed/),
+      screen.getByText("Tests take 71.0 s (372 timed tests); the slowest 37 take 74% of it."),
     ).toBeTruthy();
+    const groups = screen.getByRole("list", { name: "Groups of slow tests" });
+    const [row] = within(groups).getAllByRole("listitem");
+    expect(within(row!).getByText("+39.2 s")).toBeTruthy();
+    expect(within(row!).getByText(/29 tests at 1.4 s each/)).toBeTruthy();
+    expect(within(row!).getByText("55% of the suite")).toBeTruthy();
+    expect(within(row!).getByText(/and 2 more files/)).toBeTruthy();
+    expect(within(row!).getByText(/Inside the 161 tests that run/)).toBeTruthy();
+    expect(within(row!).getByText(/asked for by 15 of them and no other timed test/)).toBeTruthy();
+    expect(within(row!).getAllByRole("link")[0]!.getAttribute("href")).toBe(
+      "/files/packages/core/src/persistence/database.py",
+    );
 
     const slow = screen.getByRole("list", { name: "Slowest tests" });
     expect(within(slow).getByText("tests/unit/test_x.py::test_0")).toBeTruthy();
@@ -632,7 +650,23 @@ describe("Runtime evidence prompts", () => {
     expect(prompt).not.toMatch(/\u2014/);
   });
 
-  it("hands over slow tests, or the tests that run one file", () => {
+  it("names the clock a py-spy profile must be added with, once", () => {
+    const withPySpy = buildRichProfilePrompt({
+      workload: "w",
+      tool: "pyinstrument",
+      causes: lowSignalCauses(indexedRun, measuredRun({ samples: null })),
+    });
+    expect(withPySpy.split("--value-kind cpu").length).toBe(2);
+    expect(withPySpy).toContain("`value_kind=cpu` on a CI upload");
+    const pruned = buildRichProfilePrompt({
+      workload: "w",
+      tool: "pyinstrument",
+      causes: [{ kind: "pruned", tool: "pyinstrument" }],
+    });
+    expect(pruned).not.toContain("--value-kind");
+  });
+
+  it("hands over slow tests, or a group of tests and the fixture they share", () => {
     const tests = buildSlowTestsPrompt({
       subject: {
         kind: "tests",
@@ -651,22 +685,13 @@ describe("Runtime evidence prompts", () => {
     expect(tests).toContain(
       "1. `tests/t.py::test_a` in `tests/t.py`: 12.1 s, failed (workload `pytest`)",
     );
-    const file = buildSlowTestsPrompt({
-      subject: {
-        kind: "file",
-        basis: "inferred",
-        file: {
-          file_path: "src/a.py",
-          test_seconds: 84,
-          timed_tests: 120,
-          tests: 130,
-        },
-      },
-    });
-    expect(file).toContain("## Tests that run `src/a.py`");
-    expect(file).toContain("84.0 s over 120 timed tests (130 run the file)");
-    expect(file).toContain("inferred from the call graph");
-    expect(`${tests}${file}`).not.toMatch(/\u2014/);
+    const group = buildSlowTestsPrompt({ subject: { kind: "cluster", cluster } });
+    expect(group).toContain("## 29 tests that run the same code and take longer than the rest");
+    expect(group).toContain("They take 1.4 s each against 0.09 s for the other tests: 39.2 s over that pace, 55% of the suite.");
+    expect(group).toContain("`packages/core/src/persistence/models.py` and 2 more");
+    expect(group).toContain("Start with fixture `indexed` (`tests/unit/evidence/test_add.py:48`): 15 of them ask for it and no other timed test does.");
+    expect(group).toContain("part of the 161 tests that run `packages/core/src/registry/plugins.py`");
+    expect(`${tests}${group}`).not.toMatch(/\u2014/);
   });
 
   it("adds a measured function's total time to its entry", () => {

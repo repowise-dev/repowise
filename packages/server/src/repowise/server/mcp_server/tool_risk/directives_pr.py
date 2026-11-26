@@ -202,7 +202,15 @@ def missing_tests(
             if path and not (exclude_spec and is_excluded(path, exclude_spec))
         }
         population = [path for path in changed_files if path in gap_paths]
-        summary = f"Showing {len(population[:3])} of {len(population)} changed-file test gap(s)."
+        # Measured coverage first: "0 gaps" beside files without measured tests
+        # read as a contradiction when the gap count led.
+        measured = coverage.get("changed_files_with_measured_tests", 0)
+        changed = coverage.get("changed_files_total", len(changed_files))
+        shown = ", showing 3" if len(population) > 3 else ""
+        summary = (
+            f"Measured coverage: {measured} of {changed} changed file(s), "
+            f"{len(population)} test gap(s){shown}."
+        )
     elif coverage.get("reason") == "no_per_test_map_aggregate_available":
         summary = (
             "No per-test coverage map; aggregate line coverage is available, but it "

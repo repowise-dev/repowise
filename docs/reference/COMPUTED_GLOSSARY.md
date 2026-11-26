@@ -328,7 +328,7 @@ workspace overlays, MCP responses, and CLI output.
 | Contract confidence | Extraction strategy confidence. | Extractors and contract matching | `0.8` |
 | Service boundary | Monorepo service path assigned to contracts. | `workspace/extractors/service_boundary.py` | `services/billing` |
 | Normalized contract ID | Lowercase/canonical ID used for matching. | `normalize_contract_id()` | `http::GET::/Api/Users/ -> http::GET::/api/users` |
-| Contract link | Matched provider-consumer pair across repos/services. | `match_contracts()` | `{provider_repo: "api", consumer_repo: "web", match_type: "exact"}` |
+| Contract link | Matched provider-consumer pair across repos/services. Its `match_type` is `exact`, `candidate` or `manual`, derived from the matching strategy (`workspace/origins.py`, `match_type_for()`). | `match_contracts()` | `{provider_repo: "api", consumer_repo: "web", match_type: "exact"}` |
 | Manual contract link | Workspace-configured provider/consumer link. | `_build_manual_links()` | `{match_type: "manual", confidence: 1.0}` |
 | Contract store | JSON payload saved as `contracts.json`. | `run_contract_extraction()` | `{contracts: [...], contract_links: [...]}` |
 
@@ -364,18 +364,38 @@ workspace overlays, MCP responses, and CLI output.
 
 ## MCP And API-Visible Computed Payloads
 
+The ten default tools:
+
 | Tool or endpoint concept | Definition | Example |
 | --- | --- | --- |
-| `get_answer` | RAG answer with citations, confidence, fallback targets, retrieval metadata, and answer-cache support. | `{answer: "...", confidence: "medium", citations: [...]}` |
-| `search_codebase` | Wiki search using vector/FTS and federated workspace RRF when requested. | `{results: [{title, relevance_score, confidence_score}]}` |
-| `get_context` | Compact page, symbol, freshness, dependency, git, and cross-repo context for targets. | `{targets: {"src/app.py": {docs, graph, freshness}}}` |
-| `get_overview` | Repo or workspace overview, module map, entry points, git health, communities, and workspace footer. | `{summary, modules, git_health, community_summary}` |
-| `get_why` | Decision/governance lookup, file origin story, alignment, and decision health modes. | `{decisions: [...], target_context: {...}}` |
-| `get_risk` | Per-file risk, trend, risk type, owners, co-change partners, test gaps, security signals, top hotspots, optional PR blast radius. | `{results: [{risk_summary, hotspot_score}], top_hotspots: [...]}` |
-| `get_dead_code` | Tiered, grouped, and summarized dead-code findings. | `{summary: {total_findings: 12}, tiers: {...}}` |
-| `get_dependency_path` | Dependency-path or bridge context between files/symbols. | `{path: ["src/a.py", "src/b.py"]}` |
-| `get_symbol` | Exact symbol metadata and source slice. | `{name: "create_app", signature: "def create_app(...)"}` |
-| `get_execution_flows` | Entry-point traces through call edges. | `{flows: [{entry_point, trace, crosses_community}]}` |
+| `get_answer` | Answers one how, where or why question in one evidence-grounded call: an answer with citations, a confidence grade and candidate files worth opening. | `{answer: "...", confidence: "medium", citations: [...]}` |
+| `search_codebase` | Hybrid codebase search by concept, symbol or path; identifier, literal and regex queries return `lines` read from live files, with `complete` when they are every match. | `{lines: [{path, line, kind, text}], complete: true}` |
+| `get_context` | Triage card for files, modules or symbols: summary, signatures with lines, hotspot, fix history and decision titles, plus callers, references or files on request. | `{targets: {"src/app.py": {...}}}` |
+| `get_symbol` | Follow-up read of one symbol whose id another response gave: its metadata and source. | `{name: "create_app", signature: "def create_app(...)"}` |
+| `get_overview` | Orientation for an unfamiliar repo: packages, entry points, riskiest files and top actions. | `{packages: [...], next_actions: [...]}` |
+| `get_why` | Why code is shaped the way it is: the decision records in force and their evidence commits. | `{decisions: [...], target_context: {...}}` |
+| `get_risk` | What history says about touching files: bug fixes, churn, owners, co-change partners and test gaps. | `{results: [{risk_summary, hotspot_score}], top_hotspots: [...]}` |
+| `get_change_risk` | Reviews a commit, a `base..head` range or uncommitted work: size and spread, health before and after, and the tests to run. | `{health_delta: [...], ...}` |
+| `get_dead_code` | Unused exports, unreachable files and zombie packages, tiered by confidence. | `{summary: {total_findings: 12}, tiers: {...}}` |
+| `get_health` | Code-health scores and findings from the stored analysis. | `{kpis: {production_average: 7.4}, ...}` |
+
+In a workspace, `list_repos` is served too:
+
+| Tool or endpoint concept | Definition | Example |
+| --- | --- | --- |
+| `list_repos` | Every configured repository's alias, config-relative path and absolute path; any of them can be passed as `repo` to the other tools. | `{repos: [{alias: "api", path, absolute_path, is_default}]}` |
+
+The seven opt-in tools, and the computed payloads behind other endpoints:
+
+| Tool or endpoint concept | Definition | Example |
+| --- | --- | --- |
+| `generate_refactoring_code` | Refactored code and a unified diff for one refactoring plan (calls the model). | `{suggestion_id, plan, generation: {...}}` |
+| `set_finding_status` | Records a durable disposition on one refactoring plan. | `{id, status: "acknowledged", status_reason}` |
+| `get_architecture` | Workspace architecture metrics: coupling, core and a 1-10 score. | `{score: 7, core_ratio, cycle_count}` |
+| `get_blast_radius` | Cross-repo blast radius: the downstream services structurally reachable from a change. | `{impacted: [...], total_impacted: 3}` |
+| `get_conformance` | Architecture conformance: dependency-rule violations and cycles. | `{violations: [...], cycles: [...]}` |
+| `get_dependency_path` | How two files or modules are connected in the dependency graph. | `{path: ["src/a.py", "src/b.py"]}` |
+| `get_execution_flows` | How the codebase executes: top entry points and their call traces. | `{flows: [{entry_point, trace, crosses_community}]}` |
 | Blast radius API | Direct structural weights, transitive affected files, historical co-change warnings, reviewers, test gaps, and an uncalibrated 0-10 structural-impact heuristic. Deprecated `overall_risk_score` is an exact alias. | `{structural_impact_score: 7.25, structural_impact_band: "broad", overall_risk_score: 7.25}` |
 | Knowledge map API | Top owners, knowledge silos, onboarding targets. | `{top_owners: [...], knowledge_silos: [...]}` |
 | Cost summary API | Grouped costs and totals. | `{groups: [...], total_cost_usd: 3.21}` |
@@ -398,7 +418,7 @@ workspace overlays, MCP responses, and CLI output.
 | Search type | `vector`, `fulltext` |
 | Contract type | `http`, `grpc`, `topic` |
 | Contract role | `provider`, `consumer` |
-| Contract link match type | `exact`, `manual` |
+| Contract link match type | `exact`, `candidate` (an ambiguous path, a stripped prefix, a parameter segment or a host-only match), `manual` |
 | Risk trend | `increasing`, `stable`, `decreasing`, `unknown` |
 | Risk type | `bug-prone`, `churn-heavy`, `bus-factor-risk`, `high-coupling`, `stable`, `unknown` |
 | Change pattern | `feature-active`, `primarily refactored`, `fix-heavy`, `dependency-churn`, `mixed-activity`, `uncategorized` |

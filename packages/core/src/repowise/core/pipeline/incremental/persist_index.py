@@ -27,6 +27,7 @@ from .commits import persist_incremental_commits
 from .external_systems import refresh_external_systems
 from .health import persist_partial_health
 from .prune import prune_deleted_files
+from .routes import refresh_routes
 
 
 @dataclass(kw_only=True)
@@ -398,6 +399,13 @@ async def refresh_externals(ctx: IncrementalPersist) -> None:
         )
 
 
+async def refresh_route_table(ctx: IncrementalPersist) -> None:
+    # Handlers bind to the stored symbols and the code_origin rule reads the
+    # stored origins, so this follows both. Gated inside on the diff.
+    with timed(ctx.timings, "persist.routes"):
+        await refresh_routes(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs, log=ctx.log)
+
+
 async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
     # One-shot drain of proposals from the removed code_comment harvest
     # (#751). Runs on the index-only path too, because the post-commit hook's
@@ -569,6 +577,8 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    # After the prune, so a handler never binds to a deleted file's symbol.
+    Step("Route table refresh", refresh_route_table),
     Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step(
         "Deferred page staleness",

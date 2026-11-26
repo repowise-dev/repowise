@@ -11,16 +11,24 @@ Nothing here reads a store.
 - :func:`measured_payload`: the ``measured`` route from a ``measured_costs``
   view (or ``None``) and the repository's ``measured_status`` token;
 - :func:`functions_payload` / :func:`function_payload`: the ``functions``
-  route from ``symbol_hotness`` rows.
+  route from ``symbol_hotness`` rows, each with its ``next_step``
+  (:mod:`.next_step`) from the static performance findings the host passes;
+- :func:`owner_history_payload`: a measured function's owner and last change
+  from its ``git_function_blame`` row and the newest commit's row.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import json
+import posixpath
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import timedelta
 from typing import Any
 
+from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
+from .next_step import next_step
 from .status import evidence_status, run_status
 
 
@@ -66,6 +74,7 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
             "command": _command(status),
             "measured": None,
             "measured_in_tests": None,
+            "benchmarks": None,
         }
     return {
         "basis": "measured",
@@ -73,16 +82,71 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
         "command": None,
         "measured": view.get("measured"),
         "measured_in_tests": view.get("measured_in_tests"),
+        "benchmarks": view.get("benchmarks"),
     }
 
 
-def functions_payload(rows: Mapping[str, Any]) -> dict[str, Any]:
-    """The ``functions`` route from ``{symbol_id: symbol_hotness row}``, by id."""
-    return {"functions": [function_payload(row) for _, row in sorted(rows.items())]}
+def owner_history_payload(blame: Any, commit: Any | None) -> dict[str, Any]:
+    """A function's owner and last change from its ``git_function_blame`` row.
+
+    The owner wrote most of the function's current lines (``line_pct`` of
+    them). The last change is the newest commit blame credits a current line
+    to, with *commit* its ``git_commits`` row (``None`` when the commit is
+    older than the indexed window: the sha alone, then). The change number
+    comes from the commit subject. Built only from a function's own row: no
+    row, no owner (never the file's).
+    """
+    from repowise.core.forges import change_number
+
+    try:
+        shas = json.loads(blame.commit_shas_json or "[]")
+    except (TypeError, ValueError):
+        shas = []
+    last = None
+    if isinstance(shas, list) and shas:
+        subject = (commit.subject or None) if commit is not None else None
+        at = commit.committed_at if commit is not None else None
+        if at is not None:
+            # The committer's own calendar day: ``committed_at`` is a UTC instant.
+            at += timedelta(minutes=getattr(commit, "committed_offset_minutes", None) or 0)
+        last = {
+            "sha": str(shas[0]),
+            "date": at.date().isoformat() if at is not None else None,
+            "subject": subject,
+            "pr": change_number(subject) if subject else None,
+        }
+    return {
+        "owner": (
+            {"name": blame.owner_name, "line_pct": blame.owner_line_pct}
+            if blame.owner_name
+            else None
+        ),
+        "last_change": last,
+    }
 
 
-def function_payload(row: Any) -> dict[str, Any]:
-    """One ``symbol_hotness`` row as the route lists it."""
+def functions_payload(
+    rows: Mapping[str, Any], findings: Sequence[Mapping[str, Any]] = ()
+) -> dict[str, Any]:
+    """The ``functions`` route from ``{symbol_id: symbol_hotness row}``, by id.
+
+    *findings* are the repository's production performance findings as
+    :func:`.next_step.static_finding` dicts (``crud.step_findings``); without
+    them a row's step never says "batch" and never quotes a static finding."""
+    return {"functions": [function_payload(row, findings) for _, row in sorted(rows.items())]}
+
+
+def function_payload(row: Any, findings: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    """One ``symbol_hotness`` row as the route lists it, with its next step."""
+    payload = _function_fields(row)
+    file_path = payload["file_path"]
+    language = REGISTRY.from_extension(posixpath.splitext(file_path)[1]) if file_path else ""
+    step = next_step(payload, language, findings)
+    payload["next_step"] = step.as_dict() if step else None
+    return payload
+
+
+def _function_fields(row: Any) -> dict[str, Any]:
     return {
         "symbol_id": row.symbol_id,
         "file_path": file_of_symbol(row.symbol_id),
@@ -108,13 +172,27 @@ def function_payload(row: Any) -> dict[str, Any]:
         "wait_share": row.wait_share,
         "library_share": row.library_share,
         "run_unlisted": row.run_unlisted,
+        "inside": _json_list(getattr(row, "inside_json", None)),
+        "drivers": _json_list(getattr(row, "drivers_json", None)),
     }
+
+
+def _json_list(text: str | None) -> list[Any] | None:
+    """A stored JSON list column; None when empty or unreadable."""
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, list) and value else None
 
 
 __all__ = [
     "function_payload",
     "functions_payload",
     "measured_payload",
+    "owner_history_payload",
     "runs_payload",
     "status_payload",
 ]

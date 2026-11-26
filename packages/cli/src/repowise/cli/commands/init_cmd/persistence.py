@@ -223,7 +223,11 @@ async def persist_result(
         tombstone_absent_file_pages,
     )
     from repowise.core.pipeline.cleanup_debt import clear_cleanup_debt, record_cleanup_debt
-    from repowise.core.pipeline.persist import persist_symbol_analysis, sweep_store_hygiene
+    from repowise.core.pipeline.persist import (
+        persist_routes,
+        persist_symbol_analysis,
+        sweep_store_hygiene,
+    )
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
@@ -286,6 +290,8 @@ async def persist_result(
                         session, repo.id, getattr(result, "parsed_files", None)
                     )
                 await persist_analysis(result, session, repo.id)
+            with timed(timings, "persist.routes"):
+                await persist_routes(result, session, repo.id)
             # Commit boundary 2 of 5: analysis.
             with timed(timings, "persist.commit.analysis"):
                 await session.commit()

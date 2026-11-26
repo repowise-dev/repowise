@@ -56,7 +56,8 @@ class EvidenceRunSummary(_Strict):
     """One stored run: its workload, commit, freshness and where its time went."""
 
     run_id: str
-    #: ``profile``, ``benchmark``, ``test_timing`` or ``query_count``.
+    #: One of ``evidence.kinds``: ``profile``, ``benchmark``, ``test_timing``,
+    #: ``query_count``, ``route_latency`` or ``statement_stats``.
     kind: str
     workload: str
     #: The workload class: ``unit_test``, ``benchmark``, ``entry_point``,
@@ -159,8 +160,22 @@ class MeasuredRun(_Strict):
 
 
 class MeasuredOwner(_Strict):
+    """Who wrote most of the function's current lines, by line blame."""
+
     name: str
-    commit_pct: float | None
+    #: Their share of the function's blamed lines.
+    line_pct: float | None
+
+
+class MeasuredLastChange(_Strict):
+    """The newest commit blame credits a current line of the function to."""
+
+    sha: str
+    #: Null when the commit is older than the indexed history window.
+    date: str | None
+    subject: str | None
+    #: The PR or MR the commit subject names.
+    pr: int | None
 
 
 class MeasuredRow(_Strict):
@@ -186,9 +201,18 @@ class MeasuredRow(_Strict):
     #: Callers outside test code; null when the graph does not know the function.
     callers_total: int | None
     callers: list[str]
+    #: Owner and last change come from the function's own lines; null without
+    #: its blame row (never the file's owner).
     owner: MeasuredOwner | None
-    #: Nearest tests; null when the function was never mapped to tests.
+    last_change: MeasuredLastChange | None
+    #: Tests for the function, at most three; null when unknown. Empty: no
+    #: test ran it (``per_test_map``) or reaches it (``call_graph``).
     tests: list[str] | None
+    #: ``per_test_map``: tests the per-test map saw run its lines;
+    #: ``call_graph``: its nearest tests by call graph, where no map has its file.
+    tests_basis: Literal["per_test_map", "call_graph"] | None = None
+    #: The command that reruns the benchmarks that measure it, before and after a fix.
+    verify: str | None = None
     #: Open static performance causes on the function, by opportunity id.
     on_static_findings: list[str] = Field(default_factory=list)
 
@@ -201,6 +225,43 @@ class MeasuredGroup(_Strict):
     total: int
 
 
+class BenchmarkRun(_Strict):
+    """A workload's newest benchmark run."""
+
+    run_id: str
+    workload_class: str
+    workload_name: str
+    commit: str | None
+    measured_at: str | None
+    age_days: int | None
+
+
+class BenchmarkRow(_Strict):
+    """One benchmark's result: what it measures and its numbers per operation."""
+
+    run_id: str
+    #: The benchmark as the tool names it, from its own name on.
+    benchmark: str
+    #: The benchmark function; null when it did not resolve to an indexed symbol.
+    benchmark_symbol_id: str | None
+    #: The production function it measures; null when its name and calls do not say.
+    measures: str | None
+    #: Time per operation (the median the tool gave), in ``unit``.
+    time: float | None
+    unit: str | None
+    #: Exact where the tool reports them.
+    allocs_per_op: float | None
+    bytes_per_op: float | None
+
+
+class BenchmarkGroup(_Strict):
+    runs: list[BenchmarkRun]
+    #: At most ``limit`` rows per run, those naming a function first.
+    rows: list[BenchmarkRow]
+    #: Results across the group's runs before the ``limit`` cut.
+    total: int
+
+
 class MeasuredResponse(_Strict):
     """What each workload's newest run that ranks anything ranks, grouped by workload class."""
 
@@ -208,11 +269,70 @@ class MeasuredResponse(_Strict):
     basis: Literal["measured", "unknown"]
     status: EvidenceStatusToken
     command: str | None
-    #: Runs in a workload class that may lead (benchmark, entry point, load
-    #: test, production).
+    #: Runs in a workload class that may lead (entry point, load test,
+    #: production).
     measured: MeasuredGroup | None
     #: ``unit_test`` runs, listed apart.
     measured_in_tests: MeasuredGroup | None
+    #: Benchmark results, per benchmark: a benchmark profile never ranks.
+    benchmarks: BenchmarkGroup | None = None
+
+
+InsideKind = Literal["own", "repo", "wait", "import", "native", "library"]
+
+
+class MeasuredLeaf(_Strict):
+    """The frame a callee's stacks end in most: what the callee spends its time on."""
+
+    name: str
+    kind: InsideKind
+    #: Share of the measured function's inclusive time.
+    share: float
+
+
+class MeasuredCallee(_Strict):
+    """What part of a measured function's time went to (``evidence.profile_convert``)."""
+
+    #: The callee's name, or ``(own code)`` for the function's own body.
+    name: str
+    #: ``own``, ``repo``, ``wait``, ``import``, ``native`` or ``library``.
+    kind: InsideKind
+    #: Share of the function's inclusive time.
+    share: float
+    #: The callee's heaviest leaf, when its stacks end below it.
+    leaf: MeasuredLeaf | None = None
+
+
+class MeasuredDriver(_Strict):
+    """A caller that drove part of a measured function's time."""
+
+    name: str
+    #: Share of the function's inclusive time.
+    share: float
+    #: The caller's symbol id at the evidence commit, when it joined exactly.
+    symbol: str | None = None
+    #: The caller's repo-relative file, when it is repo code that did not join.
+    path: str | None = None
+
+
+class MeasuredNextStep(_Strict):
+    """What a measured function's time is and what to do (``evidence.next_step``)."""
+
+    #: The lexicon entry that named it (``filesystem``, ``import``, ``db_read`` ...).
+    rule: str
+    #: What the time is, in words; a static finding's text when one agreed.
+    why: str
+    #: What to do.
+    next: str
+    #: How to check a change for this workload.
+    verify: str | None = None
+    #: The dominant callee and the share of the function's time its family holds.
+    callee: str
+    share: float
+    #: The callee's heaviest leaf, when it named the cost.
+    leaf: str | None = None
+    #: The static finding (biomarker) that wrote ``why``.
+    static: str | None = None
 
 
 class MeasuredFunction(_Strict):
@@ -244,6 +364,13 @@ class MeasuredFunction(_Strict):
     library_share: float | None
     #: Functions the basis run measured outside production code.
     run_unlisted: int | None
+    #: Up to three callees by share; null when the basis run did not record them.
+    inside: list[MeasuredCallee] | None = None
+    #: Up to three callers by share; null when the basis run did not record them.
+    drivers: list[MeasuredDriver] | None = None
+    #: What the time is and the next step; null when the profile does not say
+    #: (no dominant callee, a wait, the framework spine, a write per request).
+    next_step: MeasuredNextStep | None = None
 
 
 class MeasuredFunctionsResponse(_Strict):
@@ -265,26 +392,70 @@ class SlowTest(_Strict):
     workload: str
 
 
-class FileTestCost(_Strict):
-    """The summed duration of the timed tests that run one production file."""
+class CostClusterTest(_Strict):
+    test_id: str
+    duration_s: float
 
+
+class CostFixture(_Strict):
+    """The fixture most of a cluster's tests ask for and few other timed tests do."""
+
+    name: str
     file_path: str
-    test_seconds: float
-    timed_tests: int
-    #: Tests that run the file, timed or not.
+    line: int | None
+    #: The cluster's tests asking for it.
+    tests: int
+    #: Other timed tests asking for it.
+    others: int
+
+
+class CostGroup(_Strict):
+    """A larger group of tests a cluster sits inside: code all of its tests run too."""
+
+    files: list[str]
+    files_total: int
     tests: int
 
 
-class FileTestCosts(_Strict):
-    #: ``measured`` from the per-test coverage map, ``inferred`` from the call graph.
-    basis: Literal["measured", "inferred"]
-    files: list[FileTestCost]
+class CostCluster(_Strict):
+    """Tests that run the same production files and take longer than the rest."""
+
+    #: The production files exactly these tests run, the first few by path.
+    files: list[str]
     files_total: int
-    #: Non-production files run by timed tests: counted, not listed.
-    not_production: int
-    #: Production files every timed test reaching production code runs (test setup
-    #: imports them): each would show all of their time, so they are counted, not listed.
-    every_test: int
+    tests: int
+    #: Mean duration of its tests, and of the other timed tests still ranked.
+    mean_s: float
+    others_mean_s: float
+    #: ``tests x (mean_s - others_mean_s)``: the time over the others' pace.
+    excess_s: float
+    #: ``excess_s`` as a fraction of the suite (0-1).
+    share: float | None
+    slowest: list[CostClusterTest]
+    fixture: CostFixture | None
+    #: The group it was narrowed from, when it carried most of that group's excess.
+    within: CostGroup | None
+
+
+class CostConcentration(_Strict):
+    #: The slowest tenth of the timed tests, and the fraction of the suite they take.
+    tests: int
+    share: float
+
+
+class SuiteCost(_Strict):
+    """Where the suite's time goes (``evidence.suite_cost.cost_fold``)."""
+
+    #: ``small_suite`` (under a minute) and ``small_excess`` (no group 5 s over the
+    #: rest) list nothing; ``no_test_map`` gives the concentration only.
+    verdict: Literal["small_suite", "no_test_map", "small_excess", "clusters"]
+    seconds: float
+    timed: int
+    concentration: CostConcentration | None
+    #: Up to 3, most excess first; empty unless ``verdict`` is ``clusters``.
+    clusters: list[CostCluster]
+    #: What records a per-test coverage map, for ``no_test_map``.
+    command: str | None
 
 
 class DurationBucket(_Strict):
@@ -318,7 +489,7 @@ class SuiteSummary(_Strict):
 
 
 class SuiteCostResponse(_Strict):
-    """The slowest tests and the test time per production file, from stored JUnit timings."""
+    """The slowest tests and where the suite's time goes, from stored JUnit timings."""
 
     status: Literal["measured", "no_test_timings"]
     #: What writes test timings; null when some are stored.
@@ -327,7 +498,8 @@ class SuiteCostResponse(_Strict):
     runs: list[EvidenceRunSummary]
     slow_tests: list[SlowTest]
     tests_total: int
-    file_costs: FileTestCosts | None
+    #: Null when no timing is stored.
+    cost: SuiteCost | None
     #: Every test of the basis runs, folded at ingest before the row cap; null
     #: when a basis run was stored before the fold existed.
     suite: SuiteSummary | None = None

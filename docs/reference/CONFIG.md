@@ -50,7 +50,7 @@ column names it and says whether it or the file wins.
 
 ```yaml
 provider: anthropic
-model: claude-sonnet-4-6
+model: claude-haiku-5-5
 embedder: mock
 embedding_model: text-embedding-3-small
 reasoning: auto
@@ -358,9 +358,10 @@ overrides a key for one session.
 
 ## The `mcp:` block
 
-Chooses the tools the MCP server advertises. The default is curated: 10 tools
-in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
---tools` / `--all` override it for one launch.
+Chooses the tools the MCP server advertises. The default is curated: Claude
+Code gets the 10 tools of the `standard` profile, and clients that load every
+schema up front get the five-tool `core` profile; `list_repos` joins in
+workspace mode. `repowise mcp --tools` / `--all` override it for one launch.
 
 <!-- BEGIN GENERATED settings:mcp (python scripts/gen_config_docs.py) -->
 | Key | Default | What it does |
@@ -374,6 +375,8 @@ in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
 | `["+name", "-name"]` | Add to or remove from the default set. |
 | `["get_answer", "get_context"]` | Unprefixed: an explicit allowlist. |
 | `all` | Everything available. |
+| `standard` | The ten default tools. |
+| `core` | `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_why`. |
 | `lean` | `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk`, `get_why` (plus `list_repos` in workspace mode), small enough for Claude Code to keep every schema loaded. |
 
 The seven opt-in tools are `get_dependency_path`, `get_execution_flows`,

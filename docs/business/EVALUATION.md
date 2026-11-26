@@ -36,7 +36,7 @@ repowise components check
 repowise components ownership     # declared owners against the last 90 days
 ```
 
-See [Components and ownership](../layers/COMPONENTS.md).
+See [Components and ownership](../layers/REPORTS.md#components-and-ownership).
 
 ## 4. Read a few recent changes
 
@@ -57,7 +57,7 @@ component need reaching tests, and run it the way CI would:
 repowise check HEAD~1..HEAD --sarif-file policy.sarif
 ```
 
-See [Change policy](../layers/POLICY.md) and [Repowise in CI](../start/CI.md).
+See [Change policy](../layers/REPORTS.md#change-policy) and [Repowise in CI](../start/CI.md).
 
 ## 6. Produce the packs you would hand over
 

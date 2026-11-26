@@ -518,6 +518,7 @@ async def _function_commits(
                 blame.repository_id == repository_id,
                 blame.file_path.in_(list(files[index : index + _BATCH])),
                 blame.commit_shas_json.is_not(None),
+                blame.history_only.is_(False),
             )
         )
         for path, start, end, shas in rows:

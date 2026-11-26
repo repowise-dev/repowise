@@ -228,6 +228,8 @@ def _drop_internal_ranking_fields(results: list[dict]) -> None:
         item.pop("_coverage_multiplier", None)
         item.pop("_confidence_score_factor", None)
         item.pop("_raw_score", None)
+        item.pop("_symbol_names", None)
+        item.pop("_named", None)
 
 
 async def _load_page_info(

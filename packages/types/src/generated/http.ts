@@ -432,6 +432,34 @@ export interface ArtifactUpdateRequest {
   pinned: boolean;
 }
 
+export interface BenchmarkGroup {
+  runs: BenchmarkRun[];
+  rows: BenchmarkRow[];
+  total: number;
+}
+
+/** One benchmark's result: what it measures and its numbers per operation. */
+export interface BenchmarkRow {
+  run_id: string;
+  benchmark: string;
+  benchmark_symbol_id: string | null;
+  measures: string | null;
+  time: number | null;
+  unit: string | null;
+  allocs_per_op: number | null;
+  bytes_per_op: number | null;
+}
+
+/** A workload's newest benchmark run. */
+export interface BenchmarkRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+}
+
 export interface BlastRadiusRequest {
   changed_files: string[];
   max_depth?: number;
@@ -1414,6 +1442,46 @@ export interface CoordinatorHealthResponse {
   detail?: string | null;
 }
 
+/** Tests that run the same production files and take longer than the rest. */
+export interface CostCluster {
+  files: string[];
+  files_total: number;
+  tests: number;
+  mean_s: number;
+  others_mean_s: number;
+  excess_s: number;
+  share: number | null;
+  slowest: CostClusterTest[];
+  fixture: CostFixture | null;
+  within: CostGroup | null;
+}
+
+export interface CostClusterTest {
+  test_id: string;
+  duration_s: number;
+}
+
+export interface CostConcentration {
+  tests: number;
+  share: number;
+}
+
+/** The fixture most of a cluster's tests ask for and few other timed tests do. */
+export interface CostFixture {
+  name: string;
+  file_path: string;
+  line: number | null;
+  tests: number;
+  others: number;
+}
+
+/** A larger group of tests a cluster sits inside: code all of its tests run too. */
+export interface CostGroup {
+  files: string[];
+  files_total: number;
+  tests: number;
+}
+
 export interface CostGroupResponse {
   group: string;
   calls: number;
@@ -2382,22 +2450,6 @@ export interface FileScoreShiftResponse {
   change?: number | null;
 }
 
-/** The summed duration of the timed tests that run one production file. */
-export interface FileTestCost {
-  file_path: string;
-  test_seconds: number;
-  timed_tests: number;
-  tests: number;
-}
-
-export interface FileTestCosts {
-  basis: "measured" | "inferred";
-  files: FileTestCost[];
-  files_total: number;
-  not_production: number;
-  every_test: number;
-}
-
 export interface FileTrendPointResponse {
   taken_at?: string | null;
   score: number;
@@ -3199,6 +3251,22 @@ export interface McpToolSurfaceResponse {
   clients?: Record<string, McpClientSurface>;
 }
 
+/** What part of a measured function's time went to (``evidence.profile_convert``). */
+export interface MeasuredCallee {
+  name: string;
+  kind: "own" | "repo" | "wait" | "import" | "native" | "library";
+  share: number;
+  leaf?: MeasuredLeaf | null;
+}
+
+/** A caller that drove part of a measured function's time. */
+export interface MeasuredDriver {
+  name: string;
+  share: number;
+  symbol?: string | null;
+  path?: string | null;
+}
+
 /** What runtime evidence says about one function, from its basis run. */
 export interface MeasuredFunction {
   symbol_id: string;
@@ -3224,6 +3292,9 @@ export interface MeasuredFunction {
   wait_share: number | null;
   library_share: number | null;
   run_unlisted: number | null;
+  inside?: MeasuredCallee[] | null;
+  drivers?: MeasuredDriver[] | null;
+  next_step?: MeasuredNextStep | null;
 }
 
 /** Measured functions of the asked symbol or file; empty means unknown. */
@@ -3237,9 +3308,37 @@ export interface MeasuredGroup {
   total: number;
 }
 
+/** The newest commit blame credits a current line of the function to. */
+export interface MeasuredLastChange {
+  sha: string;
+  date: string | null;
+  subject: string | null;
+  pr: number | null;
+}
+
+/** The frame a callee's stacks end in most: what the callee spends its time on. */
+export interface MeasuredLeaf {
+  name: string;
+  kind: "own" | "repo" | "wait" | "import" | "native" | "library";
+  share: number;
+}
+
+/** What a measured function's time is and what to do (``evidence.next_step``). */
+export interface MeasuredNextStep {
+  rule: string;
+  why: string;
+  next: string;
+  verify?: string | null;
+  callee: string;
+  share: number;
+  leaf?: string | null;
+  static?: string | null;
+}
+
+/** Who wrote most of the function's current lines, by line blame. */
 export interface MeasuredOwner {
   name: string;
-  commit_pct: number | null;
+  line_pct: number | null;
 }
 
 /** What each workload's newest run that ranks anything ranks, grouped by workload class. */
@@ -3249,6 +3348,7 @@ export interface MeasuredResponse {
   command: string | null;
   measured: MeasuredGroup | null;
   measured_in_tests: MeasuredGroup | null;
+  benchmarks?: BenchmarkGroup | null;
 }
 
 /** One ranked production function of one run. */
@@ -3267,7 +3367,10 @@ export interface MeasuredRow {
   callers_total: number | null;
   callers: string[];
   owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
   tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  verify?: string | null;
   on_static_findings?: string[];
 }
 
@@ -4978,14 +5081,24 @@ export interface SlowTest {
   workload: string;
 }
 
-/** The slowest tests and the test time per production file, from stored JUnit timings. */
+/** Where the suite's time goes (``evidence.suite_cost.cost_fold``). */
+export interface SuiteCost {
+  verdict: "small_suite" | "no_test_map" | "small_excess" | "clusters";
+  seconds: number;
+  timed: number;
+  concentration: CostConcentration | null;
+  clusters: CostCluster[];
+  command: string | null;
+}
+
+/** The slowest tests and where the suite's time goes, from stored JUnit timings. */
 export interface SuiteCostResponse {
   status: "measured" | "no_test_timings";
   command: string | null;
   runs: EvidenceRunSummary[];
   slow_tests: SlowTest[];
   tests_total: number;
-  file_costs: FileTestCosts | null;
+  cost: SuiteCost | null;
   suite?: SuiteSummary | null;
 }
 

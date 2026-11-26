@@ -38,8 +38,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Every publish adds a version of each package and nothing removed them, so
+  # the org's Packages storage filled up and publishes started failing on the
+  # billing limit. This job runs first and publish waits for it but runs
+  # whatever its result, so a full registry frees space before the next
+  # publish and a broken prune never blocks one.
+  #
+  # 500 is sized to the consumer, not to storage: hosted-frontend pins one
+  # exact `0.0.0-internal.<sha>` and bumps it about weekly, and up to ~400
+  # commits have landed on main between two bumps. Deleting the pinned
+  # version breaks its `npm ci`, so the window has to outlast a bump cycle.
+  # At current tarball sizes 500 of each is about 1 GB. Lower it only if the
+  # consumer bumps more often; raise it if ui grows past ~3 MB a version.
+  #
+  # The action deletes at most 100 versions per package per run, oldest
+  # first, so a backlog drains over several runs. A manual dispatch is safe
+  # for that: the publish steps skip versions already on the registry.
+  #
+  # The packages are not linked to this repo, so GITHUB_TOKEN cannot see
+  # them; the publish token is used and needs the delete:packages scope.
+  prune:
+    name: Prune old internal prereleases
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [types, ui, api-client]
+    steps:
+      - uses: actions/delete-package-versions@v5.0.0
+        with:
+          owner: repowise-dev
+          package-name: ${{ matrix.package }}
+          package-type: npm
+          min-versions-to-keep: 500
+          delete-only-pre-release-versions: true
+          token: ${{ secrets.NPM_TOKEN_GITHUB_PACKAGES }}
+
   publish:
     name: Publish to GitHub Packages
+    needs: prune
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
 
     steps:

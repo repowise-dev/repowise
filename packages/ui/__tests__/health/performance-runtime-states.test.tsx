@@ -223,6 +223,23 @@ describe("Runtime evidence notices", () => {
     expect(screen.getByText(/They may be measured at a commit other than the indexed one/)).toBeTruthy();
   });
 
+  it("never places a benchmark profile, which ranks nothing, as the run short of samples", async () => {
+    const runs = {
+      ...RUNS,
+      runs: [runSummary({ run_id: "run-bench", workload: "go bench", class: "benchmark" })],
+    };
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: async () => unranked("not_ranked", null),
+          listEvidenceRuns: async () => runs,
+        })}
+      />,
+    );
+    expect(await screen.findByText("The stored runs rank no production function.")).toBeTruthy();
+    expect(screen.queryByText(/Profile a workload that runs more repo code/)).toBeNull();
+  });
+
   it("keeps the code-shape order when only a unit-test run is measured", async () => {
     const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
       const view = await measured(opts);

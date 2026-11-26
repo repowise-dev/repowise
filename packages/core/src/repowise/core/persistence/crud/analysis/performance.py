@@ -1194,7 +1194,9 @@ async def measured_costs(
     ``newer_run`` (``crud.newer_unranked``). Each row's ``share`` is the function's self time (its
     cost: built-ins and libraries it called included, waits excluded) with its
     interval; ``inclusive`` is context. A row carries the function's
-    lines, callers outside test code, owner, nearest tests and, when an open
+    lines, callers outside test code, owner, tests (``tests_basis``: the
+    per-test map's tests that ran it, else nearest by call graph), the
+    ``verify`` command of the benchmarks that measure it and, when an open
     static performance cause sits on it and that cause's evidence runs in
     production code, ``on_static_findings`` with the cause ids. Stale evidence
     and code outside production are never rows.
@@ -1206,8 +1208,7 @@ async def measured_costs(
     ranked = await ranked_by_workload(session, repository_id)
     if run_id is not None:
         ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
-    if not ranked:
-        return None
+    benchmarks = await _benchmark_group(session, repository_id, limit, now, run_id)
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
     for run, rows in ranked:
         if run.workload_class in LEAD_CLASSES:
@@ -1215,13 +1216,13 @@ async def measured_costs(
         elif run.workload_class == "unit_test":
             groups["measured_in_tests"].append((run, rows))
     if not any(groups.values()):
-        return None
+        return {"benchmarks": benchmarks} if benchmarks else None
     # ``limit=0`` keeps each group's runs and total with no rows.
     shown = {key: [(run, rows[: max(limit, 0)]) for run, rows in runs] for key, runs in groups.items()}
     ids = sorted({r.symbol_id for runs in shown.values() for _, rows in runs for r in rows})
     spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
     covered = await _static_causes_on(session, repository_id, set(ids), spans)
-    context = await _function_context(session, repository_id, ids)
+    context = await _function_context(session, repository_id, ids, spans)
     listed = [run for runs in groups.values() for run, _ in runs]
     newer = await newer_unranked(session, repository_id, listed)
     at = now or _now_utc()
@@ -1237,7 +1238,60 @@ async def measured_costs(
                 ],
                 "total": sum(len(rows) for _, rows in groups[key]),
             }
+    if benchmarks:
+        view["benchmarks"] = benchmarks
     return view or None
+
+
+async def _benchmark_group(
+    session: AsyncSession,
+    repository_id: str,
+    limit: int,
+    now: datetime | None,
+    run_id: str | None,
+) -> dict[str, Any] | None:
+    """Each workload's newest benchmark run: per result, the benchmark, the
+    production function it measures and its numbers per operation
+    (``evidence.benchmarks``). ``None`` when no benchmark result is stored."""
+    from ....evidence.benchmarks import benchmark_view, measured_functions
+    from ....evidence.hotness import newest_runs
+    from .evidence import benchmark_callees, benchmark_results, benchmark_runs
+
+    # Only each workload's newest run speaks, as for profiles: an older id keeps nothing.
+    runs = await benchmark_runs(session, repository_id)
+    newest = newest_runs(runs)
+    runs = [run for run in runs if run.id in newest and run_id in (None, run.id)]
+    if not runs:
+        return None
+    results = await benchmark_results(session, sorted(run.id for run in runs))
+    callees = await benchmark_callees(session, repository_id, {r.symbol_id for r in results})
+    view = benchmark_view(
+        runs, results, measured_functions(list(callees), callees), limit=max(limit, 0)
+    )
+    if view is None:
+        return None
+    at = now or _now_utc()
+    by_id = {run.id: run for run in runs}
+    return {
+        "runs": [_benchmark_run(by_id[i], at) for i in view["run_ids"]],
+        "rows": view["rows"],
+        "total": view["total"],
+    }
+
+
+def _benchmark_run(run: Any, at: datetime) -> dict[str, Any]:
+    """A benchmark run's basis: workload, commit and age."""
+    measured_at = run.measured_at or run.ingested_at
+    if measured_at is not None and measured_at.tzinfo is None:
+        measured_at = measured_at.replace(tzinfo=UTC)
+    return {
+        "run_id": run.id,
+        "workload_class": run.workload_class,
+        "workload_name": run.workload_name,
+        "commit": run.commit_sha,
+        "measured_at": measured_at.isoformat() if measured_at else None,
+        "age_days": max((at - measured_at).days, 0) if measured_at else None,
+    }
 
 
 async def _symbol_spans(
@@ -1327,28 +1381,46 @@ async def _static_causes_on(
 class _FunctionContext(NamedTuple):
     callers_total: dict[str, int]
     callers: dict[str, list[str]]
-    owners: dict[str, Any]
+    # Owner and last change from the function's own lines (``git_function_blame``).
+    history: dict[str, dict[str, Any]]
     tests: dict[str, Any]
+    verify: dict[str, str]
 
 
 async def _function_context(
-    session: AsyncSession, repository_id: str, symbol_ids: list[str]
+    session: AsyncSession,
+    repository_id: str,
+    symbol_ids: list[str],
+    spans: dict[str, list[Any]],
 ) -> _FunctionContext:
-    """Callers, file owner and nearest tests of *symbol_ids*, from the stores
-    ``get_context`` reads: graph edges, git metadata and the function test map.
+    """Callers, owner, last change, tests and verify command of *symbol_ids*,
+    from the stores ``get_context`` reads: graph edges, function blame, the
+    per-test map and the function test map. *spans* are the indexed symbols'
+    lines per file.
 
     Callers in test code (``code_origin``) are neither listed nor counted: a
     measured production function's callers say who pays for it in production.
+    Tests are the ones the per-test map saw run the function's lines (*spans*),
+    or its nearest by call graph where the map lacks its file
+    (``evidence.function_tests.row_tests``). A benchmark that calls the
+    function or ran its lines is its verify command, never a test.
     """
+    from ....evidence.function_tests import (
+        benchmark_command,
+        is_benchmark,
+        row_tests,
+        runnable_test,
+    )
     from ....evidence.ingest import load_origins
     from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
     from ....ingestion.symbol_identity import file_of_symbol
-    from ..git import get_git_metadata_bulk
+    from ..git import function_owner_history
     from ..graph import get_node_degree_counts_bulk
+    from .coverage_map import tests_running_spans
     from .function_facts import tests_for_functions
 
     if not symbol_ids:
-        return _FunctionContext({}, {}, {}, {})
+        return _FunctionContext({}, {}, {}, {}, {})
     # Which functions the graph knows: an unknown one has no caller count at all.
     degrees = await get_node_degree_counts_bulk(
         session, repository_id, symbol_ids, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
@@ -1361,14 +1433,67 @@ async def _function_context(
         sid: [s for s in found if origins.get(file_of_symbol(s)) != "test"]
         for sid, found in sources.items()
     }
+    wanted = set(symbol_ids)
+    lines = {
+        s.symbol_id: (path, s.start_line, s.end_line)
+        for path, held in spans.items()
+        for s in held
+        if s.symbol_id in wanted and s.start_line and s.end_line
+    }
+    ran = await tests_running_spans(session, repository_id, lines)
+    ran_tests = {sid: {runnable_test(t, f) for t, f, _ in found} for sid, found in ran.items()}
+    near = await tests_for_functions(session, repository_id, symbol_ids)
+    # A benchmark is a direct caller or a test that ran the function's lines.
+    reach = {sid: {*sources.get(sid, ()), *ran_tests.get(sid, ())} for sid in symbol_ids}
+    # The nearest tests are asked too, so a stored benchmark there is never listed as a test.
+    listed = {t.selector for found in near.values() for t in found}
+    stored = await _stored_benchmarks(
+        session, repository_id, set().union(listed, *reach.values())
+    )
+    verify = {
+        sid: command
+        for sid, found in reach.items()
+        if (command := benchmark_command(b for b in found if is_benchmark(b, stored)))
+    }
     return _FunctionContext(
         callers_total={i: len(outside_tests.get(i, ())) for i in symbol_ids if i in degrees},
         callers={sid: found[:_MEASURED_CALLERS] for sid, found in outside_tests.items() if found},
-        owners=await get_git_metadata_bulk(
-            session, repository_id, sorted({file_of_symbol(i) for i in symbol_ids})
+        history=await function_owner_history(
+            session,
+            repository_id,
+            [
+                (s.symbol_id, s.start_line, s.end_line)
+                for i in symbol_ids
+                for s in spans.get(file_of_symbol(i), ())
+                if s.symbol_id == i
+            ],
         ),
-        tests=await tests_for_functions(session, repository_id, symbol_ids, k=_MEASURED_TESTS),
+        tests={
+            sid: row_tests(ran.get(sid), near.get(sid), k=_MEASURED_TESTS, benchmarks=stored)
+            for sid in symbol_ids
+        },
+        verify=verify,
     )
+
+
+async def _stored_benchmarks(
+    session: AsyncSession, repository_id: str, symbol_ids: set[str]
+) -> set[str]:
+    """The symbols among *symbol_ids* a stored benchmark result names."""
+    from ...models import EvidenceBenchmarkResult
+
+    out: set[str] = set()
+    for batch in chunked(sorted(symbol_ids)):
+        result = await session.execute(
+            select(EvidenceBenchmarkResult.symbol_id)
+            .where(
+                EvidenceBenchmarkResult.repository_id == repository_id,
+                EvidenceBenchmarkResult.symbol_id.in_(batch),
+            )
+            .distinct()
+        )
+        out.update(result.scalars())
+    return out
 
 
 async def _callers_of(
@@ -1446,8 +1571,8 @@ def _measured_row(
     symbol_id = row.symbol_id
     path = file_of_symbol(symbol_id)
     span = next((s for s in spans.get(path, ()) if s.symbol_id == symbol_id), None)
-    owner = context.owners.get(path)
-    tests = context.tests.get(symbol_id)
+    history = context.history.get(symbol_id) or {}
+    tests = context.tests[symbol_id]
     out = {
         "symbol_id": symbol_id,
         "file_path": path,
@@ -1463,13 +1588,15 @@ def _measured_row(
         "freshness": row.freshness,
         "callers_total": context.callers_total.get(symbol_id),
         "callers": context.callers.get(symbol_id, []),
-        "owner": (
-            {"name": owner.primary_owner_name, "commit_pct": owner.primary_owner_commit_pct}
-            if owner is not None and owner.primary_owner_name
-            else None
-        ),
-        # ``None``: the function was never mapped to tests; ``[]``: no test reaches it.
-        "tests": [t.selector for t in tests] if tests is not None else None,
+        # From the function's own lines; none without its blame row, never the file's.
+        "owner": history.get("owner"),
+        "last_change": history.get("last_change"),
+        # ``None``: unknown. ``[]``: no test ran it (``per_test_map``) or reaches it.
+        "tests": tests.tests,
+        # ``per_test_map``: tests that ran its lines; ``call_graph``: nearest by call graph.
+        "tests_basis": tests.basis,
+        # Reruns the benchmarks that measure it; never listed as tests.
+        "verify": context.verify.get(symbol_id),
     }
     if symbol_id in covered:
         out["on_static_findings"] = sorted(covered[symbol_id])
