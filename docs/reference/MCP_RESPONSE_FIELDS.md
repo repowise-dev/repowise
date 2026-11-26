@@ -316,7 +316,7 @@ One top-level block: `window` (`since`, `until`), `candidates` (changes merged i
 
 ### Package targets
 
-`package:<name>` (`package:requests`, `package:npm:lodash`): manifest declarations, a summary, components and owner teams, and up to 25 import sites with line, `mapping` (`declared`, `inferred`) and `reachability` (`reachable`, `unreachable`, `test`, `unknown`, with a basis). After `repowise packages import`, a package with a stored advisory also carries `advisories` (up to 5: `id`, `tier` (`package_called`, `imported`, `unknown`), `severity`, `fix`, `affected: null` when no exact version decided the range, and `sites` as `path:line`); `package:<eco>:<name>@<version>` adds a `check` of that version (`verdict`: `ok`, `has_advisories`, `unknown_no_source`). A package with no stored advisory carries neither. See [PACKAGE_USAGE.md](PACKAGE_USAGE.md).
+`package:<name>` (`package:requests`, `package:npm:lodash`): manifest declarations, a summary, components and owner teams, and up to 25 import sites with line, `mapping` (`declared`, `inferred`) and `reachability` (`reachable`, `unreachable`, `test`, `unknown`, with a basis). After `repowise packages import`, a package with a stored advisory also carries `advisories` (up to 5: `id`, `tier` (`package_called`, `imported`, `unknown`), `severity`, `fix`, `affected: null` when no exact version decided the range, and `sites` as `path:line`); `package:<eco>:<name>@<version>` adds a `check` of that version (`verdict`: `ok`, `has_advisories`, `unknown_no_source`), only when a version is asked for. A package with no stored advisory carries no `advisories`. See [PACKAGE_USAGE.md](PACKAGE_USAGE.md).
 
 ### Skeleton
 

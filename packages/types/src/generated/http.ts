@@ -5491,6 +5491,8 @@ export interface ValidationError {
   loc: (string | number)[];
   msg: string;
   type: string;
+  input?: unknown;
+  ctx?: Record<string, unknown>;
 }
 
 /** Server version, PyPI freshness, and (optional) per-repo store status. */
