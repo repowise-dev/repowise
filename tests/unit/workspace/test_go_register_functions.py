@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.core.workspace.extractors.http import HttpExtractor
-from repowise.core.workspace.extractors.http.go import served_prefixes
+from repowise.core.workspace.extractors.http.go_register import served_prefixes
 
 GIN = '"github.com/gin-gonic/gin"'
 
@@ -59,6 +59,7 @@ func UsersRegister(router *gin.RouterGroup) {{
 
 
 def _write(root: Path, files: dict[str, str]) -> None:
+    files = {"go.mod": "module example.com/app\n", **files}
     for rel, text in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,17 +216,17 @@ func Orphan(router *gin.RouterGroup) {{
     ]
 
 
-def test_the_package_is_placed_by_its_module_else_by_its_tail() -> None:
+def test_a_chain_is_read_to_its_top_or_refused() -> None:
     sites = [
-        ("=a/routes", "Register", 0, "", "/a"),
-        ("=routes", "Register", 0, "", "/root"),
-        ("~example.com/other/b/routes", "Register", 0, "", "/b"),
+        ("a/routes", "Register", 0, "", "/a"),
+        ("b/routes", "Register", 0, "api|Setup|0", "/b"),
     ]
     assert served_prefixes(sites, "a/routes", "Register", 0) == ["/a"]
-    # An import path no go.mod places is taken for any directory it ends in.
-    assert served_prefixes(sites, "routes", "Register", 0) == ["/b", "/root"]
-    assert served_prefixes(sites, "b/routes", "Register", 0) == ["/b"]
     assert served_prefixes(sites, "a/routes", "Register", 1) is None
+    # Setup is never handed a router, so the prefix above /b is unknown.
+    assert served_prefixes(sites, "b/routes", "Register", 0) is None
+    mounted = [*sites, ("api", "Setup", 0, "", "/api")]
+    assert served_prefixes(mounted, "b/routes", "Register", 0) == ["/api/b"]
 
 
 def test_an_import_is_placed_through_go_mod(tmp_path: Path) -> None:
@@ -370,3 +371,38 @@ func main() { r := gin.Default(); Reg(r.Group("/api")) }
 func Reg(g *gin.RouterGroup) { g, err := mk(); g.GET("/x", X) }
 """
     assert _one_file(tmp_path, body) == [("http::GET::/x", 6)]
+
+
+def test_a_route_closure_handing_on_its_router_adds_its_prefix(tmp_path: Path) -> None:
+    body = """\
+func main() { r := chi.NewRouter(); r.Route("/api", func(r chi.Router) { Reg(r) }) }
+func Reg(r chi.Router) { r.Get("/x", X) }
+"""
+    _write(tmp_path, {"main.go": f'package main\n\nimport "github.com/go-chi/chi/v5"\n\n{body}'})
+    assert [(cid, line) for cid, _f, line in _routes(tmp_path)] == [("http::GET::/api/x", 6)]
+
+
+def test_a_parameter_hides_a_package_group_of_its_name(tmp_path: Path) -> None:
+    body = """\
+var r = gin.Default()
+var v1 = r.Group("/api")
+func main() { F(r.Group("/m")) }
+func F(v1 *gin.RouterGroup) { v1.GET("/x", X) }
+"""
+    assert _one_file(tmp_path, body) == [("http::GET::/m/x", 8)]
+
+
+def test_a_caller_never_handed_a_router_leaves_the_path_unplaced(tmp_path: Path) -> None:
+    body = """\
+func Setup(rg *gin.RouterGroup) { Reg(rg.Group("/users")) }
+func Reg(g *gin.RouterGroup) { g.GET("/x", X) }
+"""
+    assert _one_file(tmp_path, body) == [("http::GET::/x", 6)]
+
+
+def test_a_comma_inside_a_parameter_type_keeps_the_router_position(tmp_path: Path) -> None:
+    body = """\
+func main() { r := gin.Default(); Reg(nil, r.Group("/api")) }
+func Reg(cfg map[string]func(a, b int), g *gin.RouterGroup) { g.GET("/x", X) }
+"""
+    assert _one_file(tmp_path, body) == [("http::GET::/api/x", 6)]
