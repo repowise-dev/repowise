@@ -3583,8 +3583,9 @@ class StatementSiteRow(Base):
 class StatementSitesStamp(Base):
     """Which read last wrote a repository's ``statement_sites``.
 
-    ``statement_sites.sites_fingerprint()`` of that read; an update re-reads
-    when a changed path is Python or SQL or this differs. No row (or NULL)
+    ``statement_sites.sites_fingerprint()`` of that read, and ``inputs_json``
+    what it used (``{"files": [...], "names": [...]}``); an update re-reads
+    when a changed path touches those or this differs. No row (or NULL)
     means read again.
     """
 
@@ -3592,6 +3593,7 @@ class StatementSitesStamp(Base):
 
     repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
     fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class BuildUnitDep(Base):

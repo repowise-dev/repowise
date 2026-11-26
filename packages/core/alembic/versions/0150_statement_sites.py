@@ -64,6 +64,7 @@ def upgrade() -> None:
             "statement_sites_stamp",
             _repository_id(),
             sa.Column("fingerprint", sa.String(64), nullable=True),
+            sa.Column("inputs_json", sa.Text, nullable=True),
         )
     have = {c["name"] for c in inspector.get_columns("evidence_statement_stats")}
     if "issuer" not in have:

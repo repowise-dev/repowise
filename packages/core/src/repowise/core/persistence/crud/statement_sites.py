@@ -8,7 +8,8 @@ Written whole by every read, with the fingerprint of that read in
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,8 +32,10 @@ async def replace_statement_sites(
     repository_id: str,
     sites: Sequence[StatementSite],
     fingerprint: str,
+    inputs: Mapping[str, Any] | None = None,
 ) -> int:
-    """Replace the repository's sites with *sites* and stamp *fingerprint*; returns rows written."""
+    """Replace the repository's sites with *sites* and stamp *fingerprint* and the
+    read's *inputs* (the files and names it used); returns rows written."""
     rows = [
         {
             "repository_id": repository_id,
@@ -56,15 +59,24 @@ async def replace_statement_sites(
     )
     for i in range(0, len(rows), _BATCH_SIZE):
         await session.execute(insert(StatementSiteRow), rows[i : i + _BATCH_SIZE])
-    await stamp_sites_fingerprint(session, repository_id, fingerprint)
+    await stamp_sites_fingerprint(session, repository_id, fingerprint, inputs)
     return len(rows)
 
 
 async def stamp_sites_fingerprint(
-    session: AsyncSession, repository_id: str, fingerprint: str | None
+    session: AsyncSession,
+    repository_id: str,
+    fingerprint: str | None,
+    inputs: Mapping[str, Any] | None = None,
 ) -> None:
     """Record the read the stored sites come from; None makes the next update re-read."""
-    await session.merge(StatementSitesStamp(repository_id=repository_id, fingerprint=fingerprint))
+    await session.merge(
+        StatementSitesStamp(
+            repository_id=repository_id,
+            fingerprint=fingerprint,
+            inputs_json=json.dumps(dict(inputs), sort_keys=True) if inputs is not None else None,
+        )
+    )
     await session.flush()
 
 
@@ -93,6 +105,22 @@ async def list_statement_sites(session: AsyncSession, repository_id: str) -> lis
     ]
 
 
+async def stored_sites_stamp(
+    session: AsyncSession, repository_id: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    """The fingerprint and inputs of the read that last wrote the sites, or Nones."""
+    row = (
+        await session.execute(
+            select(StatementSitesStamp.fingerprint, StatementSitesStamp.inputs_json).where(
+                StatementSitesStamp.repository_id == repository_id
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None, None
+    return row.fingerprint, json.loads(row.inputs_json) if row.inputs_json else None
+
+
 async def stored_sites_fingerprint(session: AsyncSession, repository_id: str) -> str | None:
     """The fingerprint of the read that last wrote the repository's sites, or None."""
     return (
@@ -109,4 +137,5 @@ __all__ = [
     "replace_statement_sites",
     "stamp_sites_fingerprint",
     "stored_sites_fingerprint",
+    "stored_sites_stamp",
 ]

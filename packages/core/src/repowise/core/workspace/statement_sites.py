@@ -41,6 +41,7 @@ import json
 import logging
 import posixpath
 import re
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -66,9 +67,11 @@ _PREFILTER_RE = re.compile(
     r"|(?i:[\"']\s*(?:SELECT\s[^\"']*?\bFROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)\b)"
 )
 _WORD_RE = re.compile(r"[A-Za-z_]\w*")
+_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(")
 _CRON_RE = re.compile(r"\bcron\.(schedule|schedule_in_database)\s*\(", re.IGNORECASE)
 _SQL_STRING_RE = re.compile(
-    r"\$(?P<tag>[A-Za-z_]\w*)?\$(?P<dollar>.*?)\$(?P=tag)\$|'(?P<quoted>(?:[^']|'')*)'", re.DOTALL
+    r"\$(?P<tag>(?:[A-Za-z_]\w*)?)\$(?P<dollar>.*?)\$(?P=tag)\$|'(?P<quoted>(?:[^']|'')*)'",
+    re.DOTALL,
 )
 _MAX_HOPS = 3
 
@@ -147,6 +150,8 @@ class _Module:
     tables: dict[str, list[tuple[Any, ...]]] = field(default_factory=dict)
     imports: dict[str, tuple[str, str]] = field(default_factory=dict)
     module_aliases: dict[str, str] = field(default_factory=dict)
+    bound: set[str] = field(default_factory=set)
+    rebound: set[str] = field(default_factory=set)
     functions: list[_Function] = field(default_factory=list)
     function_of: dict[ast.AST, _Function] = field(default_factory=dict)
     #: Every node of a kind the scan reads, gathered in the one walk.
@@ -183,15 +188,26 @@ def _parse(path: str, text: str) -> _Module | None:
             mod.classes.append(parent)
     for stmt in tree.body:
         _read_module_statement(mod, stmt, package)
+    for name in mod.rebound:
+        mod.constants.pop(name, None)
+        mod.tables.pop(name, None)
     _collect_functions(mod, tree, (), False)
     return mod
 
 
 def _read_module_statement(mod: _Module, stmt: ast.stmt, package: str) -> None:
+    if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+        mod.rebound.add(stmt.target.id)
     if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
         targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
         value = stmt.value
         for target in targets:
+            for name in ast.walk(target):
+                if isinstance(name, ast.Name):
+                    # Bound twice (``if``/``else``, a later reassignment): no one value.
+                    if name.id in mod.bound:
+                        mod.rebound.add(name.id)
+                    mod.bound.add(name.id)
             if not isinstance(target, ast.Name) or value is None:
                 continue
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
@@ -277,9 +293,10 @@ class _Repo:
                 for dotted in _module_names(path):
                     self.by_dotted[dotted] = None if dotted in self.by_dotted else path
         self.models: dict[str, str | None] = {}
+        self.top_packages = {dotted.split(".")[0] for dotted in self.by_dotted}
         self._unparsed: set[str] = set()
         #: Per Python file, every name it calls or mentions; read on first use.
-        self._words: dict[str, frozenset[str]] | None = None
+        self._words: dict[str, tuple[Counter[str], Counter[str]]] | None = None
 
     def module(self, path: str) -> _Module | None:
         if path not in self.modules:
@@ -291,20 +308,34 @@ class _Repo:
             self.modules[path] = parsed
         return self.modules[path]
 
-    def calling(self, *names: str) -> list[str]:
-        """The Python files not parsed yet that call (or name) any of *names*."""
+    def _counts(self) -> dict[str, tuple[Counter[str], Counter[str]]]:
+        """Per Python file, how often each name appears, and how often it is called."""
         if self._words is None:
             self._words = {
-                path: frozenset(_WORD_RE.findall(text))
+                path: (Counter(_WORD_RE.findall(text)), Counter(_CALL_RE.findall(text)))
                 for path, text in self.texts.items()
                 if path.endswith(".py")
             }
+        return self._words
+
+    def calling(self, *names: str, calls_only: bool = False) -> list[str]:
+        """The Python files not parsed yet that name (or, *calls_only*, call) any of *names*."""
         wanted = set(names)
         return [
             path
-            for path, words in self._words.items()
-            if path not in self.modules and path not in self._unparsed and wanted & words
+            for path, (words, calls) in self._counts().items()
+            if path not in self.modules
+            and path not in self._unparsed
+            and wanted & (calls.keys() if calls_only else words.keys())
         ]
+
+    def named_uncalled(self, name: str) -> bool:
+        """Whether a file not parsed names *name* other than to call it (a reference)."""
+        return any(
+            words[name] > calls[name]
+            for path, (words, calls) in self._counts().items()
+            if path not in self.modules
+        )
 
     def module_named(self, dotted: str) -> _Module | None:
         path = self.by_dotted.get(dotted)
@@ -354,13 +385,16 @@ def _name_value(repo: _Repo, mod: _Module, fn: _Function | None, expr: ast.expr)
     name = expr.id
     holder = fn
     while holder is not None:
+        is_param = name in holder.params() or name in holder.kwonly()
         if _assigned(holder, name):
+            if is_param:
+                return None  # a caller's value or a local one: no single answer
             local = _local_string(holder, name)
             if local is not None:
                 return _Value("literal", (local,))
             data = _loop_data(repo, mod, holder, name)
             return _Value("data", tuple(data)) if data else None
-        if name in holder.params() or name in holder.kwonly():
+        if is_param:
             return _Value("param", param=name, function=holder)
         holder = mod.enclosing(holder.node)
     constant = repo.constant(mod, name)
@@ -490,8 +524,15 @@ def _local_columns(fn: _Function, name: str) -> Columns | None:
     added_always: set[str] = set()
     added_maybe: set[str] = set()
     closed = True
+    passed = 0
     body_level = {id(s) for s in fn.node.body}
     for node in _own_nodes(fn):
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
+            parent = fn.module.parents.get(node)
+            if isinstance(parent, ast.keyword):
+                parent = fn.module.parents.get(parent)
+            if isinstance(parent, ast.Call) and parent.func is not node:
+                passed += 1
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for t in targets:
@@ -534,7 +575,8 @@ def _local_columns(fn: _Function, name: str) -> Columns | None:
         return None
     required = base.required | added_always
     optional = (base.optional | added_maybe) - required
-    return Columns(required, optional, base.closed and closed)
+    # Handed to another call besides the one that sends it: that call may add keys.
+    return Columns(required, optional, base.closed and closed and passed <= 1)
 
 
 def _target(node: ast.AST) -> ast.AST:
@@ -574,7 +616,8 @@ def _filter_column(
         return None
     value = _name_value(repo, mod, fn, call.args[0])
     if value is not None and value.kind in ("literal", "constant") and len(value.names) == 1:
-        return [value.names[0]]
+        # ``data->>key`` tests the ``data`` column.
+        return [value.names[0].split("->")[0].strip().lower()]
     return None
 
 
@@ -594,12 +637,20 @@ def _postgrest_table_site(
     columns: Columns | None = None
     required: set[str] = set()
     optional: set[str] = set()
+    conflicting = False
     for i, chain in enumerate(chains):
         for name, link in chain:
+            if name in _VERB_METHODS and i > 0:
+                # ``t = client.table("x")`` then ``t.insert(...)`` and ``t.delete()``:
+                # one builder, several statements; none of them is known.
+                conflicting = True
             if name in _VERB_METHODS and verb is None:
                 verb = _VERB_METHODS[name]
                 if name == "select":
                     columns = _select_columns(link)
+                    text = _string(link.args[0]) if link.args else None
+                    if text is not None and ("(" in text or "!" in text):
+                        closed = False  # an embedded resource joins on more columns
                 else:
                     columns = _columns(fn, link.args[0] if link.args else None)
             elif name in _FILTER_METHODS or name == "match":
@@ -610,11 +661,22 @@ def _postgrest_table_site(
                     (required if i == 0 else optional).update(found)
             elif name not in _NEUTRAL_METHODS and name not in _VERB_METHODS:
                 closed = False  # ``or_`` and anything unknown may filter more
+    if conflicting:
+        verb, columns, closed = None, None, False
     filters = (
         None
         if verb == "insert"
         else Columns(frozenset(required), frozenset(optional - required), closed)
     )
+    schema = None
+    owner = call.func.value if isinstance(call.func, ast.Attribute) else None
+    if (
+        isinstance(owner, ast.Call)
+        and isinstance(owner.func, ast.Attribute)
+        and owner.func.attr == "schema"
+    ):
+        # ``client.schema("x").table("t")``; a schema the code does not spell is "?".
+        schema = ((_string(owner.args[0]) if owner.args else None) or "?").lower()
     site = StatementSite(
         file_path=mod.path,
         line=call.lineno,
@@ -623,6 +685,7 @@ def _postgrest_table_site(
         name=None,
         verb=verb,
         via="literal",
+        schema=schema,
         columns=columns,
         filters=filters,
     )
@@ -673,7 +736,7 @@ def _select_columns(call: ast.Call) -> Columns | None:
     names = [part.strip() for part in text.split(",")]
     if any(not n or "*" in n or "(" in n or "!" in n or "." in n for n in names):
         return None
-    out = frozenset(n.split(":")[-1].split("::")[0].strip().lower() for n in names)
+    out = frozenset(n.split("::")[0].split(":")[-1].strip().lower() for n in names)
     return Columns(out, frozenset(), True)
 
 
@@ -717,8 +780,18 @@ def _orm_site(repo: _Repo, mod: _Module, call: ast.Call) -> StatementSite | None
     elif isinstance(func, ast.Attribute):
         if func.attr in ("query", "get") and call.args:
             verb, model = "select", _orm_model(repo, mod, call.args[0])
-        elif func.attr == "add" and call.args and isinstance(call.args[0], ast.Call):
-            verb, model = "insert", _orm_model(repo, mod, call.args[0].func)
+            if func.attr == "query":
+                # ``session.query(M).filter(...).delete()`` deletes; ``.update({...})`` updates.
+                for name, _link in _chain(mod, call)[0]:
+                    if name in ("delete", "update"):
+                        verb = name
+        elif func.attr in ("add", "add_all", "delete", "merge") and _session_like(func.value):
+            first = call.args[0] if call.args else None
+            model = _orm_model(repo, mod, first.func) if isinstance(first, ast.Call) else None
+            verb = {"add": "insert", "add_all": "insert", "delete": "delete"}.get(func.attr)
+            if model is None:
+                # ``session.add(user)``: a model the code does not name here.
+                return StatementSite(mod.path, call.lineno, "sql", "table", None, verb, "runtime")
         elif func.attr in _ORM_VERBS and isinstance(func.value, (ast.Name, ast.Attribute)):
             # ``users.insert()`` on a ``Table("users", ...)``, or ``sa.select(M)``.
             target = _orm_model(repo, mod, func.value)
@@ -729,6 +802,12 @@ def _orm_site(repo: _Repo, mod: _Module, call: ast.Call) -> StatementSite | None
     if verb is None or model is None:
         return None
     return StatementSite(mod.path, call.lineno, "sql", "table", model.lower(), verb, "model")
+
+
+def _session_like(owner: ast.expr) -> bool:
+    """Whether a receiver reads as an ORM session (``session``, ``db.session``)."""
+    name = owner.id if isinstance(owner, ast.Name) else getattr(owner, "attr", "")
+    return name.lower().endswith("session")
 
 
 def _partial(mod: _Module, node: ast.Constant) -> bool:
@@ -768,7 +847,10 @@ def _sql_site(mod: _Module, text: str, line: int, *, partial: bool) -> Statement
     shape = statement_shape(text)
     if shape is None or shape.channel != "sql":
         return None
-    closed = not partial
+    # Ceiling: a literal may grow later (``sql += " WHERE ..."``, ``.format``), so
+    # its columns and filters are what it sends at least, never all of it.
+    del partial
+    closed = False
     return StatementSite(
         file_path=mod.path,
         line=line,
@@ -837,7 +919,7 @@ def _scan(repo: _Repo, mod: _Module) -> tuple[list[StatementSite], list[_Templat
             continue
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             # A module constant holding SQL: the function that reads it issues it.
-            text = mod.constants.get(node.id)
+            text = repo.constant(mod, node.id)
             if text is not None and mod.enclosing(node) is not None:
                 site = _sql_site(mod, text, node.lineno, partial=False)
                 if site is not None:
@@ -923,6 +1005,8 @@ class _Calls:
     def __init__(self, repo: _Repo) -> None:
         self.by_name: dict[str, list[tuple[_Module, ast.Call]]] = {}
         self.indexed: set[str] = set()
+        #: Names read other than as the callee of a call: a function handed on.
+        self.referenced: set[str] = set()
         self.searched: set[str] = set()
         for mod in list(repo.modules.values()):
             self._index(mod)
@@ -941,6 +1025,10 @@ class _Calls:
                 )
                 if name:
                     self.by_name.setdefault(name, []).append((mod, node))
+            elif isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
+                parent = mod.parents.get(node)
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    self.referenced.add(node.id if isinstance(node, ast.Name) else node.attr)
 
     def of(self, repo: _Repo, target: _Function) -> tuple[list[tuple[_Module, ast.Call]], bool]:
         """Calls that reach *target*, and whether every call by its name was placed."""
@@ -951,14 +1039,16 @@ class _Calls:
                 found.append((mod, call))
             else:
                 unplaced = unplaced or _maybe_calls(repo, mod, call, target)
-        return found, not unplaced
+        # Passed by reference, it may run with any arguments.
+        referenced = target.name in self.referenced or repo.named_uncalled(target.name)
+        return found, not unplaced and not referenced
 
     def ensure(self, repo: _Repo, name: str) -> None:
         """Parse the files that call *name* and index their calls."""
         if name in self.searched:
             return
         self.searched.add(name)
-        for path in repo.calling(name):
+        for path in repo.calling(name, calls_only=True):
             repo.module(path)
         for mod in list(repo.modules.values()):
             if mod.path not in self.indexed:
@@ -1010,6 +1100,20 @@ def _maybe_calls(repo: _Repo, mod: _Module, call: ast.Call, target: _Function) -
     index cannot type, or a name a star import may bring, may be *target*.
     """
     func = call.func
+    name = target.name
+
+    def elsewhere(dotted: str) -> bool:
+        # A package outside the repo, or a repo module that defines its own *name*;
+        # anything else (a re-export, an instance, an unresolved module) may be *target*.
+        if dotted.split(".")[0] not in repo.top_packages:
+            return True
+        other = repo.module_named(dotted)
+        return (
+            other is not None
+            and other is not target.module
+            and any(f.name == name and "." not in f.qualname for f in other.functions)
+        )
+
     if isinstance(func, ast.Name):
         if mod is not target.module and any(
             f.name == func.id and "." not in f.qualname for f in mod.functions
@@ -1017,10 +1121,7 @@ def _maybe_calls(repo: _Repo, mod: _Module, call: ast.Call, target: _Function) -
             return False
         source = mod.imports.get(func.id)
         if source is not None:
-            if source[0] not in repo.by_dotted:
-                return False  # a package outside the repo
-            other = repo.module_named(source[0])
-            return other is None or other is target.module
+            return not elsewhere(source[0])
         return mod is not target.module
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
         owner = func.value.id
@@ -1030,10 +1131,7 @@ def _maybe_calls(repo: _Repo, mod: _Module, call: ast.Call, target: _Function) -
             ".".join(mod.imports[owner]) if owner in mod.imports else None
         )
         if alias is not None:
-            if alias not in repo.by_dotted:
-                return False  # a package outside the repo
-            other = repo.module_named(alias)
-            return other is None or other is target.module
+            return not elsewhere(alias)
     return True
 
 
@@ -1087,7 +1185,12 @@ def _resolve(
             if template.columns_param
             else None
         )
-        if arg is None:
+        spread = any(isinstance(a, ast.Starred) for a in call.args) or any(
+            kw.arg is None for kw in call.keywords
+        )
+        if arg is None and spread:
+            out.append(open_site)
+        elif arg is None:
             default = _default(target, template.name.param)
             out.append(
                 replace(open_site, name=default.lower(), via="constant")
@@ -1125,10 +1228,15 @@ def _resolve(
     return out
 
 
-def read_python_sites(texts: Mapping[str, str]) -> list[StatementSite]:
+def read_python_sites(
+    texts: Mapping[str, str], inputs: dict[str, list[str]] | None = None
+) -> list[StatementSite]:
     """Every statement site the Python files of *texts* (``rel path -> source``) hold.
 
     Pure. Sites carry no ``symbol_id`` yet (see :func:`attach_functions`).
+    *inputs*, when given, is filled with what the read depended on: the
+    ``files`` it parsed and the ``names`` (helpers, models, SQL constants)
+    whose new callers or readers would add a site.
     """
     repo = _Repo(texts)
     wanted = [p for p, t in texts.items() if p.endswith(".py") and _PREFILTER_RE.search(t)]
@@ -1139,8 +1247,15 @@ def read_python_sites(texts: Mapping[str, str]) -> list[StatementSite]:
     # ``session.get(User, ...)``, ``session.add(User(...))``: a file that names a
     # model and nothing else the prefilter reads.
     models = [name for name, table in repo.models.items() if table]
-    if models:
-        wanted.extend(p for p in repo.calling(*models) if repo.module(p) is not None)
+    # ``from app.queries import PURGE_SQL``: a file that reads SQL another one holds.
+    held_sql = [
+        name
+        for mod in list(repo.modules.values())
+        for name, text in mod.constants.items()
+        if statement_shape(text) is not None
+    ]
+    if models or held_sql:
+        wanted.extend(p for p in repo.calling(*models, *held_sql) if repo.module(p) is not None)
     sites: list[StatementSite] = []
     templates: list[_Template] = []
     for path in wanted:
@@ -1150,12 +1265,18 @@ def read_python_sites(texts: Mapping[str, str]) -> list[StatementSite]:
         found, helpers = _scan(repo, mod)
         sites.extend(found)
         templates.extend(helpers)
+    helpers: set[str] = set()
     if templates:
         # A helper's callers may sit in files the prefilter passed over:
         # ``_Calls.of`` parses those as it looks for them.
         calls = _Calls(repo)
         for template in templates:
             sites.extend(_resolve(repo, calls, template))
+        helpers = calls.searched
+    if inputs is not None:
+        inputs["files"] = sorted(repo.modules)
+        inputs["names"] = sorted({*models, *held_sql})
+        inputs["helpers"] = sorted(helpers)
     return sorted(set(sites), key=_site_order)
 
 
@@ -1191,6 +1312,8 @@ def read_schedule_sites(path: str, text: str) -> list[StatementSite]:
                     verb=shape.verb,
                     via="schedule",
                     schema=shape.schema,
+                    columns=Columns(shape.columns, closed=False) if shape.columns else None,
+                    filters=Columns(shape.filters, closed=False) if shape.filters else None,
                 )
             )
     return out
@@ -1239,13 +1362,53 @@ def attach_functions(
     return out
 
 
-def read_sites(texts: Mapping[str, str]) -> list[StatementSite]:
-    """Code and schedule sites of *texts* (``rel path -> source``), no functions attached."""
-    sites = read_python_sites(texts)
+def read_sites(
+    texts: Mapping[str, str], inputs: dict[str, list[str]] | None = None
+) -> list[StatementSite]:
+    """Code and schedule sites of *texts* (``rel path -> source``), no functions attached.
+
+    *inputs*: see :func:`read_python_sites`; schedule files join its ``files``.
+    """
+    sites = read_python_sites(texts, inputs)
+    scheduled = []
     for path, text in texts.items():
         if "cron.schedule" in text.lower():
             sites.extend(read_schedule_sites(path, text))
+            scheduled.append(path)
+    if inputs is not None:
+        inputs["files"] = sorted({*inputs.get("files", ()), *scheduled})
     return sorted(set(sites), key=_site_order)
+
+
+def _touches(repo_path: Path, changed: Iterable[str], inputs: Mapping[str, Any]) -> bool:
+    """Whether a changed path can move a stored site, given what the last read used.
+
+    A file the read parsed; or one that now names a client call, a model, SQL
+    or a schedule (the prefilter), or a helper, model or SQL constant the read
+    resolved (a new caller). Ceiling: a file it never parsed that changes only
+    a value one of those reads (``from x import *``) waits for the next read.
+    """
+    files = set(inputs.get("files") or ())
+    names = set(inputs.get("names") or ())
+    helpers = set(inputs.get("helpers") or ())
+    for path in changed:
+        if not path.lower().endswith(_SUFFIXES):
+            continue
+        if path in files:
+            return True
+        try:
+            text = (repo_path / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue  # gone, and the read never used it
+        if "cron.schedule" in text.lower():
+            return True
+        if path.endswith(".py") and (
+            _PREFILTER_RE.search(text)
+            or names & set(_WORD_RE.findall(text))
+            or helpers & set(_WORD_RE.findall(text))
+        ):
+            return True
+    return False
 
 
 def sites_fingerprint(repo_path: Path) -> str:
@@ -1272,7 +1435,12 @@ def _repo_texts(repo_path: Path) -> dict[str, str]:
     }
 
 
-async def read_statement_sites(session: Any, repo_id: str, repo_path: Path) -> list[StatementSite]:
+async def read_statement_sites(
+    session: Any,
+    repo_id: str,
+    repo_path: Path,
+    inputs: dict[str, list[str]] | None = None,
+) -> list[StatementSite]:
     """Every statement site of the checkout at *repo_path*, functions from the stored symbols."""
     import asyncio
 
@@ -1284,7 +1452,7 @@ async def read_statement_sites(session: Any, repo_id: str, repo_path: Path) -> l
     texts = await asyncio.to_thread(_repo_texts, Path(repo_path).resolve())
     origins = await load_origins(session, repo_id, texts)
     texts = {p: t for p, t in texts.items() if origins.get(p) not in _SKIPPED_ORIGINS}
-    sites = await asyncio.to_thread(read_sites, texts)
+    sites = await asyncio.to_thread(read_sites, texts, inputs)
     files = sorted({s.file_path for s in sites})
     spans: dict[str, list[tuple[int, int, str]]] = {}
     for i in range(0, len(files), 400):
@@ -1317,17 +1485,18 @@ async def refresh_statement_sites(
     """Re-read *repo_path*'s statement sites into ``statement_sites``; returns the rows written.
 
     *changed_paths* None (an init) always reads. Given (an update), it reads
-    only when one of them is a Python or SQL file or the stored rows were
-    read with another fingerprint, and returns None when it skipped. Ceiling:
-    a read is the whole repo (a helper's callers and imported constants
-    cross files); the prefilter keeps it to the files that can hold a site.
+    only when one of them can move a site (:func:`_touches`, against what the
+    last read used) or the stored rows were read with another fingerprint,
+    and returns None when it skipped. A read is the whole repo (a helper's
+    callers and imported constants cross files); the prefilter keeps it to
+    the files that can hold a site.
     A failed read keeps the stored rows and clears the stamp so the next
     update reads again. The write is one savepoint.
     """
     from repowise.core.persistence.crud.statement_sites import (
         replace_statement_sites,
         stamp_sites_fingerprint,
-        stored_sites_fingerprint,
+        stored_sites_stamp,
     )
 
     repo_path = Path(repo_path)
@@ -1335,11 +1504,16 @@ async def refresh_statement_sites(
         return None
     fingerprint = sites_fingerprint(repo_path)
     if changed_paths is not None:
-        stored = await stored_sites_fingerprint(session, repo_id)
-        if stored == fingerprint and not sites_relevant(changed_paths):
-            return None
+        stored, used = await stored_sites_stamp(session, repo_id)
+        if stored == fingerprint:
+            changed = list(changed_paths)
+            if not (
+                _touches(repo_path, changed, used) if used is not None else sites_relevant(changed)
+            ):
+                return None
+    inputs: dict[str, list[str]] = {}
     try:
-        sites = await read_statement_sites(session, repo_id, repo_path)
+        sites = await read_statement_sites(session, repo_id, repo_path, inputs)
     except Exception as exc:
         _log.warning("statement sites not refreshed: %r", exc)
         async with session.begin_nested():
@@ -1347,7 +1521,7 @@ async def refresh_statement_sites(
         return None
     try:
         async with session.begin_nested():
-            await replace_statement_sites(session, repo_id, sites, fingerprint)
+            await replace_statement_sites(session, repo_id, sites, fingerprint, inputs)
     except Exception:
         async with session.begin_nested():
             await stamp_sites_fingerprint(session, repo_id, None)

@@ -60,7 +60,8 @@ _WHERE_END_RE = re.compile(
 )
 _CONDITION_RE = re.compile(
     rf"({_NAME}(?:\s*\.\s*{_NAME}){{0,2}})\s*"
-    r"(?:=|<>|!=|<=|>=|<|>|~~\*?|!~~\*?|\bI?LIKE\b|\bIS\b|\bIN\b|@>|<@|&&|@@)",
+    r"(?:->>?|#>>?|=|<>|!=|<=|>=|<<|>>|-\|-|&<|&>|<|>|~~\*?|!~~\*?|\bI?LIKE\b|\bIS\b"
+    r"|\bIN\b|\bBETWEEN\b|\bNOT\b|@>|<@|&&|@@)",
     re.I,
 )
 _SET_RE = re.compile(r"\bSET\b(.*?)(?:\bWHERE\b|\bRETURNING\b|\bFROM\b|$)", re.I | re.S)
@@ -143,10 +144,18 @@ class Columns:
     closed: bool = True
 
     def agrees(self, statement: frozenset[str]) -> bool:
-        """Whether a statement with exactly *statement* could come from here."""
-        if not self.required <= statement:
+        """Whether a statement with exactly *statement* could come from here.
+
+        Names compare in lower case: a statement's text folds unquoted names,
+        and code spells a quoted one (``userId``) in its own case.
+        """
+        statement = frozenset(c.lower() for c in statement)
+        required = frozenset(c.lower() for c in self.required)
+        if not required <= statement:
             return False
-        return not self.closed or statement <= self.required | self.optional
+        if not self.closed:
+            return True
+        return statement <= required | frozenset(c.lower() for c in self.optional)
 
     def as_json(self) -> dict[str, object]:
         return {
@@ -262,7 +271,7 @@ def _sql_shape(text: str, channel: str, *, complete: bool) -> StatementShape | N
         return StatementShape(channel, "delete", name, schema, None, filters)
     if not re.match(r"\s*SELECT\b", text, re.I):
         return None
-    source = _FROM_RE.search(text)
+    source = next((m for m in _FROM_RE.finditer(text) if _depth(text, m.start()) == 0), None)
     if source is None:
         call = _SELECT_CALL_RE.match(text)
         if call is None:
@@ -278,6 +287,11 @@ def _sql_shape(text: str, channel: str, *, complete: bool) -> StatementShape | N
         # ``FROM f(...)``: the statement reads what a function returns.
         return StatementShape(channel, "call", name, schema)
     return StatementShape(channel, "select", name, schema, _selected(text, source.start()), filters)
+
+
+def _depth(text: str, at: int) -> int:
+    """How many parentheses are open at *at*."""
+    return text.count("(", 0, at) - text.count(")", 0, at)
 
 
 def _selected(text: str, from_at: int) -> frozenset[str] | None:
@@ -372,9 +386,11 @@ def _agrees(site: StatementSite, shape: StatementShape) -> bool:
     if site.name is not None:
         if site.name != shape.name:
             return False
-        if site.schema is not None and shape.schema is not None and site.schema != shape.schema:
-            return False
-        if site.schema is None and shape.schema not in (None, "public"):
+        if site.schema == "?":
+            pass  # a schema only known at run time
+        elif (
+            site.schema is not None and shape.schema is not None and site.schema != shape.schema
+        ) or (site.schema is None and shape.schema not in (None, "public")):
             return False
     if (
         site.columns is not None

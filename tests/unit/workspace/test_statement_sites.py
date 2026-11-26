@@ -233,7 +233,11 @@ def test_orm_models_and_literal_sql_are_sites_too() -> None:
     assert [s.line for s in sites[("audit_log", "insert")]] == [20]
     assert [s.line for s in sites[("users", "delete")]] == [24]
     literal = sites[("users", "select")][1]
-    assert (literal.channel, literal.filters) == ("sql", Columns(frozenset({"active"})))
+    # A literal may grow later (``sql += ...``): what it names, at least.
+    assert (literal.channel, literal.filters) == (
+        "sql",
+        Columns(frozenset({"active"}), closed=False),
+    )
     # Part of an f-string says nothing of what the rest adds.
     assert sites[("users", "select")][2].filters == Columns(frozenset(), closed=False)
 
@@ -326,6 +330,12 @@ async def test_the_index_stores_sites_and_rereads_only_when_python_or_sql_moves(
             is None
         )
         assert any(s.name == "pages" for s in await list_statement_sites(session, repo_id))
+        # Nor does a Python file that names no client call, model, SQL or helper.
+        (repo / "app" / "util.py").write_text("def slug(text):\n    return text.lower()\n")
+        assert (
+            await refresh_statement_sites(session, repo_id, repo, changed_paths=["app/util.py"])
+            is None
+        )
         assert (
             await refresh_statement_sites(session, repo_id, repo, changed_paths=["app/db.py"]) == 5
         )
@@ -420,3 +430,20 @@ def test_a_file_that_only_names_a_model_is_read_too() -> None:
         "users",
         "select",
     )
+
+
+def test_an_update_reads_again_only_what_can_move_a_site(tmp_path: Path) -> None:
+    from repowise.core.workspace.statement_sites import _touches, read_sites
+
+    texts = {"app/helpers.py": _HELPERS, "app/names.py": 'SIGHTINGS = "record_sighting"\n'}
+    inputs: dict[str, list[str]] = {}
+    read_sites(texts, inputs)
+    # The constant's file was read to resolve a name; the helpers are watched by name.
+    assert "app/names.py" in inputs["files"]
+    assert {"cached_rpc", "drain", "get_cached", "save_any"} <= set(inputs["helpers"])
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "new.py").write_text("def go(c):\n    return cached_rpc(c, 'x', {})\n")
+    (tmp_path / "app" / "util.py").write_text("def slug(t):\n    return t.lower()\n")
+    assert _touches(tmp_path, ["app/new.py"], inputs)
+    assert _touches(tmp_path, ["app/names.py"], inputs)
+    assert not _touches(tmp_path, ["app/util.py", "README.md", "app/deleted.py"], inputs)
