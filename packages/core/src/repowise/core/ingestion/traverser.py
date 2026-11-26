@@ -382,6 +382,21 @@ _EMITTED_SUFFIXES: tuple[str, ...] = (
 )
 
 
+def _cargo_is_unpublished(manifest_path: Path) -> bool:
+    """Whether a Cargo.toml marks the crate unpublished (publish = false / [])."""
+    import tomllib
+
+    try:
+        data = tomllib.loads(manifest_path.read_text(encoding="utf-8", errors="ignore"))
+        pkg = data.get("package")
+        if isinstance(pkg, dict):
+            publish = pkg.get("publish")
+            return publish in (False, [], ["none"])
+        return False
+    except Exception:
+        return False
+
+
 class FileTraverser:
     """Traverse a repository and yield FileInfo for each documentable file.
 
@@ -1003,7 +1018,14 @@ class FileTraverser:
         cached = self._package_root_cache.get(rel_dir)
         if cached is None:
             base = self.repo_root / rel_dir
-            cached = any((base / name).is_file() for name in _MANIFEST_FILES)
+            is_pkg = any((base / name).is_file() for name in _MANIFEST_FILES)
+            if (
+                is_pkg
+                and (base / "Cargo.toml").is_file()
+                and _cargo_is_unpublished(base / "Cargo.toml")
+            ):
+                is_pkg = False
+            cached = is_pkg
             self._package_root_cache[rel_dir] = cached
         return cached
 

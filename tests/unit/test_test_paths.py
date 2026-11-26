@@ -41,6 +41,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # go
     ("app/user_test.go", None, "test"),
     ("pkg/thing_test.go", None, "test"),
+    # rust test-harness crates
+    ("tests-build/src/lib.rs", None, "test"),
+    ("tests-integration/src/lib.rs", None, "test"),
     # jest / vitest
     ("src/__tests__/x.js", None, "test"),
     ("src/components/Button.test.tsx", None, "test"),
@@ -401,6 +404,16 @@ def test_a_test_helper_directory_that_is_a_package_root_stays_production() -> No
     assert is_test_path("test-utils/test/index.test.js", package_root=roots)
     # Golden data is not a package even beside a manifest (Go fixture modules).
     assert is_test_support_path("testdata/mod/x.go", package_root=lambda _d: True)
+
+
+def test_a_published_tests_crate_stays_production() -> None:
+    """A published crate whose name starts with tests stays production."""
+    published_roots = {"tests-published"}.__contains__
+    assert not is_test_related_path("tests-published/src/lib.rs", package_root=published_roots)
+    assert not is_test_path("tests-published/src/lib.rs", package_root=published_roots)
+    assert is_test_path("tests-published/tests/macros.rs", package_root=published_roots)
+    assert is_test_path("tests-build/src/lib.rs")
+    assert is_test_path("tests-integration/src/lib.rs")
 
 
 @pytest.mark.parametrize("path", ["", ".", "/"])

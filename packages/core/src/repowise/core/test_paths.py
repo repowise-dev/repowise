@@ -420,12 +420,16 @@ def _is_support_compound(filename: str) -> bool:
 
 
 def _is_test_dir(
-    segments: list[str], original: list[str], filename: str, language: str | None
+    segments: list[str],
+    original: list[str],
+    filename: str,
+    language: str | None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether any directory segment marks this path as sitting in a test tree."""
-    return _has_test_segment(segments, original, filename, language) or _has_test_layout(
-        segments, original, _conventions().dir_suffixes
-    )
+    return _has_test_segment(
+        segments, original, filename, language, package_root
+    ) or _has_test_layout(segments, original, _conventions().dir_suffixes)
 
 
 def _tree_segments(
@@ -449,7 +453,11 @@ def _tree_segments(
 
 
 def _has_test_segment(
-    segments: list[str], original: list[str], filename: str, language: str | None
+    segments: list[str],
+    original: list[str],
+    filename: str,
+    language: str | None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether one directory's own name says it holds tests."""
     rules = _conventions()
@@ -470,13 +478,44 @@ def _has_test_segment(
         or any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
     )
     return any(
-        _is_test_segment(seg, orig, lang_tokens, corroborated)
-        for seg, orig in zip(segments, original, strict=True)
+        _is_test_segment(
+            seg,
+            orig,
+            lang_tokens,
+            corroborated,
+            package_root=package_root,
+            dir_parts=original[: i + 1],
+            filename=filename if i == len(segments) - 1 else "",
+        )
+        for i, (seg, orig) in enumerate(zip(segments, original, strict=True))
     )
 
 
-def _is_test_segment(seg: str, orig: str, lang_tokens: frozenset[str], corroborated: bool) -> bool:
+def _is_tests_prefix_dir(seg: str) -> bool:
+    """Whether a compound directory segment begins with 'tests', e.g. tests-build, tests-integration.
+
+    Rust workspaces name test-harness crates ``tests-*`` with ``publish = false``.
+    Ceiling: a published crate whose name begins with ``tests`` (e.g. a testing framework library)
+    stays production via the package_root probe.
+    """
+    words = _words(seg)
+    return bool(words) and len(words) >= 2 and words[0] == "tests"
+
+
+def _is_test_segment(
+    seg: str,
+    orig: str,
+    lang_tokens: frozenset[str],
+    corroborated: bool,
+    package_root: PackageRootProbe | None = None,
+    dir_parts: list[str] | None = None,
+    filename: str = "",
+) -> bool:
     if _is_named_test_dir(seg):
+        return True
+    if _is_tests_prefix_dir(seg) and not _is_package_root(
+        dir_parts or [orig], filename, package_root
+    ):
         return True
     words = _words(seg)
     head = words[-1] if words else ""
@@ -618,7 +657,10 @@ def _classify_with_context(
     if (
         needs_test_dir
         and not _is_test_dir(
-            *_tree_segments(segments, original_segments, filename), filename, language
+            *_tree_segments(segments, original_segments, filename),
+            filename,
+            language,
+            package_root,
         )
         and not _dotnet_project_collects(path, filename, dotnet_projects)
     ):
