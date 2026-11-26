@@ -382,17 +382,15 @@ _EMITTED_SUFFIXES: tuple[str, ...] = (
 )
 
 
-def _cargo_is_unpublished(manifest_path: Path) -> bool:
-    """Whether a Cargo.toml marks the crate unpublished (publish = false / [])."""
+def _cargo_is_published(manifest_path: Path) -> bool:
+    """Whether a Cargo.toml declares the crate published (not publish = false or [])."""
     import tomllib
+
+    from repowise.core.analysis.published_packages import cargo_manifest_publishes
 
     try:
         data = tomllib.loads(manifest_path.read_text(encoding="utf-8", errors="ignore"))
-        pkg = data.get("package")
-        if isinstance(pkg, dict):
-            publish = pkg.get("publish")
-            return publish in (False, [], ["none"])
-        return False
+        return cargo_manifest_publishes(data)
     except Exception:
         return False
 
@@ -1018,14 +1016,14 @@ class FileTraverser:
         cached = self._package_root_cache.get(rel_dir)
         if cached is None:
             base = self.repo_root / rel_dir
-            is_pkg = any((base / name).is_file() for name in _MANIFEST_FILES)
-            if (
-                is_pkg
-                and (base / "Cargo.toml").is_file()
-                and _cargo_is_unpublished(base / "Cargo.toml")
-            ):
-                is_pkg = False
-            cached = is_pkg
+            # Manifests other than Cargo.toml always count as package roots.
+            # An unpublished Cargo.toml does not, but another manifest in the
+            # same directory still ships.
+            has_other = any(
+                (base / name).is_file() for name in _MANIFEST_FILES if name != "Cargo.toml"
+            )
+            has_cargo = (base / "Cargo.toml").is_file()
+            cached = has_other or (has_cargo and _cargo_is_published(base / "Cargo.toml"))
             self._package_root_cache[rel_dir] = cached
         return cached
 

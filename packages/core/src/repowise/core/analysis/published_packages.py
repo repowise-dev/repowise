@@ -225,6 +225,14 @@ def go_published(facts: BuildFacts) -> dict[str, str | None]:
 # --- Rust -------------------------------------------------------------------
 
 
+def cargo_manifest_publishes(data: dict[str, Any]) -> bool:
+    """Whether a Cargo manifest's package table publishes to a registry."""
+    package = data.get("package")
+    if not isinstance(package, dict):
+        return False
+    return package.get("publish", True) not in (False, [])
+
+
 def cargo_published(facts: BuildFacts) -> dict[str, str | None]:
     """Every crate dir, mapped to its name when it ships a library target."""
     out: dict[str, str | None] = {}
@@ -237,7 +245,7 @@ def cargo_published(facts: BuildFacts) -> dict[str, str | None]:
         has_lib = isinstance(data.get("lib"), dict) or "lib.rs" in facts.tree.get(
             _join(rel_dir, "src"), frozenset()
         )
-        publishes = package.get("publish", True) not in (False, [])
+        publishes = cargo_manifest_publishes(data)
         out[rel_dir] = name if isinstance(name, str) and has_lib and publishes else None
         if out[rel_dir] is not None:
             out.update(dict.fromkeys(_cargo_bin_paths(rel_dir, data)))
