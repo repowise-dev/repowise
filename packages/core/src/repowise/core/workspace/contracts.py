@@ -96,7 +96,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # vendored code out (#6005, #6012, #6014, #6015, #6089, #6104, #6113, #6119).
 # Version 18 serves Go routes under the group prefix a register function is
 # handed (#6347), and Express routes on a router handed to a module's exported
-# function under that router's mount (#6362). ``routes_fingerprint`` includes
+# function under that router's mount (#6362), and puts the base a JS client
+# factory's call sites pass before the requests it builds. ``routes_fingerprint`` includes
 # this version, so stored HTTP routes and ``contracts.json`` refresh with it.
 CONTRACTS_VERSION = 18
 

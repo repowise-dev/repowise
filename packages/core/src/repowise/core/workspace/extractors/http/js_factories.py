@@ -122,27 +122,40 @@ def factory_mounts(ctx: ScanContext) -> dict[str, str]:
     return out
 
 
-def _enclosing_factory(content: str, name: str, offset: int) -> tuple[str, int] | None:
-    """``(function name, position)`` of the innermost named function whose
-    parameter *name* is and whose body holds *offset*."""
-    found: tuple[int, str, int] | None = None
-    for m in _DEF_RE.finditer(content, 0, offset):
+def _definitions(content: str, names: set[str]) -> list[tuple[int, int, str, list[str]]]:
+    """``(body start, body end, function name, parameters)`` of each named
+    function in *content* with one of *names* as a parameter, read once per file."""
+    out = []
+    for m in _DEF_RE.finditer(content):
         paren = m.end() - 1
-        params = call_arguments(content, paren)
+        close = match_paren(content, paren)
+        params = call_arguments(content, paren, close) if close > 0 else None
         if not params:
             continue
-        names = [p.group(1) if (p := _PARAM_RE.match(a)) else "" for a in params]
-        if name not in names:
+        params = [p.group(1) if (p := _PARAM_RE.match(a)) else "" for a in params]
+        if names.isdisjoint(params):
             continue
-        close = match_paren(content, paren)
         body = _BODY_RE.match(content, close + 1)
         if body is None:
             continue
         start = body.start("open")
         end = match_paren(content, start, closer="}" if body.group("open") == "{" else ")")
-        if start < offset and (end < 0 or offset < end) and (found is None or m.start() > found[0]):
-            found = (m.start(), m.group("f") or m.group("v"), names.index(name))
-    return (found[1], found[2]) if found else None
+        out.append((start, end if end > 0 else len(content), m.group("f") or m.group("v"), params))
+    return out
+
+
+def _enclosing_factory(
+    definitions: list[tuple[int, int, str, list[str]]], name: str, offset: int
+) -> tuple[str, int] | None:
+    """``(function name, position)`` of the innermost of *definitions* whose
+    parameter *name* is and whose body holds *offset*."""
+    found = None
+    for start, end, factory, params in definitions:
+        if start >= offset:
+            break
+        if offset < end and name in params:
+            found = (factory, params.index(name))  # later starts are inner ones
+    return found
 
 
 def _bases(mounts: Mapping[str, str], factory: str, position: int, call_form: bool) -> list[str]:
@@ -168,11 +181,14 @@ def factory_bases(ctx: ScanContext, matches: list[ClientCallMatch]) -> list[Clie
     """*matches* with each factory request's base put back, one row per base."""
     if not any(m.url[1:3] == "${" for m in matches):
         return matches
-    content = ctx.content
+    leads = [_LEAD_RE.match(m.url, 1) if m.url[1:3] == "${" else None for m in matches]
+    names = {lead.group("name") for lead in leads if lead}
+    if not names:
+        return matches
+    definitions = _definitions(ctx.content, names)
     out: list[ClientCallMatch] = []
-    for m in matches:
-        lead = _LEAD_RE.match(m.url, 1) if m.url[1:3] == "${" else None
-        found = _enclosing_factory(content, lead.group("name"), m.offset) if lead else None
+    for m, lead in zip(matches, leads, strict=True):
+        found = _enclosing_factory(definitions, lead.group("name"), m.offset) if lead else None
         if found is None:
             out.append(m)
             continue
