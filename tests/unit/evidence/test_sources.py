@@ -872,15 +872,27 @@ def test_a_host_with_no_checkout_stores_entries_batches_with_no_checkout_root(
 ) -> None:
     root, head = indexed
     no_checkout = tmp_path / "no-checkout"  # never created, like hosted's
-    double.batches = [_statement_batch(), _profile_batch(head, workload_class="production")]
+    v1_bytes = json.dumps(
+        {"format": "repowise-evidence-v1", "kind": "statement_stats", "statements": _STATEMENTS}
+    ).encode()
+    double.batches = [
+        _statement_batch(),
+        _profile_batch(head, workload_class="production"),
+        # A v1 document handed over as bytes reads no source either.
+        _statement_batch(
+            workload="prod db bytes", entries=None, document=None,
+            data=v1_bytes, format="repowise-evidence-v1",
+        ),
+    ]
 
     outcome = _fetch(root, double, _request(), repo_path=no_checkout)
 
     assert outcome.status == "ok", outcome.error
-    assert [p["stored"] for p in outcome.stored] == [True, True]
+    assert [p["stored"] for p in outcome.stored] == [True, True, True]
     runs, _costs = _stored(root)
     assert sorted((r.kind, r.checkout_root) for r in runs) == [
         ("profile", None),
+        ("statement_stats", None),
         ("statement_stats", None),
     ]
 
@@ -900,7 +912,7 @@ def test_a_batch_of_profile_bytes_still_needs_its_checkout(double, indexed, tmp_
 
     outcome = _fetch(root, double, _request(), repo_path=tmp_path / "no-checkout")
 
-    assert outcome.status == "failed" and "is not a directory" in outcome.error
+    assert outcome.status == "failed" and "checkout's source" in outcome.error
     assert _stored(root) == ([], [])
 
 

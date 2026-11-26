@@ -846,9 +846,10 @@ async def ingest_batch(
     one savepoint: a batch is stored whole or not at all. Raises
     :class:`EvidenceRefusedError` like :func:`ingest_evidence`.
 
-    Only a batch of profile bytes needs the checkout (its frames are placed on
-    the source). A batch of entries names its files already, so a host with no
-    checkout (hosted) passes one that does not exist and the run stores none.
+    Only profile bytes need the checkout (their frames are placed on the
+    source). A batch of entries, or of v1 bytes, names its files already, so a
+    host with no checkout (hosted) passes one that does not exist and the run
+    stores none.
     """
     from .sources import SOURCE_COLUMN, batch_v1
 
@@ -895,7 +896,8 @@ async def ingest_batch(
                 verified=True,
                 measured_at=batch.measured_at,
                 expect_kind=batch.kind,
-                require_checkout=batch.data is not None,
+                # prepare_evidence refuses profile bytes with no checkout itself.
+                require_checkout=False,
             )
     except EvidenceRefusedError as exc:
         field = _BATCH_FIELDS.get(exc.option or "")
