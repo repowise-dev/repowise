@@ -158,16 +158,21 @@ class _Reach:
 
     def reachers(self, directory: str) -> frozenset[str]:
         if directory not in self._memo:
-            seen = set(self._by_dir.get(directory, ()))
-            stack = list(seen)
-            while stack:
-                for source in self._importers.get(stack.pop(), ()):
-                    for path in self._by_dir.get(posixpath.dirname(source), (source,)):
-                        if path not in seen:
-                            seen.add(path)
-                            stack.append(path)
-            self._memo[directory] = frozenset(seen)
+            self._memo[directory] = self._walk(directory)
         return self._memo[directory]
+
+    def _walk(self, directory: str) -> frozenset[str]:
+        seen = set(self._by_dir.get(directory, ()))
+        stack = list(seen)
+        while stack:
+            importers = self._importers.get(stack.pop(), ())
+            found = {p for s in importers for p in self._package_of(s)} - seen
+            seen |= found
+            stack.extend(found)
+        return frozenset(seen)
+
+    def _package_of(self, path: str) -> Sequence[str]:
+        return self._by_dir.get(posixpath.dirname(path), (path,))
 
 
 def _declares(content: str | None, sym: IndexedSymbol) -> bool:
