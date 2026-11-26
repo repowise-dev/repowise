@@ -31,6 +31,19 @@ class ExternalCallsMixin:
         # A chained call's receiver is a value, typed by nothing here.
         if call.receiver_call is not None or call.on_unnamed_object:
             return None
+        found = self._call_binding(file_path, call, language)
+        if found is None:
+            return None
+        binding, attributes = found
+        if self._binding_refused(file_path, binding, caller_id, language, call.line):
+            return None
+        return _site(file_path, call.line, caller_id, ecosystem, binding, attributes)
+
+    def _call_binding(
+        self, file_path: str, call: CallSite, language: str
+    ) -> tuple[NamedBinding, list[str]] | None:
+        """The package import binding *call* goes through, and the attributes it
+        reads past it (``linalg``, ``norm`` in ``np.linalg.norm()``)."""
         if call.receiver_name:
             segments = call.receiver_name.split(".")
             found = self._longest_bound_prefix(file_path, segments, call.line)
@@ -40,48 +53,33 @@ class ExternalCallsMixin:
             attributes = [*segments[width:], call.target_name]
         else:
             binding = self._proven_binding(file_path, call.target_name, call.line)
-            if binding is None:
+            # Calling a Python module is never valid; a CommonJS module may be a function.
+            if binding is None or (binding.is_module_alias and language == "python"):
                 return None
             attributes = []
-            # Calling a Python module is never valid; a CommonJS module may be a function.
-            if binding.is_module_alias and language == "python":
-                return None
         source = binding.source_file or ""
         if not source.startswith(_EXTERNAL_PREFIX) or binding.member_of:
             return None
-        module = source[len(_EXTERNAL_PREFIX) :]
-        if self._names_repo_code(ecosystem, module):
-            return None
+        return binding, attributes
+
+    def _binding_refused(
+        self, file_path: str, binding: NamedBinding, caller_id: str, language: str, line: int
+    ) -> bool:
+        """Whether the binding may not be the package at this call, cheapest test first."""
+        ecosystem = EXTERNAL_CALL_ECOSYSTEMS[language]
+        if self._names_repo_code(ecosystem, (binding.source_file or "")[len(_EXTERNAL_PREFIX) :]):
+            return True
         head = binding.local_name.split(".", 1)[0]
         # The file itself rebinds the name (``requests = Session()``), or two
         # imports bind it (``try: import ujson as json`` / ``import json``).
-        if head in self._file_top_level.get(file_path, {}) or self._bound_twice(  # type: ignore[attr-defined]
-            file_path, binding.local_name
-        ):
-            return None
+        if head in self._file_top_level.get(file_path, {}):  # type: ignore[attr-defined]
+            return True
+        if self._bound_twice(file_path, binding.local_name):
+            return True
         # Last, as the costliest: the caller's own scopes rebinding the name.
-        if self._binds_locally(file_path, caller_id, language, head, call.line):  # type: ignore[attr-defined]
-            return None
-        if not self._binding_reaches(file_path, binding, caller_id):
-            return None
-        if binding.is_module_alias:
-            kind, path = "module", attributes
-        elif binding.exported_name == "default":
-            kind, path = "default", ["default", *attributes]
-        else:
-            kind, path = "named", [binding.exported_name or binding.local_name, *attributes]
-        return ExternalCallSite(
-            file_path=file_path,
-            line=call.line,
-            caller_symbol_id=caller_id,
-            ecosystem=ecosystem,
-            module=module,
-            package=package_root(ecosystem, module),
-            external_node=source,
-            local_name=binding.local_name,
-            symbol_path=".".join(path),
-            binding=kind,  # type: ignore[arg-type]
-        )
+        if self._binds_locally(file_path, caller_id, language, head, line):  # type: ignore[attr-defined]
+            return True
+        return not self._binding_reaches(file_path, binding, caller_id)
 
     def _bound_twice(self, file_path: str, local_name: str) -> bool:
         """Whether two imports of *file_path* bind *local_name* to different modules."""
@@ -157,3 +155,34 @@ class ExternalCallsMixin:
         start, end = max(holders)
         span = self._spans_for(file_path).get(caller_id)  # type: ignore[attr-defined]
         return span is not None and start <= span[0] and span[1] <= end
+
+
+def _site(
+    file_path: str,
+    line: int,
+    caller_id: str,
+    ecosystem: str,
+    binding: NamedBinding,
+    attributes: list[str],
+) -> ExternalCallSite:
+    """The record for one proven package call."""
+    if binding.is_module_alias:
+        kind, path = "module", attributes
+    elif binding.exported_name == "default":
+        kind, path = "default", ["default", *attributes]
+    else:
+        kind, path = "named", [binding.exported_name or binding.local_name, *attributes]
+    source = binding.source_file or ""
+    module = source[len(_EXTERNAL_PREFIX) :]
+    return ExternalCallSite(
+        file_path=file_path,
+        line=line,
+        caller_symbol_id=caller_id,
+        ecosystem=ecosystem,
+        module=module,
+        package=package_root(ecosystem, module),
+        external_node=source,
+        local_name=binding.local_name,
+        symbol_path=".".join(path),
+        binding=kind,  # type: ignore[arg-type]
+    )
