@@ -178,9 +178,10 @@ class _ReferenceScope:
         enclosing = _find_enclosing_symbol(line, self.symbol_ranges)
         if is_table and enclosing in self.callable_ids:
             return None
-        if (line, name, receiver) in self.seen:
+        # Per position, not per line: each read gets its own shadow decision.
+        if (name_node.start_byte, name, receiver) in self.seen:
             return None
-        self.seen.add((line, name, receiver))
+        self.seen.add((name_node.start_byte, name, receiver))
         return CallSite(
             target_name=name,
             receiver_name=receiver,

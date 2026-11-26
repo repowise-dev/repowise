@@ -590,6 +590,8 @@ class TestModuleBindingReads:
             ("_py", "const _py = make();\nexport const py = _py.pipe(1);\n", "py"),
             ("user$", "const user$ = new B();\nexport const get = () => user$;\n", "get"),
             ("DEF", "const DEF = 1;\nexport function f(n = DEF) { return n; }\n", "f"),
+            # A read left of a same-named callback parameter, a shadowed read after it.
+            ("id", "const id = arg('id');\nexport const r = run(id, (id) => id);\n", "r"),
         ],
     )
     def test_reads_reference_the_binding(
