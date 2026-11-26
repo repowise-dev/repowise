@@ -788,15 +788,21 @@ class ConftestFacts:
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Name):
                     facts._read_module_name(sub)
-        if facts.error == facts._plugins_error and local_plugin is not None:
-            names = plugin_names(tree)
-            if names is not None and not any(local_plugin(n) for n in names):
-                facts.error = None  # installed plugins only: no local fixture to follow
+        if local_plugin is not None:
+            facts._allow_installed_plugins(tree, local_plugin)
         return facts
 
     @property
     def _plugins_error(self) -> str:
         return f"{self.path} loads pytest plugins"
+
+    def _allow_installed_plugins(self, tree: ast.Module, local: Callable[[str], bool]) -> None:
+        """Drop the plugin error when every plugin named is installed: no local fixture to follow."""
+        if self.error != self._plugins_error:
+            return
+        names = plugin_names(tree)
+        if names is not None and not any(local(n) for n in names):
+            self.error = None
 
     def _read_unit_body(self, name: str, unit: _Unit) -> None:
         """Record the imports in *unit*'s body, the names it reads, and the units it names."""
