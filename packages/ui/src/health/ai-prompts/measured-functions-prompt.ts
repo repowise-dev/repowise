@@ -75,7 +75,8 @@ function entry(row: MeasuredRow, index: number, orderingOnly: boolean): string {
     lines.push(`   - ${label}: ${row.tests.map((t) => `\`${t}\``).join(", ")}`);
   }
   if (row.verify && row.verify_basis === "workload") {
-    lines.push(`   - Re-measure before and after: ${row.verify}`);
+    // A workload check: a rerun for an entry point or load test, the next window for production.
+    lines.push(`   - How to check a fix: ${row.verify}`);
   } else if (row.verify) {
     lines.push(`   - Benchmark to run before and after: \`${row.verify}\``);
   }

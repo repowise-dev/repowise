@@ -359,9 +359,14 @@ describe("buildMeasuredFunctionsPrompt", () => {
     expect(prompt).toContain("Next step: walk with os.scandir");
     expect(prompt).toContain("Why: 90% of it is stat calls");
     expect(prompt).toContain(
-      "Re-measure before and after: repowise perf measure --save before -- cli build before the change",
+      "How to check a fix: repowise perf measure --save before -- cli build before the change",
     );
     expect(prompt).not.toContain("Benchmark to run");
+    const production = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [measuredRow({ verify: "compare this row in the next prod window", verify_basis: "workload" })],
+    });
+    expect(production).toContain("How to check a fix: compare this row in the next prod window");
   });
 
   it("names production callers, with the share each measured caller drove", () => {
