@@ -55,6 +55,7 @@ async def persist_external_call_sites(session: Any, repo_id: str, graph_builder:
                 sites,
                 scope=graph_builder.external_call_scope,
                 live_paths=graph_builder._parsed_files.keys(),
+                complete=getattr(graph_builder, "external_calls_complete", True),
             )
     except Exception:
         try:

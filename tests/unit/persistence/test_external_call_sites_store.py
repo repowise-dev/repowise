@@ -141,3 +141,17 @@ async def test_a_failed_write_keeps_the_rows_and_clears_the_stamp(async_session)
     assert await _paths(async_session, repo.id) == [("a.py", 1)]
     assert await external_call_sites_version(async_session, repo.id) is None
     assert not await external_call_sites_complete(async_session, repo.id)
+
+
+async def test_an_incomplete_build_is_stored_unstamped(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await replace_external_call_sites(
+        async_session,
+        repo.id,
+        {"a.py": [_site("a.py", 1)]},
+        scope=None,
+        live_paths={"a.py"},
+        complete=False,
+    )
+    assert await _paths(async_session, repo.id) == [("a.py", 1)]
+    assert await external_call_sites_version(async_session, repo.id) is None

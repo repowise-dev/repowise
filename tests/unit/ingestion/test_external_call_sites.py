@@ -208,3 +208,15 @@ def test_two_imports_of_one_name_bind_neither_provably(tmp_path: Path) -> None:
         "def f(x):\n    json.dumps(x)\n"
     )
     assert _sites(_build(tmp_path, {"a.py": src})) == []
+
+
+def test_a_check_that_raises_marks_the_build_incomplete(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.ingestion import call_external
+
+    def boom(self, file_path, call):
+        raise IndexError("short source")
+
+    monkeypatch.setattr(call_external.ExternalCallsMixin, "_external_call_site", boom)
+    builder = _build(tmp_path, {"a.py": "import requests\n\ndef f(x):\n    requests.get(x)\n"})
+    assert builder.external_call_sites == {}
+    assert builder.external_calls_complete is False

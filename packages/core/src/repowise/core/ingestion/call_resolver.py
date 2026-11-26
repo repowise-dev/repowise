@@ -372,6 +372,8 @@ class CallResolver(
         # {repo path: bytes} of the revision under analysis, when it is not the
         # working tree; a file it lacks is read from disk.
         self._source_map = source_map
+        # Calls whose package-call check raised (see ``resolve_file``).
+        self.external_call_failures = 0
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
         # which case the inherited tier simply never fires.
@@ -1071,6 +1073,8 @@ class CallResolver(
                 try:
                     site = self._external_call_site(file_path, call)
                 except Exception as exc:  # a derived record never fails the graph
+                    # Counted, so the build's package calls are stored as incomplete.
+                    self.external_call_failures += 1
                     log.debug("external_call_site_failed", path=file_path, error=repr(exc))
                     site = None
                 if site is not None:

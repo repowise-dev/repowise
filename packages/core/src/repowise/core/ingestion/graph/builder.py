@@ -150,6 +150,7 @@ class GraphBuilder(
         # leaves the stored rows alone.
         self.external_call_sites: dict[str, list[ExternalCallSite]] | None = None
         self.external_call_scope: frozenset[str] | None = None
+        self.external_calls_complete = True
         # {(file, partial type's bare name): every file declaring a fragment
         # of that type}, filled by ``_resolve_dotnet_partials`` so the call
         # resolver can treat the fragments as the one class scope they are.

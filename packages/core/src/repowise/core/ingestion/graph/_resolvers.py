@@ -757,6 +757,10 @@ class ResolveMixin:
             if progress:
                 progress.on_item_done("graph.calls")
 
+        # A check that raised leaves the record set short; stored, it is unstamped.
+        self.external_calls_complete = resolver.external_call_failures == 0
+        if not self.external_calls_complete:
+            log.warning("external_call_sites_incomplete", failures=resolver.external_call_failures)
         if progress:
             _phase_done = getattr(progress, "on_phase_done", None)
             if _phase_done is not None:

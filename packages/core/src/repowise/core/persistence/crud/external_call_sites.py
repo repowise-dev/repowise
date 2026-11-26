@@ -29,12 +29,15 @@ async def replace_external_call_sites(
     *,
     scope: Collection[str] | None,
     live_paths: Collection[str],
+    complete: bool = True,
 ) -> int:
     """Store one graph build's package calls and stamp the current version.
 
     *scope* None (a full build): every row is replaced. Otherwise only the files
     in *scope* (the ones the build re-resolved) are replaced, and rows of files
-    outside *live_paths* (gone from the index) are dropped. Returns rows written.
+    outside *live_paths* (gone from the index) are dropped. *complete* False (a
+    build whose check raised on some call) leaves the stamp empty, so readers
+    answer "unknown" and the next update rebuilds. Returns rows written.
     """
     if scope is None:
         await session.execute(
@@ -76,7 +79,9 @@ async def replace_external_call_sites(
     values = list(rows.values())
     for i in range(0, len(values), _BATCH_SIZE):
         await session.execute(insert(ExternalCallSiteRow), values[i : i + _BATCH_SIZE])
-    await stamp_external_call_sites(session, repository_id, EXTERNAL_CALL_SITES_VERSION)
+    # Rows from a build that could not check every call are kept but unstamped.
+    version = EXTERNAL_CALL_SITES_VERSION if complete else None
+    await stamp_external_call_sites(session, repository_id, version)
     return len(values)
 
 
