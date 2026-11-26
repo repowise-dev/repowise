@@ -39,7 +39,12 @@ from repowise.core.persistence.models import (
     Page,
 )
 from repowise.server.mcp_server._budget import cap_collection
-from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
+from repowise.server.mcp_server._changes import (
+    file_changes,
+    file_provenance,
+    load_file_meta,
+    symbol_changes,
+)
 from repowise.server.mcp_server._directory import _git_rows_under
 from repowise.server.mcp_server._edit_sites import edit_set_block
 from repowise.server.mcp_server._helpers import _decision_body, no_source_field, serves_no_source
@@ -256,6 +261,9 @@ async def _triage_section(card: CardState) -> None:
         # shape fix_annotation reads off a full ORM row.
         fixes = fix_annotation(triage_meta, now=card.query.as_of_ts)
         if fixes is not None:
+            if card.resolved.target_type == "symbol":
+                # Counted per file: say so on a symbol card rather than pass it off as the symbol's.
+                fixes = {**fixes, "scope": "file"}
             card.data["fix_history"] = fixes
     # Governing decisions, opt-in only: the graph query is not worth its
     # latency on every card. Returns titles; get_why has the rationale.
@@ -446,9 +454,17 @@ def _author_at(top_authors_json: str | None, moment: datetime) -> str | None:
 
 
 async def _changes_section(card: CardState) -> None:
-    """Change Records and provenance (file targets, opt-in)."""
-    include = card.include
+    """Change Records and provenance (file targets, opt-in); a symbol target
+    gets the changes that edited its lines."""
     file_path = card.resolved.file_path
+    if card.resolved.target_type == "symbol" and file_path and card.wants("changes"):
+        await _symbol_changes_section(card, file_path)
+    else:
+        await _file_changes_section(card, file_path)
+
+
+async def _file_changes_section(card: CardState, file_path: str | None) -> None:
+    include = card.include
     if not (
         include
         and card.resolved.target_type == "file"
@@ -464,6 +480,23 @@ async def _changes_section(card: CardState) -> None:
     if "provenance" in include:
         meta = await load_file_meta(card.session, card.repo_id, file_path) if attribution else None
         card.data["provenance"] = file_provenance(meta, attribution)
+
+
+async def _symbol_changes_section(card: CardState, file_path: str) -> None:
+    sym = card.resolved.sym_matches[0] if card.resolved.sym_matches else card.resolved.graph_symbol
+    start, end = getattr(sym, "start_line", None), getattr(sym, "end_line", None)
+    lines = (start, end) if start and end and end >= start else None
+    repository = card.query.repository
+    card.data.update(
+        await symbol_changes(
+            card.session,
+            repository,
+            served_root(repository, card.query.repo_root),
+            file_path,
+            lines,
+            attribution=attribution_enabled(repository.local_path),
+        )
+    )
 
 
 async def _decisions_section(card: CardState) -> None:

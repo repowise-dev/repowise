@@ -176,6 +176,108 @@ async def test_file_card_lists_recent_changes_on_request(setup_mcp, session):
     assert "recent_changes_total" not in card
 
 
+def _git(root: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-c", "user.name=Dev", "-c", "user.email=dev@example.com", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+async def _symbol_history(session, root: Path) -> dict[str, str]:
+    """A checkout where one commit edits ``login`` (lines 20-40) and two do not."""
+    from repowise.core.persistence.models import Repository
+
+    path = root / "src/auth/service.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"x{n} = {n}" for n in range(1, 121)]
+    _git(root, "init", "-q")
+    shas = {}
+    for name, line in (("seed", None), ("outside", 4), ("inside", 30), ("after", 110)):
+        if line is not None:
+            lines[line - 1] = f"x{line} = '{name}'"
+        path.write_text("".join(f"{text}\n" for text in lines), encoding="utf-8")
+        _git(root, "add", "src")
+        _git(root, "commit", "-qm", name)
+        shas[name] = _git(root, "rev-parse", "HEAD")
+    await session.execute(
+        update(Repository).where(Repository.id == "repo1").values(head_commit=shas["after"])
+    )
+    file = ["src/auth/service.py"]
+    await _seed(
+        session,
+        [
+            _row("pr-10", 10, file, sha=shas["outside"]),
+            _row("pr-11", 11, file, sha=shas["inside"], category="fix", title="fix: login"),
+            _row("pr-12", 12, file, sha=shas["after"]),
+        ],
+    )
+    return shas
+
+
+@pytest.mark.asyncio
+async def test_symbol_card_lists_only_the_changes_that_edited_its_lines(
+    setup_mcp, session, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server import _changes, get_context
+
+    await _symbol_history(session, tmp_path)
+    # The file scan's cap would keep only pr-12; the symbol's edit is older.
+    monkeypatch.setattr(_changes, "_FILE_SCAN_CAP", 1)
+    target = "src/auth/service.py::login"
+    card = (await get_context(targets=[target], include=["changes"]))["targets"][target]
+    assert card["changes_scope"] == "symbol"
+    assert [(r["id"], r["category"]) for r in card["recent_changes"]] == [("pr-11", "fix")]
+    # The file-level count stays, labelled as the file's.
+    assert card.get("fix_history", {}).get("scope", "file") == "file"
+
+
+@pytest.mark.asyncio
+async def test_symbol_changes_say_file_level_when_git_cannot_walk_its_lines(
+    setup_mcp, session, tmp_path
+):
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import get_context
+
+    await _seed(session)
+    target = "src/auth/service.py::login"
+
+    async def scope() -> tuple[str, str]:
+        card = (await get_context(targets=[target], include=["changes"]))["targets"][target]
+        assert [r["id"] for r in card["recent_changes"]] == ["pr-4", "pr-2", "pr-1"]
+        return card["changes_scope"], card["changes_scope_reason"]
+
+    repo = update(Repository).where(Repository.id == "repo1")
+    await session.execute(repo.values(head_commit=None))
+    await session.commit()
+    assert await scope() == ("file", "no_indexed_commit")
+    # An indexed commit but no checkout under the repo root: git has no history to walk.
+    await session.execute(repo.values(head_commit="f" * 40))
+    await session.commit()
+    assert await scope() == ("file", "git_history_unavailable")
+
+
+@pytest.mark.asyncio
+async def test_symbol_card_labels_file_fix_history(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/auth/service.py")
+        .values(prior_defect_count=3, last_fix_at=datetime.now(UTC))
+    )
+    await session.commit()
+    result = await get_context(targets=["src/auth/service.py::login", "src/auth/service.py"])
+    symbol = result["targets"]["src/auth/service.py::login"]["fix_history"]
+    file = result["targets"]["src/auth/service.py"]["fix_history"]
+    assert symbol == {**file, "scope": "file"}
+    assert "scope" not in file
+
+
 @pytest.mark.asyncio
 async def test_change_rows_below_the_coverage_floor_carry_no_provenance(setup_mcp, session):
     from repowise.server.mcp_server import get_context
@@ -287,9 +389,7 @@ async def test_file_provenance_carries_coverage_and_withholds_below_the_floor(
 
     _attribution_off(tmp_path)
     off = await get_context(targets=["src/auth/service.py"], include=["provenance"])
-    assert off["targets"]["src/auth/service.py"]["provenance"] == {
-        "unavailable": "attribution_off"
-    }
+    assert off["targets"]["src/auth/service.py"]["provenance"] == {"unavailable": "attribution_off"}
 
 
 def test_change_is_a_target_kind_not_a_repo_alias():
@@ -347,7 +447,10 @@ async def test_overview_changes_by_category_week_and_agent_share(setup_mcp, sess
 async def test_overview_agent_share_is_withheld_below_the_floor(setup_mcp, session):
     from repowise.server.mcp_server import get_overview
 
-    rows = [_row(f"pr-{n}", n, ["src/x.py"], provenance="unknown", provenance_known=0) for n in range(1, 5)]
+    rows = [
+        _row(f"pr-{n}", n, ["src/x.py"], provenance="unknown", provenance_known=0)
+        for n in range(1, 5)
+    ]
     rows.append(_row("pr-5", 5, ["src/x.py"]))
     await _seed(session, rows)
     prov = (await get_overview(include=["changes"]))["changes"]["provenance"]
@@ -400,9 +503,7 @@ async def test_recent_changes_match_the_exact_path_only(setup_mcp, session):
         ],
     )
     repository = await session.get(Repository, "repo1")
-    found = await file_changes(
-        session, repository, ["src/a_b.py", "src/100%.py"], attribution=True
-    )
+    found = await file_changes(session, repository, ["src/a_b.py", "src/100%.py"], attribution=True)
     ids = {path: [r["id"] for r in block["recent_changes"]] for path, block in found.items()}
     assert ids == {"src/a_b.py": ["pr-1"], "src/100%.py": ["pr-3"]}
 
@@ -421,7 +522,9 @@ async def test_risk_reads_every_cards_changes_in_one_query(setup_mcp, session, m
 
     module = sys.modules["repowise.server.mcp_server.tool_risk.get_risk"]
     monkeypatch.setattr(module, "file_changes", counted)
-    result = await get_risk(targets=["src/auth/service.py", "src/db/models.py"], include=["changes"])
+    result = await get_risk(
+        targets=["src/auth/service.py", "src/db/models.py"], include=["changes"]
+    )
     assert len(calls) == 1 and sorted(calls[0]) == ["src/auth/service.py", "src/db/models.py"]
     assert [r["id"] for r in result["targets"]["src/db/models.py"]["recent_changes"]] == ["pr-2"]
 
