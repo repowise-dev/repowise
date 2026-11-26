@@ -40,13 +40,15 @@ SYMFONY_AS_EVENT_LISTENER_ATTR_LOWER = (
     "symfony\\component\\eventdispatcher\\attribute\\aseventlistener"
 )
 
-_DECLARATION_PREFIX = r"^[ \t]*(?:(?:final|abstract|readonly)[ \t]+)*"
+_DECLARATION_PREFIX = (
+    r"^[ \t]*(?:#\[[^\]]*\]\s*)*(?:(?:final|abstract|readonly)\s+)*"
+)
 
 _TYPE_DECL_RE = re.compile(
     _DECLARATION_PREFIX
-    + r"(?P<kind>class|interface)[ \t]+(?P<name>[A-Za-z_]\w*)"
-    + r"(?:[ \t]+extends[ \t]+(?P<extends>\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*(?:[ \t]*,[ \t]*\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*)*))?"
-    + r"(?:[ \t]+implements[ \t]+(?P<implements>[^{]+))?",
+    + r"(?P<kind>class|interface)\s+(?P<name>[A-Za-z_]\w*)"
+    + r"(?:\s+extends\s+(?P<extends>\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*(?:\s*,\s*\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*)*))?"
+    + r"(?:\s+implements\s+(?P<implements>[^{]+))?",
     re.MULTILINE,
 )
 
@@ -63,19 +65,20 @@ _AS_EVENT_LISTENER_ATTR_RE = re.compile(
 class _PhpFile:
     """One PHP file's text and namespace/use-alias environment."""
 
-    __slots__ = ("aliases", "lower_aliases", "namespace", "path", "text")
+    __slots__ = ("aliases", "blanked", "lower_aliases", "namespace", "path", "text")
 
     def __init__(self, path: str, parsed: Any, source_map: dict[str, bytes]) -> None:
         self.path = path
         self.text = source_text(path, parsed, source_map)
-        self.namespace = file_namespace(self.text) if self.text else None
+        self.blanked = blank_php_comments(self.text) if self.text else ""
+        self.namespace = file_namespace(self.blanked) if self.blanked else None
         self.aliases = php_use_aliases(parsed)
         self.lower_aliases = {k.lower(): v for k, v in self.aliases.items()}
 
     def qualify(self, name: str) -> str:
         name_clean = name.lstrip("\\")
         first, sep, rest = name_clean.partition("\\")
-        if first.lower() in self.lower_aliases:
+        if not name.startswith("\\") and first.lower() in self.lower_aliases:
             target = self.lower_aliases[first.lower()]
             return f"{target}\\{rest}" if sep else target
         return qualify_php_name(name, self.namespace, self.aliases)
@@ -222,7 +225,7 @@ def _add_symfony_edges(
     attributed_files: set[str] = set()
 
     for f in php_files:
-        blanked = blank_php_comments(f.text)
+        blanked = f.blanked
         if _has_symfony_attribute(f, blanked):
             attributed_files.add(f.path)
         _record_declarations(

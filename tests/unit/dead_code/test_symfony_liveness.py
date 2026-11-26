@@ -78,6 +78,35 @@ _FILES = {
         "use Symfony\\Component\\Console\\Command\\Command;\n"
         "class DupCommand extends Command {}\n"
     ),
+    "src/Cmd/MultilineCmd.php": (
+        "<?php\nnamespace Acme\\Cmd;\n"
+        "use Symfony\\Component\\Console\\Command\\Command;\n"
+        "class MultilineCmd\n"
+        "    extends Command {\n"
+        "    public function execute() { return 0; }\n"
+        "}\n"
+    ),
+    "src/Cmd/SameLineAttrCommand.php": (
+        "<?php\nnamespace Acme\\Cmd;\n"
+        "use Symfony\\Component\\Console\\Command\\Command;\n"
+        "#[Acme\\Attr] final class SameLineAttrCommand extends Command {\n"
+        "    public function execute() { return 0; }\n"
+        "}\n"
+    ),
+    "src/Cmd/CommentedNsCommand.php": (
+        "<?php\n"
+        "// namespace Commented\\Out;\n"
+        "namespace Acme\\Cmd;\n"
+        "use Symfony\\Component\\Console\\Command\\Command;\n"
+        "class CommentedNsCommand extends Command {\n"
+        "    public function execute() { return 0; }\n"
+        "}\n"
+    ),
+    "src/Cmd/GlobalCommand.php": (
+        "<?php\nnamespace Acme\\Cmd;\n"
+        "use Symfony\\Component\\Console\\Command\\Command;\n"
+        "class GlobalCommand extends \\Command {}\n"
+    ),
     "src/Util/StringFake.php": (
         "<?php\nnamespace Acme\\Util;\n"
         "$code = 'class FakeCmd extends Command {}';\n"
@@ -145,6 +174,9 @@ def test_symfony_commands_and_subscribers_are_live(tmp_path: Path) -> None:
         "src/Cmd/CaseInsensitiveCommand.php",
         "src/Cmd/DupOne.php",
         "src/Cmd/DupTwo.php",
+        "src/Cmd/MultilineCmd.php",
+        "src/Cmd/SameLineAttrCommand.php",
+        "src/Cmd/CommentedNsCommand.php",
         "src/Events/Sub.php",
         "src/Events/IndirectSub.php",
         "src/Events/AttrListener.php",
@@ -155,5 +187,6 @@ def test_symfony_commands_and_subscribers_are_live(tmp_path: Path) -> None:
     # Plain and local non-Symfony command remain flagged as dead code
     assert "src/Util/Plain.php" in flagged
     assert "src/Local/LocalCommand.php" in flagged
+    assert "src/Cmd/GlobalCommand.php" in flagged
     # File containing class declaration inside string literal remains flagged
     assert "src/Util/StringFake.php" in flagged
