@@ -3259,6 +3259,11 @@ export interface MeasuredCallee {
   leaf?: MeasuredLeaf | null;
 }
 
+export interface MeasuredChangedIn {
+  sha: string;
+  pr: number | null;
+}
+
 /** A caller that drove part of a measured function's time. */
 export interface MeasuredDriver {
   name: string;
@@ -3371,8 +3376,24 @@ export interface MeasuredRow {
   last_change: MeasuredLastChange | null;
   tests: string[] | null;
   tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
   verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
   on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  sources?: Record<string, string>;
+}
+
+/** A slower comparison that names a measured function (``evidence.action_row.row_slower``). */
+export interface MeasuredRowSlower {
+  workload: string;
+  base_commit: string | null;
+  metric?: string | null;
+  before?: number | null;
+  after?: number | null;
+  ratio?: number | null;
+  unit?: string | null;
+  changed_in: MeasuredChangedIn[];
 }
 
 /** A run's basis: workload, commit, age, samples and where its time went. */

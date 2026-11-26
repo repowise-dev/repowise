@@ -108,10 +108,14 @@ def _render_measured_costs(view: dict[str, Any] | None) -> None:
     block per run.
 
     Each block opens with its basis and where the run's time went, so a ranked
-    function is never read without its workload. Rows lead with the function's
-    self time, the cost it is ranked by. Silent without ranked evidence.
+    function is never read without its workload. Each row is the compact text
+    form of ``evidence.action_row``: the next step first, then what drove it,
+    the measurement with owner and tests, and the one verify command. Silent
+    without ranked evidence.
     """
     from rich.markup import escape
+
+    from repowise.core.evidence.action_row import row_text
 
     if not view:
         return
@@ -128,7 +132,8 @@ def _render_measured_costs(view: dict[str, Any] | None) -> None:
                 if row.get("label"):
                     name = f"{row['file_path']} {row['label']}"
                 console.print(f"  {row['rank']}. [cyan]{escape(name)}[/cyan]")
-                console.print(f"     [dim]{escape(_row_facts(row))}[/dim]")
+                for line in row_text(row):
+                    console.print(f"     [dim]{escape(line)}[/dim]")
     _render_benchmarks(view.get("benchmarks"))
 
 
@@ -178,10 +183,6 @@ def _benchmark_numbers(row: dict[str, Any]) -> str:
     return ", ".join(parts) or "no numbers stored"
 
 
-def _pct(value: float | None) -> str:
-    return "?" if value is None else f"{value * 100:.0f}%"
-
-
 def _run_basis(run: dict[str, Any]) -> str:
     """``entry_point "api" at abc1234, 3 days old: repo code itself 47%, waits 30%,
     libraries 12% of 5,300 samples``."""
@@ -202,41 +203,6 @@ def _run_basis(run: dict[str, Any]) -> str:
     if run.get("ordering_only"):
         where += "; traced, so the order counts and no share is given"
     return f"{basis}: {where}"
-
-
-def _row_facts(row: dict[str, Any]) -> str:
-    parts = []
-    if row.get("share") is not None:
-        interval = ""
-        if row.get("share_low") is not None and row.get("share_high") is not None:
-            interval = f" ({_pct(row['share_low'])} to {_pct(row['share_high'])})"
-        parts.append(f"self {_pct(row['share'])} of the run{interval}")
-    if row.get("inclusive") is not None:
-        parts.append(f"with callees {_pct(row['inclusive'])}")
-    if row.get("samples") is not None:
-        parts.append(f"{row['samples']:,} samples")
-    callers = row.get("callers_total")
-    if callers is not None:
-        parts.append(f"{callers} caller{'s' if callers != 1 else ''}")
-    if row.get("owner"):
-        parts.append(f"owner {row['owner']['name']}")
-    last = row.get("last_change")
-    if last:
-        ref = ", ".join(x for x in (last["sha"][:7], f"#{last['pr']}" if last["pr"] else None) if x)
-        parts.append(f"last changed {last['date']} ({ref})" if last["date"] else f"last changed {ref}")
-    tests = row.get("tests")
-    ran = row.get("tests_basis") == "per_test_map"
-    if tests is None:
-        parts.append("tests not mapped")
-    elif tests:
-        parts.append(f"{'test that ran it' if ran else 'nearest test by call graph'} {tests[0]}")
-    else:
-        parts.append("no test ran it" if ran else "no test reaches it")
-    if row.get("verify"):
-        parts.append(f"verify: {row['verify']}")
-    if row.get("on_static_findings"):
-        parts.append(f"static cause {', '.join(row['on_static_findings'])}")
-    return " · ".join(parts)
 
 
 def _render_split_line(kpis: dict) -> None:

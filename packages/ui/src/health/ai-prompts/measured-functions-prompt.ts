@@ -55,6 +55,10 @@ function entry(row: MeasuredRow, index: number, orderingOnly: boolean): string {
     `${index + 1}. \`${symbolSubject(row.symbol_id)}\` in \`${rowLocation(row)}\`: ${cost}`,
     `   - Symbol id: \`${row.symbol_id}\``,
   ];
+  if (row.next_step) {
+    lines.push(`   - Next step: ${row.next_step.next}`);
+    lines.push(`   - Why: ${row.next_step.why}`);
+  }
   if (!orderingOnly && row.inclusive != null) {
     lines.push(`   - Total time, with what it calls: ${shareText(row.inclusive)} of the run`);
   }
@@ -70,7 +74,9 @@ function entry(row: MeasuredRow, index: number, orderingOnly: boolean): string {
     const label = row.tests_basis === "per_test_map" ? "Tests that ran it" : "Nearest tests by call graph";
     lines.push(`   - ${label}: ${row.tests.map((t) => `\`${t}\``).join(", ")}`);
   }
-  if (row.verify) {
+  if (row.verify && row.verify_basis === "workload") {
+    lines.push(`   - Re-measure before and after: ${row.verify}`);
+  } else if (row.verify) {
     lines.push(`   - Benchmark to run before and after: \`${row.verify}\``);
   }
   if (row.on_static_findings && row.on_static_findings.length > 0) {

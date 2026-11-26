@@ -437,3 +437,38 @@ async def test_routes_return_what_the_payload_builders_make_from_the_same_rows(
     for path, model in built.items():
         served = (await ev_client.get(f"/api/repos/{repo_id}/evidence/{path}")).json()
         assert served == model.model_dump(mode="json", by_alias=True), path
+
+
+def test_the_measured_row_schema_holds_the_action_row_json_form() -> None:
+    """Every key ``evidence.action_row`` writes is a ``MeasuredRow`` field (closed models)."""
+    from types import SimpleNamespace
+
+    from repowise.core.evidence.action_row import action_row, row_step
+    from repowise.core.evidence.compare import Cause, ChangedCommit, Comparison, Slower
+    from repowise.core.evidence.function_tests import RowTests
+    from repowise.server.schemas.runtime_evidence import MeasuredRow
+
+    fn = "src/app.py::scan"
+    inside = [{"name": "is_file", "kind": "library", "share": 0.8}]
+    measured = SimpleNamespace(
+        symbol_id=fn, run_id="r1", rank=1, self_share=0.2, share_low=0.1, share_high=0.3,
+        total_share=0.4, samples=50, freshness="current",
+    )
+    slower = Comparison(
+        kind="profile", workload="w", environment="local", verdict="slower", band_runs=3,
+        head_run_id="r1", current_runs=1, base_commit="a" * 40, head_commit="b" * 40,
+        slower=(Slower("self_seconds", fn, 1.0, 2.0, 2.0, "s", symbol_id=fn),),
+        cause=Cause("a" * 40, "b" * 40, 1, (ChangedCommit("c" * 40, None, None, (fn,)),)),
+    )
+    row = action_row(
+        measured, lines=(1, 9), workload_name="w", workload_class="entry_point",
+        next_step=row_step(fn, inside, None, "w", "entry_point"),
+        tests=RowTests(["tests/test_app.py::test_scan"], "per_test_map"),
+        history={"owner": {"name": "Ada", "line_pct": 1.0}, "last_change": None},
+        compare=[slower], static_causes={"perf3_x"},
+    ).as_dict()
+
+    parsed = MeasuredRow.model_validate(row)
+    assert parsed.next_step is not None and parsed.next_step.verify is None
+    assert parsed.verify_basis == "workload" and parsed.slower.ratio == 2.0
+    assert parsed.model_dump(exclude_unset=True).keys() == row.keys()

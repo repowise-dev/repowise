@@ -339,6 +339,31 @@ describe("buildMeasuredFunctionsPrompt", () => {
     );
   });
 
+  it("leads a row with its next step and names a workload rerun as the verify", () => {
+    const prompt = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [
+        measuredRow({
+          next_step: {
+            rule: "filesystem",
+            why: "90% of it is stat calls",
+            next: "walk with os.scandir",
+            callee: "is_file",
+            share: 0.9,
+          },
+          verify: "repowise perf measure --save before -- cli build before the change",
+          verify_basis: "workload",
+        }),
+      ],
+    });
+    expect(prompt).toContain("Next step: walk with os.scandir");
+    expect(prompt).toContain("Why: 90% of it is stat calls");
+    expect(prompt).toContain(
+      "Re-measure before and after: repowise perf measure --save before -- cli build before the change",
+    );
+    expect(prompt).not.toContain("Benchmark to run");
+  });
+
   it("names production callers, with the share each measured caller drove", () => {
     const prompt = buildMeasuredFunctionsPrompt({
       run: measuredRun(),
