@@ -128,7 +128,8 @@ async def bfs_trace(
         # uncut rather than as a stop we cannot explain.
         # The callee ranking ``get_graph_edges_for_node`` gives, read so that
         # excluded targets leave before the cut and never take a walkable
-        # callee's place.
+        # callee's place. The excluded rows read before the cut are kept, so a
+        # node that calls only excluded files still stops as `excluded_target`.
         stmt = (
             select(GraphEdge)
             .where(
@@ -138,7 +139,7 @@ async def bfs_trace(
             )
             .order_by(GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type)
         )
-        rows = [
+        edges = [
             e
             for (e,) in await fetch_allowed_edges(
                 session,
@@ -146,17 +147,21 @@ async def bfs_trace(
                 exclude_spec,
                 limit=_CALLEE_FETCH_LIMIT + 1,
                 endpoints=lambda row: (row[0].target_node_id,),
+                keep_excluded=True,
             )
         ]
-        edges = rows[:_CALLEE_FETCH_LIMIT]
+        allowed = [e for e in edges if not node_is_excluded(e.target_node_id, exclude_spec)]
         # Rows arrive most-confident first, so a tail below the floor is
         # provably unwalkable and hides nothing: only a cut whose last kept row
         # is still walkable leaves a real unknown.
-        truncated = len(rows) > _CALLEE_FETCH_LIMIT and is_walkable_execution_edge(
-            edges[-1].edge_type,
-            edges[-1].resolution_origin,
-            edges[-1].confidence,
+        truncated = len(allowed) > _CALLEE_FETCH_LIMIT and is_walkable_execution_edge(
+            allowed[_CALLEE_FETCH_LIMIT - 1].edge_type,
+            allowed[_CALLEE_FETCH_LIMIT - 1].resolution_origin,
+            allowed[_CALLEE_FETCH_LIMIT - 1].confidence,
         )
+        if len(allowed) > _CALLEE_FETCH_LIMIT:
+            cut = allowed[_CALLEE_FETCH_LIMIT]
+            edges = edges[: next(i for i, e in enumerate(edges) if e is cut)]
         revisited = 0
         low_confidence = Counter()
         excluded = 0

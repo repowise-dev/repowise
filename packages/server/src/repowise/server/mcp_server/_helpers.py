@@ -943,24 +943,43 @@ async def fetch_allowed_edges(
     *,
     limit: int,
     endpoints: Callable[[Any], Iterable[str | None]] = _edge_endpoints,
+    keep_excluded: bool = False,
 ) -> list:
     """Shape G: the first *limit* rows of an edge query with no excluded endpoint.
 
     The exclusion runs before the cap, so excluded rows never take the place of
     allowed ones. It is one query with ``LIMIT``, as before, unless that page
-    was full and held an excluded row; then the rest of the same ordering is
-    read once and filtered, so the cap is filled whenever enough allowed rows
-    exist. Stale excluded rows are rare, so the second read almost never runs.
-    *stmt* must be fully ordered for the two reads to be disjoint.
+    was full and held an excluded row; then the same ordering is read on in
+    bounded pages until the cap is filled or the rows run out. Stale excluded
+    rows are rare, so the extra reads almost never run. *stmt* must be fully
+    ordered for the pages to be disjoint.
+
+    With *keep_excluded*, the excluded rows read before the last allowed one
+    stay in the result, in order, for a caller that reports what it skipped;
+    only allowed rows count toward *limit*.
     """
     page = (await session.execute(stmt.limit(limit))).all()
     if not spec:
         return list(page)
-    kept = filter_edge_rows(page, spec, endpoints)
-    if len(kept) < len(page) == limit:
-        rest = (await session.execute(stmt.offset(limit))).all()
-        kept.extend(filter_edge_rows(rest, spec, endpoints))
-    return kept[:limit]
+    out: list = []
+    allowed = 0
+    offset = 0
+    size = limit
+    while True:
+        for row in page:
+            if allowed >= limit:
+                break
+            if any(node_is_excluded(n, spec) for n in endpoints(row)):
+                if keep_excluded:
+                    out.append(row)
+                continue
+            out.append(row)
+            allowed += 1
+        if allowed >= limit or len(page) < size:
+            return out
+        offset += size
+        size = limit * 4
+        page = (await session.execute(stmt.limit(size).offset(offset))).all()
 
 
 def filter_embedded_path_ids(ids: list, spec: Any) -> list:

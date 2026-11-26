@@ -129,6 +129,28 @@ async def test_fetch_allowed_edges_fills_the_cap_past_excluded_rows(session, rep
     assert all(r.source_node_id.startswith("archive/") for r in raw)
 
 
+@pytest.mark.asyncio
+async def test_fetch_allowed_edges_reads_on_past_many_pages_and_can_keep_skipped_rows(
+    session, repo_id, spec
+):
+    target = "src/core.py::run"
+    session.add_all(
+        [_edge(repo_id, f"archive/m{i:02d}.py::f", target, confidence=1.0) for i in range(40)]
+        + [_edge(repo_id, "src/u.py::f", target, confidence=0.5)]
+    )
+    await session.flush()
+    stmt = (
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id)
+        .where(GraphEdge.repository_id == repo_id, GraphEdge.target_node_id == target)
+        .order_by(GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.id)
+    )
+    kept = await fetch_allowed_edges(session, stmt, spec, limit=2)
+    assert [r.source_node_id for r in kept] == ["src/u.py::f"]
+    with_skipped = await fetch_allowed_edges(session, stmt, spec, limit=2, keep_excluded=True)
+    assert len(with_skipped) == 41
+    assert with_skipped[-1].source_node_id == "src/u.py::f"
+
+
 # --- flow path adjacency ----------------------------------------------------
 
 

@@ -216,6 +216,22 @@ async def test_excluded_callees_do_not_fill_the_flow_fetch_cut(session, repo_id,
 
 
 @pytest.mark.asyncio
+async def test_a_node_calling_only_excluded_files_stops_as_excluded_target(
+    session, repo_id, tmp_path
+):
+    entry = "src/e.py::main"
+    _edge(session, repo_id, entry, "archive/x.py::f", conf=0.95)
+    await session.flush()
+
+    termination: dict = {}
+    trace = await bfs_trace(
+        session, repo_id, entry, 3, termination=termination, exclude_spec=_spec(tmp_path)
+    )
+    assert trace == [entry]
+    assert termination["reason"] == "excluded_target"
+
+
+@pytest.mark.asyncio
 async def test_degrees_and_community_counts_skip_excluded_endpoints(session, repo_id, tmp_path):
     repository = SimpleNamespace(id=repo_id)
     _node(session, repo_id, "src/a.py", node_type="file", community_id=1)
