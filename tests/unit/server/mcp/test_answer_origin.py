@@ -195,3 +195,120 @@ async def test_a_file_without_history_gets_a_file_command(setup_mcp):
     result = await get_answer("When was src/auth/service.py added?")
     assert result["confidence"] == "low"
     assert "git log --follow --diff-filter=A -- src/auth/service.py" in result["next_action_hint"]
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_reuses_the_walk_until_the_head_moves(
+    setup_mcp, history, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server import get_answer
+    from repowise.server.mcp_server.tool_answer import origin
+
+    walks = []
+    real = origin._oldest_adding_commit
+
+    def counted(*args):
+        walks.append(args)
+        return real(*args)
+
+    monkeypatch.setattr(origin, "_oldest_adding_commit", counted)
+    first = await get_answer("Who added AuthService?")
+    again = await get_answer("Which commit introduced AuthService?")
+    assert len(walks) == 1
+    assert again["origin"] == first["origin"]
+    (tmp_path / "notes.txt").write_text("n\n", encoding="utf-8")
+    _git(tmp_path, "add", "notes.txt")
+    _git(tmp_path, "commit", "-qm", "notes")
+    await get_answer("Who added AuthService?")
+    assert len(walks) == 2
+
+
+async def _seed_file_history(session, sha: str, *, first_at: datetime, committed_at: datetime):
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitCommit, GitCommitFile, GitMetadata
+
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/auth/service.py")
+        .values(first_commit_at=first_at, commit_count_capped=False, original_path=None)
+    )
+    session.add(
+        GitCommit(
+            repository_id="repo1",
+            sha=sha,
+            author_name="Indexed Author",
+            committed_at=committed_at,
+            subject="Create the auth service",
+        )
+    )
+    session.add(GitCommitFile(repository_id="repo1", sha=sha, file_path="src/auth/service.py"))
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_file_is_dated_from_the_indexed_history_without_git(setup_mcp, session):
+    from repowise.server.mcp_server import get_answer
+
+    sha = "a" * 40
+    when = datetime(2025, 6, 2, 8, 18, 57, tzinfo=UTC)
+    await _seed_file_history(session, sha, first_at=when, committed_at=when)
+    await _seed_change(session, sha)
+    # No git checkout at all: the answer comes from the index.
+    result = await get_answer("When was src/auth/service.py added?")
+    assert result["confidence"] == "high"
+    assert result["origin"]["commit"] == sha
+    assert result["origin"]["change"] == "pr-7"
+    assert result["note"].startswith("Read from the indexed history")
+
+
+@pytest.mark.asyncio
+async def test_indexed_history_short_of_the_first_commit_falls_back(setup_mcp, session):
+    from repowise.server.mcp_server import get_answer
+
+    # The stored window starts after the file's first commit: not its origin.
+    await _seed_file_history(
+        session,
+        "b" * 40,
+        first_at=datetime(2016, 9, 13, tzinfo=UTC),
+        committed_at=datetime(2024, 1, 21, tzinfo=UTC),
+    )
+    result = await get_answer("When was src/auth/service.py added?")
+    assert result["confidence"] == "low"
+    assert "this checkout has no git history" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_a_name_many_files_define_is_said_so(setup_mcp, session):
+    from repowise.core.persistence.models import WikiSymbol
+    from repowise.server.mcp_server import get_answer
+
+    for i in range(6):
+        session.add(
+            WikiSymbol(
+                id=f"close{i}",
+                repository_id="repo1",
+                file_path=f"src/m{i}.py",
+                symbol_id=f"src/m{i}.py::close_all",
+                name="close_all",
+                qualified_name=f"m{i}.close_all",
+                kind="function",
+            )
+        )
+    await session.commit()
+    result = await get_answer("Who added close_all?")
+    assert result["confidence"] == "low"
+    assert "6 indexed files define `close_all`, too many to name one origin" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_name_two_files_carry_asks_for_the_path(setup_mcp, session):
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_answer
+
+    for path in ("src/a/util.py", "src/b/util.py"):
+        session.add(GitMetadata(repository_id="repo1", file_path=path))
+    await session.commit()
+    result = await get_answer("When was util.py added?")
+    assert result["confidence"] == "low"
+    assert "2 indexed files are named `util.py` (src/a/util.py, src/b/util.py)" in result["answer"]

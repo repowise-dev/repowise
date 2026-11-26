@@ -3,9 +3,12 @@
 "Which PR introduced _MAX_COOKIES" asks about history. Retrieval answers it
 with the definition line, which is a confident answer to another question.
 When the origin verb takes a named symbol or file as its object, the answer is
-the oldest commit whose diff adds it (``git log -S`` over the files that define
-it, ``--diff-filter=A`` for a file), read back to its indexed Change Record for
-the PR, title and author. An origin question this cannot answer says so and
+the oldest commit that adds it, read back to its indexed Change Record for the
+PR, title and author. A file's adding commit comes from the indexed history
+when that history reaches back to it. The index keeps no per-symbol history,
+so a symbol (and a file older than the indexed window) walks git: ``git log
+-S`` over the files that define it, ``--diff-filter=A`` for a file. Walks are
+kept per repository head, so a repeat costs nothing. An origin question this cannot answer says so and
 names the git command that can, instead of falling through to retrieval.
 """
 
@@ -16,6 +19,8 @@ import json
 import re
 import subprocess
 import time
+from collections import OrderedDict
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +29,9 @@ from sqlalchemy import select
 from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.core.persistence.crud.changes import find_changes
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GitMetadata, WikiSymbol
+from repowise.core.persistence.models import GitCommit, GitCommitFile, GitMetadata, WikiSymbol
 from repowise.server.mcp_server._helpers import is_excluded
-from repowise.server.mcp_server._meta import build_meta
+from repowise.server.mcp_server._meta import build_meta, read_live_head
 from repowise.server.mcp_server._query_shape import path_tokens
 from repowise.server.mcp_server.tool_answer.symbols import _extract_question_identifiers
 
@@ -54,6 +59,12 @@ _MAX_DEF_FILES = 5
 #: Seconds for the history walk; a slower one answers "could not tell".
 _GIT_TIMEOUT = 10
 _LOG_FORMAT = "--format=%H\t%an\t%aI\t%s"
+
+#: Git walks already made: (repo id, kind, name, paths, live head) -> the
+#: commit, or why none adds it. History below a head never changes, so an
+#: entry is right until the head moves. In-process only; the oldest goes first.
+_WALKS: OrderedDict[tuple, dict | str] = OrderedDict()
+_WALKS_MAX = 256
 
 
 def asks_origin(question: str) -> bool:
@@ -99,19 +110,35 @@ async def origin_reply(ask: Any) -> dict | None:
             return _cannot(
                 ask,
                 named,
-                defined,
+                defined[:_MAX_DEF_FILES],
                 f"the question asks about a change inside `{named}`, not when `{named}` itself was added",
                 kind="file" if files else "symbol",
                 inside=True,
             )
         name, paths, kind = subject
-        if not paths:
-            return _cannot(ask, name, [], f"no indexed file defines `{name}`", kind=kind)
-        commit, reason = await _first_commit(repo_path, name, paths, kind)
+        if unclear := _unclear(name, paths, kind):
+            return _cannot(ask, name, [], unclear, kind=kind)
+        commit = (
+            await _indexed_file_origin(session, ask.repo_id, paths[0]) if kind == "file" else None
+        )
+        if commit is None:
+            commit, reason = await _first_commit(repo_path, ask.repo_id, name, paths, kind)
         if commit is None:
             return _cannot(ask, name, paths, reason, kind=kind)
         found = await find_changes(session, ask.repo_id, commit["sha"], limit=1)
     return _answer(ask, name, paths, kind, commit, found[0] if found else None)
+
+
+def _unclear(name: str, paths: list[str], kind: str) -> str | None:
+    """Why *paths* name no one place to read the origin in, or ``None``."""
+    if not paths:
+        return f"no indexed file {'is' if kind == 'file' else 'defines'} `{name}`"
+    if kind == "file" and len(paths) > 1:
+        listed = ", ".join(paths[:3]) + (", ..." if len(paths) > 3 else "")
+        return f"{len(paths)} indexed files are named `{name}` ({listed}); ask with the full path"
+    if len(paths) > _MAX_DEF_FILES:
+        return f"{len(paths)} indexed files define `{name}`, too many to name one origin"
+    return None
 
 
 def _stems(files: list[str]) -> set[str]:
@@ -133,7 +160,7 @@ async def _subject(
 
 
 async def _indexed_files(session, ask: Any, token: str) -> list[str]:
-    """The indexed file *token* names: its path, or the one file with that name."""
+    """The indexed file *token* names: its path, else every file with that name."""
     rows = (
         (
             await session.execute(
@@ -148,12 +175,11 @@ async def _indexed_files(session, ask: Any, token: str) -> list[str]:
     )
     rows = [r for r in rows if not is_excluded(r, ask.exclude_spec)]
     exact = [r for r in rows if r == token]
-    return exact or (rows if len(rows) == 1 else [])
+    return exact or sorted(rows)
 
 
 async def _defining_files(session, ask: Any, ident: str) -> list[str]:
-    """Files holding a definition of *ident* (its last dotted part), at most
-    :data:`_MAX_DEF_FILES`; none when more files define it."""
+    """Files holding a definition of *ident* (its last dotted part)."""
     leaf = ident.rsplit(".", 1)[-1]
     rows = (
         (
@@ -166,30 +192,85 @@ async def _defining_files(session, ask: Any, ident: str) -> list[str]:
         .scalars()
         .all()
     )
-    paths = sorted(r for r in rows if not is_excluded(r, ask.exclude_spec))
-    return paths if len(paths) <= _MAX_DEF_FILES else []
+    return sorted(r for r in rows if not is_excluded(r, ask.exclude_spec))
 
 
 _NO_COMMIT = "no commit in this checkout's history adds it"
 _TIMED_OUT = f"reading its git history took longer than {_GIT_TIMEOUT} s"
 
 
+async def _indexed_file_origin(session, repo_id: str, path: str) -> dict | None:
+    """The commit that added *path*, from the indexed history, or ``None`` when
+    that history does not reach back to it (capped, renamed, or older than the
+    stored commits)."""
+    meta = (
+        await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repo_id, GitMetadata.file_path == path
+            )
+        )
+    ).scalar_one_or_none()
+    if meta is None or meta.commit_count_capped or meta.original_path or not meta.first_commit_at:
+        return None
+    row = (
+        await session.execute(
+            select(GitCommit)
+            .join(
+                GitCommitFile,
+                (GitCommitFile.repository_id == GitCommit.repository_id)
+                & (GitCommitFile.sha == GitCommit.sha),
+            )
+            .where(GitCommit.repository_id == repo_id, GitCommitFile.file_path == path)
+            .order_by(GitCommit.committed_at.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None or row.committed_at is None:
+        return None
+    # The stored commits reach the file's first commit only when the oldest
+    # one touching it is that first commit.
+    if abs((_utc(row.committed_at) - _utc(meta.first_commit_at)).total_seconds()) > 1:
+        return None
+    return {
+        "sha": row.sha,
+        "author": row.author_name,
+        "date": _utc(row.committed_at).date().isoformat(),
+        "subject": row.subject,
+        "source": "index",
+    }
+
+
+def _utc(moment):
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
 async def _first_commit(
-    repo_path: str | None, name: str, paths: list[str], kind: str
+    repo_path: str | None, repo_id: str, name: str, paths: list[str], kind: str
 ) -> tuple[dict | None, str]:
     """``(commit, "")``, or ``(None, why no commit is named)``."""
     if not repo_path or not (Path(repo_path) / ".git").exists():
         return None, "this checkout has no git history"
-    try:
-        commit = await asyncio.wait_for(
-            asyncio.to_thread(_oldest_adding_commit, str(repo_path), name, paths, kind),
-            timeout=_GIT_TIMEOUT + 1,
-        )
-    except TimeoutError:
-        return None, _TIMED_OUT
+    head = read_live_head(str(repo_path))
+    key = (repo_id, kind, name, tuple(paths), head)
+    commit = _WALKS.get(key) if head else None
+    if commit is None:
+        try:
+            commit = await asyncio.wait_for(
+                asyncio.to_thread(_oldest_adding_commit, str(repo_path), name, paths, kind),
+                timeout=_GIT_TIMEOUT + 1,
+            )
+        except TimeoutError:
+            return None, _TIMED_OUT
+        # A walk that failed or ran out of time may succeed next time.
+        if head and (isinstance(commit, dict) or commit == _NO_COMMIT):
+            _WALKS[key] = commit
+            while len(_WALKS) > _WALKS_MAX:
+                _WALKS.popitem(last=False)
+    else:
+        _WALKS.move_to_end(key)
     if isinstance(commit, str):
         return None, commit
-    if commit["cut"]:
+    if commit.get("cut"):
         return None, "it predates the oldest commit in this shallow clone"
     return commit, ""
 
@@ -235,6 +316,7 @@ def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str
         "author": author,
         "date": date[:10],
         "subject": subject,
+        "source": "git",
         # A shallow clone's cut commit shows as adding everything it holds.
         "cut": sha in shallow_roots(repo_path),
     }
@@ -267,7 +349,8 @@ def _answer(ask: Any, name: str, paths: list[str], kind: str, commit: dict, chan
         "grounding": "git_history",
         "origin": origin,
         "note": (
-            "Read from git: the oldest commit whose diff adds it"
+            ("Read from the indexed history" if commit["source"] == "index" else "Read from git")
+            + ": the oldest commit that adds it"
             + (", and the indexed change that landed that commit." if change is not None else ".")
         ),
         "next_action_hint": hint,
