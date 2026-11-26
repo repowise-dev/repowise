@@ -320,6 +320,64 @@ async def test_base_embed_batch_default_uses_single_path(mock_embedder):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "lancedb"])
+@pytest.mark.parametrize("mapping", [
+    {"source'quoted": "occupied", "occupied": "new"},
+    {"source'quoted": "occupied", "occupied": "source'quoted"},
+])
+async def test_copy_vectors_preserves_source_values_and_metadata(
+    backend, mapping, tmp_path, mock_embedder, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from repowise.core.persistence.vector_store import InMemoryVectorStore, LanceDBVectorStore
+
+    if backend == "lancedb":
+        pytest.importorskip("lancedb")
+        store = LanceDBVectorStore(str(tmp_path / "copies"), mock_embedder)
+    else:
+        store = InMemoryVectorStore(mock_embedder)
+    source = ([0.25] * mock_embedder.dimensions, {"title": "Source", "content": "Retained"})
+    occupied = ([0.75] * mock_embedder.dimensions, {"title": "Occupied", "content": "Other"})
+    try:
+        await store.upsert_vectors([
+            ("source'quoted", *source), ("occupied", *occupied),
+            ("unrelated", [0.5] * mock_embedder.dimensions, {"title": "Keep"}),
+            ("identical", *source),
+            ("different-metadata", source[0], {"title": "Different"}),
+        ])
+        if backend == "lancedb":
+            await store._table.add_columns({"custom_metadata": "'keep this column'"})
+            before = {row["page_id"]: row for row in await store._table.query().to_list()}
+        else:
+            before = dict(store._store)
+        embed = AsyncMock(side_effect=AssertionError("Copy must not embed"))
+        monkeypatch.setattr(mock_embedder, "embed", embed)
+
+        assert await store.vectors_match({"source'quoted", "identical"})
+        assert not await store.vectors_match({"source'quoted", "occupied"})
+        assert not await store.vectors_match({"source'quoted", "different-metadata"})
+        assert not await store.vectors_match({"source'quoted", "absent"})
+        assert await store.copy_vectors({**mapping, "missing": "absent"}) == set(mapping)
+        assert await store.copy_vectors({}) == set()
+
+        if backend == "lancedb":
+            after = {row["page_id"]: row for row in await store._table.query().to_list()}
+            for old, new in mapping.items():
+                assert after[new] == {**before[old], "page_id": new}
+        else:
+            after = store._store
+            for old, new in mapping.items():
+                assert after[new] == before[old]
+        assert after["unrelated"] == before["unrelated"]
+        assert set(mapping) <= set(after)
+        assert "absent" not in after
+        embed.assert_not_called()
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_lancedb_vector_store_basic(tmp_path, mock_embedder):
     lancedb = pytest.importorskip("lancedb")  # noqa: F841
     from repowise.core.persistence.vector_store import LanceDBVectorStore

@@ -8,6 +8,41 @@ from typing import Any
 _TABLE_NAME = "wiki_pages"
 
 
+async def recover_pending_decision_vectors(repo_path: Path, store: Any = None) -> None:
+    """Settle interrupted decision writes while the caller holds the update lock."""
+    from repowise.core.persistence.decision_id_migration import (
+        DecisionVectorRecoveryError,
+        recover_decision_vector_undo,
+    )
+    from repowise.core.persistence.vector_store.lancedb_store import LanceDBVectorStore
+
+    if store is None:
+        lance_dir = repo_path / ".repowise" / "lancedb"
+        if not LanceDBVectorStore.has_pending_decision_rekey(lance_dir):
+            return
+        from repowise.core.providers.embedding.base import MockEmbedder
+
+        store = LanceDBVectorStore(str(lance_dir), MockEmbedder())
+        try:
+            await recover_pending_decision_vectors(repo_path, store)
+        finally:
+            await store.close()
+        return
+
+    if not isinstance(store, LanceDBVectorStore) or not store.decision_rekey_pending():
+        return
+
+    from repowise.cli.helpers import repo_index_session
+
+    async with repo_index_session(repo_path) as opened:
+        if opened is None:
+            raise DecisionVectorRecoveryError(
+                "Cannot find the repository for the pending decision rekey"
+            )
+        session, repository_id = opened
+        await recover_decision_vector_undo(session, repository_id, store)
+
+
 def existing_vector_dim(lance_dir: Path) -> int | None:
     """Return the width of the vectors already stored at *lance_dir*.
 

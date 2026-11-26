@@ -882,6 +882,94 @@ def test_decision_add_stays_silent_when_the_repo_has_no_real_embedder(tmp_path, 
     assert not (tmp_path / ".repowise" / "lancedb").exists()
 
 
+def test_decision_add_reports_embedding_deferred_by_an_update(indexed_repo, monkeypatch):
+    import subprocess
+    import sys
+
+    from repowise.cli.providers import embedders
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    monkeypatch.setattr(embedders, "resolve_embedder_for_repo", lambda _path: "test")
+    monkeypatch.setattr(embedders, "build_embedder", lambda _name, _path: MockEmbedder())
+    hold_lock = """
+import sys
+from pathlib import Path
+from repowise.core.update_lock import holding_update_lock
+
+with holding_update_lock(Path(sys.argv[1])) as locked:
+    print("ready" if locked else "contended", flush=True)
+    sys.stdin.read()
+"""
+    args = [
+        "decision", "add", str(indexed_repo), "--title", "Use one cache",
+        "--decision", "Use the shared cache", "--rationale", "Keep one source of truth",
+        "--format", "json",
+    ]
+    with subprocess.Popen(
+        [sys.executable, "-c", hold_lock, str(indexed_repo)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    ) as writer:
+        try:
+            assert writer.stdout.readline().strip() == "ready"
+            result = CliRunner().invoke(cli, args)
+        finally:
+            writer.communicate(timeout=10)
+
+    assert result.exit_code == 0, result.output
+    recorded = json.loads(result.output)["decision"]
+    assert recorded["warnings"] == [
+        "Search indexing was deferred by a running update. "
+        "Repeat this decision add command when the update finishes."
+    ]
+    assert _stored_column(indexed_repo, recorded["id"], "title") == "Use one cache"
+
+
+def test_embed_decision_recovers_interrupted_rekey_and_skips_a_stale_record(tmp_path, monkeypatch):
+    pytest.importorskip("lancedb")
+    from uuid import uuid4
+
+    from repowise.cli.commands import decision_cmd
+    from repowise.cli.providers import embedders
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    _seed_wiki_db(tmp_path, [{"id": "current", "title": "Current decision", "decision": "Use one path"}])
+    embedder = MockEmbedder()
+    monkeypatch.setattr(embedders, "build_embedder", lambda *_: embedder)
+    monkeypatch.setattr(embedders, "resolve_embedder_for_repo", lambda *_: "mock")
+
+    async def run():
+        store = LanceDBVectorStore(str(tmp_path / ".repowise" / "lancedb"), embedder)
+        old_key = "decision:retained"
+        abandoned_key = "decision:abandoned"
+        await store.upsert_vectors([(old_key, [0.25] * 8, {"title": "Retained"})])
+        before = await store.snapshot_vectors({old_key, abandoned_key})
+        store.decision_vector_journal(_REPO_ID).write_text(
+            json.dumps({"revision": uuid4().hex, "previous": None, "rows": before}),
+            encoding="utf-8",
+        )
+        await store.copy_vectors({old_key: abandoned_key})
+        await store.delete(old_key)
+        await store.close()
+
+        await decision_cmd._embed_decision(
+            tmp_path, "abandoned", "Obsolete entry", "Write a stale vector", None,
+            repository_id=_REPO_ID,
+        )
+        assert await store.snapshot_vectors({old_key, abandoned_key}) == before
+        assert not store.decision_rekey_pending()
+
+        await decision_cmd._embed_decision(
+            tmp_path, "current", "Current decision", "Use one path", "current",
+            repository_id=_REPO_ID,
+        )
+        await store.refresh_vector_snapshot()
+        assert await store.list_page_ids() == {old_key, "decision:current"}
+        await store.close()
+
+    asyncio.run(run())
+
+
 # -- index routing: worktrees and unindexed checkouts --------------------------
 
 

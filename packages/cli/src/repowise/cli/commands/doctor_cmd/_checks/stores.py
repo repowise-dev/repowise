@@ -26,15 +26,24 @@ async def _decision_vector_ids(session, repository_id: str) -> set[str]:
     reconciliation must count decisions on the SQL side — otherwise every
     decision embedding reads as an orphan.
     """
-    from sqlalchemy import text as _sql_text
+    from sqlalchemy import select
 
     from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
+    from repowise.core.persistence.models import REKEYED_REASON, DecisionAlias, DecisionRecord
 
-    rows = await session.execute(
-        _sql_text("SELECT id FROM decision_records WHERE repository_id = :rid"),
-        {"rid": repository_id},
+    canonical = select(DecisionRecord.id).where(DecisionRecord.repository_id == repository_id)
+    # An older migration can leave its only copy at a retired key. The
+    # vector migration verifies that copy before it retires the source.
+    retained = (
+        select(DecisionAlias.alias_id)
+        .join(DecisionRecord, DecisionRecord.id == DecisionAlias.decision_id)
+        .where(
+            DecisionAlias.repository_id == repository_id,
+            DecisionAlias.reason == REKEYED_REASON,
+            DecisionRecord.repository_id == repository_id,
+        )
     )
-    return {f"{DECISION_VECTOR_PREFIX}{r[0]}" for r in rows}
+    return {f"{DECISION_VECTOR_PREFIX}{key}" for key in await session.scalars(canonical.union(retained))}
 
 
 def _is_stub_fallback_row(page) -> bool:
@@ -193,6 +202,7 @@ async def _reconcile(
 ) -> tuple[StoreDrift, int, str | None]:
     """``(drift, stub_count, vector_store_error)`` across SQL, vectors and FTS."""
     from repowise.core.persistence import get_repository_by_path, get_session
+    from repowise.core.persistence.vector_store.lancedb_store import LanceDBVectorStore
 
     engine, sf = await open_store(repo_path)
     async with get_session(sf) as session:
@@ -225,6 +235,7 @@ async def _reconcile(
                 and vs_error is None
                 and not vs_ids
             ),
+            decision_rekey_pending=LanceDBVectorStore.has_pending_decision_rekey(lance_dir),
         ),
         sql.stub_count,
         vs_error,
@@ -255,13 +266,16 @@ def _consistency_rows(ctx: CheckContext) -> list[DoctorCheck]:
                 )
             )
         vec_ok, vec_detail = _drift_detail(drift.missing_from_vector, drift.orphaned_vector)
+        if drift.decision_rekey_pending:
+            vec_ok = False
+            vec_detail = "interrupted decision rekey awaiting recovery"
         # Held-back stubs are not drift, but the wiki has a page there no model
         # wrote, so say so rather than letting "in sync" imply it is complete.
         # Name the command: `--resume` exists only on `init`.
         if stub_count:
             vec_detail += f" · {stub_count} stub(s) awaiting `repowise init --resume`"
         # --repair declines to re-embed a whole empty store; reindex does that.
-        vec_fix = "repowise reindex" if drift.vector_store_empty else _REPAIR
+        vec_fix = "repowise reindex" if drift.vector_store_empty and not drift.decision_rekey_pending else _REPAIR
         rows.append(
             _check(
                 "SQL ↔ Vector Store",

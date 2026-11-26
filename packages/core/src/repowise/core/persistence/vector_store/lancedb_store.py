@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from repowise.core.providers.embedding.base import Embedder, MockEmbedder
 
+from ..batches import chunked
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
 from ._base import (
     STORED_SNIPPET_CHARS,
@@ -298,6 +301,8 @@ class LanceDBVectorStore(VectorStore):
                 )
             # Embedder changed dimensions — the old vectors are unusable.
             # Forget the record first so a crash mid-rebuild leaves none.
+            if self.decision_rekey_pending():
+                raise RuntimeError("Cannot replace the vector table while a decision rekey is pending")
             record_vector_dim(self._db_path, self._table_name, None)
             await self._db.drop_table(self._table_name)  # type: ignore[union-attr]
             self._table = None
@@ -463,6 +468,95 @@ class LanceDBVectorStore(VectorStore):
         await self._upsert_rows(rows)
         return True
 
+    async def copy_vectors(self, mapping: dict[str, str]) -> set[str]:
+        if not mapping:
+            return set()
+        await self._ensure_connected()
+        if self._table is None:
+            return set()
+        import pyarrow as pa
+
+        rows = await self._vector_rows(list(mapping))
+        copied = set(rows.column("page_id").to_pylist())
+        if rows.num_rows:
+            ids = pa.array([mapping[old] for old in rows.column("page_id").to_pylist()])
+            rows = rows.set_column(
+                rows.schema.get_field_index("page_id"), rows.schema.field("page_id"), ids
+            )
+            await self._upsert_rows(rows)
+        return copied
+
+    async def _vector_rows(self, page_ids: list[str]) -> Any:
+        import pyarrow as pa
+
+        table = self._table
+        assert table is not None
+        return pa.concat_tables([
+            await table.query().where(_page_ids_in_filter(list(batch))).to_arrow()
+            for batch in chunked(page_ids)
+        ])
+
+    async def vectors_match(self, page_ids: set[str]) -> bool:
+        if not page_ids:
+            return False
+        await self._ensure_connected()
+        if self._table is None:
+            return False
+        rows = await self._vector_rows(sorted(page_ids))
+        if rows.num_rows != len(page_ids) or set(rows["page_id"].to_pylist()) != page_ids:
+            return False
+        values = rows.drop_columns(["page_id"]).to_pylist()
+        return all(values[0] == value for value in values[1:])
+
+    def decision_vector_journal(self, repository_id: str) -> Path:
+        identity = sha256(f"{self._table_name}\0{repository_id}".encode()).hexdigest()
+        return Path(self._db_path) / f"decision-vectors-{identity}.undo"
+
+    @staticmethod
+    def has_pending_decision_rekey(db_path: str | Path) -> bool:
+        return any(Path(db_path).glob("decision-vectors-*.undo"))
+
+    def decision_rekey_pending(self) -> bool:
+        return self.has_pending_decision_rekey(self._db_path)
+
+    async def refresh_vector_snapshot(self) -> None:
+        await self._ensure_connected()
+        if self._table is None:
+            await self.close()
+            await self._ensure_connected()
+        if self._table is not None:
+            await self._table.checkout_latest()
+
+    async def snapshot_vectors(self, page_ids: set[str]) -> dict[str, dict | None]:
+        await self._ensure_connected()
+        before: dict[str, dict | None] = dict.fromkeys(page_ids)
+        if self._table is not None and page_ids:
+            rows = await self._vector_rows(sorted(page_ids))
+            before.update((row["page_id"], row) for row in rows.to_pylist())
+        return before
+
+    async def restore_vectors(self, before: dict[str, dict | None]) -> None:
+        was_closed = self._db is None
+        try:
+            await self._ensure_connected()
+            rows = [row for row in before.values() if row is not None]
+            if rows:
+                if self._table is None:
+                    await self._ensure_table(rows[0]["vector"])
+                await self._upsert_rows(rows)
+            await self.delete_many(sorted(key for key, row in before.items() if row is None))
+        finally:
+            if was_closed:
+                await self.close()
+
+    async def preserve_vectors(self, page_ids: set[str]) -> Callable[[], Awaitable[None]]:
+        before = await self.snapshot_vectors(page_ids)
+
+        async def restore() -> None:
+            await self.restore_vectors(before)
+
+        return restore
+
     async def search(
         self, query: str, limit: int = 10, *, kind: str = "query"
     ) -> list[SearchResult]:
@@ -545,6 +639,23 @@ class LanceDBVectorStore(VectorStore):
                 exc,
             )
             return set()
+
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        if not page_ids:
+            return set()
+        await self._ensure_connected()
+        if self._table is None:
+            return set()
+        present = set()
+        for batch in chunked(sorted(page_ids)):
+            rows = await (
+                self._table.query()
+                .where(_page_ids_in_filter(list(batch)))
+                .select(["page_id"])
+                .to_list()
+            )
+            present.update(row["page_id"] for row in rows)
+        return present
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.

@@ -122,6 +122,7 @@ async def run_scoped_generation(
         cost_tracking_disabled,
         resolve_embedder,
     )
+    from repowise.cli.providers.vector_store import recover_pending_decision_vectors
 
     # Deferred like every other CLI call site: ``repowise.core.pipeline.__init__``
     # eagerly pulls in the orchestrator and the persist layer. At module scope
@@ -138,6 +139,7 @@ async def run_scoped_generation(
         upsert_repository,
     )
     from repowise.core.persistence import get_session as _get_session
+    from repowise.core.persistence.decision_id_migration import DecisionVectorRecoveryError
     from repowise.core.pipeline.scoped_generation import (
         ScopedGenerationResult,
         execute_scoped_generation,
@@ -240,6 +242,11 @@ async def run_scoped_generation(
         try:
             embedder = build_embedder(resolve_embedder(embedder_name, repo_path=repo_path), repo_path)
             vector_store = build_vector_store(repo_path, embedder, summaries=True)
+            await recover_pending_decision_vectors(repo_path, vector_store)
+        except DecisionVectorRecoveryError:
+            if vector_store is not None:
+                await vector_store.close()
+            raise
         except Exception as exc:
             # Null BOTH on any failure. If the embedder built but the store did
             # not, a non-None embedder would make generation embed into a

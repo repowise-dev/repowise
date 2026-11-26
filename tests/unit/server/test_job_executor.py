@@ -1035,22 +1035,24 @@ async def test_sync_job_holds_the_update_lock_and_stamps_its_analyzer(session_fa
 
 
 @pytest.mark.asyncio
-async def test_sync_job_does_not_run_while_a_cli_update_holds_the_lock(session_factory, tmp_path):
+@pytest.mark.parametrize("mode", ["sync", "generate"])
+async def test_job_does_not_run_while_a_cli_update_holds_the_lock(session_factory, tmp_path, mode):
     from repowise.core.update_lock import (
         read_update_lock,
         release_update_lock,
         try_acquire_update_lock,
     )
 
-    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "sync"})
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": mode})
     app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
     assert try_acquire_update_lock(tmp_path, "cli-target") is None
     run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    run_generate_mock = AsyncMock()
     try:
         with (
             patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
-            patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
-            _no_provider(),
+            patch("repowise.server.job_executor._run_generate_job", run_generate_mock),
+            patch("repowise.server.provider_config.get_chat_provider_instance", return_value=object()),
         ):
             await execute_job(job_id, app_state)
         # The CLI's lock is left in place for its owner.
@@ -1059,9 +1061,64 @@ async def test_sync_job_does_not_run_while_a_cli_update_holds_the_lock(session_f
         release_update_lock(tmp_path)
 
     run_pipeline_mock.assert_not_called()
+    run_generate_mock.assert_not_called()
     job = await _job_row(session_factory, job_id)
     assert job.status == "cancelled"
     assert "Another repowise update" in job.error_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["sync", "generate", "single_page"])
+async def test_job_recovers_pending_decision_vectors_before_writing(session_factory, tmp_path, mode):
+    import json
+    from uuid import uuid4
+
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.update_lock import read_update_lock
+
+    pytest.importorskip("lancedb")
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": mode})
+    job = await _job_row(session_factory, job_id)
+    embedder = MockEmbedder()
+    store = LanceDBVectorStore(str(tmp_path / ".repowise" / "lancedb"), embedder)
+    key = "decision:fixture"
+    await store.upsert_vectors([(key, [0.25] * embedder.dimensions, {"title": "Original"})])
+    before = await store.snapshot_vectors({key})
+    journal = store.decision_vector_journal(job.repository_id)
+    journal.write_text(
+        json.dumps({"revision": uuid4().hex, "previous": None, "rows": before}),
+        encoding="utf-8",
+    )
+    await store.upsert_vectors([(key, [0.75] * embedder.dimensions, {"title": "Interrupted"})])
+    app_state = SimpleNamespace(
+        session_factory=None,
+        fts=None,
+        vector_store=None,
+        workspace_vector_stores={job.repository_id: store},
+    )
+
+    writes = []
+
+    async def writer(*args, **kwargs):
+        writes.append(
+            (read_update_lock(tmp_path) is not None, journal.exists(),
+             await store.snapshot_vectors({key}))
+        )
+        return _fake_result()
+
+    try:
+        with (
+            patch("repowise.server.job_executor.run_pipeline", side_effect=writer),
+            patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+            patch("repowise.server.job_executor._run_generate_job", side_effect=writer),
+            patch("repowise.server.provider_config.get_chat_provider_instance", return_value=object()),
+        ):
+            await execute_job(job_id, app_state, session_factory_override=session_factory)
+        assert writes == [(True, False, before)]
+        assert read_update_lock(tmp_path) is None
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio

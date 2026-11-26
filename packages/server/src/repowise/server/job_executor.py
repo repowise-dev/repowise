@@ -459,10 +459,7 @@ async def execute_job(
             progress=progress,
             start=start,
         )
-        if spec.mode in ("generate", "single_page"):
-            await _run_scoped_generation(run)
-        else:
-            await _run_index_job(run, app_state)
+        await _run_job_under_update_lock(run, app_state)
 
     except (PipelineCancelled, asyncio.CancelledError):
         # Record and swallow: nothing awaits a background task's result.
@@ -623,8 +620,8 @@ def _refuse_older_analyzer(repo_path: Path) -> None:
         )
 
 
-async def _run_index_job(run: _JobRun, app_state: Any) -> None:
-    """Index under the CLI's update lock, so the two never write one index at once."""
+async def _run_job_under_update_lock(run: _JobRun, app_state: Any) -> None:
+    """Serialize index and generation writers with the repository's CLI writers."""
     repo_path = Path(run.spec.repo_path)
     head = await asyncio.to_thread(_read_head_sha, repo_path)
     # Acquired and released without an await, so a cancel cannot leak the lock.
@@ -638,19 +635,35 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
             run.spec.job_id,
             status="cancelled",
             error_message=(
-                f"Another repowise update or sync (pid {owner.get('pid')}) is "
+                f"Another repowise update, sync or generation (pid {owner.get('pid')}) is "
                 "running on this repository, so this job did not run."
             ),
         )
         return
     try:
-        await asyncio.to_thread(_refuse_older_analyzer, repo_path)
-        # A checkout the server owns moves to its remote head first; any
-        # other checkout is indexed as it stands.
-        await asyncio.to_thread(sync_managed_checkout, repo_path)
-        await _run_locked_index_job(run, app_state)
+        scoped_generation = run.spec.mode in ("generate", "single_page")
+        if not scoped_generation:
+            await asyncio.to_thread(_refuse_older_analyzer, repo_path)
+            # A checkout the server owns moves to its remote head first; any
+            # other checkout is indexed as it stands.
+            await asyncio.to_thread(sync_managed_checkout, repo_path)
+        await _recover_job_decision_vectors(run)
+        if scoped_generation:
+            await _run_scoped_generation(run)
+        else:
+            await _run_locked_index_job(run, app_state)
     finally:
         release_update_lock(repo_path)
+
+
+async def _recover_job_decision_vectors(run: _JobRun) -> None:
+    from repowise.core.persistence.decision_id_migration import recover_decision_vector_undo
+    from repowise.core.persistence.vector_store.lancedb_store import LanceDBVectorStore
+
+    store = run.vector_store
+    if isinstance(store, LanceDBVectorStore) and store.decision_rekey_pending():
+        async with get_session(run.session_factory) as session:
+            await recover_decision_vector_undo(session, run.spec.repo_id, store)
 
 
 async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
@@ -659,7 +672,7 @@ async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
     docs = _DocsPlan.for_job(spec, run.llm_client)
     result = await _run_index_pipeline(run, docs)
     incremental_pages = await _sync_incremental_pages(run, result)
-    # A CLI init does not take the update lock; check again right before writing.
+    # Check again at the persistence boundary after the pipeline's read phase.
     await asyncio.to_thread(_refuse_older_analyzer, Path(spec.repo_path))
     swept_page_ids = await _persist_index_result(run, result, incremental_pages)
 

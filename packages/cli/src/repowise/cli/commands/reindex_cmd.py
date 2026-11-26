@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 from repowise.cli.helpers import (
@@ -74,13 +76,22 @@ def _index_only_message(repo_path) -> str | None:
 
 
 async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
-    from pathlib import Path
+    from repowise.core.update_lock import holding_update_lock
 
+    with holding_update_lock(repo_path) as locked:
+        if not locked:
+            raise click.ClickException("Another update is writing this index. Retry reindex when it finishes.")
+        await _reindex_locked(repo_path, embedder_name, batch_size)
+
+
+async def _reindex_locked(repo_path, embedder_name: str, batch_size: int) -> None:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from repowise.cli.helpers import load_config_for_write
+    from repowise.cli.providers.vector_store import recover_pending_decision_vectors
     from repowise.core.persistence.database import create_engine, init_db
+    from repowise.core.persistence.decision_id_migration import DecisionVectorRecoveryError
     from repowise.core.persistence.models import Page
 
     # The run ends by writing config.yaml: refuse a file that does not parse
@@ -99,6 +110,11 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     lance_dir.mkdir(parents=True, exist_ok=True)
     vector_store = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
+    try:
+        await recover_pending_decision_vectors(Path(repo_path), vector_store)
+    except DecisionVectorRecoveryError as exc:
+        await vector_store.close()
+        raise click.ClickException(str(exc)) from exc
 
     # --- Open database ---
     db_url = get_db_url_for_repo(repo_path)
@@ -116,7 +132,6 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         pages = list(result.scalars().all())
 
     # --- Load decision records ---
-    from repowise.core.analysis.decision_semantic_match import decision_vector_item
     from repowise.core.persistence.models import DecisionRecord
 
     async with factory() as session:
@@ -137,6 +152,25 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         clear_keyless_store_mark(lance_dir)
         return
 
+    indexed, failed, below_floor, provider_error = await _embed_reindex_batches(
+        vector_store, pages, decisions, batch_size
+    )
+    await vector_store.close()
+    await engine.dispose()
+    if provider_error is not None:
+        raise click.ClickException(_circuit_message(provider_error))
+    # Nothing failed, so the keyless marker has done its job; kept, it would
+    # propose this re-embed on every ``update`` of a wiki whose pages all sit
+    # below the information floor (no table is ever written). After a failure
+    # it stays, and the next ``update`` retries, as it did over a mock table.
+    if not failed:
+        clear_keyless_store_mark(lance_dir)
+    _report_reindex(repo_path, lance_dir, embedder_name, indexed, failed, below_floor)
+
+
+async def _embed_reindex_batches(vector_store, pages, decisions, batch_size: int):
+    from repowise.core.analysis.decision_semantic_match import decision_vector_item
+
     # --- Embed and upsert pages in batches ---
     # The recipe is shared with generation and ``doctor --repair`` so a page
     # reindexed here gets the same vector it would have got from any of them.
@@ -147,157 +181,129 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     failed = 0
     below_floor = 0
     consecutive_provider_failures = 0
-    provider_circuit_error: Exception | None = None
+    warned = 0
+
+
+    def _note_failure(message: str) -> None:
+        """Count one failed item; only the first three are printed."""
+        nonlocal failed, warned
+        failed += 1
+        warned += 1
+        if warned <= 3:
+            warn(message)
+
+    async def _embed_slice(items: list[tuple[str, str, dict]]) -> Exception | None:
+        """Embed one slice with bounded recovery for input-specific failures.
+
+        The batched call is the fast path (one embedder request per
+        chunk). The store reports exactly which internal chunks failed and
+        whether embedding or persistence raised. Only an input-shaped HTTP
+        error is isolated per item: retrying timeouts, rate limits, server
+        errors, or failed writes one page at a time multiplies an outage
+        into hours of duplicate work.
+        """
+        nonlocal indexed, failed
+        try:
+            await vector_store.embed_batch(items)
+            indexed += len(items)
+            return None
+        except Exception as exc:
+            successful, retry_items, terminal = _batch_recovery_plan(exc, items)
+            indexed += successful
+
+        missing = _missing_model(terminal)
+        if missing is not None:
+            # Every later request fails the same way: stop on the first one,
+            # with no per-page warnings in front of the one line that fixes it.
+            failed += len(terminal) + len(retry_items)
+            return missing
+
+        for (page_id, _text, _meta), stage, exc in terminal:
+            _note_failure(f"  failed to embed {page_id} during {stage}: {exc}")
+
+        for page_id, text, meta in retry_items:
+            try:
+                await _embed_one_with_input_recovery(vector_store, (page_id, text, meta))
+                indexed += 1
+            except Exception as exc:
+                _note_failure(f"  failed to embed {page_id}: {exc}")
+        return next((exc for _item, stage, exc in terminal if stage == "embedding"), None)
+
+    def _page_items(batch):
+        nonlocal below_floor
+        items = []
+        for page in batch:
+            if not (page.title or "").strip():
+                # The shared recipe refuses a blank title, and it is right
+                # to: the row would be unfindable by name. Here that must
+                # not abort a whole reindex over one bad row, so the page
+                # is skipped and counted like any other failure.
+                _note_failure(f"  skipped {page.id}: no title to index it by")
+                continue
+            item = embed_item(
+                page.id,
+                title=page.title,
+                page_type=page.page_type or "",
+                target_path=page.target_path or "",
+                summary=page.summary or "",
+                content=page.content or "",
+                page_metadata=page.metadata_json,
+                digest=page.digest or "",
+            )
+            if item is None:
+                # Below the information floor. Not a failure — the page is
+                # deliberately kept out of the index and is counted apart
+                # from the ones that broke, because a reindex reporting
+                # them together would read as an embedder losing rows.
+                below_floor += 1
+                continue
+            items.append(item)
+        return items
+
+    def _decision_items(batch):
+        return [
+            item
+            for d in batch
+            if (
+                item := decision_vector_item(
+                    d.id,
+                    title=d.title or "",
+                    decision=d.decision or "",
+                    evidence_file=getattr(d, "evidence_file", None),
+                )
+            )
+            is not None
+        ]
 
     with make_progress(console) as progress:
-        task = progress.add_task("Indexing pages...", total=total, unit="pages")
+        task = progress.add_task("Indexing pages...", total=len(pages) + len(decisions), unit="pages")
 
-        warned = 0
-
-        async def _embed_slice(items: list[tuple[str, str, dict]]) -> Exception | None:
-            """Embed one slice with bounded recovery for input-specific failures.
-
-            The batched call is the fast path (one embedder request per
-            chunk). The store reports exactly which internal chunks failed and
-            whether embedding or persistence raised. Only an input-shaped HTTP
-            error is isolated per item: retrying timeouts, rate limits, server
-            errors, or failed writes one page at a time multiplies an outage
-            into hours of duplicate work.
-            """
-            nonlocal indexed, failed
-            try:
-                await vector_store.embed_batch(items)
-                indexed += len(items)
-                return None
-            except Exception as exc:
-                successful, retry_items, terminal = _batch_recovery_plan(exc, items)
-                indexed += successful
-
-            missing = _missing_model(terminal)
-            if missing is not None:
-                # Every later request fails the same way: stop on the first one,
-                # with no per-page warnings in front of the one line that fixes it.
-                failed += len(terminal) + len(retry_items)
-                return missing
-
-            for (page_id, _text, _meta), stage, exc in terminal:
-                _note_failure(f"  failed to embed {page_id} during {stage}: {exc}")
-
-            for page_id, text, meta in retry_items:
-                try:
-                    await _embed_one_with_input_recovery(vector_store, (page_id, text, meta))
-                    indexed += 1
-                except Exception as exc:
-                    _note_failure(f"  failed to embed {page_id}: {exc}")
-            return next((exc for _item, stage, exc in terminal if stage == "embedding"), None)
-
-        def _note_failure(message: str) -> None:
-            """Count one failed item; only the first three are printed."""
-            nonlocal failed, warned
-            failed += 1
-            warned += 1
-            if warned <= 3:
-                warn(message)
-
-        # Pages — one batched embed per slice instead of one embedder
-        # round-trip per page (a large wiki paid thousands of serial calls).
-        for i in range(0, len(pages), batch_size):
-            batch = pages[i : i + batch_size]
-            items = []
-            for page in batch:
-                if not (page.title or "").strip():
-                    # The shared recipe refuses a blank title, and it is right
-                    # to: the row would be unfindable by name. Here that must
-                    # not abort a whole reindex over one bad row, so the page
-                    # is skipped and counted like any other failure.
-                    failed += 1
-                    warned += 1
-                    if warned <= 3:
-                        warn(f"  skipped {page.id}: no title to index it by")
+        async def _index_batches(records, build_items):
+            nonlocal consecutive_provider_failures
+            for start in range(0, len(records), batch_size):
+                batch = records[start : start + batch_size]
+                provider_error = await _embed_slice(build_items(batch))
+                progress.advance(task, advance=len(batch))
+                if provider_error is None:
+                    consecutive_provider_failures = 0
                     continue
-                item = embed_item(
-                    page.id,
-                    title=page.title,
-                    page_type=page.page_type or "",
-                    target_path=page.target_path or "",
-                    summary=page.summary or "",
-                    content=page.content or "",
-                    page_metadata=page.metadata_json,
-                    digest=page.digest or "",
-                )
-                if item is None:
-                    # Below the information floor. Not a failure — the page is
-                    # deliberately kept out of the index and is counted apart
-                    # from the ones that broke, because a reindex reporting
-                    # them together would read as an embedder losing rows.
-                    below_floor += 1
-                    continue
-                items.append(item)
-            provider_failure = await _embed_slice(items)
-            progress.advance(task, advance=len(batch))
-            if provider_failure is None:
-                consecutive_provider_failures = 0
-            else:
                 consecutive_provider_failures += 1
-                # A missing model fails every request alike: no second batch needed.
+                # A missing model fails every request alike, so stop immediately.
                 if (
                     consecutive_provider_failures >= _PROVIDER_FAILURE_CIRCUIT_SLICES
-                    or isinstance(provider_failure, OllamaModelMissingError)
+                    or isinstance(provider_error, OllamaModelMissingError)
                 ):
-                    provider_circuit_error = provider_failure
-                    break
+                    return provider_error
+            return None
 
-        # Decision records — embedded into the shared page store under the
-        # decision: namespace, batched like the pages. Uses embed_batch
-        # directly (which raises on failure) rather than the ingest-side
-        # best-effort wrapper, so the indexed/failed counters stay honest.
-        # Only when there are any. Set unconditionally, this relabelled a bar
-        # that had just finished the pages, so a repo with no decisions ended
-        # its reindex reading "Indexing decisions... 186/186" — 186 pages
-        # reported as decisions that were never indexed.
-        if decisions and provider_circuit_error is None:
+        provider_error = await _index_batches(pages, _page_items)
+        if decisions and provider_error is None:
             progress.update(task, description="Indexing decisions...")
-        for i in range(0, len(decisions) if provider_circuit_error is None else 0, batch_size):
-            batch = decisions[i : i + batch_size]
-            items = [
-                item
-                for d in batch
-                if (
-                    item := decision_vector_item(
-                        d.id,
-                        title=d.title or "",
-                        decision=d.decision or "",
-                        evidence_file=getattr(d, "evidence_file", None),
-                    )
-                )
-                is not None
-            ]
-            provider_failure = await _embed_slice(items)
-            progress.advance(task, advance=len(batch))
-            if provider_failure is None:
-                consecutive_provider_failures = 0
-            else:
-                consecutive_provider_failures += 1
-                # A missing model fails every request alike: no second batch needed.
-                if (
-                    consecutive_provider_failures >= _PROVIDER_FAILURE_CIRCUIT_SLICES
-                    or isinstance(provider_failure, OllamaModelMissingError)
-                ):
-                    provider_circuit_error = provider_failure
-                    break
+            provider_error = await _index_batches(decisions, _decision_items)
+    return indexed, failed, below_floor, provider_error
 
-    await vector_store.close()
-    await engine.dispose()
 
-    if provider_circuit_error is not None:
-        raise click.ClickException(_circuit_message(provider_circuit_error))
-    # Nothing failed, so the keyless marker has done its job; kept, it would
-    # propose this re-embed on every ``update`` of a wiki whose pages all sit
-    # below the information floor (no table is ever written). After a failure
-    # it stays, and the next ``update`` retries, as it did over a mock table.
-    if not failed:
-        clear_keyless_store_mark(lance_dir)
-
+def _report_reindex(repo_path, lance_dir, embedder_name: str, indexed: int, failed: int, below_floor: int) -> None:
     # Record the embedder we actually built the table with. Without this, a
     # repo indexed keyless keeps `embedder: mock` in config.yaml, and the next
     # `repowise update` builds a mock store, writes 8-wide vectors into the

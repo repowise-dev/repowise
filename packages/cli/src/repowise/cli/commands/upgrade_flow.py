@@ -778,8 +778,10 @@ def upgrade_to_full(
     pages. With no model configured the documentation is built from code: no
     model calls and no spend.
     """
+    from repowise.cli.providers.vector_store import recover_pending_decision_vectors
     from repowise.cli.ui import load_dotenv
     from repowise.core.generation import GenerationConfig
+    from repowise.core.persistence.decision_id_migration import DecisionVectorRecoveryError
 
     load_dotenv(repo_path)
     state = load_state(repo_path)
@@ -836,6 +838,10 @@ def upgrade_to_full(
     # Released when this function returns (success, cost-gate Abort or failure),
     # not at process exit.
     try:
+        try:
+            run_async(recover_pending_decision_vectors(repo_path))
+        except DecisionVectorRecoveryError as exc:
+            raise click.ClickException(str(exc)) from exc
         provider_block = _provider_block(
             provider,
             embedder_name,

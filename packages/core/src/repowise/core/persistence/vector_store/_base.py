@@ -12,7 +12,7 @@ import json
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -331,6 +331,24 @@ class VectorStore(ABC):
         """
         return False
 
+    async def copy_vectors(self, mapping: dict[str, str]) -> set[str]:
+        """Copy stored vectors and metadata to new IDs without embedding.
+
+        Each destination has one source. Snapshot all sources before writing
+        any destination so occupied-key chains work. Leave sources intact;
+        return the source IDs copied.
+        Unsupported backends return an empty set. Write failures propagate.
+        """
+        return set()
+
+    async def vectors_match(self, page_ids: set[str]) -> bool:
+        """Confirm all requested IDs hold the same vector and stored metadata."""
+        return False
+
+    async def preserve_vectors(self, page_ids: set[str]) -> Callable[[], Awaitable[None]] | None:
+        """Capture exact rows for restoring these keys if a caller rolls back."""
+        return None
+
     @abstractmethod
     async def search(
         self, query: str, limit: int = 10, *, kind: str = "query"
@@ -403,6 +421,10 @@ class VectorStore(ABC):
         inconsistencies.  Implementations may override for efficiency.
         """
         return set()  # default: empty (subclasses should override)
+
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        """Return which of the requested IDs currently have a stored vector."""
+        return page_ids & await self.list_page_ids() if page_ids else set()
 
     async def holds_current_vectors(self) -> bool:
         """Whether stored vectors have the width the running embedder writes.

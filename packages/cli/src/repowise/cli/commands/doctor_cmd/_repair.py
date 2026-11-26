@@ -110,7 +110,7 @@ async def _embed_missing(sf, vs, missing: set[str]):
             yield page.id
 
 
-async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
+async def _repair_vectors(sf, repo_path: _DoctorPath) -> int:
     """Re-embed missing pages and delete orphans; returns entries repaired."""
     repaired = 0
     try:
@@ -119,14 +119,27 @@ async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
             build_vector_store,
             resolve_embedder_for_repo,
         )
+        from repowise.cli.providers.vector_store import recover_pending_decision_vectors
+        from repowise.core.persistence.vector_store.lancedb_store import LanceDBVectorStore
+
+        from ._checks.stores import _reconcile
 
         # Repair with the embedder that built this store, not a hardcoded
         # mock: writing 8-wide mock vectors into a real table makes LanceDB
         # drop it. build_vector_store refuses that combination and returns None.
         embedder_name = resolve_embedder_for_repo(repo_path)
+        repowise_dir = repo_path / ".repowise"
+        if LanceDBVectorStore.has_pending_decision_rekey(repowise_dir / "lancedb"):
+            await recover_pending_decision_vectors(repo_path)
+            repaired += 1
+        # The diagnostic scan ran before we took the writer lock. An update
+        # in between can make a former orphan the only valid copy of a vector.
+        drift, _, error = await _reconcile(repo_path, repowise_dir)
+        if error is not None:
+            raise RuntimeError(error)
         reindex_instead = _announce_embedding(drift, embedder_name)
-        if reindex_instead and not drift.orphaned_vector:
-            return 0
+        if not drift.orphaned_vector and (reindex_instead or not drift.missing_from_vector):
+            return repaired
         embedder = build_embedder(embedder_name, repo_path)
         vs = build_vector_store(_DoctorPath(repo_path), embedder)
         if vs is None:
@@ -134,13 +147,15 @@ async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
                 "no embedder available that can write this store; "
                 "set an embedder key and run `repowise reindex`"
             )
-        if drift.missing_from_vector and not reindex_instead:
-            async for _page_id in _embed_missing(sf, vs, drift.missing_from_vector):
+        try:
+            if drift.missing_from_vector and not reindex_instead:
+                async for _page_id in _embed_missing(sf, vs, drift.missing_from_vector):
+                    repaired += 1
+            for pid in drift.orphaned_vector:
+                await vs.delete(pid)
                 repaired += 1
-        for pid in drift.orphaned_vector:
-            await vs.delete(pid)
-            repaired += 1
-        await vs.close()
+        finally:
+            await vs.close()
     except Exception as exc:
         console.print(f"[yellow]Vector repair skipped: {exc}[/yellow]")
     return repaired
@@ -154,9 +169,17 @@ async def _repair_stores(ctx: CheckContext) -> int:
         repaired += await _repair_fts(engine, sf, drift)
     lance_dir = ctx.repowise_dir / "lancedb"
     if (lance_dir.exists() or drift.vector_store_empty) and (
-        drift.missing_from_vector or drift.orphaned_vector
+        drift.missing_from_vector or drift.orphaned_vector or drift.decision_rekey_pending
     ):
-        repaired += await _repair_vectors(sf, ctx.repo_path, drift)
+        from repowise.core.update_lock import holding_update_lock
+
+        with holding_update_lock(ctx.repo_path) as locked:
+            if locked:
+                repaired += await _repair_vectors(sf, ctx.repo_path)
+            else:
+                console.print(
+                    "[yellow]Vector repair skipped: another update is writing this index.[/yellow]"
+                )
     await engine.dispose()
     return repaired
 

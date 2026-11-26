@@ -74,6 +74,47 @@ async def test_reindex_uses_shared_database_engine(
     assert created["engine"].disposed is True
 
 
+async def test_reindex_recovers_pending_rows_before_loading_the_index(tmp_path, monkeypatch):
+    pytest.importorskip("lancedb")
+    import json
+    from uuid import uuid4
+
+    from repowise.core.persistence.database import create_engine, create_session_factory, init_db
+    from repowise.core.persistence.models import Repository
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo_id = "reindex-recovery-fixture"
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    engine = create_engine(f"sqlite+aiosqlite:///{repowise_dir / 'wiki.db'}")
+    try:
+        await init_db(engine)
+        async with create_session_factory(engine)() as session:
+            session.add(Repository(id=repo_id, name="fixture", local_path=str(tmp_path)))
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+    store = LanceDBVectorStore(str(repowise_dir / "lancedb"), MockEmbedder())
+    key = "decision:restored"
+    await store.upsert_vectors([(key, [0.25] * 8, {"title": "Retained"})])
+    before = await store.snapshot_vectors({key})
+    store.decision_vector_journal(repo_id).write_text(
+        json.dumps({"revision": uuid4().hex, "previous": None, "rows": before}),
+        encoding="utf-8",
+    )
+    await store.delete(key)
+    await store.close()
+
+    monkeypatch.setattr(reindex_cmd, "_embedder_for", lambda *_: ("mock", MockEmbedder()))
+    await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
+
+    assert await store.snapshot_vectors({key}) == before
+    assert not store.decision_rekey_pending()
+    await store.close()
+
+
 async def test_reindex_aborts_when_every_item_failed(
     monkeypatch,
     tmp_path: Path,

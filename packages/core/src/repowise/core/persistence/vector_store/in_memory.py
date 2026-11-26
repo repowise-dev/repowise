@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
+
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import SearchResult
@@ -66,6 +69,32 @@ class InMemoryVectorStore(VectorStore):
             self._store[page_id] = (list(vector), dict(metadata))
         return True
 
+    async def copy_vectors(self, mapping: dict[str, str]) -> set[str]:
+        snapshots = {
+            source: (list(self._store[source][0]), dict(self._store[source][1]))
+            for source in mapping
+            if source in self._store
+        }
+        for source, value in snapshots.items():
+            self._store[mapping[source]] = value
+        return set(snapshots)
+
+    async def vectors_match(self, page_ids: set[str]) -> bool:
+        if not page_ids or not page_ids <= self._store.keys():
+            return False
+        first, *others = page_ids
+        return all(self._store[first] == self._store[other] for other in others)
+
+    async def preserve_vectors(self, page_ids: set[str]) -> Callable[[], Awaitable[None]]:
+        before = {key: deepcopy(self._store[key]) for key in page_ids & self._store.keys()}
+
+        async def restore() -> None:
+            for key in page_ids - before.keys():
+                self._store.pop(key, None)
+            self._store.update(before)
+
+        return restore
+
     async def search(
         self, query: str, limit: int = 10, *, kind: str = "query"
     ) -> list[SearchResult]:
@@ -102,6 +131,9 @@ class InMemoryVectorStore(VectorStore):
 
     async def list_page_ids(self) -> set[str]:
         return set(self._store.keys())
+
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        return {page_id for page_id in page_ids if page_id in self._store}
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.

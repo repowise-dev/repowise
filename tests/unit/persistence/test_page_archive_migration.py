@@ -36,26 +36,62 @@ def _live_rows(path: Path) -> dict:
 
 @pytest.mark.parametrize("warm_start", [False, True])
 def test_upgrade_handles_migrated_and_additive_stores(tmp_path: Path, warm_start: bool) -> None:
-    from repowise.core.persistence import crud
-
     path = tmp_path / "wiki.db"
     config = _alembic_config(path)
     command.upgrade(config, "0120")
 
-    async def seed() -> None:
-        engine = create_engine(f"sqlite+aiosqlite:///{path}")
-        try:
-            async with get_session(create_session_factory(engine)) as session:
-                repo = await insert_repo(session)
-                kwargs = make_page_kwargs(repo.id, content="Original migration prose")
-                await crud.upsert_page(session, **kwargs)
-                await crud.upsert_page(session, **{**kwargs, "content": "Current migration prose"})
-            if warm_start:
-                await init_db(engine)
-        finally:
-            await engine.dispose()
+    # Seed revision 0120 using its own columns. The active ORM also expects
+    # columns from later revisions, which may not exist on a cold store.
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO repositories (id, name, local_path) VALUES (?, ?, ?)",
+            ("repo", "test-repo", "/tmp/test-repo"),
+        )
+        connection.execute(
+            """
+            INSERT INTO wiki_pages (
+                id, repository_id, page_type, title, content, target_path,
+                source_hash, model_name, provider_name, version, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (
+                "file_page:src/main.py",
+                "repo",
+                "file_page",
+                "main.py",
+                "Current migration prose",
+                "src/main.py",
+                "abc123",
+                "mock",
+                "mock",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO wiki_page_versions (
+                id, page_id, repository_id, version, page_type, title, content,
+                source_hash, model_name, provider_name
+            )
+            SELECT ?, id, repository_id, 1, page_type, title, ?, source_hash,
+                   model_name, provider_name
+            FROM wiki_pages WHERE id = ?
+            """,
+            ("version", "Original migration prose", "file_page:src/main.py"),
+        )
 
-    asyncio.run(seed())
+    if warm_start:
+
+        async def reconcile() -> None:
+            engine = create_engine(f"sqlite+aiosqlite:///{path}")
+            try:
+                await init_db(engine)
+            finally:
+                await engine.dispose()
+
+        asyncio.run(reconcile())
+
     original = _live_rows(path)
     command.upgrade(config, "0121")
     assert _live_rows(path) == original

@@ -142,3 +142,36 @@ def test_up_to_date_self_heal_runs_and_releases_under_lock(
     assert calls.get("heal_commit_offsets", 0) == 1
     assert calls.get("consume_update_pending", 0) == 1
     assert calls.get("release_update_lock", 0) == 1
+
+
+def test_changed_update_releases_lock_if_vector_recovery_refuses(tmp_path, monkeypatch):
+    from click import ClickException
+
+    from repowise.core.update_lock import read_update_lock, release_update_lock
+
+    repo, _ = _indexed_repo(tmp_path)
+    (repo / "a.txt").write_text("updated")
+    _git(repo, "commit", "-am", "after index")
+
+    def refuse(repo_path):
+        assert read_update_lock(repo_path) is not None
+        raise ClickException("Cannot settle decision-vector undo")
+
+    monkeypatch.setattr(upd_cmd, "_recover_decision_vectors", refuse)
+    try:
+        with pytest.raises(ClickException, match="Cannot settle"):
+            upd_cmd.run_update(
+                path=str(repo),
+                provider_name=None,
+                model=None,
+                since=None,
+                reasoning=None,
+                cascade_budget=None,
+                dry_run=False,
+                workspace=False,
+                no_workspace=True,
+                repo_alias=None,
+            )
+        assert read_update_lock(repo) is None
+    finally:
+        release_update_lock(repo)

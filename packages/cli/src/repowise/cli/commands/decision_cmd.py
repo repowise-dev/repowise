@@ -343,6 +343,11 @@ def decision_add(
         )
 
     warnings = _collect_add_warnings(repo_path, fields, stored.kind)
+    if stored.vector_write_deferred:
+        warnings.append(
+            "Search indexing was deferred by a running update. "
+            "Repeat this decision add command when the update finishes."
+        )
     _report_added(repo_path, stored, fmt, warnings=warnings, commits=evidence_commits)
 
 
@@ -594,6 +599,7 @@ class _Persisted(NamedTuple):
     kept: list[str]
     blockers: tuple[str, ...] = ()
     agent: str = ""
+    vector_write_deferred: bool = False
 
 
 #: Restatable fields, and the column each list field is stored in.
@@ -685,6 +691,7 @@ async def _persist_decision(
                 await _accept_answered_prompts(session, rec, repo_path)
 
             embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
+            repository_id = repo.id
             # A different title means the derived id folded this onto a record
             # stating the same decision, which is an update too.
             from repowise.core.persistence.crud.authority import record_blockers
@@ -697,8 +704,8 @@ async def _persist_decision(
 
         # After the session commits, so a network embed never holds the write
         # transaction or vectors an uncommitted record.
-        await _embed_decision(repo_path, *embed)
-    return stored
+        deferred = await _embed_decision(repo_path, *embed, repository_id=repository_id)
+    return stored._replace(vector_write_deferred=deferred)
 
 
 async def _note_agent_signer(session, rec, signer: _Signer) -> None:
@@ -734,8 +741,10 @@ async def _embed_decision(
     title: str,
     decision: str,
     evidence_file: str | None,
-) -> None:
-    """Write a record's ``decision:`` vector, or leave the store untouched.
+    *,
+    repository_id: str | None = None,
+) -> bool:
+    """Write the record's vector and report whether an active writer deferred it.
 
     Without it a manual entry is invisible to semantic dedup in both
     directions until the next reindex: it can neither find a duplicate nor be
@@ -744,32 +753,56 @@ async def _embed_decision(
     record a decision.
     """
     from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
-    from repowise.cli.providers.vector_store import build_vector_store
+    from repowise.cli.providers.vector_store import (
+        build_vector_store,
+        recover_pending_decision_vectors,
+    )
     from repowise.core.analysis.decisions.semantic_match import upsert_decision_vector
     from repowise.core.providers.embedding import is_semantic_embedder
+    from repowise.core.update_lock import holding_update_lock
 
     try:
         # Before building the store, which would create its directory for a
         # repo whose embedder cannot fill it.
         embedder = build_embedder(resolve_embedder_for_repo(repo_path), repo_path)
         if not is_semantic_embedder(embedder):
-            return
-        store = build_vector_store(repo_path, embedder)
-        if store is None:
-            return
-        await upsert_decision_vector(
-            store,
-            decision_id,
-            title=title,
-            decision=decision,
-            evidence_file=evidence_file,
-        )
+            return False
+        with holding_update_lock(repo_path) as locked:
+            if not locked:
+                return True
+            store = build_vector_store(repo_path, embedder)
+            if store is None:
+                return False
+            try:
+                await recover_pending_decision_vectors(repo_path, store)
+                if repository_id is not None:
+                    from repowise.cli.helpers import repo_index_session
+                    from repowise.core.persistence.models import DecisionRecord
+
+                    async with repo_index_session(repo_path) as opened:
+                        if opened is None or opened[1] != repository_id:
+                            return False
+                        record = await opened[0].get(DecisionRecord, decision_id)
+                        if record is None or (
+                            record.title, record.decision or "", record.evidence_file
+                        ) != (title, decision, evidence_file):
+                            return False
+                await upsert_decision_vector(
+                    store,
+                    decision_id,
+                    title=title,
+                    decision=decision,
+                    evidence_file=evidence_file,
+                )
+            finally:
+                await store.close()
     except Exception as err:
         # Covers resolving and building the store. The embed call itself
         # swallows its own failures, so this does not see those.
         structlog.get_logger(__name__).debug(
             "decision.embed_skipped", decision_id=decision_id, error=str(err)
         )
+    return False
 
 
 # ---------------------------------------------------------------------------

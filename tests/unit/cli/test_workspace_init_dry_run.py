@@ -132,3 +132,51 @@ def test_workspace_dry_run_still_counts_files(tmp_path: Path, _stub_pipeline: No
     assert outcome.file_count == 3
     assert outcome.symbol_count == 9
     assert outcome.pages_generated == 0
+
+
+def test_workspace_init_defers_to_an_existing_update_lock(tmp_path, monkeypatch) -> None:
+    from repowise.core.update_lock import (
+        read_update_lock,
+        release_update_lock,
+        try_acquire_update_lock,
+    )
+
+    repo = _fake_repo(tmp_path)
+    assert try_acquire_update_lock(tmp_path, "running-update") is None
+
+    def unexpected_pipeline(*args, **kwargs):
+        pytest.fail("Workspace init started while an update held the repository lock")
+
+    monkeypatch.setattr(ws_mod, "_index_repo", unexpected_pipeline)
+    try:
+        outcome = _ingest_and_generate_repo(repo, 1, 1, _ctx(tmp_path, dry_run=False))
+        assert "Another repowise update" in outcome.error
+        assert read_update_lock(tmp_path)["target_commit"] == "running-update"
+    finally:
+        release_update_lock(tmp_path)
+
+
+def test_workspace_init_recovers_before_pipeline_and_releases_on_failure(tmp_path, monkeypatch):
+    from repowise.core.persistence.decision_id_migration import DecisionVectorRecoveryError
+    from repowise.core.update_lock import read_update_lock
+
+    repo = _fake_repo(tmp_path)
+    lock_during_recovery = []
+
+    async def recover(repo_path):
+        assert repo_path == tmp_path
+        lock_during_recovery.append(read_update_lock(tmp_path))
+        raise DecisionVectorRecoveryError("Cannot settle decision-vector undo")
+
+    def unexpected_pipeline(*args, **kwargs):
+        pytest.fail("Workspace init started before recovering interrupted decision vectors")
+
+    monkeypatch.setattr(
+        "repowise.cli.providers.vector_store.recover_pending_decision_vectors", recover
+    )
+    monkeypatch.setattr(ws_mod, "_index_repo", unexpected_pipeline)
+    outcome = _ingest_and_generate_repo(repo, 1, 1, _ctx(tmp_path, dry_run=False))
+
+    assert outcome.error == "Cannot settle decision-vector undo"
+    assert lock_during_recovery[0] is not None
+    assert read_update_lock(tmp_path) is None
