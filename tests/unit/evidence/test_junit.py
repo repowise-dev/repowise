@@ -69,12 +69,21 @@ JEST_SETUP = b"""<?xml version="1.0" encoding="UTF-8"?>
 </testsuite></testsuites>
 """
 
+# cargo-nextest's default junit reporter format
+NEXTEST = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="1" failures="0" errors="0" time="0.042">
+    <testsuite name="cart" tests="1" disabled="0" errors="0" failures="0" time="0.042">
+        <testcase name="test_adds" classname="cart::tests" time="0.042" />
+    </testsuite>
+</testsuites>
+"""
+
 
 def _doc(data: bytes):
     return parse_evidence(json.dumps(junit.to_v1(data)))
 
 
-@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST])
+@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST, NEXTEST])
 def test_every_runner_shape_is_detected_as_junit(data: bytes) -> None:
     assert detect_profile_format(data) == "junit"
 
@@ -95,6 +104,16 @@ def test_pytest_cases_keep_their_classname_until_placed() -> None:
     ]
     # Class or module fixtures run inside the first test of each classname.
     assert [e["first_in_class"] for e in doc.entries] == [True, False, True, False]
+
+
+def test_nextest_cases_keep_their_classname_until_placed() -> None:
+    doc = _doc(NEXTEST)
+
+    assert doc.kind == "test_timing"
+    assert [(e["test_id"], e["outcome"], e["duration_s"]) for e in doc.entries] == [
+        ("cart::tests::test_adds", "passed", 0.042),
+    ]
+
 
 
 def test_a_case_that_names_its_file_gets_a_path_id() -> None:
