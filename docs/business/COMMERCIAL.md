@@ -103,8 +103,9 @@ All of the following ship in `pip install repowise` today, free for internal use
   expiring tokens. Authentication, team directory, change metadata, event
   delivery and report sections are named seams a plugin can fill.
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
-  offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
-  environment only, never code, paths or repo names) can be turned off with
+  offline via Ollama. Anonymous, opt-out usage telemetry (command, MCP tool and
+  client names, status, duration and coarse environment, never code, paths or
+  repo names; raw events deleted after 90 days) can be turned off with
   `repowise telemetry disable`, `REPOWISE_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`
   or `REPOWISE_OFFLINE=1`. Stored:
   graph, non-reversible embeddings, wiki pages, git metadata, decision records. Raw

@@ -89,14 +89,21 @@ The CLI reports anonymous, opt-out usage telemetry so we can prioritize work. It
 is documented field by field in
 [docs/reference/TELEMETRY.md](../reference/TELEMETRY.md).
 
-**What is collected:** an anonymous envelope (`anon_id`, `session_id`,
-`cli_version`, `os`, `arch`, `python_version` at major.minor only, `is_ci`),
-plus per-event properties: the command name, a known subcommand name, flag
-**names** only, a status enum, an exception **class name**, and a duration. For
-`init` / `update`, coarse buckets describe the shape of the run (file-count
-bucket, top language, docs mode on/off, provider and model, embedder, pages
-bucket). MCP tool calls report the tool name, status, duration, and coarse
-enums (confidence, retrieval quality, results bucket, index-behind flag).
+**What is collected:** three event types, `command_run` (once per CLI
+command), `mcp_tool_call` (once per MCP tool call) and `view_opened` (once per
+local web UI view). Each carries an anonymous envelope (`anon_id`,
+`session_id`, `cli_version`, `os`, `arch`, `python_version` at major.minor
+only, `is_ci`) and a `client` label naming the host that ran Repowise
+(`claude_code`, `codex`, `cursor`, `vscode`, `ci`, `terminal`, or for an MCP
+call the agent the client announces, else `unknown`). `command_run` adds the
+command name, a known subcommand name, flag **names** only, a status enum, an
+exception **class name**, a duration, and command-specific fixed labels,
+booleans and ranges (for `init` / `update`: file-count range, top language,
+docs mode, provider and model, embedder, pages range). `mcp_tool_call` adds the
+MCP tool name, status, duration, fixed labels such as confidence and error
+reason, a results range, the response size as a count, and stage timings.
+`view_opened` adds the fixed id of the view. Every field is listed in
+TELEMETRY.md.
 
 **What is never collected:** source code or file contents, file paths or
 directory names, repository names, package names, symbol or function names,
@@ -107,6 +114,8 @@ hostnames, email, or anything personally identifiable.
 **`anon_id` is a random UUID** stored in `~/.repowise/platform.json`. It is not
 derived from a hostname, username, or machine identifier, so it cannot be
 reversed to a person. Delete the file and a new, unrelated id is generated.
+Signing in with `repowise login` links that id to your repowise.dev account;
+nothing is linked unless you sign in.
 
 **Verify before you trust us.** Print the exact payload without sending it:
 
@@ -125,8 +134,10 @@ export REPOWISE_OFFLINE=1         # blocks all of repowise's own network calls
 
 Check state with `repowise telemetry status`.
 
-**Retention:** events are kept for 90 days, then deleted. Only aggregate figures
-are used or shared.
+**Retention:** raw events and any per-install data derived from them are
+deleted after 90 days. Only anonymous aggregate counts (per day, tool, client
+and version, and weekly install cohorts) with no per-install key are kept
+longer. Only aggregate figures are used or shared.
 
 ---
 
@@ -235,9 +246,9 @@ own product and adds the layer above.
 | Can we run with no network access at all? | Yes. Ollama plus a local embedding model gives zero external API calls; disable telemetry and the process makes no outbound requests. In air-gapped mode the LLM provider and git server sit inside your boundary. |
 | Do you see our LLM API traffic? | No. BYOK calls go directly from your infrastructure to your provider. We do not proxy them. |
 | What is your data retention on LLM prompts? | Governed by your own provider contract (for example Anthropic's API zero-retention policy), not by us. |
-| What telemetry is sent, and can we turn it off? | Anonymous command names and coarse environment only, with no code, paths, repo names, flag values, IPs, or identifiers. On by default; disable via `repowise telemetry disable`, `DO_NOT_TRACK=1`, `REPOWISE_TELEMETRY_DISABLED=1`, or `REPOWISE_OFFLINE=1`. Verify the exact payload with `REPOWISE_TELEMETRY_DEBUG=1`. |
-| How long is telemetry retained? | 90 days, then deleted. Only aggregates are used. |
-| Can telemetry be tied back to a user or a repo? | No. `anon_id` is a random UUID in `~/.repowise/platform.json`, not derived from any machine or user identifier, and no repo-identifying field is sent. |
+| What telemetry is sent, and can we turn it off? | A random install id, the CLI command name, the MCP tool name, the web view opened, the client that ran it (such as `claude_code`, `codex` or `cursor`), status, duration, fixed labels and ranges, version and coarse environment, with no code, paths, repo names, flag values, queries, IPs, or usernames. Every field is listed in [TELEMETRY.md](../reference/TELEMETRY.md). On by default; disable via `repowise telemetry disable`, `DO_NOT_TRACK=1`, `REPOWISE_TELEMETRY_DISABLED=1`, or `REPOWISE_OFFLINE=1`. Verify the exact payload with `REPOWISE_TELEMETRY_DEBUG=1`. |
+| How long is telemetry retained? | Raw events and per-install data are deleted after 90 days. Only anonymous aggregate counts with no per-install key are kept longer. |
+| Can telemetry be tied back to a user or a repo? | Not to a repo: no repo-identifying field is sent. Not to a user unless you sign in: `anon_id` is a random UUID in `~/.repowise/platform.json`, not derived from any machine or user identifier, and `repowise login` is the one step that links it to your account. |
 | Are you SOC 2 or ISO 27001 certified? | No. We publish PCI-DSS 4.0 and SOC 2 **control-coverage reports** on the hosted platform, explicitly labeled as coverage signals rather than an audit or certification. ISO 27001 Annex A mapping is roadmap. |
 | Can we deploy on-prem or air-gapped? | Yes. Containerized API, indexer workers, and dashboard, backed by Postgres and LanceDB/pgvector, with optional Ollama. No outbound connectivity is required in air-gapped mode. A single packaged air-gapped bundle is scoped and set up for your deployment. |
 | Do you support SSO and SCIM? | SAML / OIDC SSO (Okta, Entra ID, Auth0, Google Workspace, generic SAML 2.0), SCIM provisioning, RBAC and multi-tenant segregation are scoped and set up for your deployment under the commercial license. See [COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities-at-a-glance). |
