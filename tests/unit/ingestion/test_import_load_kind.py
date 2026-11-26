@@ -396,3 +396,44 @@ def test_an_unguarded_import_still_closes_the_cycle(a_source: str) -> None:
     plans = _cycles(builder)
     assert len(plans) == 1
     assert set(plans[0].plan["cycle"]) == {"pkg/a.py", "pkg/b.py"}
+
+
+@pytest.mark.parametrize(
+    ("source", "module", "expected"),
+    [
+        # Positive: TYPE_CHECKING aliased from typing / typing_extensions is type-only.
+        (
+            "from typing import TYPE_CHECKING as TC\nif TC:\n    from .a import A\n",
+            ".a",
+            (True, False),
+        ),
+        (
+            "from typing_extensions import TYPE_CHECKING as GUARD\nif GUARD:\n    from .b import B\n",
+            ".b",
+            (True, False),
+        ),
+        # Negative: another symbol aliased as TC is NOT TYPE_CHECKING -> runtime edge.
+        (
+            "from typing import List as TC\nif TC:\n    from .c import C\n",
+            ".c",
+            (False, False),
+        ),
+        # Negative: TYPE_CHECKING aliased from an unrelated module -> runtime edge.
+        (
+            "from other_mod import TYPE_CHECKING as TC\nif TC:\n    from .d import D\n",
+            ".d",
+            (False, False),
+        ),
+        # Negative: TYPE_CHECKING aliased inside a function is not a module-level guard.
+        (
+            "def f():\n    from typing import TYPE_CHECKING as TC\nif TC:\n    from .e import E\n",
+            ".e",
+            (False, False),
+        ),
+    ],
+)
+def test_python_aliased_type_checking_guards(
+    source: str, module: str, expected: tuple[bool, bool]
+) -> None:
+    assert _kinds("pkg/a.py", source)[module] == expected
+
