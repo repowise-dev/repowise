@@ -191,7 +191,7 @@ from repowise.server.mcp_server.tool_answer.neighbors import (
     lead_file,
     neighbor_evidence,
 )
-from repowise.server.mcp_server.tool_answer.origin import origin_reply
+from repowise.server.mcp_server.tool_answer.origin import origin_hint, origin_reply, wants_origin
 from repowise.server.mcp_server.tool_answer.payload import (
     _apply_lean_high,  # noqa: F401  — backward-compatible helper re-export
     _build_best_guesses,  # noqa: F401  — re-exported: imported from here by tests
@@ -1159,6 +1159,11 @@ async def get_answer(
     agreement_dominant = _agreement(hits)
 
     def _finish(payload: dict, *, keep: bool = False, candidates: bool = True) -> dict:
+        if wants_origin(question):
+            # An origin question no symbol could be pinned to: the code-shaped
+            # answer stands, and the next step is the history of that code.
+            targets = _fallback_targets(hits)
+            payload["next_action_hint"] = origin_hint(targets[0] if targets else None)
         _with_scan_gaps(payload, retrieved.homonyms)
         if fix_history:
             payload["fix_history"] = fix_history
