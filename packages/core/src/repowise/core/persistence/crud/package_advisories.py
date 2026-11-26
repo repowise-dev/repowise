@@ -45,7 +45,10 @@ async def replace_package_advisories(
     source: str | None,
     imported_at: datetime | None = None,
 ) -> int:
-    """Replace the repository's stored document with *packages*; returns rows written."""
+    """Replace the repository's stored document with *packages*; returns rows written.
+
+    No packages writes nothing and keeps the stored document.
+    """
     stamp = {
         "repository_id": repository_id,
         "source_format": format,
@@ -66,6 +69,9 @@ async def replace_package_advisories(
             # A name spelled twice under one ecosystem keeps its first entry.
             rows.setdefault((base["ecosystem"], p.name, cols["advisory_id"]), {**base, **cols})
     values = list(rows.values())
+    if not values:
+        # An empty document says nothing: the stored one stays.
+        return 0
     await session.execute(
         delete(PackageAdvisory).where(PackageAdvisory.repository_id == repository_id)
     )
