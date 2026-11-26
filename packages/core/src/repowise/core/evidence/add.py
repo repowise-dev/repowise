@@ -1,4 +1,4 @@
-"""Read one evidence file, join it to the index and store the run.
+"""Read one evidence file (or one evidence-source batch), join it to the index and store the run.
 
 The steps behind ``repowise evidence add``, without the command line, so a
 server that receives the same file (a CI upload) runs the same checks and
@@ -12,6 +12,10 @@ it opens the index, :func:`store_evidence` inside it) so a file refused on its
 content never opens a store. A profile refused against the index (a checkout
 file that is bundled output by its stored ``code_origin``) is refused by
 :func:`store_evidence` before anything is written.
+
+A batch from a source on the ``evidence-source`` seam (:mod:`.sources`) is
+stored by :func:`ingest_batch` through the same steps, as the
+``repowise-evidence-v1`` file a user would upload with the same entries.
 
 One run may come in several profiles: a parent process and its workers each
 write their own. :func:`prepare_evidence_files` reads them all and merges
@@ -28,8 +32,9 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.git_sha import is_full_sha
 
@@ -37,11 +42,15 @@ from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument, EvidenceFormatError, p
 from .ingest import PRODUCTION_FLAG_REFUSAL, EvidenceCaps, RunProvenance
 from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, evidence_kinds
 
+if TYPE_CHECKING:
+    from .sources import SourceBatch
+
 
 class EvidenceRefusedError(Exception):
     """A file or option refused before anything is stored.
 
-    *code* is ``file_too_large``, ``invalid_evidence`` or ``invalid_option``;
+    *code* is ``file_too_large``, ``invalid_evidence``, ``invalid_option``, or
+    ``no_index`` for a source batch with no index to join to;
     *hint* says what to do; *option* names the ``evidence add`` option at
     fault for an ``invalid_option``.
     """
@@ -497,13 +506,15 @@ async def store_evidence(
     caps: EvidenceCaps,
     source: str = "cli",
     verified: bool = False,
+    measured_at: datetime | None = None,
 ) -> StoredEvidence:
     """Join *prepared* to the index of *repo* (a repository row) and store the run.
 
     *repo_path* is the indexed checkout: its HEAD says whether the run is
     stale, and its settings rank the refreshed read model. *workload_class*
     None takes the class from the kind; *verified* lets a host that verified
-    the sender store ``production`` (:func:`~.ingest.run_class`). Raises
+    the sender store ``production`` (:func:`~.ingest.run_class`).
+    *measured_at* is when the run was measured, when the sender knows. Raises
     :class:`EvidenceRefusedError`, before anything is written, for a profile
     that ran bundled or compiled code of the checkout or a class the kind
     does not take.
@@ -598,18 +609,24 @@ async def store_evidence(
             rows,
             index_at_measured_commit=index_commit is not None and index_commit == prepared.commit,
         )
+    fields = run_fields(
+        doc,
+        provenance,
+        joined,
+        key=run_key(text, provenance, doc.kind, index_commit, prepared.report_dir),
+        truncated=truncated,
+        mapping_partial=partial,
+        unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
+    )
+    if measured_at is not None:
+        # Stored times are UTC (SQLite keeps no zone); a naive time is read as UTC.
+        fields["measured_at"] = (
+            measured_at.astimezone(UTC) if measured_at.tzinfo is not None else measured_at
+        )
     write = await save_evidence_run(
         session,
         repo.id,
-        run_fields(
-            doc,
-            provenance,
-            joined,
-            key=run_key(text, provenance, doc.kind, index_commit, prepared.report_dir),
-            truncated=truncated,
-            mapping_partial=partial,
-            unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
-        ),
+        fields,
         rows,
         history_runs=caps.history_runs,
         max_runs=caps.max_runs,
@@ -721,6 +738,8 @@ async def ingest_evidence(
     caps: EvidenceCaps | None = None,
     source: str = "cli",
     verified: bool = False,
+    measured_at: datetime | None = None,
+    expect_kind: str | None = None,
 ) -> dict[str, Any]:
     """Read *data*, join it to the index of *repo* and store the run; what ``evidence add`` does.
 
@@ -733,7 +752,7 @@ async def ingest_evidence(
     are ``evidence add``'s; *max_file_mb* and *caps* default to the
     repository's ``evidence`` settings. Returns the result ``evidence add
     --format json`` prints. Raises :class:`EvidenceRefusedError` for a file or
-    option it will not take.
+    option it will not take, and for a file that is not of *expect_kind* when given.
     """
     commit = commit.lower() if commit is not None else None
     check_options(workload, workload_class, environment, commit, verified=verified)
@@ -758,6 +777,11 @@ async def ingest_evidence(
         value_kind=value_kind,
         max_file_mb=max_file_mb,
     )
+    read_kind = prepared.doc.kind if prepared.doc is not None else "profile"
+    if expect_kind is not None and read_kind != expect_kind:
+        raise EvidenceRefusedError(
+            "invalid_evidence", f"{name} holds a {read_kind} run, not a {expect_kind} run"
+        )
     stored = await store_evidence(
         session,
         repo,
@@ -770,8 +794,103 @@ async def ingest_evidence(
         caps=caps,
         source=source,
         verified=verified,
+        measured_at=measured_at,
     )
     return stored.payload
+
+
+async def ingest_batch(
+    session: Any,
+    repo: Any,
+    batch: SourceBatch,
+    *,
+    repo_path: Path,
+    checkout_root: Path | None = None,
+    caps: EvidenceCaps | None = None,
+) -> dict[str, Any]:
+    """Store one :class:`~.sources.SourceBatch` the way :func:`ingest_evidence` stores a file.
+
+    The batch's entries become the ``repowise-evidence-v1`` file a user would
+    upload (:func:`~.sources.batch_v1`), or its bytes are read by their
+    ``profile-format``; then the same read, join, store and refresh run, so the
+    stored rows match an upload of the same entries. A source is verified by
+    the host that registered it, so its batch may carry ``production`` where
+    the kind allows it; a typed ``--class`` never can. Everything is written in
+    one savepoint: a batch is stored whole or not at all. Raises
+    :class:`EvidenceRefusedError` like :func:`ingest_evidence`.
+    """
+    from .sources import SOURCE_COLUMN, batch_v1
+
+    if repo is None:
+        # Refused, not ``stored: false``: the fetch keeps its cursor, so the
+        # batch is fetched again once the repository is indexed.
+        raise EvidenceRefusedError(
+            "no_index",
+            "the repository has no index to join the batch to",
+            "run `repowise init`, then fetch again",
+        )
+    if (batch.entries is None) == (batch.data is None):
+        raise EvidenceRefusedError(
+            "invalid_evidence", "a batch carries exactly one of entries and data"
+        )
+    if batch.data is not None:
+        data, input_format_name = batch.data, batch.format
+    else:
+        try:
+            data, input_format_name = batch_v1(batch), EVIDENCE_FORMAT
+        except ValueError as exc:
+            raise EvidenceRefusedError("invalid_evidence", str(exc)) from None
+    try:
+        async with session.begin_nested():
+            return await ingest_evidence(
+                session,
+                repo,
+                data,
+                repo_path=repo_path,
+                workload=batch.workload,
+                workload_class=batch.workload_class,
+                name=f"the {batch.kind} batch",
+                checkout_root=checkout_root,
+                commit=batch.commit,
+                environment=batch.environment or _batch_environment(batch),
+                input_format_name=input_format_name,
+                value_kind=batch.value_kind,
+                # ``evidence.max_file_mb`` bounds a file someone hands over; a
+                # batch is in memory already, and the per-run row caps still apply.
+                # Refusing it would stop the cursor on it for good.
+                max_file_mb=math.inf,
+                caps=caps,
+                source=SOURCE_COLUMN,
+                verified=True,
+                measured_at=batch.measured_at,
+                expect_kind=batch.kind,
+            )
+    except EvidenceRefusedError as exc:
+        field = _BATCH_FIELDS.get(exc.option or "")
+        if field is None:
+            raise
+        # Name the batch field at fault, not the ``evidence add`` option it stands in for.
+        raise EvidenceRefusedError(exc.code, f"batch {field}: {exc}", exc.hint) from None
+
+
+def _batch_environment(batch: SourceBatch) -> str:
+    """Where a batch that names no environment ran: production ran where users are."""
+    spec = evidence_kinds.get(batch.kind)
+    production = batch.workload_class == "production" or (
+        spec is not None and spec.production_only and batch.workload_class is None
+    )
+    return "production" if production else "unknown"
+
+
+#: ``evidence add`` options and the :class:`~.sources.SourceBatch` field each one is.
+_BATCH_FIELDS = {
+    "--class": "workload_class",
+    "--commit": "commit",
+    "--environment": "environment",
+    "--input-format": "format",
+    "--value-kind": "value_kind",
+    "--workload": "workload",
+}
 
 
 async def _convert(
@@ -892,6 +1011,7 @@ __all__ = [
     "evidence_caps",
     "evidence_paths",
     "evidence_report_dir",
+    "ingest_batch",
     "ingest_evidence",
     "input_format",
     "prepare_evidence",

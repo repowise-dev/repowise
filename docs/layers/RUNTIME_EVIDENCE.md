@@ -849,6 +849,12 @@ Detection takes the first format that claims the file, built-in formats first,
 and `--input-format myprof` picks it by name. Entry points, testing and
 publishing: [PLUGINS.md](../reference/PLUGINS.md#seams).
 
+A service that holds measurements (a database's statement statistics, a
+continuous profiler) registers on the `evidence-source` seam instead: it
+fetches runs for a window from a cursor, with credentials the host keeps, and
+each run is stored exactly as a file of the same entries would be. See
+[Writing an evidence source](../reference/PLUGINS.md#writing-an-evidence-source).
+
 Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 
 ### Adding a language
