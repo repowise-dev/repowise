@@ -971,3 +971,78 @@ async def test_a_row_carries_the_step_its_run_measured_inside_it(async_session) 
     assert serve["slower"]["changed_in"] == [{"sha": "f" * 40, "pr": 42}]
     assert load["next_step"] is None and "slower" not in load
     assert serve["verify_basis"] == load["verify_basis"] == "workload"
+
+
+async def _measured_items(session, cls: str = "entry_point") -> tuple[str, list]:
+    """``serve`` and ``load`` measured above the bar by one *cls* run, a step
+    firing on ``serve`` only (its run measured stat calls per entry inside it)."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+
+    repo = await insert_repo(session)
+    await _seed_code(session, repo.id)
+    inside = [
+        {"name": "is_file", "kind": "library", "share": 0.6,
+         "leaf": {"name": "stat", "kind": "native", "share": 0.6}},
+        {"name": "rglob", "kind": "library", "share": 0.3},
+    ]
+    session.add(_run(repo.id, "r1", cls=cls))
+    await session.flush()
+    session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=f"{APP}::serve", repository_id=repo.id,
+            inside_json=json.dumps(inside),
+        )
+    )
+    await session.flush()
+    await replace_workload_hotness(
+        session,
+        repo.id,
+        [
+            {**_hot("load"), "tier": "lead_candidate", "self_share": 0.2},
+            {**_hot("serve", rank=2), "tier": "lead_candidate"},
+        ],
+    )
+    await finalize_performance_opportunities(session, repo.id)
+    rows = (await session.execute(select(PerformanceOpportunity))).scalars().all()
+    return repo.id, [r for r in rows if r.biomarker_type == "measured_hotspot"]
+
+
+async def test_a_measured_item_with_a_next_step_leads_fix_first_with_its_row(
+    async_session,
+) -> None:
+    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+    from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
+
+    repo_id, items = await _measured_items(async_session)
+    by_symbol = {r.intervention_symbol: r for r in items}
+    serve, load = by_symbol[f"{APP}::serve"], by_symbol[f"{APP}::load"]
+    stored = json.loads(serve.details_json)
+    assert stored["may_lead"] is True
+    assert stored["measured_row"]["next_step"]["rule"] == "filesystem"
+    # No rule fired on ``load``: listed, never first, though its share is larger.
+    assert json.loads(load.details_json)["may_lead"] is False
+
+    queue = await load_fix_first(async_session, repo_id, limit=None)
+    lead = queue.lead
+    assert lead.source.opportunity_id == serve.opportunity_id
+    assert lead.title == "Speed up serve"
+    assert "os.scandir" in lead.action.steps[0].text
+    assert lead.gain.text == 'up to 10% of the "w-r1" run'
+    assert lead.verify.command.startswith("repowise perf measure --save before -- w-r1")
+    assert [t.path for t in lead.verify.tests] == ["tests/test_app.py::test_serve"]
+    assert ("self time", '10% of the "w-r1" run') in [(f.label, f.value) for f in lead.facts]
+    compact = lead.compact()
+    assert "os.scandir" in compact["first_step"]["action"] and compact["verify"]["command"]
+
+    # The agent surfaces keep the item with a step and drop the one without.
+    assert await measured_hotspot_ids(async_session, repo_id, without_step=True) == {
+        load.opportunity_id
+    }
+
+
+@pytest.mark.parametrize("cls", ["unit_test", "benchmark"])
+async def test_unit_test_and_benchmark_runs_mint_no_measured_item(async_session, cls) -> None:
+    _, items = await _measured_items(async_session, cls)
+    assert items == []

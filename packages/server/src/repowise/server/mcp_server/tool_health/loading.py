@@ -567,7 +567,9 @@ async def _read_fix_first(
     if pop.scoped or not req.wants("fix_first"):
         return None, None
     full = await load_fix_first(session, repository.id, limit=None)
-    full = without_sources(full, await measured_hotspot_ids(session, repository.id))
+    full = without_sources(
+        full, await measured_hotspot_ids(session, repository.id, without_step=True)
+    )
     return queue_view(full, limit=req.fix_first_cap, offset=req.fix_first_cursor), full
 
 

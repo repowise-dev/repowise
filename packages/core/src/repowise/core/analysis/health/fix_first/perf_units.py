@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from repowise.core.analysis.health.queue.eligibility import perf_low_priority
@@ -16,10 +16,11 @@ from repowise.core.analysis.health.queue.value import (
 )
 from repowise.core.analysis.health.rows import detail_map, field
 from repowise.core.analysis.health.worth import execution_role
+from repowise.core.evidence.function_tests import PER_TEST_MAP
 
 from . import text
 from ._files import _action, _Files, _finish, _opportunity_call
-from ._parts import MAX_FACTS, _one_of, _risk, _step_command, _Unit, _verify
+from ._parts import MAX_FACTS, MAX_TESTS, _one_of, _risk, _step_command, _Unit, _verify
 from .model import (
     FIX_EFFORTS,
     FixConfidence,
@@ -30,6 +31,8 @@ from .model import (
     FixSource,
     FixStep,
     FixTarget,
+    FixTest,
+    FixVerify,
 )
 
 
@@ -60,9 +63,14 @@ def _perf_unit(
 ) -> _Unit:
     cause = _PerfCause.read(rows, files, symbol_lines)
     lead, path = cause.lead, cause.path
+    may_lead = cause.details.get("may_lead") is not False
+    row = cause.details.get("measured_row") or {}
     return _finish(
         kind="perf_fix",
-        may_lead=cause.details.get("may_lead") is not False,
+        may_lead=may_lead,
+        # Only a measured hotspot carries a row, and it may lead only when its
+        # run leads and a rule fired on it (``opportunities._measured_hotspot``).
+        measured_share=float(row.get("share") or 0.0) if may_lead and row else None,
         source_id=f"{path}::{cause.symbol or path}",
         value=perf_value(lead, cause.facets),
         ready=perf_ready(lead, cause.plan),
@@ -120,7 +128,10 @@ class _PerfCause:
 
 def _perf_rank_facts(cause: _PerfCause) -> list[FixRankFact]:
     lead = cause.lead
+    share = (cause.details.get("measured_row") or {}).get("share")
+    measured = [FixRankFact("measured self share", f"{share:.0%}")] if share is not None else []
     return [
+        *measured,
         FixRankFact("runs in", field(lead, "execution_context") or "unknown"),
         FixRankFact("run by", execution_role(lead)),
         FixRankFact("call sites", str(cause.call_sites)),
@@ -143,9 +154,16 @@ def _perf_fields(cause: _PerfCause) -> dict[str, Any]:
         cause.facets.get("loop_magnitude"),
     )
     verify = _verify(cause.plan.get("validation"))
+    row = cause.details.get("measured_row")
+    if row:
+        verify = _row_verify(row, verify)
     steps = _perf_steps(cause, verify.command)
+    step = (row or {}).get("next_step")
+    if step and steps:
+        # The row's next step as is: the target already names the function.
+        steps = (replace(steps[0], text=step["next"][:1].upper() + step["next"][1:]), *steps[1:])
     strategy = field(lead, "fix_strategy") or ""
-    return {
+    fields = {
         "title": text.clip(_perf_title(cause, name)),
         "target": _perf_target(cause, symbol, steps),
         "why": f"{what}; {_perf_reach(cause, files_n)}.",
@@ -171,6 +189,65 @@ def _perf_fields(cause: _PerfCause) -> dict[str, Any]:
             field(lead, "opportunity_id"),
         ),
     }
+    if row:
+        fields.update(_row_fields(row, cause.facets.get("measured")))
+    return fields
+
+
+def _row_fields(row: Mapping[str, Any], workload: str | None) -> dict[str, Any]:
+    """A measured hotspot's why, saving and facts, read off its stored
+    ``evidence.action_row`` row (JSON form): the run's measurement, the next
+    step's reason, and the callers that drove the time. The step itself is
+    the plan's (``performance_fix._measured_step``)."""
+    run = f'the "{workload}" run' if workload else "the run"
+    share = row.get("share")
+    cost = f"{share:.0%} of {run}" if share is not None else run
+    step = row.get("next_step")
+    why = f"{cost} is self time here"
+    facts = [FixFact("self time", cost)]
+    drivers = row.get("caller_shares") or {}
+    if drivers:
+        facts.append(
+            FixFact(
+                "driven by",
+                ", ".join(f"{text.short_symbol(c)} {s:.0%}" for c, s in list(drivers.items())[:2]),
+            )
+        )
+    # The share is the gain's and a fact's; the why is what the time is.
+    out: dict[str, Any] = {
+        "why": f"{step['why']}." if step else f"{why}; no rule names what it repeats.",
+        "facts": tuple(facts[:MAX_FACTS]),
+    }
+    if share is not None:
+        out["gain"] = FixGain("performance", None, f"up to {cost}")
+    return out
+
+
+def _row_verify(row: Mapping[str, Any], stored: FixVerify) -> FixVerify:
+    """The row's one verify command and its tests (the per-test map's tests
+    that ran the function, else the nearest by call graph); the stored plan's
+    where the row has none."""
+    tests = row.get("tests")
+    command = row.get("verify") or stored.command
+    if tests is None:
+        return FixVerify(
+            stored.tests,
+            stored.tests_total,
+            command,
+            stored.basis,
+            stored.prerequisite,
+            stored.measure,
+        )
+    ran = row.get("tests_basis") == PER_TEST_MAP
+    reason = "ran it in the per-test map" if ran else "nearest by call graph"
+    return FixVerify(
+        tuple(FixTest(str(t), reason) for t in tests[:MAX_TESTS]),
+        len(tests),
+        command,
+        ("measured" if ran else "inferred") if tests else "unknown",
+        None if tests else stored.prerequisite,
+        stored.measure,
+    )
 
 
 def _perf_name(cause: _PerfCause) -> tuple[str, str | None]:
