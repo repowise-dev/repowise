@@ -24,6 +24,8 @@ EXTERNAL = 'pytest_plugins = ("pytest_aiohttp.plugin", "pytester")\n'
         ("tests/conftest.py", "from .base import pytest_plugins\n", None),
         ("tests/conftest.py", 'pytest_plugins = ["a"]\npytest_plugins.append("b")\n', None),
         ("tests/conftest.py", "pytest_plugins = (\n", None),
+        ("tests/conftest.py", 'sys.modules[__name__].pytest_plugins = ["a"]\n', None),
+        ("tests/conftest.py", 'setattr(sys.modules[__name__], "pytest_plugins", ["a"])\n', None),
         ("pytest.ini", "[pytest]\naddopts =\n  -p pytest_cov\n  -p no:aiohttp\n", ("pytest_cov",)),
         (
             "pyproject.toml",

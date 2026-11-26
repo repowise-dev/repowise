@@ -47,15 +47,19 @@ def plugin_names(tree: ast.Module) -> tuple[str, ...] | None:
     """The names a module's ``pytest_plugins`` assignments list; ``None`` for any other use.
 
     Each assignment must bind a string or a list or tuple of strings, so a
-    computed list, a read (``pytest_plugins.append``) or an import of the name
-    is unreadable. Ceiling: a name only a string spells (``globals()[...]``),
-    a star import bringing ``pytest_plugins`` in, and the ``PYTEST_PLUGINS``
+    computed list, a read (``pytest_plugins.append``), an import of the name, an
+    attribute of that name or a string spelling it is unreadable. Ceiling: a
+    star import bringing ``pytest_plugins`` in and the ``PYTEST_PLUGINS``
     environment variable are not seen.
     """
     names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.alias) and _NAME in (node.name, node.asname):
             return None
+        if isinstance(node, ast.Attribute) and node.attr == _NAME:
+            return None  # ``sys.modules[__name__].pytest_plugins = ...``
+        if isinstance(node, ast.Constant) and node.value == _NAME:
+            return None  # ``setattr(module, "pytest_plugins", ...)``, ``globals()[...]``
         if not (isinstance(node, ast.Name) and node.id == _NAME):
             continue
         value = _assigned(tree, node)
