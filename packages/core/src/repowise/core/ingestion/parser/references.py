@@ -163,6 +163,7 @@ class _ReferenceScope:
             caller_symbol_id=enclosing,
             line=line,
             argument_count=None,
+            start_byte=name_node.start_byte,
         )
 
 
