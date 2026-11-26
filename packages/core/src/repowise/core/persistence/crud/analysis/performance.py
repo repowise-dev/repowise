@@ -1382,8 +1382,7 @@ async def measured_costs(
         view["statements"] = {
             "runs": [_statement_run(found, at) for found in statements],
             "rows": [
-                _statement_row(r, by_run[r.run_id], spans, context, covered)
-                for r in statement_rows
+                _statement_row(r, by_run[r.run_id], spans, context, covered) for r in statement_rows
             ],
             "total": sum(len(found.rows) for found in statements),
         }
