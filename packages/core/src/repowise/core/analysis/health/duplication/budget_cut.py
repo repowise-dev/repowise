@@ -21,6 +21,13 @@ def collection_order(parsed_files: list[Any]) -> list[Any]:
     A budget cut then lands on tests, tooling and other non-production files
     before it drops any production file. Each group keeps the given order. The
     full run, the splice and the persisted cut all read this one order.
+
+    The origin comes from the path and the stored test flag only, the same
+    form the sibling-skeleton filter uses. A splice must rebuild this order
+    without reading every file, so the content rules (a generated banner at a
+    plain path) do not apply here: such a file sorts with production. Reading
+    each file's head would let them apply, at the cost of a full read pass on
+    every incremental update.
     """
     production: list[Any] = []
     rest: list[Any] = []
