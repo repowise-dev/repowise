@@ -194,6 +194,39 @@ class TestRefused:
         edges = _pairs(tmp_path, {"app/app.go": ("go", source)}, {})
         assert not any(e[2] == "receiver_chain_import" for e in edges)
 
+    def test_an_embedded_generic_instantiation_stops_a_deeper_search(self, tmp_path: Path) -> None:
+        """``Base[int]`` may promote ``Save`` at depth 1, ahead of ``Inner.Save``."""
+        source = (
+            "package app\n\ntype Base[T any] struct{}\n\nfunc (b *Base[T]) Save() {}\n\n"
+            "type Inner struct{}\n\nfunc (i *Inner) Save() {}\n\n"
+            "type Middle struct {\n\tInner\n}\n\n"
+            "type Outer struct {\n\tBase[int]\n\tMiddle\n}\n\n"
+            "var outer = new(Outer)\n\nfunc run() {\n\touter.Save()\n}\n"
+        )
+        edges = _pairs(tmp_path, {"app/app.go": ("go", source)}, {})
+        assert ("app/app.go::run", "app/app.go::Inner::Save", "receiver_chain_import") not in edges
+
+    def test_a_local_chain_is_read_where_it_was_bound(self, tmp_path: Path) -> None:
+        """``api`` rebound after ``group`` is not the ``api`` ``group`` was read from."""
+        router = 'package system\n\nimport api "m/api/v1"\n\ntype SkillsRouter struct{}\n\n'
+        body = (
+            "\tgroup := api.ApiGroupApp.SystemApiGroup\n"
+            "\tapi := &Decoy{}\n\t_ = api\n\tgroup.SkillsApi.GetTools()\n"
+        )
+        decoy = "type Decoy struct {\n\tSystemApiGroup Other\n}\n\ntype Other struct{}\n\n"
+        files = _files(
+            "",
+            {
+                "router/system/skills.go": (
+                    "go",
+                    router + decoy + f"func (s *SkillsRouter) InitSkillsRouter() {{\n{body}}}\n",
+                )
+            },
+        )
+        links = {**_LINKS, "router/system/skills.go": {"m/api/v1": "api/v1/enter.go"}}
+        edges = _pairs(tmp_path, files, links)
+        assert (_INIT_SKILLS, _GET_TOOLS, "receiver_chain_import") in edges
+
     def test_a_type_declared_in_two_files_of_the_package(self, tmp_path: Path) -> None:
         twin = ("go", "package system\n\ntype SkillsApi struct{}\n")
         files = _files("\tskillsApi.GetTools()\n", {"api/v1/system/twin.go": twin})

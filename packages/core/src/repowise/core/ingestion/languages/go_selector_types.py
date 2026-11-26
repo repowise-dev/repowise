@@ -313,6 +313,10 @@ def _struct_fields(body: Node) -> tuple[Field, ...]:
             elif written is not None:
                 # An embedded ``Base``, ``*Base`` or ``pkg.Base`` is a field named ``Base``.
                 fields.append(Field(written[1], written, True))
+            else:
+                # An embed no hop can follow (``Base[int]``) may still promote the
+                # member, so it is kept, untyped, and stops a search at its depth.
+                fields.append(Field("", None, True))
     return tuple(fields)
 
 
@@ -442,7 +446,9 @@ class GoSelectorTypes(Generic[T]):
         if local.written is not None:
             owner = self.resolve_written(path, local.written)
         else:
-            owner = self.receiver_type(path, line, local.chain or (), budget - 1)
+            # The chain is read where the local was bound, not where it is used:
+            # a later binding of its head between the two is not what it names.
+            owner = self.receiver_type(path, visible[0].line, local.chain or (), budget - 1)
         return self.walk_fields(owner, chain[1:])
 
     def _local(self, path: str, line: int, name: str) -> VarSpec | None:
