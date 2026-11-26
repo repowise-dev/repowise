@@ -73,10 +73,11 @@ async def test_import_name_alone_is_inferred_and_ecosystem_scoped(session, tmp_p
     assert "No manifest declares" in yaml["note"]
     assert yaml_npm["sites"] == []  # a Python file's import is not an npm package
     # Declared under its distribution name (in two spellings), imported as
-    # ``yaml``: no link, said so.
+    # ``yaml``: the stored node is unlinked, so the distribution's import name
+    # finds it as inferred.
     assert [d["package_key"] for d in pyyaml["declared"]] == ["pypi:PyYAML", "pypi:pyyaml"]
-    assert pyyaml["sites"] == []
-    assert "import name may differ" in pyyaml["note"]
+    assert [(s["path"], s["mapping"]) for s in pyyaml["sites"]] == [("src/jobs/worker.py", "inferred")]
+    assert "note" not in pyyaml
 
 
 def test_parse_query():
@@ -237,3 +238,12 @@ async def test_a_resolved_dynamic_load_reaches_a_file(session, tmp_path):  # noq
     doc = await package_usage(session, REPO, tmp_path, "requests")
     worker = _by_path(doc)["src/jobs/worker.py"]
     assert worker["reachability"] == {"state": "reachable", "basis": "import_graph"}
+
+
+def test_an_undeclared_distribution_finds_the_module_it_is_imported_under():
+    from repowise.core.inventory.usage import UsageIndex
+
+    index = UsageIndex(nodes={"external:PIL": None, "external:PIL.Image": None, "external:Crypto": None})
+    assert index.match("pillow", "pypi")[1] == {"external:PIL": "inferred", "external:PIL.Image": "inferred"}
+    assert index.match("Pillow")[1] == {"external:PIL": "inferred", "external:PIL.Image": "inferred"}
+    assert index.match("pillow", "npm")[1] == {}
