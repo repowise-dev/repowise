@@ -316,7 +316,7 @@ One top-level block: `window` (`since`, `until`), `candidates` (changes merged i
 
 ### Package targets
 
-`package:<name>` (`package:requests`, `package:npm:lodash`): manifest declarations, a summary, components and owner teams, and up to 25 import sites with line, `mapping` (`declared`, `inferred`) and `reachability` (`reachable`, `unreachable`, `test`, `unknown`, with a basis). See [PACKAGE_USAGE.md](PACKAGE_USAGE.md).
+`package:<name>` (`package:requests`, `package:npm:lodash`): manifest declarations, a summary, components and owner teams, and up to 25 import sites with line, `mapping` (`declared`, `inferred`) and `reachability` (`reachable`, `unreachable`, `test`, `unknown`, with a basis). After `repowise packages import`, a package with a stored advisory also carries `advisories` (up to 5: `id`, `tier` (`package_called`, `imported`, `unknown`), `severity`, `fix`, `affected: null` when no exact version decided the range, and `sites` as `path:line`); `package:<eco>:<name>@<version>` adds a `check` of that version (`verdict`: `ok`, `has_advisories`, `unknown_no_source`), only when a version is asked for. A package with no stored advisory carries no `advisories`. See [PACKAGE_USAGE.md](PACKAGE_USAGE.md).
 
 ### Skeleton
 
@@ -430,6 +430,7 @@ Per file:
 | `primary_owner` | Always, with the owner clause in `risk_summary` |
 | `cross_repo_impact` | Workspace, only when another repo has a concrete link to the file: a contract on either side, or a package import that reaches it (the imported module or subpath, or a file its re-exports forward to). `affected_repos`, the overlay's `status` (and `reason` when not available), and contract consumer and provider rows. Co-change alone is history, not a link: it stays in `cross_repo_links` |
 | test gaps, `security_signals` | Coverage gaps and security findings |
+| `advisory_call` | Only when a production function calls, from this file, a package with a stored advisory (tier `package_called`): one line naming the advisory and the call's `path:line`. Absent otherwise |
 | `resolved`, `unresolved_reason` | No indexed file: `unsupported_target_kind` (`module:` id), `directory`, `not_indexed`, `no_such_path`; counts omitted, not zeroed |
 | `signal_tier`, `signal_tier_reason` | `"history"` for docs, config, query and other non-code files |
 

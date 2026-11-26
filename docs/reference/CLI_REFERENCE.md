@@ -1650,17 +1650,23 @@ Find third-party package imports; export or join package data. See [PACKAGE_USAG
 repowise packages where requests
 repowise packages export -o usage.cdx.json
 repowise packages import sbom.json
+repowise packages vulns --fail-on package_called
+repowise packages check pypi:requests@2.31.0
 ```
 
 | Flag | Subcommands | What it does | Default |
 |------|-------------|--------------|---------|
 | `--path` | all | Repo path. | cwd |
-| `--format` | all | `text` or `json`; `export`: `cyclonedx`. | `text`; `export`: `cyclonedx` |
+| `--format` | all | `text` or `json`; `export`: `cyclonedx`; `vulns`: also `sarif`. | `text`; `export`: `cyclonedx` |
 | `--output` / `-o` | `export` | Output file. | stdout |
+| `--tier` | `vulns` | `package_called` or `imported` (with `unknown`): list only advisories at this tier or stronger. | all |
+| `--fail-on` | `vulns` | `package_called`, `imported` (with `unknown`) or `never`: exit 1 when an advisory sits at this tier or stronger. | `package_called` |
 
 - **`where NAME`** (name or `ecosystem:name`): importing files with import line, component, owner teams and reachability, each with basis.
 - **`export`**: declared packages and import sites as CycloneDX 1.6 JSON (`evidence.occurrences`). Not an SBOM.
-- **`import FILE`**: joins your Syft, SPDX, CycloneDX or OSV JSON to usage by package name. Fetches nothing, matches no vulnerability.
+- **`import FILE`**: joins your Syft, SPDX, CycloneDX or OSV JSON to usage by package name and stores it as the repository's advisory data. Fetches nothing.
+- **`vulns`**: each stored advisory with its tier (`package_called`, `imported`, `unknown`; see [package advisories](PACKAGE_USAGE.md#advisories-and-tiers)) and the call or import sites behind it. Exits 2 when no document was imported.
+- **`check TARGET`** (`[ecosystem:]name[@version]`): whether the stored document lists an advisory for that package at that version (`ok`, `has_advisories`, `unknown_no_source`), and where the repository already declares and imports it. Exits 1 on `has_advisories`.
 
 ---
 
