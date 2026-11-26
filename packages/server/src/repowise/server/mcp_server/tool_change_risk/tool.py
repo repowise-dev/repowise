@@ -28,6 +28,7 @@ from repowise.server.mcp_server._helpers import (
     attach_ignored_arguments,
 )
 from repowise.server.mcp_server._meta import full_meta
+from repowise.server.mcp_server._repo_contracts import route_breaks_payload
 from repowise.server.mcp_server._savings import declare_replaced
 from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
 from repowise.server.mcp_server._savings.interaction import note_stage_ms
@@ -298,6 +299,24 @@ async def _attach_change_blocks(
         payload["cross_repo"] = cross_repo
 
 
+def _start_in_repo_contracts(
+    ctx: Any, revspec: str | None, result: Any, changed: Any
+) -> asyncio.Task:
+    """Start reading which routes the change stops serving that in-repo callers call.
+
+    Started beside the other blocks: the comparison reads git and the route
+    dialects, and nothing else waits on it. Without a linked route among the
+    changed files it ends at once with None.
+    """
+    from repowise.server.mcp_server._repo_contracts import route_breaks
+
+    # A clean tree is scored as HEAD, so the comparison reads HEAD too.
+    spec = None if result.working_tree else (revspec or "HEAD")
+    return start_call_task(
+        asyncio.to_thread(route_breaks, getattr(ctx, "path", None), spec, set(changed))
+    )
+
+
 async def _attach_branch_blocks(
     ctx: Any,
     payload: dict,
@@ -307,9 +326,7 @@ async def _attach_branch_blocks(
     scan: asyncio.Task | None,
 ) -> Any:
     """Attach ``branch_overlap`` and return the independent-changes block, or None."""
-    overlap = await _branch_overlap_block(
-        ctx, changed, collector, revspec_head(revspec), scan=scan
-    )
+    overlap = await _branch_overlap_block(ctx, changed, collector, revspec_head(revspec), scan=scan)
     if overlap is not None:
         payload["branch_overlap"] = overlap
     return await _independent_changes_block(ctx, changed, collector, revspec)
@@ -454,8 +471,10 @@ async def get_change_risk(
     # A drill-down returns one finding and nothing else, so the tests,
     # coverage, fix, cross-repo and branch blocks would never reach the caller.
     scan = branches = None
+    in_repo_task = None
     if finding_id is None:
         scan, branches = rescan or await _branch_scan(ctx, key, changed, revspec)
+        in_repo_task = _start_in_repo_contracts(ctx, revspec, result, changed)
     independent = None
     # A block that raises leaves the comparison and the scan to ends_call_tasks.
     if finding_id is None:
@@ -490,6 +509,11 @@ async def get_change_risk(
         expand="findings" in include_set,
         diagnostics="diagnostics" in include_set,
     )
+    if in_repo_task is not None:
+        with _timed(timings, "in_repo_contracts"):
+            in_repo = route_breaks_payload(await in_repo_task, detail="findings" in include_set)
+        if in_repo is not None:
+            payload.update(in_repo)
     if "evidence" in include_set:
         payload["evidence"] = await _evidence_block(
             ctx,
@@ -561,9 +585,7 @@ async def _revalidated(
     """
     branches = await asyncio.to_thread(_cache.branch_inputs, str(ctx.path))
     if _needs_branch_rescan(stored, branches):
-        scan = _start_overlap_scan(
-            ctx, dict.fromkeys(stored.targets or ()), revspec_head(revspec)
-        )
+        scan = _start_overlap_scan(ctx, dict.fromkeys(stored.targets or ()), revspec_head(revspec))
         answer = await _scan_answer(scan)
         # A failed scan is no answer, so it never vouches for the stored one.
         if answer != stored.overlap or (answer is None and stored.targets):

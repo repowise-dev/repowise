@@ -991,7 +991,10 @@ route it reaches, across the repo's services. An update re-reads them only when
 a commit or an uncommitted edit touches a file that can hold one. Each run
 prints one line: contracts found, caller-to-route links inside the repo
 (`contract_links`), and links to other repos known only by host
-(`service_links`). A workspace keeps its own contracts in
+(`service_links`). The MCP tools read the links: `get_context` on a route file
+or handler says where in the repo it is called from, and on a client file which
+routes it calls; `get_change_risk` names the callers a change leaves without
+their route. A workspace keeps its own contracts in
 `.repowise-workspace/contracts.json`.
 
 ```yaml
