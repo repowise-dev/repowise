@@ -9,8 +9,8 @@ rows hold. New tables only.
 Local SQLite stores get both from the models through ``init_db``; this
 migration exists for managed Postgres.
 
-Revision ID: 0150
-Revises: 0149
+Revision ID: 0152
+Revises: 0151
 Create Date: 2026-11-26
 """
 
@@ -21,8 +21,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0150"
-down_revision: str | None = "0149"
+revision: str = "0152"
+down_revision: str | None = "0151"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
