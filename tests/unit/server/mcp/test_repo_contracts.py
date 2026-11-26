@@ -346,3 +346,14 @@ def test_get_change_risk_attaches_the_line_only_when_a_route_breaks(repo: Path) 
     assert asyncio.run(run(set())) is None
     breaks = asyncio.run(run({ROUTES_FILE}))
     assert [b.contract_id for b in breaks] == ["http::GET::/api/items/{param}"]
+
+
+def test_deleting_a_short_route_beside_a_kept_linked_one_breaks_nothing(repo: Path) -> None:
+    # Mounted elsewhere: read alone, the file's routes carry no /api prefix,
+    # so a deleted `/{item_id}` ends the stored `/api/items/{param}` too.
+    mounted = ROUTES.replace('APIRouter(prefix="/api")', "APIRouter()")
+    short = '\n\n@router.get("/{item_id}")\ndef get_any(item_id: str):\n    return None\n'
+    _write(repo, ROUTES_FILE, mounted + short)
+    _git(repo, "commit", "-q", "-am", "mount elsewhere, add a short route")
+    _write(repo, ROUTES_FILE, mounted)
+    assert _breaks(repo) == []

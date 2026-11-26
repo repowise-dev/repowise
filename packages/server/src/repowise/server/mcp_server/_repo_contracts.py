@@ -77,7 +77,7 @@ class RepoContracts:
         return links
 
 
-_cache: dict[str, tuple[tuple[int, int], RepoContracts | None]] = {}
+_cache: dict[str, tuple[tuple[int, int, int], RepoContracts | None]] = {}
 _cache_lock = threading.Lock()
 
 
@@ -96,7 +96,7 @@ def load_repo_contracts(repo_path: Any) -> RepoContracts | None:
         stat = path.stat()
     except OSError:
         return None
-    stamp = (stat.st_mtime_ns, stat.st_size)
+    stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
     key = str(path)
     with _cache_lock:
         hit = _cache.get(key)
@@ -338,6 +338,19 @@ def _gone_routes(base: list[Any], head: list[Any]) -> list[Any]:
     return [c for c in base if (key := _segments(c.contract_id)) and key not in served]
 
 
+def _ends_with(key: tuple[str, tuple[str, ...]] | None, stored_id: str) -> bool:
+    """Whether route *key* read alone can be the stored route *stored_id*.
+
+    Same method, and its path segments end the stored path (a root path only
+    a root path): a mount in another file can only have added a prefix.
+    """
+    stored_key = _segments(stored_id)
+    if key is None or stored_key is None or stored_key[0] != key[0]:
+        return False
+    tail, segs = key[1], stored_key[1]
+    return (segs[len(segs) - len(tail) :] == tail) if tail else not segs
+
+
 def _stored_for(store: RepoContracts, gone: Any, stored: list[dict]) -> dict | None:
     """The stored provider link row a base-side route is, or None when unsure.
 
@@ -347,16 +360,9 @@ def _stored_for(store: RepoContracts, gone: Any, stored: list[dict]) -> dict | N
     settle is no claim.
     """
     key = _segments(gone.contract_id)
-    if key is None:
-        return None
-    method, tail = key
     by_id: dict[str, dict] = {}
     for lk in stored:
-        stored_key = _segments(lk.get("contract_id") or "")
-        if stored_key is None or stored_key[0] != method:
-            continue
-        segs = stored_key[1]
-        if (segs[len(segs) - len(tail) :] == tail) if tail else not segs:
+        if _ends_with(key, lk.get("contract_id") or ""):
             by_id.setdefault(lk.get("contract_id") or "", lk)
     if len(by_id) > 1 and gone.line:
         by_id = {
@@ -448,16 +454,21 @@ def _compare(root: Path, store: RepoContracts, revspec: str | None) -> list[_Bre
         if pair.working_tree
         else source.read(pair.head_sha, head_paths)
     )
+    head = _http_providers(root, store.repo, head_sources)
     gone = _gone_routes(
-        _http_providers(root, store.repo, source.read(pair.base_sha, list(linked))),
-        _http_providers(root, store.repo, head_sources),
+        _http_providers(root, store.repo, source.read(pair.base_sha, list(linked))), head
     )
+    head_keys = {_segments(c.contract_id) for c in head}
     edited = {p for c in pair.changes for p in (c.base_path, c.head_path) if p}
     breaks: dict[str, _Break] = {}
     for route in gone:
         links = linked.get(route.file_path, [])
         hit = _stored_for(store, route, links)
         if hit is None or hit.get("contract_id") in breaks:
+            continue
+        # A head-side route that can still be the stored one (a deleted `/{id}`
+        # beside a kept `/users/{id}`) means the callers' route may be served.
+        if any(_ends_with(k, hit.get("contract_id") or "") for k in head_keys):
             continue
         same = [lk for lk in links if lk.get("contract_id") == hit.get("contract_id")]
         sites = _sites(store, same, "consumer")
