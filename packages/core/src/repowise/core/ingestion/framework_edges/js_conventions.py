@@ -15,20 +15,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..framework_facts import js_frameworks, npm_manifests
+from ..models import TS_JS_LANGUAGES
 from ..resolvers import ResolverContext
 from .base import DetectionContext, FrameworkHandler, add_entry_edges
 
 if TYPE_CHECKING:
     import networkx as nx
 
-_LANGUAGES = frozenset({"typescript", "javascript", "vue", "svelte", "astro"})
-
-
 class _JsConventionHandler:
     def detect(self, dctx: DetectionContext) -> bool:
         if dctx.ctx.repo_path is None:
             return False
-        return any(p.file_info.language in _LANGUAGES for p in dctx.parsed_files.values())
+        return any(p.file_info.language in TS_JS_LANGUAGES for p in dctx.parsed_files.values())
 
     def add_edges(
         self,
@@ -39,7 +37,7 @@ class _JsConventionHandler:
     ) -> int:
         if ctx.repo_path is None:
             return 0
-        js_paths = [p for p, parsed in parsed_files.items() if parsed.file_info.language in _LANGUAGES]
+        js_paths = [p for p, parsed in parsed_files.items() if parsed.file_info.language in TS_JS_LANGUAGES]
         count = 0
         for manifest in npm_manifests(ctx.repo_path, js_paths):
             for facts, _pkg in js_frameworks(manifest):

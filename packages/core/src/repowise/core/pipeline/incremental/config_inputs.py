@@ -218,7 +218,6 @@ def _package_json(text: str, _path: Path, _root: Path) -> object:
         leaves_its_directory,
         setup_specs,
     )
-
     from repowise.core.ingestion.framework_facts import npm_dependency_names
 
     data = json.loads(text)

@@ -373,41 +373,53 @@ def npm_manifests(repo_root: str | Path, paths: Iterable[str]) -> list[NpmManife
 _EMAIL_COMMANDS = frozenset({"dev", "build", "export"})
 
 
-def _react_email_dir(manifest: NpmManifest) -> str:
-    """The directory an ``email dev|build|export`` script names with ``--dir``, else ``emails``."""
+def _email_script_dir(args: list[str]) -> str:
+    """The ``--dir`` among one ``email`` command's *args*, else the default ``emails``."""
+    for j, arg in enumerate(args):
+        if arg in ("--dir", "-d") and j + 1 < len(args):
+            return posixpath.normpath(args[j + 1])
+        if arg.startswith("--dir="):
+            return posixpath.normpath(arg.removeprefix("--dir="))
+    return "emails"
+
+
+def _react_email_dirs(manifest: NpmManifest) -> list[str]:
+    """Every directory an ``email dev|build|export`` script reads, sorted.
+
+    A command without ``--dir`` reads the default ``emails``, as does a
+    package with no such script. A directory outside the package is dropped:
+    nothing under the package can be anchored to it.
+    """
+    dirs: set[str] = set()
     for script in manifest.scripts.values():
         try:
             words = shlex.split(script)
         except ValueError:
             continue
         for i in range(len(words) - 1):
-            if words[i] != "email" or words[i + 1] not in _EMAIL_COMMANDS:
-                continue
-            args = words[i + 2 :]
-            for j, arg in enumerate(args):
-                if arg in ("--dir", "-d") and j + 1 < len(args):
-                    return posixpath.normpath(args[j + 1])
-                if arg.startswith("--dir="):
-                    return posixpath.normpath(arg.removeprefix("--dir="))
-    return "emails"
+            if words[i] == "email" and words[i + 1] in _EMAIL_COMMANDS:
+                dirs.add(_email_script_dir(words[i + 2 :]))
+    return sorted(
+        d for d in (dirs or {"emails"}) if d != "." and not d.startswith(("..", "/"))
+    )
 
 
 def js_frameworks(manifest: NpmManifest) -> list[tuple[FrameworkFacts, str]]:
     """``(facts, the dependency that marks it)`` for each JS framework *manifest* uses.
 
     The facts' globs are relative to the manifest's directory. A React Email
-    project's are re-rooted at the directory its ``email`` script names; one
-    outside the package anchors nothing.
+    project's are rooted at every directory its ``email`` scripts read.
     """
     out: list[tuple[FrameworkFacts, str]] = []
     for facts in JS_FRAMEWORKS:
         pkg = facts.matches_npm(manifest)
         if pkg is None:
             continue
-        if facts is REACT_EMAIL and (emails := _react_email_dir(manifest)) != "emails":
-            if emails == "." or emails.startswith(("..", "/")):
+        if facts is REACT_EMAIL:
+            dirs = _react_email_dirs(manifest)
+            if not dirs:
                 continue
-            facts = replace(facts, entry_globs=_js(f"{emails.removeprefix('./')}/*"))
+            facts = replace(facts, entry_globs=_js(*(f"{d}/*" for d in dirs)))
         out.append((facts, pkg))
     return out
 

@@ -127,6 +127,19 @@ def test_react_email_dir_flag_moves_the_emails_directory() -> None:
     assert facts.entry_files("packages/mail", paths) == ["packages/mail/src/templates/a.tsx"]
 
 
+def test_a_bare_email_command_keeps_the_default_dir_beside_a_named_one() -> None:
+    manifest = parse_npm_manifest(
+        {
+            "dependencies": {"react-email": "6"},
+            "scripts": {"dev": "email dev", "export": "email export --dir out", "lint": "tsc"},
+        }
+    )
+    assert manifest is not None
+    ((facts, _pkg),) = js_frameworks(manifest)
+    paths = ["emails/a.tsx", "out/b.tsx", "src/c.tsx"]
+    assert facts.entry_files("", paths) == ["emails/a.tsx", "out/b.tsx"]
+
+
 def test_a_dir_outside_the_package_anchors_nothing() -> None:
     manifest = parse_npm_manifest(
         {"dependencies": {"react-email": "6"}, "scripts": {"dev": "email dev --dir=../shared"}}
