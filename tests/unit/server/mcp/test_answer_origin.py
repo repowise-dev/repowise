@@ -395,6 +395,8 @@ async def test_other_forges_name_their_own_change_ref(
         # A regression began, or no history is asked: not a behaviour's origin.
         ("When did the login start failing?", False),
         ("When did the tests start timing out?", False),
+        # A whole failure verb only: "timestamping" is a behaviour.
+        ("When did we start timestamping commits?", True),
         ("How do we limit login attempts?", False),
     ],
 )
@@ -543,4 +545,31 @@ async def test_a_scope_without_the_symbol_resolves_nothing(setup_mcp, session, l
 
     await _seed_symbol(session, "MAX_LOGIN_ATTEMPTS")
     result = await get_answer("When did we start limiting login attempts?", scope="src/db/")
+    assert "origin" not in result
+
+
+def test_a_digit_run_stays_with_its_letters():
+    from repowise.server.mcp_server.tool_answer.origin import _behaviour_words, _name_cover
+
+    words = _behaviour_words("When did we start validating UTF8 input?")
+    assert _name_cover("validateUTF8", words, False, "validating") == 2
+
+
+def test_a_code_noun_in_the_question_still_spells_the_name():
+    from repowise.server.mcp_server.tool_answer.origin import _behaviour_words, _name_cover
+
+    words = _behaviour_words("Which pull request started limiting request body size?")
+    assert "pull" not in words
+    assert _name_cover("MAX_REQUEST_BODY_SIZE", words, True, "limiting") == 4
+
+
+@pytest.mark.asyncio
+async def test_a_scan_past_its_cap_resolves_nothing(setup_mcp, session, limit_history, monkeypatch):
+    from repowise.server.mcp_server import get_answer
+    from repowise.server.mcp_server.tool_answer import origin
+
+    await _seed_symbol(session, "MAX_LOGIN_ATTEMPTS")
+    await _seed_symbol(session, "LOGIN_ATTEMPTS_MAX_COUNT", "src/auth/policy.py")
+    monkeypatch.setattr(origin, "_MAX_SCANNED_NAMES", 1)
+    result = await get_answer("When did we start limiting login attempts?")
     assert "origin" not in result

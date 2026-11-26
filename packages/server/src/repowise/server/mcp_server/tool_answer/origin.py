@@ -77,10 +77,11 @@ _WALKS_MAX = 256
 
 
 # "start limiting" / "started refusing": when a behaviour began. A failure
-# gerund asks when a regression began, which the code's origin does not answer.
+# gerund asks when a regression began, which the code's origin does not answer;
+# whole words only, so "timestamping" is a behaviour and "timing out" is not.
 _STARTED_BEHAVIOUR = re.compile(
-    r"\bstart(?:ed|s)?\s+(?!(?:fail|break|crash|hang|error|leak|flak|regress|misbehav"
-    r"|time|timing|throw|stall|slow)\w*)([a-z]+ing)\b",
+    r"\bstart(?:ed|s)?\s+(?!(?:failing|breaking|crashing|hanging|erroring|leaking|flaking"
+    r"|regressing|misbehaving|throwing|stalling|slowing|timing\s+out)\b)([a-z]+ing)\b",
     re.IGNORECASE,
 )
 
@@ -168,7 +169,9 @@ async def origin_reply(ask: Any, scope: str | None = None) -> dict | None:
     return _answer(ask, name, paths, kind, commit, found[0] if found else None, resolved=resolved)
 
 
-# Question words that ask about history and never name the code.
+# Question words that ask about history and never name code. Nouns such as
+# "request" or "change" stay: a name may use them, and the origin cue that
+# holds them ("which pull request") is cut from the question first.
 _HISTORY_WORDS = frozenset(
     [
         "when",
@@ -177,15 +180,6 @@ _HISTORY_WORDS = frozenset(
         "who",
         "why",
         "did",
-        "pull",
-        "request",
-        "requests",
-        "merge",
-        "commit",
-        "commits",
-        "change",
-        "changes",
-        "patch",
         "first",
         "originally",
         "initially",
@@ -210,18 +204,22 @@ _LIMIT_CUE = re.compile(
 _LIMIT_PARTS = frozenset({"max", "maximum", "limit", "limits", "cap", "bound"})
 # Name parts that carry no meaning of their own ("_MAX_COOKIES_PER_RESPONSE").
 _FREE_PARTS = frozenset({"per", "of", "to", "by", "in", "on", "for", "the", "a", "an", "is"})
-_NAME_PART_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+# A digit run stays on the letters before it: "UTF8Validator" is "utf8", "validator".
+_NAME_PART_RE = re.compile(r"[A-Z]+[0-9]*(?![a-z])|[A-Z]?[a-z]+[0-9]*|[0-9]+")
 #: Content words read from the question, at most: the symbol query stays small.
 _MAX_BEHAVIOUR_WORDS = 12
 #: Name parts the question must spell, at least, besides a limit part: one
 #: word ("Response") names too much to be the code a behaviour lives in.
 _MIN_CONTENT_PARTS = 2
-#: Symbol rows the behaviour scan reads, at most.
+#: Symbol rows the behaviour scan reads, at most. A scan that reaches it may
+#: have dropped a name as good as the best, so it resolves nothing.
 _MAX_SCANNED_NAMES = 5000
 
 
 def _behaviour_words(question: str) -> list[str]:
-    words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9]*", question)]
+    """The words of *question* that may spell code: its origin cue cut out."""
+    text = _ORIGIN_RE.sub(" ", question)
+    words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9]*", text)]
     kept = [w for w in words if len(w) >= 3 and w not in STOPWORDS and w not in _HISTORY_WORDS]
     return list(dict.fromkeys(kept))[:_MAX_BEHAVIOUR_WORDS]
 
@@ -264,6 +262,40 @@ def _name_cover(name: str, words: list[str], limit: bool, action: str | None = N
     return len(parts) if content >= _MIN_CONTENT_PARTS else 0
 
 
+async def _names_with_stems(session, repo_id: str, stems: list[str]) -> list | None:
+    """``(name, path)`` rows whose name holds any of *stems*; ``None`` past the cap."""
+    # Ceiling: a substring scan of the symbol names, capped, run only for
+    # behaviour origin questions. An index of name parts would make it a lookup.
+    rows = (
+        await session.execute(
+            select(WikiSymbol.name, WikiSymbol.file_path)
+            .where(
+                WikiSymbol.repository_id == repo_id,
+                or_(*(WikiSymbol.name.ilike(f"%{s}%") for s in stems)),
+            )
+            .distinct()
+            .limit(_MAX_SCANNED_NAMES + 1)
+        )
+    ).all()
+    return None if len(rows) > _MAX_SCANNED_NAMES else rows
+
+
+def _spelled_names(rows, cover, ask: Any, scope: str | None) -> dict[str, tuple[int, set[str]]]:
+    """Each name *cover* scores above 0, with its score and the production
+    files in scope that define it."""
+    scores: dict[str, int] = {}
+    found: dict[str, tuple[int, set[str]]] = {}
+    for name, path in rows:
+        if name not in scores:
+            scores[name] = cover(name)
+        if not scores[name] or not path or not _in_scope([path], scope):
+            continue
+        if is_excluded(path, ask.exclude_spec) or path_origin(path) != "production":
+            continue
+        found.setdefault(name, (scores[name], set()))[1].add(path)
+    return found
+
+
 async def _behaviour_subject(
     session, ask: Any, question: str, idents: list[str], scope: str | None
 ) -> tuple[str, list[str], str] | None:
@@ -281,39 +313,23 @@ async def _behaviour_subject(
     stems = list(dict.fromkeys(w[:4] for w in words if len(w) >= 4))
     if len(words) < _MIN_CONTENT_PARTS or not stems:
         return None
+    rows = await _names_with_stems(session, ask.repo_id, stems)
+    if not rows:
+        return None
     typed = {i.rsplit(".", 1)[-1] for i in idents}
-    # Ceiling: a substring scan of the symbol names, capped, run only for
-    # behaviour origin questions. An index of name parts would make it a lookup.
-    rows = (
-        await session.execute(
-            select(WikiSymbol.name, WikiSymbol.file_path)
-            .where(
-                WikiSymbol.repository_id == ask.repo_id,
-                or_(*(WikiSymbol.name.ilike(f"%{s}%") for s in stems)),
-            )
-            .distinct()
-            .limit(_MAX_SCANNED_NAMES)
-        )
-    ).all()
     limit = bool(_LIMIT_CUE.search(question))
     started = _STARTED_BEHAVIOUR.search(question)
     action = started.group(1).lower() if started else None
-    covers: dict[str, int] = {}
-    defined: dict[str, set[str]] = {}
-    for name, path in rows:
-        if name not in covers:
-            covers[name] = 0 if name in typed else _name_cover(name, words, limit, action)
-        if not covers[name] or not path or not _in_scope([path], scope):
-            continue
-        if is_excluded(path, ask.exclude_spec) or path_origin(path) != "production":
-            continue
-        defined.setdefault(name, set()).add(path)
-    if not defined:
+
+    def cover(name: str) -> int:
+        return 0 if name in typed else _name_cover(name, words, limit, action)
+
+    found = _spelled_names(rows, cover, ask, scope)
+    ranked = sorted(found.items(), key=lambda item: item[1][0], reverse=True)
+    if not ranked or (len(ranked) > 1 and ranked[1][1][0] == ranked[0][1][0]):
         return None
-    ranked = sorted(defined, key=lambda n: covers[n], reverse=True)
-    if len(ranked) > 1 and covers[ranked[1]] == covers[ranked[0]]:
-        return None
-    return ranked[0], sorted(defined[ranked[0]]), "symbol"
+    name, (_, paths) = ranked[0]
+    return name, sorted(paths), "symbol"
 
 
 def origin_hint(top_file: str | None) -> str:
