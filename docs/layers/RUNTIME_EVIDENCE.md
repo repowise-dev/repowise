@@ -283,7 +283,7 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 
 | Kind | Entries | Input formats read |
 |---|---|---|
-| `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, V8 `.cpuprofile`, collapsed stacks, or a v1 document |
+| `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, V8 `.cpuprofile`, collapsed stacks, Python pstats / cProfile, or a v1 document |
 | `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, Google Benchmark JSON, `go test -bench` output, hyperfine JSON, Vitest benchmark JSON, Criterion estimates, or a v1 document |
 | `test_timing` | Per test: duration and outcome | JUnit XML, `go test -json`, or a v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
@@ -292,7 +292,7 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `cpuprofile`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`, `criterion`,
+`pprof`, `cpuprofile`, `pstats`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`, `criterion`,
 `junit`, `pg-stat-statements`, `collapsed`, or one a plugin registers).
 
 Every kind is one entry of the kind registry (`repowise.core.evidence.kinds`):
@@ -315,8 +315,9 @@ migration.
 | `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
 | `cpuprofile` | `node --cpu-prof`, as `setup` prints, or a CPU profile saved from a browser's developer tools (plain JavaScript) | function name, `file://` URL or path, and the function's start line and column. Frames join by file, line and column only, never by name: V8 names a function by its own name. `node:` modules and the runtime (`(program)`, `(garbage collector)`) sit outside the checkout, `node_modules` is a library, and both are charged to the calling repo function; `(idle)` is a wait. The weight is the time to the next sample, in microseconds, with one sample each; the clock is `wall` |
 | `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
+| `pstats` | `python -m cProfile -o app.prof`, or any `pstats.Stats.dump_stats()` marshal file | function, file, line, and exact call count. Deterministic tracer: provides an ordering of functions only, never a share of the run (tracer overhead scales with call count). |
 
-- **Clock.** A profile needs `cpu` or `wall`. pyinstrument and `.cpuprofile`
+- **Clock.** A profile needs `cpu` or `wall`. pyinstrument, cProfile and `.cpuprofile`
   output is wall clock and pprof says its own sample type; for py-spy,
   collapsed stacks and other Speedscope exporters pass `--value-kind`.
 - **TypeScript and bundled code.** A profile whose frames name TypeScript files

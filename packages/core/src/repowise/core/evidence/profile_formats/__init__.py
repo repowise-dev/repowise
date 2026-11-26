@@ -45,6 +45,7 @@ from . import (
     junit,
     pg_stat_statements,
     pprof,
+    pstats,
     pytest_benchmark,
     speedscope,
     vitest_bench,
@@ -126,6 +127,7 @@ profile_formats.register(
     "criterion",
     ProfileFormat(criterion.sniff, to_v1=criterion.to_v1, to_v1_from_path=criterion.to_v1),
 )
+profile_formats.register("pstats", ProfileFormat(pstats.sniff, pstats.read))
 
 
 def detect_profile_format(head: bytes) -> str | None:
