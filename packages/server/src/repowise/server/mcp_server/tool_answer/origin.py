@@ -44,10 +44,10 @@ _ORIGIN_RE = re.compile(
     r"|\b(?:first|originally|initially)\s+(?:introduc|add|creat|land)\w*",
     re.IGNORECASE,
 )
-# "start failing" asks when a regression began, not when the code was added.
+# "start failing" / "start to fail" asks when a regression began, not when the code was added.
 _VERB = (
     r"(?:introduc\w*|add(?:ed|s|ing)?|creat\w*|wr[io]te|written|authored|landed"
-    r"|start(?:ed|s)?(?!\s+\w+ing\b)|appear\w*|brought\s+in)"
+    r"|start(?:ed|s)?(?!\s+(?:\w+ing|to)\b)|appear\w*|brought\s+in)"
 )
 # Past tense only: "how Session is created" asks about behaviour, not origin.
 _ADVERB = r"(?:(?:was|were|got|first|originally|initially)\s+){0,2}"
@@ -90,8 +90,11 @@ def _is_object(question: str, name: str) -> bool:
     return bool(re.search(f"{active}|{passive}", question, re.IGNORECASE))
 
 
-async def origin_reply(ask: Any) -> dict | None:
-    """The origin answer for an origin question that names code, else ``None``."""
+async def origin_reply(ask: Any, scope: str | None = None) -> dict | None:
+    """The origin answer for an origin question that names code, else ``None``.
+
+    With *scope*, only files under its prefixes count, as for retrieval.
+    """
     question = ask.question
     if not asks_origin(question):
         return None
@@ -106,7 +109,7 @@ async def origin_reply(ask: Any) -> dict | None:
         subject = await _subject(session, ask, question, files, idents)
         if subject is None:
             named = (files or idents)[0]
-            defined = files[:1] or await _defining_files(session, ask, named)
+            defined = files[:1] or _in_scope(await _defining_files(session, ask, named), scope)
             return _cannot(
                 ask,
                 named,
@@ -116,7 +119,8 @@ async def origin_reply(ask: Any) -> dict | None:
                 inside=True,
             )
         name, paths, kind = subject
-        if unclear := _unclear(name, paths, kind):
+        paths = _in_scope(paths, scope)
+        if unclear := _unclear(name, paths, kind, scope):
             return _cannot(ask, name, [], unclear, kind=kind)
         commit = (
             await _indexed_file_origin(session, ask.repo_id, paths[0]) if kind == "file" else None
@@ -129,10 +133,18 @@ async def origin_reply(ask: Any) -> dict | None:
     return _answer(ask, name, paths, kind, commit, found[0] if found else None)
 
 
-def _unclear(name: str, paths: list[str], kind: str) -> str | None:
+def _in_scope(paths: list[str], scope: str | None) -> list[str]:
+    prefixes = [
+        p.replace("\\", "/").removeprefix("./") for p in re.split(r"[,\s]+", scope or "") if p
+    ]
+    return [p for p in paths if p.startswith(tuple(prefixes))] if prefixes else paths
+
+
+def _unclear(name: str, paths: list[str], kind: str, scope: str | None = None) -> str | None:
     """Why *paths* name no one place to read the origin in, or ``None``."""
     if not paths:
-        return f"no indexed file {'is' if kind == 'file' else 'defines'} `{name}`"
+        where = f" under `{scope}`" if scope else ""
+        return f"no indexed file{where} {'is' if kind == 'file' else 'defines'} `{name}`"
     if kind == "file" and len(paths) > 1:
         listed = ", ".join(paths[:3]) + (", ..." if len(paths) > 3 else "")
         return f"{len(paths)} indexed files are named `{name}` ({listed}); ask with the full path"
@@ -257,12 +269,14 @@ async def _first_commit(
         try:
             commit = await asyncio.wait_for(
                 asyncio.to_thread(_oldest_adding_commit, str(repo_path), name, paths, kind),
-                timeout=_GIT_TIMEOUT + 1,
+                timeout=2 * _GIT_TIMEOUT + 1,
             )
         except TimeoutError:
             return None, _TIMED_OUT
-        # A walk that failed or ran out of time may succeed next time.
-        if head and (isinstance(commit, dict) or commit == _NO_COMMIT):
+        # A walk that failed or ran out of time may succeed next time, and a
+        # shallow clone can be deepened under the same head.
+        keep = isinstance(commit, dict) or commit == _NO_COMMIT
+        if head and keep and not shallow_roots(str(repo_path)):
             _WALKS[key] = commit
             while len(_WALKS) > _WALKS_MAX:
                 _WALKS.popitem(last=False)
@@ -275,20 +289,47 @@ async def _first_commit(
     return commit, ""
 
 
+#: A line that defines a name: a declaration keyword before it, or an
+#: assignment after it. Ceiling: a method declared by its return type alone
+#: (Java, C) matches neither and takes the whole-word walk.
+_DEF_KEYWORDS = (
+    "def|class|function|func|fn|struct|interface|type|enum|trait|module|const|let|var|val"
+    "|object|record|protocol"
+)
+_DEF_MODIFIERS = (
+    "export|pub|public|private|protected|internal|static|async|final|abstract|open|override"
+)
+
+
 def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str) -> dict | str:
     """The oldest commit whose diff adds *name* to *paths* (or adds the file),
-    or why there is none."""
+    or why there is none.
+
+    A symbol's walk looks for the oldest commit adding a line that defines it,
+    so an earlier call or comment using the same word is not taken for its
+    origin; only when no such line is found does any whole-word mention count
+    (a bare -S would also count "parse" inside "parser").
+    """
     if kind == "file":
-        args = ["--diff-filter=A", "--follow"]
-    else:
-        # A rename moves the text without adding it; follow one file across renames.
-        # Whole word: a bare -S would count "parse" inside "parser".
-        word = re.escape(name.rsplit(".", 1)[-1])
-        args = [
-            "--pickaxe-regex",
-            f"-S(^|[^A-Za-z0-9_]){word}([^A-Za-z0-9_]|$)",
-            *(["--follow"] if len(paths) == 1 else []),
-        ]
+        return _walk(repo_path, ["--diff-filter=A", "--follow"], paths, _GIT_TIMEOUT)
+    word = re.escape(name.rsplit(".", 1)[-1])
+    # A rename moves the text without adding it; follow one file across renames.
+    follow = ["--follow"] if len(paths) == 1 else []
+    defines = (
+        f"^[[:space:]]*(({_DEF_MODIFIERS})[[:space:]]+)*({_DEF_KEYWORDS})[[:space:]]+{word}"
+        f"([^A-Za-z0-9_]|$)|^[[:space:]]*{word}[[:space:]]*(:[^=]*)?=[^=]"
+    )
+    deadline = time.monotonic() + 2 * _GIT_TIMEOUT
+    found = _walk(repo_path, ["--pickaxe-regex", f"-S{defines}", *follow], paths, _GIT_TIMEOUT)
+    if found != _NO_COMMIT:
+        return found
+    mention = f"(^|[^A-Za-z0-9_]){word}([^A-Za-z0-9_]|$)"
+    left = max(1, int(deadline - time.monotonic()))
+    return _walk(repo_path, ["--pickaxe-regex", f"-S{mention}", *follow], paths, left)
+
+
+def _walk(repo_path: str, args: list[str], paths: list[str], timeout: int) -> dict | str:
+    """The oldest commit ``git log <args> -- <paths>`` lists, or why there is none."""
     try:
         proc = subprocess.run(
             ["git", "log", "--topo-order", *args, _LOG_FORMAT, "--", *paths],
@@ -297,7 +338,7 @@ def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=_GIT_TIMEOUT,
+            timeout=timeout,
             # A git child inheriting the JSON-RPC stdin can wedge the session.
             stdin=subprocess.DEVNULL,
         )

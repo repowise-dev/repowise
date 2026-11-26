@@ -40,6 +40,7 @@ def test_origin_questions(question, origin):
         # A behaviour inside the symbol: its own first commit is not the answer.
         ("Which PR added retries to fetch_url?", "fetch_url", False),
         ("When did AuthService start failing?", "AuthService", False),
+        ("When did AuthService start to fail?", "AuthService", False),
         ("Who added CookieJar.", "CookieJar", True),
         ("Who added cookies.py.", "cookies.py", True),
         ("Who added cookies.pyc", "cookies.py", False),
@@ -312,3 +313,42 @@ async def test_a_file_name_two_files_carry_asks_for_the_path(setup_mcp, session)
     result = await get_answer("When was util.py added?")
     assert result["confidence"] == "low"
     assert "2 indexed files are named `util.py` (src/a/util.py, src/b/util.py)" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_a_scope_outside_the_defining_file_finds_nothing(setup_mcp, history):
+    from repowise.server.mcp_server import get_answer
+
+    result = await get_answer("Who added AuthService?", scope="src/db/")
+    assert result["confidence"] == "low"
+    assert "no indexed file under `src/db/` defines `AuthService`" in result["answer"]
+    inside = await get_answer("Who added AuthService?", scope="src/auth/")
+    assert inside["confidence"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_a_shallow_clone_walk_is_not_kept(setup_mcp, history, monkeypatch):
+    from repowise.server.mcp_server import get_answer
+    from repowise.server.mcp_server.tool_answer import origin
+
+    monkeypatch.setattr(origin, "shallow_roots", lambda _path: frozenset({"0" * 40}))
+    await get_answer("Who added AuthService?")
+    assert not origin._WALKS
+
+
+@pytest.mark.asyncio
+async def test_a_use_before_the_definition_is_not_the_origin(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import get_answer
+
+    _git(tmp_path, "init", "-q")
+    path = tmp_path / "src/auth/service.py"
+    path.parent.mkdir(parents=True)
+    # A call on another module that happens to use the same word.
+    path.write_text("x = other.AuthService()\n", encoding="utf-8")
+    _git(tmp_path, "add", "src")
+    _git(tmp_path, "commit", "-qm", "use it")
+    path.write_text("x = other.AuthService()\nclass AuthService:\n    pass\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-qam", "Define it")
+    defined = _git(tmp_path, "rev-parse", "HEAD")
+    result = await get_answer("Who added AuthService?")
+    assert result["origin"]["commit"] == defined
