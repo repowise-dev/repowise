@@ -183,6 +183,11 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/testfixtures/transform.ts", None, ""),
     ("src/__testfixtures__extra/transform.ts", None, ""),
     ("src/transforms/__testfixtures__.ts", None, ""),
+    # Semgrep reads a repository's rules from .semgrep/; source files there are
+    # the targets `semgrep --test` checks each rule against.
+    (".semgrep/authz.py", None, "support"),
+    ("tools/.semgrep/rules/no-eval.ts", None, "support"),
+    ("semgrep/authz.py", None, ""),
     # a test-shaped filename still wins over the directory
     ("testdata/build_test.go", None, "test"),
     # and the same finding's third path stays production code on purpose: bare

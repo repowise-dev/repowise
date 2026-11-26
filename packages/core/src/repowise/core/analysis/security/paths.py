@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+from repowise.core.ingestion.ts_declarations import is_declaration_file
 from repowise.core.support_paths import DOC_EXTENSIONS
 from repowise.core.test_paths import is_test_related_path
 
@@ -50,12 +51,11 @@ _NON_SHIPPING_ORIGINS = frozenset({"tooling", "docs_example", "data"})
 # A bundler's or generator's output, or a copied library: nobody here wrote its
 # calls, so only a secret it carries is news.
 _MACHINE_ORIGINS = frozenset({"generated", "vendored"})
-_DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
 
 
 def _holds_no_written_code(file_path: str, origin: str) -> bool:
     """Whether only secret kinds apply: machine output, or a TS declaration file, which never runs."""
-    return origin in _MACHINE_ORIGINS or file_path.lower().endswith(_DECLARATION_SUFFIXES)
+    return origin in _MACHINE_ORIGINS or is_declaration_file(file_path)
 
 
 def _is_low_for_path(kind: str, is_low_sev_file: bool, origin: str) -> bool:

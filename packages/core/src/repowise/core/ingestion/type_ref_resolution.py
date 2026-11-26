@@ -52,6 +52,7 @@ import structlog
 from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
 from .models import CONTAINMENT_EDGE_TYPES, TS_JS_LANGUAGES, ParsedFile
 from .symbol_identity import file_of_symbol
+from .ts_declarations import is_declaration_file
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -741,12 +742,12 @@ def _find_unique_ambient_declaration(
     defined_names: dict[str, set[str]],
     ctx: ResolverContext,
 ) -> str | None:
-    """Resolve an unimported type from one ambient ``.d.ts`` owner."""
+    """Resolve an unimported type from one ambient declaration-file owner."""
     owners_by_name = getattr(ctx, "_ts_ambient_type_owners", None)
     if owners_by_name is None:
         owners_by_name: dict[str, list[str]] = {}
         for path, names in defined_names.items():
-            if not path.endswith(".d.ts") or not graph.has_node(path):
+            if not is_declaration_file(path) or not graph.has_node(path):
                 continue
             ambient_names = _ambient_declaration_names(path, names, ctx)
             for name in ambient_names:

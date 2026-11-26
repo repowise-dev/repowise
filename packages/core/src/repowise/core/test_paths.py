@@ -192,6 +192,10 @@ _SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
 # filename rules became source rules.
 # jscodeshift keeps codemod input and expected output in ``__testfixtures__``
 # beside the transform, so those files are test support wherever they sit too.
+# ``.semgrep/`` is the directory Semgrep reads a repository's own rules from
+# when no config is named. The rules are YAML; a source file beside one is the
+# target ``semgrep --test`` checks it against (``# ruleid:`` comments mark the
+# lines it must match), written to hold the very pattern the rule forbids.
 #
 # Support rather than test, deliberately: golden data is what a test reads, not
 # a test. So the union counts it (#1103's reporter asked for exactly that) while
@@ -199,7 +203,7 @@ _SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__mocks__", "__snapshots__", "__testfixtures__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "__testfixtures__", "testdata", ".semgrep"}
 )
 
 # Helper directories named for tests, matched on the segment's words run
