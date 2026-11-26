@@ -50,6 +50,8 @@ def test_fragment_category(path, want):
         ("type: enhancement", "feature"),
         ("documentation", "docs"),
         ("needs-review", None),
+        ("area/docs", None),
+        ("area: test", None),
         ("bot:chronographer:provided", None),
     ],
 )

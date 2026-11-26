@@ -97,7 +97,8 @@ _FRAGMENT_TYPES: dict[str, str] = {
 #: first; the rest keep their timeline order.
 _RANK = ("fix", *(c for c in EVOLUTION_CATEGORIES if c != "fix"))
 #: Forge label (lowercased, last ``:``/``/`` segment, punctuation trimmed) ->
-#: category: ``bug``, ``type: bug``, ``kind/bug`` and ``🐛 bug`` all read ``bug``.
+#: category: ``bug``, ``type: bug``, ``kind/bug`` and ``🐛 bug`` all read ``bug``;
+#: other namespaces (``area/docs``) are not read.
 _LABELS: dict[str, str] = {
     "bug": "fix",
     "bugfix": "fix",
@@ -116,6 +117,7 @@ _LABELS: dict[str, str] = {
     "test": "test",
     "tests": "test",
 }
+_KIND_NAMESPACES = frozenset({"type", "kind", "category", "changelog"})
 _LABEL_TRIM = re.compile(r"^[^a-z0-9]+|[^a-z0-9]+$")
 
 
@@ -141,9 +143,15 @@ def fragment_category(path: str) -> str | None:
 
 
 def label_category(label: str) -> str | None:
-    """The category a forge *label* declares, or ``None``."""
-    tail = re.split(r"[:/]", (label or "").lower())[-1]
-    return _LABELS.get(_LABEL_TRIM.sub("", tail))
+    """The category a forge *label* declares, or ``None``.
+
+    A namespaced label counts only under a namespace that names a kind
+    (``type: bug``, ``kind/bug``); ``area/docs`` names a place, not a kind.
+    """
+    parts = re.split(r"[:/]", (label or "").lower(), maxsplit=1)
+    if len(parts) == 2 and _LABEL_TRIM.sub("", parts[0]) not in _KIND_NAMESPACES:
+        return None
+    return _LABELS.get(_LABEL_TRIM.sub("", parts[-1]))
 
 
 def _first(found: list[tuple[str, str]]) -> tuple[str, str] | None:
