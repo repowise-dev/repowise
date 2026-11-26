@@ -594,6 +594,10 @@ _PLAIN_SUITE = re.compile(r"(?:jest|vitest|mocha)(?:\s+(?!--(?:\s|$))[^\s'\"`$\\
 #: paths are relative to where Mocha runs from Mocha 11.6 on; older releases write them
 #: absolute, and those tests keep their timing without a file.
 _MOCHA_JUNIT = "--reporter xunit --reporter-option output=junit.xml,showRelativePaths=true"
+
+#: The flags that make RSpec write ``junit.xml`` through ``rspec_junit_formatter``;
+#: the first keeps the progress output on stdout, the second writes the report.
+_RSPEC_JUNIT = "--format progress --format RspecJunitFormatter --out junit.xml"
 _BARE_DASHES = re.compile(r"(?<!\S)--(?!\S)")
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
@@ -1331,11 +1335,25 @@ def _ruby(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
         test, runner = "bin/rails test", "rails test"
     else:
         test, runner = "bundle exec rake test", "rake test"
+    if runner == "rspec":
+        # Minitest and `rake test` stay without timings for now.
+        junit_report, junit_flag = "junit.xml", _RSPEC_JUNIT
+        if "rspec_junit_formatter" not in gemfile:
+            notes = (
+                *notes,
+                "RSpec writes test timings through `rspec_junit_formatter`, which the Gemfile "
+                'does not list. Add `gem "rspec_junit_formatter"` to the Gemfile\'s test group. '
+                "Until then the timings step finds no report and says so.",
+            )
+    else:
+        junit_report = junit_flag = ""
     version = () if root & {".ruby-version", ".tool-versions"} else ("    ruby-version: \"3.3\"   # adjust to your version",)
     return Stack(
         "ruby", runner, "bundler", reports,
         setup=("- uses: ruby/setup-ruby@v1", "  with:", *version, "    bundler-cache: true"),
         test=test, notes=notes, pattern=_RUBY, editor=lambda line, m: CommandEdit(line, reports),
+        junit_report=junit_report,
+        junit_flag=junit_flag,
     )
 
 
@@ -1362,12 +1380,23 @@ def _php(files: dict[str, str]) -> Stack:
     version = found.group(0) if found else "8.3"
     runner = "pest" if "pestphp/pest" in dev else "phpunit"
     return Stack(
-        "php", runner, "composer", "clover.xml",
-        setup=("- uses: shivammathur/setup-php@v2", "  with:", f'    php-version: "{version}"',
-               "    coverage: pcov", "- run: composer install --no-interaction --no-progress"),
+        "php",
+        runner,
+        "composer",
+        "clover.xml",
+        setup=(
+            "- uses: shivammathur/setup-php@v2",
+            "  with:",
+            f'    php-version: "{version}"',
+            "    coverage: pcov",
+            "- run: composer install --no-interaction --no-progress",
+        ),
         test=f"vendor/bin/{runner} --coverage-clover clover.xml",
-        pattern=_PHPUNIT, job_requires=re.compile(r"coverage:\s*['\"]?(pcov|xdebug)|XDEBUG_MODE"),
+        pattern=_PHPUNIT,
+        job_requires=re.compile(r"coverage:\s*['\"]?(pcov|xdebug)|XDEBUG_MODE"),
         editor=_edit_phpunit,
+        junit_report="junit.xml",
+        junit_flag="--log-junit junit.xml",
     )
 
 # ---------------------------------------------------------------------------

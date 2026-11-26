@@ -69,12 +69,33 @@ JEST_SETUP = b"""<?xml version="1.0" encoding="UTF-8"?>
 </testsuite></testsuites>
 """
 
+# rspec_junit_formatter: one <testsuite>; the classname is the spec file dotted,
+# each case names the spec as RSpec spells it.
+RSPEC = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="rspec" tests="2" failures="1" errors="0" skipped="0" time="0.007">
+<testcase classname="spec.a_spec" name="A adds an item" file="./spec/a_spec.rb" time="0.005" />
+<testcase classname="spec.a_spec" name="A removes an item" file="./spec/a_spec.rb" time="0.002"><failure message="expected 2, got 1">Failure/Error: expect(a.size).to eq(2)</failure></testcase>
+</testsuite>
+"""
+
+# PHPUnit --log-junit: the suite and each case name the test file, as an absolute
+# path; the classname is what places the cases on the indexed file.
+PHPUNIT = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuites><testsuite name="ATest" file="/repo/tests/ATest.php" tests="2" assertions="2" failures="1" errors="0" skipped="0" time="0.006">
+<testcase name="testAdds" class="ATest" classname="ATest" file="/repo/tests/ATest.php" line="8" assertions="1" time="0.004" />
+<testcase name="testRemoves" class="ATest" classname="ATest" file="/repo/tests/ATest.php" line="13" assertions="1" time="0.002"><failure type="PHPUnit\\Framework\\ExpectationFailedException">ATest::testRemoves
+Failed asserting that false is true.</failure></testcase>
+</testsuite></testsuites>
+"""
+
 
 def _doc(data: bytes):
     return parse_evidence(json.dumps(junit.to_v1(data)))
 
 
-@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST])
+@pytest.mark.parametrize(
+    "data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST, RSPEC, PHPUNIT]
+)
 def test_every_runner_shape_is_detected_as_junit(data: bytes) -> None:
     assert detect_profile_format(data) == "junit"
 
@@ -126,6 +147,21 @@ def test_jest_junit_as_setup_runs_it_names_each_file() -> None:
     assert {e["test_file"] for e in entries} == {"web/src/cart.test.ts", "web/src/pay.test.ts"}
     # Setup shared by a file runs in its first test.
     assert [e["first_in_class"] for e in entries] == [True, False, True]
+
+
+def test_rspec_and_phpunit_cases_land_on_their_test_files() -> None:
+    rspec = place_test_entries(_doc(RSPEC), {"spec/a_spec.rb", "lib/a.rb"})
+    # PHPUnit writes absolute file paths; the classname places the cases.
+    phpunit = place_test_entries(_doc(PHPUNIT), {"tests/ATest.php", "src/A.php"})
+
+    assert [(e["test_id"], e["test_file"], e["outcome"]) for e in rspec.entries] == [
+        ("spec/a_spec.rb::a_spec::A adds an item", "spec/a_spec.rb", "passed"),
+        ("spec/a_spec.rb::a_spec::A removes an item", "spec/a_spec.rb", "failed"),
+    ]
+    assert [(e["test_id"], e["test_file"], e["outcome"]) for e in phpunit.entries] == [
+        ("tests/ATest.php::ATest::testAdds", "tests/ATest.php", "passed"),
+        ("tests/ATest.php::ATest::testRemoves", "tests/ATest.php", "failed"),
+    ]
 
 
 def test_placing_joins_dotted_names_to_indexed_files() -> None:

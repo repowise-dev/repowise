@@ -256,6 +256,53 @@ def test_a_jest_unit_says_how_jest_junit_writes_its_timings(tmp_path: Path) -> N
     assert run["env"] == unit["test_timings"]["env"]
 
 
+def test_ruby_and_php_units_say_how_their_tests_write_junit_timings(tmp_path: Path) -> None:
+    (tmp_path / "Gemfile").write_text('source "https://rubygems.org"\ngem "rspec"\n')
+    (tmp_path / "Gemfile.lock").write_text("")
+    (tmp_path / "spec").mkdir()
+    (tmp_path / "spec" / "a_spec.rb").write_text(
+        "RSpec.describe A do\n  it 'adds' do\n  end\nend\n"
+    )
+    api = tmp_path / "api"
+    api.mkdir()
+    (api / "composer.json").write_text(
+        json.dumps({"require": {"php": "^8.2"}, "require-dev": {"phpunit/phpunit": "^11"}})
+    )
+    (api / "composer.lock").write_text("{}")
+    (api / "tests").mkdir()
+    (api / "tests" / "ATest.php").write_text("<?php\nfinal class ATest extends TestCase {}\n")
+
+    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
+
+    timings = {unit["root"]: unit["test_timings"] for unit in plan["units"]}
+    assert timings[""] == {
+        "flag": "--format progress --format RspecJunitFormatter --out junit.xml",
+        "env": None,
+        "report": "junit.xml",
+        "command": "bundle exec rspec --format progress --format RspecJunitFormatter --out junit.xml",
+        "workload": "rspec tests",
+        "ingest": 'repowise evidence add junit.xml --workload "rspec tests" --class unit_test '
+        "--commit " + "a" * 40,
+    }
+    assert timings["api"] == {
+        "flag": "--log-junit junit.xml",
+        "env": None,
+        "report": "api/junit.xml",
+        "command": "vendor/bin/phpunit --coverage-clover clover.xml --log-junit junit.xml",
+        "workload": "api: phpunit tests",
+        "ingest": 'repowise evidence add api/junit.xml --workload "api: phpunit tests" --class unit_test '
+        "--commit " + "a" * 40,
+    }
+    # The formatter gem is missing, so the Ruby unit says so; the coverage commands are untouched.
+    (ruby,) = [unit for unit in plan["units"] if unit["root"] == ""]
+    assert "rspec_junit_formatter" in "\n".join(ruby["coverage"]["notes"])
+    assert ruby["coverage"]["command"] == "bundle exec rspec"
+    # The loop's test step is that command: one run, coverage and timings, for the
+    # first unit; the PHP unit's turn comes once the Ruby one is covered.
+    steps = [s["run"] for s in plan["next_call"]["steps"]]
+    assert timings[""]["command"] in steps and timings[""]["ingest"] in steps
+
+
 def test_coverage_setup_leaves_test_timings_out(tmp_path: Path) -> None:
     _python(tmp_path)
 
