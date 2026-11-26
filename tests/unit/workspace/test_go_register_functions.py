@@ -340,3 +340,33 @@ func Reg(g *gin.RouterGroup) {{
 """
     _write(tmp_path, {"go.mod": "module example.com/app\n", "main.go": main, "api/a.go": own})
     assert _routes(tmp_path) == [("http::GET::/x", "api/a.go", 6)]
+
+
+def test_mutual_registration_adds_no_path(tmp_path: Path) -> None:
+    body = """\
+func main() { r := gin.Default(); A(r.Group("/m")) }
+func A(g *gin.RouterGroup) { g.GET("/a", X); B(g.Group("/b")) }
+func B(g *gin.RouterGroup) { g.GET("/bb", X); A(g.Group("/x")) }
+"""
+    assert _one_file(tmp_path, body) == [("http::GET::/m/a", 6), ("http::GET::/m/b/bb", 7)]
+
+
+def test_a_methods_groups_stay_in_the_method(tmp_path: Path) -> None:
+    body = """\
+func main() { r := gin.Default(); Reg(r.Group("/p")) }
+func Reg(g *gin.RouterGroup) { g.GET("/c", X) }
+func (h *H) Setup(r *gin.Engine) { g := r.Group("/mm"); g.GET("/d", X); Reg(g.Group("/s")) }
+"""
+    assert _one_file(tmp_path, body) == [
+        ("http::GET::/mm/d", 7),
+        ("http::GET::/mm/s/c", 6),
+        ("http::GET::/p/c", 6),
+    ]
+
+
+def test_a_multi_assigned_parameter_is_rebound(tmp_path: Path) -> None:
+    body = """\
+func main() { r := gin.Default(); Reg(r.Group("/api")) }
+func Reg(g *gin.RouterGroup) { g, err := mk(); g.GET("/x", X) }
+"""
+    assert _one_file(tmp_path, body) == [("http::GET::/x", 6)]

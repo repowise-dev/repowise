@@ -121,7 +121,9 @@ _MAX_DEPTH = 16
 #: place, so its routes keep their in-function path.
 _MAX_PREFIXES = 16
 
-_FUNC_DECL_RE = re.compile(r"^func\s+(?P<name>\w+)\s*(?:\[[^\]\n]*\]\s*)?\(", re.M)
+_FUNC_DECL_RE = re.compile(
+    r"^func\s+(?P<recv>\([^()\n]*\)\s*)?(?P<name>\w+)\s*(?:\[[^\]\n]*\]\s*)?\(", re.M
+)
 _IMPORT_RE = re.compile(r"^import\s*(?:\((?P<block>[^)]*)\)|(?P<one>[^\n]+))", re.M)
 _IMPORT_SPEC_RE = re.compile(r"(?:(?P<alias>[\w.]+)\s+)?\"(?P<path>[^\"]+)\"")
 _CALL_RE = re.compile(r"(?<![\w.])(?:(?P<pkg>\w+)\s*\.\s*)?(?P<func>\w+)\s*(?:\[[^\]\n]*\]\s*)?\(")
@@ -141,11 +143,13 @@ _ROUTER_PARAM_RE = re.compile(
 )
 _KEYWORDS = frozenset({"func", "if", "for", "switch", "return", "go", "defer", "select"})
 
-_Function = tuple[str, list[str], int, int]
+#: ``(name, parameter names, body start, body end)``; a method's name is None,
+#: since its call sites (``h.Register(g)``) name no type to key it by.
+_Function = tuple["str | None", list[str], int, int]
 
 
 def _functions(content: str) -> list[_Function]:
-    """``(name, parameter names, body start, body end)`` of each package-level function."""
+    """Each package-level function and method, as :data:`_Function`."""
     out: list[_Function] = []
     for m in _FUNC_DECL_RE.finditer(content):
         close = go_match_paren(content, m.end() - 1)
@@ -154,7 +158,8 @@ def _functions(content: str) -> list[_Function]:
         if end > 0:
             # `a, b *gin.RouterGroup` names two parameters; a name is a part's first word.
             params = [(p.split() or [""])[0] for p in content[m.end() : close].split(",")]
-            out.append((m.group("name"), params, brace, end))
+            name = None if m.group("recv") else m.group("name")
+            out.append((name, params, brace, end))
     return out
 
 
@@ -198,11 +203,14 @@ class _Scopes:
 
 
 def _param_index(content: str, fn: _Function | None, name: str) -> int | None:
-    """The position of *fn*'s parameter *name*, unless its body rebinds the name."""
-    if fn is None or name not in fn[1]:
+    """The position of function *fn*'s parameter *name*, unless its body rebinds
+    the name (``g := ...``, ``g, err := ...``, ``var g``)."""
+    if fn is None or fn[0] is None or name not in fn[1]:
         return None
-    if re.search(rf"(?<![\w.]){re.escape(name)}\s*:=", content[fn[2] : fn[3]]):
-        return None
+    n = re.escape(name)
+    rebinds = rf"\bvar\s+{n}\b|(?<![\w.])(?:\w+\s*,\s*)*{n}(?:\s*,\s*\w+)*\s*:="
+    if re.search(rebinds, content[fn[2] : fn[3]]):
+        return None  # ceiling: a rebinding in any block counts for the whole body
     return fn[1].index(name)
 
 
@@ -290,15 +298,16 @@ def router_sites(mounts: Mapping[str, str]) -> list[_Site]:
 
 
 class _FanOutError(Exception):
-    """More prefixes reach one parameter than :data:`_MAX_PREFIXES`."""
+    """A chain this refuses: too many prefixes, or deeper than :data:`_MAX_DEPTH`."""
 
 
 def served_prefixes(
     sites: Sequence[_Site], directory: str, func: str, index: int
 ) -> list[str] | None:
     """Every prefix the call sites of *func*'s parameter *index* (in the package
-    at *directory*) hand it, sorted; ``None`` when no call site hands it one, or
-    when more than :data:`_MAX_PREFIXES` reach it at any level of the chain."""
+    at *directory*) hand it, sorted; ``None`` when no call site hands it one,
+    when more than :data:`_MAX_PREFIXES` reach it, or when the chain above it
+    runs deeper than :data:`_MAX_DEPTH`."""
     try:
         return _prefixes(sites, (directory, func, index), frozenset()) or None
     except _FanOutError:
@@ -307,30 +316,34 @@ def served_prefixes(
 
 def _prefixes(
     sites: Sequence[_Site], param: tuple[str, str, int], stack: frozenset[tuple[str, str, int]]
-) -> list[str]:
-    """:func:`served_prefixes` for *param*, *stack* holding the parameters above it.
-    A call site inside the chain it extends (a function registering itself) adds nothing."""
+) -> list[str] | None:
+    """:func:`served_prefixes` for *param*, *stack* holding the parameters above
+    it: ``[]`` when no call site hands it a router (it is unmounted), ``None``
+    when every call site is a cycle back into the chain, which serves nothing."""
     directory, func, index = param
+    if len(stack) >= _MAX_DEPTH:
+        raise _FanOutError
     stack = stack | {param}
+    called = False
     out: set[str] = set()
     for package, name, idx, parent, prefix in sites:
         if name != func or idx != index or not _same_package(package, directory):
             continue
-        outer: list[str] = []
+        called = True
+        outer: list[str] | None = []
         if parent:
             p_dir, p_func, p_idx = parent.split("|")
             up = (p_dir, p_func, int(p_idx))
-            if up in stack:
-                continue  # a cycle: the call site serves no path of its own
-            if len(stack) < _MAX_DEPTH:
-                outer = _prefixes(sites, up, stack)
+            outer = None if up in stack else _prefixes(sites, up, stack)
+        if outer is None:
+            continue  # a cycle: the call site serves no path of its own
         if outer:
             out.update(compose_prefix(o, prefix) for o in outer)
         else:
             out.add(prefix)  # called from an unmounted function: its own segment only
         if len(out) > _MAX_PREFIXES:
             raise _FanOutError
-    return sorted(out)
+    return sorted(out) if out or not called else None
 
 
 def _router_args(ctx: ScanContext) -> dict[str, str]:
