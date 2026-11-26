@@ -409,9 +409,12 @@ def test_a_trailing_hole_after_a_path_parameter_is_stripped() -> None:
     assert strip_trailing_query_expr("/users/user-${id}") == "/users/user-${id}"
 
 
-def test_a_hole_after_a_path_parameter_is_not_a_glued_wrapper_name() -> None:
+def test_a_hole_after_a_path_parameter_is_a_glued_name() -> None:
     from repowise.core.workspace.extractors.http.paths import trailing_glued_name
 
     assert trailing_glued_name("/api/v1${endpoint}") == "endpoint"
-    assert trailing_glued_name("/users/${id}${qs}") is None
-    assert trailing_glued_name("${a}${b}") is None
+    assert trailing_glued_name("/repos/${id}${endpoint}") == "endpoint"
+    assert trailing_glued_name("${a}${b}") == "b"
+    # A parameter segment, and two holes glued onto a literal segment, give None.
+    assert trailing_glued_name("/users/${id}") is None
+    assert trailing_glued_name("/a${x}${y}") is None

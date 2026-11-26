@@ -203,12 +203,11 @@ _HOLE_NAME_RE = re.compile(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}")
 def trailing_glued_name(path: str) -> str | None:
     """The name of the one bare-name hole glued onto *path*'s last segment.
 
-    ``/api/v1${endpoint}`` gives ``endpoint``; a parameter segment
-    (``/users/${id}``), an expression hole, or two holes give None.
+    ``/api/v1${endpoint}`` gives ``endpoint``, and so does ``/repos/${id}${endpoint}``,
+    where the hole follows a parameter; a parameter segment (``/users/${id}``), an
+    expression hole, or two holes glued onto a segment give None.
     """
     m = _TRAILING_QUERY_EXPR_RE.search(path)
-    if m and path[m.start() - 1] == "}":
-        return None  # follows another hole, not a literal segment
     hole = _HOLE_NAME_RE.fullmatch(m.group()) if m else None
     return hole.group(1) if hole else None
 
