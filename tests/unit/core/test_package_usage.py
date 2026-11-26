@@ -247,3 +247,11 @@ def test_an_undeclared_distribution_finds_the_module_it_is_imported_under():
     assert index.match("pillow", "pypi")[1] == {"external:PIL": "inferred", "external:PIL.Image": "inferred"}
     assert index.match("Pillow")[1] == {"external:PIL": "inferred", "external:PIL.Image": "inferred"}
     assert index.match("pillow", "npm")[1] == {}
+
+
+def test_an_unscoped_query_takes_only_curated_import_names():
+    from repowise.core.inventory.usage import UsageIndex
+
+    index = UsageIndex(nodes={"external:date_fns": None, "external:typing_extensions": None})
+    assert index.match("date-fns")[1] == {}
+    assert index.match("typing-extensions", "pypi")[1] == {"external:typing_extensions": "inferred"}

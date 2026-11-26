@@ -45,7 +45,11 @@ from repowise.core.analysis.external_systems import (
     declaration_name_candidates,
     package_key,
 )
-from repowise.core.analysis.external_systems.pypi_imports import pypi_dist_key, pypi_import_names
+from repowise.core.analysis.external_systems.pypi_imports import (
+    PYPI_IMPORT_NAMES,
+    pypi_dist_key,
+    pypi_import_names,
+)
 from repowise.core.ids import SYMBOL_SEP
 
 #: Language tag of an importing file to the manifest ecosystem its imports
@@ -194,10 +198,15 @@ class UsageIndex:
 
 def _inferred_keys(name: str, ecosystem: str | None) -> tuple[str, ...]:
     """Unlinked import names that stand for *name*: itself and, for a PyPI
-    distribution, the modules it is imported under (``pillow`` as ``PIL``)."""
+    distribution, the modules it is imported under (``pillow`` as ``PIL``).
+
+    An unscoped query takes only the curated names: the default spelling rule
+    would turn any name into a module (npm ``date-fns`` into ``date_fns``)."""
     keys = [name]
-    if ecosystem in (None, "pypi"):
+    if ecosystem == "pypi":
         keys.extend(pypi_import_names(name))
+    elif ecosystem is None:
+        keys.extend(PYPI_IMPORT_NAMES.get(pypi_dist_key(name), ()))
     return tuple(dict.fromkeys(key.casefold() for key in keys))
 
 
