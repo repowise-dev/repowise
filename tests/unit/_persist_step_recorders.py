@@ -153,9 +153,13 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(fix_rollups, "apply_fix_rollups", ret=0)
     rec.patch(commit_health, "refresh_commit_health_after_update")
     # Core reads it from the search module, the CLI from the package.
+    # persistence exports FullTextSearch lazily from search via __getattr__;
+    # access it first and patch persistence before search so monkeypatch records
+    # the real class as the original to restore at teardown rather than the stub.
+    _ = persistence.FullTextSearch
     fts = rec.fts_class()
-    rec.monkeypatch.setattr(search, "FullTextSearch", fts)
     rec.monkeypatch.setattr(persistence, "FullTextSearch", fts)
+    rec.monkeypatch.setattr(search, "FullTextSearch", fts)
 
 
 def install_decision_chain(rec: StepRecorder) -> None:

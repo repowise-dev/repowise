@@ -309,3 +309,17 @@ async def test_complexity_is_restored_outside_the_diffed_files(repo, monkeypatch
 
     [(args, _kwargs)] = rec.args_of("restore_stored_complexity")
     assert args[-1] == ["src/a.py"]
+
+
+def test_full_text_search_is_restored_to_real_class_after_recorders(monkeypatch) -> None:
+    import repowise.core.persistence as persistence
+    from repowise.core.persistence.search import FullTextSearch as RealFTS
+
+    assert persistence.FullTextSearch is RealFTS
+    rec = StepRecorder(monkeypatch)
+    install_shared_steps(rec)
+
+    assert persistence.FullTextSearch is not RealFTS
+    monkeypatch.undo()
+
+    assert persistence.FullTextSearch is RealFTS
