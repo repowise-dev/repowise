@@ -19,8 +19,8 @@ is chosen when any of these hold:
 5. a changed code file has no known test, only a filename guess names one, or
    a route to it passes through a test helper no test imports (unless every
    known test is selected anyway), or any Python
-   test helper while a conftest or pytest config loads plugins by name (its
-   users are unknown);
+   test helper while a conftest or pytest config loads by name a plugin that
+   may be a module of the repository (its users are unknown);
 6. the index is missing, disagrees with itself about its commit, or its graph
    could not be read; or the files changed between its commit and the base are
    unknown, too many to trace, or include a manifest, lockfile or build config;
@@ -67,7 +67,6 @@ a pipeline must branch on the run-all flag rather than rely on the sentinel.
 from __future__ import annotations
 
 import functools
-import re
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
@@ -361,10 +360,6 @@ def is_documentation(path: str) -> bool:
     )
 
 
-# ``pytest_plugins = [...]`` or ``-p name`` (not ``-p no:name``, which disables one).
-_PLUGIN_DECLARATION = re.compile(r"\bpytest_plugins\b|(?:^|[\s\"'=])-p\s*(?!no:)[A-Za-z_]")
-
-
 def is_scan_source(path: str) -> bool:
     """Code or pytest config: the files :func:`doc_readers` and :func:`plugin_loader` read."""
     name = PurePosixPath(path).name
@@ -447,16 +442,24 @@ def _named_in(
     return out
 
 
-def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:
+def plugin_loader(
+    sources: Iterable[tuple[str, str]], files: Collection[str] | None = None
+) -> str | None:
     """The first conftest or pytest config that loads a plugin module by name.
 
     Such a plugin's fixtures reach tests that never import it, so while one is
-    declared, a test helper's importers are not all of its users.
+    declared, a test helper's importers are not all of its users. Given the
+    repository's *files*, only a plugin that may be one of them counts
+    (:mod:`.plugin_loaders`): an installed package or a pytest builtin is no
+    test helper here. A declaration whose names cannot be read always counts.
     """
+    from .plugin_loaders import loads_local, local_module_check
+
+    local = local_module_check(files or ())
     for path, text in sources:
         name = PurePosixPath(path).name
         pytest_file = name == "conftest.py" or name in PYTEST_CONFIG_NAMES
-        if pytest_file and _PLUGIN_DECLARATION.search(text):
+        if pytest_file and loads_local(path, text, local):
             return path
     return None
 
