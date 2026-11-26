@@ -326,13 +326,21 @@ migration.
   Profile the emitted JavaScript with a `//# sourceMappingURL=` comment and a
   local Source Map v3 file instead. Before joining, the shared converter maps
   positions to the original checkout source (JavaScript or TypeScript), then
-  applies the usual position, dirty-file and code-origin checks. Generated
-  bundles with usable maps can resolve to maintained sources; generated files
-  with unavailable or unsupported maps and vendored files remain libraries.
-  Missing maps for maintained files and unmapped positions
-  are refused. Inline, remote and indexed maps are unsupported; map paths and
-  sources must stay inside the checkout. Collapsed frames without columns need
-  exactly one mapping segment starting at column zero on their generated line.
+  applies the usual position, dirty-file and code-origin checks. Map sources
+  are checkout-relative paths or webpack's `webpack://<namespace>/<path>`
+  form (Next.js writes `webpack://_N_E/./src/page.tsx`), read from the
+  deepest directory above the map where the file exists; a webpack module
+  that names no file (`webpack://_N_E/?3f2a`) stays unjoined. Generated bundles
+  with usable maps can resolve to maintained sources; vendored files remain
+  libraries. A bundle with no `sourceMappingURL` comment joins at its own
+  positions. When a bundle's comment points at a map that cannot be used
+  (missing, inline `data:`, remote, indexed, or with sources outside the
+  checkout or in another scheme), a generated bundle stays a library frame,
+  and any other bundle refuses the whole profile with an error naming that
+  bundle; so does a frame whose position the map does not cover. Generate
+  external maps for every bundle the profile runs. Collapsed frames without
+  columns need exactly one mapping segment starting at column zero on their
+  generated line.
 - **Go `-trimpath`.** A binary built with `-trimpath` names its files by import
   path, under no checkout, so its profile is refused. Profile a build without
   it. A build made in another directory (CI, a container) joins with that
@@ -775,9 +783,10 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   and class checked; without a line, by name only when one method fits.
   Compiler-made JVM frames (bridges, accessors, `$$Lambda`) count as generated
   and charge their caller, and a Kotlin class is found only in a file named
-  after it, under its package directories. TypeScript and
-  bundled code are refused, since source maps are not read, and so is a Go binary
-  built with `-trimpath`.
+  after it, under its package directories. TypeScript and bundled code join
+  their original source through a local external source map; a frame that
+  names a TypeScript file directly is refused, and so is a Go binary built
+  with `-trimpath`.
 - A profile or query-count run where more than half the entries did not map is
   refused unless `--allow-partial`.
 - A profile of one process misses the processes it starts; profile each one and
