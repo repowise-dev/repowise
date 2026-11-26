@@ -57,7 +57,8 @@ class RunProvenance:
     #: The commit measured; None only for a production-only kind whose window
     #: spans deploys and whose source did not say which one ran.
     commit_sha: str | None
-    checkout_root: str
+    #: None for a source batch of entries stored with no checkout.
+    checkout_root: str | None
     dirty: bool | None
     environment: str = "unknown"
     source: str = "cli"
@@ -451,7 +452,7 @@ def run_key(
         provenance.workload_name,
         provenance.workload_class,
         provenance.environment,
-        provenance.checkout_root,
+        provenance.checkout_root or "",
         str(provenance.dirty),
         provenance.source,
         # Only when known, so a run that never reports it keeps its key.

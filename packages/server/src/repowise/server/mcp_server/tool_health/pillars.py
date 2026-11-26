@@ -178,6 +178,8 @@ def _statement_run(run: dict[str, Any]) -> dict[str, Any]:
     unattributed = {k: v["share"] for k, v in run["unattributed"].items() if v["share"]}
     if unattributed:
         out["unattributed"] = unattributed
+    if run.get("window"):
+        out["window"] = run["window"]["claim"]
     return out
 
 
@@ -215,6 +217,10 @@ def _measured_run(run: dict[str, Any]) -> dict[str, Any]:
     # Only a tracer's run says so: every other run gives shares.
     if not out["ordering_only"]:
         del out["ordering_only"]
+    # Only a production run names the window and deploy it measured, as its rows' claim.
+    window = run.get("window")
+    if window:
+        out["window"] = window["claim"]
     # Only a run listed in place of a newer one that ranks nothing says so.
     newer = run.get("newer_run")
     if newer:

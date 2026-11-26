@@ -1122,6 +1122,9 @@ async def test_production_statements_list_as_action_rows_that_never_lead(async_s
         "s1", "production", 1000.0, 5,
     )
     assert run["window_start"].startswith("2026-11-01") and run["age_days"] == 2
+    assert run["window"]["claim"] == (
+        f"in production over 2026-11-01 to 2026-11-16, deployed {'d' * 12}"
+    )
     assert run["unattributed"] == {
         "ambiguous": {"statements": 1, "total_ms": 300.0, "share": 0.3},
         "database_schedule": {"statements": 1, "total_ms": 100.0, "share": 0.1},
