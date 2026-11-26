@@ -1329,6 +1329,10 @@ def resolve_test_reports(
     return out
 
 
+#: Sentinel error note for a recognized coverage report that measured zero files.
+EMPTY_COVERAGE_REPORT_NOTE = "measured no files, skipped"
+
+
 def build_coverage_map(
     repo_root: Path,
     report_paths: list[Path],
@@ -1379,7 +1383,12 @@ def build_coverage_map(
             continue
         report = parse_coverage(text, format=coverage_format)
         if not report.files:
-            errors.append((path, f"no coverage entries (detected={report.source_format})"))
+            msg = (
+                EMPTY_COVERAGE_REPORT_NOTE
+                if report.source_format != "unknown"
+                else f"no coverage entries (detected={report.source_format})"
+            )
+            errors.append((path, msg))
             continue
         report.origin_dir = report_origin_dir(path, repo_root)
         report.path_prefix = prefixes.get(path)
