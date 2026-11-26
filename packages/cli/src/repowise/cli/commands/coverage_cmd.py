@@ -228,14 +228,9 @@ def coverage_add(
         url = get_db_url_for_repo(repo_path)
         from repowise.core.persistence.database import has_db_store
 
-        clean_path = url.split(":///")[-1] if ":///" in url else None
-        store_exists = (
-            has_db_store(repo_path)
-            or (":memory:" in url)
-            or (clean_path is not None and Path(clean_path).is_file())
-            or url.startswith(("postgresql", "mysql"))
-        )
-        if not store_exists:
+        # A configured database counts as existing (see has_db_store); only the
+        # repo-local default must already be on disk, so none is created here.
+        if not has_db_store(repo_path):
             console.print(
                 "[yellow]No index yet. Run `repowise init` once before adding coverage.[/yellow]"
             )
@@ -490,14 +485,9 @@ def coverage_status(repo: str | None, fmt: str) -> None:
         url = get_db_url_for_repo(repo_path)
         from repowise.core.persistence.database import has_db_store
 
-        clean_path = url.split(":///")[-1] if ":///" in url else None
-        store_exists = (
-            has_db_store(repo_path)
-            or (":memory:" in url)
-            or (clean_path is not None and Path(clean_path).is_file())
-            or url.startswith(("postgresql", "mysql"))
-        )
-        if not store_exists:
+        # A configured database counts as existing (see has_db_store); only the
+        # repo-local default must already be on disk, so none is created here.
+        if not has_db_store(repo_path):
             notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
             if fmt == "json":
                 emit_json({"repo": str(repo_path), "indexed": False})
