@@ -52,6 +52,7 @@ from repowise.core.evidence.statement_join import (
     StatementSite,
     statement_shape,
 )
+from repowise.core.pyparse import parse_python
 
 _log = logging.getLogger("repowise.workspace.statement_sites")
 
@@ -171,7 +172,7 @@ class _Module:
 
 def _parse(path: str, text: str) -> _Module | None:
     try:
-        tree = ast.parse(text)
+        tree = parse_python(text)
     except (SyntaxError, ValueError):
         return None
     mod = _Module(path, tree)
