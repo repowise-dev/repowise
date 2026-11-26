@@ -131,6 +131,34 @@ def test_origin_near_misses_stay_flaggable(path):
 @pytest.mark.parametrize(
     "path",
     [
+        # A migration runner loads its scripts from their directory.
+        "packages/database/migration/20240101_add_x/migration.ts",
+        "src/migration/1700000000000-Init.ts",
+        "db/migrate/20240101_add_users.rb",
+        "alembic/versions/abc_add.py",
+        # TypeScript declaration files, ESM and CommonJS flavours included.
+        "src/types.d.ts",
+        "src/types.d.mts",
+        "src/types.d.cts",
+        "packages/x/dist/index.d.ts",
+    ],
+)
+def test_migrations_and_declarations_are_never_flagged(path):
+    assert never_flag_path(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/migration/index.ts", "modules/migration/comment.go", "src/types.mts"],
+)
+def test_migration_and_declaration_near_misses_stay_flaggable(path):
+    assert not never_flag_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         # A build tool runs a build file by its name; nothing imports one.
         "ktor-server/ktor-server-core/build.gradle.kts",
         "gradle/plugins/ktorbuild.kmp.gradle.kts",

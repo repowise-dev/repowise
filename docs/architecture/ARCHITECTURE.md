@@ -929,7 +929,10 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 - `__init__.py` public re-exports
 - `@pytest.fixture`: `@pytest.mark.*` symbols
 - Files matching `*migrations*`, `*schema*`, `*seed*`
-- TypeScript `.d.ts` files
+- Schema migrations under other directory names (`alembic/versions/`,
+  `db/migrate/`, `db/migration/`, numbered entries of a singular
+  `migration/`), as `code_origin.is_migration_path` reads them
+- TypeScript declaration files (`.d.ts`, `.d.mts`, `.d.cts`)
 - Files where `is_api_contract == True`
 - Files named in the `whitelist` key of the analyzer's config argument (an API
   parameter; no CLI flag or config file populates it today)

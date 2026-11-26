@@ -914,7 +914,18 @@ _MIGRATION_DIR = "migrations"
 # (``src/django_test_migrations/``).
 _MIGRATION_DB_DIR = "db"
 _MIGRATION_DB_SUBDIR_SUFFIX = "_migrations"
-_MIGRATION_DIR_PAIRS = frozenset({("db", "migrate"), ("alembic", "versions")})
+_MIGRATION_DIR_PAIRS = frozenset(
+    {("db", "migrate"), ("db", "migration"), ("alembic", "versions")}
+)
+# A singular ``migration/`` directory holds migrations when its entries are
+# numbered: TypeORM's ``src/migration/1700000000000-Init.ts``, a data
+# migration's ``migration/20240101_add_x/migration.ts``. A bare ``migration/``
+# is as often a product feature (an importer that migrates a user's data from
+# another service), so the numbered child is what decides. Flyway's
+# ``db/migration`` is a pair above.
+_MIGRATION_SINGULAR_DIR = "migration"
+# A sequence or timestamp of four or more digits, then a separator.
+_NUMBERED_ENTRY_RE = re.compile(r"^\d{4,}[-_.]")
 _TOOLING_ROOT_NAMES = frozenset({"fabfile.py"})
 # Benchmarks kept beside the code they measure (abseil's
 # ``mutex_benchmark.cc``), not in a benchmarks directory.
@@ -978,9 +989,13 @@ def is_vendored_or_generated_path(path: str) -> bool:
     return _is_generated_path(name, dirs) or _is_vendored_path(name.lower(), dirs)
 
 
-def _is_migration_dir(dirs: list[str]) -> bool:
+def _is_migration(name: str, dirs: list[str]) -> bool:
     return (
         _MIGRATION_DIR in dirs
+        or any(
+            parent == _MIGRATION_SINGULAR_DIR and _NUMBERED_ENTRY_RE.match(child)
+            for parent, child in pairwise([*dirs, name])
+        )
         or any(pair in _MIGRATION_DIR_PAIRS for pair in pairwise(dirs))
         or any(
             parent == _MIGRATION_DB_DIR and child.endswith(_MIGRATION_DB_SUBDIR_SUFFIX)
@@ -993,7 +1008,7 @@ def is_migration_path(path: str) -> bool:
     """Whether *path* is a schema migration: generated once, append-only, and
     meant to stay self-contained, so no shared helper or split belongs in it."""
     split = _split(path)
-    return split is not None and _is_migration_dir(split[2])
+    return split is not None and _is_migration(split[1], split[2])
 
 
 # A ``scripts/`` folder inside a served static tree holds the browser scripts
@@ -1033,7 +1048,7 @@ def _is_tooling(name: str, dirs: list[str]) -> bool:
     return (
         any(_is_tooling_dir(i, d, dirs) for i, d in enumerate(dirs))
         or bool(dirs and dirs[0] in _TOOLING_ROOT_DIRS)
-        or _is_migration_dir(dirs)
+        or _is_migration(name, dirs)
         or (not dirs and name in _TOOLING_ROOT_NAMES)
         or bool(_TOOLING_NAME_RE.match(name.lower()))
         or _is_benchmark_file(name)

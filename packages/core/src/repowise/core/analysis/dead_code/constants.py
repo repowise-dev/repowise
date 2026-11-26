@@ -16,9 +16,14 @@ import os
 import re
 from functools import lru_cache
 
-from repowise.core.code_origin import is_build_file, is_vendored_or_generated_path
+from repowise.core.code_origin import (
+    is_build_file,
+    is_migration_path,
+    is_vendored_or_generated_path,
+)
 from repowise.core.ingestion.languages.js_config_values import TEST_SETUP_KEYS
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.ingestion.ts_declarations import DECLARATION_SUFFIXES
 
 # Non-code languages (registry passthrough languages plus "unknown").
 _NON_CODE_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_or_unknown_languages()
@@ -55,16 +60,16 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*__main__.py",
     "*conftest.py",
     "*alembic/env.py",
-    # Alembic loads version scripts reflectively; many setups use
-    # ``alembic/versions/``, which ``*migrations*`` does not match.
-    "*/alembic/versions/*.py",
     "*manage.py",
     "*wsgi.py",
     "*asgi.py",
+    # Any path naming ``migrations``. Migration directories under other names
+    # (``alembic/versions``, ``db/migrate``, a singular ``migration/``) are
+    # ``code_origin.is_migration_path``, asked by ``never_flag_path``.
     "*migrations*",
     "*schema*",
     "*seed*",
-    "*.d.ts",
+    *(f"*{suffix}" for suffix in DECLARATION_SUFFIXES),
     "*setup.py",
     "*setup.cfg",
     # JS tooling loads its config by file name: ``<tool>.config.<ext>`` (and
@@ -689,8 +694,6 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*src/pages/*.ts",
     "*src/pages/*.js",
     "*src/pages/*.mjs",
-    # ESM declaration outputs in dist trees.
-    "*/dist/*.d.ts",
     # ---- JVM (Java + Kotlin) conventions ---------------------------------
     # Module / package metadata files, which declare no importable symbols.
     "*/module-info.java",
@@ -1294,13 +1297,19 @@ def never_flag_match(path: str) -> bool:
 
 
 def never_flag_path(path: str) -> bool:
-    """The never-flag globs, plus vendored, generated and build files by path.
+    """The never-flag globs, plus vendored, generated, build and migration files by path.
 
     A copied library or a generator's output is not this repository's to
-    delete, whatever its importers look like, and a build tool runs a build
-    file by its name, so it has no importer by design.
+    delete, whatever its importers look like, a build tool runs a build file
+    by its name, and a migration runner loads its scripts from their
+    directory, so neither has an importer by design.
     """
-    return never_flag_match(path) or is_vendored_or_generated_path(path) or is_build_file(path)
+    return (
+        never_flag_match(path)
+        or is_vendored_or_generated_path(path)
+        or is_build_file(path)
+        or is_migration_path(path)
+    )
 
 
 def _is_fixture_path(path: str) -> bool:
