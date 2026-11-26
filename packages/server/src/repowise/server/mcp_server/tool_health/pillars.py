@@ -178,6 +178,8 @@ def _statement_run(run: dict[str, Any]) -> dict[str, Any]:
     unattributed = {k: v["share"] for k, v in run["unattributed"].items() if v["share"]}
     if unattributed:
         out["unattributed"] = unattributed
+    if run.get("window"):
+        out["window"] = run["window"]["claim"]
     return out
 
 

@@ -1909,6 +1909,8 @@ def _statement_run(found: Any, at: datetime) -> dict[str, Any]:
     """A production statement run's basis: workload, commit, age, its window,
     the statement time it stored and the statements on no single function
     (``evidence.measured_fold.StatementRun``)."""
+    from ....evidence.status import production_window
+
     run = found.run
     basis = _benchmark_run(run, at)
     return {
@@ -1918,6 +1920,7 @@ def _statement_run(found: Any, at: datetime) -> dict[str, Any]:
         "total_ms": found.total_ms,
         "statements": found.statements,
         "unattributed": found.unattributed,
+        "window": production_window(run),
     }
 
 

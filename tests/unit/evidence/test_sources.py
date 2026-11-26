@@ -997,3 +997,6 @@ def test_only_production_runs_name_their_window_on_the_wire(double, indexed) -> 
     ranked = {r["workload_name"]: r for r in measured["measured"]["runs"]}
     assert ranked["api"]["window"] == window["api"]
     assert "window" not in ranked["app"]
+    # A statement window says the same where its functions are listed, if any joined.
+    for statement_run in (measured.get("statements") or {}).get("runs", []):
+        assert statement_run["window"] == window[statement_run["workload_name"]]

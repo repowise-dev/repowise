@@ -541,6 +541,7 @@ async def test_production_statements_list_compactly_beside_no_profile(setup_mcp,
         "commit": "d" * 12, "age_days": run["age_days"],
         "verify": "compare this row in the next orders-db window",
         "unattributed": {"ambiguous": 0.15, "database_schedule": 0.05},
+        "window": f"in production, window unknown, deployed {'d' * 12}",
     }
 
 

@@ -319,6 +319,8 @@ class StatementRun(_Strict):
     #: ``ambiguous`` (several functions could issue it), ``database_schedule``
     #: (only a ``cron.schedule`` job runs it), ``unjoined`` (nothing matched).
     unattributed: dict[str, UnattributedStatements]
+    #: The window and deploy in words, as every production run names them.
+    window: ProductionWindow
 
 
 class StatementGroup(_Strict):

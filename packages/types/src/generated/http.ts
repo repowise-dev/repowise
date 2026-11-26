@@ -5187,6 +5187,7 @@ export interface StatementRun {
   total_ms: number;
   statements: number;
   unattributed: Record<string, UnattributedStatements>;
+  window: ProductionWindow;
 }
 
 /** Where the suite's time goes (``evidence.suite_cost.cost_fold``). */
