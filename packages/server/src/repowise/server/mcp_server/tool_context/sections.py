@@ -456,11 +456,15 @@ def _author_at(top_authors_json: str | None, moment: datetime) -> str | None:
 async def _changes_section(card: CardState) -> None:
     """Change Records and provenance (file targets, opt-in); a symbol target
     gets the changes that edited its lines."""
-    include = card.include
     file_path = card.resolved.file_path
     if card.resolved.target_type == "symbol" and file_path and card.wants("changes"):
         await _symbol_changes_section(card, file_path)
-        return
+    else:
+        await _file_changes_section(card, file_path)
+
+
+async def _file_changes_section(card: CardState, file_path: str | None) -> None:
+    include = card.include
     if not (
         include
         and card.resolved.target_type == "file"
