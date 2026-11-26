@@ -7,7 +7,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import replace
 from pathlib import Path
 
-from .astro import ASTRO
+from .astro import ASTRO, astro_facts
 from .base import FrameworkFacts, _js
 from .expo_router import EXPO_ROUTER
 from .next import NEXT_PAGES
@@ -40,6 +40,8 @@ def js_frameworks(
             continue
         if facts is NUXT:
             facts = nuxt_facts(manifest, paths)
+        elif facts is ASTRO:
+            facts = astro_facts(manifest)
         elif facts is SVELTEKIT:
             facts = sveltekit_facts(manifest)
         elif facts is REACT_EMAIL:
