@@ -102,3 +102,14 @@ def test_a_change_beside_it_prints_nothing_extra(tmp_path: Path) -> None:
     assert table.exit_code == 0, table.output
     assert "measured function" not in table.output
     assert "measured" not in json.loads(machine.output)
+
+
+def test_a_file_the_score_left_out_is_never_measured(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, ("a = 1", "a = 2"))
+
+    result = CliRunner().invoke(
+        risk_command, ["HEAD", "--path", str(repo), "--baseline", "0", "--ext", ".go"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "measured function" not in result.output

@@ -71,23 +71,37 @@ def _impacted_tests_for(repo_path: str, result, revspec: str | None) -> dict:
     return run_async(read())
 
 
-def _measured_for(repo_path: str, result, revspec: str | None) -> dict | None:
-    """The measured functions the change edits, as ``get_change_risk`` names them."""
+def _measured_for(subject: _Subject, result) -> dict | None:
+    """The measured functions the change edits, as ``get_change_risk`` names them.
+
+    Informational: an index that cannot be opened (missing, or a schema still
+    behind) leaves it out and never changes the exit code.
+    """
+    from repowise.cli._helpers.db import StaleIndexError
     from repowise.core import git_refs
     from repowise.core.persistence import create_session_factory
-    from repowise.server.mcp_server.tool_change_risk.measured import scored_change_measured
+    from repowise.server.mcp_server.tool_change_risk.measured import (
+        measured_block,
+        scored_changed_lines,
+    )
 
-    root = Path(git_refs.toplevel(repo_path) or repo_path).resolve()
+    root = Path(git_refs.toplevel(subject.repo_path) or subject.repo_path).resolve()
+    # Read git before the store opens: no subprocess while a connection is held.
+    changed = scored_changed_lines(root, subject.revspec, result, subject.extensions)
+    if not changed:
+        return None
 
     async def read() -> dict | None:
         async with repo_index_session(root) as opened:
             if opened is None:
                 return None
             session, repo_id = opened
-            factory = create_session_factory(session.bind)
-            return await scored_change_measured(root, factory, revspec, result, repo=repo_id)
+            return await measured_block(create_session_factory(session.bind), changed, repo_id)
 
-    return run_async(read())
+    try:
+        return run_async(read())
+    except StaleIndexError:
+        return None
 
 
 def _print_measured(block: dict | None) -> None:
@@ -128,7 +142,7 @@ def _print_change(subject: _Subject, result: ChangeRiskResult, failed: bool) -> 
     """The table rendering of a scored change."""
     _print_size(result, subject.fail_above, failed)
     _print_fix_history_and_shape(result)
-    _print_measured(_measured_for(subject.repo_path, result, subject.revspec))
+    _print_measured(_measured_for(subject, result))
     groups = _independent_changes_for(subject.repo_path, result, subject.revspec)
     if groups:
         _print_independent_changes(groups)
@@ -249,7 +263,7 @@ def _emit_machine(subject: _Subject, result: ChangeRiskResult) -> None:
         payload["impacted_tests"] = _impacted_tests_for(
             subject.repo_path, result, subject.revspec
         )
-        measured = _measured_for(subject.repo_path, result, subject.revspec)
+        measured = _measured_for(subject, result)
         if measured:
             payload["measured"] = measured
         if fail_above is not None:

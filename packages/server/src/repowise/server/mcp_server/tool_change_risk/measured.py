@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
-from functools import partial
 from typing import Any
 
 import structlog
@@ -39,29 +37,26 @@ async def measured_block(
     return fold(found)
 
 
-async def scored_change_measured(
-    repo_path: Any, session_factory: Any, revspec: str | None, scored: Any, repo: str | None = None
-) -> dict[str, Any] | None:
-    """:func:`measured_block` for the change *scored* (a ``ChangeRiskResult``) holds,
-    over the files its score counted, so ``repowise risk`` names the functions
-    ``get_change_risk`` names for the same change."""
+def scored_changed_lines(
+    repo_path: Any, revspec: str | None, scored: Any, extensions: tuple[str, ...] = ()
+) -> dict[str, set[int]]:
+    """The changed lines of the change *scored* (a ``ChangeRiskResult``) holds,
+    over the files its score counted (*extensions*, its excludes), the lines
+    ``get_change_risk`` reads for the same change. ``{}`` when git cannot read
+    it. Git only: call it before a store opens, so no connection waits on git."""
+    from repowise.core.analysis.change_risk import normalize_extensions
     from repowise.core.analysis.changed_lines import changed_lines
 
-    counted = {path for path, _ in scored.features.file_churn}
-    if session_factory is None or not counted:
-        return None
+    from .changed import _filter_changed
+
+    excludes = scored.riskignore_excludes + scored.request_excludes
     try:
-        changed, _ = await asyncio.to_thread(
-            partial(
-                changed_lines,
-                str(repo_path),
-                revspec or "HEAD",
-                working_tree=scored.working_tree,
-                skip_untracked=scored.riskignore_excludes + scored.request_excludes,
-            )
+        changed, _ = changed_lines(
+            str(repo_path),
+            revspec or "HEAD",
+            working_tree=scored.working_tree,
+            skip_untracked=excludes,
         )
     except (ValueError, subprocess.SubprocessError, OSError):  # git could not read it
-        return None
-    return await measured_block(
-        session_factory, {p: lines for p, lines in changed.items() if p in counted}, repo
-    )
+        return {}
+    return _filter_changed(changed, normalize_extensions(tuple(extensions)), excludes)

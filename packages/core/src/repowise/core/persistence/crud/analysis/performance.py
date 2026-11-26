@@ -14,6 +14,7 @@ for the same reason - they can no longer describe the current tree.
 from __future__ import annotations
 
 import json
+from bisect import bisect_left
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -1551,12 +1552,8 @@ async def measured_in_change(
     spans = await _symbol_spans(session, repository_id, files)
     edited: list[str] = []
     for path, held in spans.items():
-        lines = changed[path]
-        touched = [
-            s
-            for s in held
-            if s.kind in _CALLABLE_KINDS and any(s.start_line <= n <= s.end_line for n in lines)
-        ]
+        lines = sorted(changed[path])
+        touched = [s for s in held if s.kind in _CALLABLE_KINDS and _holds_a_line(s, lines)]
         edited += [s.symbol_id for s in innermost(touched)]
     if not edited:
         return []
@@ -1586,6 +1583,12 @@ async def measured_in_change(
         if (command := benchmark_command(b for b in found if b in stored))
     }
     return measured_changes(edited, ranked, benchmarks)
+
+
+def _holds_a_line(span: Any, lines: list[int]) -> bool:
+    """Whether *span* holds one of the sorted *lines*: a bisect, not a scan."""
+    i = bisect_left(lines, span.start_line)
+    return i < len(lines) and lines[i] <= span.end_line
 
 
 async def _holds_any(session: AsyncSession, repository_id: str, tables: tuple[Any, ...]) -> bool:

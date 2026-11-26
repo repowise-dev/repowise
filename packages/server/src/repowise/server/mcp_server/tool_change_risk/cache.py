@@ -179,7 +179,7 @@ async def _index_inputs(ctx: Any) -> str:
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.core.persistence.database import get_session
-    from repowise.core.persistence.models import CoverageIngest, EvidenceRun
+    from repowise.core.persistence.models import CoverageIngest
     from repowise.server.mcp_server import tool_change_risk as _pkg
     from repowise.server.mcp_server._index_state import index_state_key
 
@@ -197,8 +197,26 @@ async def _index_inputs(ctx: Any) -> str:
                     )
                 )
             ).one()
-            # The measured block reads evidence an ingest adds without an index stamp.
-            runs_at, runs = (
+    except (LookupError, SQLAlchemyError):
+        return ""
+    return f"{index_state_key(repository)}|{newest or ''}|{count}|{await _evidence_inputs(ctx)}"
+
+
+async def _evidence_inputs(ctx: Any) -> str:
+    """The newest evidence ingest and the run count, which the measured block
+    reads and an ingest writes without an index stamp; ``""`` when unreadable
+    (an index older than the evidence tables), which keeps the rest of the key."""
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import EvidenceRun
+    from repowise.server.mcp_server import tool_change_risk as _pkg
+
+    try:
+        async with get_session(ctx.session_factory) as session:
+            repository = await _pkg._get_repo(session)
+            newest, count = (
                 await session.execute(
                     select(func.max(EvidenceRun.ingested_at), func.count()).where(
                         EvidenceRun.repository_id == repository.id
@@ -207,4 +225,4 @@ async def _index_inputs(ctx: Any) -> str:
             ).one()
     except (LookupError, SQLAlchemyError):
         return ""
-    return f"{index_state_key(repository)}|{newest or ''}|{count}|{runs_at or ''}|{runs}"
+    return f"{newest or ''}|{count}"
