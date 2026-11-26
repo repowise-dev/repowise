@@ -256,14 +256,30 @@ def tier_advisory(
             return by_path
     if not call_sites_known:
         return TierResult("imported", "no_call_records", _import_sites(shipping))
-    reached_calls = [
-        call
-        for call in call_sites
-        if call.caller_symbol_id in reachable and origin(call.file_path) not in NON_SHIPPING_ORIGINS
-    ]
+    reached_calls = _reached_calls(call_sites, imports, reachable, origin, ecosystem)
     return _by_calls(reached_calls, affected, ecosystem) or TierResult(
         "imported", "import", _import_sites(shipping)
     )
+
+
+def _reached_calls(
+    call_sites: Iterable[CallRecord],
+    imports: tuple[ImportSite, ...],
+    reachable: Collection[str],
+    origin: Callable[[str], str],
+    ecosystem: str,
+) -> list[CallRecord]:
+    """Calls a production-reachable function in shipping code makes into the
+    package: into a module one of its import sites names, or a submodule of one,
+    so a record of a sibling package (``lodash.merge`` beside ``lodash``) never counts."""
+    modules = {s.module for s in imports}
+    return [
+        call
+        for call in call_sites
+        if call.caller_symbol_id in reachable
+        and origin(call.file_path) not in NON_SHIPPING_ORIGINS
+        and any(_module_matches(call.module, module, ecosystem) for module in modules)
+    ]
 
 
 def _import_sites(imports: Iterable[ImportSite]) -> tuple[Site, ...]:

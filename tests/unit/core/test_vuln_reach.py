@@ -352,7 +352,7 @@ def test_a_sibling_npm_package_is_not_a_submodule():
         call_sites=[Call("src/a.ts::f", "lodash.merge", "", 3)],
         reachable={"src/a.ts::f"},
     )
-    assert result.tier == "package_called"
+    assert (result.tier, result.basis) == ("imported", "import")
 
 
 def test_a_call_in_a_file_stored_as_non_shipping_proves_nothing():
