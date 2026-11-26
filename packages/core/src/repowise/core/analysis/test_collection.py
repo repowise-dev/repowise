@@ -284,7 +284,35 @@ _TOOL_LOADED = re.compile(
 # A line that loads a module by name: an import-like keyword, or the word
 # written as a path or a dotted name (``"./fresh"``, ``plugins.fresh``).
 _LOADS = re.compile(r"\b(import|from|require|use|mod|include|load|extends)\b")
-_COMMENT = re.compile(r"\s*(#|//|/?\*|--)")
+# What is left of a block comment's continuation line, or a line comment in a
+# language whose marker the mask does not read.
+_COMMENT = re.compile(r"\s*(//|/?\*|--)")
+
+
+def _without_comment(path: str, line: str) -> str:
+    """One added *line* of *path* with its comments blanked, columns kept.
+
+    Python is cut at its comment token (a fragment that does not tokenize is
+    kept whole); other languages go through the masking :func:`~.fixture_readers.code_text`
+    uses, which keeps ``#`` (a lost ``#include`` would select less).
+    """
+    import io
+    import tokenize
+
+    from .security_scan import mask_comments_and_strings, mask_dialect
+
+    if not path.endswith(".py"):
+        return mask_comments_and_strings(
+            line, strings=False, hash_comments=False, **mask_dialect(path)
+        )
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(line.strip() + "\n").readline):
+            if token.type == tokenize.COMMENT:
+                stripped = line.strip()
+                return stripped[: token.start[1]]
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        pass
+    return line
 
 
 def _new_file_scopes(
@@ -339,9 +367,9 @@ def _new_file_scopes(
 def _changed_namers(new: Collection[str], files: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
     """``{new file: the changed code loading it}``: its module word in a line the change adds.
 
-    The word is the file's stem, and its directory's name for a stem that
-    names the directory (``pkg/index.ts``). It counts in a line that is not a
-    comment and loads by name (:data:`_LOADS`), or written as a path or
+    The word is the file's stem, or its directory's name for a stem that
+    names the directory (``pkg/index.ts``). It counts outside comments, in a
+    line that loads by name (:data:`_LOADS`), or written as a path or
     dotted name (``"./fresh"``, ``plugins.fresh``). A file naming a new file
     that is named in turn stands for it too, so a chain of added modules
     reaches the changed file at its top. Ceiling: a word match can still
@@ -354,9 +382,8 @@ def _changed_namers(new: Collection[str], files: Mapping[str, Any]) -> dict[str,
     words: dict[str, set[str]] = {}
     for p in new:
         pure = PurePosixPath(p)
-        for word in {pure.stem, pure.parent.name} if pure.stem in _DIRECTORY_STEMS else {pure.stem}:
-            if word:
-                words.setdefault(word, set()).add(p)
+        if word := pure.parent.name if pure.stem in _DIRECTORY_STEMS else pure.stem:
+            words.setdefault(word, set()).add(p)
     if not words:
         return {}
     alternatives = "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True))
@@ -366,7 +393,8 @@ def _changed_namers(new: Collection[str], files: Mapping[str, Any]) -> dict[str,
         lines = getattr(diff, "added", None)
         if not lines or not is_code_file(path):
             continue
-        for line in lines:
+        for added in lines:
+            line = _without_comment(path, added)
             if _COMMENT.match(line):
                 continue
             loads = _LOADS.search(line) is not None

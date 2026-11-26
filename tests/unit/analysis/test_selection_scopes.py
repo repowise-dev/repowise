@@ -601,8 +601,17 @@ def test_a_new_file_named_by_a_changed_file_runs_that_files_tests() -> None:
     chained = _new_file_plan(tracked, [new, helper], edits)
     assert chained.scopes[helper].routes == (helper, app, new)
     # A comment, or the word used as a plain name, loads nothing.
-    edits = {app: ["# newmod comes later", "newmod = 1"]}
+    edits = {app: ["# newmod comes later", "newmod = 1", "x = 1  # import newmod"]}
     assert _new_file_plan(tracked, [new], edits).scopes[new].run_all
+    web = "web/src/main.ts"
+    edits = {web: ["const x = 1 // import newmod", "/* from 'newmod' */"]}
+    assert _new_file_plan([*tracked, web], [new], edits).scopes[new].run_all
+    # A stem naming its directory is named by the directory, never by the stem.
+    index = "web/widgets/index.ts"
+    other = {web: ['import x from "../other/index"']}
+    assert _new_file_plan([web], [index], other).scopes[index].run_all
+    named = {web: ['import w from "./widgets"']}
+    assert _new_file_plan([web], [index], named).scopes[index].routes == (index, web)
 
 
 def test_a_new_file_beside_code_with_tests_runs_the_tests_reaching_its_siblings() -> None:
