@@ -122,6 +122,8 @@ def test_a_nested_next_bundle_joins_the_apps_source(tmp_path):
     ("webpack://_N_E/?3f2a", "apps/web/.next/static/<webpack module>"),
     ("webpack://ns/C:/x.ts", "apps/web/.next/static/<webpack module>"),
     ("webpack://_N_E/a%00b.ts", "apps/web/.next/static/<webpack module>"),
+    # A loader's query or fragment does not change the file.
+    ("webpack://_N_E/./src/x.ts?vue&type=script#frag", "apps/web/src/x.ts"),
 ])
 def test_webpack_sources_resolve_against_the_build_context(source, found):
     from repowise.core.evidence.source_maps import _decode

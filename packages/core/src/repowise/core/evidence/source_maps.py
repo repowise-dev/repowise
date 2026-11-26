@@ -68,8 +68,8 @@ def _webpack_source(
         parsed = urlsplit(reference)
     except ValueError:
         raise _refuse("invalid map or source URL") from None
-    if parsed.scheme != "webpack" or parsed.fragment:
-        return None
+    if parsed.scheme != "webpack":
+        return None  # A query or fragment names a loader's view of the file, never the file.
     decoded = unquote(parsed.path).lstrip("/").replace("\\", "/")
     base = posixpath.dirname(map_path)
     if not decoded or ":" in decoded or "\0" in decoded:
