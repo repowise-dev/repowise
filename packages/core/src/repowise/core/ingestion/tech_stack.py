@@ -171,9 +171,13 @@ def _manifest_fingerprint(repo_path: Path) -> tuple:
 
     CEILING: a nested change (a new ``.csproj`` in an existing subdirectory, a
     workspace ``tsconfig.json`` one or two levels down, a nested
-    ``package.json``) does not move the key, so
-    a long-lived process re-indexing the same repo can be served a stale stack.
-    The stack is contextual metadata only. To close it, key on a traversal
+    ``package.json``) does not move the key, and the package-root scan behind
+    nested manifests is cached per HEAD commit. A long-lived process
+    re-indexing the same repo can therefore be served a stale stack until the
+    root key moves, a commit lands or the process restarts. The stack gates
+    framework-edge handlers (``DetectionContext.uses``), so a stale one can
+    miss a framework's edges for that run; the JS handlers also read imports
+    and route files, which narrows it. To close it, key on a traversal
     snapshot instead of the root.
     """
     sig: list = []
