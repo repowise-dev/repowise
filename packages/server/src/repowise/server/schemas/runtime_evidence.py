@@ -314,6 +314,26 @@ class MeasuredDriver(_Strict):
     path: str | None = None
 
 
+class MeasuredNextStep(_Strict):
+    """What a measured function's time is and what to do (``evidence.next_step``)."""
+
+    #: The lexicon entry that named it (``filesystem``, ``import``, ``db_read`` ...).
+    rule: str
+    #: What the time is, in words; a static finding's text when one agreed.
+    why: str
+    #: What to do.
+    next: str
+    #: How to check a change for this workload.
+    verify: str | None = None
+    #: The dominant callee and the share of the function's time its family holds.
+    callee: str
+    share: float
+    #: The callee's heaviest leaf, when it named the cost.
+    leaf: str | None = None
+    #: The static finding (biomarker) that wrote ``why``.
+    static: str | None = None
+
+
 class MeasuredFunction(_Strict):
     """What runtime evidence says about one function, from its basis run."""
 
@@ -347,6 +367,9 @@ class MeasuredFunction(_Strict):
     inside: list[MeasuredCallee] | None = None
     #: Up to three callers by share; null when the basis run did not record them.
     drivers: list[MeasuredDriver] | None = None
+    #: What the time is and the next step; null when the profile does not say
+    #: (no dominant callee, a wait, the framework spine, a write per request).
+    next_step: MeasuredNextStep | None = None
 
 
 class MeasuredFunctionsResponse(_Strict):

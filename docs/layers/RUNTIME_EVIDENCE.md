@@ -514,6 +514,19 @@ is counted there as `unplaced`.
   through any library in between, else the frame directly above. The
   `functions` route returns both; a run stored before they were recorded has
   none: add the profile again.
+- **Next step.** For an entry point, load test or production run, the
+  `functions` route also gives each function a `next_step`: what its time is
+  (`why`), what to do (`next`) and how to check a change for that workload
+  (`verify`), read from the callee family holding at least half of its time and
+  that callee's leaf (a stat per entry in a directory walk, an import inside the
+  function, templates read and compiled per render, an ETag hash per response,
+  an ORM read per call, and so on). It is null when the profile does not say:
+  no dominant callee, its own code, a wait, the framework spine, a response
+  write, a database write per request, or `runtime.cgocall` time with no
+  database call above it. A database step says "N+1" only when a static
+  `io_in_loop` finding in production code loops over the function or its main
+  driver; a static finding on the function itself becomes the `why` when its
+  boundary agrees with the callee.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
   `libraries` (a dependency frame, including Go's module cache, runs below the
   innermost repo frame, or on a stack with no repo frame),

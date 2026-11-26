@@ -71,3 +71,19 @@ def test_inside_and_drivers_read_from_their_json_and_unreadable_reads_as_none() 
     assert (function_payload(row)["inside"], function_payload(row)["drivers"]) == (None, None)
     # A host row from before the columns existed has neither.
     assert function_payload(_hot("b.py::g", "ranked"))["inside"] is None
+
+
+def test_next_step_from_the_row_and_the_file_language() -> None:
+    from repowise.server.schemas.runtime_evidence import MeasuredFunction
+
+    row = _hot("lib/view.js::tryStat", "ranked")
+    row.workload_name, row.workload_class = "api load", "load_test"
+    row.inside_json = '[{"name": "statSync", "kind": "library", "share": 0.99, "leaf": {"name": "stat", "kind": "native", "share": 0.76}}]'
+    out = function_payload(row)
+    assert out["next_step"]["rule"] == "filesystem"
+    assert out["next_step"]["leaf"] == "stat"
+    MeasuredFunction.model_validate(out)
+    # A unit-test run, or a row with no callees, says nothing.
+    row.workload_class = "unit_test"
+    assert function_payload(row)["next_step"] is None
+    assert function_payload(_hot("a.py::f", "ranked"))["next_step"] is None

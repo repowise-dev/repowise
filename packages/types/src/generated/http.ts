@@ -3294,6 +3294,7 @@ export interface MeasuredFunction {
   run_unlisted: number | null;
   inside?: MeasuredCallee[] | null;
   drivers?: MeasuredDriver[] | null;
+  next_step?: MeasuredNextStep | null;
 }
 
 /** Measured functions of the asked symbol or file; empty means unknown. */
@@ -3320,6 +3321,18 @@ export interface MeasuredLeaf {
   name: string;
   kind: "own" | "repo" | "wait" | "import" | "native" | "library";
   share: number;
+}
+
+/** What a measured function's time is and what to do (``evidence.next_step``). */
+export interface MeasuredNextStep {
+  rule: string;
+  why: string;
+  next: string;
+  verify?: string | null;
+  callee: string;
+  share: number;
+  leaf?: string | null;
+  static?: string | null;
 }
 
 /** Who wrote most of the function's current lines, by line blame. */

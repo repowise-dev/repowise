@@ -101,7 +101,8 @@ async def get_measured_functions(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """What runtime evidence says about one function, or each function of a
-    file, from its basis run. A function with no row has no evidence."""
+    file, from its basis run, with what its time is and the next step. A
+    function with no row has no evidence."""
     if not symbol_id and not file:
         raise HTTPException(status_code=400, detail="Pass symbol_id or file")
     await _repo(session, repo_id)
@@ -110,7 +111,8 @@ async def get_measured_functions(
     rows = await crud.hotness_for_symbols(
         session, repo_id, [symbol_id] if symbol_id else [], files=files
     )
-    return functions_payload(rows)
+    findings = await crud.step_findings(session, repo_id, rows.values())
+    return functions_payload(rows, findings)
 
 
 @router.get("/{repo_id}/evidence/tests", response_model=SuiteCostResponse)

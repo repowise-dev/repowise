@@ -11,7 +11,8 @@ Nothing here reads a store.
 - :func:`measured_payload`: the ``measured`` route from a ``measured_costs``
   view (or ``None``) and the repository's ``measured_status`` token;
 - :func:`functions_payload` / :func:`function_payload`: the ``functions``
-  route from ``symbol_hotness`` rows;
+  route from ``symbol_hotness`` rows, each with its ``next_step``
+  (:mod:`.next_step`) from the static performance findings the host passes;
 - :func:`owner_history_payload`: a measured function's owner and last change
   from its ``git_function_blame`` row and the newest commit's row.
 """
@@ -19,12 +20,15 @@ Nothing here reads a store.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+import posixpath
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 
+from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
+from .next_step import next_step
 from .status import evidence_status, run_status
 
 
@@ -121,13 +125,28 @@ def owner_history_payload(blame: Any, commit: Any | None) -> dict[str, Any]:
     }
 
 
-def functions_payload(rows: Mapping[str, Any]) -> dict[str, Any]:
-    """The ``functions`` route from ``{symbol_id: symbol_hotness row}``, by id."""
-    return {"functions": [function_payload(row) for _, row in sorted(rows.items())]}
+def functions_payload(
+    rows: Mapping[str, Any], findings: Sequence[Mapping[str, Any]] = ()
+) -> dict[str, Any]:
+    """The ``functions`` route from ``{symbol_id: symbol_hotness row}``, by id.
+
+    *findings* are the repository's production performance findings as
+    :func:`.next_step.static_finding` dicts (``crud.step_findings``); without
+    them a row's step never says "batch" and never quotes a static finding."""
+    return {"functions": [function_payload(row, findings) for _, row in sorted(rows.items())]}
 
 
-def function_payload(row: Any) -> dict[str, Any]:
-    """One ``symbol_hotness`` row as the route lists it."""
+def function_payload(row: Any, findings: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    """One ``symbol_hotness`` row as the route lists it, with its next step."""
+    payload = _function_fields(row)
+    file_path = payload["file_path"]
+    language = REGISTRY.from_extension(posixpath.splitext(file_path)[1]) if file_path else ""
+    step = next_step(payload, language, findings)
+    payload["next_step"] = step.as_dict() if step else None
+    return payload
+
+
+def _function_fields(row: Any) -> dict[str, Any]:
     return {
         "symbol_id": row.symbol_id,
         "file_path": file_of_symbol(row.symbol_id),
