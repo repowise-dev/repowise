@@ -6,9 +6,12 @@ import {
   apiPost,
   configureApiClient,
   createAdapterFetch,
+  getFetch,
   type MinimalRequestInit,
   type MinimalResponse,
 } from "./client";
+import { getFileContent } from "./files";
+import { postChatMessage } from "./chat";
 
 interface Call {
   url: string;
@@ -168,5 +171,107 @@ describe("createAdapterFetch", () => {
     await expect(adapted("http://h", { method: "POST", body: new Uint8Array([1]) })).rejects.toBeInstanceOf(
       TypeError,
     );
+  });
+
+  it("getFetch returns injected fetch when set and global fetch otherwise", () => {
+    const customFetch = (async () => new Response("ok")) as typeof fetch;
+    configureApiClient({ baseUrl: "http://h", fetch: customFetch });
+    expect(getFetch()).toBe(customFetch);
+
+    configureApiClient({ baseUrl: "http://h" });
+    expect(getFetch()).toBe(globalThis.fetch);
+  });
+
+  it("routes getFileContent through the injected fetch rather than global", async () => {
+    const origFetch = globalThis.fetch;
+    const globalSeen: string[] = [];
+    globalThis.fetch = (async (u: RequestInfo | URL) => {
+      globalSeen.push(String(u));
+      return new Response("from-global", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const { calls, minimal } = fakeMinimal(respond(200, "hello world"));
+      configureApiClient({
+        baseUrl: "http://127.0.0.1:7337",
+        token: "secret",
+        fetch: createAdapterFetch(minimal),
+      });
+
+      const content = await getFileContent("r1", "path/to/file.ts");
+      expect(content).toBe("hello world");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe(
+        "http://127.0.0.1:7337/api/repos/r1/file-content?file_path=path%2Fto%2Ffile.ts",
+      );
+      expect(calls[0]?.init.headers).toEqual({
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      });
+      expect(globalSeen).toHaveLength(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("preserves native fetch for postChatMessage so SSE streaming is not buffered", async () => {
+    const origFetch = globalThis.fetch;
+    const globalCalls: { url: string; init: RequestInit | undefined }[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      globalCalls.push({ url: String(url), init });
+      return new Response("retry: 3000\n\n", {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const { calls, minimal } = fakeMinimal(respond(200, "adapter-response"));
+      configureApiClient({
+        baseUrl: "http://127.0.0.1:7337",
+        token: "secret",
+        fetch: createAdapterFetch(minimal),
+      });
+
+      const controller = new AbortController();
+      const res = await postChatMessage("r1", {
+        message: "test message",
+        signal: controller.signal,
+      });
+
+      expect(res.ok).toBe(true);
+      // Chat uses native fetch for SSE streaming, avoiding adapter text buffering
+      expect(calls).toHaveLength(0);
+      expect(globalCalls).toHaveLength(1);
+      expect(globalCalls[0]?.url).toBe("http://127.0.0.1:7337/api/repos/r1/chat/messages");
+      expect(globalCalls[0]?.init?.signal).toBe(controller.signal);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("routes getFileContent through global fetch when no injected fetch is configured", async () => {
+    const origFetch = globalThis.fetch;
+    const globalCalls: { url: string; init: RequestInit | undefined }[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      globalCalls.push({ url: String(url), init });
+      return new Response("global-response", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      configureApiClient({ baseUrl: "http://127.0.0.1:7337" });
+
+      const content = await getFileContent("r1", "test.txt");
+      expect(content).toBe("global-response");
+      expect(globalCalls).toHaveLength(1);
+      expect(globalCalls[0]?.url).toBe(
+        "http://127.0.0.1:7337/api/repos/r1/file-content?file_path=test.txt",
+      );
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
