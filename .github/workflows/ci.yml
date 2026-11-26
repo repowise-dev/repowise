@@ -271,6 +271,7 @@ jobs:
             uv run repowise init --yes --no-prose --no-editor-setup --no-hook
           fi
 
+      # "Test selection (recorded only)" waits on this step by name.
       - name: Save the index before the per-test map
         if: steps.build.outcome == 'success'
         continue-on-error: true
@@ -384,12 +385,13 @@ jobs:
   impacted-tests-shadow:
     name: Test selection (recorded only)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: changes
     if: needs.changes.outputs.python == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
     continue-on-error: true
     permissions:
       contents: read
+      actions: read   # sees whether the base's index is saved yet
 
     steps:
       - uses: actions/checkout@v7
@@ -418,6 +420,59 @@ jobs:
         id: base
         continue-on-error: true
         run: echo "sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+
+      # A pull request opened right after a merge usually starts before the
+      # base's index is saved, and would restore an older commit's. Wait for
+      # the base's index for up to 12 minutes (about as long as the Python
+      # tests take, so the wait never holds the run back), and stop early once
+      # the base's index job (Repowise index (main)) is past its first save
+      # or has ended, as no index is coming then. Whatever exists is used after.
+      - name: Wait for the base's index
+        continue-on-error: true
+        timeout-minutes: 13
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          [ -n "$BASE" ] || exit 0
+          runs="repos/$GH_REPO/actions/runs?head_sha=$BASE&event=push&per_page=20"
+          run=""
+          SECONDS=0
+          while :; do
+            # The index job's state is read before the cache, so a save that
+            # lands in between is still found below.
+            state=pending
+            if [ -z "$run" ]; then
+              if run=$(gh api "$runs" --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")][0].id // empty'); then
+                # A run seen as missing in the first 90s may not be listed yet.
+                [ -n "$run" ] || [ "$SECONDS" -lt 90 ] || state=gone
+              else
+                run=""
+              fi
+            fi
+            if [ -n "$run" ]; then
+              state=$(gh api "repos/$GH_REPO/actions/runs/$run/jobs?filter=latest&per_page=100" --jq '
+                [.jobs[] | select(.name == "Repowise index (main)")][0]
+                | if . == null then (if '"$SECONDS"' < 90 then "pending" else "gone" end)
+                  elif .status == "completed" then "gone"
+                  elif any(.steps[]?; .name == "Save the index before the per-test map" and .status == "completed") then "gone"
+                  else "pending" end') || state=pending
+            fi
+            if [ -n "$(gh cache list --key "repowise-index-$BASE-" --json key --jq '.[].key')" ]; then
+              echo "The base's index is saved (waited ${SECONDS}s)."
+              exit 0
+            fi
+            if [ "$state" = gone ]; then
+              echo "No index is coming for the base; using the newest one saved (waited ${SECONDS}s)."
+              exit 0
+            fi
+            if [ "$SECONDS" -ge 720 ]; then
+              echo "The base's index is not saved after ${SECONDS}s; using the newest one saved."
+              exit 0
+            fi
+            sleep 30
+          done
 
       # Read-only: pull requests, forks included, restore main's index and
       # never save one. An older index is used as is.
