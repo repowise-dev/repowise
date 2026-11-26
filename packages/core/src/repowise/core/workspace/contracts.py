@@ -94,7 +94,11 @@ CONTRACTS_FILENAME = "contracts.json"
 # header says class, and strips a base built from a scheme and a host
 # placeholder; and leaves contract ends in test, docs, tooling, generated and
 # vendored code out (#6005, #6012, #6014, #6015, #6089, #6104, #6113, #6119).
-CONTRACTS_VERSION = 17
+# Version 18 serves Go routes under the group prefix a register function is
+# handed (#6347), and Express routes on a router handed to a module's exported
+# function under that router's mount (#6362). ``routes_fingerprint`` includes
+# this version, so stored HTTP routes and ``contracts.json`` refresh with it.
+CONTRACTS_VERSION = 18
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans
