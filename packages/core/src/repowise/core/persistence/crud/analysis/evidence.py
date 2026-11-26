@@ -578,16 +578,7 @@ async def statement_costs(session: AsyncSession, repository_id: str) -> list[Sta
     """
     from ....evidence.measured_fold import fold_statements, query_runs_to_read
 
-    runs = list(
-        (
-            await session.execute(
-                select(EvidenceRun).where(
-                    EvidenceRun.repository_id == repository_id,
-                    EvidenceRun.kind == "statement_stats",
-                )
-            )
-        ).scalars()
-    )
+    runs = await _statement_runs(session, repository_id)
     keep = query_runs_to_read(runs)
     if not keep:
         return []
@@ -601,6 +592,33 @@ async def statement_costs(session: AsyncSession, repository_id: str) -> list[Sta
         ).where(EvidenceStatementStats.run_id.in_(keep))
     )
     return fold_statements(runs, [tuple(p) for p in points])
+
+
+async def _statement_runs(session: AsyncSession, repository_id: str) -> list[EvidenceRun]:
+    """Every stored ``statement_stats`` run (none of its rows)."""
+    result = await session.execute(
+        select(EvidenceRun).where(
+            EvidenceRun.repository_id == repository_id,
+            EvidenceRun.kind == "statement_stats",
+        )
+    )
+    return list(result.scalars())
+
+
+async def _statement_names_a_function(session: AsyncSession, repository_id: str) -> bool:
+    """A production statement workload's newest run puts a statement on a
+    function: what :func:`statement_costs` would list, without folding it."""
+    from ....evidence.measured_fold import query_runs_to_read
+
+    keep = query_runs_to_read(await _statement_runs(session, repository_id))
+    if not keep:
+        return False
+    named = select(EvidenceStatementStats.run_id).where(
+        EvidenceStatementStats.run_id.in_(keep),
+        EvidenceStatementStats.issuer == "function",
+        EvidenceStatementStats.symbol_id.is_not(None),
+    )
+    return (await session.execute(named.limit(1))).first() is not None
 
 
 async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
@@ -739,11 +757,12 @@ async def measured_status(session: AsyncSession, repository_id: str) -> str:
     """``measured`` when a workload's run ranks a function (what
     :func:`ranked_by_workload` lists) or a production statement workload's
     newest run puts a statement on a function (:func:`statement_costs`), else
-    :func:`unranked_reason`'s token. One indexed lookup when anything is ranked."""
+    :func:`unranked_reason`'s token. One indexed lookup when a profile ranks
+    anything; two more (the statement runs, one row) otherwise."""
     ranked = select(WorkloadHotness.run_id).where(WorkloadHotness.repository_id == repository_id)
     if (await session.execute(ranked.limit(1))).first() is not None:
         return "measured"
-    if any(found.rows for found in await statement_costs(session, repository_id)):
+    if await _statement_names_a_function(session, repository_id):
         return "measured"
     return await unranked_reason(session, repository_id)
 

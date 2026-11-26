@@ -1142,6 +1142,28 @@ async def test_production_statements_list_as_action_rows_that_never_lead(async_s
     assert [r["symbol_id"] for r in only["statements"]["rows"]] == [f"{APP}::load"]
     assert await measured_costs(async_session, repo.id, now=NOW, run_id="nope") is None
     assert (await measured_costs(async_session, repo.id, now=NOW, run_id="s1"))["statements"]
+    # ``limit=0`` keeps the run and the total with no rows.
+    empty = (await measured_costs(async_session, repo.id, now=NOW, limit=0))["statements"]
+    assert (empty["rows"], empty["total"], len(empty["runs"])) == ([], 2, 1)
+
+
+async def test_a_profile_comparison_never_marks_a_statement_row_slower(async_session) -> None:
+    """A slower profile of the same workload name measures something else."""
+    from repowise.core.evidence.compare import Comparison, Slower
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_statements(async_session, repo.id)
+    serve = f"{APP}::serve"
+    slower = Comparison(
+        kind="profile", workload="orders-db", environment="prod", verdict="slower",
+        band_runs=3, head_run_id="r1", current_runs=1, base_commit="a" * 40,
+        head_commit="b" * 40,
+        slower=(Slower("self_seconds", serve, 1.0, 2.0, 2.0, "s", symbol_id=serve),),
+        cause=None,
+    )
+    view = await measured_costs(async_session, repo.id, now=NOW, comparisons=[slower])
+    assert all("slower" not in r for r in view["statements"]["rows"])
 
 
 async def test_statements_on_no_single_function_rank_nothing_but_are_runtime_data(

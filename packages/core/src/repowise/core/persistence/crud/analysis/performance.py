@@ -1382,7 +1382,7 @@ async def measured_costs(
         view["statements"] = {
             "runs": [_statement_run(found, at) for found in statements],
             "rows": [
-                _statement_row(r, by_run[r.run_id], spans, context, covered, comparisons)
+                _statement_row(r, by_run[r.run_id], spans, context, covered)
                 for r in statement_rows
             ],
             "total": sum(len(found.rows) for found in statements),
@@ -1927,11 +1927,16 @@ def _statement_row(
     spans: dict[str, list[Any]],
     context: _FunctionContext,
     covered: dict[str, set[str]],
-    comparisons: list[Any],
 ) -> dict[str, Any]:
     """One function's production statements (``evidence.measured_fold.StatementCost``)
     as ``evidence.action_row`` builds it: no next step (no rule reads a
-    statement's cost yet) and the next window as its verify, never a benchmark."""
+    statement's cost yet), the next window as its verify, never a benchmark,
+    and no ``slower`` (comparisons measure profiles, not statements).
+
+    Ceiling: the function is the one the join named when the run was stored;
+    one renamed or removed since keeps its row with ``lines`` null (it did
+    issue the statements in that window). Upgrade path: re-join statement
+    rows on update, as profile rows get a freshness."""
     from ....evidence.action_row import action_row, statement_facts
     from ....ingestion.symbol_identity import file_of_symbol
 
@@ -1947,7 +1952,6 @@ def _statement_row(
         callers_total=context.callers_total.get(symbol_id),
         tests=context.tests[symbol_id],
         history=context.history.get(symbol_id),
-        compare=comparisons,
         static_causes=covered.get(symbol_id, ()),
         statements=statement_facts(cost),
     ).as_dict()

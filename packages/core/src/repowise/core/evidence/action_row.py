@@ -479,7 +479,8 @@ def row_compact(row: Mapping[str, Any]) -> dict[str, Any]:
     if facts:
         # A production statement row: ``share`` is of the window's statement time.
         out["calls"] = facts["calls"]
-        out["mean_ms"] = facts["mean_ms"]
+        if facts.get("mean_ms") is not None:
+            out["mean_ms"] = facts["mean_ms"]
     return out
 
 
