@@ -40,6 +40,12 @@ def test_origin_questions(question, origin):
         # A behaviour inside the symbol: its own first commit is not the answer.
         ("Which PR added retries to fetch_url?", "fetch_url", False),
         ("When did AuthService start failing?", "AuthService", False),
+        ("Who added CookieJar.", "CookieJar", True),
+        ("Who added cookies.py.", "cookies.py", True),
+        ("Who added cookies.pyc", "cookies.py", False),
+        # Present tense asks about behaviour; a lowercase word is not the class.
+        ("Which commit changed how Session is created?", "Session", False),
+        ("Which PR added session handling?", "Session", False),
     ],
 )
 def test_the_verb_must_take_the_name(question, name, expected):
@@ -62,12 +68,17 @@ def history(tmp_path):
     _git(tmp_path, "init", "-q")
     path = tmp_path / "src/auth/service.py"
     path.parent.mkdir(parents=True)
-    path.write_text("x = 1\n", encoding="utf-8")
+    # A longer name holding the class name is not the class.
+    path.write_text("x = 1\nAuthServiceError = None\n", encoding="utf-8")
     _git(tmp_path, "add", "src")
     _git(tmp_path, "commit", "-qm", "seed")
-    path.write_text("x = 1\n\nclass AuthService:\n    pass\n", encoding="utf-8")
+    path.write_text(
+        "x = 1\nAuthServiceError = None\nclass AuthService:\n    pass\n", encoding="utf-8"
+    )
     _git(tmp_path, "commit", "-qam", "Add the auth service (#7)")
-    path.write_text("x = 2\n\nclass AuthService:\n    retries = 3\n", encoding="utf-8")
+    path.write_text(
+        "x = 2\nAuthServiceError = None\nclass AuthService:\n    retries = 3\n", encoding="utf-8"
+    )
     _git(tmp_path, "commit", "-qam", "Retry logins")
     return _git(tmp_path, "rev-parse", "HEAD~1")
 

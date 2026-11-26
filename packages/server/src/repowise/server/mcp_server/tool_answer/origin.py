@@ -44,7 +44,8 @@ _VERB = (
     r"(?:introduc\w*|add(?:ed|s|ing)?|creat\w*|wr[io]te|written|authored|landed"
     r"|start(?:ed|s)?(?!\s+\w+ing\b)|appear\w*|brought\s+in)"
 )
-_ADVERB = r"(?:(?:was|were|is|got|first|originally|initially)\s+){0,2}"
+# Past tense only: "how Session is created" asks about behaviour, not origin.
+_ADVERB = r"(?:(?:was|were|got|first|originally|initially)\s+){0,2}"
 _ARTICLE = r"(?:(?:the|a|an)\s+)?"
 
 #: Defining files the pickaxe walks. Ceiling: a symbol defined in more files
@@ -69,8 +70,10 @@ def _is_object(question: str, name: str) -> bool:
     retries to X" does not: that asks about a behaviour inside X, which X's own
     first commit does not answer.
     """
-    n = rf"`?{re.escape(name)}`?"
-    active = rf"\b{_VERB}\s+{_ARTICLE}{n}(?![\w.])"
+    # Case-sensitive: "Session" names the class, "session" is a word.
+    n = rf"`?(?-i:{re.escape(name)})`?"
+    # A sentence-final period ends the name; "x.py" or "a.b" continues it.
+    active = rf"\b{_VERB}\s+{_ARTICLE}{n}(?!\w|\.\w)"
     passive = rf"(?<![\w.]){n}\s+{_ADVERB}{_VERB}\b"
     return bool(re.search(f"{active}|{passive}", question, re.IGNORECASE))
 
@@ -187,10 +190,16 @@ def _oldest_adding_commit(repo_path: str, name: str, paths: list[str], kind: str
         args = ["--diff-filter=A", "--follow"]
     else:
         # A rename moves the text without adding it; follow one file across renames.
-        args = [f"-S{name.rsplit('.', 1)[-1]}", *(["--follow"] if len(paths) == 1 else [])]
+        # Whole word: a bare -S would count "parse" inside "parser".
+        word = re.escape(name.rsplit(".", 1)[-1])
+        args = [
+            "--pickaxe-regex",
+            f"-S(^|[^A-Za-z0-9_]){word}([^A-Za-z0-9_]|$)",
+            *(["--follow"] if len(paths) == 1 else []),
+        ]
     try:
         proc = subprocess.run(
-            ["git", "log", *args, _LOG_FORMAT, "--", *paths],
+            ["git", "log", "--topo-order", *args, _LOG_FORMAT, "--", *paths],
             cwd=repo_path,
             capture_output=True,
             text=True,
