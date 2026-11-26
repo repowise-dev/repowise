@@ -1,4 +1,4 @@
-"""Read one evidence file, join it to the index and store the run.
+"""Read one evidence file (or one evidence-source batch), join it to the index and store the run.
 
 The steps behind ``repowise evidence add``, without the command line, so a
 server that receives the same file (a CI upload) runs the same checks and
@@ -12,6 +12,10 @@ it opens the index, :func:`store_evidence` inside it) so a file refused on its
 content never opens a store. A profile refused against the index (a checkout
 file that is bundled output by its stored ``code_origin``) is refused by
 :func:`store_evidence` before anything is written.
+
+A batch from a source on the ``evidence-source`` seam (:mod:`.sources`) is
+stored by :func:`ingest_batch` through the same steps, as the
+``repowise-evidence-v1`` file a user would upload with the same entries.
 
 One run may come in several profiles: a parent process and its workers each
 write their own. :func:`prepare_evidence_files` reads them all and merges
@@ -28,7 +32,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -615,7 +619,10 @@ async def store_evidence(
         unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
     )
     if measured_at is not None:
-        fields["measured_at"] = measured_at
+        # Stored times are UTC (SQLite keeps no zone); a naive time is read as UTC.
+        fields["measured_at"] = (
+            measured_at.astimezone(UTC) if measured_at.tzinfo is not None else measured_at
+        )
     write = await save_evidence_run(
         session,
         repo.id,
@@ -799,7 +806,6 @@ async def ingest_batch(
     *,
     repo_path: Path,
     checkout_root: Path | None = None,
-    max_file_mb: float | None = None,
     caps: EvidenceCaps | None = None,
 ) -> dict[str, Any]:
     """Store one :class:`~.sources.SourceBatch` the way :func:`ingest_evidence` stores a file.
@@ -849,7 +855,10 @@ async def ingest_batch(
                 environment=batch.environment,
                 input_format_name=input_format_name,
                 value_kind=batch.value_kind,
-                max_file_mb=max_file_mb,
+                # ``evidence.max_file_mb`` bounds a file someone hands over; a
+                # batch is in memory already, and the per-run row caps still apply.
+                # Refusing it would stop the cursor on it for good.
+                max_file_mb=math.inf,
                 caps=caps,
                 source=SOURCE_COLUMN,
                 verified=True,

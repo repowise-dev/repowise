@@ -731,3 +731,27 @@ def test_a_batch_for_a_repository_with_no_index_keeps_the_cursor(double, tmp_pat
     assert (outcome.status, outcome.cursor, outcome.stored) == ("failed", "0", [])
     assert outcome.error.startswith(EvidenceRefusedError.__name__)
     assert "no index" in outcome.error
+
+
+def test_a_measured_time_with_an_offset_is_stored_as_utc(double, indexed) -> None:
+    from datetime import UTC, datetime, timedelta, timezone
+
+    root, head = indexed
+    at = datetime(2026, 11, 1, 14, tzinfo=timezone(timedelta(hours=2)))
+    double.batches = [_profile_batch(head, measured_at=at)]
+
+    assert _fetch(root, double, _request()).status == "ok"
+
+    (run,), _ = _stored(root)
+    assert run.measured_at.replace(tzinfo=UTC) == datetime(2026, 11, 1, 12, tzinfo=UTC)
+
+
+def test_a_batch_over_the_file_size_setting_is_still_stored(double, indexed) -> None:
+    root, _head = indexed
+    (root / ".repowise" / "config.yaml").write_text("evidence:\n  max_file_mb: 0.0001\n")
+    double.batches = [_statement_batch()]
+
+    outcome = _fetch(root, double, _request())
+
+    assert (outcome.status, outcome.cursor) == ("ok", "1")
+    assert [r.kind for r in _stored(root)[0]] == ["statement_stats"]
