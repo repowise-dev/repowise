@@ -66,6 +66,27 @@ def test_an_uploaded_profile_is_converted_and_stored(indexed) -> None:
     assert [c.symbol_id for c in costs] == ["src/app.py::build"]
 
 
+def test_ingest_64_character_sha256_commit_round_trips(indexed) -> None:
+    root, _ = indexed
+    sha256_commit = "e" * 64
+
+    payload = _ingest(
+        root,
+        _speedscope(root),
+        workload="app",
+        workload_class="entry_point",
+        commit=sha256_commit,
+        environment="ci",
+        source="ci",
+    )
+
+    assert payload["stored"] is True
+    assert payload["commit_sha"] == sha256_commit
+    (run,), _ = _stored(root)
+    assert run.commit_sha == sha256_commit
+
+
+
 @pytest.mark.parametrize(
     ("data", "options", "code", "option"),
     [

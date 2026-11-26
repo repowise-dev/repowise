@@ -3108,7 +3108,7 @@ class EvidenceRun(Base):
     tool_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # The commit measured. Evidence from another commit than the indexed one
     # keeps its own commit and reads as stale; it is never re-mapped.
-    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Uncommitted changes at measurement; NULL: unknown.
     dirty: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     checkout_root: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -3299,7 +3299,7 @@ class EvidenceTestStats(Base):
     durations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     median_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
-    last_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -3410,7 +3410,7 @@ class SymbolHotness(Base):
     workload_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     workload_class: Mapped[str | None] = mapped_column(String(16), nullable=True)
     run_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    evidence_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    evidence_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     built_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
