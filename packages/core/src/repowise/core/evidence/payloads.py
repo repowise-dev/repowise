@@ -76,6 +76,7 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
             "command": _command(status),
             "measured": None,
             "measured_in_tests": None,
+            "statements": None,
             "benchmarks": None,
         }
     return {
@@ -84,6 +85,7 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
         "command": None,
         "measured": view.get("measured"),
         "measured_in_tests": view.get("measured_in_tests"),
+        "statements": view.get("statements"),
         "benchmarks": view.get("benchmarks"),
     }
 

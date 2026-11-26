@@ -531,7 +531,7 @@ the commits deployed in it (`commit_sha` the newest, `base_commit_sha` the
 oldest) keeps them on the run; one that names no commit is stored with a
 "deployed commit unknown" warning, and its rows never rank against code
 changed since. A route row is stored without a function until the route table
-joins it; nothing ranks by either kind yet.
+joins it, and nothing reads route rows yet.
 
 A statement row names the function that issues it. Every index stores the
 repo's statement sites (`statement_sites`): each PostgREST client call
@@ -561,6 +561,21 @@ says what it found:
 
 Ceiling: only Python code issues sites so far; a statement another language
 sends stays unjoined, never joined wrong.
+
+Each statement workload's newest run is read back as the `statements` group of
+the measured view (REST `measured` route, `repowise health`, MCP
+`performance_measured`): one row per function the join named, ranked by the
+time its statements took. A row is the same action row as a profile's, with
+`share` the function's part of the window's stored statement time,
+`statements` (`calls`, `total_ms`, `mean_ms` per call, how many distinct
+statements) and `verify` the next production window. Only a statement whose
+`issuer` is `function` counts toward a function; the run's `unattributed`
+counts the rest by `issuer` (`ambiguous`, `database_schedule`, `unjoined`), so
+no statement is ever put on a function the join did not name. These rows are
+listed, never leading: no rule reads a statement's cost into a next step yet,
+so they mint no measured hotspot and no Fix first item. A store with statement
+runs is never `no_runtime_data`; one whose newest windows name no function
+reads `not_ranked`.
 
 A Postgres database's statement statistics are one SELECT away, run by whoever
 may read the database, with no connector:

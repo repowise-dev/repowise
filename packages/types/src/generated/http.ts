@@ -3360,6 +3360,7 @@ export interface MeasuredResponse {
   command: string | null;
   measured: MeasuredGroup | null;
   measured_in_tests: MeasuredGroup | null;
+  statements?: StatementGroup | null;
   benchmarks?: BenchmarkGroup | null;
 }
 
@@ -5111,6 +5112,73 @@ export interface SlowTest {
   workload: string;
 }
 
+/** What the statements one function issues did in a production window. */
+export interface StatementFacts {
+  calls: number;
+  total_ms: number;
+  mean_ms: number | null;
+  statements: number;
+}
+
+export interface StatementGroup {
+  runs: StatementRun[];
+  rows: StatementRow[];
+  total: number;
+}
+
+/**
+ * One function's production statements in one run, as a measured row.
+ *
+ * ``rank`` is by statement time and ``share`` is of the window's stored
+ * statement time; there is no interval, inclusive share or samples, and no
+ * freshness: the statement was joined to the function when it was stored.
+ * No ``next_step``: no rule reads a statement's cost yet. ``verify`` is the
+ * next production window.
+ */
+export interface StatementRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness?: "current" | "body_unchanged" | "stale" | null;
+  callers_total: number | null;
+  callers: string[];
+  caller_shares?: Record<string, number>;
+  owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
+  tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
+  verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
+  on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  label?: string | null;
+  sources?: Record<string, string>;
+  statements: StatementFacts;
+}
+
+/** A production statement workload's newest run. */
+export interface StatementRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  window_start: string | null;
+  window_end: string | null;
+  total_ms: number;
+  statements: number;
+  unattributed: Record<string, UnattributedStatements>;
+}
+
 /** Where the suite's time goes (``evidence.suite_cost.cost_fold``). */
 export interface SuiteCost {
   verdict: "small_suite" | "no_test_map" | "small_excess" | "clusters";
@@ -5354,6 +5422,12 @@ export interface TransitiveEntry {
   path: string;
   depth: number;
   via?: string | null;
+}
+
+export interface UnattributedStatements {
+  statements: number;
+  total_ms: number;
+  share: number | null;
 }
 
 /**

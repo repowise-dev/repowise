@@ -25,6 +25,7 @@ from ...models import (
     Base,
     EvidenceBenchmarkResult,
     EvidenceRun,
+    EvidenceStatementStats,
     EvidenceSymbolCost,
     SymbolHotness,
     WorkloadHotness,
@@ -35,6 +36,7 @@ from .._shared import _BATCH_SIZE
 
 if TYPE_CHECKING:
     from ....evidence.hotness import CostFacts, RunFacts
+    from ....evidence.measured_fold import StatementRun
 
 
 def evidence_row_table(kind: str) -> Table | None:
@@ -565,11 +567,66 @@ async def ranked_by_workload(
     return [(run, by_run[run.id]) for run in found]
 
 
+async def statement_costs(session: AsyncSession, repository_id: str) -> list[StatementRun]:
+    """Each production statement workload's newest run, newest first, with
+    what each function that issues its statements cost in the window
+    (``evidence.measured_fold.fold_statements``: only statements the join put
+    on exactly one function count toward it; the rest are counted by label).
+
+    Two statements: the ``statement_stats`` runs, then the rows of the ones
+    that speak. Empty when no statement run is stored.
+    """
+    from ....evidence.measured_fold import fold_statements, query_runs_to_read
+
+    runs = await _statement_runs(session, repository_id)
+    keep = query_runs_to_read(runs)
+    if not keep:
+        return []
+    points = await session.execute(
+        select(
+            EvidenceStatementStats.run_id,
+            EvidenceStatementStats.symbol_id,
+            EvidenceStatementStats.issuer,
+            EvidenceStatementStats.calls,
+            EvidenceStatementStats.total_ms,
+        ).where(EvidenceStatementStats.run_id.in_(keep))
+    )
+    return fold_statements(runs, [tuple(p) for p in points])
+
+
+async def _statement_runs(session: AsyncSession, repository_id: str) -> list[EvidenceRun]:
+    """Every stored ``statement_stats`` run (none of its rows)."""
+    result = await session.execute(
+        select(EvidenceRun).where(
+            EvidenceRun.repository_id == repository_id,
+            EvidenceRun.kind == "statement_stats",
+        )
+    )
+    return list(result.scalars())
+
+
+async def _statement_names_a_function(session: AsyncSession, repository_id: str) -> bool:
+    """A production statement workload's newest run puts a statement on a
+    function: what :func:`statement_costs` would list, without folding it."""
+    from ....evidence.measured_fold import query_runs_to_read
+
+    keep = query_runs_to_read(await _statement_runs(session, repository_id))
+    if not keep:
+        return False
+    named = select(EvidenceStatementStats.run_id).where(
+        EvidenceStatementStats.run_id.in_(keep),
+        EvidenceStatementStats.issuer == "function",
+        EvidenceStatementStats.symbol_id.is_not(None),
+    )
+    return (await session.execute(named.limit(1))).first() is not None
+
+
 async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     """Why :func:`ranked_by_workload` has no row, as one token.
 
     ``no_runtime_data``: no profile run is stored outside the ``benchmark``
-    class. ``ahead_of_index``: every
+    class and no production statement run either (one that names no
+    function reads ``not_ranked``). ``ahead_of_index``: every
     function the stored runs mapped is stale, and a workload's newest run was
     added after the newest run at the indexed commit
     (``evidence.hotness.commit_position``): it ranks once the index reaches
@@ -583,9 +640,11 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     """
     has_profile = select(EvidenceRun.id).where(
         EvidenceRun.repository_id == repository_id,
-        EvidenceRun.kind == "profile",
-        # A benchmark profile never ranks (``evidence.hotness``).
-        EvidenceRun.workload_class != "benchmark",
+        or_(
+            # A benchmark profile never ranks (``evidence.hotness``).
+            (EvidenceRun.kind == "profile") & (EvidenceRun.workload_class != "benchmark"),
+            EvidenceRun.kind == "statement_stats",
+        ),
     )
     if (await session.execute(has_profile.limit(1))).first() is None:
         return "no_runtime_data"
@@ -696,10 +755,14 @@ async def _newest_ahead_of_index(session: AsyncSession, repository_id: str) -> b
 
 async def measured_status(session: AsyncSession, repository_id: str) -> str:
     """``measured`` when a workload's run ranks a function (what
-    :func:`ranked_by_workload` lists), else :func:`unranked_reason`'s token.
-    One indexed lookup when anything is ranked."""
+    :func:`ranked_by_workload` lists) or a production statement workload's
+    newest run puts a statement on a function (:func:`statement_costs`), else
+    :func:`unranked_reason`'s token. One indexed lookup when a profile ranks
+    anything; two more (the statement runs, one row) otherwise."""
     ranked = select(WorkloadHotness.run_id).where(WorkloadHotness.repository_id == repository_id)
     if (await session.execute(ranked.limit(1))).first() is not None:
+        return "measured"
+    if await _statement_names_a_function(session, repository_id):
         return "measured"
     return await unranked_reason(session, repository_id)
 
@@ -783,6 +846,7 @@ __all__ = [
     "replace_symbol_hotness",
     "replace_workload_hotness",
     "save_evidence_run",
+    "statement_costs",
     "unranked_command",
     "unranked_reason",
 ]
