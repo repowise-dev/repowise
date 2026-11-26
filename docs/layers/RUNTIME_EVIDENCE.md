@@ -293,7 +293,7 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
 `pprof`, `cpuprofile`, `pstats`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`, `criterion`,
-`junit`, `pg-stat-statements`, `jfr`, `collapsed`, or one a plugin registers).
+`jmh`, `junit`, `pg-stat-statements`, `jfr`, `collapsed`, or one a plugin registers).
 
 Every kind is one entry of the kind registry (`repowise.core.evidence.kinds`):
 its entry validator, the join it needs, the table its rows go to, its
@@ -356,6 +356,7 @@ migration.
 | `google-benchmark` | a C++ binary built with Google Benchmark, run with `--benchmark_format=json` | `name` (``BM_Sort/1024``) names the series; a plain run carries `mean` from `real_time` with its `iterations`; a run with `--benchmark_repetitions` folds its `mean`, `median` and `stddev` aggregate rows into the entry, and `iterations` is the repetition count. The row's `time_unit` is the unit; the file carries no source path, so no entry claims a function |
 | `vitest-bench` | `vitest bench --outputJson=PATH` | `fullName > name` names the series, with a numeric suffix on repeated names; `min`, `max`, `mean`, `median` in milliseconds, lower is better, and `rounds` from `sampleCount` |
 | `criterion` | Cargo Criterion, `target/criterion/<group>/<id>/new/estimates.json` | one series, named by the sibling `benchmark.json`'s `full_id` (`criterion benchmark` when that file is missing); `mean`, `median`, `stddev` from the point estimates, in nanoseconds |
+| `jmh` | `java -jar benchmarks.jar -rf json -rff PATH` | `benchmark:mode` names the series; `mean`, `median`, `min`, `max` in converted unit (lower is better for `avgt`, `sample`, `ss`; higher is better for `thrpt`), `rounds`, `iterations` |
 
 - The node id without its parameters is the benchmark function's symbol id, so
   `benchmarks/test_io.py::TestCache::test_get[small]` links to
