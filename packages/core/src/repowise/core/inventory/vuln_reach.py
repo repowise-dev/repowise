@@ -250,33 +250,56 @@ def tier_advisory(
     shipping = tuple(s for s in imports if origin(s.path) not in NON_SHIPPING_ORIGINS)
     if not shipping:
         return _below_imported(imports, dependency)
-    imported_sites = _sites(Site(s.path, s.line) for s in shipping)
-
-    named_paths = [a.path for a in affected if a.path and a.symbols]
-    if ecosystem in _IMPORT_PATH_ECOSYSTEMS and named_paths:
-        reached_files = {file_of_symbol(node) for node in reachable}
-        hits = [
-            Site(s.path, s.line)
-            for s in shipping
-            if s.path in reached_files
-            and any(_module_matches(s.module, path, ecosystem) for path in named_paths)
-        ]
-        if hits:
-            return TierResult("reachable", "import_path", _sites(hits))
-
+    if ecosystem in _IMPORT_PATH_ECOSYSTEMS:
+        by_path = _by_import_path(shipping, affected, reachable, ecosystem)
+        if by_path is not None:
+            return by_path
     if not call_sites_known:
-        return TierResult("imported", "no_call_records", imported_sites)
+        return TierResult("imported", "no_call_records", _import_sites(shipping))
     reached_calls = [
         call
         for call in call_sites
         if call.caller_symbol_id in reachable and origin(call.file_path) not in NON_SHIPPING_ORIGINS
     ]
+    return _by_calls(reached_calls, affected, ecosystem) or TierResult(
+        "imported", "import", _import_sites(shipping)
+    )
+
+
+def _import_sites(imports: Iterable[ImportSite]) -> tuple[Site, ...]:
+    return _sites(Site(s.path, s.line) for s in imports)
+
+
+def _by_import_path(
+    shipping: tuple[ImportSite, ...],
+    affected: tuple[AffectedImport, ...],
+    reachable: Collection[str],
+    ecosystem: str,
+) -> TierResult | None:
+    """``reachable`` when a reached file imports an affected path that names symbols."""
+    named_paths = [a.path for a in affected if a.path and a.symbols]
+    if not named_paths:
+        return None
+    reached_files = {file_of_symbol(node) for node in reachable}
+    hits = [
+        s
+        for s in shipping
+        if s.path in reached_files
+        and any(_module_matches(s.module, path, ecosystem) for path in named_paths)
+    ]
+    return TierResult("reachable", "import_path", _import_sites(hits)) if hits else None
+
+
+def _by_calls(
+    reached_calls: list[CallRecord], affected: tuple[AffectedImport, ...], ecosystem: str
+) -> TierResult | None:
+    """``reachable`` for a reached call of a named symbol, else ``package_called``."""
     named = [c for c in reached_calls if any(_names_symbol(c, a, ecosystem) for a in affected)]
     if named:
         return TierResult("reachable", "call", _sites(map(_call_site, named)))
     if reached_calls:
         return TierResult("package_called", "call", _sites(map(_call_site, reached_calls)))
-    return TierResult("imported", "import", imported_sites)
+    return None
 
 
 __all__ = [
