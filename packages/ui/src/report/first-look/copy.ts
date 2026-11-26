@@ -50,6 +50,10 @@ export interface FirstLookCopy {
   countOf: (n: string, total: string) => string;
   /** "{n} more in the app". */
   moreInApp: (n: string) => string;
+  /** Heading over the sections the report could not collect. */
+  notInReport: string;
+  /** "Open Security", the link to an uncollected section's page. */
+  openSection: (title: string) => string;
   linesCovered: string;
   branchesCovered: string;
   /** Compact table headings. */
@@ -152,6 +156,8 @@ export const FIRST_LOOK_COPY_EN: FirstLookCopy = {
   copyItemPrompt: "Copy prompt for this item",
   countOf: (n, total) => `${n} of ${total}`,
   moreInApp: (n) => `${n} more in the app`,
+  notInReport: "Not in this report",
+  openSection: (title) => `Open ${title}`,
   linesCovered: "lines covered",
   branchesCovered: "branches covered",
   table: {

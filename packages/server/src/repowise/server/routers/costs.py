@@ -219,7 +219,26 @@ async def get_savings(
 
     missed = scan_missed_savings(Path(repo.local_path))
     reread = scan_missed_mcp_savings(Path(repo.local_path))
+    return savings_response(report, as_of=as_of, days=days, missed=missed, reread=reread)
 
+
+def savings_response(
+    report: Any,
+    *,
+    as_of: datetime,
+    days: int | None,
+    missed: Mapping[str, Any] | None = None,
+    reread: Mapping[str, Any] | None = None,
+) -> SavingsResponse:
+    """A core savings report on the wire, as this endpoint answers it.
+
+    For a host that folds its own stored events into a report
+    (``core.savings.reporting.build_report``). *missed* and *reread* are the
+    transcript scans; a host with no agent transcripts leaves them out and
+    those fields read zero.
+    """
+    missed = missed or {}
+    reread = reread or {}
     return SavingsResponse(
         available=True,
         window_days=days,
@@ -257,11 +276,11 @@ async def get_savings(
         per_opportunity_kind=[
             SavingsOpportunityRow(**row) for row in report.per_opportunity_kind
         ],
-        missed_events=missed["events"],
-        missed_tokens_est=missed["est_saved_tokens"],
-        missed_window_days=missed["window_days"],
-        reread_events=reread["events"],
-        reread_tokens_est=reread["est_saved_tokens"],
+        missed_events=missed.get("events", 0),
+        missed_tokens_est=missed.get("est_saved_tokens", 0),
+        missed_window_days=missed.get("window_days", 0.0),
+        reread_events=reread.get("events", 0),
+        reread_tokens_est=reread.get("est_saved_tokens", 0),
         files_not_opened=report.files_not_opened,
         files_not_opened_tokens=report.files_not_opened_tokens,
         tool_calls_answered=report.tool_calls_answered,

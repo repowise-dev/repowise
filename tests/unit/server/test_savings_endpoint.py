@@ -455,3 +455,44 @@ async def test_a_failing_output_estimate_leaves_the_rest_of_the_response_unchang
     before.pop("as_of")
     after.pop("as_of")
     assert after == before
+
+
+async def test_a_host_maps_a_report_onto_the_same_response(
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``savings_response`` is the endpoint's own mapping, for a host's own report."""
+    from datetime import UTC, datetime
+
+    from repowise.core.distill import missed, missed_mcp
+    from repowise.core.savings.service import load_report
+    from repowise.server.routers.costs import savings_response
+
+    monkeypatch.setattr(
+        missed,
+        "scan_missed_savings",
+        lambda _p: {"events": 3, "est_saved_tokens": 900, "window_days": 7.0},
+    )
+    monkeypatch.setattr(
+        missed_mcp, "scan_missed_mcp_savings", lambda _p: {"events": 2, "est_saved_tokens": 40}
+    )
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _sidecar(repo_dir)
+    _event(repo_dir, surface="mcp", baseline=1_000, priced=True, avoided_files=(("a.py", 120),))
+    _event(repo_dir, surface="hook", agent="codex", baseline=250)
+
+    data = (await client.get(f"/api/repos/{repo['id']}/savings")).json()
+    as_of = datetime.fromisoformat(data["as_of"])
+    report = load_report(repo_dir, as_of=as_of)
+    assert report is not None
+
+    scans = {
+        "missed": {"events": 3, "est_saved_tokens": 900, "window_days": 7.0},
+        "reread": {"events": 2, "est_saved_tokens": 40},
+    }
+    assert savings_response(report, as_of=as_of, days=None, **scans).model_dump(
+        mode="json"
+    ) == data
+    bare = savings_response(report, as_of=datetime.now(UTC), days=None)
+    assert (bare.missed_events, bare.reread_events, bare.missed_window_days) == (0, 0, 0.0)
+    assert bare.saved_input_tokens == data["saved_input_tokens"]

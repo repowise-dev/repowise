@@ -109,102 +109,38 @@ different strategies:
 ```
 repowise/
 ├── packages/
-│   ├── core/                   # Python: ingestion + generation engine
+│   ├── core/          # Python: ingestion, analysis, generation, persistence, providers, pipeline
 │   │   ├── src/repowise/core/
-│   │   │   ├── ingestion/
-│   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .repowiseIgnore + extra exclude patterns
-│   │   │   │   ├── parser/             # ASTParser: one class, all languages; one module per pass (symbols, imports, calls, references)
-│   │   │   │   ├── parsers/            # per-language parser helpers
-│   │   │   │   ├── graph.py            # NetworkX dep graph builder; add_file(), _resolve_calls(), file_subgraph()
-│   │   │   │   ├── call_resolver.py    # CallResolver: origin-stamped call resolution
-│   │   │   │   ├── change_detector.py  # git diff + change propagation
-│   │   │   │   ├── git_indexer.py      # git history mining → git_metadata table
-│   │   │   │   ├── special_handlers.py # OpenAPI, Protobuf, GraphQL, Dockerfile, CI YAML
-│   │   │   │   └── models.py           # ParsedFile, FileInfo, Symbol, Import, CallSite, NamedBinding, EdgeType, etc.
-│   │   │   ├── analysis/
-│   │   │   │   └── dead_code.py        # dead code detection (graph + SQL, no LLM)
-│   │   │   ├── generation/
-│   │   │   │   ├── page_generator.py   # hierarchical page generator
-│   │   │   │   ├── context_assembler.py# context assembly (RAG + graph + git + source)
-│   │   │   │   ├── job_system.py       # resumable job state machine
-│   │   │   │   ├── models.py           # GeneratedPage, GenerationConfig, PageType, etc.
-│   │   │   │   ├── templates/          # Jinja2 prompt templates (one per page type)
-│   │   │   │   └── editor_files/       # CLAUDE.md / cursor.md generation (no LLM)
-│   │   │   │       ├── base.py         # BaseEditorFileGenerator (marker-merge, atomic write)
-│   │   │   │       ├── data.py         # EditorFileData + sub-dataclasses (frozen)
-│   │   │   │       ├── fetcher.py      # EditorFileDataFetcher (DB → EditorFileData)
-│   │   │   │       ├── tech_stack.py   # filesystem tech stack + build command detection
-│   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
-│   │   │   ├── pipeline/
-│   │   │   │   ├── orchestrator.py     # run_pipeline(), PipelineResult
-│   │   │   │   ├── persist/            # persist_pipeline_result(): shared by CLI + server
-│   │   │   │   └── progress.py         # ProgressCallback protocol + LoggingProgressCallback
-│   │   │   ├── persistence/
-│   │   │   │   ├── models.py           # SQLAlchemy ORM models
-│   │   │   │   ├── crud.py             # async CRUD layer
-│   │   │   │   ├── database.py         # engine factory, session management
-│   │   │   │   ├── search.py           # SQLite FTS5 full-text search
-│   │   │   │   ├── vector_store.py     # VectorStore abstraction (LanceDB)
-│   │   │   │   └── embedder.py         # Embedder base class + MockEmbedder
-│   │   │   ├── providers/              # LLM provider abstraction
-│   │   │   │   ├── base.py             # BaseProvider, GeneratedResponse, ProviderError
-│   │   │   │   ├── anthropic.py
-│   │   │   │   ├── openai.py
-│   │   │   │   ├── ollama.py
-│   │   │   │   ├── litellm.py
-│   │   │   │   ├── mock.py
-│   │   │   │   └── registry.py         # get_provider(), register_provider(), list_providers()
-│   │   │   └── rate_limiter.py         # token-bucket RPM + TPM limiter
-│   │   └── queries/                    # tree-sitter .scm query files (one per language)
-│   │       ├── python.scm
-│   │       ├── typescript.scm
-│   │       ├── javascript.scm
-│   │       ├── go.scm
-│   │       ├── rust.scm
-│   │       ├── java.scm
-│   │       ├── cpp.scm
-│   │       ├── c.scm
-│   │       ├── ruby.scm
-│   │       ├── kotlin.scm
-│   │       ├── csharp.scm
-│   │       ├── swift.scm
-│   │       ├── scala.scm
-│   │       └── php.scm
-│   │
-│   ├── server/                 # Python: FastAPI REST API + MCP server
-│   │   └── src/repowise/server/
-│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, doc-drift, decisions, search, claude-md)
-│   │       ├── mcp_server/      # MCP server package (11 default tools, split into focused modules)
-│   │       ├── webhooks/        # GitHub + GitLab handlers
-│   │       ├── job_executor.py  # Background pipeline executor: bridges REST to core pipeline
-│   │       └── scheduler.py     # APScheduler background jobs
-│   │
-│   ├── cli/                    # Python: repowise CLI (click + rich)
-│   │   └── src/repowise/cli/
-│   │       └── commands/        # init, update, watch, serve, search, export, status, doctor, dead-code, decision, mcp, reindex, generate-claude-md
-│   │
-│   └── web/                    # Next.js 15 frontend
-│       ├── src/app/             # App Router pages (dashboard, wiki, search, graph, symbols, overview, …)
-│       ├── src/components/      # UI primitives, layout, wiki, repos, jobs, settings, dashboard
-│       └── src/lib/             # API client, SWR hooks, utilities (health-score, format), design tokens
-│
-├── integrations/
-│   ├── github-action/           # action.yml + Dockerfile entrypoint
-│   └── github-app/              # GitHub App webhook handler
-│
-├── docker/
-│   ├── Dockerfile               # multi-stage: Python + Node build + final runtime
-│   └── docker-compose.yml       # with optional Redis profile
-│
-├── tests/
-│   ├── unit/                    # unit tests (no LLM calls, no filesystem)
-│   ├── integration/             # integration tests using sample_repo fixture
-│   ├── e2e/                     # full repowise init + update flows
-│   └── fixtures/
-│       └── sample_repo/         # 30-file multi-language fixture repo
-│
-└── docs/                        # repowise's own generated wiki (dogfooding)
+│   │   │   ├── ingestion/     # traverser, parser/, languages/, queries/ (.scm), graph/, call resolution, git_indexer/
+│   │   │   ├── analysis/      # dead_code/, health/, security/, decisions/, change_risk/, coupling/, test intelligence
+│   │   │   ├── generation/    # page_generator/, context_assembler.py, templates/, editor_files/ (CLAUDE.md, AGENTS.md)
+│   │   │   ├── persistence/   # SQLAlchemy models, crud/, search.py (FTS), vector_store/
+│   │   │   ├── providers/     # llm/ (one module per provider, registry.py) and embedding/
+│   │   │   ├── pipeline/      # orchestrator.py, phases/, incremental/, persist/
+│   │   │   ├── workspace/     # multi-repo workspaces
+│   │   │   └── ...            # distill, evidence, ownership, settings, ci, forges, and more
+│   │   └── alembic/           # database migrations
+│   ├── server/        # Python: FastAPI REST API (routers/), MCP server (mcp_server/), chat, job executor, scheduler
+│   ├── cli/           # Python: the repowise CLI (click + rich), commands/, agent_targets/, editor integrations
+│   ├── web/           # Next.js 15 web UI
+│   ├── ui/            # shared React components used by the web UI
+│   ├── api-client/    # TypeScript client for the REST API
+│   ├── types/         # shared TypeScript types
+│   ├── vscode/        # VS Code extension
+│   └── claude-mod/    # Repowise Lens, the Claude Code mod (built into plugins/claude-code/hooks/lens/)
+├── plugins/           # agent plugins: claude-code, codex, cursor, shared
+├── ci/                # CI templates: github, gitlab
+├── docker/            # Dockerfile, Dockerfile.mcp, docker-compose.yml
+├── scripts/           # maintenance scripts (doc generators, checks)
+├── tests/             # unit, integration, e2e, core, providers; fixtures/ holds sample repos
+└── docs/              # start, agent, architecture, layers, reference, business, scale, design
 ```
+
+Each subsystem has its own page in this folder: see the [architecture index](README.md)
+(ingestion and languages in [language-support.md](language-support.md), graph in
+[graph-algorithms.md](graph-algorithms.md), health in [code-health.md](code-health.md),
+dead code in [dead-code.md](dead-code.md), decisions in [decisions.md](decisions.md),
+chat in [chat.md](chat.md), workspaces in [workspace.md](workspace.md)).
 
 ---
 
@@ -540,7 +476,7 @@ span runs from `same_file` and `self_scope` at 0.95, through import- and
 package-scoped origins at 0.88–0.90, down to `global_unique` at 0.50, a
 repo-wide name match, which the source comments label as a guess.
 
-Twelve of the 39 are **receiver-typing** origins: they resolve a call on a
+Twelve of the 40 are **receiver-typing** origins: they resolve a call on a
 variable by reading the variable's declaration (a local, a parameter, an
 enclosing class's field, or a type a framework decorator imposed), then resolving
 the method on that type. Registered for Java, C#, Python, Go, Kotlin and Swift.
@@ -1043,14 +979,27 @@ describes *what*, decisions capture *why*.
 
 ### Capture Sources
 
-Decisions are extracted from four sources, each with a different confidence level:
+Sources are registered once, as `SourceSpec` entries in
+`analysis/decisions/policy.py` (`SOURCE_SPECS`), and one resolved policy backs the
+CLI, the REST API and the index pipeline:
 
-| Source | Confidence | Status | Trigger |
-|--------|-----------|--------|---------|
-| **Inline markers** (`# WHY:`, `# DECISION:`, `# TRADEOFF:`, `# ADR:`, `# RATIONALE:`, `# REJECTED:`) | 0.95 | `active` | File scanning during init/update |
-| **Git archaeology** (commit messages with migration/refactor signals) | 0.70–0.85 | `proposed` | Init only, reuses git layer data |
-| **README/docs mining** (implicit decisions in prose) | 0.60 | `proposed` | Init only, LLM extraction |
-| **CLI capture** (`repowise decision add`) | 1.00 | `active` | Manual entry |
+| Key | Captures | Default |
+|-----|----------|---------|
+| `inline_marker` | `WHY:` / `DECISION:` / `TRADEOFF:` / `ADR:` / `RATIONALE:` / `REJECTED:` comment markers | on |
+| `git_archaeology` | Commit messages carrying a decision verb | on |
+| `adr` | Nygard and MADR architecture decision records | on |
+| `pr` | Pull request bodies that read as a description | on |
+| `comment` | Rationale prose in comments on high-centrality files | on |
+| `session` | Durable choices mined from local coding-agent transcripts | off |
+| `session_discovery` | One broad model pass over new transcript prose each update | off |
+| `conventions` | Import patterns the graph proves (a wrapper most files reach a library through) | off |
+| `cli` | `repowise decision add` (manual entry) | always |
+| `agent` | `repowise decision add --agent` (a coding agent's entry) | always |
+
+Confidence is computed per record from the strongest source's rank, how many
+independent sources corroborate it, how complete it is, and whether its quote
+verifies against the source span. Stages, verification, ranks and the confidence
+formula are in [decisions.md](decisions.md).
 
 ### Data Model
 
@@ -1089,16 +1038,19 @@ repowise decision deprecate  # active → deprecated
 repowise decision health     # health summary
 ```
 
+These are the everyday commands; `repowise decision --help` lists the full group
+(config, sources, review, sync, import and export among them).
+
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `core/analysis/decision_extractor.py` | All 4 capture sources + staleness computation |
+| `core/analysis/decisions/` | Source registry and policy, one module per source, provenance, lifecycle, staleness, rule check |
 | `core/persistence/models.py` | `DecisionRecord` ORM model |
-| `core/persistence/crud.py` | 8 decision CRUD functions |
+| `core/persistence/crud/decision_*.py`, `crud/decisions.py` | Decision ingest, evidence, staleness and health queries |
 | `server/mcp_server/tool_why/` | MCP tool `get_why` (package: one module per mode, plus shared loading, ranking, projection and caps) |
 | `server/routers/decisions.py` | REST API endpoints |
-| `cli/commands/decision_cmd.py` | CLI command group (7 subcommands) |
+| `cli/commands/decision_cmd.py` and `decision_*_cmd.py` | The `repowise decision` command group |
 
 ---
 
@@ -1236,8 +1188,9 @@ file, tokens used, estimated cost, estimated time remaining).
 repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
-the user has configured and has access to **7 tools** from the MCP surface
-(see [`chat.md`](chat.md), not the full 11-tool MCP default).
+the user has configured and calls the repository's configured MCP surface (the
+ten task-shaped tools by default) plus three chat-only tools (`show_view`,
+`chart`, `find_suspects`).
 
 See [`docs/architecture/chat.md`](chat.md) for the full technical reference covering the
 backend agentic loop, SSE streaming protocol, provider abstraction extensions,
@@ -1248,9 +1201,11 @@ database schema, frontend component architecture, and artifact rendering system.
 - **Provider-agnostic**: the chat agent goes through the same provider abstraction
   as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
   `stream_chat()` for streaming + tool use without breaking existing callers.
-- **Tool reuse**: the 7 chat tools are called directly as Python functions (no
-  subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
-  fed to both the LLM and the executor.
+- **Tool reuse**: chat reads the same MCP tool registry and selection the MCP
+  server lists (`selected_tool_entries`), narrowed by the principal's scope and
+  the session policy, and calls the tools directly as Python functions (no
+  subprocess round-trip). Schemas come from FastMCP's generated contracts, so
+  the LLM and the executor see one definition.
 - **SSE streaming**: `POST /api/repos/{repo_id}/chat/messages` runs the agentic
   loop and streams back Server-Sent Events (`text_delta`, `tool_start`,
   `tool_result`, `done`, `error`).
@@ -1649,9 +1604,9 @@ CLI follows [agent-platform.md](agent-platform.md).
 Full configuration with defaults (`.repowise/config.yaml`):
 
 ```yaml
-provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | ollama | litellm | codex_cli | opencode | edenai | mock
-model: claude-sonnet-4-5    # passed through to the provider
-embedder: gemini             # gemini | openai | openrouter | ollama | edenai | mock
+provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | edenai | ollama | litellm | claude_cli | codex_cli | copilot_cli | opencode | mock
+model: claude-haiku-5-5      # passed through to the provider; omitted, the provider default is used
+embedder: gemini             # gemini | openai | openrouter | ollama | edenai | fastembed | mock
 embedding_model: gemini-embedding-001
 
 prompt_caching: true

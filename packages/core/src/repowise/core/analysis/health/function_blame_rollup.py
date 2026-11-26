@@ -61,6 +61,11 @@ def build_function_blame_rows(
     file's blame index is looked up in *git_meta_map* under ``"blame_index"``
     (the FULL-tier git tier attaches it there). *now_ts* anchors the recent
     window (unix seconds); ``None`` uses each blame index's own anchor.
+
+    A file blamed only for its functions' owner and history (under the commit
+    floor, or a large production file: ``"history_blame_index"``) gets rows
+    marked ``history_only``; the health readers of the table skip them, so
+    they score exactly what the biomarkers saw.
     """
     rows: list[dict] = []
 
@@ -69,6 +74,9 @@ def build_function_blame_rows(
         meta = git_meta_map.get(path) or {}
         # ``commit_set_blame``: a re-score's blame for a file stored without sets.
         idx = meta.get("blame_index") or meta.get("commit_set_blame")
+        history_only = not isinstance(idx, BlameIndex) or not idx.lines
+        if history_only:
+            idx = meta.get("history_blame_index")
         if not isinstance(idx, BlameIndex) or not idx.lines:
             continue
         since = (now_ts if now_ts is not None else blame_as_of(idx)) - recent_window_days * 86400
@@ -97,6 +105,7 @@ def build_function_blame_rows(
                     "owner_email": owner_email,
                     "owner_line_pct": owner_pct,
                     "commit_shas_json": json.dumps(shas),
+                    "history_only": history_only,
                 }
             )
     return rows

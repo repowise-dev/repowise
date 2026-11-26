@@ -46,6 +46,9 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     # the server keeps the checkout current, not what the index holds.
     "state_only": frozenset(
         {
+            # Opt-in contract extraction keeps its own stamp in contracts.json;
+            # wiki.db does not depend on it.
+            "contracts",
             "distill",
             "editor_files",
             "editor_setup",

@@ -849,6 +849,16 @@ def _resolve_impacted(
     return consumers
 
 
+def consumers_outside_service(change: BreakingChange) -> list[ImpactedConsumer]:
+    """*change*'s consumers outside the provider's own (repo, service).
+
+    The single-repo filter: a workspace gates on another repo, a monorepo on
+    another service inside it.
+    """
+    own = (change.provider_repo, change.provider_service)
+    return [ic for ic in change.impacted_consumers if (ic.repo, ic.service) != own]
+
+
 # ---------------------------------------------------------------------------
 # Engine (pure)
 # ---------------------------------------------------------------------------

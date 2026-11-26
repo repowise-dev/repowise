@@ -27,7 +27,7 @@ Symbol-level edges (all carry a `confidence` score from 0.0 to 1.0):
 |-----------|--------|---------|
 | `defines` | GraphBuilder `add_file()` | `login.py` defines `validate_token` |
 | `has_method` | GraphBuilder `add_file()` | `AuthService` has_method `login` |
-| `calls` | `CallResolver` (39 named resolution origins, each with a fixed confidence) | `validate_token` calls `hash_password` |
+| `calls` | `CallResolver` (40 named resolution origins, each with a fixed confidence) | `validate_token` calls `hash_password` |
 | `dispatches_to` | Heritage pass | base `Handler.run` dispatches_to `JsonHandler.run` |
 | `references` | `@reference.name` captures | a dispatch table names `on_signal` without calling it |
 | `framework_binds` | Framework handlers | a pytest fixture binds to the test that requests it |
@@ -83,7 +83,7 @@ an argument; the last is captured as a reference, since passing a handler is
 not invoking it.
 
 **Resolution** turns a captured name and receiver (`save` on `repo` in
-`repo.save(draft)`) into one declaration in one file. This is where the 39
+`repo.save(draft)`) into one declaration in one file. This is where the 40
 resolution origins live.
 
 A missed capture is silent, since nothing internal knows the call existed, so
@@ -125,7 +125,7 @@ recommending wrong deletions. `global_unique` stays at 0.50 because a labelled
 guess serves reachability better than a missing edge.
 
 Tables, intervals and pre-registrations are in
-[BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language) and
+[BENCHMARKS.md](../BENCHMARKS.md#call-graph-accuracy-by-language) and
 [repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph).
 
 ---

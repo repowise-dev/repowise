@@ -14,14 +14,20 @@ from repowise.core.persistence.crud import (
     replace_symbol_hotness,
     replace_workload_hotness,
 )
+from repowise.core.persistence.crud import tests_running_spans as spans_run
 from repowise.core.persistence.models import (
+    EvidenceBenchmarkResult,
     EvidenceRun,
     FunctionFact,
+    GitCommit,
+    GitFunctionBlame,
     GitMetadata,
     GraphEdge,
     GraphNode,
     HealthFinding,
     PerformanceOpportunity,
+    TestCoverageSource,
+    TestCoverageTest,
 )
 from tests.unit.persistence.helpers import insert_repo, make_wiki_symbol
 
@@ -82,11 +88,22 @@ async def _seed_code(session, repo_id: str) -> None:
                 )
                 for c in callers
             ),
+            # The file's owner: never shown on a function row.
             GitMetadata(
                 repository_id=repo_id,
                 file_path=APP,
                 primary_owner_name="Ada",
                 primary_owner_commit_pct=0.8,
+            ),
+            # ``serve``'s own lines: Grace wrote most, newest commit is "f" * 40.
+            GitFunctionBlame(
+                repository_id=repo_id, symbol_id=serve, file_path=APP, function_name="serve",
+                start_line=1, end_line=20, mod_count=2, owner_name="Grace",
+                owner_line_pct=0.75, commit_shas_json=json.dumps(["f" * 40, "e" * 40]),
+            ),
+            GitCommit(
+                repository_id=repo_id, sha="f" * 40, subject="perf: serve faster (#42)",
+                committed_at=datetime(2026, 10, 3, 12, tzinfo=UTC),
             ),
         ]
     )
@@ -140,7 +157,7 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     async_session.add_all(
         [
             _run(repo.id, "r1"),
-            _run(repo.id, "r2", cls="benchmark", day=16),
+            _run(repo.id, "r2", cls="load_test", day=16),
             _run(repo.id, "r3", cls="unit_test"),
             # On ``load``, with production evidence: linked on its row.
             _finding(repo.id, 35, "perf3_load"),
@@ -161,7 +178,7 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
         [
             _hot("serve"),
             _hot("load", rank=2, tier="lead_candidate"),
-            # The benchmark ranks ``serve`` too: listed under both workloads.
+            # The load test ranks ``serve`` too: listed under both workloads.
             _hot("helper", run="r2"),
             _hot("serve", run="r2", rank=2),
             _hot("thin", run="r3"),
@@ -182,8 +199,17 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     assert serve["lines"] == [1, 20]
     # The test caller is neither listed nor counted.
     assert serve["callers_total"] == 1 and serve["callers"] == ["src/main.py::main"]
-    assert serve["owner"] == {"name": "Ada", "commit_pct": 0.8}
+    # Owner and last change from the function's own lines, not the file's owner.
+    assert serve["owner"] == {"name": "Grace", "line_pct": 0.75}
+    assert serve["last_change"] == {
+        "sha": "f" * 40, "date": "2026-10-03", "subject": "perf: serve faster (#42)", "pr": 42,
+    }
+    # ``load`` has no blame row of its own: no owner line, never the file's owner.
+    load = measured["rows"][3]
+    assert load["owner"] is None and load["last_change"] is None
     assert serve["tests"] == ["tests/test_app.py::test_serve"]
+    # No per-test map: the nearest test by call graph, labelled so.
+    assert (serve["tests_basis"], serve["verify"]) == ("call_graph", None)
     # ``share`` is the cost (self), with its interval; inclusive is context.
     assert (serve["share"], serve["share_low"], serve["share_high"]) == (0.1, 0.08, 0.12)
     assert serve["inclusive"] == 0.3
@@ -201,9 +227,13 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
         "repo_self_share": 0.47,
         "wait_share": 0.3,
         "library_share": 0.12,
+        # 1000 total less 470 + 300 + 120 in the three buckets.
+        "unattributed_share": 0.11,
         "outside_production": 4,
         "value_kind": "wall",
         "ordering_only": False,
+        # The workload's newest run.
+        "newer_run": None,
     }
     assert [r["run_id"] for r in measured["runs"]] == ["r2", "r1"]
 
@@ -212,6 +242,97 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     assert [r["workload_class"] for r in tests_group["runs"]] == ["unit_test"]
     # Never mapped to tests: unknown, not "no tests".
     assert tests_group["rows"][0]["tests"] is None
+    assert tests_group["rows"][0]["tests_basis"] is None
+
+
+def _map(repo_id: str, tests: list[tuple[str, str]], ranges: list[str]) -> list:
+    """A per-test map row for ``APP``: test *i* ran ``ranges[i]``."""
+    return [
+        *(
+            TestCoverageTest(repository_id=repo_id, test_no=no, test_id=test_id, test_file=path)
+            for no, (test_id, path) in enumerate(tests)
+        ),
+        TestCoverageSource(
+            repository_id=repo_id,
+            source_file=APP,
+            tests_json=json.dumps([[no, r] for no, r in enumerate(ranges)]),
+            test_count=len(tests),
+            source_format="coverage.py",
+        ),
+    ]
+
+
+async def test_the_per_test_map_names_the_tests_that_ran_each_function(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    async_session.add_all(
+        [
+            _run(repo.id, "r1"),
+            *_map(
+                repo.id,
+                [
+                    ("tests/test_app.py::test_run[a]|run", "tests/test_app.py"),
+                    ("tests/test_load.py::test_load", "tests/test_load.py"),
+                    # A pytest-benchmark test: its stored result says so.
+                    ("tests/test_app.py::test_timed", "tests/test_app.py"),
+                    ("tests/test_app.py::test_module_only", "tests/test_app.py"),
+                    # Ran only ``load``'s def line: an import, not a call.
+                    ("tests/test_app.py::test_import_only", "tests/test_app.py"),
+                ],
+                ["3-6", "32-33,36", "2", "25", "30"],
+            ),
+            EvidenceBenchmarkResult(
+                run_id="r1", benchmark_key="test_timed", repository_id=repo.id,
+                symbol_id="tests/test_app.py::test_timed", median=1.0,
+            ),
+        ]
+    )
+    await async_session.flush()
+    await replace_workload_hotness(
+        async_session,
+        repo.id,
+        [_hot("serve"), _hot("load", rank=2), _hot("helper", rank=3)],
+    )
+
+    rows = {
+        r["symbol_id"].partition("::")[2]: r
+        for r in (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"]
+    }
+
+    # The map has the file: only tests that ran the lines, never the static
+    # nearest one the map did not see run it, nor the benchmark.
+    assert (rows["serve"]["tests"], rows["serve"]["tests_basis"]) == (
+        ["tests/test_app.py::test_run"],
+        "per_test_map",
+    )
+    assert rows["serve"]["verify"] == "pytest tests/test_app.py::test_timed --benchmark-only"
+    assert rows["load"]["tests"] == ["tests/test_load.py::test_load"]
+    assert rows["load"]["verify"] is None
+    # The map has the file and no test ran it: none ran it, not unknown.
+    assert (rows["helper"]["tests"], rows["helper"]["tests_basis"]) == ([], "per_test_map")
+
+
+async def test_a_benchmark_calling_the_function_is_its_verify_command(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    bench = "app_test.go::BenchmarkServe"
+    async_session.add_all(
+        [
+            _run(repo.id, "r1"),
+            GraphNode(repository_id=repo.id, node_id=bench, node_type="symbol"),
+            GraphEdge(
+                repository_id=repo.id, source_node_id=bench, target_node_id=f"{APP}::serve",
+                edge_type="calls",
+            ),
+        ]
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("serve")])
+
+    row = (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"][0]
+
+    assert row["verify"] == "go test -run '^$' -bench '^BenchmarkServe$' -count 5 ."
+    assert row["tests"] == ["tests/test_app.py::test_serve"]
 
 
 async def test_unit_test_evidence_never_lists_under_measured(async_session) -> None:
@@ -250,7 +371,7 @@ async def test_a_finding_with_no_cause_id_links_nothing(async_session) -> None:
 async def test_the_limit_applies_per_run_so_no_workload_is_cut_away(async_session) -> None:
     repo = await insert_repo(async_session)
     await _seed_code(async_session, repo.id)
-    async_session.add_all([_run(repo.id, "r1"), _run(repo.id, "r2", cls="benchmark", day=16)])
+    async_session.add_all([_run(repo.id, "r1"), _run(repo.id, "r2", cls="load_test", day=16)])
     await async_session.flush()
     await replace_workload_hotness(
         async_session,
@@ -609,3 +730,128 @@ async def test_a_measured_hotspots_evidence_on_rest_is_the_run_that_measured_it(
         repo.id, static.opportunity_id, limit=50, offset=0, session=async_session
     )
     assert all(r["biomarker_type"] != "measured_hotspot" for r in other["items"])
+
+
+async def test_a_one_line_python_function_is_unknown_to_the_map(async_session) -> None:
+    repo = await insert_repo(async_session)
+    async_session.add_all(
+        _map(repo.id, [("tests/test_app.py::test_imports", "tests/test_app.py")], ["1-3,90"])
+    )
+    await async_session.flush()
+    spans = {"one": (APP, 90, 90), "body": (APP, 1, 3), "elsewhere": ("src/other.py", 1, 9)}
+
+    found = await spans_run(async_session, repo.id, spans)
+
+    # Its def line runs on import: no line tells a call apart, so no claim either way.
+    assert "one" not in found and "elsewhere" not in found
+    assert found["body"] == [("tests/test_app.py::test_imports", "tests/test_app.py", 2)]
+
+
+async def test_a_stored_benchmark_among_the_nearest_tests_is_never_listed(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    timed = "tests/test_app.py::test_timed"
+    async_session.add_all(
+        [
+            _run(repo.id, "r1"),
+            FunctionFact(
+                repository_id=repo.id,
+                symbol_id=f"{APP}::load",
+                tests_json=encode_tests(
+                    [MappedTest(timed, 2), MappedTest("tests/test_load.py::test_load", 2)]
+                ),
+            ),
+            EvidenceBenchmarkResult(
+                run_id="r1", benchmark_key="test_timed", repository_id=repo.id,
+                symbol_id=timed, median=1.0,
+            ),
+        ]
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("load")])
+
+    row = (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"][0]
+
+    assert (row["tests"], row["tests_basis"]) == (["tests/test_load.py::test_load"], "call_graph")
+
+
+async def test_benchmarks_list_each_result_with_the_function_it_measures(async_session) -> None:
+    from repowise.core.persistence.crud import unranked_reason
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    bench = "benchmarks/test_app.py::test_load"
+    # A benchmark-class profile is stored too: it never ranks, so it is no runtime data.
+    async_session.add(_run(repo.id, "p1", cls="benchmark"))
+    run = _run(repo.id, "b1", cls="benchmark")
+    run.kind = "benchmark"
+    async_session.add(run)
+    async_session.add_all(
+        [
+            GraphEdge(repository_id=repo.id, source_node_id=bench, target_node_id=target,
+                      edge_type="calls")
+            # The fixture's helper is no production code, so it measures nothing.
+            for target in (f"{APP}::load", "benchmarks/conftest.py::load")
+        ]
+    )
+    await async_session.flush()
+    async_session.add_all(
+        [
+            EvidenceBenchmarkResult(
+                run_id="b1", repository_id=repo.id, benchmark_key=f"{bench}[small]",
+                symbol_id=bench, unit="s", median=0.002, allocs_per_op=None,
+            ),
+            EvidenceBenchmarkResult(
+                run_id="b1", repository_id=repo.id, benchmark_key="other", symbol_id=None,
+                unit="s", median=0.5,
+            ),
+        ]
+    )
+    await async_session.flush()
+    view = await measured_costs(async_session, repo.id, now=NOW, limit=5)
+    assert set(view) == {"benchmarks"}
+    group = view["benchmarks"]
+    assert group["total"] == 2
+    assert [r["run_id"] for r in group["runs"]] == ["b1"]
+    assert [(r["benchmark"], r["measures"], r["time"]) for r in group["rows"]] == [
+        ("test_load[small]", f"{APP}::load", 0.002),
+        ("other", None, 0.5),
+    ]
+    assert await unranked_reason(async_session, repo.id) == "no_runtime_data"
+    # Another run's id keeps nothing.
+    assert await measured_costs(async_session, repo.id, now=NOW, run_id="r1") is None
+
+
+async def test_a_benchmark_profile_never_reads_as_evidence_ahead_of_the_index(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.evidence import _newest_ahead_of_index
+
+    repo = await insert_repo(async_session)
+    repo.head_commit = "c" * 40
+    at_head = _run(repo.id, "p1", day=1)
+    at_head.ingested_at = datetime(2026, 11, 1, tzinfo=UTC)
+    bench = _run(repo.id, "p2", cls="benchmark", day=2)
+    bench.workload_name = at_head.workload_name
+    bench.commit_sha = "d" * 40
+    bench.ingested_at = datetime(2026, 11, 2, tzinfo=UTC)
+    async_session.add_all([at_head, bench])
+    await async_session.flush()
+    assert await _newest_ahead_of_index(async_session, repo.id) is False
+
+
+async def test_an_older_benchmark_run_id_keeps_nothing(async_session) -> None:
+    from repowise.core.persistence.models import EvidenceBenchmarkResult
+
+    repo = await insert_repo(async_session)
+    for rid, day in (("b0", 1), ("b1", 2)):
+        run = _run(repo.id, rid, cls="benchmark", day=day)
+        run.kind, run.workload_name = "benchmark", "go bench"
+        async_session.add(run)
+    await async_session.flush()
+    async_session.add_all(
+        EvidenceBenchmarkResult(run_id=rid, repository_id=repo.id, benchmark_key="k", median=1.0)
+        for rid in ("b0", "b1")
+    )
+    await async_session.flush()
+    assert await measured_costs(async_session, repo.id, now=NOW, run_id="b0") is None
+    view = await measured_costs(async_session, repo.id, now=NOW, run_id="b1")
+    assert [r["run_id"] for r in view["benchmarks"]["rows"]] == ["b1"]

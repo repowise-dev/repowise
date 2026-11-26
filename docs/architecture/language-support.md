@@ -426,6 +426,10 @@ Steps 1–5 give you the symbols, imports and calls your query captures. They do
   node map. See [the three registries](#the-three-code-health-dialect-registries).
 - **Receiver typing.** Steps 9–11 above, and each is gated on measurement.
 - **Framework edges.** One module per framework under `framework_edges/`.
+- **Runtime evidence.** Profile frames join to functions only for languages
+  the frame resolver has a join for, and test timings need the stack to name a
+  JUnit report. See
+  [runtime-evidence-languages.md](runtime-evidence-languages.md).
 - **Class-level metrics, if the language does not nest method bodies in the
   type.** Go's external receivers and Object Pascal's split
   declaration/implementation sections both fail this, and both are deliberately

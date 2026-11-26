@@ -414,7 +414,8 @@ export interface PerformanceOpportunityFix {
 }
 
 export interface PerformanceOpportunityEvidence {
-  finding_id: string;
+  /** Null for a measured hotspot, which comes from runtime evidence, not a static finding. */
+  finding_id: string | null;
   file_path: string;
   biomarker_type: string;
   function_name: string | null;

@@ -126,6 +126,7 @@ BLOCKS: tuple[Block, ...] = (
     _block("evidence"),
     _block("refactoring"),
     _block("report"),
+    _block("contracts"),
     _block("assertions"),
     _block("tests"),
     Block("platform-json", lambda s: s.path == "~/.repowise/platform.json"),

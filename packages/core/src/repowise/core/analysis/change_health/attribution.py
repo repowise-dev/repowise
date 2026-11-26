@@ -105,15 +105,35 @@ class FindingAttributor:
 
 
 def changed_symbols_for(
-    changes: dict[str, FileChange], findings_by_file: dict[str, list[HealthFindingData]]
+    changes: dict[str, FileChange],
+    findings_by_file: dict[str, list[HealthFindingData]],
+    head_symbols: Mapping[str, list[Symbol]],
+    base_symbols: Mapping[str, list[Symbol]],
 ) -> set[tuple[str, str]]:
-    """``(path, symbol)`` pairs whose body overlaps the change's added lines."""
+    """``(path, name)`` pairs for the symbols the change edits, findings or not.
+
+    Read from the symbols' own line ranges, the way :func:`changed_symbols`
+    lists them (the innermost symbol an edit touched), so an edit away from
+    every finding still names its symbol.
+    A finding whose span overlaps the added lines adds its symbol too. Pairs
+    key on the bare name a finding carries, so a name the file declares twice
+    is claimed only when every declaration is touched.
+    """
     out: set[tuple[str, str]] = set()
     for path, change in changes.items():
+        head = _held(head_symbols, path)
+        cut = _lost_lines(change, _held(base_symbols, change.base_path))
+        # Innermost only, as the list charges it: a method edit is not an edit
+        # of its class, whose class-wide findings stay away from this basis.
+        touched = {id(s) for s in innermost(_touched(change, head, cut))}
+        by_name: dict[str, list[Symbol]] = {}
+        for symbol in head:
+            by_name.setdefault(symbol.name, []).append(symbol)
+        out.update(
+            (path, name) for name, held in by_name.items() if all(id(s) in touched for s in held)
+        )
         added = change.added_lines
-        if not added:
-            continue
-        for finding in findings_by_file.get(path, ()):
+        for finding in findings_by_file.get(path, ()) if added else ():
             if finding.function_name and _overlaps(finding, added):
                 out.add((path, finding.function_name))
     return out
@@ -164,12 +184,7 @@ def _head_side(
     known_base: bool,
     moves: MoveMap,
 ) -> list[ChangedSymbol]:
-    if change.is_new:
-        touched = head
-    else:
-        hit = {id(s) for s in symbols_overlapping(head, line_ranges(change.added_lines))}
-        lost_lines = {_local_id(s) for s in cut}
-        touched = [s for s in head if id(s) in hit or _local_id(s) in lost_lines]
+    touched = _touched(change, head, cut)
     base_ids = {_local_id(s) for s in base}
     # Without a parsed base side, nothing proves a symbol is new.
     new = change.is_new or known_base
@@ -180,6 +195,15 @@ def _head_side(
         for s in touched
         if kinds[id(s)][0] != "edited" or id(s) in leaves
     ]
+
+
+def _touched(change: FileChange, head: list[Symbol], cut: list[Symbol]) -> list[Symbol]:
+    """Head symbols the change touches: over its added lines, or that lost lines (*cut*)."""
+    if change.is_new:
+        return head
+    hit = {id(s) for s in symbols_overlapping(head, line_ranges(change.added_lines))}
+    lost_lines = {_local_id(s) for s in cut}
+    return [s for s in head if id(s) in hit or _local_id(s) in lost_lines]
 
 
 def _lost_lines(change: FileChange, base: list[Symbol]) -> list[Symbol]:

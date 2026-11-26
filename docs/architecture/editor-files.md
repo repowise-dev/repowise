@@ -406,10 +406,8 @@ above, including the rewrite hook offer, *and* the project-local files
 repowise init --no-editor-setup --yes .
 ```
 
-It used to cover the machine-wide half only, and said so — which meant there
-was no combination of flags that indexed a repo without writing four files into
-the working tree, since VS Code had no opt-out flag of its own. Issue #1499 is
-the report of exactly that. One switch, one meaning.
+It covers both halves, so one flag indexes a repo without writing any editor
+file into the working tree. One switch, one meaning.
 
 `.repowise/mcp.json` is the one deliberate exception and is written either way.
 No editor reads it unless pointed at it, and it is what `repowise mcp .` prints
@@ -432,10 +430,9 @@ that gates an already-installed global rewrite hook off here.
 The same reasoning covers the instruction files: `--no-editor-setup
 --no-claude-md` still records `editor_files.claude_md: false`, and likewise for
 `--no-agents-md`. Those flags mean "never generate this file", not "skip it this
-once", and the generator declining on its way past used to be the only thing
-that wrote the preference down — so suppressing the writes would also have
-suppressed the memory of the refusal, and the next `repowise update` would have
-generated the file anyway. A preference is not a write.
+once", and the preference has to be written down even when the writes are
+suppressed, or the next `repowise update` would generate the file anyway. A
+preference is not a write.
 
 `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch as an env var, which is the
 better fit for CI and sandboxes where no one is passing flags by hand. Either

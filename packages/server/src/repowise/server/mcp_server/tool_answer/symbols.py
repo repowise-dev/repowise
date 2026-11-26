@@ -9,6 +9,7 @@ here, since callers and tests import them from this module.
 from __future__ import annotations
 
 import asyncio
+import os.path
 import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,7 @@ from repowise.server.mcp_server._page_paths import in_scope
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
     _folds_case,
+    _has_code_extension,
     _identifier_shaped,
     _looks_like_code_name,
     _unmistakably_code,
@@ -104,11 +106,21 @@ def _extract_question_identifiers(question: str) -> set[str]:
     """
     ids: set[str] = set()
     for tok in _WORD_CHAIN_RE.findall(question):
-        # A dotted path yields both the full thing and each part.
+        # A file name (``call_resolver.py``) yields its stem: the stem may name
+        # a class (``UserService.java``), the extension never names code.
+        # A dotted name yields both the full thing and each part.
+        if _has_code_extension(tok):
+            tok = os.path.splitext(tok)[0]
         for c in (tok, *tok.split(".")):
             if c.lower() not in _STOPWORDS and _identifier_shaped(c):
                 ids.add(c)
     return ids
+
+
+def _named_file_stems(question: str) -> set[str]:
+    """Stems of the file names *question* writes (``call_resolver.py`` -> ``call_resolver``)."""
+    stems = [os.path.splitext(t)[0] for t in _WORD_CHAIN_RE.findall(question) if _has_code_extension(t)]
+    return {part for stem in stems for part in (stem, *stem.split("."))}
 
 
 def union_defers_to_synthesis(
@@ -316,20 +328,21 @@ async def _anchor_symbol_hits(
     literal: dict[str, list] = {}
     prose = bool(question) and not is_symbol_lookup_question(question, question_ids)
     homonyms["unindexed"] = sorted(question_ids - indexed_names)
+    # The stem of a file the question names is that file, not a name written in
+    # code: no line need write it, and the lines that do are its importers.
+    unwritten = sorted(question_ids - indexed_names - _named_file_stems(question))
     guard: _TopicGuard | None = None
     if repo_root is not None:
         origins = await _stored_origins(session_factory, repo_id, by_name)
         guard = _TopicGuard(repo_root, hits, question, qids_lower, origins)
         # The scans below run one after another; their git greps need not.
-        await prefetch_word_scans(
-            repo_root, _scanned_tokens(by_name, homonyms["unindexed"], prose=prose)
-        )
+        await prefetch_word_scans(repo_root, _scanned_tokens(by_name, unwritten, prose=prose))
         if prose:
             by_name = await _trusted_over_topic(by_name, question_ids, guard)
             literal, homonyms["unindexed_lines"] = await _literal_holders(
-                session, repo_id, question_ids - indexed_names, guard
+                session, repo_id, set(unwritten), guard
             )
-        homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard, scope)
+        homonyms["absent"] = await _absent_names(unwritten, guard, scope)
         homonyms["not_searched"] = guard.unread()
 
     chosen = await _choose_anchor_symbols(

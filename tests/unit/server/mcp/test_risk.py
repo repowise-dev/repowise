@@ -601,6 +601,50 @@ def test_pr_directive_says_when_every_test_must_run():
     assert "Every test must run" in directive["summary"]
 
 
+def test_pr_directive_runs_all_when_the_selection_holds_most_of_the_suite():
+    """A subset holding most of the suite is not targeted; the ranked head stays."""
+    import dataclasses
+
+    tests = [f"tests/test_m{i:02}.py" for i in range(12)]
+    selected = _selected(set(tests))
+    most = dataclasses.replace(
+        selected,
+        selection=dataclasses.replace(selected.selection, known_tests=(*tests, "tests/test_x.py")),
+    )
+    directive = _directive({}, tests=most)
+    assert directive["tests_run_all"] is True
+    assert directive["tests_run_all_reasons"] == [
+        "selection_covers_most_of_suite: 12 of 13 test files."
+    ]
+    assert directive["tests_to_run"] == tests[:10]
+    assert "Every test must run" in directive["summary"]
+
+    others = tuple(f"tests/test_o{i:02}.py" for i in range(12))
+    few = dataclasses.replace(
+        selected,
+        selection=dataclasses.replace(selected.selection, known_tests=(*tests, *others)),
+    )
+    directive = _directive({}, tests=few)
+    assert directive["tests_run_all"] is False
+    assert "tests_run_all_reasons" not in directive
+
+
+def test_pr_directive_summary_leads_test_gaps_with_measured_coverage():
+    blast = {
+        "test_impact": {
+            "coverage": {
+                "status": "available",
+                "changed_files_total": 1,
+                "changed_files_with_measured_tests": 0,
+            },
+            "files_without_measured_tests": ["src/core.py"],
+        }
+    }
+    directive = _directive(blast, tests=_selected({"tests/test_core.py"}))
+    assert "Measured coverage: 0 of 1 changed file(s), 0 test gap(s)." in directive["summary"]
+    assert "Showing 0 of 0" not in directive["summary"]
+
+
 def test_pr_directive_without_a_selection_names_nothing_and_says_why():
     from repowise.server.mcp_server.tool_risk.directives import ChangeTests
 

@@ -175,7 +175,9 @@ async def _function_changes(
     blame pass skipped for size; ``None`` when the repository keeps no
     function history at all."""
     b = GitFunctionBlame
-    any_row = await session.execute(select(b.id).where(b.repository_id == repo_id).limit(1))
+    any_row = await session.execute(
+        select(b.id).where(b.repository_id == repo_id, b.history_only.is_(False)).limit(1)
+    )
     if any_row.first() is None:
         return None, set()
     leads = [(f.file_path, symbol_key(f.file_path, f.function_name)) for f in findings] + [
@@ -190,7 +192,7 @@ async def _function_changes(
         session,
         keys,
         lambda piece: select(b.symbol_id, b.mod_count).where(
-            b.repository_id == repo_id, b.symbol_id.in_(piece)
+            b.repository_id == repo_id, b.symbol_id.in_(piece), b.history_only.is_(False)
         ),
     )
     changes = {r.symbol_id: r.mod_count for r in rows}
@@ -227,7 +229,9 @@ async def _blame_skipped(session: AsyncSession, repo_id: str, paths: set[str]) -
         session,
         candidates,
         lambda piece: (
-            select(b.file_path).where(b.repository_id == repo_id, b.file_path.in_(piece)).distinct()
+            select(b.file_path)
+            .where(b.repository_id == repo_id, b.file_path.in_(piece), b.history_only.is_(False))
+            .distinct()
         ),
     )
     return candidates - {r.file_path for r in blamed}
@@ -830,6 +834,12 @@ def clear_fix_first_cache() -> None:
     _cache.clear()
 
 
+def drop_fix_first_repo(repository_id: str) -> None:
+    """Forget every queue kept for *repository_id*."""
+    for key in [k for k in _cache if k[1] == repository_id]:
+        del _cache[key]
+
+
 async def load_fix_first(
     session: AsyncSession,
     repository_id: str,
@@ -982,6 +992,7 @@ __all__ = [
     "FINDING_FILES",
     "SNAPSHOT_KIND",
     "clear_fix_first_cache",
+    "drop_fix_first_repo",
     "load_fix_first",
     "queue_view",
     "stored_item_counts",

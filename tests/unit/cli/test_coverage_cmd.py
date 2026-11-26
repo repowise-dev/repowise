@@ -850,3 +850,47 @@ def test_coverage_status_names_indexed_production_files_the_report_leaves_out(
         "src/calc/gen/keep.py",
     ]
     assert coverage["file_count"] == 3
+
+
+def test_a_dot_coverage_beside_its_report_is_named_for_the_map_it_built(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        return TestMapWrite(written=len(records))
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    _coverage_data(tmp_path / ".coverage", "tests/test_a.py::test_one|run", tmp_path / "src" / "a.py")
+    (tmp_path / "coverage.xml").write_text(
+        '<coverage><packages><package><classes><class filename="src/a.py"><lines>'
+        '<line number="1" hits="1"/><line number="2" hits="0"/></lines></class></classes>'
+        "</package></packages></coverage>"
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "coverage.xml", ".coverage"])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    # What setup's ingest line passes: the file did its job, nothing reads as a mistake.
+    assert ".coverage: used for the test-to-code map; per-file coverage comes from coverage.xml." in output
+    assert "gives no per-file coverage" not in output
+
+
+def test_the_per_test_map_hint_names_pytest_only_where_pytest_runs(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = _status_index(tmp_path)
+    monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda repo, fmt="table": tmp_path)
+    monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: url)
+    (tmp_path / "package.json").write_text('{"name": "w", "scripts": {"test": "mocha"}}')
+
+    node = CliRunner().invoke(cli, ["coverage", "status"])
+    assert node.exit_code == 0, node.output
+    assert "pytest" not in node.output
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "calc"\n')
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
+    python = CliRunner().invoke(cli, ["coverage", "status"])
+    assert "No test-to-code map yet - record one with pytest --cov" in " ".join(python.output.split())

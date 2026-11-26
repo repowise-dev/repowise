@@ -4,8 +4,9 @@ Every `repowise` command and flag. For a guided introduction, see the [Quickstar
 
 Top-level commands (alphabetical): `agents`, `ask`, `attribution`, `augment`, `bot`, `changes`, `check`, `ci-summary`, `components`,
 `config`, `context`, `corrections`, `costs`, `coverage`, `dead-code`, `decision`, `delete`, `distill`, `doc-drift`,
-`doctor`, `events`, `expand`, `export`, `generate`, `generate-claude-md`, `health`, `hook`, `hosted`, `impacted-tests`, `init`,
-`login`, `logout`, `mcp`, `next`, `overlap`, `packages`, `perf`, `plugins`, `publish`, `reindex`, `report`, `restyle`, `risk`,
+`doctor`, `events`, `evidence`, `expand`, `export`, `generate`, `generate-claude-md`, `grammars`, `health`, `hook`, `hosted`,
+`impacted-tests`, `init`, `login`, `logout`, `mark`, `mcp`, `next`, `overlap`, `packages`, `pages`, `perf`, `plugins`, `publish`,
+`reindex`, `report`, `restyle`, `risk`,
 `saved`, `savings`, `search`, `security`, `serve`, `status`, `suspects`, `symbol`, `telemetry`, `uninstall`, `update`,
 `watch`, `whats-new`, `whoami`, `why`, `wiki-styles`, `workspace`. `repowise --version` prints the version.
 `repowise-augment` and `repowise-rewrite` are separate console scripts (hook entry points, not run by hand).
@@ -51,7 +52,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`workspace check`](#repowise-workspace-check), [`workspace metrics`](#repowise-workspace-metrics-path), [`workspace
   impacted-tests`](#repowise-workspace-impacted-tests-repopath)
 - **Maintenance:** [`doctor`](#repowise-doctor-path), [`grammars fetch`](#repowise-grammars-fetch-dir), [`whats-new`](#repowise-whats-new),
-  [`telemetry`](#repowise-telemetry), [`plugins`](#repowise-plugins), [`config hints`](#repowise-config-hints-onoff),
+  [`telemetry`](#repowise-telemetry), [`plugins`](#repowise-plugins), [`config`](#repowise-config), [`config hints`](#repowise-config-hints-onoff),
   [`login`](#repowise-login), [`logout`](#repowise-logout), [`whoami`](#repowise-whoami),
   [`hosted`](#repowise-hosted), [`bot`](#repowise-bot),
   [`publish`](#repowise-publish-path), [`delete`](#repowise-delete-repo_id), [`uninstall`](#repowise-uninstall-path),
@@ -106,7 +107,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--provider` | `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `copilot_cli`, `claude_cli`, `opencode`, `edenai`, `mock`. Terminals prompt for a missing key (`openai`: plus optional compatible base URL). | from environment |
-| `--model` | Model (e.g. `claude-sonnet-4-6`). | provider default |
+| `--model` | Model (e.g. `claude-sonnet-5-5`). | provider default |
 | `--embedder` | `gemini`, `openai`, `openrouter`, `ollama`, `fastembed`, `edenai`, `mock`. | auto-detect |
 | `--prose` / `--no-prose` | The one LLM-spend knob; see notes. | prose when a key exists |
 | `--index-only` | Deprecated hidden alias of `--no-prose`. | |
@@ -953,7 +954,7 @@ Run order (`args`, `json`; `list` keeps report order unless `--prioritize`), lik
 
 ### `repowise health [PATH]`
 
-Per-file scores from 51 deterministic detectors, pure Python over tree-sitter + git; no LLM by default.
+Per-file scores from 59 deterministic detectors, pure Python over tree-sitter + git; no LLM by default.
 
 ```bash
 repowise health                     # KPIs + lowest-scoring files
@@ -1423,8 +1424,9 @@ repowise evidence add bench.json --workload "go bench" --class benchmark --forma
 repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)   # every file in the directory
 repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
+repowise evidence add statements.csv --workload "prod db"   # psql --csv over pg_stat_statements: production
 repowise evidence status --format json   # newest run of each workload
-repowise evidence tests                  # slowest tests, and test time per production file
+repowise evidence tests                  # groups of tests that make the suite slow, and the slowest tests
 repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
 ```
 
@@ -1440,14 +1442,15 @@ writes nothing.
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--workload` | What ran, e.g. `cli build`. Required. | |
-| `--class` | `unit_test`, `benchmark`, `entry_point` or `load_test`. Required. `production` is refused: only a verified source sets it. | |
-| `--commit` | The full SHA measured. Required when the file has no `commit_sha` and for a converted file; must agree with the file's commit otherwise. | the file's `commit_sha` |
+| `--class` | `unit_test`, `benchmark`, `entry_point` or `load_test`. Required, except for a `route_latency` or `statement_stats` file, which is production by its kind and refuses a class. `production` is refused: only a verified source or a production kind sets it. | |
+| `--commit` | The full SHA measured. Required when the file has no `commit_sha` and for a converted file, except a production file (its window spans deploys); must agree with the file's commit otherwise. | the file's `commit_sha` |
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
-| `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-bench`, `hyperfine`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local`; `production` for a production file |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `criterion`, `junit`, `pg-stat-statements`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
+| `--path` | Repo path. | cwd, or the workspace primary |
 | `--format` | `table` or `json`. | `table` |
 
 - Entries join to indexed functions by exact path and qualified name (the start line settles
@@ -1483,6 +1486,11 @@ writes nothing.
   `unknown` when either commit is missing), where its time went (`repo_self_share`,
   `wait_share`, `library_share`; unknown for a run stored before they were recorded, or with no
   total), and its counts.
+- `tests` reads the JUnit XML timings `evidence add` stored (the newest run of each test workload) and lists
+  the slowest tests and the test time spent on each production file. Time per file is `measured` from the
+  per-test coverage map when one is stored, else `inferred` from each function's nearest tests on the call
+  graph. Timing orders work; it never gates. `--limit` sets how many tests and files to list (default 20,
+  1 to 500). Takes `--path` and `--format`.
 - `setup` runs nothing and writes nothing. Per build unit it prints the stack (`unknown` when
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
@@ -1494,11 +1502,15 @@ writes nothing.
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
   `--workload`, `--class` and `--commit` filled in. Each unit whose runner repowise knows also has
-  `test_timings`: the `flag` that makes its test command write JUnit XML (`null` for Maven and
-  Gradle, which write it by default), the `env` that command needs (`null` unless the runner reads
-  its report options from the environment, as jest-junit does; a Jest unit's `prerequisites` then
-  install `jest-junit` when the package lacks it), the `report` path and the `ingest` line. Test timings are
-  never a `next_call` step. Workload names and profile files of a unit below
+  `test_timings`: the `flag` that makes its test command write JUnit XML (`-json > go-test.json`
+  for Go; `null` for Maven and Gradle, which write it by default), the `env` that command needs as
+  name to value (`null` unless the runner reads its report options from the environment, as
+  jest-junit does; a Jest unit's `prerequisites` then install `jest-junit` when the package lacks
+  it), the `report` path, the `command` (the coverage command with the flag), the `workload` the
+  timings are stored under and the `ingest` line. `next_call`'s test step runs that `command` and
+  ingests both the coverage report and the timings; a step that needs environment variables
+  carries them under `env`, and the unit's `coverage.env` names what its coverage command needs
+  (`COVERAGE_CORE=ctrace` for pytest with per-test contexts). Workload names and profile files of a unit below
   the root start with its root (`tools: go bench .`). A Python target's `prerequisites` are the
   unit's own test install plus the profiler; a Python run that fails writes no profile, and the
   pytest-benchmark and Go steps first remove an older profile, so a failed run's `evidence add`
@@ -2281,7 +2293,8 @@ repowise hook backfill --days 30
 
 Manage the Distill command-rewrite hooks (Claude Code + Codex PreToolUse): noisy commands (tests, builds, git
 status/log/diff, searches, listings) run as `repowise distill <command>` (errors-first) with no prompt by default
-(`permission: allow`).
+(`permission: allow`). The Claude Code hook is on by default: `repowise init` installs it (see `--distill-hook`) and
+the Claude Code plugin ships it. These commands add or remove it by hand.
 
 ```bash
 repowise hook rewrite install        # writes ~/.claude/settings.json (idempotent)
@@ -2487,7 +2500,7 @@ repowise doctor --workspace --repair
   `python -m pip install -U repowise`), the `repowise` on `PATH` and the launching command. Never updates, never fails
   offline. After upgrading, **restart Claude/Codex/Cursor or any MCP client**.
 - **Distill:** validates `distill:` (unknown keys, bad permission values, unknown filters, non-positive store sizing);
-  shows omission store size vs cap and whether the opt-in rewrite hook is installed (absence passes).
+  shows omission store size vs cap and whether the rewrite hook is installed (absence passes).
 
 ### `repowise grammars fetch DIR`
 
@@ -2555,7 +2568,33 @@ repowise attribution purge [PATH] [--yes]
   transcripts (about 4 minutes for 7 GB on a laptop), later runs only new ones.
 - **`purge`** deletes index labels, `.repowise/attribution/` and git-ai notes Repowise wrote; history, trailers and others' notes stay.
 
-### `repowise config hints on|off`
+### `repowise config`
+
+Find, explain and change settings. Six subcommands: `list`, `explain`, `get`, `set`, `reset`, `hints`. Every
+setting is described in [CONFIG.md](CONFIG.md).
+
+```bash
+repowise config list --area mcp           # settings in one area, with values and where each came from
+repowise config list --suggested          # settings worth changing here, with why and the command
+repowise config explain mcp.tools         # what one setting does, what it accepts, how to change it
+repowise config get mcp.tools             # its value and where it came from
+repowise config set mcp.tools standard    # change it; prints what changed, its effect and the undo command
+repowise config reset mcp.tools           # back to the default
+```
+
+| Subcommand | What it does |
+|------------|--------------|
+| `list` | Settings by area, with their values and where each came from. `--area` keeps one area (`account`, `attribution`, `decisions`, `distill`, `editor`, `events`, `evidence`, `generation`, `health`, `hooks`, `indexing`, `mcp`, `providers`, `report`, `server`); `--changed` keeps settings not at their default; `--suggested` keeps settings worth changing in this repository, with why and the command; `--all` adds debug and test settings. |
+| `explain KEY` | What one setting does, what it accepts, and how to change it. |
+| `get KEY` | One setting's value and where it came from. |
+| `set KEY VALUE` | Change one setting; prints what changed, its effect, and the undo command. `VALUE` is read as the setting's type: `true` or `false` for a switch, a number, `a,b` or `[a, b]` for a list (`[a, b]` when an item holds a comma). |
+| `reset KEY` | Put one setting back to its default. |
+| `hints on\|off` | The repowise.dev tip (below). |
+
+`list`, `explain`, `get`, `set` and `reset` take `--path` (a path inside the repository, default the current
+directory) and `--format` (`table` or `json`, default `table`).
+
+#### `repowise config hints on|off`
 
 Toggle the repowise.dev hint: one dim stderr line with a link at a helpful moment (finished `init`, slow `update`); max
 one per run, each once a week. Never with `--format json`, in CI, non-terminal stderr, signed in, or from `mcp`,

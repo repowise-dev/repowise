@@ -242,7 +242,7 @@ async def get_dead_code_findings(
     *,
     kind: str | None = None,
     min_confidence: float = 0.0,
-    status: str = "open",
+    status: str | None = "open",
     safe_to_delete: bool | None = None,
     limit: int | None = None,
     include_withheld: bool = False,
@@ -250,6 +250,9 @@ async def get_dead_code_findings(
     file_paths: Sequence[str] | None = None,
 ) -> list[DeadCodeFinding]:
     """Return dead code findings filtered by kind, confidence, and status.
+
+    ``status=None`` reads every status, for a lookup by id that must still
+    answer once a finding was resolved, dismissed or acknowledged.
 
     Kinds the finding-type registry withholds are left out unless
     ``include_withheld``; naming a provisional ``kind`` is an explicit request.
@@ -264,9 +267,10 @@ async def get_dead_code_findings(
     """
     q = select(DeadCodeFinding).where(
         DeadCodeFinding.repository_id == repository_id,
-        DeadCodeFinding.status == status,
         DeadCodeFinding.confidence >= min_confidence,
     )
+    if status is not None:
+        q = q.where(DeadCodeFinding.status == status)
     if kind is not None:
         q = q.where(DeadCodeFinding.kind == kind)
     if not include_withheld:

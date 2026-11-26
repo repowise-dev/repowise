@@ -227,3 +227,65 @@ async def test_an_indexed_directory_named_with_a_comma_stays_whole(ledgers, sess
 
     assert whole.scope == "reports,2024" and not whole.missing
     assert separators == (None, [], [])
+
+
+@pytest.mark.asyncio
+async def test_the_store_free_resolver_matches_the_session_one(ledgers, session):
+    """A host holding only the indexed path list resolves a scope as the store does."""
+    from repowise.core.persistence.database import get_session
+    from repowise.server.mcp_server.tool_answer.scope import resolve_scope, resolve_scope_over
+
+    extra = [
+        "examples/ip-masq-agent/e.py",
+        *(f"pkg/monitor/agent/m{i}.py" for i in range(3)),
+        *(f"pkg/datapath/d{i}.py" for i in range(7)),
+        "reports,2024/q1.py",
+        "README.md",
+    ]
+    session.add_all(
+        GraphNode(
+            id=f"over{i}",
+            repository_id="repo1",
+            node_id=p,
+            node_type="file",
+            language="go",
+        )
+        for i, p in enumerate(extra)
+    )
+    await session.commit()
+    from sqlalchemy import union
+
+    from repowise.server.mcp_server.tool_answer.scope import _indexed_paths
+
+    paths = [p for (p,) in await session.execute(union(*_indexed_paths("repo1")))]
+    assert set(extra) <= set(paths)
+    scopes = [
+        None,
+        "",
+        " , ",
+        ".",
+        "pkg/vault pkg/billing",
+        "pkg/vault/, pkg/billing/",
+        "pkg/vault pkg ./pkg/vault/",
+        "docs site",
+        "reports,2024/",
+        "pkg/vault pkg/agent",
+        "pkg/agent",
+        "masq-agent",
+        "pkg/zzz",
+        "pkg/vaults",
+        "nowhere/deep/er",
+        "README.md",
+        "PKG/vault",
+        r"pkg\datapath",
+    ]
+    async with get_session(ledgers.session_factory) as s:
+        for scope in scopes:
+            assert resolve_scope_over(paths, scope) == await resolve_scope(s, "repo1", scope), scope
+
+
+def test_the_store_free_resolver_keeps_a_scope_it_cannot_judge():
+    from repowise.server.mcp_server.tool_answer.scope import resolve_scope_over
+
+    assert resolve_scope_over([], "pkg/a pkg/b") == ("pkg/a\npkg/b", [], [])
+    assert resolve_scope_over(["top.py"], "pkg/a") == ("pkg/a", [], [])

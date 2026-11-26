@@ -306,12 +306,22 @@ async def _timed_targets(
         return {}
     from repowise.core.evidence.runtime_setup import load_runtime_inputs
     from repowise.core.evidence.setup import timed_targets
+    from repowise.core.test_runners.stacks import detect_repo_stacks
 
     from ..build_units import load_build_units
 
     units = await load_build_units(session, repository_id)
     runtime = await load_runtime_inputs(session, repository_id)
-    return await asyncio.to_thread(timed_targets, root, paths, units=units, runtime=runtime)
+    # Both plan finalizers of an update ask, over one tree: the session keeps
+    # the first detection. Ceiling: a session held across a working-tree edit
+    # keeps the stacks it read; sessions here last one update or one request.
+    key = ("detected_stacks", str(root), frozenset(u.manifest for u in units.units.values()))
+    stacks = session.info.get(key)
+    if stacks is None:
+        stacks = session.info[key] = await asyncio.to_thread(detect_repo_stacks, root, units)
+    return await asyncio.to_thread(
+        timed_targets, root, paths, units=units, runtime=runtime, stacks=stacks
+    )
 
 
 async def _symbol_spans(

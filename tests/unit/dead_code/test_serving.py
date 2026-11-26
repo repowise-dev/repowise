@@ -12,6 +12,7 @@ from repowise.core.analysis.dead_code.risk_factors import (
 )
 from repowise.core.analysis.dead_code.serving import (
     DEFAULT_EXCLUDED_KINDS,
+    DETAIL_FIELDS,
     SUMMARY_SCOPE,
     TIER_FLOORS,
     FindingFilters,
@@ -173,8 +174,11 @@ def test_serialization_is_the_same_for_rows_and_mappings() -> None:
 
 def test_serialization_adds_the_last_meaningful_change() -> None:
     gm = SimpleNamespace(significant_commits_json=json.dumps([{"date": "2026-03-01"}]))
-    out = serialize_finding(_ROWS[0], {"src/a/one.py": gm})
+    out = serialize_finding(_ROWS[0], {"src/a/one.py": gm}, detail=True)
     assert out["last_meaningful_change"] == "2026-03-01"
+    lean = serialize_finding(_ROWS[0], {"src/a/one.py": gm})
+    assert not set(DETAIL_FIELDS) & set(lean)
+    assert lean.items() <= out.items()
     assert last_meaningful_change(SimpleNamespace(significant_commits_json="not json")) is None
     assert last_meaningful_change(None) is None
 

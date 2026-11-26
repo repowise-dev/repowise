@@ -30,8 +30,10 @@ logger = logging.getLogger(__name__)
 
 #: Token scale floor(chars / 4), same as v1. The version names the counterfactual
 #: table in force (docs/architecture/savings-accounting.md, "MCP counterfactuals").
-_ESTIMATOR = "chars_per_token_floor_v3"
-_TOKEN_UNIT = "estimated_tokens"
+ESTIMATOR = "chars_per_token_floor_v3"
+TOKEN_UNIT = "estimated_tokens"
+_ESTIMATOR = ESTIMATOR
+_TOKEN_UNIT = TOKEN_UNIT
 
 #: The host session this server runs under, when the host exports it to the
 #: servers it launches. Claude Code does; its hooks key the same session by the
@@ -41,7 +43,7 @@ _TOKEN_UNIT = "estimated_tokens"
 _HOST_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
 
 
-def _outcome(result: Any) -> tuple[str, bool]:
+def result_state(result: Any) -> tuple[str, bool]:
     """Classify the delivered response as the contract's result state.
 
     Three states, and the two that are missing are deliberate. A shaped error is
@@ -76,6 +78,9 @@ def _outcome(result: Any) -> tuple[str, bool]:
     if any(value and _marks_partial(key) for key, value in flags.items()):
         return "partial", True
     return "success", True
+
+
+_outcome = result_state
 
 
 def _marks_partial(key: str) -> bool:
@@ -150,15 +155,9 @@ def _record(interaction: Interaction, result: Any) -> bool:
     from repowise.core.savings import recorder
     from repowise.core.savings.pricing import resolve_pricing_snapshot, warm_pricing_snapshot
 
-    from .wrapper import response_tokens
-
     if not interaction.repo_root:
         return False
 
-    delivered = response_tokens(result)
-    result_state, is_usable = _outcome(result)
-    baseline = interaction.baseline_input_tokens
-    inferred = baseline is not None
     # The rate this saving is worth, frozen now so a later price change cannot
     # rewrite it -- but read from cache only, never resolved here. Detecting the
     # agent's model scans the local transcripts, which measures around six
@@ -173,12 +172,41 @@ def _record(interaction: Interaction, result: Any) -> bool:
     )
     if pricing is None:
         warm_pricing_snapshot(interaction.repo_root)
+    payload = event_payload(interaction, result, scope=str(interaction.repo_root), pricing=pricing)
+    return recorder.record_event(interaction.repo_root, payload)
 
-    payload: dict[str, Any] = {
+
+def event_payload(
+    interaction: Interaction,
+    result: Any,
+    *,
+    scope: str,
+    pricing: Any = None,
+    delivered_input_tokens: int | None = None,
+    host_session_id: str | None = None,
+) -> dict[str, Any]:
+    """The savings event for *interaction* and its delivered *result*, unwritten.
+
+    What :func:`record` hands ``recorder.record_event``, for a host that writes
+    events to its own store. *scope* keys the idempotency key (the local
+    ledger uses the repository root). *pricing* is a frozen pricing snapshot,
+    or ``None`` for an unpriced event. *delivered_input_tokens* is the size the
+    agent received, when the host measured it on its own wire; by default it
+    is read off *result* as the local server does. *host_session_id* keys the
+    avoided files; by default the local server's host session (the
+    ``CLAUDE_CODE_SESSION_ID`` it was launched with), else the interaction's.
+    """
+    from .wrapper import response_tokens
+
+    delivered = (
+        response_tokens(result) if delivered_input_tokens is None else delivered_input_tokens
+    )
+    state, is_usable = result_state(result)
+    baseline = interaction.baseline_input_tokens
+    inferred = baseline is not None
+    return {
         "event_id": interaction.event_id,
-        "idempotency_key": scoped_idempotency_key(
-            str(interaction.repo_root), "mcp", interaction.event_id
-        ),
+        "idempotency_key": scoped_idempotency_key(scope, "mcp", interaction.event_id),
         "occurred_at": _now(),
         "surface": "mcp",
         "integration": interaction.agent,
@@ -189,23 +217,22 @@ def _record(interaction: Interaction, result: Any) -> bool:
         # Inferred only when a counterfactual was actually derived. Truncation
         # on its own is a measured before/after of bytes that really moved.
         "evidence_kind": "inferred" if inferred else "measured",
-        "estimator": _ESTIMATOR,
-        "token_unit": _TOKEN_UNIT,
-        "result_state": result_state,
+        "estimator": ESTIMATOR,
+        "token_unit": TOKEN_UNIT,
+        "result_state": state,
         "is_usable": is_usable,
         "baseline_input_tokens": baseline,
         "pre_budget_input_tokens": interaction.pre_budget_input_tokens,
         "delivered_input_tokens": delivered,
         "omission_refs": _omission_refs(result),
-        **_files(interaction),
+        **_files(interaction, host_session_id),
         **_outcome_field(interaction.tool, result),
         "metadata": interaction.identity_metadata or None,
         **(pricing.as_payload() if pricing else {}),
     }
-    return recorder.record_event(interaction.repo_root, payload)
 
 
-def _files(interaction: Interaction) -> dict[str, Any]:
+def _files(interaction: Interaction, host_session_id: str | None = None) -> dict[str, Any]:
     """Files served in place of a Read, and the session that keys them. Never raises.
 
     Paths and one Read's tokens each, already sized by the counterfactual, so
@@ -214,7 +241,9 @@ def _files(interaction: Interaction) -> dict[str, Any]:
     try:
         return {
             "avoided_files": tuple(interaction.avoided_files.items()),
-            "host_session_id": os.environ.get(_HOST_SESSION_ENV) or interaction.session_id,
+            "host_session_id": host_session_id
+            or os.environ.get(_HOST_SESSION_ENV)
+            or interaction.session_id,
         }
     except Exception:
         return {}
