@@ -740,14 +740,16 @@ browser fetches it from a layout or a top-level page; for a page in a subfolder
 it can bind a `public/` file the browser would not fetch. A `/`-rooted value
 (an `is:inline` script, an icon) is served from `public/`, so
 `ingestion/resolvers/astro.py` looks for it under the nearest `public/` above
-the page, walking up to the repository root. Vite resolves and serves any
+the page when no Astro manifest is known. With a manifest, lookup is rooted
+at its configured public directory. Vite resolves and serves any
 `/src/...` value (an import, a `<script src>`, a `<link href>`) from the project
-root, so it is tried under each folder above the page after that, exactly as
-written. Vite also probes extensions (`/src/lib/format` → `format.ts`), but this
+root, so the configured source-directory prefix is tried from the app root,
+or from ancestor directories when no Astro manifest is known. Vite also probes extensions (`/src/lib/format` → `format.ts`), but this
 lookup does not. A `/`-rooted tsconfig `paths` alias (`/@/*`) is tried last,
 as in a `.ts` file. A URL takes it too, so a catch-all `*` alias can bind a
-missed URL into `src/`. A miss is no node at all. Astro's `base` prefix and a custom
-`publicDir` or `srcDir` are not read, so those values miss.
+missed URL into `src/`. A miss is no node at all. Astro's `base` prefix is not read. Custom
+`publicDir` and `srcDir` are read from literal values in Astro config files.
+Computed directory values are not evaluated.
 Anything else takes the TS/JS resolver, whose `./site.css` → `site.ts` fallback
 is the known ceiling for a relative `href`. Its extension guessing is another:
 `<link rel="prefetch" href="docs">` in `src/pages/index.astro` binds
