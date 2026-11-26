@@ -986,6 +986,9 @@ class ReceiverTypingMixin(
         # Offsets are into the raw bytes tree-sitter parsed (``_text_of`` folds
         # CRLF); the scan counts characters, so the line's head is decoded.
         raw = self._raw_source(file_path)
+        if len(raw) < use_byte:
+            # Unread or changed since the parse: no column, so the binding stands.
+            return False
         head = raw[raw.rfind(b"\n", 0, use_byte) + 1 : use_byte]
         use_column = len(head.decode("utf-8", errors="replace"))
         columns = [

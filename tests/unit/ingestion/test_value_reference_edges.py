@@ -640,6 +640,17 @@ class TestModuleBindingReads:
         graph = _build(tmp_path)
         assert not _inbound(graph, "mod.ts::val", "references")
 
+    def test_an_unreadable_source_keeps_a_same_line_binding(self, tmp_path: Path) -> None:
+        """No bytes to read a column from: the callback parameter still hides the name."""
+        from repowise.core.ingestion.call_receiver_typing import ReceiverTypingMixin
+
+        typing = ReceiverTypingMixin.__new__(ReceiverTypingMixin)
+        typing._init_receiver_typing_caches()
+        typing._parsed_files = {}
+        typing._source_text = {"mod.ts": "export const out = [1].map((val) => val);\n"}
+        # The binding sits right of offset 5; with no bytes it must still count.
+        assert not typing._bound_only_after("mod.ts", "typescript", "val", 1, 5)
+
     @pytest.mark.parametrize("newline", ["\n", "\r\n"])
     def test_same_line_rule_counts_columns_not_bytes(self, tmp_path: Path, newline: str) -> None:
         """CRLF line ends and non-ASCII text earlier on the line leave the column right."""

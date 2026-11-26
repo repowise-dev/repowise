@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ....entry_candidacy import is_reachability_root
+from ....ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ..apex_reachability import is_apex_entry_member
 from ..constants import (
     _CONTAINER_USE_LANGUAGES,
@@ -73,6 +74,9 @@ class _ExportFile:
 # ``vars(mod)``, ``mod.__dict__``): the importer never writes the names it uses.
 _COMPUTED_ATTRIBUTE_RE = re.compile(rb"\b(?:getattr|vars|dir|getmembers)\s*\(|__dict__")
 
+# Module-level bindings (``const``/``let``), whose same-file reads are references.
+_MODULE_BINDING_KINDS = frozenset({"variable", "constant"})
+
 
 class UnusedExportPass:
     """Judges every public top-level symbol of every eligible file."""
@@ -104,6 +108,26 @@ class UnusedExportPass:
                 findings.append(self._make_unused_export_finding(file_ctx, sym, unsatisfied_guard))
 
         return findings
+
+    def _used_beyond_own_reads(self, sym_id: str, sym: dict) -> bool:
+        """Whether a use edge rescues this export, not counting its own file's reads of a binding.
+
+        An exported ``const`` read only in its own file is used, and only its
+        export is unneeded: that finding is kept and marked export-only by
+        ``demote_used_in_own_file``, so a same-file ``references`` edge onto a
+        module binding does not rescue it here.
+        """
+        if sym.get("kind") not in _MODULE_BINDING_KINDS or not self.graph.has_node(sym_id):
+            return self.ctx._has_inbound_use(sym_id)
+        own_file = sym.get("file_path")
+        return any(
+            data.get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+            and not (
+                data.get("edge_type") == "references"
+                and self.graph.nodes[pred].get("file_path") == own_file
+            )
+            for pred, _, data in self.graph.in_edges(sym_id, data=True)
+        )
 
     def _member_is_used(self, sym_id: str, language: str | None) -> bool:
         """True when this container declares a method something else uses.
@@ -376,7 +400,7 @@ class UnusedExportPass:
 
         # Any symbol-level use edge counts even when ``imported_names`` missed
         # it; a use of one overload uses the set.
-        if unsatisfied_guard is None and self.ctx._has_inbound_use(sym_id):
+        if unsatisfied_guard is None and self._used_beyond_own_reads(sym_id, sym):
             return True, None
 
         if self._member_is_used(sym_id, sym.get("language")):

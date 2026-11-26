@@ -781,7 +781,10 @@ class ResolveMixin:
         collision rather than a reference, and C++ names its getters exactly
         like the locals that feed them. Measured on leveldb, admitting methods
         there turned ``value``, ``status``, ``level``, ``key`` and ``offset``
-        into fifteen edges, every one of them wrong.
+        into fifteen edges, every one of them wrong. TS/JS also let a bare name
+        reach a module-level ``const``/``let`` (``_BINDING_REFERENCE_LANGUAGES``):
+        their symbol tables hold only top-level bindings and the shadow scan
+        drops a name a parameter or local binds, so a bare read of one is a use.
 
         A name that arrived with a receiver went through an operator only a
         callable accepts — ``Foo::bar``, ``pkg.Handler`` in argument position —

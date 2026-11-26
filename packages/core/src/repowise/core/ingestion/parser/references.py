@@ -59,11 +59,14 @@ def _extract_references(
     function with no inbound edge, which read as a ``safe_to_delete``
     unused export and took out whole handler and interop layers.
     TS/JS and Python capture any value position: an argument, a list or
-    object entry, a return, an assignment and a default export.
+    object entry, a return, an assignment and a default export. TS/JS also
+    capture read positions (an operand, a member base, a spread, ``typeof``),
+    where the name may be a module-level ``const``/``let``.
 
     ``@reference.receiver`` is optional; capturing it is what lets
     ``_add_reference_edges`` restrict a bare name to free functions and
-    allow a qualified name to reach a method.
+    classes (and, in TS/JS, module bindings) and allow a qualified name to
+    reach a method.
 
     Self-gating on the reference captures, so a language whose query
     defines none produces nothing and pays two dict lookups. Two guards
