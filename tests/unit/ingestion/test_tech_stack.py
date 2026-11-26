@@ -139,6 +139,33 @@ def test_a_manifest_outside_production_code_is_not_the_stack(tmp_path, folder):
     assert "Next.js" not in [i.name for i in detect_tech_stack(tmp_path)]
 
 
+def _exclude(tmp_path, *patterns):
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    lines = "".join(f"  - {p}\n" for p in patterns)
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        f"exclude_patterns:\n{lines}", encoding="utf-8"
+    )
+
+
+def test_a_manifest_the_index_excludes_is_not_the_stack(tmp_path):
+    _exclude(tmp_path, "apps/legacy/")
+    _write_package(tmp_path / "apps" / "legacy", {"next": "12.0.0"})
+
+    assert "Next.js" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_an_excluded_manifest_above_a_counted_one_is_not_read(tmp_path):
+    # npm_manifests also reads ancestors; only the manifests chosen here count.
+    _exclude(tmp_path, "apps/package.json")
+    _write_package(tmp_path / "apps", {"nuxt": "^3.12.0"})
+    _write_package(tmp_path / "apps" / "web", {"next": "14.2.0"})
+
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+
+    assert "Next.js" in names
+    assert "Nuxt" not in names
+
+
 def test_a_rails_app_is_named_from_its_boot_file(tmp_path):
     (tmp_path / "Gemfile").write_text("source 'https://rubygems.org'\n", encoding="utf-8")
     (tmp_path / "config").mkdir()

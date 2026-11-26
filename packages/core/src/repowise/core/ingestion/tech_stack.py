@@ -20,6 +20,7 @@ from itertools import chain
 from pathlib import Path
 
 from repowise.core.code_origin import path_origin
+from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.core.repo_formatters import declares_ruff_format
 
 from .composer import COMPOSER_JSON, read_composer
@@ -340,17 +341,23 @@ def _nested_npm_manifests(repo_path: Path) -> list[NpmManifest]:
     """Every production ``package.json`` below the root, as :mod:`.framework_facts` reads it.
 
     The package-root scan already skips vendored trees, nested checkouts and
-    ignored directories; a manifest in a test fixture, an example or a tooling
+    ignored directories, and the repo's ``exclude_patterns`` drop what the
+    index leaves out. A manifest in a test fixture, an example or a tooling
     folder is not the repo's stack, so only production origins count.
     """
-    paths = [
-        f"{rel}/package.json"
+    spec = build_exclude_spec(repo_path)
+    dirs = {
+        rel
         for rel, names in scan_package_manifests(repo_path).items()
-        if "package.json" in names and path_origin(f"{rel}/package.json") == "production"
-    ]
-    if not paths:
+        if "package.json" in names
+        and path_origin(f"{rel}/package.json") == "production"
+        and not is_excluded(f"{rel}/package.json", spec)
+    }
+    if not dirs:
         return []
-    return [m for m in npm_manifests(repo_path, paths) if m.rel_dir]
+    # npm_manifests also reads every ancestor directory; keep only the chosen ones.
+    paths = [f"{rel}/package.json" for rel in sorted(dirs)]
+    return [m for m in npm_manifests(repo_path, paths) if m.rel_dir in dirs]
 
 
 def _dep_table(pkg: dict, field: str) -> dict:
