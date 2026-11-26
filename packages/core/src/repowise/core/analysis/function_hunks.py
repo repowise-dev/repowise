@@ -809,6 +809,49 @@ async def older_map_functions(
     Ceiling: a test that reads a file changed since the map by a path no
     recorded edge names (a directory listing) is still read off the map.
     """
+    base = change.base
+    if not (measured and base and repo_path) or measured in (base, change.head):
+        return None
+    paths = [
+        p
+        for p, lines in asked.items()
+        if lines is not None and p in change.files and is_python_source(p)
+    ]
+    gap = _traceable_gap(repo_path, measured, base) if paths else None
+    if gap is None:
+        return None
+    texts = read_sides(repo_path, change, paths)
+    found = {
+        p: f
+        for p in paths
+        if (f := touched_functions(p, change.files[p].hunks, "old", *texts[p])) is not None
+    }
+    edited = sorted(p for p, s in gap.items() if s == "M" and is_python_source(p))
+    then = _texts_at(repo_path, measured, {*found, *edited}) if found else {}
+    functions = {
+        p: moved
+        for p, f in found.items()
+        if (moved := _bodies_at(f, texts[p][0], then.get(p))) is not None
+    }
+    sorted_gap = _sort_gap(repo_path, measured, base, gap, edited, then) if functions else None
+    if sorted_gap is None:
+        return None
+    bodies, reach = sorted_gap
+    once = await run_once_symbols(session, repo_id, repo_path)
+    if once is None:
+        return None
+    functions = {p: f for p, f in functions.items() if not (f.symbol_ids() & once)}
+    if not functions:
+        return None
+    # A body run once per process is credited to one test, so its users are unknown.
+    reach |= {p for p, f in bodies.items() if f.symbol_ids() & once}
+    gap_bodies = {p: f.lines for p, f in bodies.items() if f.bodies and p not in reach}
+    return OlderMap(functions, gap_bodies, tuple(sorted(reach)))
+
+
+def _traceable_gap(repo_path, measured: str, base: str) -> dict[str, str] | None:
+    """The files changed from *measured* (an ancestor of *base*) to *base*, by status;
+    ``None`` when they cannot be told or one of them stops a narrowed answer."""
     from ..git_refs import is_ancestor
     from .test_selection import (
         _GAP_TRACED,
@@ -819,15 +862,7 @@ async def older_map_functions(
         is_runnable_test,
     )
 
-    base = change.base
-    if not (measured and base and repo_path) or measured in (base, change.head):
-        return None
-    paths = [
-        p
-        for p, lines in asked.items()
-        if lines is not None and p in change.files and is_python_source(p)
-    ]
-    if not paths or not is_ancestor(str(repo_path), measured, base):
+    if not is_ancestor(str(repo_path), measured, base):
         return None
     gap = _changed_since(repo_path, measured, base)
     if gap is None or len(gap) > MAX_INDEX_GAP:
@@ -837,32 +872,29 @@ async def older_map_functions(
     # Build, dependency or test configuration changed since: selection runs everything.
     if any(_gap_kind(p, TestSelectionConfig(), None) not in _GAP_TRACED for p in gap):
         return None
-    texts = read_sides(repo_path, change, paths)
-    found = {
-        p: f
-        for p in paths
-        if (f := touched_functions(p, change.files[p].hunks, "old", *texts[p])) is not None
-    }
-    if not found:
-        return None
-    edited = sorted(p for p, s in gap.items() if s == "M" and is_python_source(p))
-    then = _texts_at(repo_path, measured, {*found, *edited})
-    functions = {
-        p: moved
-        for p, f in found.items()
-        if (moved := _bodies_at(f, texts[p][0], then.get(p))) is not None
-    }
-    if not functions:
-        return None
+    return gap
+
+
+def _sort_gap(
+    repo_path,
+    measured: str,
+    base: str,
+    gap: Mapping[str, str],
+    edited: list[str],
+    then: Mapping[str, str],
+) -> tuple[dict[str, FileFunctions], set[str]] | None:
+    """The gap's Python files changed only inside function bodies, with those bodies at
+    *measured*, and every other file but an added one; ``None`` when git cannot diff."""
     now = _texts_at(repo_path, base, edited)
     try:
         hunks = diff_since(str(repo_path), measured, base, edited) if edited else {}
     except (ValueError, OSError, subprocess.SubprocessError):
         return None
     bodies: dict[str, FileFunctions] = {}
-    reach: list[str] = []
+    reach: set[str] = set()
+    python = set(edited)
     for p, status in sorted(gap.items()):
-        if p in edited:
+        if p in python:
             diff = hunks.get(p)
             touched = _touched(diff.hunks, "old", then.get(p), now.get(p)) if diff else {}
             # Two bodies under one name collapse into one, so the other's tests go unseen.
@@ -871,17 +903,8 @@ async def older_map_functions(
                 continue
         # An added test or data file was never measured; the code reading it changed too.
         if status != "A":
-            reach.append(p)
-    once = await run_once_symbols(session, repo_id, repo_path)
-    if once is None:
-        return None
-    functions = {p: f for p, f in functions.items() if not (f.symbol_ids() & once)}
-    if not functions:
-        return None
-    # A body run once per process is credited to one test, so its users are unknown.
-    reach += [p for p, f in bodies.items() if f.symbol_ids() & once]
-    gap_bodies = {p: f.lines for p, f in bodies.items() if f.bodies and p not in reach}
-    return OlderMap(functions, gap_bodies, tuple(sorted(reach)))
+            reach.add(p)
+    return bodies, reach
 
 
 def _changed_since(repo_path, since: str, until: str) -> dict[str, str] | None:
