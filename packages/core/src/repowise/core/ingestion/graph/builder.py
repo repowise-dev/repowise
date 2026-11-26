@@ -24,6 +24,7 @@ from ..cohesion import (
     UNIT_FANOUT_LANGUAGES,
     withdraw_declaration_hint,
 )
+from ..external_calls import ExternalCallSite
 from ..languages.apex_namespace import spell_apex_names
 from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
@@ -142,6 +143,14 @@ class GraphBuilder(
         # resolver indexes, or read from the store for a rehydrated builder.
         # None until either happens.
         self.build_units: BuildUnitIndex | None = None
+        # {file: the package calls its call sites make}, for the files this
+        # process's last build() resolved calls for: every file on a full build,
+        # the patch scope on a scoped one (``external_call_scope``, None for
+        # full). None when no build ran here (a rehydrated builder), so a writer
+        # leaves the stored rows alone.
+        self.external_call_sites: dict[str, list[ExternalCallSite]] | None = None
+        self.external_call_scope: frozenset[str] | None = None
+        self.external_calls_complete = True
         # {(file, partial type's bare name): every file declaring a fragment
         # of that type}, filled by ``_resolve_dotnet_partials`` so the call
         # resolver can treat the fragments as the one class scope they are.
@@ -540,6 +549,8 @@ class GraphBuilder(
         never create them.
         """
         self._invalidate_metric_caches()
+        # Set again by the call pass; a build that stops before it writes none.
+        self.external_call_sites, self.external_call_scope = None, None
         self._qualify_python_symbols()
         # Apex and Pascal names are case-insensitive; every resolver keys on
         # the declared spelling.
