@@ -460,9 +460,15 @@ def _matches_php_folded(symbol: IndexedSymbol, clean_prefix: str) -> bool:
     if not clean_prefix:
         return True
     qual_parts = symbol.qualified_name.split(".")
-    if len(qual_parts) >= 2 and symbol.kind == "method":
-        parent = qual_parts[-2]
-        return clean_prefix == parent or clean_prefix.endswith("." + parent)
+    if len(qual_parts) >= 2:
+        if symbol.kind == "method":
+            parent = qual_parts[-2]
+            if clean_prefix == parent or clean_prefix.endswith("." + parent):
+                return True
+        else:
+            ns = ".".join(qual_parts[:-1])
+            if clean_prefix == ns or ns.endswith("." + clean_prefix) or clean_prefix.endswith("." + ns):
+                return True
     return clean_prefix == symbol.name or clean_prefix.endswith("." + symbol.name)
 
 

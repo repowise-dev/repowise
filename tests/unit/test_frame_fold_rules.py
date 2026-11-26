@@ -262,3 +262,13 @@ def test_php_closure_at_module_level_folds_into_file() -> None:
 def test_php_closure_with_wrong_class_prefix_is_mismatch() -> None:
     assert _run(_php(8, "OtherClass::{closure}"), PHP_SYM).skipped == {"second_signal_mismatch": 1}
 
+
+def test_php_closure_in_namespaced_function_folds() -> None:
+    symbols = [_sym("util.php", "App.Util.calc", 10, 25, "function")]
+    frame = ProfileFrame(f"{ROOT}/util.php", 15, "php", function="App\\Util\\{closure}")
+    assert _hit(_run(frame, symbols)) == (symbols[0], True)
+
+    mismatch = ProfileFrame(f"{ROOT}/util.php", 15, "php", function="Other\\Util\\{closure}")
+    assert _run(mismatch, symbols).skipped == {"second_signal_mismatch": 1}
+
+
