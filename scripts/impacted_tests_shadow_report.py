@@ -101,6 +101,9 @@ def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "failing_runs_caught": sum(not r.get("missed") for r in failing),
         "misses": misses,
         "ordered_runs": len(ranked),
+        # Failing runs whose failing files the prioritized order never lists:
+        # left out of the rank statistics, so counted here instead.
+        "unordered_runs": len(failing) - len(ranked),
         "first_failure_rank_median": statistics.median(ranks) if ranks else None,
         "first_failure_position_median": statistics.median(positions) if positions else None,
         "first_failure_position_p75": _quantile(positions, 0.75) if positions else None,
@@ -140,6 +143,11 @@ def render(s: Mapping[str, Any]) -> str:
             f"rank {s['first_failure_rank_median']:g} of a median {s['order_length_median']:g} files; "
             f"median position {100 * s['first_failure_position_median']:.1f}%, "
             f"p75 {100 * s['first_failure_position_p75']:.1f}%."
+        )
+    if s["unordered_runs"]:
+        lines.append(
+            f"No failing file in the prioritized order: {s['unordered_runs']} of "
+            f"{s['failing_runs']} runs with a failing test, left out of the ranks above."
         )
     return "\n".join(lines)
 

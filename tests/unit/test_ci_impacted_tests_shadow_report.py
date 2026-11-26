@@ -68,6 +68,7 @@ def test_summary_counts_full_runs_saving_and_first_failure_position() -> None:
 
     assert (s["runs"], s["run_all"], s["seconds_saved"], s["total_seconds"]) == (3, 1, 100.0, 300.0)
     assert (s["failing_runs"], s["failing_runs_caught"], s["ordered_runs"]) == (2, 2, 2)
+    assert s["unordered_runs"] == 0
     assert s["first_failure_rank_median"] == 3
     assert s["first_failure_position_median"] == 0.3
     assert s["first_failure_position_p75"] == 0.4
@@ -94,8 +95,23 @@ def test_a_miss_that_failed_on_another_pull_request_reads_as_likely_flaky() -> N
     assert "t/test_new.py (PR 3, c)." in text
 
 
+def test_a_failing_run_missing_from_the_order_is_counted_not_dropped() -> None:
+    records = [
+        _record(1, "a", failing_files=["t/test_x.py"], first_failing_rank=2, order_length=10),
+        _record(2, "b", failing_files=["t/test_y.py"], missed=["t/test_y.py"]),
+    ]
+
+    s = report.summarize(records)
+    text = report.render(s)
+
+    assert (s["failing_runs"], s["ordered_runs"], s["unordered_runs"]) == (2, 1, 1)
+    assert "over 1 runs" in text
+    assert "No failing file in the prioritized order: 1 of 2 runs with a failing test" in text
+
+
 def test_no_records_reports_without_an_ordering_line(tmp_path) -> None:
     s = report.summarize(report.load(tmp_path))
 
-    assert s["runs"] == 0 and s["ordered_runs"] == 0
-    assert "First failing file" not in report.render(s)
+    assert s["runs"] == 0 and s["ordered_runs"] == 0 and s["unordered_runs"] == 0
+    text = report.render(s)
+    assert "First failing file" not in text and "No failing file" not in text
