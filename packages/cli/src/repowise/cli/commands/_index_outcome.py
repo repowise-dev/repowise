@@ -104,6 +104,35 @@ def _short_error(name: str, exc: BaseException) -> str:
     return escape(f"{name}: {type(exc).__name__}" + (f": {first}" if first else ""))
 
 
+def refresh_stale_routes(repo_path: Any) -> None:
+    """Fill the route table when the stored one was read by other extractors.
+
+    Every update outcome runs this, the "already up to date" one included, so
+    an index written before the table (or by an older repowise) gets its routes
+    without waiting for a commit that touches one. When the stamp matches it
+    costs one fingerprint and one primary-key read. Best-effort.
+    """
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.workspace.repo_routes import refresh_route_table
+
+    root = Path(repo_path)
+
+    async def _run() -> int | None:
+        async with repo_index_session(root) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            return await refresh_route_table(session, repo_id, root, changed_paths=())
+
+    try:
+        written = run_async(_run())
+    except Exception as exc:
+        log.debug("route_table_not_refreshed", error=repr(exc))
+        return
+    if written is not None:
+        log.info("route_table_refreshed", routes=written)
+
+
 def refresh_repo_contracts(repo_path: Any) -> None:
     """Re-read the repo's own contracts into ``.repowise/contracts.json`` (opt-in).
 

@@ -3441,6 +3441,46 @@ class BuildUnitRow(Base):
     __table_args__ = ({"sqlite_with_rowid": False},)
 
 
+class HttpRoute(Base):
+    """One HTTP route the repository registers (``workspace.repo_routes.Route``).
+
+    Replaced whole by every read (``crud.http_routes``). ``path`` is the
+    normalized template (``/users/{param}``); ``handler_symbol_id`` is the
+    ``wiki_symbols`` id of the function serving the route, NULL for an inline
+    handler or one the read could not resolve without guessing.
+    """
+
+    __tablename__ = "http_routes"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    method: Mapped[str] = mapped_column(String(16), primary_key=True)
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    line: Mapped[int] = mapped_column(Integer, primary_key=True)
+    framework: Mapped[str] = mapped_column(String(32), nullable=False)
+    handler_symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The handler expression as the registration writes it (``user.list``).
+    handler: Mapped[str | None] = mapped_column(Text, nullable=True)
+    service: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class HttpRoutesStamp(Base):
+    """Which read last wrote a repository's ``http_routes``.
+
+    ``repo_routes.routes_fingerprint()`` of that read. An update re-reads the
+    routes when a changed path can hold one or this differs, so an index
+    written before the table, or by other extractors, fills on its next
+    update. No row (or NULL) means read again.
+    """
+
+    __tablename__ = "http_routes_stamp"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class BuildUnitDep(Base):
     """One in-repo dependency of a build unit on another."""
 
