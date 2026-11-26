@@ -210,7 +210,12 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     assert load["owner"] is None and load["last_change"] is None
     assert serve["tests"] == ["tests/test_app.py::test_serve"]
     # No per-test map: the nearest test by call graph, labelled so.
-    assert (serve["tests_basis"], serve["verify"]) == ("call_graph", None)
+    # No benchmark measures it: the one verify command reruns its workload.
+    assert (serve["tests_basis"], serve["verify_basis"]) == ("call_graph", "workload")
+    assert serve["verify"] == (
+        "repowise perf measure --save before -- w-r1 before the change, "
+        "then --against before after it"
+    )
     # ``share`` is the cost (self), with its interval; inclusive is context.
     assert (serve["share"], serve["share_low"], serve["share_high"]) == (0.1, 0.08, 0.12)
     assert serve["inclusive"] == 0.3
@@ -306,9 +311,11 @@ async def test_the_per_test_map_names_the_tests_that_ran_each_function(async_ses
         ["tests/test_app.py::test_run"],
         "per_test_map",
     )
+    # A benchmark that measures the function beats its workload's rerun.
     assert rows["serve"]["verify"] == "pytest tests/test_app.py::test_timed --benchmark-only"
+    assert rows["serve"]["verify_basis"] == "benchmark"
     assert rows["load"]["tests"] == ["tests/test_load.py::test_load"]
-    assert rows["load"]["verify"] is None
+    assert rows["load"]["verify_basis"] == "workload"
     # The map has the file and no test ran it: none ran it, not unknown.
     assert (rows["helper"]["tests"], rows["helper"]["tests_basis"]) == ([], "per_test_map")
 
@@ -923,3 +930,44 @@ async def test_an_import_row_is_listed_as_import_time_with_no_lines(async_sessio
     assert imported["callers"] == [] and imported["owner"] is None
     # A function's row carries no label: its name says what it is.
     assert "label" not in rows[f"{APP}::serve"]
+
+
+async def test_a_row_carries_the_step_its_run_measured_inside_it(async_session) -> None:
+    """The run measured stat calls per entry inside ``serve``: its row says what
+    to do, why, and the one verify command; a row with nothing inside stays silent."""
+    from repowise.core.evidence.compare import Cause, ChangedCommit, Comparison
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    inside = [
+        {"name": "is_file", "kind": "library", "share": 0.6,
+         "leaf": {"name": "stat", "kind": "native", "share": 0.6}},
+        {"name": "rglob", "kind": "library", "share": 0.3},
+    ]
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    async_session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=f"{APP}::serve", repository_id=repo.id,
+            inside_json=json.dumps(inside),
+        )
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("serve"), _hot("load", rank=2)])
+    slower = Comparison(
+        kind="profile", workload="w-r1", environment="local", verdict="slower", band_runs=3,
+        head_run_id="r1", current_runs=1, base_commit="a" * 40, head_commit="c" * 40,
+        cause=Cause("a" * 40, "c" * 40, 2, (ChangedCommit("f" * 40, None, 42, (f"{APP}::serve",)),)),
+    )
+
+    rows = (
+        await measured_costs(async_session, repo.id, now=NOW, comparisons=[slower])
+    )["measured"]["rows"]
+    serve, load = rows
+
+    assert serve["next_step"]["rule"] == "filesystem"
+    assert "os.scandir" in serve["next_step"]["next"] and "verify" not in serve["next_step"]
+    assert serve["sources"]["next_step"] == "run_inside"
+    assert serve["slower"]["changed_in"] == [{"sha": "f" * 40, "pr": 42}]
+    assert load["next_step"] is None and "slower" not in load
+    assert serve["verify_basis"] == load["verify_basis"] == "workload"

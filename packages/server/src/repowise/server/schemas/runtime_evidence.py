@@ -215,10 +215,51 @@ class MeasuredRow(_Strict):
     #: ``per_test_map``: tests the per-test map saw run its lines;
     #: ``call_graph``: its nearest tests by call graph, where no map has its file.
     tests_basis: Literal["per_test_map", "call_graph"] | None = None
-    #: The command that reruns the benchmarks that measure it, before and after a fix.
+    #: What the time is and the next step (``evidence.next_step``), from what
+    #: its run measured inside it; null when the profile does not say. Its
+    #: ``verify`` is never set here: the row's own ``verify`` is the one command.
+    next_step: MeasuredNextStep | None = None
+    #: The one command that verifies a fix, run before and after it: the
+    #: benchmarks that measure the function, else a rerun of its workload
+    #: (``evidence.action_row.row_verify``); null when neither has one.
     verify: str | None = None
+    #: ``benchmark`` or ``workload``: what ``verify`` reruns.
+    verify_basis: Literal["benchmark", "workload"] | None = None
     #: Open static performance causes on the function, by opportunity id.
     on_static_findings: list[str] = Field(default_factory=list)
+    #: What got slower about the function, when a comparison of its
+    #: workloads' runs names it (``evidence.compare``); only where the host
+    #: read the comparisons.
+    slower: MeasuredRowSlower | None = None
+    #: ``import time`` on a module body's row (the time to import its file);
+    #: absent on a function's row.
+    label: str | None = None
+    #: Where each field that holds a value came from: ``workload_hotness``,
+    #: ``symbols``, ``call_graph``, ``run_drivers``, ``function_blame``, the
+    #: ``tests_basis``, ``run_inside`` or ``static_finding``, the
+    #: ``verify_basis``, ``performance_findings``, ``compare``.
+    sources: dict[str, str] = Field(default_factory=dict)
+
+
+class MeasuredChangedIn(_Strict):
+    sha: str
+    pr: int | None
+
+
+class MeasuredRowSlower(_Strict):
+    """A slower comparison that names a measured function (``evidence.action_row.row_slower``)."""
+
+    workload: str
+    #: The band's newest commit.
+    base_commit: str | None
+    #: The function's own measure that got worse, when the comparison has one.
+    metric: str | None = None
+    before: float | None = None
+    after: float | None = None
+    ratio: float | None = None
+    unit: str | None = None
+    #: Commits in the range that changed the function.
+    changed_in: list[MeasuredChangedIn]
 
 
 class MeasuredGroup(_Strict):

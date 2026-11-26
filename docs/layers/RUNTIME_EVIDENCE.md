@@ -809,13 +809,25 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   the file, and `render_connect_evidence` for the agent prompt.
 - **Performance findings**: the static findings evidence sits beside, in
   [PERFORMANCE.md](PERFORMANCE.md).
-- **Measured rows** (`repowise health`, the Performance tab and its REST view): each
-  ranked function names up to 3 tests. With a stored per-test map that has the
-  function's file, they are tests that ran its lines (`tests_basis: per_test_map`;
-  an empty list means none did); otherwise its nearest tests on the call graph
-  (`call_graph`). A benchmark that calls the function or ran its lines is never
-  listed as a test: `verify` is the command that reruns it before and after a fix
-  (`go test -run '^$' -bench ...` or `pytest ... --benchmark-only`).
+- **Measured rows** (`repowise health`, the Performance tab and its REST view): one
+  row per ranked function, built by `repowise.core.evidence.action_row`. It leads
+  with the `next_step` from what the run measured inside the function (the same
+  rule as the `functions` route), then the callers that drove it, the
+  measurement, the function's own owner and last change, its tests and one
+  `verify` command. Each row names where every field it holds came from in
+  `sources`.
+  - **Tests**: up to 3. With a stored per-test map that has the function's file,
+    they are tests that ran its lines (`tests_basis: per_test_map`; an empty list
+    means none did); otherwise its nearest tests on the call graph (`call_graph`).
+    A benchmark is never listed as a test.
+  - **Verify**: one command, run before and after a fix. A benchmark that calls
+    the function or ran its lines wins (`verify_basis: benchmark`:
+    `go test -run '^$' -bench ...` or `pytest ... --benchmark-only`): it times the
+    function alone. Otherwise the workload's own rerun (`verify_basis: workload`:
+    `repowise perf measure` for an entry point, the load again for a load test).
+    A unit-test run has neither.
+  - **Slower**: in `get_health`, a row a slower comparison names says so
+    (`slower`: its own measure that got worse and the commits that changed it).
 
 ## Reference
 

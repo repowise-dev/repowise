@@ -275,9 +275,9 @@ MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_health).
 
 `performance_measured` lists, for each workload's newest run, the functions
-ranked by self time (waits excluded), each with its workload class, age, sample
-size, interval and where the run's time went (repo code itself, waits,
-libraries)
+ranked by self time (waits excluded), each with the next step its profile names
+and the one command that verifies a fix, beside its run's workload class, age,
+sample size and where the run's time went (repo code itself, waits, libraries)
 ([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). Benchmarks are listed
 apart under `benchmarks`: each result with the production function it measures
 and its time and allocations per operation. A benchmark profile ranks nothing.

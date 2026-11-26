@@ -128,24 +128,18 @@ async def test_rows_carry_their_basis_and_cap(setup_mcp, session, materialized):
     assert block["basis"] == "measured"
     # Three per run, so the load test's row is not cut away by the other run's.
     # Runs measured at the same time come in a stable order (newest, then id).
-    assert [(r["run_id"], r["rank"]) for r in block["rows"]] == [
-        ("r2", 1), ("r1", 1), ("r1", 2), ("r1", 3),
+    assert [(r["run_id"], r["symbol_id"]) for r in block["rows"]] == [
+        ("r2", LOGIN), ("r1", LOGIN), ("r1", "src/app.py::f0"), ("r1", "src/app.py::f1"),
     ]
     assert (block["rows_total"], block["rows_emitted"], block["rows_reduced_reason"]) == (
         6,
         4,
         "limit",
     )
-    row = next(r for r in block["rows"] if r["run_id"] == "r1" and r["rank"] == 1)
-    assert row["lines"] == "20-40"
-    # ``share`` is the cost (self time) with its interval; inclusive is context.
-    assert (row["share"], row["share_low"], row["share_high"], row["samples"]) == (
-        0.1,
-        0.08,
-        0.12,
-        100,
-    )
-    assert row["inclusive"] == 0.3 and "self_share" not in row
+    row = next(r for r in block["rows"] if r["run_id"] == "r1")
+    # The action row's MCP form: the cost and how to verify a fix, no
+    # bookkeeping (lines, interval, samples, inclusive are the JSON form's).
+    assert row == {"symbol_id": LOGIN, "run_id": "r1", "share": 0.1}
     # Unit-test runs are listed apart and never lead.
     assert [r["symbol_id"] for r in block["in_tests"]] == ["src/app.py::t"]
     assert block["in_tests_total"] == 1 and "in_tests_reduced_reason" not in block
@@ -156,12 +150,16 @@ async def test_rows_carry_their_basis_and_cap(setup_mcp, session, materialized):
     assert (runs["r1"]["repo_self_share"], runs["r1"]["wait_share"]) == (0.47, 0.3)
     assert "explained_share" not in runs["r1"]
     assert runs["r1"]["age_days"] is not None and runs["r1"]["commit"] == "c" * 12
+    # No benchmark measures the rows: the workload's rerun, once on the run.
+    assert runs["r1"]["verify"].startswith("repowise perf measure --save before -- w-r1")
+    assert runs["r2"]["verify"].startswith("run the load again")
+    assert "verify" not in runs["r3"]
 
     wide = await _measured(limit=10)
     assert len(wide["rows"]) == 6 and "rows_reduced_reason" not in wide
     # A function a production static cause sits on keeps its place and names the cause.
     shared = next(r for r in wide["rows"] if r["symbol_id"] == SHARED)
-    assert shared["rank"] == 5 and shared["on_static_findings"][0].startswith("perf")
+    assert wide["rows"].index(shared) == 5 and shared["on_static_findings"][0].startswith("perf")
     assert "on_static_findings" not in wide
 
 
@@ -170,7 +168,7 @@ async def test_an_import_row_says_import_time_and_others_add_nothing(setup_mcp, 
     module = "src/auth/service.py::<module>"
     await _seed(session, materialized, [_hot(module), _hot(LOGIN, rank=2)])
     rows = {r["symbol_id"]: r for r in (await _measured(limit=10))["rows"]}
-    assert (rows[module]["label"], rows[module]["lines"]) == ("import time", None)
+    assert rows[module]["label"] == "import time" and "lines" not in rows[module]
     assert "label" not in rows[LOGIN]
 
 
@@ -394,3 +392,34 @@ async def test_a_slower_benchmark_adds_one_line(setup_mcp, session, materialized
     [line] = (await _measured())["slower"]
     assert line.startswith('"go bench": 1 benchmark slower than the band of 3 earlier runs')
     assert "BenchmarkRoute 1.80x" in line
+
+
+@pytest.mark.asyncio
+async def test_a_row_says_what_to_do_from_what_its_run_measured_inside_it(
+    setup_mcp, session, materialized
+):
+    """The action row's MCP form: ``next`` from what the run measured inside the
+    function; ``why``, owner and tests stay with the JSON form and ``get_context``."""
+    import json as _json
+
+    from repowise.core.persistence.models import EvidenceSymbolCost
+
+    await _seed(session, materialized, [_hot(LOGIN), _hot(SHARED, rank=2)])
+    inside = [
+        {"name": "is_file", "kind": "library", "share": 0.7,
+         "leaf": {"name": "stat", "kind": "native", "share": 0.7}},
+    ]
+    session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=LOGIN, repository_id=materialized, inside_json=_json.dumps(inside)
+        )
+    )
+    await session.commit()
+
+    block = await _measured()
+    login, shared = block["rows"]
+    assert login["symbol_id"] == LOGIN and login["next"].startswith("cache the answer")
+    assert "next" not in shared
+    assert not {"why", "owner", "tests", "lines", "share_low", "verify"} & set(login)
+    (run,) = block["runs"]
+    assert run["verify"].startswith("repowise perf measure --save before -- w-r1")

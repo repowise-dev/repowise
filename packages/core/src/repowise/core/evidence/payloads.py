@@ -141,11 +141,14 @@ def functions_payload(
 def function_payload(row: Any, findings: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """One ``symbol_hotness`` row as the route lists it, with its next step."""
     payload = _function_fields(row)
-    file_path = payload["file_path"]
-    language = REGISTRY.from_extension(posixpath.splitext(file_path)[1]) if file_path else ""
-    step = next_step(payload, language, findings)
+    step = next_step(payload, file_language(payload["file_path"]), findings)
     payload["next_step"] = step.as_dict() if step else None
     return payload
+
+
+def file_language(file_path: str) -> str:
+    """The registry language of *file_path* by its extension; ``""`` when none."""
+    return REGISTRY.from_extension(posixpath.splitext(file_path)[1]) if file_path else ""
 
 
 def _function_fields(row: Any) -> dict[str, Any]:
@@ -174,8 +177,8 @@ def _function_fields(row: Any) -> dict[str, Any]:
         "wait_share": row.wait_share,
         "library_share": row.library_share,
         "run_unlisted": row.run_unlisted,
-        "inside": _json_list(getattr(row, "inside_json", None)),
-        "drivers": _json_list(getattr(row, "drivers_json", None)),
+        "inside": json_list(getattr(row, "inside_json", None)),
+        "drivers": json_list(getattr(row, "drivers_json", None)),
     }
 
 
@@ -193,7 +196,7 @@ def weighted_callers(
     stays the graph's, ordered by what the run saw.
     """
     shares: dict[str, float] = {}
-    for driver in _json_list(drivers_json) or ():
+    for driver in json_list(drivers_json) or ():
         if not isinstance(driver, Mapping):
             continue
         symbol, share = driver.get("symbol"), driver.get("share")
@@ -205,7 +208,7 @@ def weighted_callers(
     return listed, {c: shares[c] for c in listed if c in shares}
 
 
-def _json_list(text: str | None) -> list[Any] | None:
+def json_list(text: str | None) -> list[Any] | None:
     """A stored JSON list column; None when empty or unreadable."""
     if not text:
         return None
@@ -217,8 +220,10 @@ def _json_list(text: str | None) -> list[Any] | None:
 
 
 __all__ = [
+    "file_language",
     "function_payload",
     "functions_payload",
+    "json_list",
     "measured_payload",
     "owner_history_payload",
     "runs_payload",
