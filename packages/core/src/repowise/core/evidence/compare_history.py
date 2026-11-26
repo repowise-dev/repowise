@@ -264,10 +264,10 @@ async def benchmark_cause(
     repo_path: Path | str | None,
     base: str | None,
     head: str | None,
-    benchmark_functions: Sequence[str | None],
+    benchmark_functions: Sequence[str],
 ) -> Cause | None:
     """The commits between *base* and *head* that changed what *benchmark_functions*
-    ran (``None`` for a benchmark not placed; :func:`~.compare.benchmark_reach`):
+    ran (:func:`~.compare.benchmark_reach`):
     the cause line ``perf check`` shares with :func:`load_comparisons`."""
     from ..persistence.crud.analysis.evidence import EVIDENCE_ROW_TABLES, list_evidence_runs
 
