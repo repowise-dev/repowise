@@ -528,6 +528,13 @@ def test_a_grouped_read_beside_another_query_or_in_a_loop_keeps_its_step() -> No
     # A loop in the function over some other I/O does not repeat the read.
     http = {**own, "boundary": "network", "sink": "http.Get"}
     assert next_step(_counts_row([GORM_FIND, GORM_GROUP]), "go", [http]) is None
+    # Nor does a loop over another database call, one the run never measured.
+    count = {**own, "sink": "Count"}
+    assert next_step(_counts_row([GORM_FIND, GORM_GROUP]), "go", [count]) is None
+    # A loop whose sink is the grouped read, or names none, keeps the step.
+    for sink in ("db.Find(&rows)", None):
+        found = {**own, "sink": sink}
+        assert next_step(_counts_row([GORM_FIND, GORM_GROUP]), "go", [found]).rule == "db_read"
     loop = static_finding(
         "articles/serializers.go",
         "Response",

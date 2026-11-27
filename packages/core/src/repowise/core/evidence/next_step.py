@@ -637,8 +637,12 @@ def _refine(
     loop = _loop_owner(symbol, drivers, findings)
     if family == "db_write" and loop and workload_class == "entry_point":
         family = "db_write_loop"
+    read = _last(str(_lead(group).get("name") or ""))
     own_loop = any(
-        f.get("kind") == "io_in_loop" and f.get("boundary") == "db" and _on(f, symbol)
+        f.get("kind") == "io_in_loop"
+        and f.get("boundary") == "db"
+        and _on(f, symbol)
+        and _sink_may_be(f.get("sink"), read)
         for f in findings
     )
     if family == "db_read" and not (loop or own_loop) and _one_grouped_read(group, inside, lang):
@@ -878,6 +882,12 @@ def _database(name: str, lang: str) -> bool:
             last in _JVM_DB_VERBS or last in _DB_WRITE_VERBS
         )
     return False
+
+
+def _sink_may_be(sink: Any, call: str) -> bool:
+    """Whether a loop finding's sink call (``Find``, ``db.Find(&rows)``) may be
+    *call*; a finding that names no sink may be any call."""
+    return not sink or _last(str(sink).split("(")[0]) == call
 
 
 def _one_grouped_read(
