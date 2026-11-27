@@ -637,6 +637,10 @@ class GraphBuilder(
                 resolved.append(targets)
                 if targets:
                     imp.resolved_file = targets[0]
+                    if _lang == "go":
+                        from ..extractors.bindings.go import sync_go_import_binding
+
+                        sync_go_import_binding(imp, targets[0], self._parsed_files)
                 for target in targets:
                     file_imports.add(target)
                     self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)

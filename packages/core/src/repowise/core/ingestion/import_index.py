@@ -90,6 +90,10 @@ def build_import_name_maps(
             if imp.resolved_file is None:
                 continue
             resolved = imp.resolved_file
+            if parsed.file_info.language == "go":
+                from .extractors.bindings.go import sync_go_import_binding
+
+                sync_go_import_binding(imp, resolved, parsed_files)
             if imp.bindings:
                 for binding in imp.bindings:
                     if binding.local_name == "*":
