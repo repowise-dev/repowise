@@ -151,7 +151,7 @@ def _handler_symbol(
         # or a handler the repo names once); its line fallback lands elsewhere.
         if bound is not None and _names(bound, expr):
             return bound.symbol_id
-        found = _resolve_named(index, c.file_path, expr, framework)
+        found = _resolve_named(index, c.file_path, expr, framework, go_walk=go_walk)
         return found.symbol_id if found is not None else None
     if bound is None:
         return None
@@ -178,7 +178,11 @@ def _symbol_by_id(index: RepoIndex, symbol_id: str) -> IndexedSymbol | None:
 
 
 def _resolve_named(
-    index: RepoIndex, file_path: str, expr: str, framework: str
+    index: RepoIndex,
+    file_path: str,
+    expr: str,
+    framework: str,
+    go_walk: _GoIndexWalk | None = None,
 ) -> IndexedSymbol | None:
     """The one symbol *expr* names from *file_path*, nearest scope first.
 
@@ -209,14 +213,16 @@ def _resolve_named(
         return _named_in(index.symbols_for_file(target), name) if exported == "default" else None
     if framework == "go":
         # A bare name is the file's package (its directory); ``pkg.Fn`` is the
-        # package directory named ``pkg``.
+        # package directory imported as ``pkg``.
         if len(parts) == 1:
             package = posixpath.dirname(file_path)
             return _named_in(_in_directories(index, lambda d: d == package), name)
         if len(parts) == 2:
-            return _named_in(
-                _in_directories(index, lambda d: posixpath.basename(d) == parts[0]), name
-            )
+            walk = go_walk or _GoIndexWalk(index)
+            package = walk.imported_dir(file_path, parts[0])
+            if package is None:
+                return None
+            return _named_in(_in_directories(index, lambda d: d == package), name)
         return None
     found = index.symbol_named(expr)
     # ``symbol_named`` returns a lone candidate whatever its qualifier says.
@@ -252,6 +258,9 @@ class _GoIndexWalk:
     def method_at(self, file_path: str, line: int, parts: list[str]) -> IndexedSymbol | None:
         return self._walk().method_at(file_path, line, parts)
 
+    def imported_dir(self, file_path: str, local: str) -> str | None:
+        return self._imported_dir(file_path, local)
+
     def _package_files(self, package: str) -> list[str]:
         # A package variable or type is a stored symbol, so its file is listed.
         return self._dirs.get(package, [])
@@ -267,7 +276,7 @@ class _GoIndexWalk:
             from repowise.core.ingestion.resolvers.go import read_go_modules
 
             self._modules = read_go_modules(self._index.repo_path)
-        for module_dir, module in self._modules:  # longest module path first
+        for module_dir, module in self._modules or ():  # longest module path first
             if imported == module or imported.startswith(module + "/"):
                 rest = imported[len(module) :].strip("/")
                 package = posixpath.join(module_dir, rest) if module_dir else rest
