@@ -979,7 +979,11 @@ async def get_page_versions(
     result = await session.execute(
         select(PageVersion)
         .where(PageVersion.page_id == page_id)
-        .order_by(PageVersion.version.desc(), PageVersion.archived_at.desc())
+        .order_by(
+            PageVersion.version.desc(),
+            PageVersion.archived_at.desc(),
+            PageVersion.id.desc(),
+        )
         .limit(limit)
     )
     return list(result.scalars().all())
