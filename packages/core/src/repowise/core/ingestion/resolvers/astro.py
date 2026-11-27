@@ -29,6 +29,9 @@ from .typescript import resolve_ts_js_import
 if TYPE_CHECKING:
     from .context import ResolverContext
 
+# The lazy per-context index of custom ``publicDir`` values (see ResolverContext).
+_INDEX_KEY = "_astro_public_dirs"
+
 
 def resolve_astro_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
     """Resolve an Astro import or markup ref to a repo-relative path, or None."""
@@ -83,25 +86,29 @@ def _public_dirs(ctx: ResolverContext) -> dict[str, str]:
     left out, so ``public/`` is tried there. As for ``public/``, a miss walks on
     to the folders above, where an outer app's ``publicDir`` takes its place.
     """
-    cached = getattr(ctx, "_astro_public_dirs", None)
+    cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:
         return cached
-    configs: dict[str, str] = {}  # app directory -> its astro.config, first name wins
-    for path in ctx.path_set:
-        directory, _, name = path.rpartition("/")
-        if name in ASTRO_CONFIGS:
-            current = configs.get(directory)
-            if current is None or ASTRO_CONFIGS.index(name) < ASTRO_CONFIGS.index(
-                current.rpartition("/")[2]
-            ):
-                configs[directory] = path
     public_dirs: dict[str, str] = {}
-    for directory, path in configs.items():
+    for directory, path in _astro_configs(ctx.path_set).items():
         public = astro_public_dir(_read_text(ctx, path) or "")
         if public != "public":
             public_dirs[directory] = public
-    ctx._astro_public_dirs = public_dirs  # type: ignore[attr-defined]
+    setattr(ctx, _INDEX_KEY, public_dirs)
     return public_dirs
+
+
+def _astro_configs(paths: set[str]) -> dict[str, str]:
+    """App directory -> its ``astro.config``; with several, the first of :data:`ASTRO_CONFIGS`."""
+    found: dict[str, list[str]] = {}
+    for path in paths:
+        directory, _, name = path.rpartition("/")
+        if name in ASTRO_CONFIGS:
+            found.setdefault(directory, []).append(path)
+    return {
+        directory: min(candidates, key=lambda p: ASTRO_CONFIGS.index(p.rpartition("/")[2]))
+        for directory, candidates in found.items()
+    }
 
 
 def _read_text(ctx: ResolverContext, rel: str) -> str | None:

@@ -166,3 +166,23 @@ def test_comment_markers_inside_strings_do_not_hide_options() -> None:
     })
     """
     assert astro_src_dir(config) == "app"
+
+
+def test_the_public_dir_is_read_from_the_config_on_disk(tmp_path) -> None:
+    page = "site/src/pages/i.astro"
+    (tmp_path / "site").mkdir()
+    (tmp_path / "site/astro.config.mjs").write_text(
+        "defineConfig({ publicDir: 'assets' })", encoding="utf-8"
+    )
+    # ``other/astro.config.ts`` is indexed but missing on disk: it reads as no config.
+    paths = {page, "site/astro.config.mjs", "site/assets/a.svg", "other/astro.config.ts"}
+    ctx = ResolverContext(
+        path_set=paths, stem_map={}, graph=nx.DiGraph(), has_sfc_files=True, repo_path=tmp_path
+    )
+    assert resolve_import("/a.svg", page, "astro", ctx) == "site/assets/a.svg"
+
+
+def test_a_config_with_no_source_and_no_repo_path_reads_as_default() -> None:
+    page = "site/src/pages/i.astro"
+    ctx = _ctx({page, "site/astro.config.mjs", "site/public/a.svg"})
+    assert resolve_import("/a.svg", page, "astro", ctx) == "site/public/a.svg"
