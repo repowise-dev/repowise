@@ -349,6 +349,7 @@ def _prompt_generation(
         default=detected_embedder,
         type=click.Choice(embedder_choices),
     )
+    result["embedder_default"] = detected_embedder
 
     result["test_run"] = click.confirm(
         "  Test run? (full ingestion; LLM page generation limited to top 10 files for quick validation)",
@@ -548,6 +549,17 @@ def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
             ["mock", "ollama", "fastembed", "gemini", "openai", "openrouter", "edenai"]
         ),
     )
+
+
+def chosen_embedder(adv: dict[str, Any]) -> str | None:
+    """The embedder the user picked on the advanced screen, or ``None``.
+
+    Pressing Enter on the generation prompt's default is not a choice: that
+    default was resolved from the environment at the time, and stored as one
+    it would outrank the provider picked afterwards, like ``--embedder``.
+    """
+    embedder = adv.get("embedder")
+    return None if embedder and embedder == adv.get("embedder_default") else embedder
 
 
 def _resolve_embedder_from_env(provider: str | None = None) -> str:

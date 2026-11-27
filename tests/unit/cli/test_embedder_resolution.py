@@ -1561,3 +1561,46 @@ def test_the_plan_screen_shows_ollama_once_ollama_is_picked(
 
     assert _embedders(run)[1] == "openai"
     assert _embedders(run, "ollama")[1] == "ollama"
+
+
+def test_an_accepted_advanced_default_is_not_a_choice() -> None:
+    """Enter on a key-guessed default must not outrank the provider picked later."""
+    from repowise.cli.ui.mode_selection import chosen_embedder
+
+    assert chosen_embedder({"embedder": "openai", "embedder_default": "openai"}) is None
+    assert chosen_embedder({"embedder": "gemini", "embedder_default": "openai"}) == "gemini"
+    # The index-only prompt records no default: its answer stays a choice.
+    assert chosen_embedder({"embedder": "mock"}) == "mock"
+
+
+def test_switching_to_ollama_after_accepting_the_default_embeds_with_ollama(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bot's case: hosted model, Enter on the advanced default, then ollama."""
+    from repowise.cli.commands.init_cmd._options import InitOptions, InitRun
+    from repowise.cli.commands.init_cmd._questions import _apply_advanced_answers
+
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    fields = {name: None for name in InitOptions.__dataclass_fields__}
+    fields.update(exclude=(), coverage_report=(), run_mode="standard", concurrency=10)
+    run = InitRun(opts=InitOptions(**fields), repo_path=repo, start=0.0, is_interactive=False)
+    run.generate_docs = False
+    adv = {
+        "commit_limit": 5000,
+        "follow_renames": False,
+        "skip_tests": False,
+        "skip_infra": False,
+        "exclude": (),
+        "embedder": "openai",
+        "embedder_default": "openai",
+    }
+
+    _apply_advanced_answers(run, adv)
+
+    assert run.opts.embedder_name is None
+    assert providers.resolve_embedder_choice(
+        run.opts.embedder_name, repo_path=repo, provider="ollama"
+    ) == ("ollama", "follows the ollama provider")
