@@ -134,6 +134,7 @@ async def test_entry_point_reach_skips_an_excluded_file(
     assert {n["node_id"] for n in body["nodes"]} == {_A, _C, _D, _E}
     assert all(_B not in (link["source"], link["target"]) for link in body["links"])
 
+
 @pytest.mark.asyncio
 async def test_repeat_requests_at_one_index_state_load_the_graph_once(
     client: AsyncClient, app, tmp_path: Path, monkeypatch
@@ -191,3 +192,60 @@ async def test_a_new_index_state_reloads_the_graph(
     assert resp.json()["path"] == [_A, _D, _E, _C]
     assert len(builds) == 2
 
+
+@pytest.mark.asyncio
+async def test_a_second_exclude_spec_replaces_the_repository_graph(
+    client: AsyncClient, app, tmp_path: Path
+) -> None:
+    from repowise.core.exclusion import build_exclude_spec
+
+    repo = await _repo(client, app, tmp_path, exclude="unrelated/**")
+    spec = build_exclude_spec(tmp_path / "test-repo")
+    assert spec is not None
+
+    async with get_session(app.state.session_factory) as session:
+        await graph_views.load_code_graph(session, repo["id"], spec)
+        narrowed = await graph_views.load_code_graph(session, repo["id"], None)
+
+    kept = [k for k in graph_views._code_graphs._entries if k[1] == repo["id"]]
+    assert len(kept) == 1
+    assert graph_views._code_graphs.get(kept[0]) is narrowed
+    assert graph_views._code_graphs.weight == len(narrowed.nodes) + len(narrowed.edges)
+
+
+@pytest.mark.asyncio
+async def test_graphs_past_the_row_budget_leave_the_least_recently_used_repository(
+    client: AsyncClient, app, tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    first = await _repo(client, app, tmp_path / "one", exclude=None)
+    second = await _repo(client, app, tmp_path / "two", exclude=None)
+    # Each seeded graph is 5 nodes + 5 edges; the budget fits one.
+    monkeypatch.setattr(graph_views._code_graphs, "_budget", 15)
+
+    async with get_session(app.state.session_factory) as session:
+        await graph_views.load_code_graph(session, first["id"], None)
+        await graph_views.load_code_graph(session, second["id"], None)
+
+    assert [k[1] for k in graph_views._code_graphs._entries] == [second["id"]]
+    assert graph_views._code_graphs.weight == 10
+
+
+@pytest.mark.asyncio
+async def test_a_cold_burst_of_requests_builds_the_graph_once(
+    client: AsyncClient, app, tmp_path: Path, monkeypatch
+) -> None:
+    import asyncio
+
+    repo = await _repo(client, app, tmp_path, exclude=None)
+    builds = _count_builds(monkeypatch)
+
+    async def load():
+        async with get_session(app.state.session_factory) as session:
+            return await graph_views.load_code_graph(session, repo["id"], None)
+
+    graphs = await asyncio.gather(*(load() for _ in range(4)))
+
+    assert builds == [repo["id"]]
+    assert all(g is graphs[0] for g in graphs)
