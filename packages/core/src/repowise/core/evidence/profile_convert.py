@@ -49,8 +49,9 @@ function's (kind ``import``). The row's ``inside`` names what the import spent
 its time on, by top-level package for a library or the standard library (kind
 ``library``: ``sqlalchemy``, ``json``), by name for a repo function run at
 import time (kind ``repo``), ``own`` for the modules' own top-level code and
-``import`` for the machinery itself. A library item of a module that was
-imported (not the program's entry script) carries ``"called": false`` when no
+``import`` for the machinery itself. An installed library's item
+(``site-packages``) of a module that was imported (not the program's entry
+script) carries ``"called": false`` when no
 stack of the run entered that package from code (:meth:`_Tally._mark_calls`):
 the run paid to load it and never ran it. Ceiling: a call too short to take
 a sample reads as never called. Ceiling: a Go package initializer or a
@@ -519,11 +520,17 @@ class _Tally:
         self._import = [is_import_frame(f) for f in frames]
         self._native = [is_native_frame(f) for f in frames]
         self._python = [f.language == "python" for f in frames]
-        # Per frame: the Python library package it runs in, and whether it is a module body.
+        # Per frame: the installed Python package it runs in (``site-packages``;
+        # the standard library, frozen modules and paths elsewhere are never
+        # judged: a C accelerator or a second spelling of the package could hide
+        # its use), and whether it is a module body.
         self._package = [
-            _written_name(package_name(f.path)) if lib and py else None
+            _written_name(package_name(f.path))
+            if lib and py and _INSTALLED_RE.search(f.path.replace("\\", "/"))
+            else None
             for f, lib, py in zip(frames, self._library, self._python, strict=True)
         ]
+        self._installed = {p for p in self._package if p is not None}
         self._module_body = [f.function == MODULE_FUNCTION for f in frames]
         #: Packages some stack entered from code, not from the import loading them.
         self._called: set[str] = set()
@@ -624,7 +631,8 @@ class _Tally:
         """The Python packages *frames* run as a call, and the module rows they reach
         through an import.
 
-        A package's frame is a call when its own module body is not above it and
+        A package's frame is a call when its own module body is not above it (with
+        no repo frame in between) and
         the frame that entered the package (the one above its topmost frame in a
         row of its frames) is code, not import machinery: ``from dateutil import
         parser`` runs ``dateutil.__getattr__`` from the importer, which is loading,
@@ -637,6 +645,10 @@ class _Tally:
         for k, i in enumerate(frames):
             if machinery is None and self._import[i]:
                 machinery = k
+            if not self._unmaintained[i]:
+                # Repo code running under a package's import and calling back into
+                # it is use, not that package loading itself.
+                loading.clear()
             package = self._package[i]
             if package is not None:
                 if self._module_body[i]:
@@ -807,6 +819,7 @@ class _Tally:
             }
             if (
                 key[0] == "package"
+                and key[1] in self._installed
                 and key[1] not in self._called
                 and sid in self._imported_rows
                 and item["kind"] == "library"

@@ -729,15 +729,18 @@ is counted there as `unplaced`.
   the outermost one, with the libraries and standard-library modules they load
   named by package in `inside` (`sqlalchemy`, `json`). A module a function
   imports starts its own row, driven by that function; a library a function
-  imports stays that function's cost. A library item of an imported module
-  (not the entry script) carries `called: false` when no sample of the run
-  entered that package from code: the run paid to load it and never ran it.
-  The row's next step says to import that library inside the functions that
-  call it, only when it is the row's heaviest item, holds at least a quarter
-  of the import, and every production call site the index proved is inside a
-  function or method; a package called at import time (a module-level logger,
-  a decorator, a class body) or with no proven call site stays silent, and so
-  does every other import row. A call too short to take a sample reads as
+  imports stays that function's cost. An installed library's item
+  (`site-packages`; never the standard library) of an imported module (not
+  the entry script) carries `called: false` when no sample of the run entered
+  that package from code: the run paid to load it and never ran it. The row's
+  next step says to import that library inside the functions that call it,
+  only when it is the row's heaviest item, holds at least a quarter of the
+  import, every production call site the index proved is in a function or
+  method body, and every production file importing it at its top level holds
+  one of those functions. A package called at import time (a module-level
+  logger, a decorator, a class body, a default value), imported by a file
+  that never calls it, or with no proven call site stays silent, and so does
+  every other import row. A call too short to take a sample reads as
   never run. Fix first lists an import row only when it has that step. Go
   package `init`, the CommonJS wrapper and Pascal blocks have no row yet; their self time is reported under
   `self_unattributed` as `module_body`, never dropped. An import row measured

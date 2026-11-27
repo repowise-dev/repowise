@@ -413,7 +413,10 @@ def profile_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
         "self_samples": _count(raw.get("self_samples")),
         "total_samples": _count(raw.get("total_samples")),
         "call_count": _count(raw.get("calls")),
-        "inside": _split_items(raw.get("inside"), _inside_item),
+        "inside": _split_items(
+            raw.get("inside"),
+            _module_inside_item if where.get("function") == MODULE_FUNCTION else _inside_item,
+        ),
         "drivers": _split_items(raw.get("drivers"), _driver_item),
     }
     if entry["self_value"] is None and entry["total_value"] is None:
@@ -432,12 +435,18 @@ def _inside_item(raw: dict[str, Any]) -> dict[str, Any] | None:
     if name is None or kind is None or share is None:
         return None
     item: dict[str, Any] = {"name": name, "kind": kind, "share": share}
-    if raw.get("called") is False:  # an import loaded this package and the run never ran it
-        item["called"] = False
     leaf = raw.get("leaf")
     # One level only: a leaf names no leaf of its own.
     if isinstance(leaf, dict) and "leaf" not in leaf and (read := _inside_item(leaf)):
         item["leaf"] = read
+    return item
+
+
+def _module_inside_item(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """An import row's ``inside`` item: a library may say the run never ran it."""
+    item = _inside_item(raw)
+    if item is not None and item["kind"] == "library" and raw.get("called") is False:
+        item["called"] = False
     return item
 
 

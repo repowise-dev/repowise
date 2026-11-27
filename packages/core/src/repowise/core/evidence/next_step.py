@@ -31,11 +31,13 @@ Silence is the default. No step when:
 - the row is a module body's import time (``<path>::<module>``), unless its
   heaviest item is a library the run loaded and never ran (``"called": false``,
   ``profile_convert``) holding :data:`IMPORT_LEADS` of the import, and the
-  repo calls that package only from inside functions (a :func:`package_calls`
-  fact): then the step is to import it inside those functions. A package the
-  repo calls at import time (``log = structlog.get_logger()``, a decorator, a
-  class body) is needed at startup by construction, and one with no proven
-  call site may be read some other way, so both stay silent. So does the
+  repo calls that package only from inside functions, in the files that import
+  it (a :func:`package_calls` fact): then the step is to import it inside those
+  functions. A package the repo calls at import time (``log =
+  structlog.get_logger()``, a decorator, a class body, a default value) or
+  imports in a file that never calls it is needed at startup by construction,
+  and one with no proven call site may be read some other way, so they stay
+  silent. So does the
   program's entry script, whose items carry no ``called``;
 - the time sits under ``runtime.cgocall`` and no database call above it says
   what the C code is: a Go profile taken on Windows samples threads inside cgo
@@ -593,22 +595,32 @@ def never_called(inside: Iterable[Any] | None) -> list[str]:
     ]
 
 
-def package_calls(package: str, callers: Iterable[tuple[str, str | None]]) -> dict[str, Any]:
+def package_calls(
+    package: str,
+    callers: Iterable[tuple[str, str | None]],
+    importers: Iterable[str] = (),
+) -> dict[str, Any]:
     """A package's production call sites as :func:`next_step` reads them.
 
     *callers* are ``(caller symbol id, its symbol kind)`` per call site the
     index proved (``external_call_sites``); a kind outside function and method
-    (a module-level assignment, a class body, ``None`` for the module itself)
-    runs the call at import time.
+    (a module-level assignment, a class body, ``None`` for the module itself or
+    a call in a function's signature, such as a default value) runs the call at
+    import time. *importers* are the production files that import the package
+    at their top level: one that holds none of the calling functions imports it
+    for something the step cannot move (a side effect, a re-export, an
+    attribute read), so the package counts as needed at import time.
     """
     callers = list(callers)
     functions = sorted({sid for sid, kind in callers if kind in _CALLED_KINDS})
+    calling_files = {file_of_symbol(sid) for sid in functions}
     return {
         "kind": PACKAGE_CALLS,
         "package": package,
         "callers": functions[:_NAMED_CALLERS],
         "callers_total": len(functions),
-        "at_import": any(kind not in _CALLED_KINDS for _, kind in callers),
+        "at_import": any(kind not in _CALLED_KINDS for _, kind in callers)
+        or any(path not in calling_files for path in importers),
     }
 
 

@@ -196,8 +196,8 @@ _LOADER = [
 ]
 
 
-def _loaded(samples):
-    return _entries(_convert(_LOADER, samples))[("pkg/app.py", "<module>")]["inside"]
+def _loaded(samples, frames=_LOADER):
+    return _entries(_convert(frames, samples))[("pkg/app.py", "<module>")]["inside"]
 
 
 def test_a_library_an_import_loads_and_the_run_never_runs_reads_called_false() -> None:
@@ -242,15 +242,58 @@ def test_called_false_survives_the_v1_parser() -> None:
                 "self": 1.0,
                 "inside": [
                     {"name": "dateutil", "kind": "library", "share": 0.6, "called": False},
-                    {"name": "click", "kind": "library", "share": 0.3, "called": True},
+                    {"name": "click", "kind": "library", "share": 0.2, "called": True},
+                    {"name": "_find_and_load", "kind": "import", "share": 0.1, "called": False},
                 ],
-            }
+            },
+            {
+                "path": "pkg/app.py",
+                "function": "load",
+                "line": 3,
+                "self": 1.0,
+                "inside": [
+                    {
+                        "name": "parse",
+                        "kind": "library",
+                        "share": 0.6,
+                        "called": False,
+                        "leaf": {"name": "f", "kind": "library", "share": 0.5, "called": False},
+                    }
+                ],
+            },
         ],
     }
-    [entry] = parse_evidence(json.dumps(doc).encode()).entries
-    assert entry["inside"] == [
+    module, fn = parse_evidence(json.dumps(doc).encode()).entries
+    # Only an import row's library item says the run never ran it.
+    assert module["inside"] == [
         {"name": "dateutil", "kind": "library", "share": 0.6, "called": False},
-        {"name": "click", "kind": "library", "share": 0.3},
+        {"name": "click", "kind": "library", "share": 0.2},
+        {"name": "_find_and_load", "kind": "import", "share": 0.1},
+    ]
+    assert fn["inside"] == [
+        {
+            "name": "parse",
+            "kind": "library",
+            "share": 0.6,
+            "leaf": {"name": "f", "kind": "library", "share": 0.5},
+        }
+    ]
+
+
+def test_the_standard_library_and_repo_reentry_are_never_judged_unused() -> None:
+    stdlib = FRAMES[7]  # the standard library: json
+    frames = [*_LOADER, stdlib]
+    inside = _loaded(
+        [
+            ([0, 1, 2, 1, 12], 3),  # app imports json, which the run never calls
+            # dateutil's import calls repo code, which calls back into dateutil: use.
+            ([0, 1, 2, 1, 3, 7, 11], 2),
+        ],
+        frames,
+    )
+    assert [(item["name"], "called" in item) for item in inside] == [
+        ("json", False),
+        ("dateutil", False),
     ]
 
 

@@ -494,7 +494,8 @@ def _measured_hotspot(
         terminal_sink=None,
         shared_path_suffix=(),
         intervention_symbol=key_intervention_symbol(key),
-        intervention_kind=key_intervention_kind(key),
+        # An import row is the file's top level, not a function.
+        intervention_kind="module" if is_import_row(symbol_id) else key_intervention_kind(key),
         terminal_sinks=(),
         resource_fingerprints=(),
         affected_call_sites_total=1,

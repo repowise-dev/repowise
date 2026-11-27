@@ -541,20 +541,15 @@ async def step_findings(
     (:func:`_package_calls`)."""
     import json
 
-    from ....evidence.format_v1 import is_import_row
     from ....evidence.ingest import load_origins
-    from ....evidence.next_step import never_called, static_finding
-    from ....evidence.payloads import json_list
+    from ....evidence.next_step import static_finding
     from ....ingestion.symbol_identity import file_of_symbol
     from ...models import HealthFinding
 
     rows = list(rows)
     targets: set[str] = set()
-    packages: set[str] = set()
     for row in rows:
         targets.add(row.symbol_id)
-        if is_import_row(row.symbol_id):
-            packages.update(never_called(json_list(getattr(row, "inside_json", None))))
         try:
             drivers = json.loads(getattr(row, "drivers_json", None) or "[]")
         except ValueError:
@@ -599,44 +594,92 @@ async def step_findings(
     return (
         out
         + [f for f in eager if origins.get(f["file_path"]) == "production"]
-        + await _package_calls(session, repository_id, packages)
+        + await _package_calls(session, repository_id, rows)
     )
 
 
 async def _package_calls(
-    session: AsyncSession, repository_id: str, packages: set[str]
+    session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
 ) -> list[dict[str, Any]]:
-    """Per Python package, its production call sites with each caller's symbol
-    kind (:func:`~repowise.core.evidence.next_step.package_calls`). None until the
-    stored call sites are complete, and none for a package nothing calls."""
+    """Per library an import row among *rows* loaded and its run never ran, the
+    package's production call sites with each caller's symbol kind and the
+    production files importing it at their top level
+    (:func:`~repowise.core.evidence.next_step.package_calls`). None until the
+    stored call sites are complete, and none for a package nothing calls.
+
+    A call on a function's signature lines (a default value) runs when the
+    module defines the function, so it reads as import time.
+    """
+    from ....evidence.format_v1 import is_import_row
     from ....evidence.ingest import load_origins
-    from ....evidence.next_step import package_calls
-    from ...models import WikiSymbol
+    from ....evidence.next_step import never_called, package_calls
+    from ....evidence.payloads import json_list
+    from ...models import GraphEdge, WikiSymbol
     from ..external_call_sites import external_call_sites_complete, list_external_call_sites
 
+    packages = sorted(
+        {
+            package
+            for row in rows
+            if is_import_row(row.symbol_id)
+            for package in never_called(json_list(getattr(row, "inside_json", None)))
+        }
+    )
     if not packages or not await external_call_sites_complete(session, repository_id):
         return []
-    sites = await list_external_call_sites(
-        session, repository_id, packages=[("pypi", p) for p in sorted(packages)]
-    )
+    sites = []
+    for i in range(0, len(packages), _BATCH_SIZE // 2):  # two bound values per package
+        sites += await list_external_call_sites(
+            session,
+            repository_id,
+            packages=[("pypi", p) for p in packages[i : i + _BATCH_SIZE // 2]],
+        )
     origins = await load_origins(session, repository_id, {s.file_path for s in sites})
     sites = [s for s in sites if origins.get(s.file_path) == "production"]
     callers = sorted({s.caller_symbol_id for s in sites})
-    kinds: dict[str, str] = {}
+    spans: dict[str, tuple[str, int, int]] = {}
     for i in range(0, len(callers), _BATCH_SIZE):
         result = await session.execute(
-            select(WikiSymbol.symbol_id, WikiSymbol.kind).where(
+            select(
+                WikiSymbol.symbol_id, WikiSymbol.kind, WikiSymbol.start_line, WikiSymbol.signature
+            ).where(
                 WikiSymbol.repository_id == repository_id,
                 WikiSymbol.symbol_id.in_(callers[i : i + _BATCH_SIZE]),
             )
         )
-        kinds.update({sid: kind for sid, kind in result})
+        for sid, kind, start, signature in result:
+            head = (signature or "").count("\n") + 1
+            spans[sid] = (kind, start or 0, (start or 0) + head - 1)
     by_package: dict[str, list[tuple[str, str | None]]] = {}
     for site in sites:
-        by_package.setdefault(site.package, []).append(
-            (site.caller_symbol_id, kinds.get(site.caller_symbol_id))
+        kind, start, head_end = spans.get(site.caller_symbol_id, (None, 0, 0))
+        if start <= site.line <= head_end:
+            kind = None  # in the signature: runs when the function is defined
+        by_package.setdefault(site.package, []).append((site.caller_symbol_id, kind))
+    importers: dict[str, set[str]] = {}
+    for package in by_package:
+        result = await session.execute(
+            select(GraphEdge.source_node_id).where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.edge_type == "imports",
+                or_(
+                    GraphEdge.target_node_id == f"external:{package}",
+                    GraphEdge.target_node_id.startswith(f"external:{package}.", autoescape=True),
+                ),
+                GraphEdge.type_only.is_(False),
+                GraphEdge.deferred.is_(False),
+            )
         )
-    return [package_calls(p, found) for p, found in sorted(by_package.items())]
+        importers[package] = {path for (path,) in result}
+    origins = await load_origins(
+        session, repository_id, {p for found in importers.values() for p in found}
+    )
+    return [
+        package_calls(
+            p, found, sorted(f for f in importers[p] if origins.get(f) == "production")
+        )
+        for p, found in sorted(by_package.items())
+    ]
 
 
 async def ranked_by_workload(

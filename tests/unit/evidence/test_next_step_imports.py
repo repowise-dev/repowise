@@ -144,3 +144,12 @@ def test_never_called_and_package_calls_shapes() -> None:
         "at_import": False,
     }
     assert package_calls("x", [("a.py::C", "class")])["at_import"] is True
+
+
+def test_a_file_importing_the_package_without_calling_it_keeps_it_at_startup() -> None:
+    # recipes.py imports and calls it; startup.py imports it for a side effect.
+    calls = [("pkg/recipes.py::parsedate", "function")]
+    moved = package_calls("dateutil", calls, ["pkg/recipes.py"])
+    kept = package_calls("dateutil", calls, ["pkg/recipes.py", "pkg/startup.py"])
+    assert moved["at_import"] is False and kept["at_import"] is True
+    assert next_step(_row(DATE_IMPORT), "python", [kept]) is None
