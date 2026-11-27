@@ -188,6 +188,7 @@
       "env": {
         "REPOWISE_HOOK_HEALTH_GATE": "1"
       },
+      "expect_stdout": "repowise health gate",
       "forbidden": [
         "scipy",
         "numpy",

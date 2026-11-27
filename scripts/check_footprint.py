@@ -68,6 +68,17 @@ _FIXTURE = {
     "app.py": "def add(a, b):\n    return a + b\n",
     "test_app.py": "from app import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
 }
+#: Staged after indexing: a function the health gate blocks, so the gate hook
+#: answers with a deny and shows it ran its commit check.
+_GATED = (
+    "def tangle(x):\n    total = 0\n"
+    + "".join(
+        f"    if x > {i}:\n        for a in range(x):\n            while a > {i}:\n"
+        f"                if a % 2:\n                    total += a\n                a -= 1\n"
+        for i in range(40)
+    )
+    + "    return total\n"
+)
 
 
 def measure_install() -> tuple[float, int, list[tuple[float, str]]]:
@@ -117,9 +128,8 @@ def indexed_repo(tmp: Path) -> Path:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"repowise init on the sample repository failed:\n{proc.stderr[-2000:]}")
-    # A staged change, so the health gate hook has a commit to check.
-    (repo / "app.py").write_text(_FIXTURE["app.py"] + "\n\ndef sub(a, b):\n    return a - b\n")
-    subprocess.run([*git, "add", "app.py"], cwd=repo, check=True)
+    (repo / "gated.py").write_text(_GATED, encoding="utf-8")
+    subprocess.run([*git, "add", "gated.py"], cwd=repo, check=True)
     return repo
 
 
