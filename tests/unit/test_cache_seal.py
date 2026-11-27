@@ -139,7 +139,8 @@ def test_sweep_removes_old_orphans_and_keeps_fresh_and_unrelated(tmp_path):
         _aged(index / "centrality_cache.pkl9c5db8b4228022b4.pkltmp", old=True),
         _aged(index / "duplication_cache.pkl7917cfu5.pkltmp", old=True),
         _aged(index / "parse_cache.pkl0123456789abcdef.tmp", old=True),
-        _aged(index / "mcp_cache" / "repo1.adjacencydeadbeef.pkltmp", old=True),
+        _aged(index / "mcp_cache" / "repo1.adjacency0123456789abcdef.pkltmp", old=True),
+        _aged(index / "mcp_cache" / "repo1.adjacency0123456789abcdef.tmp", old=True),
     ]
     kept = [
         _aged(index / "parse_cache.pklfeedfacefeedface.pkltmp", old=False),
@@ -147,6 +148,7 @@ def test_sweep_removes_old_orphans_and_keeps_fresh_and_unrelated(tmp_path):
         _aged(index / "notes.tmp", old=True),
         _aged(index / "state.json.tmp", old=True),
         _aged(index / "manual.pkltmp", old=True),
+        _aged(index / "my_backup_data.pkltmp", old=True),
         _aged(index / "notes.pkl.backup.tmp", old=True),
     ]
     deep = index / "lancedb" / "pages.lance"

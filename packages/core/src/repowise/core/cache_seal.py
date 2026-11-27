@@ -48,12 +48,11 @@ _STREAM_CHUNK = 1024 * 1024
 _TEMP_SUFFIX = ".pkltmp"
 #: A temp file untouched this long is an orphan of a killed write, never one in flight.
 ORPHAN_TEMP_SECONDS = 3600
-# ``<cache name><token>.pkltmp``, the token from make_temp_file (16 hex) or, in
-# releases before it, mkstemp (8 chars). ``<name>.pkl<token>.tmp`` is what the
-# second temp was called before it took the same suffix, so those orphans go too.
-_ORPHAN_TEMP_NAME = re.compile(
-    r".+(?:[0-9a-f]{16}|[a-z0-9_]{8})\.pkltmp|.+\.pkl(?:[0-9a-f]{16}|[a-z0-9_]{8})\.tmp"
-)
+# ``<cache name><token>.pkltmp``, the token 16 hex chars from make_temp_file.
+# Earlier releases wrote ``<cache>.pkl<8 chars>.pkltmp`` (mkstemp) and named the
+# second temp ``<cache name><token>.tmp``, so those orphans go too. Every name
+# needs the writer's token, so a file someone named by hand is left alone.
+_ORPHAN_TEMP_NAME = re.compile(r".+(?:[0-9a-f]{16}|\.pkl[a-z0-9_]{8})\.(?:pkltmp|tmp)")
 
 
 def _key_path() -> Path:
@@ -272,7 +271,7 @@ def sweep_orphan_temps(directory: Path, *, max_age: float = ORPHAN_TEMP_SECONDS)
     Looks in *directory* and its direct subdirectories, where every sealed
     cache lives (``.repowise/`` and its cache folders), so it never walks a
     deep store such as the vector index, and never follows a link out of it.
-    Only names this module writes, and only files older than *max_age*: a
+    Only names carrying the writer's random token, and only files older than *max_age*: a
     write in flight touches its temp file within seconds, so it is never that
     old. A file another process holds open (Windows refuses the delete) or one
     already gone is skipped. Ceiling: a writer suspended for over an hour
