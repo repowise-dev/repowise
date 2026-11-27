@@ -72,7 +72,6 @@ dependencies = [
     "sqlglot>=26,<28",
     # Dependency graph
     "networkx>=3.3,<4",
-    "scipy>=1.11,<2",
     # Template rendering
     "jinja2>=3.1,<4",
     # File filtering
