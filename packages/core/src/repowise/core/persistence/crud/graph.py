@@ -543,15 +543,89 @@ async def get_static_only_scc_ids(
     return {scc_id for scc_id, found in edges.items() if is_static_only_cycle(found)}
 
 
+async def _drop_excluded_edges_from_degrees(
+    session: AsyncSession,
+    repository_id: str,
+    exclude_spec: Any,
+    metrics: dict[str, dict],
+) -> None:
+    """Subtract edges touching excluded files from stored in/out degrees.
+
+    The snapshot counts distinct file-level code edges — the NetworkX file
+    subgraph: file/external nodes, no self-loops, no ``co_changes`` /
+    ``documents`` edges — so the adjustment counts the same pairs: distinct
+    ``(source, target)`` rows with both ends file-level, minus self-loops and
+    non-code edges. A pair with one excluded end decrements the kept end's
+    degree; a pair between two excluded files touches no returned row, and a
+    pair between two kept files changes nothing. Nothing is subtracted when
+    the spec excludes no file node, so a repo with no exclusions reads
+    exactly the stored snapshot.
+    """
+    from repowise.core.exclusion import node_is_excluded
+    from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
+
+    node_ids = (
+        (
+            await session.execute(
+                select(GraphNode.node_id).where(
+                    GraphNode.repository_id == repository_id,
+                    GraphNode.node_type == "file",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    excluded = {n for n in node_ids if node_is_excluded(n, exclude_spec)}
+    if not excluded:
+        return
+    pairs: list[tuple[str, str]] = []
+    ordered = sorted(excluded)
+    for i in range(0, len(ordered), _BATCH_SIZE):
+        batch = ordered[i : i + _BATCH_SIZE]
+        rows = (
+            await session.execute(
+                select(GraphEdge.source_node_id, GraphEdge.target_node_id)
+                .distinct()
+                .where(
+                    GraphEdge.repository_id == repository_id,
+                    GraphEdge.edge_type.not_in(NON_CODE_EDGE_TYPES),
+                    or_(
+                        GraphEdge.source_node_id.in_(batch),
+                        GraphEdge.target_node_id.in_(batch),
+                    ),
+                )
+            )
+        ).all()
+        pairs.extend((row[0], row[1]) for row in rows)
+    for source, target in pairs:
+        if source == target or "::" in source or "::" in target:
+            continue
+        if source in excluded and target not in excluded and target in metrics:
+            metrics[target]["in_degree"] = max(0, metrics[target]["in_degree"] - 1)
+        elif target in excluded and source not in excluded and source in metrics:
+            metrics[source]["out_degree"] = max(0, metrics[source]["out_degree"] - 1)
+
+
 async def get_graph_metrics(
     session: AsyncSession,
     repository_id: str,
+    *,
+    exclude_spec: Any = None,
 ) -> dict[str, dict]:
-    """Read the materialized ``graph_metrics`` snapshot as ``node_id → metrics``."""
+    """Read the materialized ``graph_metrics`` snapshot as ``node_id → metrics``.
+
+    With *exclude_spec*, the stored in/out degrees are adjusted so an edge
+    with an endpoint in an excluded file is not counted: the snapshot was
+    taken at index time, before the file was excluded, so its counts still
+    include those edges. Only the degrees move — pagerank, betweenness and
+    community stay the stored values. With no spec, the snapshot is returned
+    untouched.
+    """
     result = await session.execute(
         select(GraphMetric).where(GraphMetric.repository_id == repository_id)
     )
-    return {
+    metrics = {
         row.node_id: {
             "pagerank": row.pagerank,
             "betweenness": row.betweenness,
@@ -561,6 +635,9 @@ async def get_graph_metrics(
         }
         for row in result.scalars().all()
     }
+    if exclude_spec is not None:
+        await _drop_excluded_edges_from_degrees(session, repository_id, exclude_spec, metrics)
+    return metrics
 
 
 async def get_all_graph_nodes(
