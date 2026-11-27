@@ -1,359 +1,117 @@
-import { useEffect, useMemo, useState } from "react";
-import { FileText, Landmark, Lightbulb } from "lucide-react";
-import { Badge } from "@repowise-dev/ui/ui";
-import { EmptyState } from "@repowise-dev/ui/shared";
-import { Segmented } from "@repowise-dev/ui/shared/segmented";
-import {
-  DecisionStatusMark,
-  decisionStatusColor,
-} from "@repowise-dev/ui/decisions/decision-status-mark";
-import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
-import { formatRelativeTime, stripMarkdown } from "@repowise-dev/ui/lib/format";
-import {
-  DECISION_STATUSES,
-  DECISION_STATUS_LABELS,
-} from "@repowise-dev/types/decisions";
-import type { DecisionRecordResponse } from "@repowise-dev/api-client/types";
+/**
+ * Decisions panel: the web decisions page and its record page, composed from
+ * the same shared components, with the record opening in place.
+ *
+ * The shared components link with web routes (`/repos/<id>/decisions/<id>`
+ * and friends). There are no routes here, so one document-level listener maps
+ * those hrefs onto the panel's own state: a record id opens the record, the
+ * decisions root returns to the board, code health opens the Health panel,
+ * and anything else is held inert rather than navigating the webview away.
+ * Document level because the review drawer and dialogs render in portals.
+ */
+
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTheme } from "next-themes";
+import { Toaster } from "@repowise-dev/ui/shared/toast";
 import type { ViewProps } from "../../runtime/mount";
+import { useFileLinks } from "../../runtime/fileLinks";
+import { DecisionsPage, type BoardContext } from "./Board";
+import { DecisionRecordView } from "./Record";
 
-type Status = DecisionRecordResponse["status"];
+type Route = { kind: "board" } | { kind: "record"; id: string };
 
-// The shared ladder, not a local copy. The copy that was here ordered
-// deprecated ahead of superseded while the list endpoint ordered them the
-// other way, so the same rows ranked differently depending on the surface.
-const STATUS_ORDER: readonly Status[] = DECISION_STATUSES;
-
-function statusLabel(status: Status): string {
-  // `status` is a strict union here but an unconstrained string on the wire,
-  // so fall back to the raw value: a chip carrying a count needs a word beside
-  // it, and a blank label is worse than an unfamiliar one.
-  return DECISION_STATUS_LABELS[status] ?? status;
+/** What a web href means in the panel, or null when it is not a repo route. */
+export function routeForHref(
+  href: string,
+  repoId: string,
+): Route | { kind: "health" } | { kind: "inert" } | null {
+  if (!href.startsWith("/repos/")) return null;
+  const prefix = `/repos/${repoId}/decisions`;
+  const path = href.split(/[?#]/)[0] ?? "";
+  if (path === prefix || path === `${prefix}/`) return { kind: "board" };
+  if (path.startsWith(`${prefix}/`)) {
+    return { kind: "record", id: decodeURIComponent(path.slice(prefix.length + 1)) };
+  }
+  if (path.startsWith(`/repos/${repoId}/code-health`)) return { kind: "health" };
+  return { kind: "inert" };
 }
 
-/** Record section labels. Uppercase micro-labels are mono: it separates a
- *  machine-shaped label from the prose under it without spending a colour. */
-const SECTION_LABEL =
-  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
-
-function recencyKey(d: DecisionRecordResponse): number {
-  const raw = d.updated_at || d.created_at;
-  const t = raw ? new Date(raw).getTime() : 0;
-  return Number.isNaN(t) ? 0 : t;
-}
-
-/** Loading placeholder that matches the master-detail layout so the panel does
- *  not reflow when the decisions land. */
-function DecisionsSkeleton() {
+/** A plain anchor: the document listener owns what a click on it does. */
+function PanelLink({
+  href,
+  className,
+  children,
+  ...rest
+}: {
+  href: string;
+  className?: string;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex h-full flex-col" role="status" aria-label="Loading decisions">
-      <header className="border-b border-[var(--color-border-default)] px-6 py-4">
-        <div className="h-6 w-32 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-        <div className="mt-3 flex gap-2">
-          {[56, 64, 72, 60].map((w, i) => (
-            <div
-              key={i}
-              className="h-7 animate-pulse rounded-full bg-[var(--color-bg-inset)]"
-              style={{ width: w }}
-            />
-          ))}
-        </div>
-      </header>
-      <div className="flex min-h-0 flex-1">
-        {/* Borderless rows, matching the loaded list: a skeleton drawing seven
-            boxes for content that lands as seven plain rows reflows the panel
-            at exactly the moment it is meant to steady it. */}
-        <div className="w-80 shrink-0 space-y-1 border-r border-[var(--color-border-default)] p-3">
-          {Array.from({ length: 7 }).map((_, i) => (
-            <div key={i} className="flex items-start gap-3 px-3 py-2.5">
-              <div className="mt-1 h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-[var(--color-bg-inset)]" />
-              <div className="min-w-0 flex-1 space-y-1.5">
-                <div className="h-4 w-3/4 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-                <div className="h-3 w-1/2 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="min-w-0 flex-1 space-y-4 p-6">
-          <div className="h-6 w-2/3 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-          <div className="h-4 w-1/3 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-          <div className="space-y-2 pt-2">
-            {Array.from({ length: 7 }).map((_, i) => (
-              <div
-                key={i}
-                className="h-3 animate-pulse rounded bg-[var(--color-bg-inset)]"
-                style={{ width: `${92 - i * 7}%` }}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
+    <a href={href} className={className} {...rest}>
+      {children}
+    </a>
   );
 }
 
-export function App({ host, refreshToken }: ViewProps<"decisions">) {
-  const [decisions, setDecisions] = useState<DecisionRecordResponse[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Status | "all">("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+export function App({ host, repo, refreshToken }: ViewProps<"decisions">) {
+  const [route, setRoute] = useState<Route>({ kind: "board" });
+  const [version, setVersion] = useState(0);
+  const { resolvedTheme } = useTheme();
+  useFileLinks(host);
+
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
+
+  // The panel scrolls in the chrome's container, the board's parent. A record
+  // opens at its top; back puts the board where the reader left it.
+  const boardRef = useRef<HTMLDivElement>(null);
+  const boardScroll = useRef(0);
+  const openRecord = route.kind === "record" ? route.id : null;
+  useLayoutEffect(() => {
+    const scroller = boardRef.current?.parentElement;
+    if (!scroller) return;
+    scroller.scrollTop = openRecord ? 0 : boardScroll.current;
+  }, [openRecord]);
+  const go = useCallback((next: Route) => {
+    const scroller = boardRef.current?.parentElement;
+    if (scroller && !boardRef.current?.hidden) boardScroll.current = scroller.scrollTop;
+    setRoute(next);
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    setError(null);
-    host.api
-      .decisionsList()
-      .then((list) => {
-        if (cancelled) return;
-        const sorted = [...list].sort((a, b) => recencyKey(b) - recencyKey(a));
-        setDecisions(sorted);
-        setSelectedId((prev) =>
-          prev && sorted.some((d) => d.id === prev) ? prev : (sorted[0]?.id ?? null),
-        );
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Could not load decisions.");
-      });
-    return () => {
-      cancelled = true;
+    const onClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      const anchor = (event.target as Element | null)?.closest?.("a");
+      const next = routeForHref(anchor?.getAttribute("href") ?? "", repo.id);
+      if (!next) return;
+      event.preventDefault();
+      if (next.kind === "health") host.openView("health");
+      else if (next.kind !== "inert") go(next);
     };
-  }, [host, refreshToken]);
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, [host, repo.id, go]);
 
-  const counts = useMemo(() => {
-    const c = new Map<Status, number>();
-    for (const d of decisions ?? []) c.set(d.status, (c.get(d.status) ?? 0) + 1);
-    return c;
-  }, [decisions]);
-
-  const visible = useMemo(
-    () => (decisions ?? []).filter((d) => filter === "all" || d.status === filter),
-    [decisions, filter],
+  const ctx = useMemo<BoardContext>(
+    () => ({
+      host,
+      repoId: repo.id,
+      epoch: `${refreshToken}.${version}`,
+      refresh,
+      LinkComponent: PanelLink,
+    }),
+    [host, repo.id, refreshToken, version, refresh],
   );
-
-  const selected = useMemo(
-    () => visible.find((d) => d.id === selectedId) ?? visible[0] ?? null,
-    [visible, selectedId],
-  );
-
-  if (error) {
-    return (
-      <div className="p-6">
-        <EmptyState
-          icon={<Lightbulb className="h-8 w-8" />}
-          title="Could not load decisions"
-          description={error}
-        />
-      </div>
-    );
-  }
-
-  if (decisions === null) {
-    return <DecisionsSkeleton />;
-  }
-
-  if (decisions.length === 0) {
-    return (
-      <div className="p-6">
-        <EmptyState
-          icon={<Lightbulb className="h-8 w-8" />}
-          title="No decisions recorded"
-          description="No architectural decisions have been detected in this repository yet."
-        />
-      </div>
-    );
-  }
-
-  const chips: Array<{ key: Status | "all"; label: string; count: number }> = [
-    { key: "all", label: "All", count: decisions.length },
-    ...STATUS_ORDER.filter((s) => (counts.get(s) ?? 0) > 0).map((s) => ({
-      key: s,
-      label: statusLabel(s),
-      count: counts.get(s) ?? 0,
-    })),
-  ];
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="border-b border-[var(--color-border-default)] px-6 py-4">
-        <h1 className="flex items-center gap-2 text-[22px] font-semibold text-[var(--color-text-primary)]">
-          <Landmark className="h-5 w-5 text-[var(--color-text-secondary)]" />
-          Decisions
-        </h1>
-        <div className="mt-3">
-          {/* Status is one axis with mutually exclusive values: the shared
-              segmented control, with each count beside its label. */}
-          <Segmented<Status | "all">
-            label="Status"
-            value={filter}
-            onChange={setFilter}
-            options={chips.map((chip) => ({
-              value: chip.key,
-              label: chip.label,
-              count: String(chip.count),
-            }))}
-          />
-        </div>
-      </header>
-
-      <div className="flex min-h-0 flex-1">
-        <ul className="w-80 shrink-0 overflow-y-auto border-r border-[var(--color-border-default)] p-3">
-          {visible.map((d) => {
-            const on = selected?.id === d.id;
-            return (
-              <li key={d.id}>
-                <button
-                  type="button"
-                  onClick={() => setSelectedId(d.id)}
-                  className={
-                    "flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors " +
-                    (on
-                      ? "bg-[var(--color-bg-selected)]"
-                      : "hover:bg-[var(--color-bg-wash-hover)]")
-                  }
-                >
-                  <span
-                    className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: decisionStatusColor(d.status) }}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[15px] font-medium leading-snug text-[var(--color-text-primary)]">
-                      {stripMarkdown(d.title)}
-                    </span>
-                    <span className="mt-0.5 block text-xs text-[var(--color-text-tertiary)]">
-                      {formatRelativeTime(d.updated_at || d.created_at)}
-                      {d.source ? ` · ${d.source.replace(/_/g, " ")}` : ""}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-
-        <div className="min-w-0 flex-1 overflow-y-auto p-6">
-          {selected ? <Detail host={host} decision={selected} /> : null}
-        </div>
+    <>
+      {/* The board stays mounted under an open record, so back returns to the
+          lane, page and filter the reader left. */}
+      <div ref={boardRef} hidden={route.kind === "record"}>
+        <DecisionsPage ctx={ctx} />
       </div>
-    </div>
-  );
-}
-
-function Detail({
-  host,
-  decision,
-}: {
-  host: ViewProps<"decisions">["host"];
-  decision: DecisionRecordResponse;
-}) {
-  const sections: Array<{ heading: string; body: string }> = [
-    { heading: "Context", body: decision.context },
-    { heading: "Decision", body: decision.decision },
-    { heading: "Rationale", body: decision.rationale },
-  ].filter((s) => s.body && s.body.trim().length > 0);
-
-  return (
-    <article className="mx-auto max-w-2xl space-y-5">
-      <div className="space-y-3">
-        <DecisionStatusMark status={decision.status} className="capitalize" />
-        <h2 className="text-[22px] font-semibold leading-snug text-[var(--color-text-primary)]">
-          {stripMarkdown(decision.title)}
-        </h2>
-        {decision.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {decision.tags.map((tag) => (
-              <Badge key={tag} variant="outline">
-                {tag}
-              </Badge>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {sections.map((s) => (
-        <section key={s.heading} className="space-y-1.5">
-          <h3 className={SECTION_LABEL}>
-            {s.heading}
-          </h3>
-          {/* No `prose` wrapper: WikiMarkdown themes every element it emits
-              through our tokens, so the plugin only imposes a second font
-              scale and set of margins over one that is already set. */}
-          <div className="max-w-none text-[var(--color-text-secondary)]">
-            <WikiMarkdown content={s.body} />
-          </div>
-        </section>
-      ))}
-
-      {decision.alternatives.length > 0 && (
-        <ListSection heading="Alternatives considered" items={decision.alternatives} />
-      )}
-      {decision.consequences.length > 0 && (
-        <ListSection heading="Consequences" items={decision.consequences} />
-      )}
-
-      {decision.affected_files.length > 0 && (
-        <section className="space-y-1.5">
-          <h3 className={SECTION_LABEL}>
-            Affected files
-          </h3>
-          <ul className="space-y-1">
-            {decision.affected_files.map((path) => (
-              <li key={path}>
-                <FileRef host={host} path={path} />
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {decision.evidence_file && (
-        <section className="space-y-1.5 border-t border-[var(--color-border-default)] pt-4">
-          <h3 className={SECTION_LABEL}>Evidence</h3>
-          <FileRef
-            host={host}
-            path={decision.evidence_file}
-            line={decision.evidence_line ?? undefined}
-          />
-        </section>
-      )}
-    </article>
-  );
-}
-
-function ListSection({ heading, items }: { heading: string; items: string[] }) {
-  return (
-    <section className="space-y-1.5">
-      <h3 className={SECTION_LABEL}>
-        {heading}
-      </h3>
-      <ul className="list-disc space-y-1 pl-5 text-[15px] text-[var(--color-text-secondary)]">
-        {items.map((item, i) => (
-          <li key={i}>{item}</li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function FileRef({
-  host,
-  path,
-  line,
-}: {
-  host: ViewProps<"decisions">["host"];
-  path: string;
-  line?: number;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => host.openFile(path, line)}
-      className="inline-flex items-center gap-1.5 text-[15px] text-[var(--color-accent-primary)] hover:underline"
-    >
-      <FileText className="h-3.5 w-3.5 shrink-0" />
-      <span className="break-all text-left">
-        {path}
-        {line != null ? `:${line}` : ""}
-      </span>
-    </button>
+      {route.kind === "record" && <DecisionRecordView ctx={ctx} decisionId={route.id} />}
+      <Toaster theme={resolvedTheme === "dark" ? "dark" : "light"} />
+    </>
   );
 }
