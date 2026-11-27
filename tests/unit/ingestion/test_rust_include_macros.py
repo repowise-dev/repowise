@@ -3,7 +3,20 @@ from pathlib import Path
 
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.parser import ASTParser
-from tests.unit.ingestion.test_rust_module_paths import _file_info
+from tests.unit.ingestion.test_rust_module_paths import _file_info, _imports
+
+
+def test_only_source_relative_include_paths_are_extracted() -> None:
+    imports = _imports(
+        r"""
+        include!("/generated.rs");
+        include!(r"C:\build\generated.rs");
+        include!(r"\\server\share\generated.rs");
+        include!(r"C:generated.rs");
+        include!("generated.rs");
+        """
+    )
+    assert imports == [("./generated.rs", [])]
 
 
 def test_literal_includes_reach_only_indexed_targets(tmp_path: Path) -> None:

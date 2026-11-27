@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath
 
 from tree_sitter import Node
 
@@ -118,7 +118,7 @@ def _rust_statement(
             if len(parts) != 1 or parts[0].type != "string_content":
                 return []
             path = node_text(parts[0], src)
-            if PureWindowsPath(path).anchor:
+            if PurePosixPath(path).is_absolute() or PureWindowsPath(path).anchor:
                 return []
             return [
                 Import(

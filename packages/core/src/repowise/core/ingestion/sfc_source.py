@@ -636,7 +636,7 @@ _ASTRO_BRACE = rb"\{(?:%b|\{%b*+\})*+\}" % (_ASTRO_JS_BYTE, _ASTRO_JS_BYTE)
 # a word (``return"}"``) and unquoted ``title=it's`` overrun the tag; fine until a real file does.
 _ASTRO_START_TAG = (
     rb"<(?:(script|style|link)|[A-Za-z][\w.-]*)(?=[\s/>])"
-    rb"((?:\"[^\"]*(?:\"|\Z)|'[^']*(?:'|\Z)|%b|\{|[^>\"'{]++)*+)(?:>|\Z)" % _ASTRO_BRACE
+    rb"((?:\"[^\"]*(?:\"|\Z)|'[^']*(?:'|\Z)|%b|\{|[^>\"'{])*)(?:>|\Z)" % _ASTRO_BRACE
 )
 # The markup scan, outside and inside a ``{expr}``. Group 1 opens a hidden run,
 # group 4 enters or leaves an expression or an element inside one. ``<!--`` hides
@@ -776,7 +776,7 @@ def _astro_open_tag(
     _astro_record_ref(tag, attrs, state)
     if attrs.rstrip().endswith(b"/"):
         return opener.end()
-    if tag is None and b"is:raw" in attrs and _ASTRO_RAW.match(attrs):
+    if tag is None and _ASTRO_RAW.match(attrs):
         # An ``is:raw`` body is text (a lone ``{`` is legal), skipped like a <style>
         # body to the end tag of the full name (``</M.Katex>``).
         return re.compile(rb"</%b\s*>|\Z" % re.escape(full_name)).search(source, opener.end()).end()
