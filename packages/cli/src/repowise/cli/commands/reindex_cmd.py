@@ -90,6 +90,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     # --- Create LanceDB vector store ---
     lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+    _refuse_mock_over_semantic_store(lance_dir, embedder_impl)
     try:
         from repowise.core.persistence.vector_store import LanceDBVectorStore
     except ImportError:
@@ -327,6 +328,27 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     # failure is visible in the exit status, not just in the printed count.
     if indexed == 0 and failed > 0:
         raise click.Abort()
+
+
+def _refuse_mock_over_semantic_store(lance_dir, embedder_impl: object) -> None:
+    """Stop before mock vectors replace a store a real embedder built.
+
+    The store's writer refuses that write itself (``MockWouldReplaceStoreError``);
+    asked here first, through the guard ``build_vector_store`` uses, the run
+    stops before it reads a page, with one message instead of a failure per
+    batch, and names the one step that replaces the store on purpose.
+    """
+    from repowise.cli.providers.vector_store import _mock_would_clobber, existing_vector_dim
+
+    if not _mock_would_clobber(lance_dir, embedder_impl):
+        return
+    raise click.ClickException(
+        f"The search index at {lance_dir} holds {existing_vector_dim(lance_dir)}-wide "
+        "vectors from a real embedder, and mock test vectors would replace every one "
+        "of them, so its vectors were kept. To refresh it, name the embedder that "
+        "built it: repowise reindex --embedder <name>. To replace it with test "
+        "vectors anyway, delete that folder and run this reindex again."
+    )
 
 
 def _circuit_message(error: Exception) -> str:
