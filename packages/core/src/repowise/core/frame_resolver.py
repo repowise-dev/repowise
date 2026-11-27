@@ -935,6 +935,20 @@ class ClrFrameName:
     params: tuple[str, ...]
     #: The method a lambda, local function or state machine was written in, or None.
     enclosing: str | None = None
+    #: The method's owner is compiler-made: a closure class ``<>c__DisplayClass2_0`` or ``<>c``.
+    compiler_owner: bool = False
+
+    @property
+    def member_known(self) -> bool:
+        """Whether a source member can be named for this frame.
+
+        A static initializer (``.cctor``, or a lambda written in one) is no
+        member, and neither is the constructor of a compiler-made closure
+        class: it runs inside some method's body, and its name does not say which.
+        """
+        if ".cctor" in (self.method, self.enclosing):
+            return False
+        return not (self.compiler_owner and self.enclosing is None and self.method == ".ctor")
 
     @property
     def type_name(self) -> str:
@@ -982,7 +996,10 @@ def parse_clr_frame(text: str) -> ClrFrameName | None:
     if not types or not method:
         return None
     params = tuple(_clr_param(p) for p in _clr_split_params(m["params"]))
-    return ClrFrameName(namespace, tuple(types), _CLR_ARITY_RE.sub("", method), params, enclosing)
+    return ClrFrameName(
+        namespace, tuple(types), _CLR_ARITY_RE.sub("", method), params, enclosing,
+        compiler_owner=segments[-1].startswith("<"),
+    )
 
 
 def _clr_last_dot(name: str) -> int:
@@ -1066,7 +1083,10 @@ def place_clr_frames(
             out.append(frame)
             continue
         files = by_type.get(name.type_name, [])
-        if len(files) > 1:
+        if len(files) > 1 and not name.member_known:
+            # No member to look for: any file of a partial type would be a guess.
+            files = []
+        elif len(files) > 1:
             files = [
                 rel for rel in files
                 if any(s.kind in _CALLABLE_KINDS and s.name == name.wanted and _id_parent(s) == name.types[-1]
@@ -1091,15 +1111,38 @@ def _clr_type_names(symbols: Sequence[IndexedSymbol]) -> list[str]:
             if (m.start_line <= t.start_line and t.end_line <= m.end_line)
             or (m.start_line == m.end_line and m.end_line < t.start_line)
         ]
-        outer = [
-            u for u in types
-            if u is not t and u.start_line <= t.start_line and t.end_line <= u.end_line
-        ]
         spaces.sort(key=lambda s: (s.start_line, -s.end_line))
-        outer.sort(key=lambda s: (s.start_line, -s.end_line))
         namespace = ".".join(m.name for m in spaces)
-        nested = "+".join([u.name for u in outer] + [t.name])
+        nested = "+".join([*_clr_outer_types(t, types), t.name])
         out.append(f"{namespace}.{nested}" if namespace else nested)
+    return out
+
+
+def _clr_outer_types(t: IndexedSymbol, types: Sequence[IndexedSymbol]) -> list[str]:
+    """The names of the types *t* is nested in, outermost first.
+
+    Spans alone cannot tell ``class A { class B { } }`` from two sibling
+    types on one line, so each step must also be the parent the index
+    records in the qualified name (``<module>.A.B``: ``A`` holds ``B``),
+    which starts with the file's dotted path (``src/Cart.cs``: ``src.Cart``).
+    """
+    module = posixpath.splitext(t.file_path.replace("\\", "/"))[0].replace("/", ".") + "."
+    out: list[str] = []
+    cur = t
+    for _ in types:
+        qualified = cur.qualified_name
+        parts = qualified[len(module):].split(".") if qualified.startswith(module) else []
+        if len(parts) < 2:
+            break
+        holders = [
+            u for u in types
+            if u is not cur and u.name == parts[-2]
+            and u.start_line <= cur.start_line and cur.end_line <= u.end_line
+        ]
+        if not holders:
+            break
+        cur = max(holders, key=lambda s: (s.start_line, -s.end_line))
+        out.insert(0, cur.name)
     return out
 
 
@@ -1139,18 +1182,19 @@ def _csharp(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | Ski
     The method must be a direct member of the frame's innermost type, and an
     overload is picked by its parameters (:func:`_name_join`), never by name
     alone. A lambda, local function or iterator/async state machine is
-    charged to the method it was written in; one in a static field
-    initializer (``<.cctor>``) to the file.
+    charged to the method it was written in. A static initializer
+    (``.cctor``, or a lambda in one) and a closure class's constructor name
+    no member (:attr:`ClrFrameName.member_known`): they go to the file.
     """
     name = parse_clr_frame(frame.function)
     if name is None:
         return "no_second_signal"
+    if not name.member_known:
+        return (None, True)
     callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
     owner = name.types[-1]
     if name.enclosing is None:
         return _name_join(callables, owner=owner, name=name.wanted, params=name.params, by_count=True)
-    if name.enclosing == ".cctor":
-        return (None, True)
     hit = _name_join(callables, owner=owner, name=name.wanted, params=None, by_count=True)
     return (hit[0], True) if isinstance(hit, tuple) else hit
 

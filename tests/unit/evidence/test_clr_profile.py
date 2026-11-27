@@ -309,3 +309,53 @@ def test_async_and_iterator_state_machines_fold_into_their_method() -> None:
         "App!J.Jobs+<RunAsync>d__0.MoveNext()": ("J/Jobs.cs", "Jobs::RunAsync", True),
         "App!J.Jobs+<Items>d__1.MoveNext()": ("J/Jobs.cs", "Jobs::Items", True),
     }
+
+
+def test_static_initializers_and_closure_constructors_go_to_the_file_not_a_constructor() -> None:
+    src = (
+        b"namespace S;\npublic class Cart\n{\n"
+        b"    static readonly int Seed = 1;\n"
+        b"    public Cart(int n) { System.Func<int> f = () => n; }\n"
+        b"}\n"
+    )
+    frames = [
+        # The static initializer: the runtime names it ``.cctor``; the source has no such member.
+        _frame("App!S.Cart..cctor()"),
+        # The closure class ``n`` is captured in: built inside the constructor's body.
+        _frame("App!S.Cart+<>c__DisplayClass1_0..ctor()"),
+        _frame("App!S.Cart+<>c..cctor()"),
+        _frame("App!S.Cart..ctor(int32)"),
+    ]
+    assert _outcomes(frames, _symbols({"S/Cart.cs": src})) == {
+        "App!S.Cart..cctor()": ("S/Cart.cs", None, True),
+        "App!S.Cart+<>c__DisplayClass1_0..ctor()": ("S/Cart.cs", None, True),
+        "App!S.Cart+<>c..cctor()": ("S/Cart.cs", None, True),
+        "App!S.Cart..ctor(int32)": ("S/Cart.cs", "Cart::Cart", False),
+    }
+
+
+def test_a_static_initializer_of_a_partial_type_is_not_put_on_the_constructors_file() -> None:
+    fields = b"namespace P;\npublic partial class Svc { static System.Func<int> F = () => 1; }\n"
+    # (The index records no constructor written on its class's line.)
+    ctor = b"namespace P;\npublic partial class Svc\n{\n    public Svc() { }\n}\n"
+    frames = [_frame("App!P.Svc+<>c.<.cctor>b__0_0()"), _frame("App!P.Svc..cctor()"), _frame("App!P.Svc..ctor()")]
+    assert _outcomes(frames, _symbols({"Svc.Fields.cs": fields, "Svc.cs": ctor})) == {
+        "App!P.Svc+<>c.<.cctor>b__0_0()": "outside_root",
+        "App!P.Svc..cctor()": "outside_root",
+        "App!P.Svc..ctor()": ("Svc.cs", "Svc::Svc", False),
+    }
+
+
+def test_sibling_types_on_one_line_are_not_nested_in_each_other() -> None:
+    src = (
+        b"namespace N { public class A { public void Go() { } } public class B { public void Run() { } }"
+        b" class C { class D { public void Up() { } } } }\n"
+    )
+    # A file named after a type on the line: the file's name opens every qualified name.
+    path = "src/A.cs"
+    frames = [_frame("App!N.A.Go()"), _frame("App!N.B.Run()"), _frame("App!N.C+D.Up()")]
+    assert _outcomes(frames, _symbols({path: src})) == {
+        "App!N.A.Go()": (path, "A::Go", False),
+        "App!N.B.Run()": (path, "B::Run", False),
+        "App!N.C+D.Up()": (path, "D::Up", False),
+    }
