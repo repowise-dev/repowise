@@ -36,6 +36,7 @@ from repowise.cli.helpers import (
     ensure_repowise_dir,
     find_workspace_root,
     get_head_commit,
+    get_repowise_dir,
     load_config,
     load_state,
     release_update_lock,
@@ -50,6 +51,7 @@ from repowise.cli.helpers import (
     write_update_pending,
 )
 from repowise.cli.ui.mode_names import scope_line
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_BACKFILL_REWALK,
@@ -2638,6 +2640,9 @@ def run_update(
     deferred = _acquire_update_lock(run)
     if deferred is not None:
         return deferred
+    # Temp files killed cache writes left; the age guard spares one in flight.
+    if not opts.dry_run:
+        sweep_orphan_temps(get_repowise_dir(run.repo_path))
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")
