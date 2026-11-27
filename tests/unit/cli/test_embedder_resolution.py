@@ -1542,3 +1542,22 @@ def test_the_run_header_names_the_ollama_model(
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
     assert providers.embedder_label("ollama", tmp_path) == "ollama/nomic-embed-text"
     assert providers.embedder_label("openai", tmp_path) == "openai"
+
+
+def test_the_plan_screen_shows_ollama_once_ollama_is_picked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The screen's search row must name the embedder the run will use."""
+    from repowise.cli.commands.init_cmd._options import InitOptions, InitRun
+    from repowise.cli.commands.init_cmd._plan import _embedders
+
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    fields = {name: None for name in InitOptions.__dataclass_fields__}
+    fields.update(exclude=(), coverage_report=(), run_mode="standard", concurrency=10)
+    run = InitRun(opts=InitOptions(**fields), repo_path=repo, start=0.0, is_interactive=False)
+
+    assert _embedders(run)[1] == "openai"
+    assert _embedders(run, "ollama")[1] == "ollama"

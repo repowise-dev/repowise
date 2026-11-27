@@ -134,7 +134,11 @@ def _refresh(screen: _Screen, answers: WorkspaceAnswers) -> None:
         if screen.selection is not None
         else None
     )
-    resolved = resolve_embedder(answers.embedder_name, repo_path=primary)
+    resolved = resolve_embedder(
+        answers.embedder_name,
+        repo_path=primary,
+        provider=getattr(screen.selection, "provider_name", None),
+    )
     requested = embedder_was_requested(answers.embedder_name, load_config(primary).get("embedder"))
     plan = state.plan
     state.plan = replace(
