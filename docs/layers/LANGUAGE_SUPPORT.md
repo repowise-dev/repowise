@@ -123,7 +123,7 @@ by name. A third-party library in a static resource counts as vendored.
 
 Each Full and Good language claims its usual file extensions (C++ also claims
 headers such as `.hpp`, `.inl` and `.tpp`) and resolves imports through its own
-build files: tsconfig path aliases and workspaces, Maven and Gradle reactors,
+build files: tsconfig and Vite path aliases and workspaces, Maven and Gradle reactors,
 `go.mod`, `Cargo.toml`, `compile_commands.json`, `.csproj` / `.sln`, PSR-4,
 `pubspec.yaml`, `project.godot` and so on. The table per language is in
 [architecture/language-support.md](../architecture/language-support.md#extensions-and-import-resolution).

@@ -11,13 +11,16 @@ Design constraints:
   - Per-import resolution is O(k) prefix matching + set lookups, where k is
     the number of alias patterns. Candidate paths are checked against a
     once-per-directory listing, not one filesystem call per candidate.
-  - Fully backwards-compatible: if no tsconfig/jsconfig is found in the repo,
-    ``resolve()`` always returns ``None`` and behaviour is identical to before.
+  - Fully backwards-compatible: if no tsconfig/jsconfig and no Vite alias is
+    found in the repo, ``resolve()`` always returns ``None``.
   - Pattern matching follows TypeScript's exact semantics:
       1. Exact matches before wildcard matches.
       2. Wildcard matches sorted by prefix length descending (most specific wins).
       3. Candidates tried left-to-right; first hit wins.
       4. ``baseUrl``-only fallback when no ``paths`` entry matches.
+  - A Vite config's ``resolve.alias`` (:mod:`.vite_aliases`) applies to the
+    files under its directory, tried after the tsconfig ``paths`` and
+    ``baseUrl``, so a checked-in tsconfig keeps the first word.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ import structlog
 from repowise.core.fs_walk import _is_reparse_point
 
 from .models import TS_JS_LANGUAGES
+from .vite_aliases import VITE_CONFIG_GLOBS, is_vite_config, vite_aliases
 
 log = structlog.get_logger(__name__)
 
@@ -151,6 +155,11 @@ class TsconfigResolver:
         # source-file directory -> applicable ResolvedConfig (or None)
         self._file_config_cache: dict[Path, ResolvedConfig | None] = {}
 
+        # Vite config directory (absolute) -> its ``resolve.alias`` entries,
+        # in the same ``(alias_pattern, [abs_template])`` form as ``paths``.
+        self._dir_to_vite_entries: dict[Path, list[tuple[str, list[str]]]] = {}
+        self._vite_entries_cache: dict[Path, list[tuple[str, list[str]]] | None] = {}
+
         # Probe caches (see ``_probe``): directory -> resolved directory,
         # resolved directory -> its listing and its repo-relative prefix.
         # Files are assumed not to move while one resolver is alive.
@@ -166,6 +175,7 @@ class TsconfigResolver:
         log.info(
             "tsconfig_resolver_ready",
             configs=len(self._dir_to_config),
+            vite_alias_configs=len(self._dir_to_vite_entries),
         )
 
     # ------------------------------------------------------------------
@@ -187,14 +197,47 @@ class TsconfigResolver:
         3. For each match try candidate templates left-to-right.
         4. For each template try file extensions + index files.
         5. If no alias matched but ``baseUrl`` is set, try ``baseUrl + specifier``.
-        6. Return the first hit found in ``path_set``, or ``None``.
+        6. Then the nearest Vite config's ``resolve.alias`` entries, the same way.
+        7. Return the first hit found in ``path_set``, or ``None``.
         """
-        config = self._find_config_for_file(Path(importer_abs_path))
-        if config is None:
-            return None
+        importer = Path(importer_abs_path)
+        config = self._find_config_for_file(importer)
+        if config is not None:
+            # Step 1: try path alias entries.
+            resolved = self._resolve_entries(config.path_entries, module_path)
+            if resolved is not None:
+                return resolved
 
-        # Step 1: try path alias entries.
-        for alias_pattern, candidate_templates in config.path_entries:
+            # Step 2: baseUrl-only fallback.
+            if config.base_url is not None:
+                resolved = self._try_extensions(config.base_url / module_path)
+                if resolved is not None:
+                    return resolved
+
+        # Step 3: Vite ``resolve.alias``.
+        if self._dir_to_vite_entries:
+            directory = self._resolved_dir(importer.parent)
+            vite_entries = self._nearest(
+                directory, self._dir_to_vite_entries, self._vite_entries_cache
+            )
+            if vite_entries:
+                return self._resolve_entries(vite_entries, module_path, first_match_decides=True)
+
+        return None
+
+    def _resolve_entries(
+        self,
+        entries: list[tuple[str, list[str]]],
+        module_path: str,
+        *,
+        first_match_decides: bool = False,
+    ) -> str | None:
+        """The first file an alias entry maps *module_path* to, trying entries in order.
+
+        TypeScript moves on to the next matching pattern when one maps to no
+        file; Vite (*first_match_decides*) stops at the first matching entry.
+        """
+        for alias_pattern, candidate_templates in entries:
             captured = self._match_alias(alias_pattern, module_path)
             if captured is None:
                 continue
@@ -202,13 +245,8 @@ class TsconfigResolver:
                 resolved = self._apply_template(template, captured)
                 if resolved is not None:
                     return resolved
-
-        # Step 2: baseUrl-only fallback.
-        if config.base_url is not None:
-            resolved = self._try_extensions(config.base_url / module_path)
-            if resolved is not None:
-                return resolved
-
+            if first_match_decides:
+                return None
         return None
 
     # ------------------------------------------------------------------
@@ -222,12 +260,16 @@ class TsconfigResolver:
 
         from repowise.core.fs_walk import iter_glob
 
+        vite_configs: list[Path] = []
         for config_file in iter_glob(
             self._repo_path,
-            ("tsconfig*.json", "jsconfig.json"),
+            ("tsconfig*.json", "jsconfig.json", *VITE_CONFIG_GLOBS),
             prune_nested_git=self._prune_nested_git,
         ):
             name = config_file.name
+            if is_vite_config(name):
+                vite_configs.append(config_file)
+                continue
             if name == "tsconfig.json":
                 priority = 0
             elif name.startswith("tsconfig") and name.endswith(".json"):
@@ -248,6 +290,43 @@ class TsconfigResolver:
                 projects = self._load_references(resolved, visited=frozenset())
                 if projects:
                     self._config_projects[resolved.config_path] = projects
+
+        # ``vite.config.*`` before ``vitest.config.*`` in one directory; the
+        # first entry for an alias wins, as it does inside one config. Ceiling:
+        # Vitest alone loads ``vitest.config.*`` and Vite alone ``vite.config.*``,
+        # but the graph keeps one resolution per import, so a test-only alias
+        # that maps a ``find`` elsewhere than the app's is not followed.
+        for config_file in sorted(vite_configs, key=lambda p: (str(p.parent), p.name)):
+            entries = self._vite_alias_entries(config_file.resolve())
+            if entries:
+                directory = config_file.parent.resolve()
+                merged = self._dir_to_vite_entries.setdefault(directory, [])
+                seen = {pattern for pattern, _ in merged}
+                merged.extend(e for e in entries if e[0] not in seen)
+
+    def _vite_alias_entries(self, config_path: Path) -> list[tuple[str, list[str]]]:
+        """A Vite config's ``resolve.alias`` as ``paths``-style entries, in its order.
+
+        ``"@": X`` becomes ``@ -> X`` and ``@/* -> X/*``: Vite matches a string
+        ``find`` whole or followed by ``/``, first entry first. An entry whose
+        replacement is not read keeps its patterns with no candidates, so it
+        still stops the search for the specifiers it matches.
+        """
+        self.read_paths.add(config_path)
+        try:
+            text = config_path.read_bytes()
+        except OSError:
+            return []
+        entries: list[tuple[str, list[str]]] = []
+        for find, target in vite_aliases(text, config_path.parent):
+            if "*" in find:
+                continue
+            template = str(target.resolve()) if target is not None else None
+            if template is None or "*" in template:
+                entries += [(find, []), (find + "/*", [])]
+            else:
+                entries += [(find, [template]), (find + "/*", [template + "/*"])]
+        return entries
 
     # ------------------------------------------------------------------
     # Project references
@@ -532,20 +611,24 @@ class TsconfigResolver:
 
     def _find_config_for_dir(self, directory: Path) -> ResolvedConfig | None:
         """Find the nearest tsconfig for a source directory by walking up."""
-        if directory in self._file_config_cache:
-            return self._file_config_cache[directory]
+        return self._nearest(directory, self._dir_to_config, self._file_config_cache)
+
+    def _nearest(self, directory: Path, by_dir: dict[Path, Any], cache: dict[Path, Any]) -> Any:
+        """The *by_dir* value of *directory* or its nearest ancestor in the repo, memoized."""
+        if directory in cache:
+            return cache[directory]
 
         current = directory
         while True:
-            if current in self._dir_to_config:
-                self._file_config_cache[directory] = self._dir_to_config[current]
-                return self._dir_to_config[current]
+            if current in by_dir:
+                cache[directory] = by_dir[current]
+                return by_dir[current]
             parent = current.parent
             if parent == current or not current.is_relative_to(self._repo_path):
                 break
             current = parent
 
-        self._file_config_cache[directory] = None
+        cache[directory] = None
         return None
 
     # ------------------------------------------------------------------

@@ -789,7 +789,7 @@ dependency surface their syntax supports.
 | Tier | Language | Extensions | Import resolution |
 |------|----------|-----------|-------------------|
 | Full | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
-| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig and Vite `resolve.alias` path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
 | Full | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` and `require()`, including CommonJS re-export shapes |
 | Full | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and `#` subpath imports |
 | Full | **Vue** | `.vue` | The TS/JS resolver plus config aliases, directory-index components, router `import()` specifiers |
