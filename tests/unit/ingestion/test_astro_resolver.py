@@ -102,3 +102,23 @@ def test_default_astro_directories_with_manifest(tmp_path: Path) -> None:
     manifest = npm_manifests(tmp_path, paths)[0]
     facts, _ = js_frameworks(manifest, paths)[0]
     assert page in facts.entry_files(manifest.rel_dir, paths)
+
+
+def test_astro_directories_allow_quoted_keys_and_comments(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text('{"dependencies": {"astro": "*"}}')
+    (tmp_path / "astro.config.mjs").write_text(
+        """export default defineConfig({
+  "srcDir": "./app" /* source */,
+  'publicDir': `./static` // served assets
+})"""
+    )
+    page = "app/pages/index.astro"
+    paths = {page, "app/middleware.ts", "static/favicon.svg"}
+    ctx = _ctx(paths)
+    ctx.repo_path = tmp_path
+    assert resolve_import("/favicon.svg", page, "astro", ctx) == "static/favicon.svg"
+    manifest = npm_manifests(tmp_path, paths)[0]
+    facts, _ = js_frameworks(manifest, paths)[0]
+    entries = set(facts.entry_files(manifest.rel_dir, paths))
+    assert page in entries
+    assert "app/middleware.ts" in entries
