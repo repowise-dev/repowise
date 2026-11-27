@@ -85,6 +85,12 @@ _OWN_HEADER = (
         ("pkg/samples/registry.go", "production"),
         ("src/tutorials/steps.py", "production"),
         ("examples/a.py", "docs_example"),
+        ("sample-app/src/Main.kt", "docs_example"),  # issue #6220
+        ("sample-apps/a.py", "docs_example"),
+        ("test-app/src/Main.kt", "docs_example"),
+        ("playground/a.py", "docs_example"),
+        ("src/pkg/playground/a.py", "production"),  # nested, stays production
+        ("src/pkg/sample-app/a.py", "production"),
         ("docs/examples/a.py", "docs_example"),
         # A product's own docs routes ship; only a root docs tree is docs.
         ("app/docs/page.tsx", "production"),
