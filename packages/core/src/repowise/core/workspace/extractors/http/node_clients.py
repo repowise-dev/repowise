@@ -163,21 +163,43 @@ def _is_zero_arg(params: str) -> bool:
     return not p or all("=" in param for param in p.split(","))
 
 
+def _decl_encloses(content: str, brace: int, pos: int) -> bool:
+    depth = 1
+    for i in range(brace + 1, pos):
+        ch = content[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth <= 0:
+                return False
+    return depth > 0
+
+
 def _factory_return_func(content: str, pos: int) -> tuple[str, bool, bool] | None:
     """``(name, is_export, is_default)`` for a zero-argument function returning the factory call."""
     line_start = content.rfind("\n", 0, pos) + 1
     if not _RETURN_RE.search(content, line_start, pos):
         return None
-    window = content[max(0, pos - 300) : pos]
-    for m in reversed(list(_ARROW_DECL_RE.finditer(window))):
-        if _is_zero_arg(m.group("params")):
-            name = m.group("name") or ("default" if m.group("default") else "")
-            return name, bool(m.group("export") or m.group("default")), bool(m.group("default"))
-    for m in reversed(list(_FUNC_DECL_RE.finditer(window))):
-        if _is_zero_arg(m.group("params")):
-            name = m.group("name") or ("default" if m.group("default") else "")
-            return name, bool(m.group("export") or m.group("default")), bool(m.group("default"))
-    return None
+    offset = max(0, pos - 400)
+    window = content[offset:pos]
+    decls: list[tuple[int, int, re.Match[str], bool]] = [
+        (m.start() + offset, m.end() + offset, m, True) for m in _ARROW_DECL_RE.finditer(window)
+    ]
+    decls.extend((m.start() + offset, m.end() + offset, m, False) for m in _FUNC_DECL_RE.finditer(window))
+    if not decls:
+        return None
+    _, end, m, is_arrow = max(decls, key=lambda d: d[0])
+    if not _is_zero_arg(m.group("params")):
+        return None
+    if is_arrow and content[end:pos].strip() in ("", "await"):
+        name = m.group("name") or ("default" if m.group("default") else "")
+        return name, bool(m.group("export") or m.group("default")), bool(m.group("default"))
+    brace = content.find("{", end, pos)
+    if brace == -1 or not _decl_encloses(content, brace, pos):
+        return None
+    name = m.group("name") or ("default" if m.group("default") else "")
+    return name, bool(m.group("export") or m.group("default")), bool(m.group("default"))
 # `export { api, v2 as client }` and `export default api`.
 _EXPORT_LIST_RE = re.compile(r"export(?<![\w$]export)\s*\{(?P<names>[^{}]*)\}")
 _EXPORT_DEFAULT_RE = re.compile(

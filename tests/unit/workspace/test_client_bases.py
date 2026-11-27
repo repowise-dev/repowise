@@ -351,3 +351,40 @@ def test_a_wrapper_with_relative_path_and_no_prefix_is_ignored(tmp_path: Path) -
         "export const list = () => apiFetch('relative/path');\n"
     )
     assert _paths(tmp_path, "src/w.ts", text) == set()
+
+
+def test_a_block_body_arrow_wrapper_keeps_prefix(tmp_path: Path) -> None:
+    text = (
+        "import axios from 'axios';\n"
+        "export const apiFetch = (endpoint: string) => {\n"
+        "  return axios.get(`/api/v1${endpoint}`);\n"
+        "};\n"
+        "export const a = () => apiFetch('/users');\n"
+    )
+    assert "/api/v1/users" in {p for _m, p in _paths(tmp_path, "src/w.ts", text)}
+
+
+def test_a_wrapper_prefix_not_applied_to_unrelated_import(tmp_path: Path) -> None:
+    api_mod = (
+        "import axios from 'axios';\n"
+        "export function apiGet(url: string) { return axios.get(`/api${url}`); }\n"
+    )
+    unrelated_mod = (
+        "export function apiGet(url: string, opts?: any) { return fetch(url, opts); }\n"
+    )
+    client_mod = (
+        "import { apiGet } from './unrelated';\n"
+        "apiGet('/users', { method: 'GET' });\n"
+    )
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "api.ts").write_text(api_mod, encoding="utf-8")
+    (repo / "src" / "unrelated.ts").write_text(unrelated_mod, encoding="utf-8")
+    (repo / "src" / "client.ts").write_text(client_mod, encoding="utf-8")
+    paths = {
+        (c.meta["client"], c.meta["path"])
+        for c in HttpExtractor().extract(repo, "web")
+        if c.role == "consumer"
+    }
+    assert ("wrapper", "/users") in paths
+    assert ("wrapper", "/api/users") not in paths

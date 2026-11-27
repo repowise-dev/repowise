@@ -411,3 +411,21 @@ def test_only_a_placeholder_host_after_a_scheme_placeholder_is_stripped() -> Non
     path, _ = strip_leading_base_expr("${s}//${tenant}.example.com/api/users")
     assert path.startswith("//${tenant}")
     assert strip_leading_base_expr("${a}//${b}") == ("/", "b")
+
+
+def test_factory_return_func_rejects_parameterized_intervening_declaration(tmp_path: Path) -> None:
+    text = (
+        "import axios from 'axios';\n"
+        "export function ping() { return 1; }\n"
+        "export function getApi(baseUrl: string) {\n"
+        "  return axios.create({ baseURL: baseUrl });\n"
+        "}\n"
+        "export const test = () => ping().get('/test');\n"
+    )
+    (tmp_path / "index.ts").write_text(text, encoding="utf-8")
+    paths = {
+        (c.meta.get("client"), c.meta.get("path"))
+        for c in HttpExtractor().extract(tmp_path, "web")
+        if c.role == "consumer"
+    }
+    assert not any(p == "/test" for _client, p in paths)

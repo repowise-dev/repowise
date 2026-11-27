@@ -39,7 +39,15 @@ from .client_calls import (
 )
 from .commonjs import exports_mounts
 from .js_factories import factory_bases, factory_mounts
-from .node_clients import FieldScope, client_calls, client_mounts
+from .node_clients import (
+    _EXPORT_DEFAULT_RE,
+    FieldScope,
+    _imports,
+    _is_package,
+    _module_name,
+    client_calls,
+    client_mounts,
+)
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
@@ -151,11 +159,11 @@ _DEF_HEAD = (
 # After the parameter list: an optional return type with no brace in it, then
 # the body's `{`, an arrow into a template, or an arrow expression.
 _BODY_START_RE = re.compile(
-    r"\s*(?::[^{;=`]*?)?\s*(?:=>\s*(?P<arrow_expr>[^{`\s])|(?P<open>[{`]))"
+    r"\s*(?::[^{;=`]*?)?\s*(?:=>\s*)?(?P<open>[{`])|\s*(?::[^{;=`]*?)?\s*=>\s*(?P<arrow_expr>[^{`\s])"
 )
 _WRAPPER_MOUNT_KEY = "wrapper-prefix:"
 _EXPORT_NAMES_RE = re.compile(
-    r"""export(?<![\w$]export)\s+(?:async\s+)?(?:function\s*\*?\s*(?P<fn>[A-Za-z_$][\w$]*)|(?:const|let|var)\s+(?P<var>[A-Za-z_$][\w$]*))"""
+    r"""export(?<![\w$]export)\s+(?P<default>default\s+)?(?:async\s+)?(?:function\s*\*?\s*(?P<fn>[A-Za-z_$][\w$]*)|(?:const|let|var)\s+(?P<var>[A-Za-z_$][\w$]*))"""
 )
 _TEMPLATE_RE = re.compile(r"`[^`]*`")
 _FIRST_PARAM_RE = re.compile(r"\s*(?:\.\.\.)?([A-Za-z_$][\w$]*)")
@@ -168,6 +176,30 @@ _ENV_RE = re.compile(r"(?:process\.env|import\.meta\.env)\b")
 _NOT_A_REQUEST_RE = re.compile(
     r"=>|\bfunction\b|\bconsole\.|\bthrow\b|Error\s*\(|\b(?:log|logger)\s*[.(]|\bwarn\s*\("
 )
+
+
+def _mounted_wrapper_prefixes(
+    ctx: ScanContext,
+    callees: set[str],
+    prefixes: dict[str, str | None],
+) -> None:
+    content = ctx.content
+    if not any(c not in prefixes for c in callees) or ("import" not in content and "require" not in content):
+        return
+    imports = _imports(content)
+    imported_map = {
+        local: (imported, spec) for local, imported, spec in imports if not _is_package(spec)
+    }
+    for callee in callees:
+        if callee in prefixes or callee not in imported_map:
+            continue
+        imported_name, spec = imported_map[callee]
+        module = _module_name(spec)
+        mounted = ctx.mounts.get(f"{_WRAPPER_MOUNT_KEY}{module}:{imported_name}")
+        if mounted is None and imported_name == "default":
+            mounted = ctx.mounts.get(f"{_WRAPPER_MOUNT_KEY}{module}:{callee}")
+        if mounted is not None:
+            prefixes[callee] = mounted
 
 
 def with_bases(ctx: ScanContext, matches: list[ClientCallMatch]) -> list[ClientCallMatch]:
@@ -187,11 +219,7 @@ def with_bases(ctx: ScanContext, matches: list[ClientCallMatch]) -> list[ClientC
     strings = FileStrings(content, JS_SYNTAX)
     fields = FieldScope(strings)
     prefixes = wrapper_prefixes(content, callees, strings, fields)
-    for callee in callees:
-        if callee not in prefixes:
-            mounted = ctx.mounts.get(f"{_WRAPPER_MOUNT_KEY}{callee}")
-            if mounted is not None:
-                prefixes[callee] = mounted
+    _mounted_wrapper_prefixes(ctx, callees, prefixes)
     out: list[ClientCallMatch] = []
     for m in matches:
         settled: dict[str, str] = {}
@@ -384,7 +412,18 @@ def wrapper_mounts(ctx: ScanContext) -> dict[str, str]:
     if not http_names:
         return {}
     prefixes = wrapper_prefixes(content, http_names, strings, fields)
-    return {f"{_WRAPPER_MOUNT_KEY}{name}": prefix for name, prefix in prefixes.items() if prefix}
+    module = _module_name(ctx.rel_path)
+    mounts = {f"{_WRAPPER_MOUNT_KEY}{module}:{name}": prefix for name, prefix in prefixes.items() if prefix}
+    for m in _EXPORT_NAMES_RE.finditer(content):
+        if m.group("default"):
+            name = m.group("fn") or m.group("var")
+            if prefixes.get(name):
+                mounts[f"{_WRAPPER_MOUNT_KEY}{module}:default"] = prefixes[name]
+    for m in _EXPORT_DEFAULT_RE.finditer(content):
+        name = m.group("name")
+        if prefixes.get(name):
+            mounts[f"{_WRAPPER_MOUNT_KEY}{module}:default"] = prefixes[name]
+    return mounts
 
 
 class JsClientsDialect:
