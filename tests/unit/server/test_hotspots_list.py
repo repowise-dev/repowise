@@ -380,14 +380,17 @@ async def test_empty_health_report_does_not_wipe_metrics_with_placeholders(
 
         from repowise.core.persistence.models import HealthFileMetric
 
-        rows = (
-            (
+        rows = {
+            r.file_path: r
+            for r in (
                 await session.execute(
                     select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
                 )
             )
             .scalars()
             .all()
-        )
-        assert len(rows) == 1
-        assert rows[0].file_path == "app/models/user.rb"
+        }
+        assert len(rows) == 2
+        assert rows["app/models/user.rb"].score == 8.0
+        assert rows["db/schema.rb"].code_origin == "generated"
+        assert rows["db/schema.rb"].score is None

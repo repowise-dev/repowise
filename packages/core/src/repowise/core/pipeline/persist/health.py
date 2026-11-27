@@ -173,6 +173,51 @@ def _build_skipped_generated_metrics(
     return gen_metrics
 
 
+async def _save_skipped_generated_placeholders(
+    session: Any,
+    repo_id: str,
+    gen_metrics: list[Any],
+    analyzed_commit: str | None,
+) -> None:
+    if not gen_metrics:
+        return
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import HealthFileMetric
+
+    paths = [m.file_path for m in gen_metrics]
+    existing = set(
+        (
+            await session.execute(
+                select(HealthFileMetric.file_path).where(
+                    HealthFileMetric.repository_id == repo_id,
+                    HealthFileMetric.file_path.in_(paths),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for m in gen_metrics:
+        if m.file_path in existing:
+            continue
+        session.add(
+            HealthFileMetric(
+                repository_id=repo_id,
+                file_path=m.file_path,
+                score=None,
+                max_ccn=None,
+                max_nesting=None,
+                nloc=0,
+                has_test_file=False,
+                is_test=False,
+                code_origin="generated",
+                analyzed_commit=analyzed_commit,
+            )
+        )
+    await session.flush()
+
+
 async def save_full_health_report(
     session: Any,
     repo_id: str,
@@ -216,14 +261,6 @@ async def save_full_health_report(
     hr = health_report
     metrics = list(getattr(hr, "metrics", None) or [])
     findings = list(getattr(hr, "findings", None) or [])
-    if not metrics and not findings:
-        # A pass that scored nothing is a broken pass, not a clean repository.
-        # Every write below replaces the repository's rows wholesale, so
-        # honouring an empty report would delete every metric, resolve every
-        # open plan a person has triaged, and empty both queues on the strength
-        # of a parse failure or an exclude pattern that matched everything.
-        return
-
     # Store origin for skipped generated files so origin_clause holds them out (#6303).
     skipped_paths = _collect_skipped_generated_paths(
         skipped_generated_files, traversal_stats, repo_path
@@ -231,6 +268,19 @@ async def save_full_health_report(
     gen_metrics = _build_skipped_generated_metrics(
         skipped_paths, {m.file_path for m in metrics}, repo_path
     )
+    if not metrics and not findings:
+        # A pass that scored nothing is a broken pass, not a clean repository.
+        # Every write below replaces the repository's rows wholesale, so
+        # honouring an empty report would delete every metric, resolve every
+        # open plan a person has triaged, and empty both queues on the strength
+        # of a parse failure or an exclude pattern that matched everything.
+        # Minimal placeholders are recorded without wholesale replacement (#6303).
+        if gen_metrics:
+            await _save_skipped_generated_placeholders(
+                session, repo_id, gen_metrics, analyzed_commit
+            )
+        return
+
     if gen_metrics:
         metrics.extend(gen_metrics)
 
