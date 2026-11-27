@@ -5,6 +5,7 @@ from __future__ import annotations
 import posixpath
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .context import ResolverContext
 from .lwc import lwc_bundle_dir, resolve_lwc_module
@@ -12,6 +13,9 @@ from .nuxt import resolve_nuxt_alias
 from .subpath_imports import resolve_subpath_import
 from .svelte_kit import resolve_lib_alias
 from .ts_workspace import _vitest_glob_to_regex, resolve_via_workspaces
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 # Metro (React Native) platform extensions, in sorted order so the candidates
 # generated from them are deterministic.
@@ -216,6 +220,7 @@ def resolve_ts_js_import_all(
 
 
 _GLOB_CHARS = frozenset("*?[{")
+_VITE_CONFIG_EXTS = ("js", "mjs", "ts", "cjs", "mts", "cts")
 
 
 def resolve_ts_js_glob(
@@ -230,29 +235,159 @@ def resolve_ts_js_glob(
     pattern removes what it matches. Vite never loads the importer itself.
 
     Only files in ``ctx.path_set`` match, so excluded and unindexed files get
-    no edge. A ``/``-rooted pattern (from the Vite root) is not read: the root
-    comes from the bundler config, so it matches nothing here.
+    no edge. A ``/``-rooted pattern starts at the Vite root, inferred from the
+    nearest Vite config, package manifest or repository root.
     """
     matched: set[str] = set()
     removed: set[str] = set()
+    vite_root = (
+        _vite_root(importer_path, ctx.repo_path)
+        if any(pattern.startswith(("/", "!/")) for pattern in patterns)
+        else None
+    )
     for pattern in patterns:
         negated = pattern.startswith("!")
-        files = _glob_files(pattern[1:] if negated else pattern, importer_path, ctx)
+        files = _glob_files(pattern[1:] if negated else pattern, importer_path, ctx, vite_root)
         (removed if negated else matched).update(files)
     matched -= removed
     matched.discard(importer_path)
     return tuple(sorted(matched))
 
 
-def _glob_files(pattern: str, importer_path: str, ctx: ResolverContext) -> set[str]:
+def _glob_files(
+    pattern: str, importer_path: str, ctx: ResolverContext, vite_root: str | None
+) -> set[str]:
     if pattern.startswith("**"):
         return _regex_matches(pattern, ctx)
     if pattern.startswith(("./", "../")):
         joined = posixpath.normpath(posixpath.join(posixpath.dirname(importer_path), pattern))
         return set() if joined.startswith("../") else _regex_matches(joined, ctx)
-    if not pattern or pattern.startswith("/"):
+    if pattern.startswith("/"):
+        return _vite_root_glob_files(pattern, vite_root, ctx)
+    if not pattern:
         return set()
     return _alias_glob_files(pattern, importer_path, ctx)
+
+
+def _vite_root_glob_files(pattern: str, root: str | None, ctx: ResolverContext) -> set[str]:
+    root_glob = posixpath.normpath(pattern.lstrip("/"))
+    if root is None or root_glob == ".." or root_glob.startswith("../"):
+        return set()
+    if root == ".":
+        return _regex_matches(root_glob, ctx)
+    prefix = f"{root}/"
+    regex = _vitest_glob_to_regex(root_glob)
+    return {
+        path for path in ctx.path_set if path.startswith(prefix) and regex.match(path[len(prefix) :])
+    }
+
+
+def _vite_root(importer_path: str, repo_path: Path | None) -> str | None:
+    """Repo-relative Vite root, or None when the configured root is outside the repo."""
+    if repo_path is None:
+        return "."
+    package_dir: Path | None = None
+    for parent in Path(importer_path).parents:
+        directory = repo_path / parent
+        config = _vite_config_in(directory)
+        if config is not None:
+            return _configured_vite_root(config, parent, repo_path)
+        if package_dir is None and (directory / "package.json").is_file():
+            package_dir = parent
+    return (package_dir or Path(".")).as_posix()
+
+
+def _vite_config_in(directory: Path) -> Path | None:
+    """The ``vite.config.*`` file in *directory*, if there is one."""
+    for ext in _VITE_CONFIG_EXTS:
+        config = directory / f"vite.config.{ext}"
+        if config.is_file():
+            return config
+    return None
+
+
+def _configured_vite_root(config: Path, config_dir: Path, repo_path: Path) -> str | None:
+    """The repo-relative root *config* sets; its own directory when it sets none."""
+    root = _literal_vite_root(config)
+    if root is None:
+        return config_dir.as_posix()
+    try:
+        return (config.parent / root).resolve().relative_to(repo_path.resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _literal_vite_root(config: Path) -> str | None:
+    """Read a top-level literal ``root`` from a Vite config object without executing it."""
+    from tree_sitter import Parser
+
+    from ..parser import _get_language
+
+    try:
+        source = config.read_bytes()
+    except OSError:
+        return None
+    language = _get_language("typescript" if config.suffix.endswith("ts") else "javascript")
+    if language is None:
+        return None
+    for statement in Parser(language).parse(source).root_node.named_children:
+        config_object = _exported_config_object(statement)
+        if config_object is None:
+            continue
+        found, root = _root_property(config_object)
+        if found:
+            return root
+    return None
+
+
+def _exported_config_object(statement: Node) -> Node | None:
+    """The object literal a top-level statement exports, also through ``defineConfig(...)``."""
+    value = _exported_value(statement)
+    if value is not None and value.type == "call_expression":
+        value = _define_config_argument(value)
+    return value if value is not None and value.type == "object" else None
+
+
+def _exported_value(statement: Node) -> Node | None:
+    """What ``export default ...`` or ``module.exports = ...`` exports."""
+    if statement.type == "export_statement":
+        return statement.child_by_field_name("value")
+    if statement.type != "expression_statement":
+        return None
+    expression = statement.named_child(0)
+    if expression is None or expression.type != "assignment_expression":
+        return None
+    left = expression.child_by_field_name("left")
+    if left is None or left.text != b"module.exports":
+        return None
+    return expression.child_by_field_name("right")
+
+
+def _define_config_argument(call: Node) -> Node | None:
+    """The first argument of ``defineConfig(...)``; any other call is returned as is."""
+    function = call.child_by_field_name("function")
+    arguments = call.child_by_field_name("arguments")
+    if function is None or function.text != b"defineConfig" or arguments is None:
+        return call
+    return next((arg for arg in arguments.named_children if arg.type != "comment"), None)
+
+
+def _root_property(config_object: Node) -> tuple[bool, str | None]:
+    """Whether *config_object* sets ``root``, and its value when it is a plain string."""
+    for pair in reversed(config_object.named_children):
+        key = pair.child_by_field_name("key")
+        if key is not None and (key.text or b"").strip(b"\"'") == b"root":
+            return True, _plain_string(pair.child_by_field_name("value"))
+    return False, None
+
+
+def _plain_string(node: Node | None) -> str | None:
+    """The text of a string literal without substitutions, else None."""
+    if node is None or node.type not in {"string", "template_string"}:
+        return None
+    if any(child.type == "template_substitution" for child in node.named_children):
+        return None
+    return (node.text or b"")[1:-1].decode("utf-8", errors="replace")
 
 
 def _regex_matches(repo_glob: str, ctx: ResolverContext) -> set[str]:

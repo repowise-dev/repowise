@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.resolvers.ts_workspace import _vitest_glob_to_regex
@@ -104,6 +106,53 @@ def test_array_negation_options_and_braces(tmp_path: Path) -> None:
     assert "src/mods/legacy/old.ts" not in edges
     # Loaded as text: the file is used, none of its exports are.
     assert edges["src/docs/intro.md.ts"] == []
+
+
+@pytest.mark.parametrize(
+    ("root_prefix", "markers"),
+    [
+        pytest.param("", {}, id="repo-root"),
+        pytest.param(
+            "apps/web/", {"package.json": "{}", "apps/web/package.json": "{}"}, id="package-root"
+        ),
+        pytest.param(
+            "apps/web/",
+            {
+                "apps/web/vite.config.mts": "export default { build: { root: './dist' } };\n",
+                "apps/web/src/package.json": "{}",
+            },
+            id="config-directory",
+        ),
+        pytest.param(
+            "apps/web/site/",
+            {
+                "vite.config.ts": "export default {};\n",
+                "apps/web/vite.config.ts": "export default defineConfig({ root: './site' });\n",
+            },
+            id="configured-root",
+        ),
+    ],
+)
+def test_root_relative_glob(tmp_path: Path, root_prefix: str, markers: dict[str, str]) -> None:
+    other_pages = "src/pages" if root_prefix else "apps/web/src/pages"
+    graph, _ = _build(
+        tmp_path,
+        {
+            **markers,
+            "apps/web/src/main.ts": (
+                "export const pages = import.meta.glob("
+                "['/src/pages/*.ts', '!/src/pages/skip.ts', '/../outside/*.ts']);\n"
+            ),
+            f"{root_prefix}src/pages/home.ts": "export const title = 'home';\n",
+            f"{root_prefix}src/pages/skip.ts": "export const title = 'skip';\n",
+            f"{other_pages}/other.ts": "export const title = 'other';\n",
+            "apps/outside/leak.ts": "export const title = 'outside';\n",
+            "apps/web/outside/leak.ts": "export const title = 'outside';\n",
+        },
+    )
+    assert _imports_from(graph, "apps/web/src/main.ts") == {
+        f"{root_prefix}src/pages/home.ts": ["*"]
+    }
 
 
 def test_alias_rooted_glob_resolves_through_tsconfig_paths(tmp_path: Path) -> None:
