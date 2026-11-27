@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
 
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+from repowise.core.ingestion.external_calls import ExternalBinding, ExternalCallSite
 from repowise.core.workspace.breaking_change import detect_breaking_changes
 from repowise.core.workspace.code_api import (
     CODE_CONTRACT_TYPE,
@@ -510,23 +512,41 @@ class TestSurfaceScope:
 JVM_WORKSPACE = Path(__file__).parents[2] / "fixtures" / "jvm_workspace"
 CLIENT_SOURCE = "billing-client/src/main/java/com/acme/billing/client/BillingClient.java"
 CLIENT = "com.acme.billing:billing-client"
+CHARGE_ID = f"{CLIENT_SOURCE}::BillingClient::charge"
+CHARGE_CONTROLLER = "billing-service/src/main/java/com/acme/billing/service/ChargeController.java"
+ORDER_API = "src/main/java/com/shop/orders/OrderApi.java"
 PKG = "com.acme.billing.client"
 CHARGE = """    public Invoice charge(String accountId, long cents) {
-        return new Invoice(accountId, cents);
+        return rest.postForObject("/charges", accountId, Invoice.class);
     }
 """
 
 
-def _import_edges(repo: Path) -> list[tuple[str, str, list[str]]]:
-    """The ``imports`` edges to an ``external:`` target a real graph build writes for *repo*."""
+def _graph(repo: Path) -> tuple[list[tuple[str, str, list[str]]], list[ExternalCallSite]]:
+    """The ``imports`` edges to an ``external:`` target and the calls into packages
+    that a real graph build writes for *repo*."""
+    parser = ASTParser()
+    builder = GraphBuilder(repo)
+    for file_info in FileTraverser(repo).traverse():
+        builder.add_file(parser.parse_file(file_info, (repo / file_info.path).read_bytes()))
+    edges = [
+        (source, target, list(data.get("imported_names", [])))
+        for source, target, data in builder.build().edges(data=True)
+        if data.get("edge_type") == "imports" and target.startswith("external:")
+    ]
+    return edges, [s for sites in (builder.external_call_sites or {}).values() for s in sites]
+
+
+def _heritage(repo: Path) -> list[tuple[str, str, str]]:
+    """The ``extends`` and ``implements`` edges that a real graph build writes for *repo*."""
     parser = ASTParser()
     builder = GraphBuilder(repo)
     for file_info in FileTraverser(repo).traverse():
         builder.add_file(parser.parse_file(file_info, (repo / file_info.path).read_bytes()))
     return [
-        (source, target, list(data.get("imported_names", [])))
+        (source, target, data["edge_type"])
         for source, target, data in builder.build().edges(data=True)
-        if data.get("edge_type") == "imports" and target.startswith("external:")
+        if data.get("edge_type") in ("extends", "implements")
     ]
 
 
@@ -546,9 +566,11 @@ async def _extract_jvm(root: Path, monkeypatch, *, billing_edit: tuple[str, str]
         )
 
     billing = await make_repo_index(root / "billing", _parse(root / "billing"), alias="billing")
+    edges, calls = _graph(root / "orders")
     orders = await make_repo_index(
-        root / "orders", {}, alias="orders", external_edges=_import_edges(root / "orders")
-    )
+        root / "orders", _parse(root / "orders"), alias="orders",
+        external_edges=edges, call_sites=calls,
+    )  # fmt: skip
     config = WorkspaceConfig(
         repos=[
             RepoEntry(path="billing", alias="billing"),
@@ -587,7 +609,11 @@ class TestMavenCodeContracts:
         store = billing_stores[0]
 
         # None of the service module: Spring Boot makes it an application.
-        providers = sorted(c.contract_id for c in store.contracts if c.role == "provider")
+        providers = sorted(
+            c.contract_id
+            for c in store.contracts
+            if c.role == "provider" and c.contract_type == CODE_CONTRACT_TYPE
+        )
         assert providers == [
             f"code::{CLIENT}::{PKG}.{name}"
             for name in (
@@ -598,7 +624,11 @@ class TestMavenCodeContracts:
                 "Invoice.cents",
             )
         ]
-        consumers = [c for c in store.contracts if c.role == "consumer"]
+        consumers = [
+            c
+            for c in store.contracts
+            if c.role == "consumer" and c.contract_type == CODE_CONTRACT_TYPE
+        ]
         assert {c.repo for c in consumers} == {"orders"}
         assert {c.contract_id for c in consumers} == set(providers)
 
@@ -610,6 +640,32 @@ class TestMavenCodeContracts:
         }
         assert ("orders", "billing", f"code::{CLIENT}::{PKG}.BillingClient.charge") in linked
         assert {(s, t) for s, t, _ in linked} == {("orders", "billing")}
+
+    def test_a_route_of_orders_reaches_post_charges_through_billing_client_charge(
+        self, billing_stores
+    ):
+        store = billing_stores[0]
+        route = next(c for c in store.contracts if c.contract_id == "http::POST::/orders")
+        assert route.symbol_id == f"{ORDER_API}::OrderApi::bill"
+
+        # The route's method calls BillingClient.charge: the link of that call
+        # names the calling method, and the consumer its line.
+        code = [link for link in store.contract_links if link.consumer_symbol_id == route.symbol_id]
+        assert [(link.contract_id, link.provider_symbol_id) for link in code] == [
+            (f"code::{CLIENT}::{PKG}.BillingClient.charge", CHARGE_ID)
+        ]
+        call = next(
+            c
+            for c in store.contracts
+            if c.role == "consumer" and c.symbol_id == route.symbol_id
+        )
+        assert (call.file_path, call.line) == (ORDER_API, 18)
+
+        # BillingClient.charge calls POST /charges of the billing service.
+        http = [link for link in store.contract_links if link.consumer_symbol_id == CHARGE_ID]
+        assert [(link.contract_id, link.provider_symbol_id) for link in http] == [
+            ("http::POST::/charges", f"{CHARGE_CONTROLLER}::ChargeController::create")
+        ]
 
     def test_deleting_a_client_method_names_the_repo_that_uses_it(self, billing_stores):
         # The removal rule needs only the contract, and reports nothing else of
@@ -646,12 +702,20 @@ async def _surface(
     lib: Path,
     edges: list[tuple[str, str, list[str]]] = (),
     own_edges: list[tuple[str, str, list[str]]] = (),
+    calls: list[ExternalCallSite] | None = None,
+    own_calls: list[ExternalCallSite] | None = None,
 ):
-    """The code surface of the module *lib*, and of a repo `app` that holds the import *edges*."""
+    """The code surface of the module *lib*, and of a repo `app` that holds the import
+    *edges* and the *calls*."""
     app = lib.parent / "app"
     app.mkdir(exist_ok=True)
-    lib_index = await make_repo_index(lib, _parse(lib), alias="lib", external_edges=own_edges)
-    app_index = await make_repo_index(app, {}, alias="app", external_edges=edges)
+    lib_index = await make_repo_index(
+        lib, _parse(lib), alias="lib", external_edges=own_edges, call_sites=own_calls,
+        graph_edges=_heritage(lib),
+    )  # fmt: skip
+    app_index = await make_repo_index(
+        app, {}, alias="app", external_edges=edges, call_sites=calls
+    )
     try:
         return build_code_surface(
             {"lib": lib, "app": app},
@@ -727,10 +791,27 @@ CORE_JAVA = {
         public class Over {
             public void call() {}
             public void call(int times) {}
+            public void call(int times, String... tags) {}
         }
         """),
     # A record's accessor shares the header line with the record's constructor.
     "Point.java": "public record Point(int x) {}\n",
+    # What `Mail` inherits: `push` from `Sender` past the package-private `Base`, which
+    # declares `close` again, and `ping` from `LoudPing`, which declares it again.
+    "Mail.java": dedent("""\
+        public abstract class Mail extends Base implements LoudPing {}
+        class Base extends Sender {
+            public void close() {}
+        }
+        """),
+    "Sender.java": dedent("""\
+        public class Sender {
+            public void push() {}
+            public void close() {}
+        }
+        """),
+    "Ping.java": "public interface Ping {\n    void ping();\n}\n",
+    "LoudPing.java": "public interface LoudPing extends Ping {\n    void ping();\n}\n",
 }
 CORE_KOTLIN = {
     "A.kt": dedent("""\
@@ -790,9 +871,10 @@ APP_PARENT = (
     "<parent><groupId>com.shop</groupId><artifactId>app</artifactId>"
     "<version>1</version></parent>"
 )
-#: A file of each module of the repo `app` that imports `Twin`, a class both `rest` and
-#: `starter` hold, and the modules the import joins: `service` depends on `starter`, `web`
-#: on `service`, and `batch` on neither, so it joins both: the guard of that fall-back.
+#: A file of each module of the repo `app` that imports and calls `Twin`, a class both
+#: `rest` and `starter` hold, and the modules the import and the call join: `service`
+#: depends on `starter`, `web` on `service`, and `batch` on neither, so it joins both: the
+#: guard of that fall-back.
 TWIN_HOLDERS = (("rest", "Twin"), ("starter", "Twin"))
 TWIN = {
     "service/src/main/java/com/shop/service/Direct.java": {"com.acme:starter"},
@@ -806,6 +888,48 @@ def _dependency(group: str, artifact: str) -> str:
         f"<dependencies><dependency><groupId>{group}</groupId>"
         f"<artifactId>{artifact}</artifactId></dependency></dependencies>"
     )
+
+
+#: The call of each file of the repo `app`, as ingestion records it (the import's
+#: target and the called path), and the export of `core` it reaches.
+CALLS = {
+    # A call on a receiver of an imported type, and a call through a static import.
+    "Call.java": ("com.acme.core.Api", "Api.run", "Api.run"),
+    "StaticCall.java": ("com.acme.core.Api.run", "Api.run", "Api.run"),
+    "OnDemandCall.java": ("com.acme.core.*", "Api.run", "Api.run"),
+    "NestedCall.java": ("com.acme.core.Order", "Order.Builder.build", "Order.Builder.build"),
+    "CompanionCall.java": ("com.acme.core.A", "A.Companion.make", "A.make"),
+    "FileClassCall.java": ("com.acme.core.UtilsKt", "UtilsKt.util", "util"),
+    "TopLevelCall.kt": ("com.acme.core.util", "util", "util"),
+    # A method a supertype declares is the supertype's export.
+    "InheritedCall.java": ("com.acme.core.Mail", "Mail.push", "Sender.push"),
+    "InterfaceCall.java": ("com.acme.core.Mail", "Mail.ping", "LoudPing.ping"),
+    # None where the nearest declaring type is not exported, or is not in the workspace.
+    "HiddenOverrideCall.java": ("com.acme.core.Mail", "Mail.close", None),
+    "ObjectCall.java": ("com.acme.core.Api", "Api.toString", None),
+    # A test file is left out, as for an import.
+    "CallTest.java": ("com.acme.core.Api", "Api.run", None),
+}
+#: The number of arguments each file passes to `Over.call`: one fits `call(int)` exactly and
+#: `call(int, String...)` by expanding, and Java takes the fixed arity first.
+OVERLOAD_CALLS = {"OverloadOne.java": 1}
+#: Functions of one file that call one export: two on one line, one of them on two lines.
+TWICE = [("f", 3), ("h", 3), ("f", 4)]
+
+
+def _call(
+    file: str,
+    module: str,
+    symbol_path: str,
+    ecosystem: str = "maven",
+    binding: ExternalBinding = "named",
+    caller: tuple[str, int] = ("f", 3),
+) -> ExternalCallSite:
+    """The record of a call of *file*, by default on line 3 by its function ``f``."""
+    return ExternalCallSite(
+        file, caller[1], f"{file}::{caller[0]}", ecosystem, module, "", f"external:{module}",
+        symbol_path.split(".")[0], symbol_path, binding,
+    )  # fmt: skip
 
 
 @pytest.fixture(scope="module")
@@ -846,11 +970,26 @@ def jvm_lib(tmp_path_factory: pytest.TempPathFactory):
     edges = [(file, f"external:{target}", []) for file, (target, _) in IMPORTS.items()]
     edges += [(file, "external:com.acme.split.Twin", []) for file in TWIN]
     edges.append(("Split.java", "external:com.acme.split.AutoConfig", []))
+    # A suffix in capitals is the language its lower case names, as for ingestion.
+    edges.append(("Upper.JAVA", "external:com.acme.core.Api", []))
     # A package that only begins with the name of one of `core`.
     edges.append(("SiblingPrefix.java", "external:com.acme.corex.Api", []))
     # An import of the module's own package, in a file of the repo that holds it.
     own = [("rest/src/main/java/com/acme/split/Client.java", "external:com.acme.split.*", [])]
-    return lib, asyncio.run(_surface(lib, edges, own))
+    calls = [_call(file, module, path) for file, (module, path, _) in CALLS.items()]
+    calls += [_call("Twice.java", "com.acme.core.Api", "Api.run", caller=c) for c in TWICE]
+    calls += [_call(file, "com.acme.split.Twin", "Twin") for file in TWIN]
+    # The call of `f` on line 3 once more, through another name the file binds (an alias).
+    calls.append(_call("Twice.java", "com.acme.core.Api", "Api.run", caller=TWICE[0]))
+    calls[-1] = replace(calls[-1], local_name="Alias")
+    # A call of `Over.call` with one argument.
+    calls += [
+        replace(_call(file, "com.acme.core.Over", "Over.call"), argument_count=count)
+        for file, count in OVERLOAD_CALLS.items()
+    ]
+    # A call of the repo's own module, which no other repo publishes to it.
+    own_calls = [_call("Split.java", "com.acme.split.AutoConfig", "AutoConfig")]
+    return lib, asyncio.run(_surface(lib, edges, own, calls, own_calls))
 
 
 def _in(contracts, *files: str) -> set[str]:
@@ -951,9 +1090,11 @@ class TestJvmImports:
     def test_a_class_two_modules_hold_joins_the_one_the_importing_module_depends_on(
         self, jvm_lib, file: str
     ):
-        joined = {c.meta["package"] for c in jvm_lib[1].for_repo("app") if c.file_path == file}
+        app = jvm_lib[1].for_repo("app")
+        joined = {(c.line is None, c.meta["package"]) for c in app if c.file_path == file}
 
-        assert joined == TWIN[file]
+        # The import, with no line, and the call.
+        assert joined == {(imported, name) for imported in (True, False) for name in TWIN[file]}
 
     def test_an_import_that_names_no_export_is_counted(self, jvm_lib):
         # UndeclaredName and Field: each joins a package of the module and names no
@@ -965,6 +1106,99 @@ class TestJvmImports:
 
         assert stats["app"]["code_wildcard_imports"] == 1
         assert "code_wildcard_imports" not in stats["lib"]
+
+
+class TestJvmCalls:
+    """The export each call of a repo reaches in the published modules."""
+
+    def test_a_call_consumes_the_export_it_calls(self, jvm_lib):
+        # One table: each call that consumes nothing guards a limit beside the calls that do.
+        app = jvm_lib[1].for_repo("app")
+        consumed = {
+            file: [
+                (c.symbol_name.split(":", 2)[2], c.line, c.symbol_id)
+                for c in app
+                if c.file_path == file
+            ]
+            for file in CALLS
+        }
+        assert consumed == {
+            file: [(f"com.acme.core.{expected}", 3, f"{file}::f")] if expected else []
+            for file, (_, _, expected) in CALLS.items()
+        }
+
+    def test_a_call_names_the_overload_its_arguments_select(self, jvm_lib):
+        named = {
+            c.file_path: c.meta.get("overload")
+            for c in jvm_lib[1].for_repo("app")
+            if c.file_path in OVERLOAD_CALLS
+        }
+        assert named == {"OverloadOne.java": f"{JAVA}/Over.java::Over::call#1"}
+
+    def test_each_calling_function_and_line_is_one_consumer(self, jvm_lib):
+        consumed = sorted(
+            (c.line, c.symbol_id) for c in jvm_lib[1].for_repo("app") if c.file_path == "Twice.java"
+        )
+        assert consumed == [(3, "Twice.java::f"), (3, "Twice.java::h"), (4, "Twice.java::f")]
+
+    def test_a_call_that_reaches_no_export_is_counted(self, jvm_lib):
+        # HiddenOverrideCall and ObjectCall.
+        assert jvm_lib[1].stats["app"]["code_unresolved_calls"] == 2
+
+    def test_a_call_of_a_module_of_the_same_repository_is_counted_nowhere(self, jvm_lib):
+        # A guard: such a call reaches a package and is still no unresolved call.
+        assert not [c for c in jvm_lib[1].for_repo("lib") if c.role == "consumer"]
+        assert "code_unresolved_calls" not in jvm_lib[1].stats["lib"]
+
+    def test_a_repo_whose_calls_are_all_recorded_has_no_unknown_calls(self, jvm_lib):
+        # A guard: Upper.JAVA imports the module, and its suffix names Java.
+        assert "code_call_sites_unknown" not in jvm_lib[1].stats["app"]
+
+
+#: A call of each file of the repo `app` into the npm package `@acme/lib`, and the
+#: export it reaches.
+NPM_CALLS = {
+    "member.ts": (_call("member.ts", "@acme/lib", "Client.charge", "npm"), "Client.charge"),
+    # A member the exported type does not declare, such as an inherited static.
+    "inherited.ts": (_call("inherited.ts", "@acme/lib", "Client.get", "npm"), None),
+    # Into a subpath or a submodule, whose `get` may not be the root's `get`.
+    "subpath.ts": (_call("subpath.ts", "@acme/lib/sub", "get", "npm"), None),
+    # A Python package of the same import name is another package.
+    "other.py": (_call("other.py", "@acme/lib", "get", "pypi"), None),
+}  # fmt: skip
+
+
+@pytest.fixture(scope="module")
+def npm_lib(tmp_path_factory: pytest.TempPathFactory):
+    """The surface of an npm package `@acme/lib` and of a repo `app` that calls it, built once."""
+    lib = tmp_path_factory.mktemp("npm-lib") / "lib"
+    _source(lib, "package.json", '{"name": "@acme/lib", "exports": {".": "./index.ts"}}')
+    index = "export class Client {\n  charge(id: string) {}\n}\nexport function get() {}\n"
+    _source(lib, "index.ts", index)
+    # A Vue file imports the package; ingestion records no call of a Vue file.
+    vue = [("App.vue", "external:@acme/lib", ["get"])]
+    return asyncio.run(_surface(lib, vue, calls=[site for site, _ in NPM_CALLS.values()]))
+
+
+class TestCallsInOtherEcosystems:
+    """A call of any language that ingestion records is read the same way."""
+
+    def test_a_call_consumes_the_export_its_path_names(self, npm_lib):
+        # One table: each call that consumes nothing guards a limit beside the call that does.
+        app = npm_lib.for_repo("app")
+        consumed = {file: [c.contract_id for c in app if c.file_path == file] for file in NPM_CALLS}
+        assert consumed == {
+            file: [f"code::@acme/lib::{expected}"] if expected else []
+            for file, (_, expected) in NPM_CALLS.items()
+        }
+
+    def test_a_repo_with_no_complete_call_record_has_unknown_calls(self, npm_lib):
+        assert npm_lib.stats["lib"]["code_call_sites_unknown"] == 1
+
+    def test_an_import_of_a_language_whose_calls_are_not_recorded_makes_calls_unknown(
+        self, npm_lib
+    ):
+        assert npm_lib.stats["app"]["code_call_sites_unknown"] == 1
 
 
 class TestMavenPublishability:

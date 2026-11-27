@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from repowise.core.ingestion.external_calls import ExternalCallSite
+
 _log = logging.getLogger("repowise.workspace.repo_index")
 
 # Node-id prefix ingestion gives an import target it could not resolve inside
@@ -105,6 +107,8 @@ class RepoIndex:
         self._by_file: dict[str, list[IndexedSymbol]] = {}
         self._by_name: dict[str, list[IndexedSymbol]] = {}
         self._externals: list[ExternalImport] = []
+        self._call_sites: list[ExternalCallSite] | None = None
+        self._supertypes: dict[str, list[str]] = {}
         self._origins: Mapping[str, str] | None = None
 
     @classmethod
@@ -151,6 +155,7 @@ class RepoIndex:
     async def _load(self, repo_id: str) -> None:
         from sqlalchemy import select
 
+        from repowise.core.ingestion.models import HERITAGE_EDGE_TYPES
         from repowise.core.persistence.models import GraphEdge, WikiSymbol
 
         rows = await self._session.execute(
@@ -210,6 +215,25 @@ class RepoIndex:
                     imported_names=tuple(n for n in names if isinstance(n, str)),
                 )
             )
+        heritage = await self._session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type.in_(HERITAGE_EDGE_TYPES),
+            )
+        )
+        for child, parent in heritage:
+            self._supertypes.setdefault(child, []).append(parent)
+        await self._load_call_sites(repo_id)
+
+    async def _load_call_sites(self, repo_id: str) -> None:
+        """Read the repo's calls into packages, when the stored rows are complete."""
+        from repowise.core.persistence.crud.external_call_sites import (
+            external_call_sites_complete,
+            list_external_call_sites,
+        )
+
+        if await external_call_sites_complete(self._session, repo_id):
+            self._call_sites = await list_external_call_sites(self._session, repo_id)
 
     # -- Public API --------------------------------------------------------
 
@@ -295,6 +319,16 @@ class RepoIndex:
     def external_import_edges(self) -> list[ExternalImport]:
         """Every ``imports`` edge leaving the repo, with the names it consumes."""
         return self._externals
+
+    def external_call_sites(self) -> list[ExternalCallSite] | None:
+        """Every proven call from the repo into a package, or None when the
+        stored rows are not complete: unknown, never "not called"."""
+        return self._call_sites
+
+    def supertypes(self, symbol_id: str) -> Sequence[str]:
+        """The types the type *symbol_id* extends or implements, as ingestion
+        resolved them inside the repo."""
+        return self._supertypes.get(symbol_id, ())
 
     def public_symbols(self) -> list[IndexedSymbol]:
         """Symbols ingestion marked public, across the whole repo."""

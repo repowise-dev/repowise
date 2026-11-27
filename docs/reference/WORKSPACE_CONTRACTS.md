@@ -330,6 +330,41 @@ export: a field, a constant, an enum constant, a Kotlin property, and the class
 of a file that `@file:JvmName` names. An import of a module of the same
 repository is counted in neither.
 
+A call into a published package is a consumer too, beside the consumer of its
+import, which still holds an export imported and never called. Ingestion records
+each call an import binds to a package (`external_call_sites`), with the line the
+call starts on and the line and column of its called name, which may sit on a
+later line (`client` on one line, `.charge(id)` on the next). The call
+consumes the export it names, with its line and calling symbol, so its link
+names the function that calls. A Java or Kotlin call is read by its full name,
+as an import's target is, and consumes the called member only: `billing.charge()`
+on a field `BillingClient billing` consumes `BillingClient.charge`. A method the
+called type inherits is the export of the supertype that declares it, looked up
+as Java looks up a method over the supertypes ingestion resolved inside the
+library's repository: `mail.push()` on a type `Mail extends Sender` consumes
+`Sender.push`; the call's record keeps the type it is made on (`Mail.push`). Where
+the nearest declaring type is not exported, or is not in the workspace, the call
+consumes nothing. Where several
+modules declare the member, the call joins those an import joins: the modules
+the calling module depends on, or all of them where it depends on none. In another
+ecosystem a call consumes the export its path names as written
+(`Client.charge`). A call into a submodule or a subpath (`lib.sub.get()`,
+`import { get } from "lib/sub"`) or on a default export names no export, since
+the surface does not say which module of the package declares a name. A call
+that reaches a package and no export of it, such as these or a method that
+`Object` declares, is counted in `code_unresolved_calls`. Calls are recorded in Python, JavaScript, TypeScript,
+Java and Kotlin files. A repository whose recorded calls are not complete, or
+with a file of another language that imports a published package (C#, Rust, a
+Vue component), is counted in `code_call_sites_unknown`: unknown, never "not
+called". Two functions of a file that call one export make two links.
+Overloads of one name share one export contract, whose provider row holds the
+first of them; the consumer of a call names the overload it reaches in
+`meta.overload`, by the number of arguments the call passes, as Java chooses: an
+overload of exactly that number of parameters before one whose varargs expand to
+it. Where that number is not known or one kind holds several, the consumer names
+none. The types of the arguments are not read, so a fixed-arity overload they do
+not fit is named where Java takes the varargs one.
+
 The `public_api` flag of the code graph, which the dead-code pass reads for each
 symbol, keeps its own publish rule in `ingestion/graph_warmups.py`, apart from
 the rule above.

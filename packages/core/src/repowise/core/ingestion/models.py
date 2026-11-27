@@ -658,6 +658,9 @@ DynamicKind = Literal["dynamic_uses", "dynamic_imports", "url_route"]
 # gets nothing usable out of them.
 CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
 
+# A type to a supertype it names, each end a type symbol the repository declares.
+HERITAGE_EDGE_TYPES: frozenset[str] = frozenset({"extends", "implements"})
+
 # Evidence from history rather than from code: two files move together in
 # commits, not one referencing the other. This is the one that bites, because
 # a co-change edge fed back in as a dependency makes every co-change partner

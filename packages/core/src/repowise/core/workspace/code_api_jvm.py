@@ -9,7 +9,7 @@ named by its Java name, and an import is read by its target.
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from repowise.core.symbol_spans import enclosing_chains
 
@@ -25,9 +25,14 @@ if TYPE_CHECKING:
 
     #: A module an import reaches, the exports it consumes there, and whether its target is one.
     _Reached = tuple[PublishedPackage, list[str], bool]
+    #: A module a join reaches, first, and what the join gives there.
+    _Joined = TypeVar("_Joined", _Reached, tuple[PublishedPackage, str])
 
 #: Kinds that declare members, and so may enclose an exported symbol.
 _TYPE_KINDS = frozenset({"class", "interface", "struct", "enum"})
+
+#: Kinds that a call runs, and so a type may inherit.
+_METHOD_KINDS = frozenset({"method", "function"})
 
 #: The member of a Kotlin ``companion object`` that an import names after the type.
 _COMPANION = "Companion"
@@ -239,6 +244,119 @@ def exports(
     return out
 
 
+def inherited(
+    index: RepoIndex, exported: Mapping[str, tuple[PublishedPackage, str]]
+) -> dict[str, dict[str, tuple[PublishedPackage, str]]]:
+    """The members the exported types of one repo inherit, by the module of the type.
+
+    *exported* gives each export of the repo by its symbol id, with its module
+    and path. The result maps the path of an inherited member on the type
+    (``com.acme.Mail.push``) to the module and the path of the export that
+    declares it (``com.acme.Sender.push``). A member is looked up as Java looks
+    up a method: the nearest class up the superclass chain that declares the
+    name, else the one supertype that declares it and that no other declaring
+    supertype extends. Two such supertypes give none.
+
+    Only the supertypes ingestion resolved inside the repo are walked: one the
+    repo does not declare ends the walk. So a method it declares is not
+    inherited here, and where an interface of the repo declares that method
+    too, the interface's method is the one joined. A declaring type that is
+    not exported gives none: a missed consumer, never a wrong one.
+    """
+    walk = _Heritage(index)
+    out: dict[str, dict[str, tuple[PublishedPackage, str]]] = {}
+    for type_id, (package, path) in exported.items():
+        for name, declaring in walk.inherited(type_id).items():
+            owner = exported.get(declaring)
+            if owner is not None:
+                joined = (owner[0], f"{owner[1]}.{name}")
+                out.setdefault(package.name, {})[f"{path}.{name}"] = joined
+    return out
+
+
+class _Heritage:
+    """The supertypes and the declared methods of the types of one repo."""
+
+    def __init__(self, index: RepoIndex) -> None:
+        self._index = index
+        self._kinds: dict[str, str] = {}
+        self._methods: dict[str, set[str]] = {}
+        self._read: set[str] = set()
+        self._ancestors: dict[str, frozenset[str]] = {}
+
+    def _file(self, symbol_id: str) -> None:
+        from repowise.core.ingestion.symbol_identity import (
+            base_symbol_id,
+            file_of_symbol,
+            outer_scope,
+        )
+
+        path = file_of_symbol(symbol_id)
+        if path in self._read:
+            return
+        self._read.add(path)
+        for symbol in self._index.symbols_for_file(path):
+            self._kinds[symbol.symbol_id] = symbol.kind
+            if symbol.kind in _METHOD_KINDS:
+                owner = outer_scope(base_symbol_id(symbol.symbol_id))
+                self._methods.setdefault(owner, set()).add(symbol.name)
+
+    def kind(self, type_id: str) -> str | None:
+        self._file(type_id)
+        return self._kinds.get(type_id)
+
+    def methods(self, type_id: str) -> set[str]:
+        """The names of the methods *type_id* declares itself."""
+        self._file(type_id)
+        return self._methods.get(type_id, set())
+
+    def ancestors(self, type_id: str) -> frozenset[str]:
+        """Every supertype of *type_id*, at any distance."""
+        found = self._ancestors.get(type_id)
+        if found is None:
+            reached: set[str] = set()
+            pending = list(self._index.supertypes(type_id))
+            while pending:
+                node = pending.pop()
+                if node not in reached:
+                    reached.add(node)
+                    pending.extend(self._index.supertypes(node))
+            reached.discard(type_id)
+            found = self._ancestors[type_id] = frozenset(reached)
+        return found
+
+    def _superclasses(self, type_id: str) -> list[str]:
+        """The superclass chain of *type_id*, nearest first."""
+        chain: list[str] = []
+        node = type_id
+        while True:
+            parents = [p for p in self._index.supertypes(node) if self.kind(p) == "class"]
+            if len(parents) != 1 or parents[0] in chain or parents[0] == type_id:
+                return chain
+            node = parents[0]
+            chain.append(node)
+
+    def inherited(self, type_id: str) -> dict[str, str]:
+        """``{method name: the supertype that declares it}`` for each method *type_id*
+        inherits and does not declare."""
+        if not self._index.supertypes(type_id):
+            return {}
+        own = self.methods(type_id)
+        out: dict[str, str] = {}
+        for node in self._superclasses(type_id):
+            for name in self.methods(node) - own:
+                out.setdefault(name, node)
+        declaring: dict[str, set[str]] = {}
+        for node in self.ancestors(type_id):
+            for name in self.methods(node) - own - out.keys():
+                declaring.setdefault(name, set()).add(node)
+        for name, nodes in declaring.items():
+            specific = [n for n in nodes if not any(n in self.ancestors(o) for o in nodes)]
+            if len(specific) == 1:
+                out[name] = specific[0]
+        return out
+
+
 def file_class(package: PublishedPackage, symbol: IndexedSymbol) -> str | None:
     """The Java class a Kotlin file compiles its top-level functions into, or None.
 
@@ -364,6 +482,58 @@ def consumed(
     return [(package, names) for package, names, _ in reached]
 
 
+def call_target(module: str, symbol_path: str) -> str:
+    """The full Java name a call reaches: the import *module* and the rest of *symbol_path*.
+
+    A recorded call names its member from the imported name on: an import of
+    ``a.b.Client`` gives ``Client.charge``, and a static import of
+    ``a.b.Charges.refund`` gives ``Charges.refund``. So the two overlap by
+    the names they share, and the longest overlap is taken once. An on-demand
+    import ``a.b.*`` names the package, and the path starts with the type.
+    """
+    names = module.removesuffix(".*").split(".")
+    path = symbol_path.split(".") if symbol_path else []
+    width = next((w for w in range(min(len(names), len(path)), 0, -1) if names[-w:] == path[:w]), 0)
+    return ".".join([*names, *path[width:]])
+
+
+def called(
+    java_package: str,
+    rest: str,
+    packages: list[PublishedPackage],
+    surface: CodeSurface,
+    repo: str,
+    depended: Callable[[], Collection[str]],
+) -> list[tuple[PublishedPackage, str]]:
+    """The export a Java or Kotlin call in *repo* reaches, in each module that declares it.
+
+    Only the called member, read as an import's target is: ``A.Companion.make``
+    is ``A.make``, and ``UtilsKt.f`` is the top-level ``f`` of ``Utils.kt``. A
+    method the type inherits is the export of the supertype that declares it
+    (:func:`inherited`). A member no module exports, such as a method of a type
+    the workspace does not declare, gives none: a missed consumer, never a
+    wrong one. Where several modules declare it, the call joins those that
+    *depended* names, as an import does.
+    """
+    parts = f"{java_package}.{rest}".split(".")
+    first = java_package.count(".") + 2
+    function = ".".join([*parts[: first - 1], *parts[first:]])
+    out: list[tuple[PublishedPackage, str]] = []
+    for package in packages:
+        if package.repo == repo:
+            continue
+        exported = surface.members[package.name]
+        target = ".".join(_without_companion(parts, first, exported))
+        functions = surface.file_classes.get(package.name, {}).get(".".join(parts[:first]), ())
+        if target in exported:
+            out.append((package, target))
+        elif len(parts) == first + 1 and function in functions:
+            out.append((package, function))
+        elif (declared := surface.inherited.get(package.name, {}).get(target)) is not None:
+            out.append(declared)
+    return _depended_only(out, depended)
+
+
 def _reached_in(
     java_package: str, rest: str, packages: list[PublishedPackage], surface: CodeSurface
 ) -> list[_Reached]:
@@ -382,8 +552,8 @@ def _reached_in(
 
 
 def _depended_only(
-    reached: list[_Reached], depended: Callable[[], Collection[str]]
-) -> list[_Reached]:
+    reached: list[_Joined], depended: Callable[[], Collection[str]]
+) -> list[_Joined]:
     """Of *reached*, the modules named in *depended*; all of them where it names none.
 
     *depended* is read only where more than one module is reached.
