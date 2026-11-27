@@ -29,7 +29,6 @@ import type {
   GraphExportResponse,
   GraphPathResponse,
   HotFilesGraphResponse,
-  ModuleGraphResponse,
   NodeSearchResult,
   PageResponse,
 } from "@repowise-dev/api-client/types";
@@ -37,7 +36,8 @@ import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
 import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
-import type { ArchitectureView } from "@repowise-dev/ui/c4";
+import type { GraphPopulation } from "@repowise-dev/types/graph";
+import type { ZoomMap } from "@repowise-dev/ui/zoom";
 import type {
   RefactoringOpportunityDetail,
   RefactoringOpportunityPage,
@@ -137,16 +137,13 @@ export interface HostApi {
   healthMap(query?: HealthMapQuery): Promise<HealthMapFeed>;
   healthTrend(limit?: number): Promise<HealthTrendResponse>;
   churnComplexity(limit?: number): Promise<ChurnComplexityResponse>;
-  // Architecture map
-  architectureView(): Promise<ArchitectureView>;
-  fileContent(filePath: string): Promise<string>;
-  // Knowledge graph
-  moduleGraph(): Promise<ModuleGraphResponse>;
+  // Architecture map (the web Architecture page's dependency graph). The
+  // population-taking calls mirror the web hooks: absent = production only.
   fullGraph(limit?: number): Promise<GraphExportResponse>;
-  architectureCommunityGraph(): Promise<ArchitectureGraphResponse>;
-  communities(): Promise<CommunitySummaryItem[]>;
-  communitySlice(communityId: number): Promise<CommunitySliceResponse>;
-  communityDetail(communityId: number): Promise<CommunityDetailResponse>;
+  architectureCommunityGraph(population?: GraphPopulation): Promise<ArchitectureGraphResponse>;
+  communities(population?: GraphPopulation): Promise<CommunitySummaryItem[]>;
+  communitySlice(communityId: number, population?: GraphPopulation): Promise<CommunitySliceResponse>;
+  communityDetail(communityId: number, population?: GraphPopulation): Promise<CommunityDetailResponse>;
   /** Shortest path between two graph nodes (path finder panel). */
   graphPath(from: string, to: string): Promise<GraphPathResponse>;
   /** Node-name autocomplete for the path finder inputs. */
@@ -154,6 +151,8 @@ export interface HostApi {
   deadCodeGraph(): Promise<DeadCodeGraphResponse>;
   hotFilesGraph(): Promise<HotFilesGraphResponse>;
   executionFlows(): Promise<ExecutionFlowsResponse>;
+  // Knowledge graph (the web Knowledge Graph page's continuous-zoom map)
+  zoomMap(): Promise<ZoomMap>;
   // Refactoring
   /** The composed unit the web board and the agent contract both speak. */
   refactoringOpportunities(filePath?: string): Promise<RefactoringOpportunityPage>;

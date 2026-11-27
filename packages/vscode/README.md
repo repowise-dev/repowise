@@ -49,8 +49,8 @@ While you edit, a quiet status-bar hint appears if you are missing a file that u
 Full dashboards open right in an editor tab, no browser needed:
 
 - **Health overview**: where the risk concentrates, at a glance.
-- **Architecture map**: zoomable views of your system, from services down to components.
-- **Knowledge graph**: how everything connects, with search and path finding.
+- **Architecture map**: the dependency graph by community, by file or as an outline, with search and path finding.
+- **Knowledge graph**: one zoomable map of the system, from the whole repo down to layers, folders and files.
 - **Refactoring plans**: ranked, with the impact of each.
 - **Decision timeline**: the "why" behind your codebase, mined from its history.
 - **Docs browser**: always-current documentation for the file you are in.
@@ -84,8 +84,8 @@ Nothing polls, nothing scans in the background, and nothing interrupts you. Data
 | Repowise: Set Up This Repository | Build the index for this workspace |
 | Repowise: Analyze Change Risk | Score your change and see what it touches, what is missing, and who should review |
 | Repowise: Open Code Health | Open the health overview |
-| Repowise: Open Architecture | Open the architecture view |
-| Repowise: Open Knowledge Graph | Open the dependency graph |
+| Repowise: Open Architecture | Open the dependency graph |
+| Repowise: Open Knowledge Graph | Open the zoomable system map |
 | Repowise: Open Decisions | Browse mined architectural decisions |
 | Repowise: Open Docs for This File | Open the generated docs for the active file |
 | Repowise: Update Index | Sync the index with your latest commits |
