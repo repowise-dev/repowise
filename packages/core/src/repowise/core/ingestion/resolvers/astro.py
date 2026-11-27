@@ -80,7 +80,8 @@ def _public_dirs(ctx: ResolverContext) -> dict[str, str]:
     """Each Astro app directory whose ``astro.config`` names a ``publicDir`` -> that directory.
 
     Read once per context. An app with no config, or the default ``public``, is
-    left out: the lookup already tries ``public/`` there.
+    left out, so ``public/`` is tried there. As for ``public/``, a miss walks on
+    to the folders above, where an outer app's ``publicDir`` takes its place.
     """
     cached = getattr(ctx, "_astro_public_dirs", None)
     if cached is not None:

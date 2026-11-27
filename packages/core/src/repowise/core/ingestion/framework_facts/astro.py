@@ -20,6 +20,9 @@ ASTRO_CONFIGS = tuple(f"astro.config.{ext}" for ext in ("mjs", "js", "ts", "mts"
 
 _SRC_DIR_RE = re.compile(r"""\bsrcDir\s*:\s*["'`]([^"'`\n]+)["'`]""")
 _PUBLIC_DIR_RE = re.compile(r"""\bpublicDir\s*:\s*["'`]([^"'`\n]+)["'`]""")
+# ``/* ... */`` and ``// ...`` comments; a ``//`` after ``:``, a quote or a word
+# character is part of a URL or string (``https://``, ``'//cdn'``), not a comment.
+_COMMENT_RE = re.compile(r"""/\*.*?\*/|(?<![:"'`\w/])//[^\n]*""", re.DOTALL)
 
 
 def _astro_globs(src: str) -> tuple[str, ...]:
@@ -44,9 +47,10 @@ def _literal_dir(pattern: re.Pattern[str], config: str, default: str) -> str:
     """The app-relative directory a literal option names in *config*, else *default*.
 
     A value that leaves the app (``../shared``) or names the app itself keeps
-    the default: there is nothing of the app's own to root at.
+    the default: there is nothing of the app's own to root at. A commented-out
+    option is not read.
     """
-    match = pattern.search(config)
+    match = pattern.search(_COMMENT_RE.sub("", config))
     if match is None:
         return default
     return _inside(match.group(1).strip().rstrip("/")) or default

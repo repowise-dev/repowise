@@ -137,3 +137,19 @@ def test_an_app_without_public_dir_still_uses_public() -> None:
         "apps/site/astro.config.mjs": b"export default defineConfig({ srcDir: 'src' })"
     }
     assert resolve_import("/favicon.svg", page, "astro", ctx) == "apps/site/public/favicon.svg"
+
+
+def test_a_commented_out_src_dir_is_not_read() -> None:
+    from repowise.core.ingestion.framework_facts import astro_public_dir, astro_src_dir
+
+    config = """
+    // srcDir: './legacy',
+    /* publicDir: './old-static', */
+    export default defineConfig({
+      site: 'https://example.com',
+      srcDir: './app', // was './src'
+      publicDir: './static',
+    })
+    """
+    assert astro_src_dir(config) == "app"
+    assert astro_public_dir(config) == "static"
