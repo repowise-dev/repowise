@@ -209,11 +209,15 @@ def _position(frame: ProfileFrame, lines: list[list[_Position]]) -> _Position | 
 
     A generated position the map leaves unmapped (tsc's shebang line, a helper
     the compiler wrote) has no original source; the frame is skipped, not the
-    profile. A column-less frame on a line with several segments is refused:
-    it cannot say which one ran.
+    profile. A column-less frame on a line with several mapped segments is
+    refused, since it cannot say which one ran; so is a line past the map's
+    end, which says the map was not built from this bundle.
     """
-    positions = lines[frame.line - 1] if 1 <= frame.line <= len(lines) else []
-    if not positions:
+    if not 1 <= frame.line <= len(lines):
+        # Past the map's last line: the map was not built from this bundle.
+        raise _refuse("the frame's line is outside the map")
+    positions = lines[frame.line - 1]
+    if all(p.source is None for p in positions):
         return None
     if frame.column is None:
         if len(positions) != 1 or positions[0].column != 0:

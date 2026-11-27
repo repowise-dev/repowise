@@ -424,7 +424,8 @@ migration.
   and any other bundle refuses the whole profile with an error naming that
   bundle. A frame at a position the map leaves unmapped (tsc's shebang line,
   a helper the compiler wrote) is skipped as `not_indexed` and the rest of the
-  profile joins. Generate
+  profile joins; a frame past the map's last line still refuses it, since that
+  map was built from another bundle. Generate
   external maps for every bundle the profile runs. Collapsed frames without
   columns need exactly one mapping segment starting at column zero on their
   generated line.

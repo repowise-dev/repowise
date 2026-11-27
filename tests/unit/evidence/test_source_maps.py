@@ -111,6 +111,27 @@ def test_an_unmapped_frame_is_skipped_and_the_rest_joins(tmp_path, mappings, bod
     assert result.document["skipped"] == {"not_indexed": 1}
 
 
+def test_a_columnless_frame_on_a_line_with_no_source_is_skipped(bundle):
+    root, data = bundle
+    data["mappings"] = "S"
+    (root / "bundle.js.map").write_text(json.dumps(data))
+    result = convert_profile(_run(root, "collapsed"), root=str(root), value_kind="cpu",
+                             symbols_by_file={}, read_lines=checkout_reader(root))
+    assert result.document["skipped"] == {"not_indexed": 1}
+
+
+def test_a_frame_past_the_maps_last_line_refuses_the_profile(bundle):
+    # The map holds one line and the frame starts on the third: another build's map.
+    root, _ = bundle
+    url = (root / "bundle.js").as_uri()
+    run = profile_formats.get("cpuprofile").read(
+        _profile([(1, "(root)", "", -1, -1, [2]), (2, "a", url, 2, 9, [])], [2])
+    )
+    with pytest.raises(EvidenceFormatError, match=r"outside the map.*\(in bundle\.js\)"):
+        convert_profile(run, root=str(root), value_kind="cpu",
+                        symbols_by_file={}, read_lines=checkout_reader(root))
+
+
 @pytest.mark.parametrize("source", ["webpack://_N_E/./src/app.ts", "webpack:///src/app.ts"])
 def test_webpack_sources_join_the_original_file(bundle, source):
     root, data = bundle
