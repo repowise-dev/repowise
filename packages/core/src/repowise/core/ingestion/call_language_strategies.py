@@ -1310,7 +1310,11 @@ class LanguageStrategiesMixin:
         return ResolvedCall(caller_id, target, 0.90, line, origin)
 
     def _get_rails_index(self) -> Any:
-        """The repository's Zeitwerk index, built once; None outside a Rails app."""
+        """The repository's Zeitwerk index; None outside a Rails app.
+
+        The graph build hands in the one its type-reference pass already built
+        (see ``CallResolver``); a resolver built standalone makes its own.
+        """
         if not self._rails_index_built:
             self._rails_index_built = True
             if self._repo_path:
@@ -1321,12 +1325,17 @@ class LanguageStrategiesMixin:
                 self._rails_index = build_rails_index(Path(self._repo_path))
         return self._rails_index
 
-    def _ruby_method_in(self, path: str, method: str) -> str | None:
-        """The one method named *method* that the file at *path* declares."""
+    def _ruby_method_in(self, path: str, owner: str, method: str) -> str | None:
+        """The method *method* that class *owner* declares in the file at *path*.
+
+        *owner* is the constant's last segment, and a declaring class keyed
+        ``Api::V1::Foo`` (compact) or ``Foo`` both match ``Foo``; another class
+        in the same file never does.
+        """
         found = {
             sym_id
-            for (_, name), sym_id in self._file_methods.get(path, {}).items()
-            if name == method
+            for (cls, name), sym_id in self._file_methods.get(path, {}).items()
+            if name == method and (cls == owner or cls.endswith(f"::{owner}"))
         }
         return next(iter(found)) if len(found) == 1 else None
 
@@ -1350,7 +1359,8 @@ class LanguageStrategiesMixin:
             return None
         index = self._get_rails_index()
         target = index.resolve(receiver, file_path) if index is not None else None
-        callee = self._ruby_method_in(target, method) if target else None
+        owner = receiver.rpartition("::")[2]
+        callee = self._ruby_method_in(target, owner, method) if target else None
         if callee is None or callee == caller_id:
             return None
         return ResolvedCall(caller_id, callee, 0.88, call.line, "receiver_import")
@@ -1377,7 +1387,7 @@ class LanguageStrategiesMixin:
         target = index.resolve(constant, file_path)
         if target is None or target == file_path:
             return None
-        callee = self._ruby_method_in(target, call.target_name)
+        callee = self._ruby_method_in(target, constant, call.target_name)
         if callee is None:
             return None
         return ResolvedCall(caller_id, callee, 0.75, call.line, "receiver_typed_global")

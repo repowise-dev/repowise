@@ -33,6 +33,7 @@ from ..resolvers import ResolverContext
 from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.go_workspace import cached_go_index, go_package_files
+from ..resolvers.ruby_rails import get_or_build_rails_index
 from ..resolvers.typescript import detect_platform_files
 from ..symbol_identity import (
     MODULE_SYMBOL_NAME,
@@ -736,6 +737,7 @@ class GraphBuilder(
             scope=scope_set,
             registrations=run_global,
             cpp_index=self._shared_cpp_index(ctx),
+            rails_index=get_or_build_rails_index(ctx),
         )
 
         # --- Pascal property -> the read/write methods it runs ---

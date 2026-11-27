@@ -112,3 +112,35 @@ class TestConstantCallEdges:
             "app/services/auto_assignment/runner.rb::AutoAssignment::Runner::perform",
             f"{MODEL}::Conversation::toggle_status",
         )
+
+
+def test_class_call_binds_only_the_receivers_own_method(tmp_path: Path) -> None:
+    """Two classes in one file: ``Foo.new`` never reaches the other class's method."""
+    root = tmp_path / "repo"
+    files = {
+        "config/application.rb": "module App; class Application; end; end\n",
+        "app/services/report.rb": (
+            "class Report\n  def build\n  end\nend\n\n"
+            "class Report::Row\n  def initialize(cells)\n    @cells = cells\n  end\n\n"
+            "  def perform\n  end\nend\n"
+        ),
+        "app/jobs/export_job.rb": (
+            "class ExportJob\n  def perform(id)\n  end\nend\n\n"
+            "class ExportJob::Retry\n  def perform(id)\n  end\nend\n"
+        ),
+        "app/controllers/reports_controller.rb": (
+            "class ReportsController\n  def show\n    Report.new\n"
+            "    ExportJob.perform_later(1)\n  end\nend\n"
+        ),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    _parsed, _sources, builder, _structure, _count = build_repo_graph(
+        root, [], collect_sources=True, read_only=True
+    )
+    graph = builder.graph()
+    caller = "app/controllers/reports_controller.rb::ReportsController::show"
+    assert not graph.has_edge(caller, "app/services/report.rb::Report::Row::initialize")
+    assert graph.has_edge(caller, "app/jobs/export_job.rb::ExportJob::perform")
+    assert not graph.has_edge(caller, "app/jobs/export_job.rb::ExportJob::Retry::perform")
