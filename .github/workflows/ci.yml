@@ -870,7 +870,7 @@ jobs:
       - name: Install the default package into a fresh venv
         run: |
           uv python install 3.12
-          uv export --frozen --no-dev --no-emit-workspace --no-hashes --package repowise -o "$RUNNER_TEMP/pins.txt"
+          uv export --locked --no-dev --no-emit-workspace --no-hashes --package repowise -o "$RUNNER_TEMP/pins.txt"
           uv venv --python 3.12 "$RUNNER_TEMP/footprint"
           uv pip install --python "$RUNNER_TEMP/footprint/bin/python" -c "$RUNNER_TEMP/pins.txt" .
 

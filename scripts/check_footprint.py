@@ -3,7 +3,7 @@
 Run it with the interpreter of a fresh virtualenv holding a default install
 (no extras), so what it measures is what ``pip install repowise`` gives a user:
 
-    uv export --frozen --no-dev --no-emit-workspace --no-hashes --package repowise -o pins.txt
+    uv export --locked --no-dev --no-emit-workspace --no-hashes --package repowise -o pins.txt
     uv venv --python 3.12 /tmp/fp
     uv pip install --python /tmp/fp/bin/python -c pins.txt .
     /tmp/fp/bin/python scripts/check_footprint.py
@@ -13,9 +13,10 @@ Two checks, both against ``ci/footprint_budget.json``:
 - Install size and distribution count, summed from every installed
   distribution's RECORD. Each may exceed its budget by the tolerance the file
   sets, no more.
-- Startup paths. Each path runs in its own fresh interpreter (the hooks run
-  their ``main`` on a sample payload, as Claude Code would start them) and must
-  not leave any of its forbidden modules in ``sys.modules``.
+- Startup paths. Each path runs in its own fresh interpreter inside a small
+  indexed repository (the hooks run their ``main`` on a sample payload, as
+  Claude Code would start them) and must not leave any of its forbidden
+  modules in ``sys.modules``.
 
 A budget only rises by editing the budget file, in the pull request that
 justifies the growth.
@@ -41,22 +42,32 @@ BUDGET = ROOT / "ci" / "footprint_budget.json"
 #: Below the budget by more than this share, a notice asks for a lower budget.
 SLACK_NOTICE = 0.10
 
-#: Runs in the measured interpreter: start one path, then list what it loaded.
+#: Runs in the measured interpreter: start one path, then record what it loaded
+#: and what it printed. A hook exits 0 by design; any other exit is a failure.
 _DRIVER = """
 import importlib, io, json, sys
 spec, out = json.loads(sys.argv[1]), sys.argv[2]
 sys.argv = [spec["module"], *spec.get("argv", [])]
 if "stdin" in spec:
     sys.stdin = io.StringIO(json.dumps(spec["stdin"]))
+stdout, sys.stdout = sys.stdout, io.StringIO()
 module = importlib.import_module(spec["module"])
 if spec.get("call"):
     try:
         getattr(module, spec["call"])()
-    except SystemExit:
-        pass
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            raise
+printed, sys.stdout = sys.stdout.getvalue(), stdout
 with open(out, "w", encoding="utf-8") as fh:
-    json.dump(sorted(sys.modules), fh)
+    json.dump({"modules": sorted(sys.modules), "stdout": printed}, fh)
 """
+
+#: The repository the paths run in, indexed so the hooks reach their index-backed code.
+_FIXTURE = {
+    "app.py": "def add(a, b):\n    return a + b\n",
+    "test_app.py": "from app import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+}
 
 
 def measure_install() -> tuple[float, int, list[tuple[float, str]]]:
@@ -66,8 +77,11 @@ def measure_install() -> tuple[float, int, list[tuple[float, str]]]:
         name = dist.metadata["Name"]
         if not name or name.lower() in sizes:
             continue
+        if dist.files is None:
+            raise RuntimeError(f"{name} has no RECORD, so its size cannot be measured")
         total = 0
-        for file in dist.files or []:
+        for file in dist.files:
+            # A RECORD may list a file the installer did not write (a .pyc).
             with contextlib.suppress(OSError):
                 total += os.path.getsize(dist.locate_file(file))
         sizes[name.lower()] = total / 1e6
@@ -75,35 +89,59 @@ def measure_install() -> tuple[float, int, list[tuple[float, str]]]:
     return sum(sizes.values()), len(sizes), largest
 
 
-def loaded_modules(path: dict, workdir: Path) -> tuple[set[str], float]:
-    """Modules one startup path leaves loaded, and its wall seconds."""
-    spec = dict(path)
-    if isinstance(spec.get("stdin"), dict):
-        spec["stdin"] = {"cwd": str(workdir), **spec["stdin"]}
-    home = workdir / "home"
-    home.mkdir(exist_ok=True)
-    env = {
+def _env(home: Path) -> dict[str, str]:
+    """A clean user: empty home, no telemetry."""
+    return {
         **os.environ,
         "HOME": str(home),
         "USERPROFILE": str(home),
         "REPOWISE_TELEMETRY_DISABLED": "1",
         "DO_NOT_TRACK": "1",
     }
-    out = workdir / "modules.json"
+
+
+def indexed_repo(tmp: Path) -> Path:
+    """A two-file git repository with a keyless index, as a user's would have."""
+    repo = tmp / "repo"
+    repo.mkdir()
+    for name, text in _FIXTURE.items():
+        (repo / name).write_text(text, encoding="utf-8")
+    git = ["git", "-c", "user.name=ci", "-c", "user.email=ci@example.com"]
+    for cmd in (["init", "-q"], ["add", "."], ["commit", "-qm", "init"]):
+        subprocess.run([*git, *cmd], cwd=repo, check=True)
+    init = [sys.executable, "-m", "repowise.cli.main", "init", ".", "--yes", "--no-prose"]
+    init += ["--no-editor-setup", "--no-hook", "--no-workspace"]
+    proc = subprocess.run(
+        init, cwd=repo, env=_env(tmp / "home"), capture_output=True, text=True, timeout=600
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"repowise init on the sample repository failed:\n{proc.stderr[-2000:]}")
+    return repo
+
+
+def run_path(path: dict, repo: Path, home: Path) -> tuple[set[str], str, float]:
+    """Modules one startup path leaves loaded, what it printed, and its wall seconds."""
+    spec = dict(path)
+    if "stdin" in spec:
+        payload = json.dumps(spec["stdin"]).replace("{repo}", json.dumps(str(repo))[1:-1])
+        spec["stdin"] = {"cwd": str(repo), **json.loads(payload)}
+    out = home.parent / "result.json"
     started = time.perf_counter()
     # -I: the installed package only, never a checkout on the path.
     proc = subprocess.run(
         [sys.executable, "-I", "-c", _DRIVER, json.dumps(spec), str(out)],
-        cwd=workdir,
-        env=env,
+        cwd=repo,
+        env=_env(home),
         capture_output=True,
         text=True,
         timeout=300,
     )
     seconds = time.perf_counter() - started
     if proc.returncode != 0 or not out.exists():
-        raise RuntimeError(f"{path['name']} did not start:\n{proc.stderr[-2000:]}")
-    return set(json.loads(out.read_text(encoding="utf-8"))), seconds
+        raise RuntimeError(f"{path['name']} failed:\n{proc.stderr[-2000:]}")
+    result = json.loads(out.read_text(encoding="utf-8"))
+    out.unlink()
+    return set(result["modules"]), result["stdout"], seconds
 
 
 def heavy_loaded(modules: set[str], forbidden: list[str]) -> list[str]:
@@ -146,10 +184,10 @@ def check_install(
 def check_startup_paths(paths: list[dict], rows: list[str], failures: list[str]) -> None:
     """Start each path in a fresh interpreter and flag the forbidden modules it loads."""
     with tempfile.TemporaryDirectory() as tmp:
-        for index, path in enumerate(paths):
-            workdir = Path(tmp) / str(index)
-            workdir.mkdir()
-            modules, seconds = loaded_modules(path, workdir)
+        repo = indexed_repo(Path(tmp))
+        home = Path(tmp) / "home"
+        for path in paths:
+            modules, printed, seconds = run_path(path, repo, home)
             heavy = heavy_loaded(modules, path["forbidden"])
             status = ", ".join(heavy) if heavy else "none"
             rows.append(
@@ -162,6 +200,13 @@ def check_startup_paths(paths: list[dict], rows: list[str], failures: list[str])
                     f"startup. Import it inside the function that needs it. "
                     f'`python -X importtime -c "import {path["module"]}"` shows which '
                     f"import pulls it in."
+                )
+            expected = path.get("expect_stdout")
+            if expected and expected not in printed:
+                failures.append(
+                    f"{path['name']} no longer prints {expected!r} for its sample payload, "
+                    f"so this check stops short of the code it covers. Update the payload "
+                    f"in the budget file."
                 )
 
 
