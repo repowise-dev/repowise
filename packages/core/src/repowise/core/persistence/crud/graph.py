@@ -1184,6 +1184,37 @@ async def get_node_degree_by_edge_type(
     return counts
 
 
+async def _count_bulk_degrees_excluding(
+    session: AsyncSession,
+    repository_id: str,
+    present: list[str],
+    counts: dict[str, dict[str, int]],
+    edge_types: list[str] | None,
+    exclude_spec: Any,
+) -> dict[str, dict[str, int]]:
+    from repowise.core.exclusion import edge_is_excluded
+
+    for column, key in (
+        (GraphEdge.target_node_id, "in_degree"),
+        (GraphEdge.source_node_id, "out_degree"),
+    ):
+        for i in range(0, len(present), _BATCH_SIZE):
+            q = select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                GraphEdge.repository_id == repository_id,
+                column.in_(present[i : i + _BATCH_SIZE]),
+            )
+            if edge_types:
+                q = q.where(GraphEdge.edge_type.in_(edge_types))
+            allowed = (
+                (src, dst)
+                for src, dst in (await session.execute(q)).all()
+                if not edge_is_excluded(src, dst, exclude_spec)
+            )
+            for src, dst in allowed:
+                counts[dst if key == "in_degree" else src][key] += 1
+    return counts
+
+
 async def get_node_degree_counts_bulk(
     session: AsyncSession,
     repository_id: str,
@@ -1227,24 +1258,9 @@ async def get_node_degree_counts_bulk(
         return {}
     present = list(counts)
     if exclude_spec:
-        from repowise.core.exclusion import edge_is_excluded
-
-        for column, key in (
-            (GraphEdge.target_node_id, "in_degree"),
-            (GraphEdge.source_node_id, "out_degree"),
-        ):
-            for i in range(0, len(present), _BATCH_SIZE):
-                q = select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
-                    GraphEdge.repository_id == repository_id,
-                    column.in_(present[i : i + _BATCH_SIZE]),
-                )
-                if edge_types:
-                    q = q.where(GraphEdge.edge_type.in_(edge_types))
-                for src, dst in (await session.execute(q)).all():
-                    if not edge_is_excluded(src, dst, exclude_spec):
-                        node_id = dst if key == "in_degree" else src
-                        counts[node_id][key] += 1
-        return counts
+        return await _count_bulk_degrees_excluding(
+            session, repository_id, present, counts, edge_types, exclude_spec
+        )
     for column, key in (
         (GraphEdge.target_node_id, "in_degree"),
         (GraphEdge.source_node_id, "out_degree"),
