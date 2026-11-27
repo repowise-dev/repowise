@@ -470,13 +470,16 @@ A language absent from the dict runs only the shared tiers. The seam exists so a
 language-specific tier can claim a call *before* a weaker shared one gets it.
 Go's package tier is the load-bearing example: `pkg.Func()` is claimed outright
 by `_resolve_go_package_call`, so a package qualifier never reaches the typed
-fallback and cannot be mistaken for a variable.
+fallback and cannot be mistaken for a variable. `_resolve_go_package_var_call`
+follows it for a receiver that is a package variable or a chain through one
+(`router.RouterGroupApp.System.InitBaseRouter()`), typed hop by hop by
+`languages/go_selector_types.py`.
 
 Registered today:
 
 | Language | `free` | `member` | `member_fallback` |
 |---|---|---|---|
-| Go | same-package | package call | typed receiver |
+| Go | same-package | package call, package variable | typed receiver |
 | Java / Kotlin | JVM same-package | JVM receiver same-package | typed receiver |
 | C# / Python / Swift | — | — | typed receiver |
 | C / C++ | same build target | — | — |
