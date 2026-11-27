@@ -462,6 +462,7 @@ async def _read_signals(
         repository.id,
         list(pop.effective_targets),
         edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
+        exclude_spec=pop.exclude_spec,
     )
     return {
         path: asdict(file_signals(git_meta_by_path.get(path), degrees_by_path.get(path)))

@@ -12,6 +12,7 @@ lines.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from ..models import ExternalSystem, GraphEdge, GraphNode
 
@@ -79,8 +80,23 @@ class GraphRecordsIndexStore(ABC):
 
     @abstractmethod
     async def get_node_degree_counts(
-        self, repository_id: str, node_id: str
+        self,
+        repository_id: str,
+        node_id: str,
+        *,
+        edge_types: list[str] | None = None,
+        exclude_spec: Any = None,
     ) -> dict[str, int]: ...
+
+    @abstractmethod
+    async def get_node_degree_counts_bulk(
+        self,
+        repository_id: str,
+        node_ids: list[str],
+        *,
+        edge_types: list[str] | None = None,
+        exclude_spec: Any = None,
+    ) -> dict[str, dict[str, int]]: ...
 
     # ------------------------------------------------------------------
     # external_systems
