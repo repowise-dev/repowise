@@ -332,7 +332,7 @@ async def test_banner_generated_hotspot_is_held_out(
 
 
 @pytest.mark.asyncio
-async def test_empty_health_report_still_persists_skipped_generated_placeholders(
+async def test_empty_health_report_does_not_wipe_metrics_with_placeholders(
     app, tmp_path: Path
 ) -> None:
     repo_dir = tmp_path / "repo"
@@ -345,6 +345,22 @@ async def test_empty_health_report_still_persists_skipped_generated_placeholders
     async with get_session(app.state.session_factory) as session:
         await crud.upsert_repository(
             session, repo_id=repo_id, name="repo", local_path=str(repo_dir)
+        )
+        await crud.save_health_metrics(
+            session,
+            repo_id,
+            [
+                HealthFileMetricData(
+                    file_path="app/models/user.rb",
+                    score=8.0,
+                    max_ccn=2,
+                    max_nesting=1,
+                    nloc=20,
+                    has_test_file=True,
+                    is_test=False,
+                    code_origin="production",
+                )
+            ],
         )
         hr = HealthReport(
             repo_id=repo_id,
@@ -374,6 +390,4 @@ async def test_empty_health_report_still_persists_skipped_generated_placeholders
             .all()
         )
         assert len(rows) == 1
-        assert rows[0].file_path == "db/schema.rb"
-        assert rows[0].code_origin == "generated"
-        assert rows[0].score is None
+        assert rows[0].file_path == "app/models/user.rb"

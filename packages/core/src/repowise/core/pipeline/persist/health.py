@@ -216,18 +216,7 @@ async def save_full_health_report(
     hr = health_report
     metrics = list(getattr(hr, "metrics", None) or [])
     findings = list(getattr(hr, "findings", None) or [])
-    # Store origin for skipped generated files so origin_clause holds them out (#6303).
-    skipped_paths = _collect_skipped_generated_paths(
-        skipped_generated_files, traversal_stats, repo_path
-    )
-    gen_metrics = _build_skipped_generated_metrics(
-        skipped_paths, {m.file_path for m in metrics}, repo_path
-    )
     if not metrics and not findings:
-        if gen_metrics:
-            await save_health_metrics(
-                session, repo_id, gen_metrics, analyzed_commit=analyzed_commit
-            )
         # A pass that scored nothing is a broken pass, not a clean repository.
         # Every write below replaces the repository's rows wholesale, so
         # honouring an empty report would delete every metric, resolve every
@@ -235,6 +224,13 @@ async def save_full_health_report(
         # of a parse failure or an exclude pattern that matched everything.
         return
 
+    # Store origin for skipped generated files so origin_clause holds them out (#6303).
+    skipped_paths = _collect_skipped_generated_paths(
+        skipped_generated_files, traversal_stats, repo_path
+    )
+    gen_metrics = _build_skipped_generated_metrics(
+        skipped_paths, {m.file_path for m in metrics}, repo_path
+    )
     if gen_metrics:
         metrics.extend(gen_metrics)
 
