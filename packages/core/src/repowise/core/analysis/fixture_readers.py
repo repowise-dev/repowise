@@ -145,11 +145,68 @@ def helper_readers(
     if texts is None:
         return {}
     out: dict[str, list[str]] = {h: [] for h in names}
+    pairs = _ReaderIndex(names)
     for p in sorted(test_files):  # file by file, so its per-text reads are cached once
-        for h, found in names.items():
-            if p != h and _reads(p, h, found, texts):
+        for h in pairs.helpers_for(p, texts.get(p)):
+            if p != h and _reads(p, h, names[h], texts):
                 out[h].append(p)
     return out
+
+
+#: A run of the characters a name's edges are told apart by in :func:`_names_helper`
+#: and :func:`_writes_dir`.
+_RUN = re.compile(r"[\w\-]+")
+
+
+class _ReaderIndex:
+    """Which helpers a test file can reach at all, so :func:`_reads` runs only for those.
+
+    Checking every test file against every helper is tests x helpers regex scans
+    over whole texts, which dominated indexing on a large suite. A pair is skipped
+    only where :func:`_reads` must be false: the file is not under the helper's
+    directory or the one above, and its text lacks one of the ``[\\w-]`` runs of
+    every name the helper is written by. Each run of a name is bounded by the
+    name's own separators or by the match's ``(?<![\\w\\-])``/``(?![\\w\\-])``
+    edges, so a text naming it holds each run whole.
+    """
+
+    def __init__(self, names: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]]) -> None:
+        self.near: dict[str, list[str]] = {}
+        self.parent: dict[str, list[str]] = {}
+        self.by_run: dict[str, list[tuple[frozenset[str], str]]] = {}
+        self.always: list[str] = []
+        for h, (words, dirs) in names.items():
+            parent, near = _helper_dirs(h)
+            self.near.setdefault(str(near), []).append(h)
+            self.parent.setdefault(str(parent), []).append(h)
+            for name in {n.lower() for n in (*words, *dirs)}:
+                runs = _RUN.findall(name)
+                if runs:
+                    self.by_run.setdefault(runs[0], []).append((frozenset(runs), h))
+                else:
+                    self.always.append(h)
+
+    def helpers_for(self, p: str, text: str | None) -> set[str]:
+        """The helpers test file *p* (code *text*, ``None`` when unread) may reach."""
+        from .test_selection import is_runnable_test
+
+        dirs = [p[:i] for i, c in enumerate(p) if c == "/"]
+        found: set[str] = set()
+        near = [h for d in dirs for h in self.near.get(d, ())]
+        if near and is_runnable_test(p):
+            found.update(near)
+        if text is None:
+            return found
+        beside = [h for d in dirs for h in self.parent.get(d, ())]
+        if beside and _LISTING.search(text):
+            found.update(beside)
+        found.update(self.always)
+        runs = _run_starts(text)
+        for run in runs:
+            for needed, h in self.by_run.get(run, ()):
+                if all(r in runs for r in needed):
+                    found.add(h)
+        return found
 
 
 def _naming_texts(
@@ -175,8 +232,7 @@ def _reads(
     """Whether test file *p* may reach *helper* (:func:`helper_readers`)."""
     from .test_selection import is_runnable_test
 
-    parent = PurePosixPath(helper).parent
-    near = parent.parent if str(parent.parent) != "." else parent
+    parent, near = _helper_dirs(helper)
     if p.startswith(f"{near}/") and is_runnable_test(p):
         return True
     text = texts.get(p)
@@ -186,6 +242,13 @@ def _reads(
         return True
     _, dirs = found
     return _names_helper(text, helper, reader=p) or any(_writes_dir(text, d) for d in dirs)
+
+
+@functools.lru_cache(maxsize=4096)
+def _helper_dirs(helper: str) -> tuple[PurePosixPath, PurePosixPath]:
+    """*helper*'s directory and the one above it (its own directory at the top level)."""
+    parent = PurePosixPath(helper).parent
+    return parent, parent.parent if str(parent.parent) != "." else parent
 
 
 #: Code listing a directory, which reaches a file it never names.
@@ -261,8 +324,8 @@ def _names_helper(
     words = (path.name,) if stem in _ENTRY_STEMS else (path.name, stem)
     for word in dict.fromkeys(w for w in words if w):
         target = path.parts if word == path.name else module
-        for m in re.finditer(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", text):
-            before = text[max(0, m.start() - _WINDOW) : m.start()]
+        for start in _word_starts(text, word):
+            before = text[max(0, start - _WINDOW) : start]
             if before.endswith(("/", "\\")):
                 found = _path_refers(before, word, target, at)
             elif before.endswith("."):
@@ -272,6 +335,46 @@ def _names_helper(
             if found:
                 return True
     return False
+
+
+def _word_starts(text: str, word: str) -> list[int]:
+    """Where *word* stands alone in *text*, as ``re.finditer`` finds it (no overlaps)."""
+    starts = _alone(text, word)
+    if starts is None:
+        return [m.start() for m in re.finditer(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", text)]
+    out: list[int] = []
+    for start in starts:
+        if not out or start >= out[-1] + len(word):
+            out.append(start)
+    return out
+
+
+def _alone(text: str, word: str) -> list[int] | None:
+    """Every start of *word* in *text* with no ``[\\w-]`` on either side, overlapping
+    ones included; ``None`` when *word* does not open with such a character.
+
+    Read off :func:`_run_starts`, so the many helpers asking one text about a
+    common name (``models``, ``tests``) each pay a lookup, not a scan: where the
+    word stands alone, its first run is the whole run in the text.
+    """
+    first = _RUN.match(word)
+    if first is None:
+        return None
+    end = len(word)
+    return [
+        s
+        for s in _run_starts(text).get(first.group(), ())
+        if text.startswith(word, s) and not _RUN.match(text, s + end)
+    ]
+
+
+@functools.lru_cache(maxsize=8)  # the file-by-file loop asks one text at a time
+def _run_starts(text: str) -> dict[str, list[int]]:
+    """``{[\\w-] run: where it starts}`` for every maximal run in *text*."""
+    out: dict[str, list[int]] = {}
+    for m in _RUN.finditer(text):
+        out.setdefault(m.group(), []).append(m.start())
+    return out
 
 
 #: How far back a path or module path written before a name is read.
@@ -390,8 +493,19 @@ def _writes_dir(text: str, name: str) -> bool:
     """
     if not name:
         return False
-    n = re.escape(name.lower())
-    return re.search(rf"[\"'/\\]{n}(?![\w\-])|(?<![\w\-]){n}[\"'/\\]", text) is not None
+    starts = _alone(text, name := name.lower())
+    if starts is None:
+        n = re.escape(name)
+        return re.search(rf"[\"'/\\]{n}(?![\w\-])|(?<![\w\-]){n}[\"'/\\]", text) is not None
+    end = len(name)
+    return any(
+        (s > 0 and text[s - 1] in _PATH_EDGES) or text[s + end : s + end + 1] in _PATH_EDGES
+        for s in starts
+    )
+
+
+#: The characters next to which a written name is a path (:func:`_writes_dir`).
+_PATH_EDGES = frozenset("\"'/\\")
 
 
 def _stand_ins(namer: str, readers: Mapping[str, list[str]]) -> list[str]:

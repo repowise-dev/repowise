@@ -485,3 +485,63 @@ def test_an_unreadable_test_file_keeps_every_helper_unknown() -> None:
     sources = {"suite/cases/sub/case.py": "x = 1", "e2e/test_ok.py": "import os"}
     files = [*sources, "e2e/test_locked.py"]
     assert helper_readers(["suite/cases/sub/case.py"], files, sources.get) == {}
+
+
+# Helper reads over many test files and helpers: what is skipped must not change an answer.
+_NAMES = (
+    "client", "client.py", "models", "a.a", ".hidden.js", "my-tool", "naïve", "_x",
+    "tests", "cases", "e2e", "tools", "main.go", "sub",
+)  # fmt: skip
+_EDGES = (" ", ".", "/", "\\", '"', "'", "-", "(", "\n", "_", "a", "", "glob(", " as ")
+
+
+def _corpus(seed: int, count: int) -> list[str]:
+    import random
+
+    rnd = random.Random(seed)
+    return [
+        "".join(rnd.choice(_EDGES) + rnd.choice(_NAMES) for _ in range(rnd.randint(0, 12)))
+        for _ in range(count)
+    ]
+
+
+def test_a_name_is_found_where_the_regex_finds_it() -> None:
+    import re
+
+    from repowise.core.analysis.fixture_readers import _word_starts, _writes_dir
+
+    for text in _corpus(7, 400):
+        for name in _NAMES:
+            n = re.escape(name)
+            alone = [m.start() for m in re.finditer(rf"(?<![\w\-]){n}(?![\w\-])", text)]
+            path = re.search(rf"[\"'/\\]{n}(?![\w\-])|(?<![\w\-]){n}[\"'/\\]", text)
+            assert _word_starts(text, name) == alone, (text, name)
+            assert _writes_dir(text, name) is (path is not None), (text, name)
+
+
+def test_helper_readers_matches_checking_every_test_file_against_every_helper() -> None:
+    """The pairs skipped are only those :func:`_reads` turns down."""
+    from pathlib import PurePosixPath
+
+    from repowise.core.analysis import fixture_readers as fr
+
+    dirs = ("tests", "tests/e2e", "tests/e2e/tools", "suite/cases/sub", "web/my-tool", "pkg")
+    leaves = ("client.py", "models.py", "main.go", "a.a.py", "test_x.py", "case.json", "_x.ts")
+    files = [f"{d}/{leaf}" for d in dirs for leaf in leaves]
+    sources = dict(zip(files, _corpus(11, len(files)), strict=True))
+    helpers = [f for f in files if PurePosixPath(f).name != "test_x.py"]
+
+    names = {
+        h: fr._helper_names(h)
+        for h in helpers
+        if str(PurePosixPath(h).parent) != "." and not fr._configured(h, sources.get)
+    }
+    wanted = {n.lower() for words, ds in names.values() for n in (*words, *ds)}
+    texts = fr._naming_texts(files, wanted, sources.get)
+    every_pair = {
+        h: [p for p in sorted(files) if p != h and fr._reads(p, h, found, texts)]
+        for h, found in names.items()
+    }
+
+    assert fr.helper_readers(helpers, files, sources.get) == every_pair
+    assert any(every_pair.values())

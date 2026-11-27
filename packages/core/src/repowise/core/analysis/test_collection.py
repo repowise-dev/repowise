@@ -1161,6 +1161,7 @@ async def _graph_candidates(
     read_source: Callable[[str], str | None] | None = None,
     groups: Mapping[str, Sequence[str]] | None = None,
     cancelled: Callable[[], bool] = _never,
+    helper_readers: bool = True,
 ) -> GraphCandidates:
     """``{target: [(test file, via), ...]}`` from the graph, each test file's importers, notes.
 
@@ -1180,7 +1181,9 @@ async def _graph_candidates(
 
     The import edges are read once per index state (:func:`cached_import_graphs`)
     and every walk runs over them in memory; *hops* is each candidate's distance to the
-    *changed* files (every target when not given; :func:`_test_hops`).
+    *changed* files (every target when not given; :func:`_test_hops`). A caller reading
+    only the candidates passes ``helper_readers=False``: the helper scan reads every
+    test file.
     """
     from .conftest_routes import scoped_candidates
     from .plugin_loaders import local_module_check
@@ -1219,7 +1222,11 @@ async def _graph_candidates(
     importers = {test: sorted(found_by) for test, found_by in parents.items()}
     sources = targets if changed is None else [t for t in targets if t in changed]
     hops = _test_hops(out, calls, wide.hops(sources), set(sources))
-    readers = _unimported_helper_readers(out, importers, indexed_tests, read_source)
+    readers = (
+        _unimported_helper_readers(out, importers, indexed_tests, read_source)
+        if helper_readers
+        else {}
+    )
     return GraphCandidates(out, importers, notes, hops, readers)
 
 
@@ -1501,7 +1508,12 @@ async def narrow_scopes(
     try:
         candidates = (
             await _graph_candidates(
-                session, repo_id, files, pytest_texts=texts, read_source=read_source
+                session,
+                repo_id,
+                files,
+                pytest_texts=texts,
+                read_source=read_source,
+                helper_readers=False,
             )
         ).candidates
     except Exception as exc:  # the walk's own answer stands: every test under each scope
