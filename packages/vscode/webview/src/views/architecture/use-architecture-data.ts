@@ -55,7 +55,14 @@ export function useHostQuery<T>(
   useEffect(() => {
     if (key === null) return;
     let cancelled = false;
-    setState({ key, data: undefined, isLoading: true, error: null });
+    // A refetch of the same key (the index moved) keeps the last payload on
+    // screen until the fresh one lands, so a canvas is not torn down for it.
+    setState((prev) => ({
+      key,
+      data: prev.key === key ? prev.data : undefined,
+      isLoading: true,
+      error: null,
+    }));
     fetcherRef.current().then(
       (data) => {
         if (!cancelled) setState({ key, data, isLoading: false, error: null });

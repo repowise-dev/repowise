@@ -305,7 +305,9 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     searchNodes: (query, limit) => searchNodes(repoId(), query, limit),
     deadCodeGraph: () => cached("graph:dead", (id) => getDeadCodeGraph(id)),
     hotFilesGraph: () => cached("graph:hot", (id) => getHotFilesGraph(id)),
-    executionFlows: () => cached("graph:flows", (id) => getExecutionFlows(id)),
+    // The depth and count the web map asks for.
+    executionFlows: () =>
+      cached("graph:flows", (id) => getExecutionFlows(id, { top_n: 10, max_depth: 6 })),
 
     // Knowledge graph
     zoomMap: () => cached("graph:zoom", (id) => getZoomMap(id)),

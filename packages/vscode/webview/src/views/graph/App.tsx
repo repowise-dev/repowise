@@ -30,7 +30,7 @@ const FRAME =
   "relative min-h-[360px] flex-1 overflow-hidden rounded-lg border border-[var(--color-border-default)]";
 
 export function App({ host, params, refreshToken }: ViewProps<"graph">) {
-  const { data: zoomMap, isLoading, error } = useHostQuery<ZoomMap>(
+  const { data: zoomMap, error } = useHostQuery<ZoomMap>(
     "zoom-map",
     () => host.api.zoomMap(),
     refreshToken,
@@ -38,11 +38,11 @@ export function App({ host, params, refreshToken }: ViewProps<"graph">) {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 px-4 py-3">
-      {error ? (
+      {error && !zoomMap ? (
         <div className="flex flex-1 items-center justify-center p-6">
           <ApiError title="Could not load the knowledge graph." message={error} />
         </div>
-      ) : isLoading || !zoomMap ? (
+      ) : !zoomMap ? (
         <div className={`${FRAME} flex items-center justify-center`}>
           <OrbLoader state={ORB_STATE.page} size={64} label="Building the map" />
         </div>
@@ -70,8 +70,14 @@ function ZoomMapView({
   const [chain, setChain] = useState<ZoomNode[]>([]);
   // Indexed once per map for the hover card, as the web page does.
   const relationsByNode = useMemo(() => indexRelationsByNode(zoomMap), [zoomMap]);
-  // Snapshot so a later re-init does not yank the camera back.
-  const initialFocus = useRef(initialFocusId).current;
+  // Snapshot so a later re-init does not yank the camera back. The open
+  // parameter may name a node id or a repo path; zoom ids are not paths, so a
+  // path resolves to the node that carries it.
+  const initialFocus = useRef(
+    initialFocusId
+      ? zoomMap.nodes.find((n) => n.id === initialFocusId || n.path === initialFocusId)?.id
+      : undefined,
+  ).current;
 
   const flyTo = useCallback((id: string) => {
     canvasRef.current?.flyTo(id);

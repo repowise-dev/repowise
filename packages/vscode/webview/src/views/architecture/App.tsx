@@ -28,6 +28,7 @@ import { GraphCommunityPanel } from "@repowise-dev/ui/graph/graph-community-pane
 import { PathFinderPanel } from "@repowise-dev/ui/graph/path-finder-panel";
 import type { ModuleGroup } from "@repowise-dev/ui/graph/use-module-filter";
 import { ApiError } from "@repowise-dev/ui/shared";
+import { isExternal } from "@repowise-dev/types";
 import {
   PRODUCTION_ONLY,
   type CommunityDetail,
@@ -46,6 +47,7 @@ import {
 
 type Scope = "communities" | "files";
 type Signal = "dead" | "hot" | null;
+type GraphColorMode = NonNullable<GraphFlowProps["colorMode"]>;
 
 /** Same copy the web page shows under each scope. */
 const DESCRIPTION: Record<Scope, string> = {
@@ -63,9 +65,10 @@ function toViewMode(scope: Scope, signal: Signal): ViewMode {
   return "full";
 }
 
-/** Hub (`__community__N`) and repo-core ids are synthetic, not files. */
+/** Hub (`__community__N`) and repo-core ids are synthetic, and third-party
+ *  and framework nodes name code outside the repo: none of them is a file. */
 function isFileBackedNodeId(nodeId: string): boolean {
-  return !nodeId.startsWith("__");
+  return !nodeId.startsWith("__") && !isExternal(nodeId);
 }
 
 function populationKey(p: GraphPopulation): string {
@@ -75,7 +78,10 @@ function populationKey(p: GraphPopulation): string {
 export function App({ host, params, repo, refreshToken }: ViewProps<"architecture">) {
   // The web page lands on Files. A preselected file pins the file scope, the
   // way a `?node=` link does there.
-  const initialNode = params.selectPath ?? null;
+  // Dropped on the first scope or community change, as the web drops `?node=`,
+  // so a later remount of the canvas does not reselect the launch file.
+  const [initialNode, setInitialNode] = useState<string | null>(params.selectPath ?? null);
+  const [colorMode, setColorMode] = useState<GraphColorMode>("community");
   const [graphScope, setGraphScope] = useState<GraphScope>("files");
   const [signal, setSignal] = useState<Signal>(null);
   const [activeModule, setActiveModule] = useState<string | null>(null);
@@ -105,6 +111,7 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"architectur
     // Narrowing is a file-scope concept and does not survive a scope change.
     setActiveModule(null);
     setActiveCommunity(null);
+    setInitialNode(null);
     setGraphScope(next);
   }, []);
 
@@ -112,6 +119,7 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"architectur
   // constellation it came from.
   const handleActiveCommunityChange = useCallback((next: number | null) => {
     setActiveCommunity(next);
+    setInitialNode(null);
     if (next !== null) {
       setActiveModule(null);
       // A slice was never filtered to dead or hot files.
@@ -151,7 +159,7 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"architectur
 
   const handleNodeClick = useCallback<NonNullable<GraphFlowProps["onNodeClick"]>>(
     (nodeId, nodeType) => {
-      if (nodeType === "file") host.openFile(nodeId);
+      if (nodeType === "file" && isFileBackedNodeId(nodeId)) host.openFile(nodeId);
     },
     [host],
   );
@@ -209,69 +217,72 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"architectur
     );
   }
 
+  // A failed slice is reported above the canvas rather than in place of it,
+  // so the scope switcher and the way out of a community stay on screen.
+  const banner = data.error ? (
+    <ApiError title="Could not load the architecture map." message={data.error} />
+  ) : (
+    truncation
+  );
+
   return (
     <div className="flex h-full flex-col">
-      {data.error ? (
-        <div className="flex h-full items-center justify-center p-6">
-          <ApiError title="Could not load the architecture map." message={data.error} />
-        </div>
-      ) : (
-        <GraphFlow
-          description={DESCRIPTION[scope]}
-          headerActions={headerControls}
-          banner={truncation}
-          fullGraph={graph}
-          isLoadingFullGraph={data.fullGraph.isLoading}
-          constellationGraph={data.constellationGraph.data}
-          isLoadingConstellationGraph={data.constellationGraph.isLoading}
-          communitySlice={data.communitySlice.data}
-          isLoadingCommunitySlice={data.communitySlice.isLoading}
-          activeCommunity={activeCommunity}
-          onActiveCommunityChange={handleActiveCommunityChange}
-          population={population}
-          onPopulationChange={setPopulation}
-          showExternal={showExternal}
-          onShowExternalChange={setShowExternal}
-          repoName={repo.name}
-          deadCodeGraph={data.deadCodeGraph.data}
-          isLoadingDeadCodeGraph={data.deadCodeGraph.isLoading}
-          hotFilesGraph={data.hotFilesGraph.data}
-          isLoadingHotFilesGraph={data.hotFilesGraph.isLoading}
-          communities={data.communities.data}
-          executionFlows={data.executionFlows.data}
-          onFlowsVisibilityChange={handleFlowsVisibilityChange}
-          viewMode={viewMode}
-          activeModule={activeModule}
-          onModuleGroupsChange={setModuleGroups}
-          colorMode="community"
-          initialSelectedNode={initialNode}
-          onViewModeChange={handleViewModeChange}
-          onNodeClick={handleNodeClick}
-          onNodeViewDocs={openIfFile}
-          renderPathFinder={(p) => (
-            <PathFinderPanel
-              searchNodes={(q, l) => host.api.searchNodes(q, l) as Promise<NodeSearchResult[]>}
-              findPath={(from, to) => host.api.graphPath(from, to) as Promise<GraphPath>}
-              onPathFound={p.onPathFound}
-              onClear={p.onClear}
-              onClose={p.onClose}
-              initialFrom={p.initialFrom}
-              initialTo={p.initialTo}
-            />
-          )}
-          renderCommunityPanel={(p) => (
-            <CommunityPanel
-              host={host}
-              refreshToken={refreshToken}
-              communityId={p.communityId}
-              population={population}
-              onClose={p.onClose}
-              onEnterCommunity={p.onEnterCommunity}
-              onNeighborSelect={p.onNeighborSelect}
-            />
-          )}
-        />
-      )}
+      <GraphFlow
+        description={DESCRIPTION[scope]}
+        headerActions={headerControls}
+        banner={banner}
+        fullGraph={graph}
+        isLoadingFullGraph={data.fullGraph.isLoading}
+        constellationGraph={data.constellationGraph.data}
+        isLoadingConstellationGraph={data.constellationGraph.isLoading}
+        communitySlice={data.communitySlice.data}
+        isLoadingCommunitySlice={data.communitySlice.isLoading}
+        activeCommunity={activeCommunity}
+        onActiveCommunityChange={handleActiveCommunityChange}
+        population={population}
+        onPopulationChange={setPopulation}
+        showExternal={showExternal}
+        onShowExternalChange={setShowExternal}
+        repoName={repo.name}
+        deadCodeGraph={data.deadCodeGraph.data}
+        isLoadingDeadCodeGraph={data.deadCodeGraph.isLoading}
+        hotFilesGraph={data.hotFilesGraph.data}
+        isLoadingHotFilesGraph={data.hotFilesGraph.isLoading}
+        communities={data.communities.data}
+        executionFlows={data.executionFlows.data}
+        onFlowsVisibilityChange={handleFlowsVisibilityChange}
+        viewMode={viewMode}
+        activeModule={activeModule}
+        onModuleGroupsChange={setModuleGroups}
+        colorMode={colorMode}
+        onColorModeChange={setColorMode}
+        initialSelectedNode={initialNode}
+        onViewModeChange={handleViewModeChange}
+        onNodeClick={handleNodeClick}
+        onNodeViewDocs={openIfFile}
+        renderPathFinder={(p) => (
+          <PathFinderPanel
+            searchNodes={(q, l) => host.api.searchNodes(q, l) as Promise<NodeSearchResult[]>}
+            findPath={(from, to) => host.api.graphPath(from, to) as Promise<GraphPath>}
+            onPathFound={p.onPathFound}
+            onClear={p.onClear}
+            onClose={p.onClose}
+            initialFrom={p.initialFrom}
+            initialTo={p.initialTo}
+          />
+        )}
+        renderCommunityPanel={(p) => (
+          <CommunityPanel
+            host={host}
+            refreshToken={refreshToken}
+            communityId={p.communityId}
+            population={population}
+            onClose={p.onClose}
+            onEnterCommunity={p.onEnterCommunity}
+            onNeighborSelect={p.onNeighborSelect}
+          />
+        )}
+      />
     </div>
   );
 }

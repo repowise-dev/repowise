@@ -125,6 +125,8 @@ describe("useHostQuery", () => {
     await waitFor(() => expect(result.current.data).toBe(1));
 
     rerender({ k: "a", token: 1 });
+    // The last payload stays readable while the refetch is in flight.
+    expect(result.current.data).toBe(1);
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
   });
 });

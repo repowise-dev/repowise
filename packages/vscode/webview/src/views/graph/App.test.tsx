@@ -11,15 +11,21 @@ afterEach(cleanup);
 // panel wires.
 const ROOT = { id: "root", parent_id: null, kind: "system", name: "repowise", path: "" };
 const FILE = { id: "f1", parent_id: "root", kind: "file", name: "app.py", path: "src/app.py" };
+const seenFocus: (string | undefined)[] = [];
 vi.mock("@repowise-dev/ui/zoom", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@repowise-dev/ui/zoom")>();
   const { forwardRef, useEffect } = await import("react");
   return {
     ...actual,
     ZoomCanvas: forwardRef(function FakeCanvas(
-      props: { onFocusChange?: (c: ZoomNode[]) => void; onSelect?: (n: ZoomNode | null) => void },
+      props: {
+        initialFocusId?: string;
+        onFocusChange?: (c: ZoomNode[]) => void;
+        onSelect?: (n: ZoomNode | null) => void;
+      },
       _ref,
     ) {
+      seenFocus.push(props.initialFocusId);
       useEffect(() => props.onFocusChange?.([ROOT as unknown as ZoomNode]), []);
       return (
         <button type="button" onClick={() => props.onSelect?.(FILE as unknown as ZoomNode)}>
@@ -64,6 +70,15 @@ describe("Knowledge Graph panel", () => {
 
     screen.getByText("canvas").click();
     expect(host.openFile).toHaveBeenCalledWith("src/app.py");
+  });
+
+  it("resolves a repo path open parameter to the zoom node carrying it", async () => {
+    seenFocus.length = 0;
+    const host = mockHost(Promise.resolve(MAP));
+    render(<App host={host} repo={REPO} params={{ selectNode: "src/app.py" }} refreshToken={0} />);
+
+    await screen.findByText("canvas");
+    expect(seenFocus.at(-1)).toBe("f1");
   });
 
   it("shows the error when the map cannot load", async () => {
