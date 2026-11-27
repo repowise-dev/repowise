@@ -103,7 +103,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # group taken from ``Use``, and drops the routes of a Go register function only
 # another copy's callers name. ``routes_fingerprint`` includes this version, so
 # stored HTTP routes and ``contracts.json`` refresh with it. A name a SQL literal binds
-# with ``WITH`` is no table consumer, in a literal that does not parse as well.
+# with ``WITH`` is no table consumer, in a literal that does not parse as well, and a
+# name is bound only where its ``WITH`` clause is in scope.
 CONTRACTS_VERSION = 18
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.

@@ -199,6 +199,48 @@ SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.
         tables = {t for t, _verb in SqlStringsDialect()._tables_in(self.LITERAL)}
         assert "git_metadata" in tables
 
+    @pytest.mark.parametrize(
+        ("literal", "tables"),
+        [
+            # a name of a later CTE, read in the body of an earlier one, is a table
+            (
+                "WITH a AS (SELECT * FROM b), b AS (SELECT * FROM t) "
+                "SELECT * FROM a JOIN b ON 1 = 1",
+                {"b", "t"},
+            ),
+            # a CTE that reads its own name reads a table, unless it is recursive
+            ("WITH x AS (SELECT id FROM x) SELECT * FROM x", {"x"}),
+            (
+                "WITH RECURSIVE x AS (SELECT id FROM seed UNION ALL SELECT id + 1 FROM x) "
+                "SELECT * FROM x",
+                {"seed"},
+            ),
+            # under WITH RECURSIVE a body reads the later names too
+            (
+                "WITH RECURSIVE a AS (SELECT * FROM b), b AS (SELECT n FROM t) SELECT * FROM a",
+                {"t"},
+            ),
+            ("WITH a AS (SELECT id FROM t), b AS (SELECT id FROM a) SELECT * FROM b", {"t"}),
+            # the name is bound in the query the WITH serves, not outside it
+            (
+                "SELECT * FROM (WITH c AS (SELECT 1 FROM t1) SELECT * FROM c) q JOIN c ON 1 = 1",
+                {"c", "t1"},
+            ),
+        ],
+        ids=[
+            "later-cte",
+            "own-name",
+            "recursive",
+            "recursive-later",
+            "earlier-cte",
+            "outside-the-query",
+        ],
+    )
+    def test_a_name_is_bound_after_its_cte_and_not_in_the_body_of_it(
+        self, literal: str, tables: set[str]
+    ) -> None:
+        assert {t for t, _verb in SqlStringsDialect()._parse_tables(literal)} == tables
+
     def test_a_real_table_sharing_a_cte_name_elsewhere_is_unaffected(self) -> None:
         # Shadowing is per-statement: no CTE here, so ``ranked`` is a table.
         tables = {
@@ -242,6 +284,44 @@ select * from merged where id = %d order by created desc limit 10
 
     def test_a_table_read_by_a_literal_with_no_with_is_a_table(self) -> None:
         assert self.tables("select id from order_events where id = %d") == {"order_events"}
+
+    @pytest.mark.parametrize(
+        ("literal", "tables"),
+        [
+            # the body of a CTE reads its own name: a table, as on the parsed path
+            (
+                "with refund as (select id from refund where id = %d) select * from refund",
+                {"refund"},
+            ),
+            # a name read before the WITH, in an earlier statement, is a table
+            (
+                "select * from orders where id = %d; "
+                "with orders as (select 1) select * from orders",
+                {"orders"},
+            ),
+            # a name read outside the query the WITH serves is a table
+            (
+                "select * from (with c as (select 1 from t1 where id = %d) select * from c) q "
+                "join c on 1 = 1",
+                {"c", "t1"},
+            ),
+            # under WITH RECURSIVE a body reads the later names too
+            (
+                "with recursive a as (select * from b where id = %d), b as (select 1 as n) "
+                "select * from a",
+                set(),
+            ),
+        ],
+        ids=["own-name", "earlier-statement", "outside-the-query", "recursive-later"],
+    )
+    def test_a_name_is_bound_only_where_its_with_is_in_scope(
+        self, literal: str, tables: set[str]
+    ) -> None:
+        assert self.tables(literal) == tables
+
+    def test_the_target_of_a_write_is_a_table_though_a_with_binds_its_name(self) -> None:
+        literal = "with t as (select id from src where x = %s) update t set v = %s where id = %s"
+        assert self.tables(literal) == {"src", "t"}
 
     def test_a_name_that_only_follows_a_comma_is_not_bound(self) -> None:
         # The WITH list ends at the `)` that no comma follows: `b as (x)` of the select list binds
