@@ -53,7 +53,13 @@ from .express_handed import (
     served_prefix,
 )
 from .fastify import fastify_module
-from .mounts import add_mounts, compose_prefix, declare_module_mount
+from .mounts import (
+    add_mounts,
+    compose_prefix,
+    declare_module_mount,
+    declare_mount,
+    declared_mount,
+)
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -81,6 +87,9 @@ _DEFAULT_EXPORT_RE = re.compile(
 
 # Mount keys are ``express:<module>:<exported name>``.
 _NAMESPACE = "express"
+# A barrel's re-export: ``express-reexport:<module>:<exported name>`` names the
+# barrel key (``<barrel>:<member>``) the router is reachable through.
+_REEXPORT = f"{_NAMESPACE}-reexport:"
 # Routers nest a few levels deep in one file; a longer chain is a cycle.
 _MAX_DEPTH = 16
 
@@ -253,6 +262,9 @@ class ExpressDialect:
         "Router", "express", "Hono", "astify", "Koa", "koa", "Elysia",
         ".use(", ".use ", ".use\n", ".use\t",
     )  # fmt: skip
+    # The mount pass also reads a barrel that re-exports routers by name, which
+    # names no router or mount itself.
+    mount_requires = (*requires, "module.exports = {", "module.exports={", "export {", "export{")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         """Each imported router this file mounts, keyed by its module and export.
@@ -277,6 +289,7 @@ class ExpressDialect:
             )
         if "require" in ctx.content or "import" in ctx.content:
             _handed_mounts(ctx, f, out)
+            _reexports(ctx, f, out)
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
@@ -329,6 +342,24 @@ def _handed_mounts(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
         add_mounts(out, declare_handed(module))
 
 
+def _reexports(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
+    """Record each router module this barrel re-exports by name.
+
+    ``const user = require('./user'); module.exports = { user }`` makes
+    ``routes.user`` in a mounting file the default router of ``./user``, so
+    that router serves wherever the barrel member is mounted. Kept apart from
+    the mount keys: a router also mounted directly keeps that mount.
+    """
+    for name in _named_exports(f.content):
+        bound = f.imports.get(name)
+        if bound is None:
+            continue  # a router the barrel defines itself keeps its own key
+        module = resolve_module(ctx.rel_path, bound[0])
+        if module is None or module == f.module:
+            continue
+        add_mounts(out, declare_mount(_REEXPORT + _key(module, bound[1]), _key(f.module, name)))
+
+
 def _mount_of(ctx: ScanContext, f: _File, var: str, offset: int) -> str:
     """The full prefix router *var* serves under, "" when unmounted.
 
@@ -357,5 +388,10 @@ def _mount_of(ctx: ScanContext, f: _File, var: str, offset: int) -> str:
             )
     mounted, outer = served_prefix(ctx.mounts, f.key(root))
     if not mounted:
-        _mounted, outer = served_prefix(ctx.mounts, _key(f.module, root))
+        mounted, outer = served_prefix(ctx.mounts, _key(f.module, root))
+    if not mounted:
+        # Mounted only as a member of a barrel that re-exports it.
+        _declared, barrel = declared_mount(ctx.mounts, _REEXPORT + f.key(root))
+        if barrel:
+            _mounted, outer = served_prefix(ctx.mounts, barrel)
     return compose_prefix(outer or "", within)

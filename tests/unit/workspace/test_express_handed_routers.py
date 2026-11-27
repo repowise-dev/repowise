@@ -369,3 +369,80 @@ def test_a_comma_inside_a_type_keeps_parameter_positions(tmp_path: Path) -> None
             """,
         },
     ) == {("/api/users", "src/users.ts")}
+
+
+# --- barrel modules (#6442) ------------------------------------------------------
+
+_BARREL_APP = """
+    const express = require('express');
+    const routes = require('./routes');
+    const app = express();
+    app.use('/api/user', routes.user);
+"""
+_USER_ROUTER = """
+    const express = require('express');
+    const router = express.Router();
+    router.get('/plugins', list);
+    module.exports = router;
+"""
+
+
+def test_a_barrel_member_mount_reaches_the_required_router_file(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.js": """
+                const user = require('./user');
+                module.exports = { user };
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/api/user/plugins", "server/routes/user.js")}
+
+
+def test_a_direct_require_mount_still_takes_the_prefix(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": """
+                const express = require('express');
+                const app = express();
+                app.use('/api/user', require('./routes/user'));
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/api/user/plugins", "server/routes/user.js")}
+
+
+def test_a_barrel_defining_its_router_inline_keeps_its_own_key(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.js": """
+                const express = require('express');
+                const user = express.Router();
+                user.get('/plugins', list);
+                module.exports = { user };
+            """,
+        },
+    ) == {("/api/user/plugins", "server/routes/index.js")}
+
+
+def test_a_direct_mount_wins_over_a_barrel_re_export(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": """
+                const express = require('express');
+                const app = express();
+                app.use('/v2/user', require('./routes/user'));
+            """,
+            "server/routes/index.js": """
+                const user = require('./user');
+                module.exports = { user };
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/v2/user/plugins", "server/routes/user.js")}
