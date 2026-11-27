@@ -191,9 +191,8 @@ blocker: if the user has no key, do not stop and do not ask again. Tell them the
 can add a model later with `repowise generate`, and go to Step 7.
 
 Do not read, test or print the user's environment variables or key values
-yourself. `repowise init` picks up a provider key from the environment and
-`.repowise/.env` on its own, so a user who already has one set needs no
-`--provider`. Ask:
+yourself. `repowise init` picks up a provider key from `.repowise/.env` on its
+own, so a user who already saved one there needs no `--provider`. Ask:
 
 "Which LLM provider do you want to use?"
 - **Google Gemini** (good cost efficiency): needs `GEMINI_API_KEY` or `GOOGLE_API_KEY`
@@ -208,10 +207,12 @@ yourself. `repowise init` picks up a provider key from the environment and
   auth status and uses one only with `--provider`. A Codex signed in through
   ChatGPT is listed in the picker but not offered.
 
-The user sets a key in their own shell or in `.repowise/.env` (gitignored).
-Never ask for a key in the chat. Show the export line for their provider:
+The user saves the key themselves, never in the chat. Show them the line for
+their provider to put in `.repowise/.env` in the repo, with their own key in
+place of the placeholder, and tell them to keep that file out of git (add
+`.repowise/.env` to `.gitignore` if the repo does not ignore it yet):
 ```bash
-export GEMINI_API_KEY="..."
+GEMINI_API_KEY=YOUR_API_KEY
 ```
 
 Every provider SDK ships with `repowise` itself, so there is no per-provider
