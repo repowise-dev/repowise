@@ -50,6 +50,24 @@ _URL_PROP_RE = re.compile(r"""\burl\s*(?::\s*([^,\n}]+)|(?=[,}\n]|$))""")
 _METHOD_PROP_RE = re.compile(r"""\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]""")
 
 
+def _http_resource_url(arg_text: str) -> str | None:
+    if m_url := _URL_PROP_RE.search(arg_text):
+        val = m_url.group(1)
+        url = val.strip() if val else "`${url}`"
+    elif "=>" in arg_text:
+        rhs = arg_text.split("=>", 1)[1].strip()
+        if rhs.startswith("(") and rhs.endswith(")"):
+            rhs = rhs[1:-1].strip()
+        url = None if rhs.startswith("{") and rhs.endswith("}") else rhs
+    elif not (arg_text.startswith("{") and arg_text.endswith("}")):
+        url = arg_text
+    else:
+        url = None
+    if url and (url.startswith("this.") or (url.isidentifier() and not url.startswith(("'", '"', "`")))):
+        return f"`${{{url}}}`"
+    return url
+
+
 def http_resource_calls(content: str) -> Iterator[ClientCallMatch]:
     """Angular ``httpResource(...)`` calls; method defaults to GET."""
     if "httpResource" not in content:
@@ -62,30 +80,18 @@ def http_resource_calls(content: str) -> Iterator[ClientCallMatch]:
         arg_text = content[paren + 1 : close].strip()
         if not arg_text:
             continue
+        url = _http_resource_url(arg_text)
+        if not url:
+            continue
         m_method = _METHOD_PROP_RE.search(arg_text)
         method = m_method.group(1).upper() if m_method else "GET"
-        url: str | None = None
-        if m_url := _URL_PROP_RE.search(arg_text):
-            val = m_url.group(1)
-            url = val.strip() if val else "`${url}`"
-        elif "=>" in arg_text:
-            rhs = arg_text.split("=>", 1)[1].strip()
-            if rhs.startswith("(") and rhs.endswith(")"):
-                rhs = rhs[1:-1].strip()
-            if not (rhs.startswith("{") and rhs.endswith("}")):
-                url = rhs
-        elif not (arg_text.startswith("{") and arg_text.endswith("}")):
-            url = arg_text
-        if url:
-            if url.startswith("this.") or (url.isidentifier() and not url.startswith(("'", '"', "`"))):
-                url = f"`${{{url}}}`"
-            yield ClientCallMatch(
-                client="angular",
-                url=url,
-                offset=m.start(),
-                callee="httpResource",
-                method=method,
-            )
+        yield ClientCallMatch(
+            client="angular",
+            url=url,
+            offset=m.start(),
+            callee="httpResource",
+            method=method,
+        )
 
 # Wrapper call: IDENT("<url>" | `<url>`, ...) where the URL literal is concrete,
 # i.e. starts with `/`, a `${...}` base placeholder, or a scheme. The scan is

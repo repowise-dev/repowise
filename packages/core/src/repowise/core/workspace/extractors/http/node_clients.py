@@ -401,10 +401,14 @@ class FieldScope:
 
     def _resolve_fields(self, found: ClassFields, is_static: bool) -> dict[str, str]:
         chain = [found]
+        seen = {found.name}
         current = found
         while current.base_name:
+            if current.base_name in seen:
+                break
+            seen.add(current.base_name)
             base = next((c for c in self._classes or () if c.name == current.base_name), None)
-            if base is None or base in chain:
+            if base is None:
                 break
             chain.append(base)
             current = base
