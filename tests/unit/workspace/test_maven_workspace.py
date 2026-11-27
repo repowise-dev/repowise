@@ -157,6 +157,50 @@ def test_inherited_dependency_management_resolves_version(tmp_path: Path) -> Non
     assert deps[0].source_manifest == "app/pom.xml"
 
 
+@pytest.mark.parametrize(
+    ("scope", "linked"),
+    [("", False), ("<scope>compile</scope>", True)],
+    ids=["managed", "declared"],
+)
+def test_dependency_management_sets_the_scope_a_dependency_leaves_out(
+    tmp_path: Path, scope: str, linked: bool
+) -> None:
+    producer = tmp_path / "producer"
+    consumer = tmp_path / "consumer"
+    _write(producer, "pom.xml", _project("com.acme", "shared", "2.1.0"))
+    _write(
+        consumer,
+        "pom.xml",
+        """<project>
+  <groupId>com.acme</groupId><artifactId>consumer-parent</artifactId>
+  <version>1</version><packaging>pom</packaging>
+  <dependencyManagement><dependencies><dependency>
+    <groupId>com.acme</groupId><artifactId>shared</artifactId><version>2.1.0</version>
+    <scope>test</scope>
+  </dependency></dependencies></dependencyManagement>
+  <modules><module>app</module></modules>
+</project>""",
+    )
+    _write(
+        consumer,
+        "app/pom.xml",
+        f"""<project>
+  <parent><groupId>com.acme</groupId><artifactId>consumer-parent</artifactId>
+    <version>1</version><relativePath>../pom.xml</relativePath></parent>
+  <artifactId>app</artifactId>
+  <dependencies><dependency>
+    <groupId>com.acme</groupId><artifactId>shared</artifactId>{scope}
+  </dependency></dependencies>
+</project>""",
+    )
+
+    deps = detect_package_dependencies({"producer": producer, "consumer": consumer})
+
+    assert [(d.source_manifest, d.scope) for d in deps] == (
+        [("app/pom.xml", "compile")] if linked else []
+    )
+
+
 def test_parent_artifact_builtin_resolves_dependency_coordinate(tmp_path: Path) -> None:
     producer = tmp_path / "producer"
     consumer = tmp_path / "consumer"

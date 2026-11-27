@@ -276,6 +276,19 @@ def _resolve_properties(properties: dict[str, str]) -> dict[str, str]:
     return resolved
 
 
+def _manage_scope(
+    scopes: dict[tuple[str, str, str, str], str], key: tuple[str, str, str, str], scope: str
+) -> None:
+    """Record the scope of a dependencyManagement entry under *key*. An entry with no scope,
+    of scope import (which is no scope), or whose scope is a property that stays undefined,
+    replaces the scope an earlier entry gave."""
+    scope = scope.strip().lower()
+    if scope and scope != "import" and "${" not in scope:
+        scopes[key] = scope
+    else:
+        scopes.pop(key, None)
+
+
 def load_maven_reactor(
     repo_root: Path,
     manifest_paths: list[Path] | tuple[Path, ...],
@@ -454,14 +467,18 @@ def load_maven_reactor(
         managed_entries = list(parent.managed_entries) if parent is not None else []
         managed_entries.extend((dependency, raw.relative_path) for dependency in raw.managed)
         managed: dict[tuple[str, str, str, str], str] = {}
+        managed_scopes: dict[tuple[str, str, str, str], str] = {}
         for dependency, _declared_in in managed_entries:
             dep_group = _resolve(dependency.group_id, properties)
             dep_artifact = _resolve(dependency.artifact_id, properties)
             dep_version = _resolve(dependency.version, properties)
             dep_type = _resolve(dependency.dependency_type, properties).strip().lower() or "jar"
             dep_classifier = _resolve(dependency.classifier, properties).strip()
+            key = (dep_group, dep_artifact, dep_type, dep_classifier)
             if dep_group and dep_artifact and dep_version and "${" not in dep_version:
-                managed[(dep_group, dep_artifact, dep_type, dep_classifier)] = dep_version
+                managed[key] = dep_version
+            if dep_group and dep_artifact:
+                _manage_scope(managed_scopes, key, _resolve(dependency.scope, properties))
 
         dependency_entries = list(parent.dependency_entries) if parent is not None else []
         dependency_entries.extend(
@@ -478,7 +495,11 @@ def load_maven_reactor(
             if not dep_version:
                 dep_version = managed.get((dep_group, dep_artifact, dep_type, dep_classifier), "")
             unresolved_version = "${" in dep_version
-            dep_scope = _resolve(dependency.scope, properties).strip().lower() or "compile"
+            dep_scope = (
+                _resolve(dependency.scope, properties).strip().lower()
+                or managed_scopes.get((dep_group, dep_artifact, dep_type, dep_classifier), "")
+                or "compile"
+            )
             dep_optional_text = _resolve(dependency.optional, properties).strip().lower()
             dep_optional = dep_optional_text == "true"
             unresolved_metadata = any(
