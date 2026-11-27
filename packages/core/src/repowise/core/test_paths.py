@@ -154,6 +154,9 @@ _NEXT_APP_ROUTE_STEMS: frozenset[str] = frozenset(
     {
         "page", "layout", "route", "template", "default", "error", "loading",
         "not-found", "global-error", "forbidden", "unauthorized",
+        # Metadata files serve their own URL beside the segment.
+        "sitemap", "robots", "manifest", "icon", "apple-icon",
+        "opengraph-image", "twitter-image",
     }
 )  # fmt: skip
 _PAGE_EXTS: frozenset[str] = frozenset({".vue", ".svelte", ".astro", ".md", ".mdx"})

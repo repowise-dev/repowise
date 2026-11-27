@@ -13,6 +13,16 @@ NEXT_PAGES = FrameworkFacts(
     entry_globs=_js("pages/*", "src/pages/*", exts=(*_JS_EXTS, "mdx")),
 )
 
+
+def _app_router_file(rel: str) -> bool:
+    """An App Router file of the app whose root *rel* is relative to.
+
+    The ``app/`` directory sits at the app root or under ``src/``; one deeper
+    belongs to another package, which answers for itself.
+    """
+    return rel.startswith(("app/", "src/app/")) and next_app_router_file(rel)
+
+
 NEXT_APP = FrameworkFacts(
     name="Next.js",
     anchor="framework:nextjs",
@@ -21,7 +31,7 @@ NEXT_APP = FrameworkFacts(
     # the metadata files) by name from ``app/``. The same predicate decides
     # routes and execution roles, so there is one answer to "is this an App
     # Router file".
-    entry_match=next_app_router_file,
+    entry_match=_app_router_file,
     # Loaded from the app root or ``src/``. Next.js 16 renamed ``middleware``
     # to ``proxy``.
     entry_globs=_js(

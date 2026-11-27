@@ -378,3 +378,12 @@ def test_react_email_dir_edge_cases(script: str, paths: list[str], expected: lis
     assert manifest is not None
     ((facts, _pkg),) = js_frameworks(manifest)
     assert facts.entry_files("", paths) == expected
+
+
+def test_a_root_next_app_does_not_anchor_a_sibling_package_s_app_dir() -> None:
+    """``app/`` belongs to the app at the manifest root, not to a nested package."""
+    from repowise.core.ingestion.framework_facts import NEXT_APP
+
+    paths = ["app/layout.tsx", "src/app/(shop)/page.tsx", "packages/ui/app/layout.tsx"]
+    assert NEXT_APP.entry_files("", paths) == ["app/layout.tsx", "src/app/(shop)/page.tsx"]
+    assert NEXT_APP.entry_files("packages/ui", paths) == ["packages/ui/app/layout.tsx"]
