@@ -312,3 +312,42 @@ def test_a_receiver_named_like_a_logger_is_still_a_request(tmp_path: Path) -> No
         "export const a = () => apiRequest('/recent');\n"
     )
     assert "/api/logs/recent" in {p for _m, p in _paths(tmp_path, "src/e.ts", text)}
+
+
+def test_a_wrapper_with_relative_path_and_prefix(tmp_path: Path) -> None:
+    api_mod = (
+        "import axios from 'axios';\n"
+        "export default function api() { return axios.create({ baseURL: '/' }); }\n"
+        "export const apiRequestGet = (url: string) => api().get('/api/' + url);\n"
+    )
+    client_mod = (
+        "import api, { apiRequestGet } from './api';\n"
+        "api().get('/api/v1/accounts');\n"
+        "apiRequestGet('v1/accounts');\n"
+        "const c = axios.create(); c.get('/api/v1/bound');\n"
+    )
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "api.ts").write_text(api_mod, encoding="utf-8")
+    (repo / "src" / "client.ts").write_text(client_mod, encoding="utf-8")
+    paths = {
+        (c.meta["client"], c.meta["method"], c.meta["path"])
+        for c in HttpExtractor().extract(repo, "web")
+        if c.role == "consumer"
+    }
+    assert paths == {
+        ("axios", "GET", "/api/v1/accounts"),
+        ("axios", "GET", "/api/v1/bound"),
+        ("wrapper", "GET", "/api/v1/accounts"),
+    }
+
+
+def test_a_wrapper_with_relative_path_and_no_prefix_is_ignored(tmp_path: Path) -> None:
+    text = (
+        "import { baseFetch } from './base';\n"
+        "export async function apiFetch(endpoint: string) {\n"
+        "  return baseFetch(endpoint);\n"
+        "}\n"
+        "export const list = () => apiFetch('relative/path');\n"
+    )
+    assert _paths(tmp_path, "src/w.ts", text) == set()

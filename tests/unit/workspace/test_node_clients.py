@@ -141,6 +141,22 @@ class TestInstances:
         text = "import axios from 'axios';\nconst apiClient = axios.create({ baseURL: '/api' });\napiClient('/users');\n"
         assert _calls(_write(tmp_path, {"a.ts": text})) == {("axios", "GET", "/api/users", "")}
 
+    def test_exported_function_returning_axios_instance(self, tmp_path: Path) -> None:
+        api_mod = (
+            "import axios from 'axios';\n"
+            "export default function api() { return axios.create({ baseURL: '/' }); }\n"
+        )
+        caller = (
+            "import api from './api';\n"
+            "api().get('/api/v1/accounts');\n"
+            "api().post('/api/v1/posts', body);\n"
+        )
+        repo = _write(tmp_path, {"src/api.ts": api_mod, "src/caller.ts": caller})
+        assert _calls(repo) == {
+            ("axios", "GET", "/api/v1/accounts", ""),
+            ("axios", "POST", "/api/v1/posts", ""),
+        }
+
     def test_two_instances_exported_under_one_name_are_neither(self, tmp_path: Path) -> None:
         make = "import axios from 'axios';\nexport const api = axios.create({{ baseURL: '{}' }});\n"
         repo = _write(
