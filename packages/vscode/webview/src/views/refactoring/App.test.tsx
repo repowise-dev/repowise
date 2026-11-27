@@ -112,6 +112,12 @@ describe("refactoring panel", () => {
     expect(await screen.findByText("Couldn't load refactoring")).toBeTruthy();
   });
 
+  it("says why a plan could not be opened instead of an empty sheet", async () => {
+    const { host } = makeHost({ refactoringPlan: vi.fn().mockRejectedValue(new Error("Plan gone")) });
+    render(<App host={host} repo={REPO} params={{ planId: "plan-1" }} refreshToken={0} />);
+    expect(await screen.findByText(/Plan gone/)).toBeTruthy();
+  });
+
   it("opens a plan passed by id in the plan inspector", async () => {
     const { host, api } = makeHost();
     render(<App host={host} repo={REPO} params={{ planId: "plan-1" }} refreshToken={0} />);

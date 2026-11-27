@@ -212,6 +212,7 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
         detail={detail.data ?? null}
         open={openId !== null}
         loading={detail.loading}
+        error={detail.error ?? undefined}
         onOpenChange={(open) => {
           if (!open) setOpenId(null);
         }}
@@ -226,6 +227,7 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
         plan={plan.data ?? null}
         open={openPlanId !== null}
         loading={plan.loading}
+        error={plan.error ?? undefined}
         onOpenChange={(open) => {
           if (!open) setOpenPlanId(null);
         }}
