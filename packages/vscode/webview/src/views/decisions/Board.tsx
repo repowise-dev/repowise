@@ -394,6 +394,11 @@ function DecisionReviewWrapper({
   const { host, epoch, repoId, LinkComponent } = ctx;
   const [page, setPage] = React.useState(0);
   const [source, setSource] = React.useState("all");
+  // The last page known to hold rows, once a step past it came back empty.
+  // Without a measured total (under a source filter) a full window is the only
+  // hint of more, so a filter matching exactly one window would otherwise
+  // offer Next forever.
+  const [lastPage, setLastPage] = React.useState<number | null>(null);
 
   const background = lane === "candidates";
   const serverLane = movedOnly ? "needs_review" : lane;
@@ -403,6 +408,7 @@ function DecisionReviewWrapper({
   if (pagedLane !== serverLane) {
     setPagedLane(serverLane);
     setPage(0);
+    setLastPage(null);
   }
   const offset = pagedLane === serverLane ? page * PAGE_SIZE : 0;
 
@@ -425,11 +431,13 @@ function DecisionReviewWrapper({
   const changeSource = React.useCallback((next: string) => {
     setSource(next);
     setPage(0);
+    setLastPage(null);
   }, []);
 
   // Reviewing the last row of a later page leaves that page empty: step back.
   React.useEffect(() => {
     if (page > 0 && data !== undefined && data.length === 0) {
+      setLastPage(page - 1);
       setPage((p) => Math.max(0, p - 1));
     }
   }, [page, data]);
@@ -439,7 +447,10 @@ function DecisionReviewWrapper({
   const total = source === "all" ? laneTotal : undefined;
   const first = page * PAGE_SIZE + 1;
   const last = page * PAGE_SIZE + rows.length;
-  const hasNext = total !== undefined ? last < total : rows.length === PAGE_SIZE;
+  const hasNext =
+    total !== undefined
+      ? last < total
+      : rows.length === PAGE_SIZE && (lastPage === null || page < lastPage);
   const { pending, review, dismissMany } = writes;
 
   return (

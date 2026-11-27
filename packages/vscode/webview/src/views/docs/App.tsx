@@ -57,7 +57,12 @@ const TABS: DocsHeaderTab[] = [{ label: COPY.explorer, href: "?view=explorer", i
 
 const PAGE_QUERY = "?page=";
 
-export function App({ host, params, repo, refreshToken }: ViewProps<"docs">) {
+/** Keyed on the repository, so a reconnect to another one opens fresh. */
+export function App(props: ViewProps<"docs">) {
+  return <DocsPanel key={props.repo.id} {...props} />;
+}
+
+function DocsPanel({ host, params, repo, refreshToken }: ViewProps<"docs">) {
   useFileLinks(host);
   const [pages, setPages] = useState<DocPageSummary[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -116,10 +121,12 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"docs">) {
       setSelectedPageId(byPath.id);
       return;
     }
+    // The tree is usable while this resolves; a page picked meanwhile wins.
+    const fallback = overview?.id ?? null;
     host.api
       .fileDetail(filePath)
-      .then((detail) => setSelectedPageId(detail.wiki_page?.id ?? overview?.id ?? null))
-      .catch(() => setSelectedPageId(overview?.id ?? null));
+      .then((detail) => setSelectedPageId((cur) => cur ?? detail.wiki_page?.id ?? fallback))
+      .catch(() => setSelectedPageId((cur) => cur ?? fallback));
   }, [host, pages, params.pageId, params.filePath]);
 
   // The reader's page, fetched by id; refetched when the index moves.
@@ -222,15 +229,9 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"docs">) {
     },
   ];
 
-  if (listError && !pages) {
-    return (
-      <div className="flex h-full items-center justify-center px-8">
-        <ApiError title="Could not load docs" message={listError} />
-      </div>
-    );
-  }
-
-  const listLoading = pages === null;
+  // A failed listing costs the tree, not the reader: an asked-for page id
+  // still opens on its own fetch.
+  const listLoading = pages === null && listError === null;
   const treePanel = (
     <div
       className={cn(
@@ -238,7 +239,9 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"docs">) {
         treePanelOpen ? "absolute inset-y-0 left-0 z-30 w-full md:static md:w-[288px]" : "w-0 overflow-hidden",
       )}
     >
-      {listLoading ? (
+      {listError && !pages ? (
+        <ApiError className="m-3" title="Could not load docs" message={listError} />
+      ) : listLoading || !pages ? (
         <div className="space-y-2 p-3" aria-label="Loading pages">
           <Skeleton className="h-8 w-full rounded-md" />
           {["w-3/4", "w-1/2", "w-5/6", "w-2/3", "w-3/4", "w-1/2"].map((w, i) => (
@@ -252,7 +255,7 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"docs">) {
   );
 
   const body =
-    !listLoading && pages.length === 0 ? (
+    pages !== null && pages.length === 0 && !selectedPage ? (
       <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center">
         <div className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4">
           <BookOpen className="h-8 w-8 text-[var(--color-text-tertiary)]" />

@@ -77,6 +77,9 @@ function populationParams(p?: GraphPopulation) {
     : undefined;
 }
 
+/** Page types the docs tree needs in full; see `pageSummaries`. */
+const HYDRATED_PAGE_TYPES = ["repo_overview", "architecture_diagram", "onboarding", "scc_page"];
+
 /** Thrown by the dispatcher when a request arrives while disconnected. */
 class NotReadyError extends Error {
   constructor() {
@@ -399,7 +402,18 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     // Docs. The listing carries no bodies: on a large wiki the full listing is
     // tens of megabytes, and the reader fetches the one page it shows.
     pageSummaries: () =>
-      cached("docs:summaries", (id) => listAllPages(id, { fields: "summary" })),
+      cached("docs:summaries", async (id) => {
+        // A few page types draw their tree row from what a summary drops (an
+        // onboarding slot in metadata, a cycle label in the body), so those
+        // are listed in full and merged in, as the web docs hook does. A
+        // couple of dozen pages against thousands of files.
+        const [summaries, ...hydrated] = await Promise.all([
+          listAllPages(id, { fields: "summary" }),
+          ...HYDRATED_PAGE_TYPES.map((page_type) => listAllPages(id, { page_type })),
+        ]);
+        const full = new Map(hydrated.flat().map((p) => [p.id, p]));
+        return summaries.map((p) => full.get(p.id) ?? p);
+      }),
     searchPages: async (query) => {
       const id = repoId();
       const [fulltext, semantic] = await Promise.all([

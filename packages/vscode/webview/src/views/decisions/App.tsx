@@ -54,7 +54,12 @@ function PanelLink({
   );
 }
 
-export function App({ host, repo, refreshToken }: ViewProps<"decisions">) {
+/** Keyed on the repository, so a reconnect to another one starts on its board. */
+export function App(props: ViewProps<"decisions">) {
+  return <DecisionsPanel key={props.repo.id} {...props} />;
+}
+
+function DecisionsPanel({ host, repo, refreshToken }: ViewProps<"decisions">) {
   const [route, setRoute] = useState<Route>({ kind: "board" });
   const [version, setVersion] = useState(0);
   const { resolvedTheme } = useTheme();
@@ -62,22 +67,15 @@ export function App({ host, repo, refreshToken }: ViewProps<"decisions">) {
 
   const refresh = useCallback(() => setVersion((v) => v + 1), []);
 
-  // The panel scrolls in the chrome's container, the board's parent. A record
-  // opens at its top; back puts the board where the reader left it.
-  const boardRef = useRef<HTMLDivElement>(null);
-  const boardScroll = useRef(0);
-  const openRecord = route.kind === "record" ? route.id : null;
+  // The panel scrolls in the chrome's container; each route opens at its top.
+  const rootRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    const scroller = boardRef.current?.parentElement;
-    if (!scroller) return;
-    scroller.scrollTop = openRecord ? 0 : boardScroll.current;
-  }, [openRecord]);
-  const go = useCallback((next: Route) => {
-    const scroller = boardRef.current?.parentElement;
-    if (scroller && !boardRef.current?.hidden) boardScroll.current = scroller.scrollTop;
-    setRoute(next);
-  }, []);
+    const scroller = rootRef.current?.parentElement;
+    if (scroller) scroller.scrollTop = 0;
+  }, [route]);
 
+  // Capture phase: a row menu stops its clicks from bubbling, and its
+  // "open the full record" item is an anchor with a web route.
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
       if (event.defaultPrevented || event.button !== 0) return;
@@ -86,11 +84,11 @@ export function App({ host, repo, refreshToken }: ViewProps<"decisions">) {
       if (!next) return;
       event.preventDefault();
       if (next.kind === "health") host.openView("health");
-      else if (next.kind !== "inert") go(next);
+      else if (next.kind !== "inert") setRoute(next);
     };
-    document.addEventListener("click", onClick);
-    return () => document.removeEventListener("click", onClick);
-  }, [host, repo.id, go]);
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, [host, repo.id]);
 
   const ctx = useMemo<BoardContext>(
     () => ({
@@ -103,15 +101,17 @@ export function App({ host, repo, refreshToken }: ViewProps<"decisions">) {
     [host, repo.id, refreshToken, version, refresh],
   );
 
+  // The board unmounts under a record, as the web page does on navigation:
+  // its review drawer renders in a portal, and a hidden board would leave an
+  // open drawer over the record.
   return (
-    <>
-      {/* The board stays mounted under an open record, so back returns to the
-          lane, page and filter the reader left. */}
-      <div ref={boardRef} hidden={route.kind === "record"}>
+    <div ref={rootRef}>
+      {route.kind === "record" ? (
+        <DecisionRecordView ctx={ctx} decisionId={route.id} />
+      ) : (
         <DecisionsPage ctx={ctx} />
-      </div>
-      {route.kind === "record" && <DecisionRecordView ctx={ctx} decisionId={route.id} />}
+      )}
       <Toaster theme={resolvedTheme === "dark" ? "dark" : "light"} />
-    </>
+    </div>
   );
 }

@@ -11,8 +11,10 @@ import {
   DecisionDetail,
   type DecisionDetailAdapter,
 } from "@repowise-dev/ui/decisions";
+import { fileHref } from "../../runtime/fileLinks";
 import { DecisionRecordPrompts, decisionHref, type BoardContext } from "./Board";
 import { useRead } from "./useRead";
+import type { DecisionRecord } from "@repowise-dev/types/decisions";
 
 export function DecisionRecordView({ ctx, decisionId }: { ctx: BoardContext; decisionId: string }) {
   const { host, repoId, epoch, refresh, LinkComponent } = ctx;
@@ -52,6 +54,7 @@ export function DecisionRecordView({ ctx, decisionId }: { ctx: BoardContext; dec
         return `/repos/${repoId}/commits${qs}`;
       },
       hotspotsHref: () => `/repos/${repoId}/code-health`,
+      fileHref,
       LinkComponent,
       ...(review ? { reviewPrompt: () => review.text } : {}),
       renderRecordPrompts: () => (decision ? <DecisionRecordPrompts ctx={ctx} decision={decision} /> : null),
@@ -80,8 +83,22 @@ export function DecisionRecordView({ ctx, decisionId }: { ctx: BoardContext; dec
 
   return (
     <div className="mx-auto w-full max-w-3xl p-[var(--page-pad)]">
-      {/* Keyed on the record so prev/next starts each record with fresh state. */}
-      <DecisionDetail key={decision.id} decision={decision} adapter={adapter} />
+      {/* The view seeds its status, pin and scope from the record once, so it
+          remounts when the record the server returns changes (prev/next, a
+          write here, or an agent's write picked up on refresh). */}
+      <DecisionDetail key={recordVersion(decision)} decision={decision} adapter={adapter} />
     </div>
   );
+}
+
+/** Changes whenever a field the detail view seeds its own state from changes. */
+function recordVersion(d: DecisionRecord): string {
+  return [
+    d.id,
+    d.updated_at,
+    d.status,
+    d.pinned ? "pinned" : "",
+    d.affected_modules.join(","),
+    d.affected_files.join(","),
+  ].join("|");
 }

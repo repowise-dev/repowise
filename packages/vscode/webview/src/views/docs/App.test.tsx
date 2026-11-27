@@ -156,4 +156,13 @@ describe("docs App", () => {
     release(summaries(PAGES));
     await waitFor(() => expect(screen.getByText("Reference")).toBeTruthy());
   });
+
+  it("keeps an asked-for page when the listing fails", async () => {
+    const { host, api } = mockHost(PAGES);
+    api.pageSummaries.mockRejectedValue(new Error("listing timed out"));
+    render(<App host={host} repo={REPO} params={{ pageId: "fp" }} refreshToken={0} />);
+
+    expect(await screen.findByText("The application entry point.")).toBeTruthy();
+    expect(await screen.findByText("listing timed out")).toBeTruthy();
+  });
 });
