@@ -1042,35 +1042,50 @@ async def get_top_entry_points(
 ) -> list[GraphNode]:
     """Return symbol nodes with stored entry_point_score >= *min_score*.
 
-    Scores are stored inside ``community_meta_json``. Since the count of
-    symbol nodes is typically < 5000, an in-memory filter is acceptable.
+    Scores are stored inside ``community_meta_json``, so they are read in
+    memory: the scan reads only the id and that blob, for the symbols whose
+    blob names a score, and loads whole rows for the *limit* winners alone.
+    Hydrating every symbol node was seconds per call on a 28k-symbol repo.
     A symbol in a file *exclude_spec* matches is skipped before the *limit*
     cut, so it never takes an allowed entry point's place.
     """
     from repowise.core.exclusion import node_is_excluded
 
-    result = await session.execute(
-        select(GraphNode).where(
+    rows = await session.execute(
+        select(GraphNode.node_id, GraphNode.community_meta_json).where(
             GraphNode.repository_id == repository_id,
             GraphNode.node_type == "symbol",
+            GraphNode.community_meta_json.contains("entry_point_score"),
         )
     )
-    all_symbols = result.scalars().all()
 
-    scored: list[tuple[float, GraphNode]] = []
-    for node in all_symbols:
+    scored: list[tuple[float, str]] = []
+    for node_id, meta_json in rows.tuples().all():
         try:
-            meta = json.loads(node.community_meta_json or "{}")
+            meta = json.loads(meta_json or "{}")
         except (json.JSONDecodeError, TypeError):
             continue
         score = meta.get("entry_point_score")
         if score is not None and score >= min_score:
-            if node_is_excluded(node.node_id, exclude_spec):
+            if node_is_excluded(node_id, exclude_spec):
                 continue
-            scored.append((score, node))
+            scored.append((score, node_id))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [node for _, node in scored[:limit]]
+    top = [node_id for _, node_id in scored[:limit]]
+    if not top:
+        return []
+    nodes = (
+        await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_type == "symbol",
+                GraphNode.node_id.in_(top),
+            )
+        )
+    ).scalars()
+    by_id = {node.node_id: node for node in nodes}
+    return [by_id[node_id] for node_id in top if node_id in by_id]
 
 
 async def get_node_degree_counts(
