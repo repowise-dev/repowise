@@ -275,7 +275,9 @@ def sweep_orphan_temps(directory: Path, *, max_age: float = ORPHAN_TEMP_SECONDS)
     Only names this module writes, and only files older than *max_age*: a
     write in flight touches its temp file within seconds, so it is never that
     old. A file another process holds open (Windows refuses the delete) or one
-    already gone is skipped.
+    already gone is skipped. Ceiling: a writer suspended for over an hour
+    mid-write loses its temp and its write fails, which every caller already
+    treats as a cache miss to rebuild.
     """
     cutoff = time.time() - max_age
     removed = 0
