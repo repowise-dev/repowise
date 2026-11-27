@@ -251,7 +251,7 @@ describe("Runtime evidence notices", () => {
     expect(screen.getByRole("button", { name: /Measured in tests/ })).toBeTruthy();
   });
 
-  it("never says tests only when production statement windows are stored", async () => {
+  it("says profiled in tests only, keeping the prompt, when production statement windows are stored", async () => {
     const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
       const view = await measured(opts);
       const statements = await statementsOnly(opts);
@@ -261,6 +261,9 @@ describe("Runtime evidence notices", () => {
     render(<PerformanceView adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })} />);
     await screen.findByRole("list", { name: "Statements in postgres:hosted" });
     expect(screen.queryByText("Measured in tests only.")).toBeNull();
+    expect(screen.getByText("Profiled in tests only.")).toBeTruthy();
+    expect(screen.getByText(/production statement windows do not rank functions/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy prompt for your agent" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Measured in tests/ })).toBeTruthy();
   });
 
