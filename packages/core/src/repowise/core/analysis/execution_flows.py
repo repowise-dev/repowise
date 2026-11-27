@@ -14,9 +14,8 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
-import networkx as nx
 import structlog
 
 from repowise.core import ids
@@ -27,6 +26,9 @@ from repowise.core.analysis.execution_graph import (
 )
 from repowise.core.ids import file_path_of
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+
+if TYPE_CHECKING:
+    import networkx as nx
 
 log = structlog.get_logger(__name__)
 
