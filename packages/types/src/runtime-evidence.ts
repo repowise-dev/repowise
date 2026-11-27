@@ -32,6 +32,10 @@ export type {
   MeasuredRow,
   MeasuredRun,
   ProductionWindow,
+  RouteFacts,
+  RouteGroup,
+  RouteRow,
+  RouteRun,
   SlowTest,
   StatementFacts,
   StatementGroup,
@@ -41,6 +45,7 @@ export type {
   SuiteCostResponse,
   SuiteFileTime,
   SuiteSummary,
+  UnattributedRoutes,
   UnattributedStatements,
 } from "./generated/http.js";
 

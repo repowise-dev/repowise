@@ -86,6 +86,8 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
         "measured": view.get("measured"),
         "measured_in_tests": view.get("measured_in_tests"),
         "statements": view.get("statements"),
+        # Only when a route run names a handler, so every other payload is unchanged.
+        **({"routes": view["routes"]} if view.get("routes") else {}),
         "benchmarks": view.get("benchmarks"),
     }
 

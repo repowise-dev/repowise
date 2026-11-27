@@ -514,6 +514,15 @@ async def _statement_sites(session: Any, repo_id: str, doc: Any) -> list[Any]:
     return await list_statement_sites(session, repo_id)
 
 
+async def _stored_routes(session: Any, repo_id: str, doc: Any) -> list[Any]:
+    """The stored routes (``http_routes``), when *doc*'s entries join through them."""
+    if evidence_kinds[doc.kind].join != "route":
+        return []
+    from repowise.core.persistence.crud.http_routes import list_http_routes
+
+    return await list_http_routes(session, repo_id)
+
+
 async def store_evidence(
     session: Any,
     repo: Any,
@@ -586,6 +595,7 @@ async def store_evidence(
         origins,
         changed or frozenset(),
         await _statement_sites(session, repo.id, doc),
+        await _stored_routes(session, repo.id, doc),
     )
     # A benchmark or test keeps its row without its function, and a route or
     # statement names none, so only the kinds that need the join can be

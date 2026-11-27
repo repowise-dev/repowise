@@ -549,3 +549,43 @@ async def test_production_statements_list_compactly_beside_no_profile(setup_mcp,
 async def test_statements_on_no_single_function_read_not_ranked(setup_mcp, session, materialized):
     await _seed_statements(session, materialized, [(None, "ambiguous", 3, 150.0)])
     assert await _measured() == {"basis": "unknown", "status": "not_ranked"}
+
+
+@pytest.mark.asyncio
+async def test_production_routes_list_compactly_beside_no_profile(setup_mcp, session, materialized):
+    """Only a production route run: its handlers are measured rows with the
+    route, requests, mean and p95; the next window is the run's verify."""
+    from repowise.core.persistence.models import EvidenceRouteLatency
+
+    session.add(
+        EvidenceRun(
+            id="q1", repository_id=materialized, run_key="q1", kind="route_latency",
+            format="repowise-evidence-v1", source="plugin", workload_name="api",
+            workload_class="production", value_kind="wall", unit="ms", environment="prod",
+            commit_sha="d" * 40, measured_at=MEASURED_AT,
+        )
+    )
+    await session.flush()
+    session.add_all(
+        EvidenceRouteLatency(
+            run_id="q1", method="GET", route=route, repository_id=materialized,
+            handler_symbol_id=sid, request_count=count, p50_ms=None, p95_ms=p95, total_ms=ms,
+            error_count=None,
+        )
+        for route, sid, count, p95, ms in [
+            ("/login", LOGIN, 40, 30.0, 600.0),
+            ("/other", None, 5, None, 400.0),
+        ]
+    )
+    await session.commit()
+    block = await _measured()
+    assert block["basis"] == "measured" and "rows" not in block and "statements" not in block
+    (login,) = block["routes"]
+    assert login == {
+        "symbol_id": LOGIN, "run_id": "q1", "share": 0.6, "route": "GET /login",
+        "requests": 40, "mean_ms": 15.0, "p95_ms": 30.0,
+    }
+    assert block["routes_total"] == 1
+    (run,) = block["runs"]
+    assert run["verify"] == "compare this row in the next api window"
+    assert run["unattributed"] == {"unjoined": 0.4}
