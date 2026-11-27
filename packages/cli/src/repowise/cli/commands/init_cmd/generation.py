@@ -365,6 +365,10 @@ def run_repo_generation(
         )
 
     embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
+    deterministic = bool(getattr(gen_config, "deterministic", False))
+    # A model run reads earlier pages' summaries back from the store; a
+    # template run does not, so a keyless one builds no LanceDB store at all.
+    summaries = not deterministic
     # One run, one store: ``init`` builds it before the pipeline and it arrives
     # on ``result``. Only a caller whose embedder matches
     # ``embedder_name_resolved`` may pre-set it.
@@ -372,12 +376,26 @@ def run_repo_generation(
     if vector_store is None and verbose:
         # Opening the store can take seconds on a large index; say so.
         with progress_steps(console) as steps, steps.step("vector_store"):
-            vector_store = build_vector_store(repo_path, embedder_impl)
+            vector_store = build_vector_store(repo_path, embedder_impl, summaries=summaries)
     elif vector_store is None:
-        vector_store = build_vector_store(repo_path, embedder_impl)
-    result.vector_store = vector_store
+        vector_store = build_vector_store(repo_path, embedder_impl, summaries=summaries)
+    from repowise.cli.providers.vector_store import _mock_would_clobber
+    from repowise.core.providers.embedding import is_semantic_embedder
 
-    deterministic = bool(getattr(gen_config, "deterministic", False))
+    if (
+        vector_store is None
+        and not is_semantic_embedder(embedder_impl)
+        and not _mock_would_clobber(repo_path / ".repowise" / "lancedb", embedder_impl)
+    ):
+        # The keyless skip (a None over a real index is the clobber refusal,
+        # and persistence must still clean that index). Generation embeds into a throwaway store either
+        # way; holding it on ``result`` lets the run's search scope read the
+        # embedder off it, so a named embedder that fell back to keyless is
+        # not reported as semantic search being available.
+        from repowise.core.persistence.vector_store import InMemoryVectorStore
+
+        vector_store = InMemoryVectorStore(embedder_impl)
+    result.vector_store = vector_store
 
     # Cost tracker backed by the real DB so every LLM call is persisted to the
     # llm_costs table. Attached to the provider unconditionally (all providers

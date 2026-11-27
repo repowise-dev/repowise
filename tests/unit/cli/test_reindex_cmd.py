@@ -522,6 +522,7 @@ async def _switch_embedder(
     config: str,
     pages: dict[str, str] | None = None,
     pending_edit: str = "",
+    fail: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], Any]:
     """Reindex a stamped repo with *to*; return its config, state and config changes.
 
@@ -534,6 +535,8 @@ async def _switch_embedder(
     from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
 
     (tmp_path / ".repowise").mkdir()
+    # What a keyless run leaves in place of a store.
+    (tmp_path / ".repowise" / "lancedb.keyless").touch()
     (tmp_path / ".repowise" / "config.yaml").write_text(config, encoding="utf-8")
     old = load_config(tmp_path)["embedder"]
     save_state(
@@ -553,7 +556,8 @@ async def _switch_embedder(
 
     class _Store:
         async def embed_batch(self, items: list[Any]) -> None:
-            return None
+            if fail:
+                raise RuntimeError("embedder down")
 
         async def close(self) -> None:
             return None
@@ -588,6 +592,23 @@ async def test_a_clean_embedder_switch_leaves_nothing_for_update_to_rebuild(
     assert state["index_scope"]["provider"]["embedder"] == "openai"
     assert not changes.changed
     assert not changes.rebuild_required
+
+
+async def test_a_clean_switch_clears_the_keyless_marker(monkeypatch, tmp_path: Path) -> None:
+    """Once the wiki is re-embedded, ``update`` stops proposing the keyless backfill."""
+    await _switch_embedder(monkeypatch, tmp_path, "openai", config="embedder: mock\n")
+
+    assert not (tmp_path / ".repowise" / "lancedb.keyless").exists()
+
+
+async def test_a_failed_switch_keeps_the_keyless_marker(monkeypatch, tmp_path: Path) -> None:
+    """A run that embedded nothing leaves the marker, so the next ``update`` retries."""
+    with pytest.raises(Exception):  # noqa: B017 - the abort's type is not the point
+        await _switch_embedder(
+            monkeypatch, tmp_path, "openai", config="embedder: mock\n", fail=True
+        )
+
+    assert (tmp_path / ".repowise" / "lancedb.keyless").is_file()
 
 
 async def test_a_partial_embedder_switch_still_asks_update_to_rebuild(

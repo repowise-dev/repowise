@@ -11,7 +11,7 @@ Everything Repowise knows about your repository, created at the repo root by
 ```
 .repowise/
 ├── wiki.db             # SQLite database: all pages, symbols, graph, git metadata, decisions
-├── lancedb/             # Vector search index (LanceDB)
+├── lancedb/             # Vector search index (LanceDB), written once an embedder is set
 ├── omissions/           # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml          # Provider, model, embedder, exclude patterns, distill/mcp/refactoring blocks
 ├── events.jsonl         # Typed events as CloudEvents JSON lines (the jsonl event sink)

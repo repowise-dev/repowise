@@ -127,9 +127,13 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         f"Found [bold]{len(pages)}[/bold] wiki pages and [bold]{len(decisions)}[/bold] decision records to index."
     )
 
+    from repowise.core.persistence.vector_store.lancedb_store import clear_keyless_store_mark
+
     if total == 0:
         console.print("[yellow]Nothing to index. Run 'repowise init' first.[/yellow]")
         await engine.dispose()
+        # Nothing left to re-embed, so ``update`` must stop proposing it.
+        clear_keyless_store_mark(lance_dir)
         return
 
     # --- Embed and upsert pages in batches ---
@@ -286,6 +290,12 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     if provider_circuit_error is not None:
         raise click.ClickException(_circuit_message(provider_circuit_error))
+    # Nothing failed, so the keyless marker has done its job; kept, it would
+    # propose this re-embed on every ``update`` of a wiki whose pages all sit
+    # below the information floor (no table is ever written). After a failure
+    # it stays, and the next ``update`` retries, as it did over a mock table.
+    if not failed:
+        clear_keyless_store_mark(lance_dir)
 
     # Record the embedder we actually built the table with. Without this, a
     # repo indexed keyless keeps `embedder: mock` in config.yaml, and the next
