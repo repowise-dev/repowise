@@ -1,9 +1,9 @@
 {
   "about": "Budgets for scripts/check_footprint.py, run by the footprint job in .github/workflows/ci.yml. Raise a number only in the pull request that needs it, and say why in its description. install: a default `uv pip install .` (no extras, pinned to uv.lock) into a fresh Python 3.12 venv on ubuntu-latest, summed from every distribution's RECORD. startup_paths: each runs in a fresh interpreter inside a small indexed repository ({repo} in a payload is its path) and must not load any module in its forbidden list; before: payloads run first, as earlier tool calls in the same session. env: variables for that path. expect_stdout, when set, shows a hook reached its real code path.",
   "install": {
-    "size_mb": 680,
+    "size_mb": 541,
     "size_tolerance_pct": 3,
-    "distributions": 132,
+    "distributions": 108,
     "distributions_tolerance": 2
   },
   "startup_paths": [
