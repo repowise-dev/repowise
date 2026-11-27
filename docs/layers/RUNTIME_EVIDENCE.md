@@ -930,7 +930,7 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   suffix (a JVM frame, which names a class and no file, is placed on the one
   indexed file its package and class name spell). What does not join is counted by reason, and a value that was not
   measured is unknown, never zero.
-- A profile joins to code for Python, Go, JavaScript, Java and Kotlin frames.
+- A profile joins to code for Python, Go, JavaScript, Java, Kotlin and PHP frames.
   A JVM frame joins by its line to the method holding it, with the method name
   and class checked; without a line, by name only when one method fits.
   Compiler-made JVM frames (bridges, accessors, `$$Lambda`) count as generated
