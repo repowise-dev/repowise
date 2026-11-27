@@ -74,7 +74,7 @@ def _resolve_or_fall_back(run: InitRun) -> None:
         # A provider that was configured but could not be built is a different
         # problem from none being configured, and the message above would send
         # the user to set a key they have already set.
-        if "Could not set up" in str(exc):
+        if "Could not set up" in str(exc) or getattr(exc, "extra", None):
             console.print(f"  [dim]{exc}[/dim]")
 
 

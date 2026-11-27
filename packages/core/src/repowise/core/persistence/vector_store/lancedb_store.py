@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,35 @@ def record_vector_dim(db_path: str | Path, table_name: str, dim: int | None) -> 
             path.write_text(str(dim), encoding="ascii")
     except OSError:
         pass
+
+
+#: Beside ``.repowise/lancedb``: this repo's pages were embedded keyless, so no
+#: store was written. Keyless runs skip LanceDB (8-wide hash vectors carry no
+#: signal and nothing searches them), and this file keeps the one fact the old
+#: mock-filled table told later runs: once a real embedder is pinned, every page
+#: needs embedding, not only the changed ones.
+KEYLESS_MARKER = "lancedb.keyless"
+
+
+def mark_keyless_store(lance_dir: str | Path) -> None:
+    """Record that *lance_dir*'s pages were embedded keyless. Best-effort.
+
+    Read only while *lance_dir* holds no table: the first real-embedder write
+    creates one, and from then on the table's own width is the answer.
+    """
+    with contextlib.suppress(OSError):
+        (Path(lance_dir).parent / KEYLESS_MARKER).touch()
+
+
+def clear_keyless_store_mark(lance_dir: str | Path) -> None:
+    """Forget the marker once a real embedder has re-embedded the wiki. Best-effort."""
+    with contextlib.suppress(OSError):
+        (Path(lance_dir).parent / KEYLESS_MARKER).unlink(missing_ok=True)
+
+
+def keyless_store_marked(lance_dir: str | Path) -> bool:
+    """Whether a keyless run stood in for a store at *lance_dir* it never wrote."""
+    return (Path(lance_dir).parent / KEYLESS_MARKER).is_file()
 
 
 def _evidence(stored: str, query: str | None) -> str:

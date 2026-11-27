@@ -45,7 +45,7 @@ In the dashboard, open the **Dead code** view of a repository.
 Methods, fields, properties and enum members are never reported as unused
 exports: they are reached through their container. `unused_internal` is
 withheld from the dashboard and default MCP responses because its precision is
-very low ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
+below the publishing bar ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
 
 ### Confidence
 
@@ -99,6 +99,15 @@ export with strong evidence".
   range.
 - **Export only:** the symbol's own file uses it, so only the `export` is
   unneeded.
+- **Loaded by a JS framework's convention:** the file sits where a framework
+  its `package.json` depends on loads files from (React Email `emails/`,
+  Next.js `pages/`, App Router `page`, `layout`, `route` and metadata files,
+  `middleware`, `proxy` and `instrumentation`, Remix `app/routes/`, Nuxt pages, layouts, plugins,
+  middleware, `server/`, `@nuxtjs/i18n` locale files (its `langDir`) and
+  auto-imported `components/`, `composables/` and `utils/` under its `srcDir`,
+  SvelteKit hooks and routes where its `kit.files` puts them,
+  Astro `src/pages/`, Expo Router `app/`, `vite-plugin-pages` and
+  `unplugin-vue-router` `src/pages/`).
 - **Weak resolution for the language in this repository:** the language is
   unknown to the graph, its import support is not full, none of its call edges
   has a recorded resolution, or more than half of them are name matches.
@@ -108,8 +117,9 @@ export with strong evidence".
 Some files and symbols are never reported, because static reachability is the
 wrong tool for them. This covers entry points and programs (`__main__.py`,
 `main.go`, files with a shebang), build and CI files and anything they name by
-path, test files, generated code, vendored trees, framework routes such as
-Next.js `page.tsx`, and symbols registered by a framework decorator or
+path, test files, generated code, vendored trees, files a JS framework declared in
+a `package.json` loads from where they sit (the paths above, apart from Nuxt's auto-imported
+directories), and symbols registered by a framework decorator or
 annotation (pytest fixtures, Flask and FastAPI routes, Celery tasks, Spring
 stereotypes, and similar). Names that follow dynamic-dispatch conventions
 (`*Handler`, `*Plugin`, `register_*`, `on_*` and others) are treated as used.
@@ -132,6 +142,14 @@ dynamic `import(` and `require.context(`, `Class.forName(`, `ServiceLoader.load(
 `const_get(`, `plugin.Open(` and `//go:embed`, `NSClassFromString(`,
 `Activator.CreateInstance(`, and `dlopen(` / `LoadLibrary(` in C. Dynamic edges
 found by the language extractors count the same way.
+
+Two JavaScript and TypeScript loaders are read as imports instead. A Vite
+`import.meta.glob(...)` call gets an import edge to every indexed file its
+patterns match: relative patterns, `**` patterns, patterns rooted at an alias
+the repository's imports already use (tsconfig `paths`, Nuxt `~/`, SvelteKit
+`$lib`), and `!` patterns that remove files. Its `import:` option names the one
+export used. `new URL('./x', import.meta.url)` gets an edge to the file beside
+the caller.
 
 The cases where a finding is most likely wrong:
 
@@ -219,9 +237,10 @@ There is no allowlist file for dead-code findings; use the dashboard status.
 
 ## Accuracy and limits
 
-- `unused_internal` precision is under 1% on 1,511 hand-labelled findings from
-  one TypeScript/Python monorepo, so it is withheld by default. Private symbols
-  used within their own file are often invisible to the graph.
+- `unused_internal` is withheld by default: its precision on held-out
+  repositories is below the publishing bar. Some uses of a private symbol
+  inside its own file (object shorthand, `typeof`, reads of a module-level
+  constant) still leave no edge in the graph.
 - Precision on whole unreachable files is well below the deletion-ready bar
   (build scripts, manifests and runtime loaders read files by path), so they
   are never marked `safe_to_delete`.

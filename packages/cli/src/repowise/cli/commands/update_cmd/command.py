@@ -36,6 +36,7 @@ from repowise.cli.helpers import (
     ensure_repowise_dir,
     find_workspace_root,
     get_head_commit,
+    get_repowise_dir,
     load_config,
     load_state,
     release_update_lock,
@@ -50,6 +51,7 @@ from repowise.cli.helpers import (
     write_update_pending,
 )
 from repowise.cli.ui.mode_names import scope_line
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_BACKFILL_REWALK,
@@ -1387,6 +1389,9 @@ def _prepare_locked_run(opts: UpdateOptions, run: UpdateRun) -> None:
         save_state(repo_path, state)
 
     _assess_store_upgrade(opts, run)
+    from .page_history import trim_page_history
+
+    trim_page_history(repo_path, dry_run=opts.dry_run)
 
     # This run only reaches changed files, so name the command for missing slots.
     from .commit_limit_notice import surface_pinned_commit_limit
@@ -2251,6 +2256,8 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         run.repo_path,
         reasoning=opts.reasoning,
         interactive=_docs_provider_prompt_allowed(run.emitter),
+        # --yes answers no questions, so it never installs a package either.
+        allow_install=not opts.yes,
     )
 
     # Persist this update's model spend to llm_costs, as init does.
@@ -2638,6 +2645,9 @@ def run_update(
     deferred = _acquire_update_lock(run)
     if deferred is not None:
         return deferred
+    # Temp files killed cache writes left; the age guard spares one in flight.
+    if not opts.dry_run:
+        sweep_orphan_temps(get_repowise_dir(run.repo_path))
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")

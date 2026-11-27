@@ -24,6 +24,8 @@ names it as a :class:`Scope`:
   it: the code naming the file, or for a file in a fixture tree the code
   naming the tree (:mod:`~.fixture_readers`). It keeps its full run when no
   reader is found or code outside the test trees names it.
+- A code file the change adds (:func:`new_file_scope`) runs the tests of the
+  changed files naming it and of the existing code beside it.
 
 A scope also runs the tests reaching each file that names the changed one, so
 a test reading ``package.json`` as data is kept. An ecosystem scope already
@@ -72,6 +74,8 @@ MAX_NAMERS = 200
 
 #: The basis of a fixture data file that runs the test code reading it.
 FIXTURE_READERS = "fixture-readers"
+#: The basis of a code file the change adds (:func:`new_file_scope`).
+NEW_FILE = "new-file"
 
 _JVM = (".java", ".kt", ".kts", ".scala", ".groovy")
 
@@ -432,6 +436,36 @@ def _named_scope(path: str, tree: _Tree, namers: tuple[str, ...]) -> Scope | Non
     if namers:
         why += f" and is named by {_some(namers)}"
     return Scope(why, "owner-package", owner, (), tree.code_under(owner, ()), namers)
+
+
+def new_file_scope(
+    path: str, namers: tuple[str, ...], beside: tuple[str, ...], siblings: int
+) -> Scope:
+    """The tests a code file new in the change runs: no index has seen it.
+
+    New code runs only when something loads it: a file naming it (an import,
+    a registry entry) or a loader of its directory (migrations, plugins,
+    framework routes). So the tests reaching *path* itself, the changed files
+    naming it (*namers*) and the *siblings* existing code files beside it
+    (*beside*: the routes standing for them) stand for it. With no namer and
+    no sibling it runs everything. Ceiling: code loading it from another
+    directory by a name it builds is not seen.
+    """
+    where = str(PurePosixPath(path).parent)
+    found = []
+    if namers:
+        found.append(f"named by {_some(namers)}")
+    if siblings:
+        place = "the repository root" if where == "." else f"{where}/"
+        found.append(f"beside {siblings} existing code file(s) in {place}")
+    why = "it is new in this change"
+    if not found:
+        return Scope(
+            why,
+            NEW_FILE,
+            run_all=f"{why}, no changed file names it and no existing code sits beside it",
+        )
+    return Scope(f"{why}, {' and '.join(found)}", NEW_FILE, reach=(path, *namers, *beside))
 
 
 def _some(paths: tuple[str, ...]) -> str:

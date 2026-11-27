@@ -258,3 +258,41 @@ def test_context_reads_the_change_number_from_the_ci() -> None:
     assert shadow._context(env)["pr"] == 42
     assert shadow._context(env)["sha"] == "abc"
     assert shadow._context({})["pr"] is None
+
+
+def test_the_record_says_whether_the_map_was_measured_at_the_base() -> None:
+    fresh = shadow.build_record(SELECTION, {"base": "b0", "map_commit": "b0"}, None, {})
+    assert (fresh["map_commit"], fresh["map_at_base"]) == ("b0", True)
+    assert "measured at the base" in shadow.render_summary(fresh)
+    stale = shadow.build_record(SELECTION, {"base": "b0", "map_commit": "a9"}, None, {})
+    assert stale["map_at_base"] is False
+    assert "not the base `b0`" in shadow.render_summary(stale)
+    # An index without a map is stale too; without a base nothing is known.
+    none = shadow.build_record(SELECTION, {"base": "b0", "map_commit": ""}, None, {})
+    assert (none["map_commit"], none["map_at_base"]) == (None, False)
+    assert shadow.build_record(SELECTION, {}, None, {})["map_at_base"] is None
+
+
+def test_an_ancestor_index_is_noted() -> None:
+    rec = shadow.build_record(SELECTION, {"index_cache": "ancestor"}, None, {})
+    assert "nearest earlier commit" in shadow.render_summary(rec)
+
+
+def test_map_commit_reads_the_newest_map_in_the_index(tmp_path, capsys) -> None:
+    import sqlite3
+
+    db = tmp_path / "wiki.db"
+    assert shadow.map_commit(str(db)) is None  # no index
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE test_coverage_sources (ingested_at TEXT, ingested_commit_sha TEXT)")
+    con.commit()
+    assert shadow.map_commit(str(db)) is None  # no map
+    con.executemany(
+        "INSERT INTO test_coverage_sources VALUES (?, ?)",
+        [("2026-11-25T10:00:00", "old"), ("2026-11-26T10:00:00", "new")],
+    )
+    con.commit()
+    con.close()
+    assert shadow.map_commit(str(db)) == "new"
+    assert shadow.main(["--map-commit", str(db)]) == 0
+    assert capsys.readouterr().out.strip() == "new"

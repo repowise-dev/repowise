@@ -135,3 +135,33 @@ def test_off_a_contract_change_prints_nothing(
 
     assert _update(mono, capsys) == ""
     assert repo_contracts_path(mono).read_bytes() == before
+
+
+def test_the_line_names_in_repo_links_apart_from_service_links(
+    mono: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _turn_on(mono)
+
+    out = _update(mono, capsys)
+
+    assert "1 linked in this repo, 0 to other repos (" in out
+
+
+def test_kept_rows_still_print_their_counts(
+    mono: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.workspace import repo_contracts
+
+    _turn_on(mono)
+
+    async def _kept(root: Path) -> repo_contracts.RepoContractsResult:
+        return repo_contracts.RepoContractsResult(
+            False, 462, 206, repo_contracts_path(root), service_links=0
+        )
+
+    monkeypatch.setattr(repo_contracts, "run_repo_contract_extraction", _kept)
+
+    out = _update(mono, capsys)
+
+    assert "Contracts: 462 found, 206 linked in this repo, 0 to other repos (unchanged)" in out
+    assert "contract change" not in out

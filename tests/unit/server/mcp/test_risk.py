@@ -1335,3 +1335,127 @@ async def test_get_risk_history_tier_file_omits_unmeasured_signals(setup_mcp, se
         assert "owner_pct" not in card and "contributor_count" not in card
     owners = (await get_risk([path], include=["owners"]))["targets"][path]
     assert owners["owner_pct"] == 0.5
+
+
+def _co_change_paths(partners, target_origin="production", origins=None):
+    """File order ``_build_co_changes`` gives stored *partners* (heaviest first in the list)."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_risk.assessment import _build_co_changes
+
+    records = [{"file_path": p, "count": float(len(partners) - i)} for i, p in enumerate(partners)]
+    meta = SimpleNamespace(co_change_partners_json=json.dumps(records))
+    rows, _ = _build_co_changes(meta, {}, None, origins, target_origin)
+    return [r["file_path"] for r in rows]
+
+
+def test_co_change_rows_lead_with_shipped_code_then_tests():
+    """A heavier test partner ranks below every shipped partner."""
+    order = _co_change_paths(["tests/test_a.py", "docs_src/tutorial/a.py", "src/b.py", "src/c.py"])
+
+    assert order == ["src/b.py", "src/c.py", "docs_src/tutorial/a.py", "tests/test_a.py"]
+
+
+def test_a_test_files_partners_keep_tests_beside_shipped_code():
+    order = _co_change_paths(
+        ["tests/test_b.py", "docs_src/tutorial/a.py", "src/a.py"], target_origin="test"
+    )
+
+    assert order == ["tests/test_b.py", "src/a.py", "docs_src/tutorial/a.py"]
+
+
+def test_a_docs_files_partners_still_lead_with_shipped_code():
+    order = _co_change_paths(
+        ["docs_src/tutorial/b.py", "src/a.py"], target_origin="docs_example"
+    )
+
+    assert order == ["src/a.py", "docs_src/tutorial/b.py"]
+
+
+def test_co_change_rank_reads_the_stored_origin_first():
+    order = _co_change_paths(["src/gen.py", "src/b.py"], origins={"src/gen.py": "generated"})
+
+    assert order == ["src/b.py", "src/gen.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("since", ["last week", "2024-13-01", "90", ""])
+async def test_get_risk_refuses_a_since_it_cannot_read(setup_mcp, since):
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"], since=since)
+
+    assert "since must be" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_since_without_a_checkout_says_the_window_was_not_applied(setup_mcp):
+    """Stored partners stay, labelled as all history rather than passed off as recent."""
+    from repowise.server.mcp_server import get_risk
+
+    card = (await get_risk(["src/auth/service.py"], since="2024-01-01"))["targets"][
+        "src/auth/service.py"
+    ]
+
+    assert card["co_change_window"]["applied"] is False
+    assert "could not walk" in card["co_change_window"]["reason"]
+    assert card["co_change_window"]["since"] == "2024-01-01"
+    assert card["co_change_partners"]
+    assert " since " not in card["risk_summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_since_counts_partners_over_the_window(setup_mcp, tmp_path):
+    import os
+    import subprocess
+
+    from repowise.server.mcp_server import get_risk
+
+    def git(*args: str, date: str | None = None) -> None:
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "A",
+            "GIT_AUTHOR_EMAIL": "a@example.com",
+            "GIT_COMMITTER_NAME": "A",
+            "GIT_COMMITTER_EMAIL": "a@example.com",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+        }
+        if date:
+            env |= {"GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+        subprocess.run(["git", *args], cwd=tmp_path, env=env, check=True, capture_output=True)
+
+    git("init", "-q")
+    for n, (files, day) in enumerate(
+        [
+            (["src/auth/service.py", "src/auth/middleware.py"], "2020-01-01"),
+            (["src/auth/service.py", "src/auth/middleware.py"], "2020-01-02"),
+            (["src/auth/service.py", "src/db/models.py"], "2025-01-01"),
+            (["src/auth/service.py", "src/db/models.py"], "2025-01-02"),
+        ]
+    ):
+        for path in files:
+            (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+            with (tmp_path / path).open("a", encoding="utf-8") as fh:
+                fh.write(f"v{n}\n")
+        git("add", "-A")
+        git("commit", "-q", "-m", f"c{n}", date=f"{day}T12:00:00")
+
+    result = await get_risk(["src/auth/service.py"], since="2024-06-01")
+    card = result["targets"]["src/auth/service.py"]
+
+    assert card["co_change_window"] == {"since": "2024-06-01", "target_commits": 2}
+    assert [(p["file_path"], p["support"], p["conf_ab"]) for p in card["co_change_partners"]] == [
+        ("src/db/models.py", 2, 1.0)
+    ]
+    assert card["co_change_partners_total"] == 1
+    assert "1 co-change partners since 2024-06-01" in card["risk_summary"]
+
+    # The older pair is with src/auth/middleware.py, which has no git row in the
+    # fixture: a path the index does not hold is never a partner.
+    wide = (await get_risk(["src/auth/service.py"], since="2019-01-01"))["targets"][
+        "src/auth/service.py"
+    ]
+    assert wide["co_change_window"]["target_commits"] == 4
+    assert [(p["file_path"], p["support"]) for p in wide["co_change_partners"]] == [
+        ("src/db/models.py", 2)
+    ]

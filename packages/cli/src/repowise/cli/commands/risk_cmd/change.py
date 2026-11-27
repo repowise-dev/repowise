@@ -17,10 +17,16 @@ class _Subject:
     revspec: str | None
     fmt: str
     fail_above: float | None
+    #: The ``--ext`` suffixes the score counted, so later blocks read the same files.
+    extensions: tuple[str, ...] = ()
 
 
 def _resolve_subject(
-    repo_path: str, revspec: str | None, fmt: str, fail_above: float | None
+    repo_path: str,
+    revspec: str | None,
+    fmt: str,
+    fail_above: float | None,
+    extensions: tuple[str, ...] = (),
 ) -> _Subject:
     """The change to score: *revspec*, else the CI change for a gate or CI format."""
     if revspec is None and (fail_above is not None or fmt in ("markdown", "github")):
@@ -30,7 +36,7 @@ def _resolve_subject(
             revspec = ci_revspec(str(repo_root(repo_path)), None)
         except CannotEvaluateError as exc:
             cannot_evaluate(fmt, exc.code, str(exc))
-    return _Subject(repo_path, revspec, fmt, fail_above)
+    return _Subject(repo_path, revspec, fmt, fail_above, extensions)
 
 
 def _score(

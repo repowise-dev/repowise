@@ -38,6 +38,7 @@ from repowise.core.persistence.database import (
     MCP_CACHE_DIRNAME,
     STATE_FILENAME,
 )
+from repowise.core.persistence.vector_store.lancedb_store import KEYLESS_MARKER
 from repowise.core.pipeline.cleanup_debt import CLEANUP_DEBT_FILENAME
 from repowise.core.pipeline.incremental.graph_seed import _CACHE_NAME as _GRAPH_SEED
 from repowise.core.pipeline.incremental.resolution_cache import _FILENAME as _RESOLVED_IMPORTS
@@ -71,6 +72,7 @@ CARRIED_FILES: tuple[str, ...] = (
     STATE_FILENAME,
     KNOWLEDGE_GRAPH_FILENAME,
     CLEANUP_DEBT_FILENAME,
+    KEYLESS_MARKER,
     _RATIONALE_HARVEST,
     _WINDOW_CACHE_NAME,
     _FIX_WALK,

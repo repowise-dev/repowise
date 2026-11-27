@@ -255,7 +255,7 @@ async def run_scoped_generation(
         vector_store = None
         try:
             embedder = build_embedder(resolve_embedder(embedder_name, repo_path=repo_path), repo_path)
-            vector_store = build_vector_store(repo_path, embedder)
+            vector_store = build_vector_store(repo_path, embedder, summaries=True)
         except Exception as exc:
             # Null BOTH on any failure. If the embedder built but the store did
             # not, a non-None embedder would make generation embed into a

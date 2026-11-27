@@ -291,14 +291,17 @@ class TestFastify:
 
     def test_plugin_scan_is_linear_on_a_large_flat_table(self) -> None:
         # A data table in a Fastify file once cost seconds in the arrow scan.
-        import time
-
         from repowise.core.ingestion.framework_routes_fastify import fastify_plugins
+        from tests.unit._timing import assert_linear_growth
 
-        content = "import Fastify from 'fastify';\n" + "  key: 'value',\n" * 20000
-        start = time.perf_counter()
-        fastify_plugins(content, {"key", "app"})
-        assert time.perf_counter() - start < 2.0
+        def table(rows: int) -> str:
+            return "import Fastify from 'fastify';\n" + "  key: 'value',\n" * rows
+
+        assert_linear_growth(
+            lambda content: fastify_plugins(content, {"key", "app"}),
+            table(10_000),
+            table(40_000),
+        )
 
     def test_type_argument_between_verb_and_call(self) -> None:
         (route,) = list(express_routes("app.get<{Params: {id: string}}>('/x/:id', h)"))

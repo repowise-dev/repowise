@@ -10,11 +10,14 @@ only, never a walk up the hierarchy: ``dispatches_to`` already spans it.
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.batches import chunked
 from repowise.core.persistence.models import GraphEdge
+from repowise.server.mcp_server._helpers import node_is_excluded
 
 #: Same floor as the direct call rows; ``dispatches_to`` is emitted at 0.75.
 MIN_CONFIDENCE = 0.7
@@ -24,12 +27,14 @@ VIA_INTERFACE = "interface"
 
 
 async def interface_call_edges(
-    session: AsyncSession, repo_id: str, impl_ids: list[str]
+    session: AsyncSession, repo_id: str, impl_ids: list[str], exclude_spec: Any = None
 ) -> list[tuple[GraphEdge, str]]:
     """``(call edge, base method id)`` for calls into a base dispatching to *impl_ids*.
 
     Calls made from inside *impl_ids* are left out: an implementation going
-    through its own interface is not an outside caller.
+    through its own interface is not an outside caller. A base method in a
+    file *exclude_spec* excludes is no hop at all, so its callers are dropped
+    with it.
     """
     impls = set(impl_ids)
     bases: set[str] = set()
@@ -44,6 +49,7 @@ async def interface_call_edges(
         )
         bases.update(row[0] for row in res.all())
     bases -= impls
+    bases = {b for b in bases if not node_is_excluded(b, exclude_spec)}
     out: list[tuple[GraphEdge, str]] = []
     for batch in chunked(sorted(bases)):
         res = await session.execute(

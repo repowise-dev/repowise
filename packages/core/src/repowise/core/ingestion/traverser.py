@@ -72,6 +72,7 @@ from .models import (
     PackageInfo,
     RepoStructure,
 )
+from .ts_declarations import DECLARATION_SUFFIXES
 
 # ---------------------------------------------------------------------------
 # Traversal statistics
@@ -374,9 +375,7 @@ _EMITTED_LANGUAGES: frozenset[str] = _SKIP_GENERATED_CHECK | {
 
 #: Filename endings a compiler emits in otherwise hand-written languages.
 _EMITTED_SUFFIXES: tuple[str, ...] = (
-    ".d.ts",
-    ".d.mts",
-    ".d.cts",
+    *DECLARATION_SUFFIXES,
     ".qmltypes",
     *_GENERATED_SUFFIXES,
 )

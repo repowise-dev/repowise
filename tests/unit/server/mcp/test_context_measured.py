@@ -388,3 +388,96 @@ async def test_a_failure_behind_why_or_drivers_keeps_the_plain_line(
     line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
     assert line.startswith('rank 3 of repo code in entry_point "cli build"')
     assert "why" not in line and "driven" not in line
+
+
+# -- production window ---------------------------------------------------------
+
+CLAIM = "in production over 2026-10-30 to 2026-11-26, deployed ee257d145f19"
+
+
+def test_a_production_row_names_its_window_and_nothing_else_changes():
+    prod = _row(workload_class="production", workload_name="api")
+    assert symbol_line(prod, NOW, (), {"r1": CLAIM}) == (
+        'rank 3 of repo code in production "api" over 2026-10-30 to 2026-11-26, '
+        "deployed ee257d145f19 (12% self, 10-14%; repo code itself 40%), 2d old"
+    )
+    assert file_line([prod], NOW, {"r1": CLAIM}).startswith(
+        'in production "api" over 2026-10-30 to 2026-11-26, deployed ee257d145f19 ('
+    )
+    # A claim for another run, or a window on a row that is not production, is never read.
+    assert symbol_line(prod, NOW, (), {"r2": CLAIM}) == symbol_line(prod, NOW)
+    assert symbol_line(_row(), NOW, (), {"r1": CLAIM}) == symbol_line(_row(), NOW)
+    assert 'production "api", window unknown, deployed commit unknown' in symbol_line(
+        prod, NOW, (), {"r1": "in production, window unknown, deployed commit unknown"}
+    )
+
+
+async def _production_run(session, repo_id: str, run_id: str = "r1") -> None:
+    from repowise.core.persistence.models import EvidenceRun
+
+    session.add(
+        EvidenceRun(
+            id=run_id, repository_id=repo_id, run_key=run_id, kind="profile",
+            format="repowise-evidence-v1", source="cli", workload_name="api",
+            workload_class="production", value_kind="cpu", unit="samples",
+            commit_sha="ee257d145f19" + "0" * 28,
+            window_start=datetime(2026, 10, 30, tzinfo=UTC),
+            window_end=datetime(2026, 11, 26, tzinfo=UTC),
+        )
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_a_function_measured_in_production_names_the_window(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_context
+
+    await _production_run(session, populated_db)
+    await _add(session, populated_db, LOGIN, workload_class="production", workload_name="api")
+    cards = (await get_context([LOGIN, FILE]))["targets"]
+    assert cards[LOGIN]["measured"].startswith(
+        'rank 3 of repo code in production "api" over 2026-10-30 to 2026-11-26, '
+        "deployed ee257d145f19 (12% self"
+    )
+    assert cards[FILE]["measured"].startswith(f'in production "api" {CLAIM[14:]} (')
+
+
+@pytest.mark.asyncio
+async def test_non_production_lines_read_no_window(setup_mcp, session, populated_db, monkeypatch):
+    from repowise.server.mcp_server import get_context
+
+    # A stored production run elsewhere: an entry_point row's line is unchanged
+    # and the window read never runs.
+    await _production_run(session, populated_db, "r-prod")
+    await _add(session, populated_db, LOGIN)
+    calls: list = []
+
+    async def _spy(*args, **kwargs):
+        calls.append(args)
+        return {}
+
+    monkeypatch.setattr(measured, "production_window_claims", _spy)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith(
+        'rank 3 of repo code in entry_point "cli build" (12% self, 10-14%; repo code itself 40%), '
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_window_read_keeps_the_plain_line(
+    setup_mcp, session, populated_db, monkeypatch
+):
+    from repowise.server.mcp_server import get_context
+
+    await _production_run(session, populated_db)
+    await _add(session, populated_db, LOGIN, workload_class="production", workload_name="api")
+
+    async def _broken(*args, **kwargs):
+        raise ValueError("a stored window time that does not parse")
+
+    monkeypatch.setattr(measured, "production_window_claims", _broken)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in production "api" (12% self')

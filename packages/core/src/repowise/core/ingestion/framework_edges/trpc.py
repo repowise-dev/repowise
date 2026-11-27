@@ -48,8 +48,6 @@ def _has_trpc_imports(parsed_files: dict[str, Any]) -> bool:
 
 class _TrpcHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        if "trpc" in dctx.stack_lower:
-            return True
         return _has_trpc_imports(dctx.parsed_files)
 
     def add_edges(

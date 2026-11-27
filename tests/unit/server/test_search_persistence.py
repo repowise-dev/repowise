@@ -342,3 +342,47 @@ async def test_build_primary_vector_store_shared_sqlite_registry_db_url_match(
         assert await loaded_store.list_page_ids() == {"p-db-match"}
     finally:
         await loaded_store.close()
+
+
+async def test_keyless_primary_never_opens_an_existing_store(
+    session_factory, tmp_path, monkeypatch
+) -> None:
+    """A keyless server reads no LanceDB, even where a store sits on disk.
+
+    Its vectors are never searched, so opening one only cost a lancedb and
+    pyarrow import. Search for the repo then runs lexically.
+    """
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    repo_path = tmp_path / "repo"
+    (repo_path / ".repowise" / "lancedb").mkdir(parents=True)
+    async with get_session(session_factory) as session:
+        await crud.upsert_repository(session, name="repo", local_path=str(repo_path))
+    monkeypatch.chdir(repo_path)
+
+    store, repo_id = await build_primary_vector_store(
+        session_factory, "sqlite+aiosqlite:///:memory:", KeylessEmbedder()
+    )
+
+    assert repo_id is None
+    assert isinstance(store, InMemoryVectorStore)
+
+
+async def test_keyless_reader_gets_no_store_but_a_job_still_does(tmp_path) -> None:
+    """Search skips a keyless store; a generation job still reads summaries from one."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    state = SimpleNamespace(
+        vector_store=SimpleNamespace(_embedder=KeylessEmbedder()),
+        workspace_vector_stores={},
+    )
+    repo_path = tmp_path / "repo"
+    (repo_path / ".repowise" / "lancedb").mkdir(parents=True)
+
+    assert await resolve_repo_vector_store(state, "r", repo_path=repo_path) is None
+    job_store = await resolve_repo_vector_store(state, "r", repo_path=repo_path, create=True)
+    try:
+        assert isinstance(job_store, LanceDBVectorStore)
+    finally:
+        await job_store.close()

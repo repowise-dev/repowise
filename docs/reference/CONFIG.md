@@ -11,7 +11,7 @@ Everything Repowise knows about your repository, created at the repo root by
 ```
 .repowise/
 ├── wiki.db             # SQLite database: all pages, symbols, graph, git metadata, decisions
-├── lancedb/             # Vector search index (LanceDB)
+├── lancedb/             # Vector search index (LanceDB), written once an embedder is set
 ├── omissions/           # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml          # Provider, model, embedder, exclude patterns, distill/mcp/refactoring blocks
 ├── events.jsonl         # Typed events as CloudEvents JSON lines (the jsonl event sink)
@@ -982,14 +982,44 @@ free; with a configured provider one model call can write its prose.
 | `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
 <!-- END GENERATED settings:report -->
 
+## The `wiki:` block
+
+Each time a page is rewritten, the version it replaces is kept as history (the
+web UI's version list and diff read it). Only the newest versions are kept per
+page; older ones are deleted on the same write.
+
+<!-- BEGIN GENERATED settings:wiki (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `page_versions_keep` | `10` | 1-100000 | Earlier versions kept per wiki page; older ones are deleted when the page is rewritten. |
+<!-- END GENERATED settings:wiki -->
+
+- The current page is never deleted; the cap counts earlier versions only.
+- A page no write touches is trimmed by `update`: each update that indexes a
+  commit checks whether any page is over the cap (milliseconds) and trims the
+  whole repository when one is. The first one after upgrading clears the old
+  history. Raising the cap deletes nothing.
+- A value repowise cannot use (not a whole number from 1 to 100000) trims
+  nothing until it is fixed; `repowise doctor` names it.
+- `wiki.db` does not shrink when versions go: SQLite reuses the freed space for
+  later writes before it grows the file. To get the disk back at once, run
+  `VACUUM` on `.repowise/wiki.db` with no `repowise` process open (it needs
+  free disk the size of the file).
+
 ## The `contracts:` block
 
 Contracts inside one repository, off by default. When on, `init` and `update`
 read the repo's HTTP routes and client calls, gRPC services, sockets and
 message topics into `.repowise/contracts.json` and link each caller to the
 route it reaches, across the repo's services. An update re-reads them only when
-a commit or an uncommitted edit touches a file that can hold one. A workspace
-keeps its own contracts in `.repowise-workspace/contracts.json`.
+a commit or an uncommitted edit touches a file that can hold one. Each run
+prints one line: contracts found, caller-to-route links inside the repo
+(`contract_links`), and links to other repos known only by host
+(`service_links`). The MCP tools read the links: `get_context` on a route file
+or handler says where in the repo it is called from, and on a client file which
+routes it calls; `get_change_risk` names the callers a change leaves without
+their route. A workspace keeps its own contracts in
+`.repowise-workspace/contracts.json`.
 
 ```yaml
 contracts:
@@ -1218,6 +1248,33 @@ repowise init --provider ollama --model llama3.2
   same value where Repowise runs.
 
 ### LiteLLM (100+ providers)
+
+The `litellm` package ships as the `repowise[litellm]` extra (about 215 MB with
+what it pulls in), so the default install leaves it out. Picking `litellm` in
+the `repowise init` provider list, or running `repowise config set provider
+litellm` in a terminal, asks once and installs it the way repowise was
+installed:
+
+| Installed with | Command run |
+|---|---|
+| `uv tool install repowise` | `uv pip install --python <repowise's python> "litellm>=1.90.7,<2"` |
+| `pipx install repowise`, or pip in a virtualenv or conda env | `<python> -m pip install "litellm>=1.90.7,<2"`, with repowise's own interpreter |
+
+A source checkout, a system-managed Python, or an environment you cannot write
+to gets the command printed instead. So do `--yes` runs, the MCP server, and
+the web UI: they never install anything, and they name the command when the
+package is missing. `repowise doctor` reports a chosen provider whose package
+is missing, with the same command.
+
+`uv tool upgrade repowise` rebuilds the tool's environment from what it was
+installed with, so a package added in place is gone afterwards and the next
+run asks again. Installing the extra into the tool keeps it across upgrades:
+
+```bash
+uv tool install "repowise[litellm]"     # also switches an existing uv tool install
+pipx install "repowise[litellm]"
+pip install "repowise[litellm]"
+```
 
 ```bash
 export LITELLM_API_KEY="..."

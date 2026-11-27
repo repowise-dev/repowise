@@ -513,3 +513,73 @@ def test_a_loop_in_a_driver_around_a_direct_call_is_an_n_plus_one() -> None:
         "a.py::load_row", [_c("Session.execute", "library", 0.9)], drivers, klass="entry_point"
     )
     assert "loop in each (N+1)" in next_step(row, "python", [direct]).next
+
+
+# Django ORM: the shapes a Django site's page load writes (a template tag that
+# lists menu pages, a model method a template calls), trimmed to what the rule reads.
+DJANGO_ITER = _c(
+    "QuerySet.__iter__",
+    "library",
+    0.938,
+    ("DatabaseErrorWrapper.__call__.<locals>.inner", "library", 0.395),
+)
+
+
+def test_django_queryset_evaluation_is_database_work() -> None:
+    row = _row(
+        "app/templatetags/navigation_tags.py::top_menu",
+        [DJANGO_ITER, _c("MP_Node.get_children", "library", 0.049)],
+        [{"name": "InclusionNode.render", "share": 0.954}],
+    )
+    step = next_step(row, "python")
+    assert step is not None and step.rule == "db_read"
+    assert "94% QuerySet.__iter__" in step.why
+    assert "InclusionNode.render 95%" in step.next and "cache the result" in step.next
+    assert "N+1" not in step.next  # no loop in the row says per item
+    for name in ("QuerySet.__len__", "QuerySet.__bool__", "QuerySet.iterator"):
+        assert next_step(_row("a.py::f", [_c(name, "library", 0.9)]), "python").rule == "db_read"
+
+
+@pytest.mark.parametrize(
+    "inside",
+    [
+        # One row per render (a footer lookup): the request's own work.
+        [_c("QuerySet.first", "library", 0.946, ("SQLiteCursorWrapper.execute", "library", 0.635))],
+        [_c("QuerySet.get", "library", 0.9), _c("QuerySet.count", "library", 0.05)],
+        # Building a queryset runs nothing.
+        [_c("QuerySet.filter", "library", 0.6), _c("QuerySet.all", "library", 0.3)],
+        # A paginator counting rows, with the cursor only as its leaf.
+        [_c("Paginator.page", "library", 0.889, ("SQLiteCursorWrapper.execute", "library", 0.556))],
+        # Raw SQL through Django can be a write: nothing in the row says which.
+        [_c("RawQuerySet.__iter__", "library", 0.9)],
+        [
+            _c(
+                "CursorWrapper.execute",
+                "library",
+                0.9,
+                ("SQLiteCursorWrapper.execute", "library", 0.8),
+            )
+        ],
+    ],
+)
+def test_django_single_row_lookups_builders_and_raw_sql_stay_silent(
+    inside: list[dict[str, Any]],
+) -> None:
+    row = _row("app/views.py::page", inside, [{"name": "InclusionNode.render", "share": 1.0}])
+    assert next_step(row, "python") is None
+
+
+def test_a_django_queryset_in_a_loop_on_the_driver_chain_says_batch() -> None:
+    drivers = [{"name": "listing", "share": 1.0, "symbol": "app/models.py::Index::listing"}]
+    loop = static_finding(
+        "app/models.py",
+        "listing",
+        "io_in_loop",
+        "a database call per item",
+        {
+            "boundary_kind": "db",
+            "path": ["app/models.py::Index::listing", "app/models.py::Post::tags"],
+        },
+    )
+    row = _row("app/models.py::Post::tags", [DJANGO_ITER], drivers)
+    assert "loop in Index.listing (N+1)" in next_step(row, "python", [loop]).next

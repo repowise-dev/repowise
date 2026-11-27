@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import time
+from collections.abc import Callable
 from datetime import datetime
 
 import pytest
 
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE, FileInfo
 from repowise.core.ingestion.parser import ASTParser
-from repowise.core.ingestion.sfc_source import prepare_source, scan
+from repowise.core.ingestion.sfc_source import _cached_scan, prepare_source, scan
+from tests.unit._timing import assert_linear_growth
 
 _PAGE = b"""---
 import Header from '../components/Header.astro';
@@ -243,28 +244,45 @@ def test_is_raw_in_an_attribute_value_keeps_the_body_markup() -> None:
     assert scan("astro", src).component_tags == (("Card", 2), ("Other", 4))
 
 
-def test_an_unclosed_quote_scans_in_linear_time() -> None:
-    start = time.perf_counter()
-    prepare_source("astro", b'<a "' * 20_000)
-    assert time.perf_counter() - start < 2
+def _scans_in_linear_time(page: Callable[[int], bytes], n: int, factor: int = 4) -> None:
+    # The scan is memoised per source; clear it so every run scans.
+    assert_linear_growth(
+        lambda src: prepare_source("astro", src),
+        page(n),
+        page(factor * n),
+        reset=_cached_scan.cache_clear,
+        factor=factor,
+    )
 
 
 @pytest.mark.parametrize(
-    "src",
+    ("page", "n"),
     [
-        pytest.param(b"<b " * 20_000 + b"{{{", id="unbalanced-brace"),
-        pytest.param(b"{/* c */}<Card />\n" * 10_000, id="many-hidden-ranges"),
-        pytest.param(b"<Card />\n" * 40_000, id="many-tags"),
+        pytest.param(lambda n: b'<a "' * n, 8_000, id="unclosed-quote"),
+        pytest.param(lambda n: b"<b " * n + b"{{{", 11_000, id="unbalanced-brace"),
+    ],
+)
+def test_one_start_tag_page_scans_in_linear_time(page: Callable[[int], bytes], n: int) -> None:
+    # The whole page is one start tag, so the regex engine's backtrack stack holds
+    # a frame per byte (about 140 bytes each) and outgrows the CPU cache between
+    # sizes. Over a 16x input that 2-3x step stays far below quadratic growth.
+    _scans_in_linear_time(page, n, factor=16)
+
+
+@pytest.mark.parametrize(
+    ("page", "n"),
+    [
+        pytest.param(lambda n: b"{/* c */}<Card />\n" * n, 2_500, id="many-hidden-ranges"),
+        pytest.param(lambda n: b"<Card />\n" * n, 10_000, id="many-tags"),
         pytest.param(
-            b'<script src="./x.ts"' + b" " * 20_000 + b"defer></script>",
+            lambda n: b'<script src="./x.ts"' + b" " * n + b"defer></script>",
+            20_000,
             id="whitespace-after-a-lone-src",
         ),
     ],
 )
-def test_a_large_page_scans_in_linear_time(src: bytes) -> None:
-    start = time.perf_counter()
-    prepare_source("astro", src)
-    assert time.perf_counter() - start < 2
+def test_a_large_page_scans_in_linear_time(page: Callable[[int], bytes], n: int) -> None:
+    _scans_in_linear_time(page, n)
 
 
 def test_a_script_does_not_run_into_the_frontmatter(parser) -> None:

@@ -328,6 +328,7 @@ def _finish(
     may_lead: bool = True,
     low: str | None = None,
     cold_value: int | None = None,
+    measured_share: float | None = None,
 ) -> _Unit:
     confidence = _one_of(confidence, LEVEL_RANK, "low")
     effort = _one_of(effort, FIX_EFFORTS, "M")
@@ -353,7 +354,17 @@ def _finish(
         )
 
     return _Unit(
-        item_id, kind, unit_tier, value, worth, confidence, effort, improves, write, may_lead
+        item_id,
+        kind,
+        unit_tier,
+        value,
+        worth,
+        confidence,
+        effort,
+        improves,
+        write,
+        may_lead,
+        measured_share,
     )
 
 

@@ -297,6 +297,20 @@ def _shared_sink(opportunity: PerformanceOpportunity) -> str | None:
     return sink
 
 
+def _measured_step(
+    steps: list[dict[str, object]], opportunity: PerformanceOpportunity
+) -> list[dict[str, object]]:
+    """A measured hotspot's one step, said as its action row's next step when a
+    rule fired on what the run measured inside the function
+    (``evidence.next_step``); else the generic step stands."""
+    step = (opportunity.measured_row or {}).get("next_step")
+    if not step or not steps:
+        return steps
+    name = str(steps[0].get("symbol") or "").rsplit("::", 1)[-1]
+    action = f"In {name}, {step['next']}" if name else str(step["next"])
+    return [{**steps[0], "action": action}, *steps[1:]]
+
+
 def _suggestion(
     opportunity: PerformanceOpportunity, fix: PerformanceFix, confidence: str
 ) -> RefactoringSuggestion:
@@ -315,6 +329,7 @@ def _suggestion(
         _shared_sink(opportunity),
         fix.api,
     )
+    intro = _measured_step(intro, opportunity)
     edits = _site_steps(
         fix.strategy, fix.safety, locations, fix.api, opportunity.boundary_kind
     )

@@ -21,8 +21,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from repowise.core.providers.llm.base import LOCAL_SERVER_API_KEY
 from repowise.core.providers.llm.error_hints import describe_provider_error
-from repowise.core.providers.llm.openai import LOCAL_SERVER_API_KEY
 from repowise.core.providers.llm.registry import get_provider
 from repowise.core.providers.llm.resolve import (
     UntrustedBaseUrlError,

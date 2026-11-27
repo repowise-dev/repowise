@@ -406,3 +406,57 @@ func main() { r := gin.Default(); Reg(nil, r.Group("/api")) }
 func Reg(cfg map[string]func(a, b int), g *gin.RouterGroup) { g.GET("/x", X) }
 """
     assert _one_file(tmp_path, body) == [("http::GET::/api/x", 6)]
+
+
+def test_a_group_from_use_serves_under_the_router_it_was_called_on(tmp_path: Path) -> None:
+    """gin's ``Use`` returns the group it is called on: ``authed := router.Use(mw)``."""
+    users = f"""\
+package users
+
+import {GIN}
+
+func UsersRegister(router *gin.RouterGroup) {{
+	authed := router.Use(AuthMiddleware())
+	authed.POST("/logout", UsersLogout)
+}}
+"""
+    _write(tmp_path, {"hello.go": MAIN, "articles/routers.go": ARTICLES, "users/routers.go": users})
+    assert ("http::POST::/api/users/logout", "users/routers.go", 7) in _routes(tmp_path)
+
+
+def test_a_group_rebound_from_its_own_use_keeps_its_prefix(tmp_path: Path) -> None:
+    main = f"""\
+package main
+
+import {GIN}
+
+func main() {{
+	r := gin.Default()
+	v1 := r.Group("/v1")
+	v1 = v1.Use(Auth())
+	v1.GET("/ping", Ping)
+}}
+"""
+    _write(tmp_path, {"main.go": main})
+    assert _routes(tmp_path) == [("http::GET::/v1/ping", "main.go", 9)]
+
+
+def test_a_name_two_functions_bind_from_use_takes_neither_parent(tmp_path: Path) -> None:
+    main = f"""\
+package main
+
+import {GIN}
+
+func a(r *gin.Engine) {{
+	api := r.Use(Auth())
+	api.GET("/health", Health)
+}}
+
+func c(r *gin.Engine) {{
+	v1 := r.Group("/v1")
+	api := v1.Use(Auth())
+	api.GET("/ping", Ping)
+}}
+"""
+    _write(tmp_path, {"main.go": main})
+    assert ("http::GET::/health", "main.go", 7) in _routes(tmp_path)

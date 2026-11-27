@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
 
@@ -52,7 +52,30 @@ class EvidenceUnits(_Strict):
     truncated: int | None
 
 
-class EvidenceRunSummary(_Strict):
+class ProductionWindow(_Strict):
+    """The window a production run covers: ``evidence.status.production_window``."""
+
+    start: UTCDateTime | None
+    end: UTCDateTime | None
+    #: The oldest commit deployed in the window, when the source knows it.
+    base_commit: str | None
+    #: What the run's rows claim: ``in production over 2026-10-30 to
+    #: 2026-11-26, deployed commit unknown``.
+    claim: str
+
+
+class _OmitAbsentWindow(_Strict):
+    """A run model whose ``window`` is sent only on a production run, so other runs do not grow."""
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_window(self, handler):  # no return annotation: keeps the schema
+        data = handler(self)
+        if getattr(self, "window", None) is None:
+            data.pop("window", None)
+        return data
+
+
+class EvidenceRunSummary(_OmitAbsentWindow):
     """One stored run: its workload, commit, freshness and where its time went."""
 
     run_id: str
@@ -93,6 +116,8 @@ class EvidenceRunSummary(_Strict):
     #: Fewer than half the entries mapped: stored, not a basis for ranking.
     mapping_partial: bool
     tests_failed: int | None
+    #: A production run's window; absent for every other class.
+    window: ProductionWindow | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -131,7 +156,7 @@ class NewerRun(_Strict):
     reason: Literal["ahead_of_index", "not_ranked", "stale"]
 
 
-class MeasuredRun(_Strict):
+class MeasuredRun(_OmitAbsentWindow):
     """A run's basis: workload, commit, age, samples and where its time went."""
 
     run_id: str
@@ -157,6 +182,8 @@ class MeasuredRun(_Strict):
     #: The workload's newer run this one is listed in place of (it ranks
     #: nothing); null when this is the workload's newest run.
     newer_run: NewerRun | None = None
+    #: A production run's window; absent for every other class.
+    window: ProductionWindow | None = None
 
 
 class MeasuredOwner(_Strict):
@@ -234,11 +261,74 @@ class MeasuredRow(_Strict):
     #: ``import time`` on a module body's row (the time to import its file);
     #: absent on a function's row.
     label: str | None = None
-    #: Where each field that holds a value came from: ``workload_hotness``,
+    #: Where each field that holds a value came from: ``workload_hotness``
+    #: (``statement_stats`` on a production statement row),
     #: ``symbols``, ``call_graph``, ``run_drivers``, ``function_blame``, the
     #: ``tests_basis``, ``run_inside`` or ``static_finding``, the
     #: ``verify_basis``, ``performance_findings``, ``compare``.
     sources: dict[str, str] = Field(default_factory=dict)
+
+
+class StatementFacts(_Strict):
+    """What the statements one function issues did in a production window."""
+
+    calls: int
+    total_ms: float
+    #: Mean time per call across its statements; null with no calls.
+    mean_ms: float | None
+    #: Distinct statements the function issues.
+    statements: int
+
+
+class StatementRow(MeasuredRow):
+    """One function's production statements in one run, as a measured row.
+
+    ``rank`` is by statement time and ``share`` is of the window's stored
+    statement time; there is no interval, inclusive share or samples, and no
+    freshness: the statement was joined to the function when it was stored.
+    No ``next_step``: no rule reads a statement's cost yet. ``verify`` is the
+    next production window."""
+
+    freshness: MeasuredFreshness | None = None
+    statements: StatementFacts
+
+
+class UnattributedStatements(_Strict):
+    statements: int
+    total_ms: float
+    #: Of the window's stored statement time.
+    share: float | None
+
+
+class StatementRun(_Strict):
+    """A production statement workload's newest run."""
+
+    run_id: str
+    workload_class: str
+    workload_name: str
+    #: The newest deployed commit in the window; null when unknown.
+    commit: str | None
+    measured_at: str | None
+    age_days: int | None
+    window_start: str | None
+    window_end: str | None
+    #: All statement time and statements the run stored.
+    total_ms: float
+    statements: int
+    #: Statements on no single function, by what the join found:
+    #: ``ambiguous`` (several functions could issue it), ``database_schedule``
+    #: (only a ``cron.schedule`` job runs it), ``unjoined`` (nothing matched).
+    unattributed: dict[str, UnattributedStatements]
+    #: The window and deploy in words, as every production run names them.
+    window: ProductionWindow
+
+
+class StatementGroup(_Strict):
+    runs: list[StatementRun]
+    #: At most ``limit`` rows per run, by statement time.
+    rows: list[StatementRow]
+    #: Functions across the group's runs before the ``limit`` cut.
+    total: int
 
 
 class MeasuredChangedIn(_Strict):
@@ -319,6 +409,9 @@ class MeasuredResponse(_Strict):
     measured: MeasuredGroup | None
     #: ``unit_test`` runs, listed apart.
     measured_in_tests: MeasuredGroup | None
+    #: Production statement runs: the functions that issue each window's
+    #: statements, by statement time. Listed, never leading.
+    statements: StatementGroup | None = None
     #: Benchmark results, per benchmark: a benchmark profile never ranks.
     benchmarks: BenchmarkGroup | None = None
 

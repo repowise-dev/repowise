@@ -24,6 +24,7 @@ def test_measured_with_a_view_is_measured() -> None:
         "command": None,
         "measured": VIEW["measured"],
         "measured_in_tests": None,
+        "statements": None,
         "benchmarks": None,
     }
 

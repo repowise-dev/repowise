@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.serving import ServedFinding, serve_findings
 from repowise.core.attribution import attribution_enabled
-from repowise.core.exclusion import build_exclude_spec
-from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
+from repowise.core.exclusion import build_exclude_spec, fetch_allowed_edges, is_excluded
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES, NON_CODE_EDGE_TYPES
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -19,6 +19,7 @@ from repowise.core.persistence.models import (
     Repository,
 )
 from repowise.server.deps import cross_repo_cut_inputs, get_db_session
+from repowise.server.mcp_server._helpers import filter_edge_rows
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import (
     DeadCodeGraphNodeResponse,
@@ -181,9 +182,15 @@ async def dead_code_graph(
     repo_id: str,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> DeadCodeGraphResponse:
-    """Return dead-code nodes plus their 1-hop neighbors."""
+    """Return dead-code nodes plus their 1-hop neighbors.
+
+    Files the repo rules exclude are neither seeds nor neighbors, and edges
+    with an end in one are dropped. A neighbor is joined by a code edge; a
+    co-change between two files already in view is still drawn, as on the
+    full canvas, but it does not pull a file in.
+    """
     finding_result = await session.execute(
         select(DeadCodeFinding).where(
             DeadCodeFinding.repository_id == repo_id,
@@ -199,7 +206,12 @@ async def dead_code_graph(
         return DeadCodeGraphResponse(nodes=[], links=[])
 
     # Only consider high-confidence findings
-    findings = [f for f in findings if f.confidence >= 0.85]
+    exclude_spec = build_exclude_spec(repo.local_path)
+    findings = [
+        f
+        for f in findings
+        if f.confidence >= 0.85 and not is_excluded(f.file_path, exclude_spec)
+    ]
     if not findings:
         return DeadCodeGraphResponse(nodes=[], links=[])
 
@@ -255,10 +267,17 @@ async def dead_code_graph(
             GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
-    all_edges = list(out_edge_result.scalars().all()) + list(in_edge_result.scalars().all())
+    all_edges = filter_edge_rows(
+        list(out_edge_result.scalars().all()) + list(in_edge_result.scalars().all()),
+        exclude_spec,
+    )
+    # Code edges first, so a code link wins the per-pair dedup below.
+    all_edges.sort(key=lambda e: e.edge_type in NON_CODE_EDGE_TYPES)
 
     neighbor_ids: set[str] = set()
     for e in all_edges:
+        if e.edge_type in NON_CODE_EDGE_TYPES:
+            continue
         neighbor_ids.add(e.source_node_id)
         neighbor_ids.add(e.target_node_id)
     neighbor_ids -= dead_node_ids
@@ -315,18 +334,27 @@ async def hot_files_graph(
     days: int = Query(30, description="Time window in days: 7, 30, or 90"),
     limit: int = Query(25, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> HotFilesGraphResponse:
-    """Return the most-committed files plus their 1-hop outgoing neighbors."""
+    """Return the most-committed files plus their 1-hop outgoing neighbors.
+
+    Files the repo rules exclude are left out before the *limit* cut and are
+    never neighbors. A neighbor is joined by a code edge, as in the dead-code
+    view.
+    """
     commit_col = GitMetadata.commit_count_90d if days > 30 else GitMetadata.commit_count_30d
 
-    git_result = await session.execute(
+    exclude_spec = build_exclude_spec(repo.local_path)
+    git_rows = await fetch_allowed_edges(
+        session,
         select(GitMetadata)
         .where(GitMetadata.repository_id == repo_id)
-        .order_by(commit_col.desc())
-        .limit(limit)
+        .order_by(commit_col.desc(), GitMetadata.file_path),
+        exclude_spec,
+        limit=limit,
+        endpoints=lambda row: (row[0].file_path,),
     )
-    hot_files = git_result.scalars().all()
+    hot_files = [row[0] for row in git_rows]
 
     if not hot_files:
         return HotFilesGraphResponse(nodes=[], links=[])
@@ -353,9 +381,11 @@ async def hot_files_graph(
             GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
-    out_edges = out_edge_result.scalars().all()
+    out_edges = filter_edge_rows(out_edge_result.scalars().all(), exclude_spec)
 
-    neighbor_ids = {e.target_node_id for e in out_edges} - hot_node_ids
+    neighbor_ids = {
+        e.target_node_id for e in out_edges if e.edge_type not in NON_CODE_EDGE_TYPES
+    } - hot_node_ids
     if neighbor_ids:
         nbr_result = await session.execute(
             select(GraphNode).where(

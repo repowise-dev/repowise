@@ -113,8 +113,8 @@ def risk_command(
     # ``--full`` means the complete payload as JSON on every command; the
     # REVSPEC path has a full payload too, so the flag is honoured here.
     fmt = _ta.resolve_format_for(fmt, full)
-    subject = _resolve_subject(repo_path, revspec, fmt, fail_above)
     extensions = tuple(e.strip() for e in ext.split(",")) if ext else ()
+    subject = _resolve_subject(repo_path, revspec, fmt, fail_above, extensions)
     result = _score(subject, extensions, exclude, baseline)
     failed = fail_above is not None and result.percentile > fail_above
     if fmt == "table":

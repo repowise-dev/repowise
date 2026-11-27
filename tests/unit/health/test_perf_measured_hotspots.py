@@ -48,7 +48,8 @@ def test_a_measured_function_with_no_static_cause_is_confident_work() -> None:
     assert item.intervention_symbol == HOT
     assert item.facets["confirmed"] == "measured"
     assert item.facets["measured"] == "update"
-    assert item.may_lead
+    # No row, so no step a rule fired on: listed, never first (founder D2).
+    assert not item.may_lead
     assert perf_queue_verdict(item).eligible
     assert perf_confident_verdict(item).eligible
     # The plan is the reader's call: one judgment step at the function.
@@ -108,3 +109,41 @@ def test_hotspots_follow_the_place_their_run_measured() -> None:
 
     assert [i.intervention_symbol for i in items] == [first, second]
     assert items[0].rank_factors["measured_rank"] == 3
+
+
+_ROW = {
+    "symbol_id": HOT,
+    "share": 0.13,
+    "next_step": {
+        "rule": "filesystem",
+        "why": "100% of it is filesystem metadata calls during a directory walk",
+        "next": "walk with os.scandir and use each entry's stat",
+    },
+    "verify": "repowise perf measure --save before -- repowise status",
+}
+
+
+def test_a_row_with_a_next_step_is_the_items_why_and_step_and_may_lead() -> None:
+    (item,) = build_performance_opportunities(
+        [], measured={HOT: "update"}, hot=frozenset({HOT}), measured_rows={HOT: _ROW}
+    )
+
+    assert item.may_lead
+    assert item.measured_row == _ROW
+    assert "directory walk" in item.fix.rationale
+    (plan,) = performance_fix_suggestions([item])
+    (step,) = plan.plan["steps"]
+    assert step["action"] == "In _decode_lines, walk with os.scandir and use each entry's stat"
+
+
+def test_a_row_without_a_step_keeps_the_generic_step_and_never_leads() -> None:
+    row = {**_ROW, "next_step": None}
+    (item,) = build_performance_opportunities(
+        [], measured={HOT: "update"}, hot=frozenset({HOT}), measured_rows={HOT: row}
+    )
+
+    assert not item.may_lead
+    assert "profile it" in item.fix.rationale
+    (plan,) = performance_fix_suggestions([item])
+    assert "_decode_lines" in plan.plan["steps"][0]["action"]
+    assert "os.scandir" not in plan.plan["steps"][0]["action"]

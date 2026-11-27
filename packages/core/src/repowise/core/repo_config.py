@@ -58,6 +58,8 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "hooks",
             "managed_checkout",
             "mcp",
+            # Version history kept per page: trims old rows, never changes a page.
+            "wiki",
         }
     ),
 }

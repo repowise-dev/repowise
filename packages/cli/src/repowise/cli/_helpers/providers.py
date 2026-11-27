@@ -61,12 +61,19 @@ def _provider_kwargs_or_error(selection: Any, repo_path: Path | None) -> dict[st
 
 def _build_provider(selection: Any, kwargs: dict[str, Any]) -> Any:
     """Construct the provider, turning a setup failure into a config error."""
+    from repowise.core.extras import MissingExtraError
     from repowise.core.providers import get_provider
 
     try:
         return get_provider(selection.provider, **kwargs)
     except click.ClickException:
         raise
+    except MissingExtraError as exc:
+        # The message already names the one command that fixes it.
+        error = reasoned_error(str(exc), reason="provider_extra_missing")
+        error.extra = exc.extra  # type: ignore[attr-defined]
+        error.provider = selection.provider  # type: ignore[attr-defined]
+        raise error from exc
     except Exception as exc:
         # Everything this constructor reads is user input: env vars and
         # .repowise/config.yaml, base_url above all. A typo there is a
@@ -77,6 +84,21 @@ def _build_provider(selection: Any, kwargs: dict[str, Any]) -> Any:
             f"Resolved {selection.describe()}. Check those settings.",
             reason="provider_setup_failed",
         ) from exc
+
+
+def _installed_missing_extra(error: BaseException) -> bool:
+    """For a missing-extra error at a terminal: ask once and install. True when installed."""
+    extra = getattr(error, "extra", None)
+    if not extra:
+        return False
+    from repowise.cli import helpers as _facade
+    from repowise.cli.ui.extra_install import offer_extra
+
+    try:
+        what = f"The {getattr(error, 'provider', None) or extra} provider"
+        return offer_extra(_facade.console, extra, what, interactive=True)
+    except (EOFError, click.Abort):
+        return False
 
 
 def _no_provider_message() -> str:
@@ -132,7 +154,13 @@ def resolve_explicit_provider_or_prompt(
     try:
         return _facade.resolve_provider(provider_name, model, repo_path=repo_path)
     except click.ClickException as original_error:
-        if not interactive or provider_name is None:
+        if not interactive:
+            raise
+        if getattr(original_error, "extra", None):
+            if not _installed_missing_extra(original_error):
+                raise
+            return _facade.resolve_provider(provider_name, model, repo_path=repo_path)
+        if provider_name is None:
             raise
 
         try:
@@ -159,6 +187,7 @@ def resolve_provider_or_prompt(
     *,
     reasoning: str | None = None,
     interactive: bool,
+    allow_install: bool = True,
 ) -> Any:
     """Resolve a provider, falling back to init's interactive setup on a miss.
 
@@ -184,6 +213,12 @@ def resolve_provider_or_prompt(
     except Exception as original_error:
         if not interactive:
             raise
+        if getattr(original_error, "extra", None):
+            # The provider is chosen; only its package is missing. Install it
+            # rather than send the user back through the provider picker.
+            if not allow_install or not _installed_missing_extra(original_error):
+                raise
+            return _facade.resolve_provider(provider_name, model, repo_path=repo_path)
         from repowise.cli.ui import interactive_provider_config_select
 
         # ``interactive`` rests on ``isatty()``, which lies: under Git Bash,
@@ -206,7 +241,9 @@ def resolve_provider_or_prompt(
             provider=selection.provider_name,
             model=selection.model,
         )
-        return _facade.resolve_provider(selection.provider_name, selection.model, repo_path=repo_path)
+        return _facade.resolve_provider(
+            selection.provider_name, selection.model, repo_path=repo_path
+        )
 
 
 # ---------------------------------------------------------------------------

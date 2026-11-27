@@ -191,6 +191,7 @@ from repowise.server.mcp_server.tool_answer.neighbors import (
     lead_file,
     neighbor_evidence,
 )
+from repowise.server.mcp_server.tool_answer.origin import origin_hint, origin_reply, wants_origin
 from repowise.server.mcp_server.tool_answer.payload import (
     _apply_lean_high,  # noqa: F401  — backward-compatible helper re-export
     _build_best_guesses,  # noqa: F401  — re-exported: imported from here by tests
@@ -374,7 +375,7 @@ async def _run_retrieval_pipeline(
         await _apply_pagerank_bias(hits, ctx)
     # 1-hop walk rescues "right module, wrong file" near-misses.
     with contextlib.suppress(Exception):
-        hits = await _expand_via_graph(hits, ctx, repo_id)
+        hits = await _expand_via_graph(hits, ctx, repo_id, exclude_spec)
     # Graph expansion can pull excluded neighbors back in; re-filter before the cap.
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
     # Symbol anchoring: force a question-named symbol's defining file in as a
@@ -403,7 +404,9 @@ async def _run_retrieval_pipeline(
     # anchors the function holding it.
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
-            hits = await value_line_anchor_hits(ctx, session, repo_id, question, question_ids, hits)
+            hits = await value_line_anchor_hits(
+                ctx, session, repo_id, question, question_ids, hits, exclude_spec
+            )
     # Flow-path expansion: when the question anchors 2+ endpoints, inject the
     # files on the path between them, reaching a far endpoint 1-hop expansion
     # cannot. This and the stages below run before the cap so an injected file
@@ -421,13 +424,15 @@ async def _run_retrieval_pipeline(
         with contextlib.suppress(Exception):
             async with get_session(ctx.session_factory) as session:
                 hits, flow_paths = await _expand_via_flow_path(
-                    session, repo_id, hits, question, question_ids
+                    session, repo_id, hits, question, question_ids, exclude_spec
                 )
     # Neighborhood re-rank: for flow questions whose target file is never named,
     # re-rank the 1-2 hop neighborhood of the top hits. No-op on other shapes.
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
-            hits = await _expand_via_neighbor_rerank(session, repo_id, hits, question, ctx)
+            hits = await _expand_via_neighbor_rerank(
+                session, repo_id, hits, question, ctx, exclude_spec
+            )
     # Parent-concept surfacing: a subsystem-shaped question leads with the
     # rollup page for the subsystem. No-op on other shapes, and skipped once a
     # call trace answers the question: its entry file must keep the lead.
@@ -611,6 +616,15 @@ async def _data_shape_answer(question: str, ctx, repository, t0: float) -> dict 
     if grounded is None:
         return None
     return build_data_shape_payload(grounded, t0, repository)
+
+
+async def _origin_answer(ask: _Ask, scope: str | None) -> dict | None:
+    """The origin reply for "which change introduced X", or ``None``."""
+    try:
+        return await origin_reply(ask, scope)
+    except Exception:
+        _log.warning("get_answer: origin lookup failed", exc_info=True)
+        return None
 
 
 async def _graph_callers(ask: _Ask, retrieved: _Retrieved):
@@ -1092,6 +1106,11 @@ async def get_answer(
     shaped = await _data_shape_answer(question, ctx, repository, t0)
     if shaped is not None:
         return shaped
+    # Before cache and retrieval: retrieval answers "which PR added X" with
+    # X's definition, and an origin reply costs one git log, not a synthesis.
+    origin = await _origin_answer(ask, scope)
+    if origin is not None:
+        return origin
 
     # Normalize once, then use the same value for retrieval and cache identity.
     # The versioned identity deliberately misses legacy question-only rows.
@@ -1144,6 +1163,11 @@ async def get_answer(
     agreement_dominant = _agreement(hits)
 
     def _finish(payload: dict, *, keep: bool = False, candidates: bool = True) -> dict:
+        if wants_origin(question):
+            # An origin question no symbol could be pinned to: the code-shaped
+            # answer stands, and the next step is the history of that code.
+            targets = _fallback_targets(hits)
+            payload["next_action_hint"] = origin_hint(targets[0] if targets else None)
         _with_scan_gaps(payload, retrieved.homonyms)
         if fix_history:
             payload["fix_history"] = fix_history

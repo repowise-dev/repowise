@@ -9,7 +9,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import NamedTuple, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from ..lang_helpers.anonymous_classes import is_anonymous_member
 from ..languages.receiver_types import (
@@ -316,6 +316,7 @@ class ReceiverTypingMixin(
         # few slots always hit and a whole repo's source never stays resident.
         # Scans are memoised per function, not per reference.
         self._source_text: dict[str, str] = {}
+        self._raw_sources: dict[str, bytes] = {}
         self._declarations: dict[str, tuple[Declaration, ...]] = {}
         self._call_assignments: dict[str, tuple[CallAssignment, ...]] = {}
         self._destructurings: dict[str, tuple[Destructuring, ...]] = {}
@@ -337,6 +338,8 @@ class ReceiverTypingMixin(
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
         # {directory: its Go files}, built once on first use, as ``_type_ids``.
         self._go_files_by_dir: dict[str, tuple[str, ...]] | None = None
+        # Go selector chains through package variables (``GoSelectorTypes``).
+        self._go_selector_walk: Any = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._binding_positions: dict[str, tuple[tuple[int, int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
@@ -932,7 +935,7 @@ class ReceiverTypingMixin(
         if call.receiver_name and language not in BINDING_LANGUAGES:
             return False
         return language in CALL_SHADOW_LANGUAGES and self._binds_locally(
-            file_path, caller_id, language, call.target_name, call.line
+            file_path, caller_id, language, call.target_name, call.line, call.start_byte or None
         )
 
     def _binds_locally(
@@ -942,13 +945,17 @@ class ReceiverTypingMixin(
         language: str,
         name: str,
         through_line: int | None = None,
+        through_byte: int | None = None,
     ) -> bool:
         """Does the caller, or a function enclosing it, bind *name* itself?
 
         Scopes are asked innermost first, so a ``global`` stops the walk. When
         *through_line* is given only positional bindings at or before it count:
         a callback's parameter further down cannot shadow a use above, while a
-        hoisted declaration binds its whole scope. When the scope first binds
+        hoisted declaration binds its whole scope. *through_byte*, the use's
+        offset, applies the same rule within that line: in ``make({ id }, ({ id
+        }) => ...)`` the parameter is written after the first ``id`` and does
+        not hide it. When the scope first binds
         *name* on the line an in-body import binds it (``const { f } =
         require(...)``), *name* is the import's unless another binding of it,
         at any other position from that line through *through_line*, shadows it.
@@ -963,10 +970,37 @@ class ReceiverTypingMixin(
             line = scope.first_bound.get(name)
             if line is None or (through_line is not None and line > through_line):
                 continue
+            if (
+                line == through_line
+                and through_byte is not None
+                and self._bound_only_after(file_path, language, name, line, through_byte)
+            ):
+                continue
             if binding is None or line != import_line or through_line is None:
                 return True
             return self._rebinds_import(file_path, language, binding, through_line)
         return False
+
+    def _bound_only_after(
+        self, file_path: str, language: str, name: str, line: int, use_byte: int
+    ) -> bool:
+        """Is every binding of *name* on *line* written to the right of the use at *use_byte*?"""
+        # Offsets are into the raw bytes tree-sitter parsed (``_text_of`` folds
+        # CRLF); the scan counts characters, so the line's head is decoded.
+        raw = self._raw_source(file_path)
+        if len(raw) < use_byte:
+            # Unread or changed since the parse: no column, so the binding stands.
+            return False
+        head = raw[raw.rfind(b"\n", 0, use_byte) + 1 : use_byte]
+        use_column = len(head.decode("utf-8", errors="replace"))
+        columns = [
+            column
+            for _, column, bound in _in_lines(
+                self._binding_positions_for(file_path, language), line, line
+            )
+            if bound == name
+        ]
+        return bool(columns) and min(columns) > use_column
 
     def _rebinds_import(
         self, file_path: str, language: str, binding: NamedBinding, through_line: int
@@ -1958,6 +1992,22 @@ class ReceiverTypingMixin(
             spans = {s.id: (s.start_line, s.end_line) for s in (parsed.symbols if parsed else ())}
             _store_capped(self._symbol_spans, file_path, spans, _SOURCE_CACHE_FILES)
         return spans
+
+    def _raw_source(self, file_path: str) -> bytes:
+        """One file's bytes as the parser saw them, or empty if it cannot be read."""
+        raw = self._raw_sources.get(file_path)
+        if raw is not None:
+            return raw
+        raw = (getattr(self, "_source_map", None) or {}).get(file_path)
+        parsed = self._parsed_files.get(file_path)
+        if raw is None and parsed is not None:
+            try:
+                raw = Path(parsed.file_info.abs_path).read_bytes()
+            except OSError:
+                raw = None
+        raw = raw or b""
+        _store_capped(self._raw_sources, file_path, raw, _SOURCE_CACHE_FILES)
+        return raw
 
     def _text_of(self, file_path: str) -> str:
         """One file's source, or empty if it cannot be read."""

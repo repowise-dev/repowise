@@ -261,7 +261,7 @@ def test_two_servers_writing_and_reading_one_copy_never_fail(index_dir):
 def test_temp_files_a_killed_write_left_are_removed(index_dir):
     path = index_dir / ".repowise" / "mcp_cache" / "repo1.adjacency"
     path.parent.mkdir()
-    orphan = path.parent / f"{path.name}deadbeef.tmp"
+    orphan = path.parent / f"{path.name}0123456789abcdef.tmp"
     orphan.write_bytes(b"x")
     os.utime(orphan, (1, 1))
 

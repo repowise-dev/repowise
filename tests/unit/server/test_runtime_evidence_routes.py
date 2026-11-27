@@ -149,6 +149,7 @@ async def test_no_evidence_reads_unknown_with_the_setup_command(
         "command": "repowise evidence setup --format json",
         "measured": None,
         "measured_in_tests": None,
+        "statements": None,
         "benchmarks": None,
     }
     assert (await ev_client.get(f"/api/repos/{repo_id}/evidence/runs")).json() == {
@@ -475,3 +476,87 @@ def test_the_measured_row_schema_holds_the_action_row_json_form() -> None:
     # A module body's row carries its import-time label through the closed model.
     module = action_row(SimpleNamespace(**{**vars(measured), "symbol_id": "src/app.py::<module>"}))
     assert MeasuredRow.model_validate(module.as_dict()).label == "import time"
+
+
+@pytest.mark.asyncio
+async def test_production_statements_are_measured_rows_on_the_measured_route(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    """A connected statement source and no profile: status says measured, and
+    each function the join named is a row with its calls and the next window
+    as its verify; the rest is counted by label, never on a function."""
+    from repowise.core.persistence.models import EvidenceStatementStats
+
+    repo_id = await _repo(ev_client, session_factory)
+    async with session_factory() as session:
+        session.add(
+            EvidenceRun(
+                id="s1", repository_id=repo_id, run_key="s1", kind="statement_stats",
+                format="repowise-evidence-v1", source="plugin", workload_name="orders-db",
+                workload_class="production", value_kind="wall", unit="ms", environment="prod",
+                commit_sha=HEAD, measured_at=MEASURED_AT,
+                window_start=datetime(2026, 11, 1, tzinfo=UTC), window_end=MEASURED_AT,
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                EvidenceStatementStats(
+                    run_id="s1", statement_fp="a" * 16, repository_id=repo_id, symbol_id=LOGIN,
+                    issuer="function", calls=8, total_ms=80.0, mean_ms=10.0,
+                ),
+                EvidenceStatementStats(
+                    run_id="s1", statement_fp="b" * 16, repository_id=repo_id, symbol_id=None,
+                    issuer="ambiguous", calls=2, total_ms=20.0, mean_ms=10.0,
+                ),
+            ]
+        )
+        await session.commit()
+
+    status = (await ev_client.get(f"/api/repos/{repo_id}/evidence/status")).json()
+    assert (status["status"], status["command"]) == ("measured", None)
+    body = (await ev_client.get(f"/api/repos/{repo_id}/evidence/measured")).json()
+    assert (body["basis"], body["status"], body["measured"]) == ("measured", "measured", None)
+    group = body["statements"]
+    (row,) = group["rows"]
+    assert (row["symbol_id"], row["share"], row["freshness"]) == (LOGIN, 0.8, None)
+    assert row["statements"] == {"calls": 8, "total_ms": 80.0, "mean_ms": 10.0, "statements": 1}
+    assert (row["verify"], row["verify_basis"]) == (
+        "compare this row in the next orders-db window",
+        "workload",
+    )
+    (run,) = group["runs"]
+    assert run["window_start"].startswith("2026-11-01")
+    assert run["unattributed"] == {"ambiguous": {"statements": 1, "total_ms": 20.0, "share": 0.2}}
+
+
+def test_a_statement_row_reads_as_statements_in_every_form() -> None:
+    """The JSON form validates against the closed ``StatementRow``; the text and
+    MCP forms say calls and mean, not a profile's self share."""
+    from repowise.core.evidence.action_row import (
+        action_row,
+        row_compact,
+        row_text,
+        statement_facts,
+    )
+    from repowise.core.evidence.measured_fold import StatementCost
+    from repowise.server.schemas.runtime_evidence import StatementRow
+
+    cost = StatementCost("src/app.py::save", "s1", 1, 0.25, 500.0, 1000, 2)
+    row = action_row(
+        cost, workload_name="orders-db", workload_class="production",
+        statements=statement_facts(cost),
+    ).as_dict()
+    parsed = StatementRow.model_validate(row)
+    assert parsed.statements.mean_ms == 0.5 and parsed.next_step is None
+    assert parsed.model_dump(exclude_unset=True).keys() == row.keys()
+    assert row["sources"] == {"share": "statement_stats", "verify": "workload"}
+    assert row_compact(row) == {
+        "symbol_id": "src/app.py::save", "run_id": "s1", "share": 0.25, "calls": 1000,
+        "mean_ms": 0.5,
+    }
+    assert row_text(row) == [
+        "25% of the window's statement time · 1,000 calls · 0.5 ms mean · 2 statements"
+        " · tests not mapped",
+        "verify: compare this row in the next orders-db window",
+    ]
