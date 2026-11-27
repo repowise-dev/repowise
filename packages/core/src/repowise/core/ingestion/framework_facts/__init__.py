@@ -19,7 +19,7 @@ which frameworks a repo's manifests declare (the tech stack reads it).
 from __future__ import annotations
 
 from .angular import ANGULAR, ANGULAR_WORKSPACE_FILES, angular_entry_files
-from .astro import ASTRO
+from .astro import ASTRO, ASTRO_CONFIGS, astro_public_dir, astro_src_dir
 from .base import FrameworkFacts
 from .expo_router import EXPO_ROUTER
 from .js import JS_FRAMEWORKS, convention_load_reasons, js_frameworks
@@ -50,6 +50,7 @@ __all__ = [
     "ANGULAR",
     "ANGULAR_WORKSPACE_FILES",
     "ASTRO",
+    "ASTRO_CONFIGS",
     "EXPO_ROUTER",
     "JS_FRAMEWORKS",
     "LARAVEL",
@@ -72,6 +73,8 @@ __all__ = [
     "KitFiles",
     "NpmManifest",
     "angular_entry_files",
+    "astro_public_dir",
+    "astro_src_dir",
     "convention_framework_names",
     "convention_load_reasons",
     "declared_frameworks",

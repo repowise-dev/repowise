@@ -7,7 +7,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import replace
 from pathlib import Path
 
-from .astro import ASTRO
+from .astro import ASTRO, astro_facts
 from .base import FrameworkFacts, _js
 from .expo_router import EXPO_ROUTER
 from .next import NEXT_PAGES
@@ -31,7 +31,7 @@ def js_frameworks(
     project's are rooted at every directory its ``email`` scripts read, a
     Nuxt app's at its source directory (told apart by the repository's
     *paths* when its config names none), a SvelteKit app's at its
-    ``kit.files`` directories.
+    ``kit.files`` directories, an Astro app's at its ``srcDir``.
     """
     out: list[tuple[FrameworkFacts, str]] = []
     for facts in JS_FRAMEWORKS:
@@ -42,6 +42,8 @@ def js_frameworks(
             facts = nuxt_facts(manifest, paths)
         elif facts is SVELTEKIT:
             facts = sveltekit_facts(manifest)
+        elif facts is ASTRO:
+            facts = astro_facts(manifest)
         elif facts is REACT_EMAIL:
             dirs = _react_email_dirs(manifest)
             if not dirs:

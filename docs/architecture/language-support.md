@@ -746,8 +746,10 @@ root, so it is tried under each folder above the page after that, exactly as
 written. Vite also probes extensions (`/src/lib/format` → `format.ts`), but this
 lookup does not. A `/`-rooted tsconfig `paths` alias (`/@/*`) is tried last,
 as in a `.ts` file. A URL takes it too, so a catch-all `*` alias can bind a
-missed URL into `src/`. A miss is no node at all. Astro's `base` prefix and a custom
-`publicDir` or `srcDir` are not read, so those values miss.
+missed URL into `src/`. A miss is no node at all. A literal `publicDir` in the app's
+`astro.config` takes the place of `public/` for that app, and a literal `srcDir`
+roots Astro's convention entry points (`pages/`, middleware, content config,
+actions). Astro's `base` prefix is not read, so a `base`-prefixed value misses.
 Anything else takes the TS/JS resolver, whose `./site.css` → `site.ts` fallback
 is the known ceiling for a relative `href`. Its extension guessing is another:
 `<link rel="prefetch" href="docs">` in `src/pages/index.astro` binds
