@@ -20,9 +20,17 @@ ASTRO_CONFIGS = tuple(f"astro.config.{ext}" for ext in ("mjs", "js", "ts", "mts"
 
 _SRC_DIR_RE = re.compile(r"""\bsrcDir\s*:\s*["'`]([^"'`\n]+)["'`]""")
 _PUBLIC_DIR_RE = re.compile(r"""\bpublicDir\s*:\s*["'`]([^"'`\n]+)["'`]""")
-# ``/* ... */`` and ``// ...`` comments; a ``//`` after ``:``, a quote or a word
-# character is part of a URL or string (``https://``, ``'//cdn'``), not a comment.
-_COMMENT_RE = re.compile(r"""/\*.*?\*/|(?<![:"'`\w/])//[^\n]*""", re.DOTALL)
+# A string literal (kept), or a ``/* ... */`` or ``// ...`` comment (dropped).
+# Strings are matched first, so ``'/tmp/*'`` or ``'https://x'`` opens no comment.
+_STRING_OR_COMMENT_RE = re.compile(
+    r"""("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)|/\*.*?\*/|//[^\n]*""",
+    re.DOTALL,
+)
+
+
+def _without_comments(config: str) -> str:
+    """*config* with its comments removed and its string literals kept."""
+    return _STRING_OR_COMMENT_RE.sub(lambda m: m.group(1) or "", config)
 
 
 def _astro_globs(src: str) -> tuple[str, ...]:
@@ -50,7 +58,7 @@ def _literal_dir(pattern: re.Pattern[str], config: str, default: str) -> str:
     the default: there is nothing of the app's own to root at. A commented-out
     option is not read.
     """
-    match = pattern.search(_COMMENT_RE.sub("", config))
+    match = pattern.search(_without_comments(config))
     if match is None:
         return default
     return _inside(match.group(1).strip().rstrip("/")) or default

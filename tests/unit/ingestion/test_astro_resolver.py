@@ -153,3 +153,16 @@ def test_a_commented_out_src_dir_is_not_read() -> None:
     """
     assert astro_src_dir(config) == "app"
     assert astro_public_dir(config) == "static"
+
+
+def test_comment_markers_inside_strings_do_not_hide_options() -> None:
+    from repowise.core.ingestion.framework_facts import astro_src_dir
+
+    config = """
+    export default defineConfig({
+      vite: { server: { fs: { allow: ['/tmp/*'] } } },
+      srcDir: './app',
+      markdown: { include: ['**/*.md'] },
+    })
+    """
+    assert astro_src_dir(config) == "app"
