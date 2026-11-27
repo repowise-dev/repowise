@@ -28,7 +28,7 @@ import {
   getRefactoringTargets,
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
-import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
+import { getPageById, listAllPages, listPageTree } from "@repowise-dev/api-client/pages";
 import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
 import { CONFIG_SECTION } from "../constants";
 import {
@@ -183,9 +183,11 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
   const inFlight = new Map<string, Promise<unknown>>();
 
   /** Serves from the tagged cache; concurrent misses share one request. */
+  const currentTag = (): string => `${ctx.repo?.head_commit ?? ""}#${epoch()}`;
+
   function cached<T>(key: string, load: (id: string) => Promise<T>): Promise<T> {
     const id = repoId();
-    const tag = `${ctx.repo?.head_commit ?? ""}#${epoch()}`;
+    const tag = currentTag();
     const hit = ctx.cache.get<T>(id, `wv:${key}`, tag);
     if (hit !== undefined) return Promise.resolve(hit);
     const flightKey = `${id}|${key}|${tag}`;
@@ -193,7 +195,9 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     if (pending) return pending as Promise<T>;
     const request = load(id)
       .then((value) => {
-        ctx.cache.set(id, `wv:${key}`, tag, value);
+        // The cache keeps one tag per key, so a request that outlived an index
+        // update must not replace the fresher entry stored meanwhile.
+        if (tag === currentTag()) ctx.cache.set(id, `wv:${key}`, tag, value);
         return value;
       })
       .finally(() => {
@@ -351,6 +355,7 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
 
     // Docs
     pagesList: () => cached("docs:pages", (id) => listAllPages(id)),
+    pageTree: () => cached("docs:tree", (id) => listPageTree(id)),
     pageById: (pageId) =>
       cached(`docs:page:${pageId}`, (id) => getPageById(pageId, id)),
     fileDetail: (relPath) => cached(`docs:file:${relPath}`, (id) => getFileDetail(id, relPath)),

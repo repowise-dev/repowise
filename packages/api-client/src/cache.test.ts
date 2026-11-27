@@ -33,6 +33,16 @@ describe("createCache", () => {
     expect(cache.get("r", "k", "t")).toBe("new");
   });
 
+  it("keeps one tag per key, so a new freshness stamp replaces the old entry", () => {
+    const cache = createCache();
+    cache.set("r", "k", "head-1", "old");
+    cache.set("r", "k", "head-2", "new");
+    expect(cache.get("r", "k", "head-2")).toBe("new");
+    // The superseded payload is gone, not just unread: memory stays one copy
+    // per key however many index updates a session sees.
+    expect(cache.get("r", "k", "head-1")).toBeUndefined();
+  });
+
   it("drops everything on invalidateAll", () => {
     const cache = createCache();
     cache.set("r", "k1", "t", 1);

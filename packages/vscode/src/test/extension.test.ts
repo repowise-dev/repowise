@@ -1,6 +1,7 @@
 import * as assert from "node:assert";
 import * as vscode from "vscode";
 import { Commands, EXTENSION_ID } from "../constants";
+import { reinitOnReveal } from "../core/panelParams";
 import {
   clearDocDriftLocations,
   lastKnownLines,
@@ -93,6 +94,23 @@ describe("Repowise extension", () => {
     await ext.activate();
     // Opening the output channel is inert and must never throw.
     await vscode.commands.executeCommand(Commands.showLog);
+  });
+});
+
+describe("reinitOnReveal", () => {
+  it("only brings forward a plainly opened panel on a plain open", () => {
+    assert.strictEqual(reinitOnReveal({}, {}), false);
+    assert.strictEqual(reinitOnReveal(undefined, {}), false);
+    assert.strictEqual(reinitOnReveal({ filePath: undefined }, {}), false);
+  });
+
+  it("re-inits when the open names a target", () => {
+    assert.strictEqual(reinitOnReveal({ filePath: "src/a.ts" }, {}), true);
+    assert.strictEqual(reinitOnReveal({ planId: "p1" }, { planId: "p0" }), true);
+  });
+
+  it("re-inits a panel opened on a target, so a plain open clears it", () => {
+    assert.strictEqual(reinitOnReveal({}, { filePath: "src/a.ts" }), true);
   });
 });
 
