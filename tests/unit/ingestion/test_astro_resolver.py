@@ -8,7 +8,6 @@ import networkx as nx
 
 from repowise.core.ingestion.framework_facts.js import js_frameworks
 from repowise.core.ingestion.framework_facts.npm import npm_manifests
-
 from repowise.core.ingestion.resolvers import resolve_import
 from repowise.core.ingestion.resolvers.context import ResolverContext
 
