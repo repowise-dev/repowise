@@ -112,14 +112,20 @@ def test_keyless_writes_no_store_and_leaves_the_mock_width_signal(tmp_path: Path
     assert providers.existing_vector_dim(lance_dir) == MockEmbedder.dimensions
 
 
-async def test_keyless_leaves_an_old_mock_table_alone(tmp_path: Path) -> None:
-    """A store an earlier run filled stays: a later model run reads its summaries."""
+async def test_keyless_keeps_an_old_mock_table_current(tmp_path: Path) -> None:
+    """A table an earlier keyless run wrote is still maintained.
+
+    Retired pages must leave it and ``doctor --repair`` must be able to clean
+    it, so a repo that has one keeps getting its store.
+    """
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
     from repowise.core.providers.embedding.base import KeylessEmbedder
 
     await _seed_store(tmp_path, MockEmbedder())
     lance_dir = tmp_path / ".repowise" / "lancedb"
 
-    assert providers.build_vector_store(tmp_path, KeylessEmbedder()) is None
+    store = providers.build_vector_store(tmp_path, KeylessEmbedder())
+    assert isinstance(store, LanceDBVectorStore)
     assert providers.existing_vector_dim(lance_dir) == MockEmbedder.dimensions
     assert not (tmp_path / ".repowise" / "lancedb.keyless").exists()
 

@@ -123,9 +123,9 @@ def build_vector_store(repo_path: Path, embedder: Any, *, summaries: bool = Fals
     embed rather than a run that only looked healthy.
 
     Returns ``None`` when handing back a store would destroy the existing one
-    (see :func:`_mock_would_clobber`), and for the keyless embedder, whose
-    vectors nothing searches: writing them cost a lancedb import and a store
-    on disk for no reader. Every caller already treats ``None`` as "embedding
+    (see :func:`_mock_would_clobber`), and for the keyless embedder on a repo
+    with no table yet: nothing searches its vectors, and writing them cost a
+    lancedb import and a store on disk for no reader. Every caller already treats ``None`` as "embedding
     is off for this run"; full-text search is unaffected either way.
 
     *summaries* is for a run whose model generation reads earlier pages'
@@ -156,16 +156,17 @@ def build_vector_store(repo_path: Path, embedder: Any, *, summaries: bool = Fals
             "Set an\nembedder key and run [cyan]repowise reindex[/cyan] to refresh it."
         )
         return None
-    if not summaries and not is_semantic_embedder(embedder):
-        # A store an earlier run left is kept as it is: a later model run reads
-        # its summaries, and nothing searches it while the repo stays keyless.
-        # With no table on disk, the marker records what such a table told
-        # later runs: these pages were embedded keyless, so the first
-        # real-embedder ``update`` re-embeds every page.
-        if not (lance_dir / f"{_TABLE_NAME}.lance").is_dir():
-            from repowise.core.persistence.vector_store.lancedb_store import mark_keyless_store
+    has_table = (lance_dir / f"{_TABLE_NAME}.lance").is_dir()
+    if not summaries and not has_table and not is_semantic_embedder(embedder):
+        # The marker records what a keyless run's table used to tell later
+        # runs: these pages were embedded keyless, so the first real-embedder
+        # ``update`` re-embeds every page. A table an earlier run wrote is
+        # still kept current (retired pages leave it, ``doctor --repair`` can
+        # clean it, later model runs read its summaries), so only repos that
+        # have none skip LanceDB.
+        from repowise.core.persistence.vector_store.lancedb_store import mark_keyless_store
 
-            mark_keyless_store(lance_dir)
+        mark_keyless_store(lance_dir)
         return None
     from repowise.core.persistence.vector_store import LanceDBVectorStore
 
