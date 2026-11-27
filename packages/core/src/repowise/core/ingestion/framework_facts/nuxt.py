@@ -32,19 +32,36 @@ NUXT_CONFIGS = tuple(f"nuxt.config.{ext}" for ext in ("ts", "js", "mjs", "mts"))
 _NUXT_SRC = ("", "app/")
 
 
-def _nuxt_globs(srcs: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _nuxt_globs(
+    srcs: tuple[str, ...],
+    dirs: dict[str, str] | None = None,
+    server_dir: str = "server",
+    layers: tuple[str, ...] = (),
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(entry_globs, review_globs)`` for an app whose source directory is one of *srcs*.
 
     ``server/`` sits at the root on Nuxt 4 and in the source directory on
     Nuxt 3, so a known source directory anchors both.
     """
-    servers = ("",) if srcs == _NUXT_SRC else tuple(dict.fromkeys(("", *srcs)))
+    pages = glob.escape(dirs.get("pages", "pages")) if dirs else "pages"
+    layouts = glob.escape(dirs.get("layouts", "layouts")) if dirs else "layouts"
+    middleware = glob.escape(dirs.get("middleware", "middleware")) if dirs else "middleware"
+    plugins = glob.escape(dirs.get("plugins", "plugins")) if dirs else "plugins"
+
+    app_dirs = (f"{pages}/*", f"{layouts}/*", f"{middleware}/*", f"{plugins}/*")
+    layer_dirs = tuple(dict.fromkeys((*app_dirs, "pages/*", "layouts/*", "middleware/*", "plugins/*")))
+
+    all_srcs = tuple(dict.fromkeys((*srcs, *layers)))
+    servers = ("",) if srcs == _NUXT_SRC else tuple(dict.fromkeys(("", *all_srcs)))
+    server_globs = (f"{server_dir}/*",)
+
     entry = (
-        *_under(srcs, "pages/*", "layouts/*", "middleware/*", "plugins/*"),
-        *_under(srcs, "app.vue", "error.vue", *_js("app.config", "router.options")),
-        *_under(servers, "server/*"),
+        *_under(srcs, *app_dirs),
+        *_under(layers, *layer_dirs),
+        *_under(all_srcs, "app.vue", "error.vue", *_js("app.config", "router.options")),
+        *_under(servers, *server_globs),
     )
-    review = (*_under(srcs, "components/*", "composables/*", "utils/*"), "shared/*")
+    review = (*_under(all_srcs, "components/*", "composables/*", "utils/*"), "shared/*")
     return entry, review
 
 
@@ -63,6 +80,40 @@ _LANG_DIR_RE = re.compile(r"""\blangDir\s*:\s*["'`]([^"'`\n]+)["'`]""")
 _SRC_DIR_RE = re.compile(r"""\bsrcDir\s*:\s*["'`]([^"'`]+)["'`]""")
 _COMPAT_V4_RE = re.compile(r"\bcompatibilityVersion\s*:\s*4\b")
 _VERSION_MAJOR_RE = re.compile(r"(\d+)")
+_DIR_BLOCK_RE = re.compile(r"""\bdir\s*:\s*\{([^}]+)\}""", re.DOTALL)
+_DIR_PROP_RE = re.compile(r"""\b(pages|layouts|middleware|plugins)\s*:\s*["'`]([^"'`\n]+)["'`]""")
+_SERVER_DIR_RE = re.compile(r"""\bserverDir\s*:\s*["'`]([^"'`\n]+)["'`]""")
+_EXTENDS_ARRAY_RE = re.compile(r"""\bextends\s*:\s*\[([^\]]+)\]""", re.DOTALL)
+_EXTENDS_STRING_RE = re.compile(r"""\bextends\s*:\s*["'`]([^"'`\n]+)["'`]""")
+_STR_LITERAL_RE = re.compile(r"""["'`]([^"'`\n]+)["'`]""")
+
+
+def _nuxt_dirs(config: str) -> dict[str, str]:
+    m = _DIR_BLOCK_RE.search(config)
+    if not m:
+        return {}
+    dirs: dict[str, str] = {}
+    for prop, val in _DIR_PROP_RE.findall(m.group(1)):
+        norm = posixpath.normpath(val.strip()).strip("/")
+        if norm and norm != ".":
+            dirs[prop] = norm
+    return dirs
+
+
+def _nuxt_server_dir(config: str) -> str:
+    m = _SERVER_DIR_RE.search(config)
+    if not m:
+        return "server"
+    norm = posixpath.normpath(m.group(1).strip()).strip("/")
+    return norm if norm and norm != "." else "server"
+
+
+def _nuxt_extends(config: str) -> tuple[str, ...]:
+    if m := _EXTENDS_ARRAY_RE.search(config):
+        return tuple(dict.fromkeys(p.strip() for p in _STR_LITERAL_RE.findall(m.group(1)) if p.strip()))
+    if m := _EXTENDS_STRING_RE.search(config):
+        return (m.group(1).strip(),)
+    return ()
 
 
 def _join(*parts: str) -> str:
@@ -126,17 +177,32 @@ def _nuxt_i18n_globs(manifest: NpmManifest, srcs: tuple[str, ...]) -> tuple[str,
     return (*(f"{glob.escape(d)}/*" for d in sorted(dirs)), *configs)
 
 
+def _layer_srcs(root: str, config: str) -> list[str]:
+    extra_srcs: list[str] = []
+    for ext in _nuxt_extends(config):
+        layer_path = _join(root, ext.rstrip("/"))
+        if layer_path.startswith(("../", "/")) or layer_path == "..":
+            continue
+        if root:
+            rel_layer = posixpath.relpath(layer_path, root)
+            extra_srcs.append(f"{rel_layer}/")
+        else:
+            extra_srcs.append(f"{layer_path}/" if layer_path else "")
+    return extra_srcs
+
+
 def nuxt_facts(manifest: NpmManifest, paths: Collection[str] | None = None) -> FrameworkFacts:
     """:data:`NUXT` with its globs rooted at the app's source directory.
 
     The globs are relative to the manifest's directory, like every
     :func:`~.js.js_frameworks` answer.
     """
+    root = manifest.rel_dir
+    config = NUXT.config(manifest) or ""
     src = nuxt_src_dir(manifest, paths)
     if src is None:
         srcs = _NUXT_SRC
     else:
-        root = manifest.rel_dir
         rel = src[len(root) + 1 :] if root and src.startswith(root + "/") else src
         if src == root:
             srcs = ("",)
@@ -144,7 +210,15 @@ def nuxt_facts(manifest: NpmManifest, paths: Collection[str] | None = None) -> F
             srcs = _NUXT_SRC  # a srcDir outside the package: nothing of ours to root at
         else:
             srcs = (f"{rel}/",)
-    entry, review = _nuxt_globs(tuple(glob.escape(s) for s in srcs))
+    layers = tuple(dict.fromkeys(extra_srcs)) if (extra_srcs := _layer_srcs(root, config)) else ()
+    dirs = _nuxt_dirs(config)
+    server_dir = _nuxt_server_dir(config)
+    entry, review = _nuxt_globs(
+        tuple(glob.escape(s) for s in srcs),
+        dirs=dirs,
+        server_dir=glob.escape(server_dir),
+        layers=tuple(glob.escape(s) for s in layers),
+    )
     if NUXT_I18N in manifest.dependencies:
         entry += _nuxt_i18n_globs(manifest, srcs)
     return replace(NUXT, entry_globs=entry, review_globs=review)
