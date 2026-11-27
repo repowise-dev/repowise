@@ -451,6 +451,7 @@ decisions:
 | `sync` | `false` |  | Send this repo's decisions to and from its copy on repowise.dev on update. |
 | `session_start` | `false` |  | Open each agent session with the decisions relevant to its work. |
 | `upkeep_prompt` | `false` |  | After a commit, ask the agent to settle the decisions it touched. |
+| `stop_prompt` | `false` |  | When an agent that did real work stops without recording a decision, ask it once a session to record one or say there is none, committed or not. |
 | `update_mining` | unset |  | Let repowise update call a model to find decisions in new commits and PRs. Unset: off, unless the decisions block names a preset or lists sources, which keeps an older setup mining. |
 | `discovery.max_sessions` | `12` | 1-24 | Most sessions read in one discovery pass. |
 | `discovery.max_input_tokens` | `30000` | 2000-60000 | Most input tokens one discovery pass may send. |

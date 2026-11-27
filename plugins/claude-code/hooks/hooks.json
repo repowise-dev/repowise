@@ -50,6 +50,17 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment --decision-stop; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUseFailure": [
       {
         "matcher": "Read|Edit|Write|Grep|Glob|NotebookEdit",
