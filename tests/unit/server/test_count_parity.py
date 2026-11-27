@@ -195,3 +195,33 @@ async def test_every_hotspot_count_matches_the_hotspot_list(client: AsyncClient,
     assert community["hot_count"] == shown
     architecture = await get(f"/api/graph/{rid}/architecture", min_members=1)
     assert sum(n["hotspot_count"] for n in architecture["nodes"]) == shown
+
+
+@pytest.mark.asyncio
+async def test_truncated_graph_reserves_the_hotspots_it_counts(client: AsyncClient, app) -> None:
+    # Held-out hotspots outrank the production one, so a reservation on the raw
+    # flag would fill a two-node view with them and drop the counted hotspot.
+    repo = await create_test_repo(client)
+    rid = repo["id"]
+    await _seed_hotspots(app.state.session_factory, rid)
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            GraphNode(
+                repository_id=rid,
+                node_id="src/hub.py",
+                node_type="file",
+                language="python",
+                is_test=False,
+                community_id=0,
+                pagerank=0.9,
+            )
+        )
+        core = await crud.get_graph_nodes_by_ids(session, rid, ["src/core.py"])
+        core["src/core.py"].pagerank = 0.1
+        await session.commit()
+
+    resp = await client.get(f"/api/graph/{rid}", params={"limit": 2})
+    assert resp.status_code == 200, resp.text
+    graph = resp.json()
+    assert "src/core.py" in {n["node_id"] for n in graph["nodes"]}
+    assert graph["hot_total"] == graph["hot_in_view"] == 1

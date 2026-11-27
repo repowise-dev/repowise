@@ -212,7 +212,7 @@ async def export_graph(
         kept_ids: set[str] = set()
         flagged_classes = (
             lambda n: _sig(n).is_dead,
-            lambda n: _sig(n).is_hotspot,
+            lambda n: _sig(n).shown_hotspot,
             lambda n: n.node_id in flow_ids,
         )
         for flagged in flagged_classes:
