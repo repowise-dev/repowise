@@ -93,6 +93,20 @@ def test_build_file_unit_passes_other_code_languages_up():
     assert listed.file_owners == {"src/gen.py": ("cmake:core",)}
 
 
+
+def test_build_file_unit_keeps_objective_c_files():
+    # CMake and Bazel build Objective-C, so its sources stay with the target
+    # instead of walking up to the package above it.
+    cmake = _declared("cmake:core", "cmake", "src/CMakeLists.txt")
+    index = BuildUnitIndex.from_units(
+        [cmake, _unit("top", "")], ["src/view.m", "src/view.mm", "src/gen.py"]
+    )
+    assert index.file_owners == {
+        "src/gen.py": ("top",),
+        "src/view.m": ("cmake:core",),
+        "src/view.mm": ("cmake:core",),
+    }
+
 def test_build_file_rule_follows_the_registry_not_the_ecosystem():
     # Any build file the registry lists gets the rule (a Bazel BUILD here);
     # a package manifest does not, so an unlisted Python file under a Delphi
