@@ -761,7 +761,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "typescript"
   },
   "typescript/classes.ts": {
     "file_info": {
@@ -1065,7 +1066,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "typescript"
   },
   "typescript/conditionals.ts": {
     "file_info": {
@@ -1171,7 +1173,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "typescript"
   },
   "typescript/nested.ts": {
     "file_info": {
@@ -1253,7 +1256,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "typescript"
   },
   "typescript/perf_io_in_loop.ts": {
     "file_info": {
@@ -1507,7 +1511,8 @@
       }
     ],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "typescript"
   },
   "typescript/ts_class_modifiers.ts": {
     "file_info": {
@@ -1931,7 +1936,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "typescript"
   },
   "typescript/ts_module_consts.ts": {
     "file_info": {
@@ -2124,7 +2130,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "typescript"
   },
   "typescript/ts_overload_fn_method.ts": {
     "file_info": {
@@ -2457,6 +2464,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "typescript"
   }
 }

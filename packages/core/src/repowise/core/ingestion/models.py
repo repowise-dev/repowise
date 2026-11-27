@@ -876,6 +876,9 @@ class ParsedFile:
     # Parsed without its language's grammar (not installed, or a download
     # failed): a stand-in the parse cache must not keep once the grammar loads.
     grammar_missing: bool = False
+    # The grammar the file was read with, ``"tsx"`` for a ``.ts`` file the parser read again
+    # as TSX because it holds JSX. Empty where no grammar read the file.
+    grammar_tag: str = ""
 
     @property
     def symbol_count(self) -> int:

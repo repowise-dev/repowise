@@ -258,7 +258,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "php"
   },
   "php/classes.php": {
     "file_info": {
@@ -775,7 +776,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "php"
   },
   "php/clean.php": {
     "file_info": {
@@ -857,7 +859,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "php"
   },
   "php/nested.php": {
     "file_info": {
@@ -1186,6 +1189,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "php"
   }
 }

@@ -390,3 +390,56 @@ class TestBindingScan:
             "void g({Function()? b}) {}\nvoid h([VoidCallback c]) {}\n"
         )
         assert {n for _, n in scan_call_shadows(text, "dart")} == {"a", "b", "c"}
+
+
+class TestJsxAttributes:
+    """An attribute written on a line of its own is no assignment, so it hides no imported name."""
+
+    def test_an_attribute_on_its_own_line_binds_nothing_and_an_assignment_beside_it_binds(
+        self,
+    ) -> None:
+        text = (
+            "let a, b, c, d;\n"
+            'function Page() {\n  return (\n    <T\n      cols={cols}\n      label="x"\n'
+            "      t={`a`}\n    />\n  );\n}\n"
+            "a = {};\nb += 1;\nc ??= 2;\nd= 3;\n"
+        )
+        assert {n for _, n in scan_bindings(text, "typescript")} == {"Page", "a", "b", "c", "d"}
+
+    @pytest.mark.parametrize(
+        ("suffix", "statement", "callees"),
+        [
+            pytest.param(
+                ".tsx",
+                "return (\n    <Table\n      helper={helper}\n    />\n  ) && helper(n);",
+                {"util.tsx::helper"},
+                id="attribute-on-its-own-line",
+            ),
+            pytest.param(
+                ".tsx", "helper={};\n  return helper(n);", {"util.tsx::helper"}, id="tsx-no-spaces"
+            ),
+            pytest.param(
+                ".ts",
+                "return (\n    <Table\n      helper={helper}\n    />\n  ) && helper(n);",
+                {"util.ts::helper"},
+                id="ts-holding-jsx",
+            ),
+            pytest.param(
+                ".ts",
+                "const t = '<b>a</b>';\n  helper={};\n  return helper(n);",
+                set(),
+                id="ts-jsx-token-in-string",
+            ),
+        ],
+    )
+    def test_a_line_of_the_shape_of_an_attribute_hides_an_import_only_where_it_assigns(
+        self, tmp_path: Path, suffix: str, statement: str, callees: set[str]
+    ) -> None:
+        files = {
+            f"util{suffix}": "export function helper(x: number) { return x; }\n",
+            f"api{suffix}": (
+                'import { helper } from "./util";\n'
+                f"export function run(n) {{\n  {statement}\n}}\n"
+            ),
+        }
+        assert _callees(tmp_path, files, "typescript", "run") == callees

@@ -264,7 +264,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "ruby"
   },
   "ruby/classes.rb": {
     "file_info": {
@@ -600,7 +601,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "ruby"
   },
   "ruby/nested.rb": {
     "file_info": {
@@ -1027,7 +1029,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "ruby"
   },
   "ruby/perf_io_in_loop.rb": {
     "file_info": {
@@ -1939,6 +1942,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "ruby"
   }
 }

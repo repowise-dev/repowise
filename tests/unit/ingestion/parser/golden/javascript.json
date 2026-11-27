@@ -76,7 +76,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "javascript"
   },
   "javascript/route.js": {
     "file_info": {
@@ -579,6 +580,7 @@
       }
     ],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "javascript"
   }
 }

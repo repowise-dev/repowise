@@ -132,7 +132,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "java"
   },
   "java/Nested.java": {
     "file_info": {
@@ -234,7 +235,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "java"
   },
   "java/PerfIoInLoop.java": {
     "file_info": {
@@ -824,6 +826,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "java"
   }
 }

@@ -386,7 +386,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "cpp"
   },
   "cpp/classes.cpp": {
     "file_info": {
@@ -727,7 +728,8 @@
       }
     ],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "cpp"
   },
   "cpp/nested.cpp": {
     "file_info": {
@@ -833,6 +835,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "cpp"
   }
 }

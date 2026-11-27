@@ -652,7 +652,8 @@
         ]
       }
     ],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "apex"
   },
   "apex/AccountTrigger.trigger": {
     "file_info": {
@@ -775,7 +776,8 @@
         "path": []
       }
     ],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "apex"
   },
   "apex/HealthMarkersTest.cls": {
     "file_info": {
@@ -967,7 +969,8 @@
         "path": []
       }
     ],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "apex"
   },
   "apex/assertions.cls": {
     "file_info": {
@@ -1461,7 +1464,8 @@
         "path": []
       }
     ],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "apex"
   },
   "apex/classes.cls": {
     "file_info": {
@@ -1956,7 +1960,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "apex"
   },
   "apex/health_markers.cls": {
     "file_info": {
@@ -2770,7 +2775,8 @@
         ]
       }
     ],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "apex"
   },
   "apex/nested.cls": {
     "file_info": {
@@ -2980,7 +2986,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "apex"
   },
   "apex/perf_io_in_loop.cls": {
     "file_info": {
@@ -4222,6 +4229,7 @@
         ]
       }
     ],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "apex"
   }
 }

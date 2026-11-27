@@ -131,7 +131,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "shell"
   },
   "shell/functions.sh": {
     "file_info": {
@@ -272,7 +273,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "shell"
   },
   "shell/sourcing.sh": {
     "file_info": {
@@ -445,7 +447,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "shell"
   },
   "shell/zero_functions.sh": {
     "file_info": {
@@ -495,7 +498,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "shell"
   },
   "shell/zshisms.zsh": {
     "file_info": {
@@ -571,6 +575,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "shell"
   }
 }

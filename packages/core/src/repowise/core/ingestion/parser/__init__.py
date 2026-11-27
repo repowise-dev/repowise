@@ -266,6 +266,7 @@ class ASTParser:
             schema_refs=(
                 apex_schema_refs(root, symbols, file_info.path) if lang == "apex" else []
             ),
+            grammar_tag=grammar_tag,
         )
 
 

@@ -1931,11 +1931,20 @@ class ReceiverTypingMixin(
             return self._bindings_for(file_path, language)
         return scan_call_shadows(self._text_of(file_path), language)
 
+    def _read_as_jsx(self, file_path: str) -> bool:
+        """Whether the parser read the file with a grammar that holds JSX: any grammar but the
+        plain TypeScript one (``ParsedFile.grammar_tag``). A file the parser did not read with
+        a grammar is read as holding no JSX."""
+        parsed = self._parsed_files.get(file_path)
+        return parsed is not None and parsed.grammar_tag not in ("", "typescript")
+
     def _bindings_for(self, file_path: str, language: str) -> tuple[tuple[int, str], ...]:
         """Every name one file binds, scanned once however many bodies ask."""
         found = self._bindings.get(file_path)
         if found is None:
-            found = scan_bindings(self._text_of(file_path), language)
+            found = scan_bindings(
+                self._text_of(file_path), language, jsx=self._read_as_jsx(file_path)
+            )
             _store_capped(self._bindings, file_path, found, _SOURCE_CACHE_FILES)
         return found
 
@@ -1945,7 +1954,9 @@ class ReceiverTypingMixin(
         """``_bindings_for`` with columns, scanned only for files that ask."""
         found = self._binding_positions.get(file_path)
         if found is None:
-            found = scan_binding_positions(self._text_of(file_path), language)
+            found = scan_binding_positions(
+                self._text_of(file_path), language, jsx=self._read_as_jsx(file_path)
+            )
             _store_capped(self._binding_positions, file_path, found, _SOURCE_CACHE_FILES)
         return found
 
