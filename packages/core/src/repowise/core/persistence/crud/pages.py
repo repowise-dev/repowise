@@ -7,16 +7,19 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     Page,
     PageVersion,
+    Repository,
     _new_uuid,
     _now_utc,
 )
@@ -83,6 +86,7 @@ def _apply_page_upsert(
     created_at: datetime,
     updated_at: datetime,
     now: datetime,
+    snapshotted: list[str] | None = None,
 ) -> Page:
     """Apply the insert / version-snapshot / idempotent-touch branch for one
     page against a PRE-RESOLVED ``existing`` row.
@@ -90,7 +94,8 @@ def _apply_page_upsert(
     Extracted verbatim from :func:`upsert_page` so the single-page and batch
     callers share one implementation of the version semantics. Does NOT flush:
     the caller owns the flush (one per call for ``upsert_page``, one per batch
-    for :func:`upsert_pages_from_generated`).
+    for :func:`upsert_pages_from_generated`). A page that gets a new snapshot
+    has its id appended to *snapshotted*, so the caller can trim its history.
     """
     if existing is not None:
         # The page keeps the prose it already has (see
@@ -178,6 +183,8 @@ def _apply_page_upsert(
             archived_at=now,
         )
         session.add(snapshot)
+        if snapshotted is not None:
+            snapshotted.append(existing.id)
 
         # Update Page in place (preserves created_at)
         existing.page_type = page_type
@@ -283,6 +290,7 @@ async def upsert_page(
     existing_result = await session.execute(select(Page).where(Page.id == page_id))
     existing = existing_result.scalar_one_or_none()
 
+    snapshotted: list[str] = []
     page = _apply_page_upsert(
         session,
         existing,
@@ -313,8 +321,10 @@ async def upsert_page(
         created_at=created_at or now,
         updated_at=updated_at or now,
         now=now,
+        snapshotted=snapshotted,
     )
     await session.flush()
+    await _trim_snapshotted(session, repository_id, snapshotted)
     return page
 
 
@@ -422,6 +432,91 @@ async def upsert_page_from_generated(
     )
 
 
+#: ``wiki.page_versions_keep`` when no config sets it; the registry holds the same.
+DEFAULT_PAGE_VERSIONS_KEEP = 10
+
+
+def page_versions_keep(repo_root: Path | str | None) -> int:
+    """How many earlier versions each page keeps: ``wiki.page_versions_keep``.
+
+    Read from *repo_root*'s config; the default when there is no root, no
+    config, or a value the setting refuses (it must be a whole number >= 1).
+    """
+    if not repo_root:
+        return DEFAULT_PAGE_VERSIONS_KEEP
+    try:
+        from repowise.core.settings.writers import current
+
+        value = current(repo_root, "wiki.page_versions_keep").value
+    except Exception:  # a broken config.yaml must not fail a page write
+        return DEFAULT_PAGE_VERSIONS_KEEP
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return DEFAULT_PAGE_VERSIONS_KEEP
+    return value
+
+
+async def prune_page_versions(
+    session: AsyncSession,
+    keep: int,
+    *,
+    page_ids: Iterable[str] | None = None,
+    repository_id: str | None = None,
+) -> int:
+    """Delete all but the *keep* newest versions of each page; return rows deleted.
+
+    *page_ids* limits the trim to those pages, in chunks that each cost one
+    DELETE through the ``page_id`` index. Without it every page in the store
+    (or in *repository_id*) is trimmed, which reads the whole table once.
+    The live page is a ``wiki_pages`` row and is never touched here.
+
+    Newest is the highest ``version``, then the highest id. The ordering reads
+    no column stored after ``content``, so a full trim never walks the page
+    bodies it keeps.
+    """
+    if keep < 1:
+        raise ValueError(f"keep must be at least 1, got {keep}")
+    chunks: list[list[str] | None]
+    if page_ids is None:
+        chunks = [None]
+    else:
+        unique = list(dict.fromkeys(page_ids))
+        chunks = [
+            unique[i : i + _PAGE_SELECT_CHUNK] for i in range(0, len(unique), _PAGE_SELECT_CHUNK)
+        ]
+    deleted = 0
+    for chunk in chunks:
+        rank = (
+            func.row_number()
+            .over(
+                partition_by=PageVersion.page_id,
+                order_by=(PageVersion.version.desc(), PageVersion.id.desc()),
+            )
+            .label("rank")
+        )
+        ranked = select(PageVersion.id, rank)
+        if chunk is not None:
+            ranked = ranked.where(PageVersion.page_id.in_(chunk))
+        if repository_id is not None:
+            ranked = ranked.where(PageVersion.repository_id == repository_id)
+        sub = ranked.subquery()
+        stmt = delete(PageVersion).where(
+            PageVersion.id.in_(select(sub.c.id).where(sub.c.rank > keep))
+        )
+        result = await session.execute(stmt, execution_options={"synchronize_session": False})
+        deleted += result.rowcount or 0
+    return deleted
+
+
+async def _trim_snapshotted(session: AsyncSession, repository_id: str, page_ids: list[str]) -> None:
+    """Hold each page that just took a snapshot to its repository's version cap."""
+    if not page_ids:
+        return
+    local_path = (
+        await session.execute(select(Repository.local_path).where(Repository.id == repository_id))
+    ).scalar_one_or_none()
+    await prune_page_versions(session, page_versions_keep(local_path), page_ids=page_ids)
+
+
 # Chunk the id SELECT to stay under SQLite's host-parameter limit (same reason
 # as ``persist._PRUNE_CHUNK``).
 _PAGE_SELECT_CHUNK = 500
@@ -471,6 +566,7 @@ async def upsert_pages_from_generated(
 
     now = _now_utc()
     out: list[Page] = []
+    snapshotted: list[str] = []
     for gp in pages:
         out.append(
             _apply_page_upsert(
@@ -505,9 +601,11 @@ async def upsert_pages_from_generated(
                 created_at=_parse_dt(gp.created_at) or now,
                 updated_at=_parse_dt(gp.updated_at) or now,
                 now=now,
+                snapshotted=snapshotted,
             )
         )
     await session.flush()
+    await _trim_snapshotted(session, repository_id, snapshotted)
     return out
 
 
