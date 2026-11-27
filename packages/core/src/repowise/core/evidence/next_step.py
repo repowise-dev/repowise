@@ -637,17 +637,27 @@ def _refine(
     loop = _loop_owner(symbol, drivers, findings)
     if family == "db_write" and loop and workload_class == "entry_point":
         family = "db_write_loop"
+    if (
+        family == "db_read"
+        and not loop
+        and _one_grouped_read(group, inside, lang, symbol, findings)
+    ):
+        family = "db_grouped"
+    return family, loop
+
+
+def _own_loop(
+    group: Sequence[Mapping[str, Any]], symbol: str, findings: Sequence[Mapping[str, Any]]
+) -> bool:
+    """A database loop in the function *symbol* whose sink may be its read."""
     read = _last(str(_lead(group).get("name") or ""))
-    own_loop = any(
+    return any(
         f.get("kind") == "io_in_loop"
         and f.get("boundary") == "db"
         and _on(f, symbol)
         and _sink_may_be(f.get("sink"), read)
         for f in findings
     )
-    if family == "db_read" and not (loop or own_loop) and _one_grouped_read(group, inside, lang):
-        family = "db_grouped"
-    return family, loop
 
 
 # --- classification ----------------------------------------------------------
@@ -891,12 +901,19 @@ def _sink_may_be(sink: Any, call: str) -> bool:
 
 
 def _one_grouped_read(
-    group: Sequence[Mapping[str, Any]], inside: Sequence[Mapping[str, Any]], lang: str
+    group: Sequence[Mapping[str, Any]],
+    inside: Sequence[Mapping[str, Any]],
+    lang: str,
+    symbol: str,
+    findings: Sequence[Mapping[str, Any]],
 ) -> bool:
     """One database call (the family's only one, whatever its share) whose query
     the run saw built with a GROUP BY or an ``IN`` (:data:`_GO_GROUPED`,
-    :data:`_PY_GROUPED`): it already loads every item's rows at once."""
-    return len(group) == 1 and any(_grouping_builder(c, lang) for c in inside)
+    :data:`_PY_GROUPED`), and no database loop in the function repeats it: it
+    already loads every item's rows at once."""
+    if len(group) != 1 or not any(_grouping_builder(c, lang) for c in inside):
+        return False
+    return not _own_loop(group, symbol, findings)
 
 
 def _grouping_builder(callee: Mapping[str, Any], lang: str) -> bool:
