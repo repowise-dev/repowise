@@ -25,9 +25,9 @@ comments; ``ingestion.framework_routes`` keeps its own comment-aware scanner.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, lru_cache
 from itertools import pairwise
 
 from .langs import CSHARP, GO, JAVA, JS_TS, KOTLIN, PHP, PYTHON, RUBY, RUST
@@ -809,16 +809,31 @@ def _js_declaration_re(name: str) -> re.Pattern[str]:
 
 @cache
 def _js_rebinding_re(name: str) -> re.Pattern[str]:
-    """An assignment to *name* or a member of it, or a parameter of that name."""
+    """An assignment to *name* or a member of it, or a parameter of that name.
+
+    A parameter is found with no scope: a function above the use that names it refuses, closed or not.
+    A method with a return type that holds a brace or a ``?``, or that follows other text on its
+    line, or whose brace is on a later line, is not read.
+    """
     n = re.escape(name)
+    head = (  # `save<T>(a, x)` up to the closing parenthesis and the space after it
+        rf"(?!(?:if|for|while|switch|catch|with|await)\b)[A-Za-z_$][\w$]*\s*"
+        rf"(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>\s*)?"
+        rf"\([^()]*(?<![\w$.]){n}(?![\w$])[^()]*\)\s*"
+    )
     return re.compile(
         rf"(?<![\w$.]){n}\s*(?:\.\s*[\w$]+\s*|\[[^\]]*\]\s*)?[-+*/|&?]?=(?![=>])"  # `x =`, `x.uri =`, `x['uri'] =`
         rf"|Object\.assign\s*\(\s*{n}(?![\w$])"
         rf"|function(?![\w$])[^(]*\([^)]*(?<![\w$.]){n}(?![\w$])[^)]*\)"  # `function (err, x)`
         rf"|(?<![\w$.]){n}\s*=>|\([^()]*(?<![\w$.]){n}(?![\w$])[^()]*\)\s*=>"  # `x =>`, `(a, x) =>`
-        # A method shorthand `save(x) {`; a control header (`if (x) {`) is not one.
-        rf"|(?<![\w$.])(?!(?:if|for|while|switch|catch|with)\b)[A-Za-z_$][\w$]*\s*"
-        rf"\([^()]*(?<![\w$.]){n}(?![\w$])[^()]*\)\s*\{{"
+        # A method shorthand `save(x) {`, with type parameters; a control header (`if (x) {`) is not one.
+        rf"|(?<![\w$.]){head}\{{"
+        # A return type (`save<T>(x: T): void {`) is read only where a class member starts, a line that
+        # opens with modifiers: after `) :` a ternary (`c ? f(x) : {}`) or a case label (`case f(x): {`)
+        # looks the same, and a `?` ends the return type (`f(x) : c ? {`). A return type that holds
+        # a brace or a `?`, or that ends before the brace's line, is not read.
+        rf"|(?m:^)[ \t]*(?:(?:public|private|protected|static|async|override|readonly|abstract)\s+)*"
+        rf"{head}:[ \t]*[\w$][^{{}};=()?\n]*?\{{"
     )
 
 
@@ -835,8 +850,9 @@ def js_local_value(content: str, name: str, pos: int) -> str | None:
     request(options)``, where the file's constants refuse a name each handler
     declares again. A statement continued on the next line, an assignment to
     the name or one of its members, and a parameter of the same name between
-    the two all refuse. Ceiling: only the last :data:`_JS_LOCAL_WINDOW`
-    characters are read.
+    the two all refuse, as do a loop variable, a catch parameter and a destructured name of the same
+    name that hold at the use (:func:`_js_bindings`). Ceiling: only the last
+    :data:`_JS_LOCAL_WINDOW` characters are read.
     """
     decl: re.Match[str] | None = None
     for m in _js_declaration_re(name).finditer(content, max(0, pos - _JS_LOCAL_WINDOW), pos):
@@ -858,7 +874,154 @@ def js_local_value(content: str, name: str, pos: int) -> str | None:
         return None  # the declaring block closed before the use
     if _js_rebinding_re(name).search(content, ends[0], pos):
         return None  # reassigned, mutated or shadowed before the use
+    if _bound_after(content, name, decl.end(), pos):
+        return None  # a loop variable, a catch parameter or a destructured name holds there
     return rhs or None
+
+
+@dataclass(frozen=True)
+class _Binding:
+    """A place that gives names to the code around it: a loop header, a catch clause, a destructuring
+    declaration. The names hold from *start* to *end*, offsets of the text; *head* is where the binding
+    is written."""
+
+    head: int
+    start: int
+    end: int
+    names: frozenset[str]
+
+
+_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
+_NON_SPACE_RE = re.compile(r"\S")
+_OPEN_BEFORE_RE = re.compile(r"\(\s*$")
+_DECLARATION_WORD_RE = re.compile(r"\s*(?:const|let|var)(?![\w$])\s*")
+# A loop or catch header: `for (`, `for await (`, `catch (`; a call `p.catch(` is not one.
+_HEADER_RE = re.compile(r"(?<![\w$.])(for(?:\s+await)?|catch)\s*\(")
+_DESTRUCTURING_RE = re.compile(r"\b(?:const|let|var)\s*([\[{])")
+_FOR_EACH_RE = re.compile(r"(?<![\w$])(?:of|in)(?![\w$])")
+_CLOSERS = {")": "(", "]": "[", "}": "{"}
+
+
+def _target_names(target: str) -> frozenset[str]:
+    """The names a binding target holds: an identifier, or a pattern in ``{}`` or ``[]``. In a pattern
+    only the target of each element binds: the value of ``key: target``, never the key, and never the
+    default after ``=``."""
+    target = target.strip().removeprefix("...").strip()
+    if target[:1] not in ("{", "["):
+        found = _IDENT_RE.match(target)  # a type after `:` binds nothing
+        return frozenset({found.group()}) if found else frozenset()
+    names: frozenset[str] = frozenset()
+    for element in split_top_level(target[1:-1], ","):
+        value = split_top_level(split_top_level(element, "=")[0], ":")[-1]
+        names |= _target_names(value)
+    return names
+
+
+def _declarator_names(declarator: str) -> frozenset[str]:
+    """The names of one declarator, ``const`` or ``let`` word and initialiser left out."""
+    left = split_top_level(declarator, "=")[0]
+    return _target_names(_DECLARATION_WORD_RE.sub("", left, count=1))
+
+
+def _skip_space(code: str, at: int) -> int:
+    found = _NON_SPACE_RE.search(code, at)
+    return found.start() if found else len(code)
+
+
+def _scope_end(code: str, at: int) -> int:
+    """Where the scope that begins at *at* ends: the end of the block that opens there, else the end
+    of the expression or statement that does (a top-level ``;`` or ``,``, the end of a line that the
+    next line does not continue, or the bracket that closes the group around it). A block that never
+    closes runs to the end of the text. Limit: a statement that goes on past a line break with no
+    operator at the break, as a nested ``for (...)`` header on a line of its own, ends at the break.
+    """
+    limit = min(len(code), at + SCAN_LIMIT)
+    if code[at : at + 1] == "{":
+        close = match_paren(code, at, closer="}")
+        return close + 1 if close >= 0 else len(code)
+    ends = [
+        at + at_close - 1
+        for closer, opener in _CLOSERS.items()
+        if (at_close := _scan(opener + code[at:limit], 0, limit - at + 1, closer=closer)[0]) >= 0
+    ]
+    for sep in ";,":
+        ends += _scan(code, at, limit, sep=sep, first_sep_only=True)[1]
+    ends += _line_end(code, at, limit)
+    return min(ends) if ends else len(code)
+
+
+def _line_end(code: str, at: int, limit: int) -> list[int]:
+    """The first top-level line break after *at* where the statement ends: neither the line before
+    it ends with an operator nor the line after it opens with one (:data:`_CONTINUES_RE`)."""
+    while (breaks := _scan(code, at, limit, sep="\n", first_sep_only=True)[1]) and (
+        _CONTINUES_RE.match(code, breaks[0] + 1)
+        or _CONTINUES_RE.match(code[at : breaks[0]].rstrip()[-1:] or ";")
+    ):
+        at = breaks[0] + 1
+    return breaks
+
+
+def _block_end(code: str, at: int) -> int:
+    """Where the block that holds *at* ends: its closing ``}``, else the end of the text."""
+    text = "{" + code[at : at + SCAN_LIMIT]
+    close = _scan(text, 0, len(text), closer="}")[0]
+    return at + close - 1 if close >= 0 else len(code)
+
+
+def _declared(inner: str) -> frozenset[str]:
+    """The names a ``for (...)`` header declares: the left side of ``of`` or ``in``, or each declarator
+    of a classic header (``let i = 0, j = 1``). The right side of each declares nothing."""
+    parts = split_top_level(inner, ";")
+    if len(parts) > 1:
+        return frozenset().union(*map(_declarator_names, split_top_level(parts[0], ",")))
+    m = _FOR_EACH_RE.search(inner)
+    return _declarator_names(inner[: m.start()]) if m else frozenset()
+
+
+def _header_bindings(code: str) -> Iterator[_Binding]:
+    """The ``for`` headers and ``catch`` clauses of *code*, each holding its names in the body."""
+    for m in _HEADER_RE.finditer(code):
+        at = m.end() - 1
+        close = match_paren(code, at)
+        if close < 0:
+            continue
+        inner = code[at + 1 : close]
+        names = _target_names(inner) if m.group(1) == "catch" else _declared(inner)
+        body = _skip_space(code, close + 1)
+        if names:
+            yield _Binding(at, body, _scope_end(code, body), names)
+
+
+def _destructuring_bindings(code: str) -> Iterator[_Binding]:
+    for m in _DESTRUCTURING_RE.finditer(code):
+        if _OPEN_BEFORE_RE.search(code, max(0, m.start() - 20), m.start()):
+            continue  # in a loop header, which binds it for the loop only
+        close = match_paren(code, m.end() - 1, closer="]" if m.group(1) == "[" else "}")
+        if close >= 0:
+            names = _target_names(code[m.end() - 1 : close + 1])
+            yield _Binding(m.start(), close + 1, _block_end(code, close + 1), names)
+
+
+@lru_cache(maxsize=16)
+def _js_bindings(code: str) -> tuple[_Binding, ...]:
+    """Every binding of the JS text *code*: a ``for`` or ``catch`` header, a destructuring declaration.
+    Read once for the text. The parameters of a function are read by :func:`_js_rebinding_re`.
+
+    Each binding is found from its head (a keyword and a parenthesis, or a declaration's bracket) and
+    ends with the block, the statement or the group that holds it, so a loop that closed does not
+    bind the name after it. Ceiling: *code* is read as written, so a header inside a string literal
+    can add a binding, which only refuses a local.
+    """
+    return (*_header_bindings(code), *_destructuring_bindings(code))
+
+
+def _bound_after(content: str, name: str, after: int, pos: int) -> bool:
+    """Whether a binding of *name* written after *after* holds at *pos* of *content*; one written on a
+    line that is a comment is not one."""
+    return any(
+        name in b.names and after < b.start <= pos < b.end and not on_comment_line(content, b.head)
+        for b in _js_bindings(content)
+    )
 
 
 # A typed local declaration (`var uri = `, `string url = `, `Uri? u = `). The

@@ -101,7 +101,10 @@ CONTRACTS_FILENAME = "contracts.json"
 # function under that router's mount (#6362), puts the base a JS client
 # factory's call sites pass before the requests it builds (#6415), follows a Go
 # group taken from ``Use``, and drops the routes of a Go register function only
-# another copy's callers name. ``routes_fingerprint`` includes this version, so
+# another copy's callers name, and no longer reads a JS local at a use where a loop,
+# catch or destructuring binds the name again, or a method with type parameters or a
+# return type names it as a parameter, and reads one after a ``for await`` loop that
+# closed. ``routes_fingerprint`` includes this version, so
 # stored HTTP routes and ``contracts.json`` refresh with it.
 CONTRACTS_VERSION = 18
 
