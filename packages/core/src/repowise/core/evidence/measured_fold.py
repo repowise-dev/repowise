@@ -332,9 +332,40 @@ def fold_routes(runs: Iterable[Any], points: Iterable[RoutePoint]) -> list[Route
     keep = set(query_runs_to_read(runs))
     if not keep:
         return []
-    by_fn: dict[str, dict[str, list[tuple[float, str, int, float | None, int | None, bool]]]] = {
-        rid: {} for rid in keep
-    }
+    by_fn, totals, other = _sum_routes(points, keep)
+    out = []
+    for run in sorted((r for r in runs if r.id in keep), key=_age_key, reverse=True):
+        whole, requests, count = totals[run.id]
+        costs = sorted(
+            (_handler_cost(sid, held) for sid, held in by_fn[run.id].items()),
+            key=lambda c: (-c[1], -c[2], c[0]),
+        )
+        rows = [
+            RouteCost(sid, run.id, rank, _share(ms, whole), ms, n, mean, errs, p95, names)
+            for rank, (sid, ms, n, mean, p95, errs, names) in enumerate(costs, start=1)
+        ]
+        ms, n = other[run.id]
+        unattributed = (
+            {UNJOINED: {"routes": int(n), "total_ms": ms, "share": _share(ms, whole)}} if n else {}
+        )
+        out.append(RouteRun(run, rows, whole, int(requests), int(count), unattributed))
+    return out
+
+
+#: One route of a handler: ``(ms, "METHOD route", requests, p95_ms, errors, timed)``.
+_HeldRoute = tuple[float, str, int, "float | None", "int | None", bool]
+
+
+def _share(ms: float, whole: float) -> float | None:
+    return ms / whole if whole > 0 else None
+
+
+def _sum_routes(
+    points: Iterable[RoutePoint], keep: set[str]
+) -> tuple[dict[str, dict[str, list[_HeldRoute]]], dict[str, list[float]], dict[str, list[float]]]:
+    """Per kept run: each handler's routes, the run's ``[ms, requests, routes]``
+    and the ``[ms, routes]`` on no handler."""
+    by_fn: dict[str, dict[str, list[_HeldRoute]]] = {rid: {} for rid in keep}
     totals: dict[str, list[float]] = {rid: [0.0, 0, 0] for rid in keep}
     other: dict[str, list[float]] = {rid: [0.0, 0] for rid in keep}
     for run_id, symbol_id, method, route, count, total_ms, p95_ms, errors in points:
@@ -351,42 +382,27 @@ def fold_routes(runs: Iterable[Any], points: Iterable[RoutePoint]) -> list[Route
         else:
             other[run_id][0] += ms
             other[run_id][1] += 1
+    return by_fn, totals, other
 
-    def share(ms: float, whole: float) -> float | None:
-        return ms / whole if whole > 0 else None
 
-    out = []
-    for run in sorted((r for r in runs if r.id in keep), key=_age_key, reverse=True):
-        whole, requests, count = totals[run.id]
-        costs = []
-        for sid, held in by_fn[run.id].items():
-            held.sort(key=lambda h: (-h[0], -h[2], h[1]))
-            ms = sum(h[0] for h in held)
-            p95s = [h[3] for h in held if h[3] is not None]
-            errs = [h[4] for h in held if h[4] is not None]
-            timed = sum(h[2] for h in held if h[5])
-            costs.append(
-                (
-                    sid,
-                    ms,
-                    sum(h[2] for h in held),
-                    ms / timed if timed else None,
-                    max(p95s) if p95s else None,
-                    sum(errs) if errs else None,
-                    tuple(h[1] for h in held),
-                )
-            )
-        costs.sort(key=lambda c: (-c[1], -c[2], c[0]))
-        rows = [
-            RouteCost(sid, run.id, rank, share(ms, whole), ms, n, mean, errs, p95, names)
-            for rank, (sid, ms, n, mean, p95, errs, names) in enumerate(costs, start=1)
-        ]
-        ms, n = other[run.id]
-        unattributed = (
-            {UNJOINED: {"routes": int(n), "total_ms": ms, "share": share(ms, whole)}} if n else {}
-        )
-        out.append(RouteRun(run, rows, whole, int(requests), int(count), unattributed))
-    return out
+def _handler_cost(sid: str, held: list[_HeldRoute]) -> tuple[Any, ...]:
+    """``(sid, ms, requests, mean_ms, p95_ms, errors, routes)`` for one handler:
+    the mean over the requests of routes whose source gave a total, the
+    slowest p95, errors as far as the source said, routes costliest first."""
+    held = sorted(held, key=lambda h: (-h[0], -h[2], h[1]))
+    ms = sum(h[0] for h in held)
+    p95s = [h[3] for h in held if h[3] is not None]
+    errs = [h[4] for h in held if h[4] is not None]
+    timed = sum(h[2] for h in held if h[5])
+    return (
+        sid,
+        ms,
+        sum(h[2] for h in held),
+        ms / timed if timed else None,
+        max(p95s) if p95s else None,
+        sum(errs) if errs else None,
+        tuple(h[1] for h in held),
+    )
 
 
 __all__ = [
