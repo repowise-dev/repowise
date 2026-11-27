@@ -594,57 +594,64 @@ def _eager_default(
 ) -> NextStep | None:
     """The eager ``setdefault`` step: the function's own dominant callee is a
     value it builds as one, or this row is that build and a driver holding
-    :data:`DOMINANT` of its calls builds it so."""
+    :data:`DOMINANT` of its time builds it so."""
     if lang != "python" or not symbol:
         return None
     facts = {f["symbol"]: f for f in findings if f.get("kind") == EAGER_DEFAULT and f.get("symbol")}
     if not facts:
         return None
-    verify = verify_command(row.get("workload_name"), row.get("workload_class"))
+    found = _own_eager_build(symbol, inside, facts) or _driver_eager_build(symbol, row, facts)
+    if found is None:
+        return None
+    why, fact, (call, line), where, callee, share = found
+    return NextStep(
+        rule=EAGER_DEFAULT,
+        why=(
+            f"{why} as the default of setdefault on line {line}: the default is built before "
+            "the lookup, so one is built on every call, even when the key is already there"
+        ),
+        next=_eager_next(fact["file_path"], line, call, where),
+        verify=verify_command(row.get("workload_name"), row.get("workload_class")),
+        callee=callee,
+        share=round(share, 4),
+    )
+
+
+def _own_eager_build(
+    symbol: str, inside: Sequence[Mapping[str, Any]], facts: Mapping[str, Mapping[str, Any]]
+) -> tuple[Any, ...] | None:
+    """A dominant callee of the function that is one of its own eager defaults."""
     own = facts.get(symbol)
-    if own is not None:
-        for callee in inside:
-            share = float(callee.get("share") or 0.0)
-            if share < DOMINANT or callee.get("kind") in ("own", "wait"):
-                continue
-            name = str(callee.get("name") or "")
-            build = next((b for b in own["builds"] if _builds(name, b[0])), None)
-            if build is not None:
-                call, line = build
-                return NextStep(
-                    rule=EAGER_DEFAULT,
-                    why=(
-                        f"{_pct(share)} of it builds {call}() ({_short(name)}) as the default of "
-                        f"setdefault on line {line}: the default is built before the lookup, so "
-                        "one is built on every call, even when the key is already there"
-                    ),
-                    next=_eager_next(own["file_path"], line, call, None),
-                    verify=verify,
-                    callee=name,
-                    share=round(share, 4),
-                )
-    built = _built_class(symbol)
-    for driver in _items(row.get("drivers")) if built else ():
+    for callee in inside if own is not None else ():
+        share = float(callee.get("share") or 0.0)
+        if share < DOMINANT or callee.get("kind") in ("own", "wait"):
+            continue
+        name = str(callee.get("name") or "")
+        build = next((b for b in own["builds"] if _builds(name, b[0])), None)
+        if build is not None:
+            why = f"{_pct(share)} of it builds {build[0]}() ({_short(name)})"
+            return why, own, build, None, name, share
+    return None
+
+
+def _driver_eager_build(
+    symbol: str, row: Mapping[str, Any], facts: Mapping[str, Mapping[str, Any]]
+) -> tuple[Any, ...] | None:
+    """On a constructor's row, a driver holding :data:`DOMINANT` of its time that
+    builds its class as an eager default."""
+    if not _built_class(symbol):
+        return None
+    frame = _frame_of(symbol)
+    for driver in _items(row.get("drivers")):
         share = float(driver.get("share") or 0.0)
         fact = facts.get(str(driver.get("symbol") or ""))
         if share < DOMINANT or fact is None:
             continue
-        build = next((b for b in fact["builds"] if _builds(_frame_of(symbol), b[0])), None)
+        build = next((b for b in fact["builds"] if _builds(frame, b[0])), None)
         if build is not None:
-            call, line = build
             where = _fn(str(driver["symbol"]))
-            return NextStep(
-                rule=EAGER_DEFAULT,
-                why=(
-                    f"{where}, which drives {_pct(share)} of its time, builds a {call} as the default of "
-                    f"setdefault on line {line}: the default is built before the lookup, so one "
-                    "is built on every call, even when the key is already there"
-                ),
-                next=_eager_next(fact["file_path"], line, call, where),
-                verify=verify,
-                callee=call,
-                share=round(share, 4),
-            )
+            why = f"{where}, which drives {_pct(share)} of its time, builds a {build[0]}"
+            return why, fact, build, where, build[0], share
     return None
 
 

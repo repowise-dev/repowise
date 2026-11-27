@@ -504,6 +504,25 @@ async def measured_callers(
     return {sid: found for sid, found in out.items() if found}
 
 
+async def _eager_defaults(
+    session: AsyncSession, repository_id: str, symbols: list[str]
+) -> list[tuple[str, str]]:
+    """``(symbol id, eager_defaults_json)`` for the *symbols* whose walk found one."""
+    from ...models import FunctionFact
+
+    out: list[tuple[str, str]] = []
+    for i in range(0, len(symbols), _BATCH_SIZE):
+        result = await session.execute(
+            select(FunctionFact.symbol_id, FunctionFact.eager_defaults_json).where(
+                FunctionFact.repository_id == repository_id,
+                FunctionFact.symbol_id.in_(symbols[i : i + _BATCH_SIZE]),
+                FunctionFact.eager_defaults_json.is_not(None),
+            )
+        )
+        out.extend((sid, raw) for sid, raw in result.all())
+    return out
+
+
 async def step_findings(
     session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
 ) -> list[dict[str, Any]]:
@@ -520,7 +539,7 @@ async def step_findings(
     from ....evidence.ingest import load_origins
     from ....evidence.next_step import eager_default_fact, static_finding
     from ....ingestion.symbol_identity import file_of_symbol
-    from ...models import FunctionFact, HealthFinding
+    from ...models import HealthFinding
 
     targets: set[str] = set()
     for row in rows:
@@ -556,16 +575,7 @@ async def step_findings(
             )
         )
         found.update({f.id: f for f in result.scalars()})
-    eager: list[tuple[str, str]] = []
-    for i in range(0, len(named), _BATCH_SIZE):
-        result = await session.execute(
-            select(FunctionFact.symbol_id, FunctionFact.eager_defaults_json).where(
-                FunctionFact.repository_id == repository_id,
-                FunctionFact.symbol_id.in_(named[i : i + _BATCH_SIZE]),
-                FunctionFact.eager_defaults_json.is_not(None),
-            )
-        )
-        eager.extend((sid, raw) for sid, raw in result.all())
+    eager = await _eager_defaults(session, repository_id, named)
     paths = {f.file_path for f in found.values()} | {file_of_symbol(sid) for sid, _ in eager}
     origins = await load_origins(session, repository_id, paths)
     out = [
