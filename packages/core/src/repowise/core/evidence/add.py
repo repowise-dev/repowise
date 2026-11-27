@@ -248,6 +248,22 @@ def _read_json_string_bytes(data: bytes, idx: int) -> tuple[bytes | None, int]:
     return None, len(data)
 
 
+def _skip_json_container(data: bytes, idx: int) -> int:
+    depth = 1
+    i = idx + 1
+    while i < len(data) and depth > 0:
+        cur = data[i]
+        if cur == 0x22:
+            _, i = _read_json_string_bytes(data, i)
+            continue
+        if cur in (0x7B, 0x5B):
+            depth += 1
+        elif cur in (0x7D, 0x5D):
+            depth -= 1
+        i += 1
+    return i
+
+
 def _skip_json_value(data: bytes, idx: int) -> int:
     idx = _skip_json_ws(data, idx)
     if idx >= len(data):
@@ -257,19 +273,7 @@ def _skip_json_value(data: bytes, idx: int) -> int:
         _, end = _read_json_string_bytes(data, idx)
         return end
     if ch in (0x7B, 0x5B):  # '{' or '['
-        depth = 1
-        i = idx + 1
-        while i < len(data) and depth > 0:
-            cur = data[i]
-            if cur == 0x22:
-                _, i = _read_json_string_bytes(data, i)
-                continue
-            if cur in (0x7B, 0x5B):
-                depth += 1
-            elif cur in (0x7D, 0x5D):
-                depth -= 1
-            i += 1
-        return i
+        return _skip_json_container(data, idx)
     while idx < len(data) and data[idx] not in b",}] \t\r\n":
         idx += 1
     return idx
