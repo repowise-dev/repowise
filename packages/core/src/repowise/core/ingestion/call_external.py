@@ -8,6 +8,15 @@ its name only inside that function, a name a parameter or local rebinds is not
 the import's, and a binding the import maps only guess at is refused. Nothing is
 inferred through barrels, star imports or dynamic loads.
 
+In Java and Kotlin the compiler checks a declared type, so a call on a local,
+a parameter or a field (``billing.charge()`` with ``BillingClient billing``)
+is bound by the import of its declared type, read as the resolver types any
+receiver. A static import binds the member and names its declaring type. A
+Kotlin call on a receiver of a name an import binds may be that imported
+extension or a member of the receiver's type: Kotlin calls the member when the
+type has one, and the members of a type from a package are not known here, so
+neither is recorded.
+
 A module a test runner swaps for a mock is not the package either: in a file
 that calls ``jest.mock("m")`` (or ``vi.mock``, ``doMock``,
 ``unstable_mockModule``), and in a test file when the repo holds a manual mock
@@ -25,6 +34,8 @@ from .models import CallSite, NamedBinding
 from .source_text import source_bytes
 
 _CONTAINER_KINDS = frozenset({"function", "method"})
+#: Languages whose compiler checks a declared type, so the type proves the package.
+_DECLARED_TYPE_LANGUAGES = frozenset({"java", "kotlin"})
 #: Specifier prefixes that are path aliases, never an npm package name.
 _ALIAS_PREFIXES = ("~", "#", "$", "/")
 #: ``<runner>.<method>(spec, ...)`` calls that replace *spec* for the whole file
@@ -55,27 +66,42 @@ class ExternalCallsMixin:
         caller_id = call.caller_symbol_id
         if ecosystem is None or caller_id is None or call.edge_type != "calls":
             return None
-        # A chained call's receiver is a value, typed by nothing here.
-        if call.receiver_call is not None or call.on_unnamed_object:
+        # A receiver no pattern names (``a.b.m()``) is typed by nothing here.
+        if call.on_unnamed_object:
             return None
         found = self._call_binding(file_path, call, language)
         if found is None:
             return None
-        binding, attributes = found
-        if self._binding_refused(file_path, binding, caller_id, language, call.line):
+        binding, attributes, bound_in = found
+        if self._binding_refused(bound_in, binding, caller_id, language, call.line):
             return None
-        return _site(file_path, call.line, caller_id, ecosystem, binding, attributes)
+        return _site(file_path, call, caller_id, ecosystem, binding, attributes)
 
     def _call_binding(
         self, file_path: str, call: CallSite, language: str
-    ) -> tuple[NamedBinding, list[str]] | None:
-        """The package import binding *call* goes through, and the attributes it
-        reads past it (``linalg``, ``norm`` in ``np.linalg.norm()``)."""
-        if call.receiver_name:
+    ) -> tuple[NamedBinding, list[str], str] | None:
+        """The package import binding *call* goes through, the attributes it
+        reads past it (``linalg``, ``norm`` in ``np.linalg.norm()``), and the
+        file whose import it is."""
+        bound_in = file_path
+        if call.receiver_call is not None:
+            if self._may_be_extension(file_path, call, language):
+                return None
+            typed = self._returned_type_binding(file_path, call, language)
+            if typed is None:
+                return None
+            (width, binding), bound_in, segments = typed
+            attributes = [*segments[width:], call.target_name]
+        elif call.receiver_name:
             segments = call.receiver_name.split(".")
             found = self._longest_bound_prefix(file_path, segments, call.line)
             if found is None:
-                return None
+                if self._may_be_extension(file_path, call, language):
+                    return None
+                typed = self._declared_type_binding(file_path, call, language)
+                if typed is None:
+                    return None
+                found, bound_in, segments = typed
             width, binding = found
             attributes = [*segments[width:], call.target_name]
         else:
@@ -85,9 +111,106 @@ class ExternalCallsMixin:
                 return None
             attributes = []
         source = binding.source_file or ""
-        if not source.startswith(_EXTERNAL_PREFIX) or binding.member_of:
+        if not source.startswith(_EXTERNAL_PREFIX):
             return None
-        return binding, attributes
+        return binding, attributes, bound_in
+
+    def _may_be_extension(self, file_path: str, call: CallSite, language: str) -> bool:
+        """Whether a Kotlin call on a receiver names an imported function, which may
+        be an extension of the receiver (``items.map {}`` with ``import a.b.map``)."""
+        return language == "kotlin" and (
+            self._proven_binding(file_path, call.target_name, call.line) is not None
+        )
+
+    def _declared_type_binding(
+        self, file_path: str, call: CallSite, language: str
+    ) -> tuple[tuple[int, NamedBinding], str, list[str]] | None:
+        """The import binding of the receiver's declared type, the file of that
+        import, and the type's segments (``Outer``, ``Inner``).
+
+        The receiver is a local, a parameter or a field; a field an ancestor
+        class declares is typed, and its import read, in that class's file.
+        """
+        if language not in _DECLARED_TYPE_LANGUAGES:
+            return None
+        type_name, _, declared_in = self._receiver_type_and_scope(  # type: ignore[attr-defined]
+            file_path, call.caller_symbol_id or "", language, call.receiver_name or "", call.line
+        )
+        if not type_name:
+            return None
+        segments = type_name.split(".")
+        found = self._longest_bound_prefix(declared_in, segments, call.line)
+        if found is None and language == "java":
+            found = self._on_demand_binding(declared_in, segments[0])
+        return None if found is None else (found, declared_in, segments)
+
+    def _returned_type_binding(
+        self, file_path: str, call: CallSite, language: str
+    ) -> tuple[tuple[int, NamedBinding], str, list[str]] | None:
+        """The import binding of the type a chained call is made on, the file of
+        that import, and the type's segments.
+
+        The value is what a repository method returns, ``promotions()`` in
+        ``provider.promotions().accept()``, as the resolver reads the inner call
+        of a chain: the overload its arguments select, and the type that
+        overload declares. The compiler checks a declared return type as it
+        checks the type of a field, so the import of that type in the method's
+        file proves the package. A chain whose inner call is itself a call into
+        a package names no type here: a package's return types are not known.
+        """
+        if language not in _DECLARED_TYPE_LANGUAGES or call.receiver_call is None:
+            return None
+        inner = call.receiver_call
+        callee = self._chain_inner_callee(  # type: ignore[attr-defined]
+            file_path, call, inner, call.caller_symbol_id or "", language
+        )
+        if callee is None:
+            return None
+        returned = self._callee_return_type  # type: ignore[attr-defined]
+        type_name = returned(callee, inner.argument_count, language)
+        declared_in = self._symbol_paths_by_id.get(callee)  # type: ignore[attr-defined]
+        if not type_name or "::" in type_name or declared_in is None:
+            return None
+        segments = type_name.split(".")
+        line = self._symbols_by_id[callee].start_line  # type: ignore[attr-defined]
+        found = self._longest_bound_prefix(declared_in, segments, line)
+        if found is None and language == "java":
+            found = self._on_demand_binding(declared_in, segments[0])
+        return None if found is None else (found, declared_in, segments)
+
+    def _on_demand_binding(self, file_path: str, name: str) -> tuple[int, NamedBinding] | None:
+        """The binding of the type *name* through the one type-import-on-demand of a Java file.
+
+        Java looks a simple type name up in the file, then in its single-type
+        imports, then in its own package, and only then in its on-demand
+        imports and ``java.lang``, which may not both declare it. So
+        ``Channel`` in a file whose one such import is
+        ``import com.acme.sftp.*`` is that package's, where the file and the
+        repository's classes of its package declare no type of the name and
+        ``java.lang`` has none. The binding names the import as written, so the
+        call's ``module`` is ``com.acme.sftp.*`` and its path starts with the
+        type. Two on-demand imports leave the name open.
+
+        Ceiling: a member type that a supertype of the calling class declares
+        hides the import, and is not looked up; nor is a class of the file's own
+        package that a library holds. A static call on such a type is not read.
+        """
+        from .resolvers.jvm_workspace import JAVA_LANG_TYPES
+
+        parsed = self._parsed_files.get(file_path)  # type: ignore[attr-defined]
+        # A builtin the receiver typing marks (``external:Exception``) is no name.
+        if parsed is None or not name.isidentifier() or name in JAVA_LANG_TYPES:
+            return None
+        on_demand = [i for i in parsed.imports if i.imported_names == ["*"]]
+        if len(on_demand) != 1 or any(s.name == name for s in parsed.symbols):
+            return None
+        index = self._get_jvm_index()  # type: ignore[attr-defined]
+        package = index.packages.get(index.package_for_file(file_path)) if index else None
+        if package is not None and name in package.exported_top_level:
+            return None
+        return 1, NamedBinding(
+            local_name=name, exported_name=name, source_file=on_demand[0].resolved_file
+        )
 
     def _binding_refused(
         self, file_path: str, binding: NamedBinding, caller_id: str, language: str, line: int
@@ -95,7 +218,7 @@ class ExternalCallsMixin:
         """Whether the binding may not be the package at this call, cheapest test first."""
         ecosystem = EXTERNAL_CALL_ECOSYSTEMS[language]
         module = (binding.source_file or "")[len(_EXTERNAL_PREFIX) :]
-        if self._names_repo_code(ecosystem, module):
+        if self._names_repo_code(ecosystem, module, static=binding.member_of is not None):
             return True
         if ecosystem == "npm" and self._mocked_away(file_path, module):
             return True
@@ -184,18 +307,33 @@ class ExternalCallsMixin:
         }
         return len(sources) > 1
 
-    def _names_repo_code(self, ecosystem: str, module: str) -> bool:
+    def _names_repo_code(self, ecosystem: str, module: str, *, static: bool = False) -> bool:
         """Whether an unresolved specifier may still name the repo's own code.
 
         A path alias (``@/lib``, ``~/x``, ``#internal``, ``$lib``) or a module
         whose first segment is a top-level directory or module of the repo (or
         of its ``src/``) is first-party code the resolver did not place, never a
         package. Ceiling: an in-repo workspace package the resolver missed is
-        not caught here.
+        not caught here. A Java or Kotlin import is the repo's when its class is
+        in a Java package of the repo (:meth:`_in_repo_package`).
         """
         if ecosystem == "npm" and (module.startswith(_ALIAS_PREFIXES) or module.startswith("@/")):
             return True
+        if ecosystem == "maven":
+            return self._in_repo_package(module, static=static)
         return package_root(ecosystem, module).split("/", 1)[0] in self._repo_roots()
+
+    def _in_repo_package(self, module: str, *, static: bool) -> bool:
+        """Whether a Java or Kotlin import names a class of a Java package of the
+        repo that the index does not hold, such as a class generated at build time
+        (a Dagger component). A static import names a member of that class.
+
+        Ceiling: the import of a nested class names its outer class as the
+        package, so a generated nested class is not caught.
+        """
+        index = self._get_jvm_index()  # type: ignore[attr-defined]
+        owner = module.rsplit(".", 2)[0] if static else module.rpartition(".")[0]
+        return index is not None and owner in index.packages
 
     def _repo_roots(self) -> frozenset[str]:
         """Top-level directory and module names of the repo and of its ``src/``."""
@@ -270,24 +408,26 @@ def _call_end(data: bytes, pos: int) -> int:
 
 def _site(
     file_path: str,
-    line: int,
+    call: CallSite,
     caller_id: str,
     ecosystem: str,
     binding: NamedBinding,
     attributes: list[str],
 ) -> ExternalCallSite:
-    """The record for one proven package call."""
+    """The record for one proven package call, *call* of *file_path*."""
     if binding.is_module_alias:
         kind, path = "module", attributes
     elif binding.exported_name == "default":
         kind, path = "default", ["default", *attributes]
     else:
-        kind, path = "named", [binding.exported_name or binding.local_name, *attributes]
+        # A static import's member is named under its declaring type.
+        owner = [binding.member_of] if binding.member_of else []
+        kind, path = "named", [*owner, binding.exported_name or binding.local_name, *attributes]
     source = binding.source_file or ""
     module = source[len(_EXTERNAL_PREFIX) :]
     return ExternalCallSite(
         file_path=file_path,
-        line=line,
+        line=call.line,
         caller_symbol_id=caller_id,
         ecosystem=ecosystem,
         module=module,
@@ -296,4 +436,7 @@ def _site(
         local_name=binding.local_name,
         symbol_path=".".join(path),
         binding=kind,  # type: ignore[arg-type]
+        argument_count=call.argument_count,
+        name_line=call.name_at[0] if call.name_at else None,
+        name_column=call.name_at[1] if call.name_at else None,
     )

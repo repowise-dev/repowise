@@ -16,6 +16,9 @@ def extract_java_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Na
     a static import does not bring the type's bare name into scope.
     """
     kinds = {child.type for child in stmt_node.children}
+    # ``import a.b.*`` names a package, whose last name it does not bind.
+    if "asterisk" in kinds and "static" not in kinds:
+        return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
     # ``import static a.b.C.*`` parses ``C`` as the last name, already the type.
     names_member = "static" in kinds and "asterisk" not in kinds
     for child in stmt_node.children:

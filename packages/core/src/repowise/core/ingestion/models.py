@@ -413,6 +413,9 @@ class CallSite:
     argument_count: int | None  # number of arguments (None if unknown)
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
     start_byte: int = field(default=0, compare=False)  # 0-indexed start byte offset of the call node in the source file
+    # Where the called name sits (1-based line, byte column): a later line than
+    # ``line`` where the call starts with its receiver (``client\n    .get(id)``).
+    name_at: tuple[int, int] | None = field(default=None, compare=False)
     # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
     # ``receiver_name`` because that field routes to the member strategies,
     # and cpp has none -- a scoped call must stay on the free-call path. Java

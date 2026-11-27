@@ -58,6 +58,11 @@ class TestJavaShapes:
         body = "void run() { try { go(); } catch (LoadException e) { e.report(); } }"
         assert declared_types(body, "java")["e"] == "LoadException"
 
+    def test_a_record_component_is_a_field_and_a_method_parameter_is_not(self) -> None:
+        # The canonical constructor's span is the header line.
+        source = "record Svc(BillingClient billing) {\n    void place(Order order) { }\n}"
+        assert fields(source, "java", [(1, 1), (2, 2)]) == {"billing": "BillingClient"}
+
     def test_type_arguments_are_stripped(self) -> None:
         body = "void run(AsyncCache<Int, Int> cache) { }"
         assert declared_types(body, "java")["cache"] == "AsyncCache"

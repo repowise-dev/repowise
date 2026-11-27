@@ -31,7 +31,7 @@
 What each tier rests on:
 
 - **Production roots:** entry points, files a framework loads by convention, the functions serving stored HTTP routes, and CLI commands, kept only in production code (`code_origin`). Reach walks the reliable call graph from them.
-- **Calls into a package:** a call the index proves is bound to the package by an import in the caller's file (`from x import y; y()`, `import x; x.y()`). Method calls on a value of a package type are not recorded, so their absence keeps an advisory at `imported`. An index built before call recording reads as `imported` until the next `repowise update` with a change.
+- **Calls into a package:** a call the index proves is bound to the package by an import in the caller's file (`from x import y; y()`, `import x; x.y()`). In Python a method call on a value of a package type is not recorded, so its absence keeps an advisory at `imported`. An index built before call recording reads as `imported` until the next `repowise update` with a change.
 - **No discounting:** Repowise never says a vulnerable package is unused or test-only, and makes no claim about which function inside a package an advisory affects.
 
 `--fail-on TIER` (default `package_called`) exits 1 when an advisory sits at that tier or stronger, for CI (`imported` also counts `unknown`); `--format sarif` writes one result per advisory at its first site, for code scanning.
