@@ -433,6 +433,34 @@ async def hotness_for_symbols(
     return out
 
 
+async def production_window_claims(
+    session: AsyncSession, repository_id: str, run_ids: Iterable[str]
+) -> dict[str, str]:
+    """``{run id: claim}`` for each of *run_ids* that is a stored production
+    run: what its rows claim in words (``evidence.status.window_claim``).
+
+    One keyed statement per chunk of ids, and none when *run_ids* is empty,
+    so a caller that passes only its production rows' runs costs every other
+    read nothing.
+    """
+    from ....evidence.status import production_window
+
+    wanted = sorted(set(run_ids))
+    out: dict[str, str] = {}
+    for i in range(0, len(wanted), _BATCH_SIZE):
+        runs = await session.execute(
+            select(EvidenceRun).where(
+                EvidenceRun.repository_id == repository_id,
+                EvidenceRun.id.in_(wanted[i : i + _BATCH_SIZE]),
+            )
+        )
+        for run in runs.scalars():
+            window = production_window(run)
+            if window is not None:
+                out[run.id] = window["claim"]
+    return out
+
+
 async def measured_callers(
     session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
 ) -> dict[str, list[str]]:
@@ -841,6 +869,7 @@ __all__ = [
     "list_evidence_runs",
     "measured_status",
     "newer_unranked",
+    "production_window_claims",
     "prune_evidence_runs",
     "ranked_by_workload",
     "replace_symbol_hotness",
