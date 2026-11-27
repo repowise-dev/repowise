@@ -982,6 +982,30 @@ free; with a configured provider one model call can write its prose.
 | `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
 <!-- END GENERATED settings:report -->
 
+## The `wiki:` block
+
+Each time a page is rewritten, the version it replaces is kept as history (the
+web UI's version list and diff read it). Only the newest versions are kept per
+page; older ones are deleted on the same write.
+
+<!-- BEGIN GENERATED settings:wiki (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `page_versions_keep` | `10` | 1-100000 | Earlier versions kept per wiki page; older ones are deleted when the page is rewritten. |
+<!-- END GENERATED settings:wiki -->
+
+- The current page is never deleted; the cap counts earlier versions only.
+- A page no write touches is trimmed by `update`: each update that indexes a
+  commit checks whether any page is over the cap (milliseconds) and trims the
+  whole repository when one is. The first one after upgrading clears the old
+  history. Raising the cap deletes nothing.
+- A value repowise cannot use (not a whole number from 1 to 100000) trims
+  nothing until it is fixed; `repowise doctor` names it.
+- `wiki.db` does not shrink when versions go: SQLite reuses the freed space for
+  later writes before it grows the file. To get the disk back at once, run
+  `VACUUM` on `.repowise/wiki.db` with no `repowise` process open (it needs
+  free disk the size of the file).
+
 ## The `contracts:` block
 
 Contracts inside one repository, off by default. When on, `init` and `update`
