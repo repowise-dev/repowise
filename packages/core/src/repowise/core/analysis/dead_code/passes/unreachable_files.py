@@ -59,10 +59,13 @@ _WEAK_RESOLVER_LANGUAGES: frozenset[str] = frozenset(
 _NAMED_DECLARATION_KINDS: frozenset[str] = frozenset({"module"})
 
 #: Languages that name each other's files: a C header in C++ or Objective-C,
-#: a TypeScript module in JavaScript or a component file.
+#: a TypeScript module in JavaScript or a component file, a Java class in
+#: Kotlin or Scala on the same JVM classpath.
 _LANGUAGE_FAMILY: dict[str, str] = {
     "c": "cpp",
     "objectivec": "cpp",
+    "kotlin": "java",
+    "scala": "java",
     "javascript": "typescript",
     "vue": "typescript",
     "svelte": "typescript",
