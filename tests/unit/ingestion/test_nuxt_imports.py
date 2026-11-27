@@ -16,6 +16,7 @@ import pytest
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+from repowise.core.ingestion.framework_facts import convention_load_reasons
 from repowise.core.ingestion.resolvers.nuxt import component_name
 
 _APP_FILES = {
@@ -315,3 +316,122 @@ def test_a_nuxt_module_repo_binds_nothing(tmp_path: Path) -> None:
 )
 def test_component_names_follow_nuxt(rel: str, prefix: bool, expected: str) -> None:
     assert component_name(rel, prefix) == expected
+
+
+def test_nuxt_dir_pages_override(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "nuxt.config.ts": "export default defineNuxtConfig({ dir: { pages: 'routes' } });\n",
+            "routes/index.vue": "<template><h1>Home</h1></template>\n",
+            "pages/ignored.vue": "<template><h1>Ignored</h1></template>\n",
+        },
+    )
+    builder, _graph, _report = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "routes/index.vue")
+    assert not builder.graph().has_edge("framework:nuxt", "pages/ignored.vue")
+    reasons = convention_load_reasons(tmp_path, ["routes/index.vue", "pages/ignored.vue"])
+    assert "routes/index.vue" in reasons
+    assert "pages/ignored.vue" not in reasons
+
+
+def test_nuxt_server_dir_override(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "nuxt.config.ts": "export default defineNuxtConfig({ serverDir: 'custom-server' });\n",
+            "custom-server/api/ping.ts": "export default () => 'pong';\n",
+            "server/api/ignored.ts": "export default () => 'ignored';\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "custom-server/api/ping.ts")
+    assert not builder.graph().has_edge("framework:nuxt", "server/api/ignored.ts")
+
+
+def test_nuxt_extends_layer(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "app/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "app/nuxt.config.ts": "export default defineNuxtConfig({ extends: ['../base'] });\n",
+            "app/pages/index.vue": "<template><h1>App</h1></template>\n",
+            "base/pages/layer.vue": "<template><h1>Layer</h1></template>\n",
+            "base/components/BaseCard.vue": "<template><p>card</p></template>\n",
+            "stray/pages/stray.vue": "<template><h1>Stray</h1></template>\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "app/pages/index.vue")
+    assert builder.graph().has_edge("framework:nuxt", "base/pages/layer.vue")
+    assert not builder.graph().has_edge("framework:nuxt", "stray/pages/stray.vue")
+    reasons = convention_load_reasons(
+        tmp_path,
+        [
+            "app/pages/index.vue",
+            "base/components/BaseCard.vue",
+            "stray/pages/stray.vue",
+        ],
+    )
+    assert "base/components/BaseCard.vue" in reasons
+    assert "stray/pages/stray.vue" not in reasons
+
+
+def test_nuxt_extends_layer_server_routes_default_src(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "app/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "app/nuxt.config.ts": "export default defineNuxtConfig({ extends: ['../base'] });\n",
+            "app/pages/index.vue": "<template><h1>App</h1></template>\n",
+            "base/server/api/layer_route.ts": "export default () => 'layer';\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "base/server/api/layer_route.ts")
+    reasons = convention_load_reasons(tmp_path, ["app/pages/index.vue", "base/server/api/layer_route.ts"])
+    assert "base/server/api/layer_route.ts" in reasons
+
+
+def test_nuxt_extends_repo_root_layer(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "apps/web/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "apps/web/nuxt.config.ts": "export default defineNuxtConfig({ extends: ['../..'] });\n",
+            "apps/web/pages/index.vue": "<template><h1>Web</h1></template>\n",
+            "pages/root.vue": "<template><h1>Root</h1></template>\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "pages/root.vue")
+    reasons = convention_load_reasons(tmp_path, ["apps/web/pages/index.vue", "pages/root.vue"])
+    assert "pages/root.vue" in reasons
+
+
+def test_nuxt_layer_server_routes_with_custom_server_dir(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "app/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "app/nuxt.config.ts": (
+                "export default defineNuxtConfig({ serverDir: 'custom-server', extends: ['../base'] });\n"
+            ),
+            "app/custom-server/api/app.ts": "export default () => 'app';\n",
+            "base/server/api/layer.ts": "export default () => 'layer';\n",
+            "base/custom-server/api/wrong.ts": "export default () => 'wrong';\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "app/custom-server/api/app.ts")
+    assert builder.graph().has_edge("framework:nuxt", "base/server/api/layer.ts")
+    assert not builder.graph().has_edge("framework:nuxt", "base/custom-server/api/wrong.ts")
+

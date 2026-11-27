@@ -15,6 +15,27 @@ if TYPE_CHECKING:
     from .npm import NpmManifest
 
 
+def _parent_globs(globs: tuple[str, ...], root: str) -> tuple[str, ...]:
+    out: list[str] = []
+    for g in globs:
+        if g.startswith("../"):
+            norm = posixpath.normpath(posixpath.join(root, g))
+            if not norm.startswith(("../", "/")) and norm != "..":
+                out.append(norm)
+    return tuple(out)
+
+
+def _matches_entry(
+    p: str,
+    prefix: str,
+    local_pat: re.Pattern[str] | None,
+    parent_pat: re.Pattern[str] | None,
+) -> bool:
+    if local_pat is not None and p.startswith(prefix) and local_pat.match(p, len(prefix)):
+        return True
+    return parent_pat is not None and bool(parent_pat.match(p))
+
+
 @dataclass(frozen=True, slots=True)
 class FrameworkFacts:
     name: str  # tech-stack display name
@@ -57,10 +78,11 @@ class FrameworkFacts:
         if not self.entry_globs:
             return []
         prefix = f"{root}/" if root else ""
-        pattern = _compiled(self.entry_globs)
-        return sorted(
-            p for p in paths if p.startswith(prefix) and pattern.match(p, len(prefix))
-        )
+        local_globs = tuple(g for g in self.entry_globs if not g.startswith("../"))
+        parent_globs = _parent_globs(self.entry_globs, root)
+        local_pat = _compiled(local_globs) if local_globs else None
+        parent_pat = _compiled(parent_globs) if parent_globs else None
+        return sorted(p for p in paths if _matches_entry(p, prefix, local_pat, parent_pat))
 
 
 @cache
