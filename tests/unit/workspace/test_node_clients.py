@@ -429,3 +429,18 @@ def test_factory_return_func_rejects_parameterized_intervening_declaration(tmp_p
         if c.role == "consumer"
     }
     assert not any(p == "/test" for _client, p in paths)
+
+
+def test_factory_return_func_rejects_defaulted_parameter(tmp_path: Path) -> None:
+    text = (
+        "import axios from 'axios';\n"
+        "export const getApi = (prefix = '/v1') => axios.create({ baseURL: prefix });\n"
+        "export const test = () => getApi().get('/users');\n"
+    )
+    (tmp_path / "index.ts").write_text(text, encoding="utf-8")
+    paths = {
+        (c.meta.get("client"), c.meta.get("path"))
+        for c in HttpExtractor().extract(tmp_path, "web")
+        if c.role == "consumer"
+    }
+    assert not any(p == "/users" for _client, p in paths)

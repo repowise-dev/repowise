@@ -159,8 +159,7 @@ _ARROW_DECL_RE = re.compile(
 
 
 def _is_zero_arg(params: str) -> bool:
-    p = params.strip()
-    return not p or all("=" in param for param in p.split(","))
+    return not params.strip()
 
 
 def _decl_encloses(content: str, brace: int, pos: int) -> bool:
