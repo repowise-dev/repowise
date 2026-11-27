@@ -90,9 +90,10 @@ def measure_install() -> tuple[float, int, list[tuple[float, str]]]:
 
 
 def _env(home: Path) -> dict[str, str]:
-    """A clean user: empty home, no telemetry."""
+    """A clean user: empty home, no telemetry, this install's ``repowise`` on PATH."""
     return {
         **os.environ,
+        "PATH": os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
         "HOME": str(home),
         "USERPROFILE": str(home),
         "REPOWISE_TELEMETRY_DISABLED": "1",
