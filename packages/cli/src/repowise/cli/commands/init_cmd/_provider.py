@@ -134,6 +134,12 @@ def _stated_embedder(run: InitRun) -> str:
             name, reason = keyless, "keyless run"
     if name == "mock":
         return f"mock ({reason}, semantic search off)"
+    if name == "ollama":
+        from repowise.cli.providers.embedders import resolve_embedding_model
+        from repowise.core.providers.embedding.ollama import _DEFAULT_MODEL
+
+        model = resolve_embedding_model(name, repo_path=run.repo_path) or _DEFAULT_MODEL
+        return f"ollama/{model} ({reason})"
     return f"{name} ({reason})"
 
 
@@ -169,7 +175,9 @@ def resolve_docs_provider(run: InitRun) -> None:
     # Re-resolve the embedder so the display and the embed path honor the key
     # the user just pasted, rather than the pre-prompt "mock" fallback.
     run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(
-        run.opts.embedder_name, repo_path=run.repo_path
+        run.opts.embedder_name,
+        repo_path=run.repo_path,
+        provider=getattr(run.provider, "provider_name", None),
     )
     _print_provider_summary(run)
     # Nothing to verify when there is no provider: this run renders from

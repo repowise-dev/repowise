@@ -807,7 +807,9 @@ def upgrade_to_full(
     embedder_name = (
         _keyless_embedder_name(cfg, repo_path=repo_path)
         if keyless
-        else _upgrade_embedder_name(cfg, repo_path=repo_path)
+        else _upgrade_embedder_name(
+            cfg, repo_path=repo_path, provider=getattr(provider, "provider_name", None)
+        )
     )
 
     # The same single-flight lock as an incremental update: a concurrent
@@ -954,7 +956,9 @@ def _template_provider() -> Any:
     return TemplateProvider()
 
 
-def _upgrade_embedder_name(cfg: dict[str, Any], repo_path: Path | None = None) -> str | None:
+def _upgrade_embedder_name(
+    cfg: dict[str, Any], repo_path: Path | None = None, provider: str | None = None
+) -> str | None:
     """The embedder to write with: re-resolved when the index recorded the mock.
 
     Index-only promises no spend, so it records the mock embedder. The user is
@@ -963,7 +967,9 @@ def _upgrade_embedder_name(cfg: dict[str, Any], repo_path: Path | None = None) -
     """
     from repowise.cli.providers import model_run_embedder
 
-    embedder_name, stated, _replaced = model_run_embedder(cfg.get("embedder"), repo_path=repo_path)
+    embedder_name, stated, _replaced = model_run_embedder(
+        cfg.get("embedder"), repo_path=repo_path, provider=provider
+    )
     console.print(f"Embedder: [cyan]{stated}[/cyan].")
     return embedder_name
 

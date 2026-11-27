@@ -1451,3 +1451,80 @@ def test_keyless_marks_an_empty_store_directory(tmp_path: Path) -> None:
 
     assert providers.build_vector_store(tmp_path, KeylessEmbedder()) is None
     assert (tmp_path / ".repowise" / "lancedb.keyless").is_file()
+
+
+# --- an ollama run keeps embedding local -------------------------------------
+
+
+def test_an_ollama_run_does_not_embed_with_a_stray_cloud_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Choosing ollama means local; an exported OPENAI_API_KEY must not override that."""
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert providers.resolve_embedder_choice(None, repo_path=tmp_path, provider="ollama") == (
+        "ollama",
+        "follows the ollama provider",
+    )
+    # Another provider still autodetects from the key.
+    assert providers.resolve_embedder_choice(None, repo_path=tmp_path, provider="openai") == (
+        "openai",
+        "OPENAI_API_KEY is set",
+    )
+
+
+def test_an_ollama_run_keeps_an_embedder_the_user_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert (
+        providers.resolve_embedder_choice("openai", repo_path=tmp_path, provider="ollama")[0]
+        == "openai"
+    )
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "gemini")
+    assert (
+        providers.resolve_embedder_choice(None, repo_path=tmp_path, provider="ollama")[0]
+        == "gemini"
+    )
+
+
+def test_an_ollama_run_with_no_key_stays_on_the_mock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No key, no choice: nothing changes, so an unpulled embedding model never fails a run."""
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+
+    assert (
+        providers.resolve_embedder_choice(None, repo_path=tmp_path, provider="ollama")[0] == "mock"
+    )
+
+
+def test_the_advanced_prompt_defaults_to_ollama_for_an_ollama_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The "Embedder for RAG" default must match what the run would pick."""
+    from repowise.cli.ui import mode_selection
+
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert mode_selection._resolve_embedder_from_env("ollama") == "ollama"
+    assert mode_selection._resolve_embedder_from_env() == "openai"
+
+
+def test_an_ollama_upgrade_replaces_the_mock_with_ollama(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert providers.model_run_embedder("mock", provider="ollama") == (
+        "ollama",
+        "ollama (follows the ollama provider, replacing the keyless mock)",
+        True,
+    )
+    # A real pin is the user's earlier choice and stays.
+    assert providers.model_run_embedder("openai", provider="ollama")[0] == "openai"

@@ -183,6 +183,7 @@ def _edit_plan(screen: _Screen, answers: WorkspaceAnswers) -> None:
         language=answers.language,
         commit_limit=answers.commit_limit,
         ask_file_pages=False,
+        provider=getattr(screen.selection, "provider_name", None),
     )
     apply_workspace_advanced(answers, adv, repo_path=_primary_path(screen))
     if screen.state.plan.editor_setup:
