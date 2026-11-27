@@ -142,6 +142,20 @@ end
             "http::GET::/profile/settings",
         }
 
+    def test_route_containing_draw_is_not_treated_as_draw_call(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "config/routes.rb",
+            """Rails.application.routes.draw do
+  get "/draw" => "pages#show"
+  get "/draw/canvas", to: "canvas#show"
+end
+""",
+        )
+        ids = _provider_ids(tmp_path)
+        assert "http::GET::/draw" in ids
+        assert "http::GET::/draw/canvas" in ids
+
     def test_scope_namespace_and_member_inline_end(self, tmp_path: Path) -> None:
         _write(
             tmp_path,
