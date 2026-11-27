@@ -236,6 +236,15 @@ _NAMED_EXPORTS_RE = re.compile(
     r"|\b(?:module\.exports\s*=|export)\s*\{([^}]*)"
 )
 _IDENT_RE = re.compile(r"[\w$]+")
+# One export list, ``module.exports = { ... }`` or ``export { ... }``.
+_EXPORT_LIST_RE = re.compile(r"\b(?:module\.exports\s*=|export)\s*\{([^}]*)\}")
+# One entry of it: ``user``, ``user: admin`` (object key) or ``admin as user``.
+_EXPORT_PAIR_RE = re.compile(
+    r"(?P<key>[\w$]+)\s*:\s*(?P<value>[\w$]+)"
+    r"|(?P<name>[\w$]+)(?:\s+as\s+(?P<alias>[\w$]+))?"
+)
+# ``exports.user = admin;`` (a comparison such as ``exports.x == y`` aside).
+_EXPORTS_ASSIGN_RE = re.compile(r"\bexports\.([\w$]+)\s*=(?!=)\s*([\w$]+)\s*(?:;|$)", re.MULTILINE)
 
 
 def _named_export_re(var: str) -> re.Pattern[str]:
@@ -264,7 +273,14 @@ class ExpressDialect:
     )  # fmt: skip
     # The mount pass also reads a barrel that re-exports routers by name, which
     # names no router or mount itself.
-    mount_requires = (*requires, "module.exports = {", "module.exports={", "export {", "export{")
+    mount_requires = (
+        *requires,
+        "module.exports",
+        "exports.",
+        "export {",
+        "export{",
+        "export const",
+    )
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         """Each imported router this file mounts, keyed by its module and export.
@@ -350,14 +366,37 @@ def _reexports(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
     that router serves wherever the barrel member is mounted. Kept apart from
     the mount keys: a router also mounted directly keeps that mount.
     """
-    for name in _named_exports(f.content):
-        bound = f.imports.get(name)
+    for exported, local in _exported_locals(f.content).items():
+        bound = f.imports.get(local)
         if bound is None:
             continue  # a router the barrel defines itself keeps its own key
         module = resolve_module(ctx.rel_path, bound[0])
         if module is None or module == f.module:
             continue
-        add_mounts(out, declare_mount(_REEXPORT + _key(module, bound[1]), _key(f.module, name)))
+        add_mounts(out, declare_mount(_REEXPORT + _key(module, bound[1]), _key(f.module, exported)))
+
+
+def _exported_locals(content: str) -> dict[str, str]:
+    """``exported name -> local name`` for the names the file exports by name.
+
+    ``module.exports = { user }`` and ``export { user }`` export ``user`` as
+    itself, ``module.exports = { user: admin }`` and ``export { admin as user }``
+    export the local ``admin`` as ``user``, and ``exports.user = admin`` the same.
+    An entry whose value is not a bare name (``{ user: makeRouter() }``) is left out.
+    """
+    out: dict[str, str] = {}
+    for m in _EXPORT_LIST_RE.finditer(content):
+        for part in m.group(1).split(","):
+            pair = _EXPORT_PAIR_RE.fullmatch(part.strip())
+            if pair is None:
+                continue
+            if pair.group("key") is not None:
+                out[pair.group("key")] = pair.group("value")
+            else:
+                out[pair.group("alias") or pair.group("name")] = pair.group("name")
+    for m in _EXPORTS_ASSIGN_RE.finditer(content):
+        out[m.group(1)] = m.group(2)
+    return out
 
 
 def _mount_of(ctx: ScanContext, f: _File, var: str, offset: int) -> str:

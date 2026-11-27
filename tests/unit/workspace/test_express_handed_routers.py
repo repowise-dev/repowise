@@ -6,6 +6,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from repowise.core.workspace.extractors.http import HttpExtractor
 
 
@@ -446,3 +448,43 @@ def test_a_direct_mount_wins_over_a_barrel_re_export(tmp_path: Path) -> None:
             "server/routes/user.js": _USER_ROUTER,
         },
     ) == {("/v2/user/plugins", "server/routes/user.js")}
+
+
+def test_a_renamed_barrel_member_names_the_router_it_exports(tmp_path: Path) -> None:
+    # `user` is imported, but the barrel's `user` member is its own `admin` router,
+    # so user.js must not take the mount. The renamed inline router keeping its
+    # in-file path is the existing ceiling documented on `_named_export_re`.
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.js": """
+                const express = require('express');
+                const user = require('./user');
+                const admin = express.Router();
+                admin.get('/settings', show);
+                module.exports = { user: admin };
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/settings", "server/routes/index.js"), ("/plugins", "server/routes/user.js")}
+
+
+@pytest.mark.parametrize(
+    "barrel",
+    [
+        "const account = require('./user');\nmodule.exports = { user: account };\n",
+        "import account from './user';\nexport { account as user };\n",
+        "const account = require('./user');\nexports.user = account;\n",
+    ],
+    ids=["object-key", "export-as", "exports-assign"],
+)
+def test_other_barrel_export_forms_reach_the_router_file(tmp_path: Path, barrel: str) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.js": barrel,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/api/user/plugins", "server/routes/user.js")}
