@@ -807,7 +807,7 @@ dependency surface their syntax supports.
 | Full | **Apex** | `.cls` `.trigger` `.apex` | No imports: names resolve within the file's sfdx project, a declared package dependency or a namespace prefix |
 | Good | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
-| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
+| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references, `include` / `require` with an unparenthesized literal path |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
 | Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths, `.lpk` file lists and unit paths; same-named platform units reach every variant; project files as entry points |
 | Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
@@ -1182,6 +1182,13 @@ credential's own endpoint is not read.
   objects with no metadata file in the repository get no edge.
 - **Scala import resolution is partial**, and ScalaTest's infix DSL
   (`x shouldBe y`) is not counted as an assertion.
+- **Elixir has no framework edges.** Module references come from `alias`,
+  `import`, `require` and `use` only, so Phoenix routes, endpoint `plug`s,
+  supervisor children, Oban workers, mix tasks and bare module values reach
+  nothing.
+- **PHP computed includes make no edge.** `require_once(...)`, `__DIR__ .`,
+  `"$dir/x.php"` and `$GLOBALS[...] .` paths are not resolved; only an
+  unparenthesized literal path is.
 
 ---
 
