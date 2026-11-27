@@ -118,6 +118,20 @@ _RUST_INCLUDE_RE = re.compile(
 )
 
 
+def _resolve_include_target(
+    base: str,
+    spec: str | None,
+    path: str,
+    all_paths: set[str],
+) -> str | None:
+    if not spec or spec.startswith("/") or "\n" in spec:
+        return None
+    normalized = posixpath.normpath(posixpath.join(base, spec.replace("\\\\", "/").replace("\\", "/")))
+    if not normalized.startswith("..") and normalized != path and normalized in all_paths:
+        return normalized
+    return None
+
+
 def _add_rust_include_edges(
     graph: nx.DiGraph,
     parsed_files: dict[str, Any],
@@ -135,16 +149,8 @@ def _add_rust_include_edges(
         base = posixpath.dirname(path)
         for m in _RUST_INCLUDE_RE.finditer(text):
             spec = m.group(2) if m.group(2) is not None else m.group(3)
-            if not spec or spec.startswith("/") or "\n" in spec:
-                continue
-            spec = spec.replace("\\\\", "/").replace("\\", "/")
-            resolved = posixpath.normpath(posixpath.join(base, spec))
-            if (
-                not resolved.startswith("..")
-                and resolved != path
-                and resolved in all_paths
-                and _add_edge_if_new(graph, path, resolved)
-            ):
+            target = _resolve_include_target(base, spec, path, all_paths)
+            if target and _add_edge_if_new(graph, path, target):
                 count += 1
     return count
 
