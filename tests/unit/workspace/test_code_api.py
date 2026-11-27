@@ -15,6 +15,8 @@ three field rules do the work unchanged.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -22,6 +24,8 @@ from textwrap import dedent
 
 import pytest
 
+from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+from repowise.core.analysis.dead_code.serving import FindingFilters, serve_findings
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.external_calls import ExternalBinding, ExternalCallSite
 from repowise.core.workspace.breaking_change import detect_breaking_changes
@@ -29,10 +33,12 @@ from repowise.core.workspace.code_api import (
     CODE_CONTRACT_TYPE,
     build_code_surface,
     find_published_packages,
+    find_workspace_packages,
 )
 from repowise.core.workspace.config import ContractConfig, RepoEntry, WorkspaceConfig
 from repowise.core.workspace.contracts import ContractStore, run_contract_extraction
 from repowise.core.workspace.extractors.base import make_exclude_predicate
+from repowise.core.workspace.manifests import detect_package_dependencies
 from repowise.core.workspace.repo_index import WorkspaceIndex
 
 from ._repo_index import make_repo_index
@@ -550,7 +556,40 @@ def _heritage(repo: Path) -> list[tuple[str, str, str]]:
     ]
 
 
-async def _extract_jvm(root: Path, monkeypatch, *, billing_edit: tuple[str, str] | None = None):
+#: The dependency of `orders` on the client module of `billing`.
+CLIENT_DEPENDENCY = (
+    "<dependencies><dependency><groupId>com.acme.billing</groupId>"
+    "<artifactId>billing-client</artifactId><version>1.0.0</version></dependency></dependencies>"
+)
+DEPLOYMENT = re.compile(r"<distributionManagement>.*</distributionManagement>", re.DOTALL)
+
+
+def _copy_jvm(root: Path, *, deploys: bool = True, depends: bool = False) -> None:
+    """Copy the ``jvm_workspace`` fixture to *root*.
+
+    *deploys* False takes the deployment out of the pom of `billing`, as for a
+    pipeline that deploys with no pom saying so. *depends* adds the client
+    module to the dependencies of the pom of `orders`.
+    """
+    shutil.copytree(JVM_WORKSPACE, root)
+    billing, orders = root / "billing" / "pom.xml", root / "orders" / "pom.xml"
+    if not deploys:
+        text = DEPLOYMENT.sub("", billing.read_text(encoding="utf-8"))
+        billing.write_text(text, encoding="utf-8")
+    if depends:
+        text = orders.read_text(encoding="utf-8")
+        text = text.replace("</project>", f"{CLIENT_DEPENDENCY}</project>")
+        orders.write_text(text, encoding="utf-8")
+
+
+async def _extract_jvm(
+    root: Path,
+    monkeypatch,
+    *,
+    billing_edit: tuple[str, str] | None = None,
+    deploys: bool = True,
+    depends: bool = False,
+):
     """The contracts of the ``jvm_workspace`` fixture, copied to *root*.
 
     `billing` ships the client module, and `orders` uses it.
@@ -558,7 +597,7 @@ async def _extract_jvm(root: Path, monkeypatch, *, billing_edit: tuple[str, str]
     from repowise.core.workspace import contracts as contracts_mod
 
     monkeypatch.setattr(contracts_mod, "save_contract_store", lambda store, path: path)
-    shutil.copytree(JVM_WORKSPACE, root)
+    _copy_jvm(root, deploys=deploys, depends=depends)
     if billing_edit is not None:
         source = root / "billing" / CLIENT_SOURCE
         source.write_text(
@@ -679,6 +718,115 @@ class TestMavenCodeContracts:
         assert {(i.repo, Path(i.file).name) for i in removed[0].impacted_consumers} == {
             ("orders", "OrderApi.java")
         }
+
+
+@pytest.fixture(scope="module")
+def depended_workspace(tmp_path_factory: pytest.TempPathFactory):
+    """The fixture workspace with no pom that deploys the client module and a pom of
+    `orders` that depends on it: its root, and the contracts extracted from it once."""
+    root = tmp_path_factory.mktemp("jvm-depended") / "ws"
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        return root, asyncio.run(_extract_jvm(root, monkeypatch, deploys=False, depends=True))
+
+
+class TestMavenModuleDependedOn:
+    """A module no pom deploys is published when a pom of another repository depends on it."""
+
+    def test_the_module_provides_what_a_deploying_one_does_and_the_import_links_to_it(
+        self, billing_stores, depended_workspace
+    ):
+        def contracts_and_links(store):
+            return (
+                {(c.role, c.contract_id) for c in store.contracts if c.contract_type == "code"},
+                {
+                    (link.consumer_repo, link.provider_repo, link.contract_id)
+                    for link in store.contract_links
+                    if link.contract_type == "code"
+                },
+            )
+
+        depended = contracts_and_links(depended_workspace[1])
+        assert depended == contracts_and_links(billing_stores[0])
+        assert depended[1]
+
+    def test_a_module_no_pom_deploys_and_no_repository_depends_on_provides_nothing(
+        self, tmp_path: Path
+    ):
+        root = tmp_path / "ws"
+        _copy_jvm(root, deploys=False)
+
+        packages, _ = find_workspace_packages(
+            {"billing": root / "billing", "orders": root / "orders"}
+        )
+
+        assert packages == []
+
+    def test_a_pom_deeper_than_the_manifest_walk_still_depends(self, tmp_path: Path):
+        needs = (
+            "<dependencies><dependency><groupId>com.acme</groupId><artifactId>lib</artifactId>"
+            "<version>1</version></dependency></dependencies>"
+        )
+        repos = {name: tmp_path / name for name in ("lib", "app")}
+        _source(repos["lib"], "pom.xml", _pom("lib"))
+        _source(repos["lib"], "src/main/java/com/acme/lib/Api.java", "package com.acme.lib;\n")
+        _source(repos["app"], "a/b/c/d/pom.xml", _pom("app", needs))
+
+        packages, _ = find_workspace_packages(repos)
+
+        assert [p.name for p in packages] == ["com.acme:lib"]
+
+    def test_a_workspace_with_no_maven_or_gradle_build_file_reads_no_dependencies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from repowise.core.workspace import maven_dependencies
+
+        def fail(*args):
+            raise AssertionError("poms read for a workspace with no Maven or Gradle build file")
+
+        monkeypatch.setattr(maven_dependencies, "depended_dirs", fail)
+        for name in ("a", "b"):
+            _source(tmp_path / name, "package.json", '{"name": "' + name + '", "private": true}')
+
+        packages, _ = find_workspace_packages({n: tmp_path / n for n in ("a", "b")})
+
+        assert packages == []
+
+    def test_a_called_file_drops_below_the_floor_and_an_unused_one_is_not_safe_to_delete(
+        self, depended_workspace, tmp_path: Path
+    ):
+        from repowise.core.workspace.contracts import write_contract_store
+        from repowise.core.workspace.cross_repo import CrossRepoOverlay
+        from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+        root, store = depended_workspace
+        repos = {"billing": root / "billing", "orders": root / "orders"}
+        overlay = CrossRepoOverlay(package_deps=detect_package_dependencies(repos))
+        (tmp_path / "cross_repo_edges.json").write_text(
+            json.dumps(overlay.to_dict()), encoding="utf-8"
+        )
+        write_contract_store(store, tmp_path / "contracts.json")
+        lookup = CrossRepoEnricher(
+            tmp_path / "cross_repo_edges.json", contracts_path=tmp_path / "contracts.json"
+        )
+        folder = "billing-client/src/main/java/com/acme/billing/client"
+        rows = [
+            {
+                "file_path": f"{folder}/{name}.java",
+                "kind": "unused_export",
+                "confidence": 0.9,
+                "safe_to_delete": True,
+            }
+            for name in ("BillingClient", "Retired")
+        ]
+        floor = FindingFilters(None, False, RISK_CAP_CONFIDENCE, None, None)
+
+        shown = serve_findings(rows, lookup, "billing", floor)
+
+        # BillingClient has a contract link, so its confidence falls below the floor.
+        assert [f.file_path for f in shown] == [f"{folder}/Retired.java"]
+        # Retired has none; the package link of `orders` keeps it from being safe.
+        assert shown[0].confidence == 0.9
+        assert not shown[0].safe_to_delete
 
 
 def _pom(artifact: str, extra: str = "", group: str = "<groupId>com.acme</groupId>") -> str:

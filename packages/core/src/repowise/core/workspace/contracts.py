@@ -103,11 +103,12 @@ CONTRACTS_FILENAME = "contracts.json"
 # group taken from ``Use``, and drops the routes of a Go register function only
 # another copy's callers name; and gives each Maven and Gradle module that
 # deploys code contracts for its public Java and Kotlin types, with a consumer
-# for each import of one; and adds a code consumer for each call into a
-# package, linked once for each calling symbol, which consumes the export of
-# the supertype that declares an inherited method and names the overload its
-# number of arguments selects. ``routes_fingerprint`` includes
-# this version, so stored HTTP routes and ``contracts.json`` refresh with it.
+# for each import of one; adds a code consumer for each call into a package,
+# linked once for each calling symbol, which consumes the export of the
+# supertype that declares an inherited method and names the overload its
+# number of arguments selects; and counts a Maven module that a pom of another
+# repo depends on as deploying. ``routes_fingerprint`` includes this version,
+# so stored HTTP routes and ``contracts.json`` refresh with it.
 CONTRACTS_VERSION = 18
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.

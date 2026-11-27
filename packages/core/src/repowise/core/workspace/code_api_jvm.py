@@ -134,10 +134,16 @@ def _owned_files(
     return owned
 
 
-def find_packages(alias: str, repo_path: Path, counts: dict[str, int]) -> list[PublishedPackage]:
+def find_packages(
+    alias: str,
+    repo_path: Path,
+    counts: dict[str, int],
+    depended: Collection[str] = frozenset(),
+) -> list[PublishedPackage]:
     """The Maven and Gradle modules that deploy, owned and named by the readers the index uses.
 
-    ``jvm_published`` (the dead-code reader) says which module dirs deploy.
+    ``jvm_published`` (the dead-code reader) says which module dirs deploy, or,
+    in *depended*, are depended on by a pom of another repo or needed by such a module.
     The build units say which files each module owns, its build file and its
     name, and the JVM workspace index gives the Java package of each of those
     files, which is what an import names. Test files are no part of the
@@ -159,7 +165,7 @@ def find_packages(alias: str, repo_path: Path, counts: dict[str, int]) -> list[P
     from repowise.core.workspace.code_api import PublishedPackage
 
     facts = BuildFacts(repo_path)
-    modules = jvm_published(facts)
+    modules = jvm_published(facts, depended)
     publishing = sorted(root for root, name in modules.items() if name is not None)
     for _ in range(len(modules) - len(publishing)):
         _count(counts, "code_unpublished_manifest")

@@ -335,8 +335,23 @@ def find_published_packages(
     *jvm* False leaves out the Maven and Gradle modules, which need the build
     units and the JVM workspace index of the repo.
     """
+    packages, counts, has_jvm_build = _find_manifest_packages(alias, repo_path)
+    if jvm and has_jvm_build:
+        packages.extend(code_api_jvm.find_packages(alias, repo_path, counts))
+    return packages, counts
+
+
+def _count(counts: dict[str, int], key: str) -> None:
+    """Add one to the skip counter *key*."""
+    counts[key] = counts.get(key, 0) + 1
+
+
+def _find_manifest_packages(
+    alias: str, repo_path: Path
+) -> tuple[list[PublishedPackage], dict[str, int], bool]:
+    """The packages of *repo_path* read from its manifests but its Maven and Gradle
+    modules, the skip counters, and whether it holds a build file of those."""
     from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
-    from repowise.core.ingestion.resolvers.dotnet.msbuild import find_csproj_files, parse_csproj
 
     packages: list[PublishedPackage] = []
     counts: dict[str, int] = {}
@@ -353,44 +368,60 @@ def find_published_packages(
         root = "" if rel_dir == "." else rel_dir
         has_jvm_build = has_jvm_build or any(n in jvm_files for n in filenames)
         for fname in filenames:
-            if fname in _UNSUPPORTED_MANIFESTS:
-                counts["code_unsupported_ecosystem"] = (
-                    counts.get("code_unsupported_ecosystem", 0) + 1
-                )
-                continue
-            ecosystem = _MANIFESTS.get(fname)
-            if ecosystem is None:
-                continue
-            manifest = dirpath / fname
-            rel_manifest = repo_relative(manifest, repo_path)
-            if rel_manifest is None:
-                continue
-            try:
-                text = manifest.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            parsed = _read_manifest(ecosystem, text, root, dirpath)
-            if parsed is None:
-                counts["code_unpublished_manifest"] = (
-                    counts.get("code_unpublished_manifest", 0) + 1
-                )
-                continue
-            name, entries, reexported = parsed
-            if ecosystem == "pypi":
-                reexported = _dunder_all(repo_path, entries)
-            packages.append(
-                PublishedPackage(
-                    name=name,
-                    ecosystem=ecosystem,
-                    repo=alias,
-                    manifest=rel_manifest,
-                    root=root,
-                    entry_files=entries,
-                    reexported=reexported,
-                    import_names=_import_names(ecosystem, name, entries),
-                )
-            )
+            package = _manifest_package(alias, repo_path, dirpath, root, fname, counts)
+            if package is not None:
+                packages.append(package)
 
+    packages.extend(_csproj_packages(alias, repo_path, counts))
+    return packages, counts, has_jvm_build
+
+
+def _manifest_package(
+    alias: str, repo_path: Path, dirpath: Path, root: str, fname: str, counts: dict[str, int]
+) -> PublishedPackage | None:
+    """The package that the manifest *fname* in *dirpath* publishes, or None. A manifest
+    that is skipped is counted."""
+    if fname in _UNSUPPORTED_MANIFESTS:
+        _count(counts, "code_unsupported_ecosystem")
+        return None
+    ecosystem = _MANIFESTS.get(fname)
+    if ecosystem is None:
+        return None
+    manifest = dirpath / fname
+    rel_manifest = repo_relative(manifest, repo_path)
+    if rel_manifest is None:
+        return None
+    try:
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    parsed = _read_manifest(ecosystem, text, root, dirpath)
+    if parsed is None:
+        _count(counts, "code_unpublished_manifest")
+        return None
+    name, entries, reexported = parsed
+    if ecosystem == "pypi":
+        reexported = _dunder_all(repo_path, entries)
+    return PublishedPackage(
+        name=name,
+        ecosystem=ecosystem,
+        repo=alias,
+        manifest=rel_manifest,
+        root=root,
+        entry_files=entries,
+        reexported=reexported,
+        import_names=_import_names(ecosystem, name, entries),
+    )
+
+
+def _csproj_packages(
+    alias: str, repo_path: Path, counts: dict[str, int]
+) -> list[PublishedPackage]:
+    """The packages that the C# projects of *repo_path* publish; a project that does not
+    is counted."""
+    from repowise.core.ingestion.resolvers.dotnet.msbuild import find_csproj_files, parse_csproj
+
+    packages: list[PublishedPackage] = []
     for csproj in find_csproj_files(repo_path):
         project = parse_csproj(csproj)
         rel_manifest = repo_relative(csproj, repo_path) if project is not None else None
@@ -399,7 +430,7 @@ def find_published_packages(
         root = rel_manifest.rsplit("/", 1)[0] if "/" in rel_manifest else ""
         package_id = project.published_id
         if package_id is None:
-            counts["code_unpublished_manifest"] = counts.get("code_unpublished_manifest", 0) + 1
+            _count(counts, "code_unpublished_manifest")
             continue
         packages.append(
             PublishedPackage(
@@ -412,9 +443,7 @@ def find_published_packages(
                 import_names=frozenset({package_id}),
             )
         )
-    if jvm and has_jvm_build:
-        packages.extend(code_api_jvm.find_packages(alias, repo_path, counts))
-    return packages, counts
+    return packages
 
 
 def _read_manifest(
@@ -544,12 +573,25 @@ def find_workspace_packages(
 
     Read from the manifests, and for a Maven or Gradle module that deploys from
     the package declarations of its Java and Kotlin files, so it needs no
-    repo's index open.
+    repo's index open. A Maven module that a pom of another repo depends on
+    counts as deploying: the pipeline may deploy it with no pom saying so. So
+    does a module of the same repo that such a module needs
+    (:func:`.maven_dependencies.depended_dirs`).
     """
+    from repowise.core.workspace.maven_dependencies import depended_dirs
+
+    scans = {alias: _find_manifest_packages(alias, path) for alias, path in repo_paths.items()}
+    # No Maven or Gradle build file in any repo: no module is read, so no dependency matters.
+    depended = depended_dirs(repo_paths) if any(scan[2] for scan in scans.values()) else {}
     published: list[PublishedPackage] = []
     stats: dict[str, dict[str, int]] = {}
-    for alias, repo_path in repo_paths.items():
-        packages, counts = find_published_packages(alias, repo_path)
+    for alias, (packages, counts, has_jvm_build) in scans.items():
+        if has_jvm_build:
+            packages.extend(
+                code_api_jvm.find_packages(
+                    alias, repo_paths[alias], counts, depended.get(alias, frozenset())
+                )
+            )
         published.extend(packages)
         if counts:
             stats.setdefault(alias, {}).update(counts)

@@ -239,7 +239,9 @@ non-matches. When a repository has a root `pom.xml`, only that declared reactor 
 eligible; unrelated nested example or fixture POMs are not treated as producers.
 
 This does **not** execute Maven, read user settings, download artifacts, resolve
-plugins/transitive dependencies/imported BOMs, or infer generated sources. A Maven
+plugins, the transitive dependencies of a dependency (the modules a published module
+needs in its own repository are the one case, below), imported BOMs, or infer
+generated sources. A Maven
 package edge is also not a runnable Maven target recommendation, which remains
 unsupported.
 
@@ -252,9 +254,40 @@ repository, or one in a sibling directory, is not seen. A Gradle module deploys
 when `maven-publish` is named in its own build script or in the build script of
 a directory above it, in any block of that script, so a root that applies it
 only in `subprojects {}` counts as deploying too. A plugin applied through a
-convention plugin is not read. A war, a Spring Boot or an `application` module
-is an application and gives no contract, and neither does a module that does not
-deploy, nor a test file.
+convention plugin is not read. A Maven module also counts as deploying when a pom of
+another repository of the workspace, read as the package step reads it, declares a
+dependency on it, of any scope but `system`, any type or classifier, optional or not.
+The dependency names its module as Maven finds it: a module of the declaring
+repository's own reactor comes first, and otherwise exactly one project of the workspace
+has its coordinate. A pipeline may deploy a library with no pom saying so, and a
+dependency on it says it is deployed. A module that such a module needs counts too, and
+each one that module needs: a walk over the compile and runtime dependencies, not
+optional, in any repository, not a resolution of transitive dependencies. It is the walk
+of what a Maven module depends on, below, with one stop of its own. A dependency names
+an artifact that someone deploys, so every module reached through such an edge counts,
+whatever its type. The type decides only
+whether the walk goes on past that module: it does where Maven hands on the dependencies
+of the artifact (`jar`, `ejb`, `ejb-client`, `test-jar`, `maven-plugin`, `pom`,
+`javadoc`, `java-source`), and does not for a `war`, `ear`, `rar` or `fatjar`, which
+include them. A type that no handler of Maven gives here (`bundle` and the types that
+plugins add) is left out the same way by the code's choice: the module counts, and the
+modules it needs are missed, never a wrong one counted. By the code's choice, the walk
+stops at a module that the pom reader marks as standing alone: a war or ear packaging,
+or the Spring Boot plugin named anywhere in its pom, whatever the type or classifier of
+the edge. Every such module is an app in the dead-code scan too, so it gives no
+contract. Limits. Missed, never wrong: the needs of a module that stands alone when the
+edge names one of its artifacts that hands them on (its `test-jar` or tests jar, its
+`classes` jar, or the plain jar of a Boot module whose fat jar has a classifier such as
+`exec`); and a module that only names the Boot plugin (in `pluginManagement`, a profile
+or a property), which stops the walk. Walked through, wrong only on a build that Maven
+rejects (a jar edge to a war resolves no artifact): a war whose packaging a property
+holds, or whose own `<packaging>` comes after a `<packaging>` in a plugin's
+configuration. The other order, a plugin's war before a jar module's own packaging,
+stops the walk: missed. A module with packaging `pom`, and a module that skips its
+deploy, are walked through and give no contract. A war, a Spring Boot or an
+`application` module is an application and gives no contract, even when another
+repository depends on it, and neither does a module that neither deploys nor is depended
+on, nor a test file.
 
 The files of a module are the files its build unit owns, not every file under
 its directory: the directory of a Gradle root holds its subprojects, and a

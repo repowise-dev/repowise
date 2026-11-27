@@ -24,8 +24,10 @@ What counts as published, per ecosystem:
   ``publish = false``.
 - Java/Kotlin: a Maven module whose pom, or an enclosing pom, deploys
   (``distributionManagement``, a release-signing or central-publishing plugin,
-  an OSS release parent); a Gradle module that applies a publishing plugin.
-  A war, a Spring Boot or an ``application`` module is an app.
+  an OSS release parent), or that a caller names as depended on by a pom of
+  another repository or needed by such a module (``jvm_published(depended=...)``);
+  a Gradle module that applies a publishing plugin. A war, a Spring Boot or an ``application``
+  module is an app.
 - Python: a ``pyproject.toml`` with a ``[project]`` name and a
   ``[build-system]``, not marked unpackaged or private, and not a Django site.
 - TypeScript/JavaScript: a ``package.json`` that is not ``private`` and
@@ -38,7 +40,7 @@ from __future__ import annotations
 import json
 import re
 import tomllib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path, PurePosixPath
@@ -276,11 +278,13 @@ _MAVEN_DEPLOYS = (
 )
 #: Parents whose job is releasing to Maven Central.
 _MAVEN_RELEASE_PARENTS = frozenset({"oss-parent", "commons-parent", "apache"})
+_MAVEN_BOOT = r"spring-boot-maven-plugin"
+_MAVEN_BOOT_RE = re.compile(_MAVEN_BOOT)
 #: A module that ships no library artifact although a parent deploys.
-_MAVEN_NO_LIBRARY_RE = re.compile(
-    r"spring-boot-maven-plugin|<maven\.deploy\.skip>\s*true\s*<"
-)
-_MAVEN_NON_LIBRARY_PACKAGING = frozenset({"pom", "war", "ear"})
+_MAVEN_NO_LIBRARY_RE = re.compile(_MAVEN_BOOT + r"|<maven\.deploy\.skip>\s*true\s*<")
+#: The packagings of an application that carries its dependencies.
+_MAVEN_STANDALONE_PACKAGING = frozenset({"war", "ear"})
+_MAVEN_NON_LIBRARY_PACKAGING = _MAVEN_STANDALONE_PACKAGING | {"pom"}
 _GRADLE_PUBLISHES = ("maven-publish", "com.vanniktech.maven.publish")
 _GRADLE_APPS = frozenset({"application", "org.springframework.boot", "com.android.application"})
 
@@ -290,6 +294,9 @@ class _Build:
     name: str | None
     deploys: bool
     app: bool
+    #: A war or ear packaging, or the Spring Boot plugin named in the pom. Only a Maven pom
+    #: sets it, and only the walk of the workspace reads it.
+    standalone: bool = False
 
 
 def _pom(text: str) -> _Build:
@@ -300,12 +307,30 @@ def _pom(text: str) -> _Build:
     artifact = _POM_ARTIFACT_RE.search(own)
     packaging = _POM_PACKAGING_RE.search(own)
     release_parent = parent_artifact is not None and parent_artifact.group(1) in _MAVEN_RELEASE_PARENTS
+    packaged = packaging.group(1).lower() if packaging else "jar"
     return _Build(
         name=artifact.group(1) if artifact else None,
         deploys=release_parent or any(m in own for m in _MAVEN_DEPLOYS),
-        app=(packaging.group(1).lower() if packaging else "jar") in _MAVEN_NON_LIBRARY_PACKAGING
+        app=packaged in _MAVEN_NON_LIBRARY_PACKAGING
         or _MAVEN_NO_LIBRARY_RE.search(own) is not None,
+        standalone=_pom_stands_alone(own, packaged),
     )
+
+
+def _pom_stands_alone(own: str, packaged: str) -> bool:
+    """A war or ear packaging, or the Spring Boot plugin named in a module that is no pom."""
+    return packaged in _MAVEN_STANDALONE_PACKAGING or (
+        packaged != "pom" and _MAVEN_BOOT_RE.search(own) is not None
+    )
+
+
+def maven_stands_alone(pom_text: str) -> bool:
+    """Whether the pom *pom_text* has a war or ear packaging, or names the Spring Boot plugin.
+
+    It shares the parse of :func:`_pom` with :func:`jvm_published`, where every such
+    module is an app. A packaging ``pom`` and a skipped deploy are not it.
+    """
+    return _pom(pom_text).standalone
 
 
 def _gradle(facts: BuildFacts, rel_dir: str) -> _Build:
@@ -320,26 +345,37 @@ def _gradle(facts: BuildFacts, rel_dir: str) -> _Build:
     )
 
 
-def _publishing(builds: Mapping[str, _Build]) -> dict[str, str | None]:
+def _publishing(
+    builds: Mapping[str, _Build], depended: Collection[str] = frozenset()
+) -> dict[str, str | None]:
     """A module publishes when it is no app and it, or a build enclosing it
-    (a parent pom, a root ``subprojects`` block), deploys."""
+    (a parent pom, a root ``subprojects`` block), deploys, or it is in *depended*."""
     return {
         d: build.name
-        if not build.app and any(builds[k].deploys for k in _self_and_parents(d) if k in builds)
+        if not build.app
+        and (d in depended or any(builds[k].deploys for k in _self_and_parents(d) if k in builds))
         else None
         for d, build in builds.items()
     }
 
 
-def jvm_published(facts: BuildFacts) -> dict[str, str | None]:
-    """Every Maven or Gradle module dir, mapped to its artifact when it publishes."""
+def jvm_published(
+    facts: BuildFacts, depended: Collection[str] = frozenset()
+) -> dict[str, str | None]:
+    """Every Maven or Gradle module dir, mapped to its artifact when it publishes.
+
+    *depended* holds the Maven module dirs that a pom of another repository
+    depends on, and the dirs of the modules of this repository that those need:
+    a pipeline may deploy them with no build file saying so. Only the
+    workspace knows them, so the dead-code scan of one repository passes none.
+    """
     poms = {d: _pom(facts.read(d, "pom.xml") or "") for d in _dirs_with(facts, "pom.xml")}
     gradle = {
         d: _gradle(facts, d)
         for d, names in facts.tree.items()
         if d not in poms and names & {"build.gradle", "build.gradle.kts"}
     }
-    return {**_publishing(gradle), **_publishing(poms)}
+    return {**_publishing(gradle), **_publishing(poms, depended)}
 
 
 # --- Python -----------------------------------------------------------------

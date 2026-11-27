@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+from repowise.core.analysis.published_packages import maven_stands_alone
 from repowise.core.ingestion.external_systems.maven_model import (
     MavenDependency,
     MavenModelDiagnostic,
@@ -286,7 +287,9 @@ def module_dependencies(
 
 
 def _received(
-    workspace: _Workspace, edges: Iterable[tuple[str, MavenDependency]]
+    workspace: _Workspace,
+    edges: Iterable[tuple[str, MavenDependency]],
+    stops: Callable[[str, MavenProject], bool] = lambda alias, module: False,
 ) -> dict[tuple[str, str], MavenProject]:
     """The modules that *edges* name, and what Maven hands on from them, by repo and manifest.
 
@@ -295,7 +298,8 @@ def _received(
     single module gives none. Where the type of the edge hands on the
     dependencies of its artifact (:func:`_hands_on`), the module hands on its
     compile and runtime dependencies that are not optional, in any repo, and
-    theirs in turn. A module is walked once, so a cycle ends.
+    theirs in turn, unless *stops* holds for the module and its repo. A module is
+    walked once, so a cycle ends.
     """
     reached: dict[tuple[str, str], MavenProject] = {}
     walked: set[tuple[str, str]] = set()
@@ -311,5 +315,96 @@ def _received(
         if key in walked or not _hands_on(dependency):
             continue
         walked.add(key)
-        queue.extend((alias, d) for d in module.dependencies if _inherited_by_dependents(d))
+        if not stops(alias, module):
+            queue.extend((alias, d) for d in module.dependencies if _inherited_by_dependents(d))
     return reached
+
+
+def _stands_alone(repo_root: Path, project: MavenProject) -> bool:
+    """Whether *project* stands alone, as :func:`maven_stands_alone` reads its pom."""
+    try:
+        text = (repo_root / project.manifest).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return maven_stands_alone(text)
+
+
+def depended_manifests(
+    repo_paths: dict[str, Path],
+    poms_by_repo: dict[str, list[Path]],
+) -> dict[str, frozenset[str]]:
+    """The manifests of the modules a pom of another repo depends on, and what they need.
+
+    A dependency names an artifact that someone deploys, so every module reached
+    through an edge Maven resolves for a dependent counts, of any type. The producers
+    and the reactor selection are those of :func:`detect_maven_dependencies`; a
+    dependency names its module as Maven finds it (:func:`_resolve_producer`).
+
+    - First hop: a pom of another repo declares a dependency on a module, of any
+      scope but ``system``, any classifier, optional or not.
+    - Then what Maven hands on from that module (:func:`_received`): the type of the
+      edge decides only whether the walk goes on past the module it names
+      (:func:`_hands_on`). An edge of the walk into another repo is a first hop of
+      its own.
+
+    By the code's choice, the walk stops at a module that the pom reader marks as standing
+    alone (:func:`_stands_alone`): a war or ear packaging, or the Spring Boot plugin named
+    anywhere in its pom, whatever the type or the classifier of the edge. Every such module
+    is an app in :func:`jvm_published` too, so it gives no contract. A packaging ``pom`` and
+    a skipped deploy are no stop. Limits. Missed, never wrong: the needs of a module that
+    stands alone when the edge names one of its artifacts that hands them on (its
+    ``test-jar`` or tests jar, its ``classes`` jar, or the plain jar of a Boot module whose
+    fat jar has a classifier such as ``exec``); and a module that only names the Boot plugin
+    (in ``pluginManagement``, a profile or a property), which stops the walk. Walked
+    through, wrong only on a build that Maven rejects (a jar edge to a war resolves no
+    artifact): a war whose packaging a property holds, or whose own ``<packaging>`` comes
+    after a ``<packaging>`` in a plugin's configuration. The other order, a plugin's war
+    before a jar module's own packaging, stops the walk: missed.
+
+    A repo no other repo depends on has no entry. The module of an application counts
+    here; :func:`jvm_published` leaves it out, as it does a ``pom`` and a skipped deploy.
+    """
+    workspace = _load(repo_paths, poms_by_repo)
+    first_hops = (
+        (source, dependency)
+        for source, dependency, (target, _) in _resolved_dependencies(workspace)
+        if target != source and dependency.scope != "system"
+    )
+    reached: dict[str, set[str]] = defaultdict(set)
+    for alias, manifest in _received(
+        workspace, first_hops, lambda alias, module: _stands_alone(repo_paths[alias], module)
+    ):
+        reached[alias].add(manifest)
+    return {alias: frozenset(manifests) for alias, manifests in reached.items()}
+
+
+def _resolved_dependencies(
+    workspace: _Workspace,
+) -> Iterator[tuple[str, MavenDependency, tuple[str, MavenProject]]]:
+    """Each dependency that names exactly one module (:func:`_resolve_producer`), as the
+    declaring repo, the dependency and the module as (repo, project)."""
+    for source_alias, projects in workspace.projects.items():
+        for dependency in (d for project in projects for d in project.dependencies):
+            target = _resolve_producer(workspace, source_alias, dependency)
+            if target is not None:
+                yield source_alias, dependency, target
+
+
+def depended_dirs(repo_paths: dict[str, Path]) -> dict[str, frozenset[str]]:
+    """The dirs of the modules a pom of another repo depends on, and what they need.
+
+    :func:`depended_manifests` over the poms of every repo, as the cross-repo
+    package step reads them. One repo gives nothing.
+    """
+    from .manifests import find_poms
+
+    if len(repo_paths) < 2:
+        return {}
+    poms = {alias: find_poms(path) for alias, path in repo_paths.items()}
+    return {
+        alias: frozenset(
+            "" if (parent := PurePosixPath(manifest).parent.as_posix()) == "." else parent
+            for manifest in manifests
+        )
+        for alias, manifests in depended_manifests(repo_paths, poms).items()
+    }
