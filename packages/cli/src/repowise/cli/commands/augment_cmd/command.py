@@ -374,48 +374,60 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
 # duplicate. Generous enough to cover two hook processes racing on the same
 # tool event, short enough that a genuinely repeated search later still speaks.
 _EMIT_DEDUP_TTL_SECONDS = 8.0
-_MAX_MARKER_CLEANUP_PER_RUN = 20
-_SWEEP_THROTTLE_FILE = ".repowise-augment-sweep.stamp"
+# Markers live in a directory of their own. The system temp dir can hold
+# hundreds of thousands of entries (151k on one Windows box), and listing it on
+# a hook's hot path cost 0.2 s warm and several seconds cold, enough to trip
+# Claude Code's hook timeout on the first emission of a session.
+_MARKER_DIR_NAME = "repowise-augment"
+_SWEEP_STAMP_NAME = ".sweep.stamp"
+# Expired markers are inert (a stale one is taken over on the next claim), so
+# they only cost disk entries; sweeping hourly keeps the directory small
+# without listing it on every emission.
+_SWEEP_INTERVAL_SECONDS = 3600.0
+# Bounds one sweep's unlink cost. Hourly, this clears far more markers than
+# the hooks create in an hour; any backlog is cleared by the next sweep.
+_MAX_MARKER_CLEANUP_PER_RUN = 500
 
 
-def _is_sweep_throttled(temp_dir: Path, now: float) -> bool:
-    """Return True if a sweep was performed within the dedup TTL window."""
-    stamp = temp_dir / _SWEEP_THROTTLE_FILE
+def _marker_dir() -> Path:
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / _MARKER_DIR_NAME
+
+
+def _is_sweep_throttled(marker_dir: Path, now: float) -> bool:
+    """Return True if a sweep ran within the last sweep interval; else claim this one."""
+    stamp = marker_dir / _SWEEP_STAMP_NAME
     with contextlib.suppress(OSError):
-        if now - stamp.stat().st_mtime < _EMIT_DEDUP_TTL_SECONDS:
+        if now - stamp.stat().st_mtime < _SWEEP_INTERVAL_SECONDS:
             return True
     with contextlib.suppress(OSError):
         stamp.write_text(str(now), encoding="utf-8")
     return False
 
 
-def _unlink_if_expired(entry: Path, now: float) -> bool:
-    """Delete entry if older than TTL. Return True if deleted."""
-    if entry.name == _SWEEP_THROTTLE_FILE:
-        return False
-    with contextlib.suppress(OSError):
-        if now - entry.stat().st_mtime > _EMIT_DEDUP_TTL_SECONDS:
-            entry.unlink(missing_ok=True)
-            return True
-    return False
+def _sweep_dir(marker_dir: Path, now: float, max_delete: int) -> None:
+    import os
 
-
-def _sweep_dir(temp_dir: Path, now: float, max_delete: int) -> None:
     deleted = 0
-    with contextlib.suppress(OSError):
-        for entry in temp_dir.glob(".repowise-augment-*"):
-            if _unlink_if_expired(entry, now):
-                deleted += 1
-                if deleted >= max_delete:
-                    break
+    with contextlib.suppress(OSError), os.scandir(marker_dir) as entries:
+        for entry in entries:
+            if entry.name == _SWEEP_STAMP_NAME:
+                continue
+            with contextlib.suppress(OSError):
+                if now - entry.stat().st_mtime > _EMIT_DEDUP_TTL_SECONDS:
+                    os.unlink(entry.path)
+                    deleted += 1
+                    if deleted >= max_delete:
+                        return
 
 
 def _cleanup_stale_markers(
-    temp_dir: Path, now: float, max_delete: int = _MAX_MARKER_CLEANUP_PER_RUN
+    marker_dir: Path, now: float, max_delete: int = _MAX_MARKER_CLEANUP_PER_RUN
 ) -> None:
-    """Delete expired .repowise-augment-* markers, throttled to run at most once per TTL window."""
-    if not _is_sweep_throttled(temp_dir, now):
-        _sweep_dir(temp_dir, now, max_delete)
+    """Delete expired markers from repowise's own marker dir, at most once per sweep interval."""
+    if not _is_sweep_throttled(marker_dir, now):
+        _sweep_dir(marker_dir, now, max_delete)
 
 
 def _take_over_stale_marker(marker: Path, now: float) -> bool:
@@ -446,12 +458,13 @@ def _claim_emission(event: str, context: str) -> bool:
     """
     import hashlib
     import os
-    import tempfile
     import time
 
     try:
         key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
-        marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
+        marker_dir = _marker_dir()
+        marker_dir.mkdir(exist_ok=True)
+        marker = marker_dir / key
         now = time.time()
         claimed = False
         try:
@@ -468,7 +481,7 @@ def _claim_emission(event: str, context: str) -> bool:
             # a crashed prior run that left the marker behind).
             claimed = _take_over_stale_marker(marker, now)
         if claimed:
-            _cleanup_stale_markers(marker.parent, now)
+            _cleanup_stale_markers(marker_dir, now)
         return claimed
     except Exception:
         return True
