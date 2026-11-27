@@ -153,7 +153,10 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     ):
         # Only windows that joined no function: nothing is ranked, so the
         # status token stays, beside the runs that say where the time went.
-        return {**await _unranked_block(session, repository_id, slower), "runs": list(runs.values())}
+        return {
+            **await _unranked_block(session, repository_id, slower),
+            "runs": list(runs.values()),
+        }
     block["runs"] = list(runs.values())
     if slower:
         block["slower"] = slower
