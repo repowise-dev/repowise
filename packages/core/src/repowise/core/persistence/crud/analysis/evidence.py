@@ -510,15 +510,17 @@ async def step_findings(
     """The open performance findings a next step reads for *rows*
     (``evidence.next_step``): those in the rows' files and their drivers' files,
     and those whose call path names a row or a driver, as
-    :func:`~repowise.core.evidence.next_step.static_finding` dicts. Findings in
+    :func:`~repowise.core.evidence.next_step.static_finding` dicts, then the
+    eager ``setdefault`` defaults the rows and drivers build
+    (:func:`~repowise.core.evidence.next_step.eager_default_fact`). Facts in
     files that are not production code (``code_origin``) are left out, so a loop
     in a test never reads as an N+1."""
     import json
 
     from ....evidence.ingest import load_origins
-    from ....evidence.next_step import static_finding
+    from ....evidence.next_step import eager_default_fact, static_finding
     from ....ingestion.symbol_identity import file_of_symbol
-    from ...models import HealthFinding
+    from ...models import FunctionFact, HealthFinding
 
     targets: set[str] = set()
     for row in rows:
@@ -554,14 +556,30 @@ async def step_findings(
             )
         )
         found.update({f.id: f for f in result.scalars()})
-    origins = await load_origins(session, repository_id, {f.file_path for f in found.values()})
-    return [
+    eager: list[tuple[str, str]] = []
+    for i in range(0, len(named), _BATCH_SIZE):
+        result = await session.execute(
+            select(FunctionFact.symbol_id, FunctionFact.eager_defaults_json).where(
+                FunctionFact.repository_id == repository_id,
+                FunctionFact.symbol_id.in_(named[i : i + _BATCH_SIZE]),
+                FunctionFact.eager_defaults_json.is_not(None),
+            )
+        )
+        eager.extend((sid, raw) for sid, raw in result.all())
+    paths = {f.file_path for f in found.values()} | {file_of_symbol(sid) for sid, _ in eager}
+    origins = await load_origins(session, repository_id, paths)
+    out = [
         static_finding(
             f.file_path, f.function_name, f.biomarker_type, f.reason, json.loads(f.details_json or "{}")
         )
         for f in sorted(found.values(), key=lambda f: (f.file_path, f.line_start or 0, f.id))
         if origins.get(f.file_path) == "production"
     ]
+    for sid, raw in sorted(eager):
+        fact = eager_default_fact(sid, raw)
+        if fact is not None and origins.get(fact["file_path"]) == "production":
+            out.append(fact)
+    return out
 
 
 async def ranked_by_workload(

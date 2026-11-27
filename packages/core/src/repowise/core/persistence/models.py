@@ -2442,6 +2442,10 @@ class FunctionFact(Base):
     # ``[[selector, hops], ...]``: ``[]`` when no test reaches the function,
     # NULL when no run has mapped it. Restamped every run, like the role.
     tests_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Values the body builds as an eager ``setdefault`` default, built on every
+    # call (``analysis.health.perf.eager_defaults``), as ``[[callee, line], ...]``;
+    # NULL when there are none or the walk did not look (only Python is read).
+    eager_defaults_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 
