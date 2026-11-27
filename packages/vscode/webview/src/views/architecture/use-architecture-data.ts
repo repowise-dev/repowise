@@ -119,65 +119,81 @@ export interface ArchitectureData {
   error: string | null;
 }
 
+/** The cache key of each slice the active scope draws, or null when it draws
+ *  none of it. Keys follow the web hooks' (scope, population, community, cap). */
+export function sliceKeys(input: ArchitectureDataInput) {
+  const { viewMode, tree, population, narrowingPopulation, activeCommunity, graphLimit } = input;
+  const pop = populationKey(population);
+  // The outline draws only the file graph; every canvas slice is off.
+  const canvas = (on: boolean, key: string) => (!tree && on ? key : null);
+  return {
+    full:
+      tree || viewMode === "full" || viewMode === "unified"
+        ? `full:${graphLimit ?? "default"}`
+        : null,
+    constellation: canvas(viewMode === "architecture", `constellation:${pop}`),
+    dead: canvas(viewMode === "dead", "dead"),
+    hot: canvas(viewMode === "hotfiles", "hot"),
+    slice: canvas(
+      viewMode !== "architecture" && activeCommunity != null,
+      `slice:${activeCommunity}:${pop}`,
+    ),
+    communities: canvas(true, `communities:${pop}`),
+    narrowing: canvas(true, `communities:${populationKey(narrowingPopulation)}`),
+    flows: canvas(input.flowsRequested && viewMode !== "architecture", "flows"),
+  };
+}
+
+/** The first failure among the slices the canvas draws. */
+function firstError(...queries: QueryState<unknown>[]): string | null {
+  return queries.find((q) => q.error)?.error ?? null;
+}
+
 export function useArchitectureData(
   host: WebviewHost,
   refreshToken: number,
   input: ArchitectureDataInput,
 ): ArchitectureData {
-  const { viewMode, tree, population, narrowingPopulation, activeCommunity, graphLimit } = input;
-  const pop = populationKey(population);
+  const { population, narrowingPopulation, activeCommunity, graphLimit } = input;
+  const keys = sliceKeys(input);
+  const api = host.api;
 
-  const needsFullGraph = tree || viewMode === "full" || viewMode === "unified";
-  const fullGraph = useHostQuery(
-    needsFullGraph ? `full:${graphLimit ?? "default"}` : null,
-    () => host.api.fullGraph(graphLimit),
-    refreshToken,
-  );
+  const fullGraph = useHostQuery(keys.full, () => api.fullGraph(graphLimit), refreshToken);
   const constellationGraph = useHostQuery(
-    !tree && viewMode === "architecture" ? `constellation:${pop}` : null,
-    () => host.api.architectureCommunityGraph(population) as Promise<ArchitectureGraph>,
+    keys.constellation,
+    () => api.architectureCommunityGraph(population) as Promise<ArchitectureGraph>,
     refreshToken,
   );
   const deadCodeGraph = useHostQuery(
-    !tree && viewMode === "dead" ? "dead" : null,
-    () => host.api.deadCodeGraph() as Promise<GraphExport>,
+    keys.dead,
+    () => api.deadCodeGraph() as Promise<GraphExport>,
     refreshToken,
   );
   const hotFilesGraph = useHostQuery(
-    !tree && viewMode === "hotfiles" ? "hot" : null,
-    () => host.api.hotFilesGraph() as Promise<GraphExport>,
+    keys.hot,
+    () => api.hotFilesGraph() as Promise<GraphExport>,
     refreshToken,
   );
   const communitySlice = useHostQuery(
-    !tree && viewMode !== "architecture" && activeCommunity != null
-      ? `slice:${activeCommunity}:${pop}`
-      : null,
-    () => host.api.communitySlice(activeCommunity!, population) as Promise<CommunitySlice>,
+    keys.slice,
+    () => api.communitySlice(activeCommunity!, population) as Promise<CommunitySlice>,
     refreshToken,
   );
   const communities = useHostQuery(
-    tree ? null : `communities:${pop}`,
-    () => host.api.communities(population),
+    keys.communities,
+    () => api.communities(population),
     refreshToken,
   );
   const narrowingCommunities = useHostQuery(
-    tree ? null : `communities:${populationKey(narrowingPopulation)}`,
-    () => host.api.communities(narrowingPopulation),
+    keys.narrowing,
+    () => api.communities(narrowingPopulation),
     refreshToken,
   );
   const executionFlows = useHostQuery(
-    !tree && input.flowsRequested && viewMode !== "architecture" ? "flows" : null,
-    () => host.api.executionFlows() as Promise<ExecutionFlows>,
+    keys.flows,
+    () => api.executionFlows() as Promise<ExecutionFlows>,
     refreshToken,
   );
-
-  const error =
-    fullGraph.error ??
-    constellationGraph.error ??
-    deadCodeGraph.error ??
-    hotFilesGraph.error ??
-    communitySlice.error ??
-    null;
 
   return {
     fullGraph,
@@ -188,6 +204,6 @@ export function useArchitectureData(
     communities,
     narrowingCommunities,
     executionFlows,
-    error,
+    error: firstError(fullGraph, constellationGraph, deadCodeGraph, hotFilesGraph, communitySlice),
   };
 }
