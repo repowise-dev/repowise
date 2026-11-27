@@ -333,11 +333,10 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 def _refuse_mock_over_semantic_store(lance_dir, embedder_impl: object) -> None:
     """Stop before mock vectors replace a store a real embedder built.
 
-    The same guard every other store path goes through (``build_vector_store``):
-    8-wide test vectors written into a 1536-wide table make LanceDB drop it,
-    taking every page and decision vector a paid embedder wrote. Reindex opens
-    the store itself, so it asks the guard directly and refuses, with the one
-    step that replaces the store on purpose.
+    The store's writer refuses that write itself (``MockWouldReplaceStoreError``);
+    asked here first, through the guard ``build_vector_store`` uses, the run
+    stops before it reads a page, with one message instead of a failure per
+    batch, and names the one step that replaces the store on purpose.
     """
     from repowise.cli.providers.vector_store import _mock_would_clobber, existing_vector_dim
 

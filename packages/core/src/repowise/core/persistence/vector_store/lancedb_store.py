@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from repowise.core.providers.embedding.base import Embedder
+from repowise.core.providers.embedding.base import Embedder, MockEmbedder
 
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
 from ._base import (
@@ -171,6 +171,10 @@ class LanceDBUnavailableError(RuntimeError):
     """lancedb is missing or broken: an install problem, not a store one."""
 
 
+class MockWouldReplaceStoreError(RuntimeError):
+    """A mock-width write was refused over a table a real embedder filled."""
+
+
 def store_open_fix_hint(exc: BaseException) -> str:
     """What to do about a store that would not open, by what actually failed.
 
@@ -280,6 +284,18 @@ class LanceDBVectorStore(VectorStore):
                     record_vector_dim(self._db_path, self._table_name, existing_dim)
                     self._dim_recorded = True
                 return
+            if isinstance(self._embedder, MockEmbedder) and existing_dim > dim:
+                # The drop below is the intended rebuild when a real embedder
+                # changes model, and never for test or keyless vectors: it
+                # would trade every real page and decision vector for ones no
+                # query can rank on. Refused here, where the table is dropped,
+                # so no path that opens the store with the mock can do it.
+                raise MockWouldReplaceStoreError(
+                    f"The vector table at {self._db_path} holds {existing_dim}-wide "
+                    f"vectors from a real embedder; {dim}-wide mock vectors would "
+                    "replace every one of them, so the write was refused. Delete "
+                    "that folder to replace it on purpose."
+                )
             # Embedder changed dimensions — the old vectors are unusable.
             # Forget the record first so a crash mid-rebuild leaves none.
             record_vector_dim(self._db_path, self._table_name, None)
