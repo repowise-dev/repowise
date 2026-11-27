@@ -155,9 +155,7 @@ def _build_skipped_generated_metrics(
             continue
         head = _read_skipped_head(repo_path, rel_path)
         origin = (
-            code_origin(rel_path, head, repo_root=repo_path)
-            if head is not None
-            else "generated"
+            code_origin(rel_path, head, repo_root=repo_path) if head is not None else "generated"
         )
         if origin == "generated":
             gen_metrics.append(

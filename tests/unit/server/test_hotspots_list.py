@@ -144,9 +144,7 @@ async def test_facets_sum_and_match_each_filters_total(client: AsyncClient, app)
 
 
 @pytest.mark.asyncio
-async def test_search_matches_path_or_owner_and_keeps_global_rank(
-    client: AsyncClient, app
-) -> None:
+async def test_search_matches_path_or_owner_and_keeps_global_rank(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _seed(app.state.session_factory, repo["id"])
 
@@ -186,8 +184,13 @@ async def test_facets_follow_a_git_only_remine(client: AsyncClient, app) -> None
 
     async with get_session(app.state.session_factory) as session:
         await crud.upsert_git_metadata(
-            session, repository_id=repo["id"], file_path="src/late.py", is_hotspot=True,
-            commit_count_90d=1, commit_count_30d=0, churn_percentile=0.1,
+            session,
+            repository_id=repo["id"],
+            file_path="src/late.py",
+            is_hotspot=True,
+            commit_count_90d=1,
+            commit_count_30d=0,
+            churn_percentile=0.1,
         )
     page = await _list(client, repo["id"])
     assert page["facets"]["total"] == page["total"] == 7
@@ -223,9 +226,7 @@ async def test_origin_clause_matches_stored_origin(app, code_origin, is_test) ->
         )
         session.add(row)
         await session.flush()
-        got = await session.scalar(
-            select(origin_clause()).where(HealthFileMetric.id == row.id)
-        )
+        got = await session.scalar(select(origin_clause()).where(HealthFileMetric.id == row.id))
         await session.rollback()
     assert got == stored_origin(code_origin, is_test)
 
@@ -360,6 +361,7 @@ async def test_empty_health_report_still_persists_skipped_generated_placeholders
             traversal_stats=TraversalStats(generated_files=["db/schema.rb"]),
         )
         from sqlalchemy import select
+
         from repowise.core.persistence.models import HealthFileMetric
 
         rows = (
@@ -375,4 +377,3 @@ async def test_empty_health_report_still_persists_skipped_generated_placeholders
         assert rows[0].file_path == "db/schema.rb"
         assert rows[0].code_origin == "generated"
         assert rows[0].score is None
-

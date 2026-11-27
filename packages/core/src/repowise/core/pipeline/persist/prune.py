@@ -154,9 +154,7 @@ async def _prune_stale_file_rows(
         if current_health_file_paths is not None
         else current_graph_file_paths
     )
-    await _delete_stale_by_paths(
-        HealthFileMetric, HealthFileMetric.file_path, health_file_paths
-    )
+    await _delete_stale_by_paths(HealthFileMetric, HealthFileMetric.file_path, health_file_paths)
     await _delete_stale_by_paths(HealthFinding, HealthFinding.file_path, current_graph_file_paths)
     await _delete_stale_by_paths(CoverageFile, CoverageFile.file_path, current_graph_file_paths)
     await _delete_stale_by_paths(
