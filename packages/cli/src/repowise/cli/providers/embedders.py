@@ -117,7 +117,7 @@ def model_run_embedder(
     stated = name or "mock"
     if stated == "mock":
         reason += ", semantic search off"
-    return name, f"{stated} ({reason})", upgraded
+    return name, f"{embedder_label(stated, repo_path)} ({reason})", upgraded
 
 
 def keyless_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str, str]:

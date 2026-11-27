@@ -1523,7 +1523,7 @@ def test_an_ollama_upgrade_replaces_the_mock_with_ollama(
 
     assert providers.model_run_embedder("mock", provider="ollama") == (
         "ollama",
-        "ollama (follows the ollama provider, replacing the keyless mock)",
+        "ollama/embeddinggemma (follows the ollama provider, replacing the keyless mock)",
         True,
     )
     # A real pin is the user's earlier choice and stays.
