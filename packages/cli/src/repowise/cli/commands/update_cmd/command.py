@@ -1389,7 +1389,7 @@ def _prepare_locked_run(opts: UpdateOptions, run: UpdateRun) -> None:
     _assess_store_upgrade(opts, run)
     from .page_history import trim_page_history
 
-    trim_page_history(repo_path, state, dry_run=opts.dry_run)
+    trim_page_history(repo_path, dry_run=opts.dry_run)
 
     # This run only reaches changed files, so name the command for missing slots.
     from .commit_limit_notice import surface_pinned_commit_limit

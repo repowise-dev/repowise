@@ -1,4 +1,4 @@
-"""``update`` trims every page's history once, and again only when the cap goes down."""
+"""``update`` trims every page's history when a page is over the cap, and only then."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
-from repowise.cli.commands.update_cmd.page_history import PAGE_VERSIONS_KEPT_KEY, trim_page_history
-from repowise.cli.helpers import load_state
+from repowise.cli.commands.update_cmd.page_history import trim_page_history
 from repowise.core.persistence import create_engine, create_session_factory, get_session
 from repowise.core.persistence.crud import upsert_page, upsert_repository
 from repowise.core.persistence.database import init_db
@@ -66,47 +65,49 @@ async def _versions(root: Path) -> int:
     return count
 
 
-def test_update_trims_old_history_once_and_again_when_the_cap_drops(tmp_path):
+def _write_keep(root: Path, keep: object) -> None:
+    (root / ".repowise" / "config.yaml").write_text(
+        f"wiki:\n  page_versions_keep: {keep}\n", encoding="utf-8"
+    )
+
+
+def test_update_trims_old_history_and_again_whenever_a_page_is_over_the_cap(tmp_path):
     asyncio.run(_seed(tmp_path))
     assert asyncio.run(_versions(tmp_path)) == PAGES * (WRITES - 1)
 
-    state: dict = {}
-    assert trim_page_history(tmp_path, state, dry_run=True) is None
+    assert trim_page_history(tmp_path, dry_run=True) is None
     assert asyncio.run(_versions(tmp_path)) == PAGES * (WRITES - 1)
 
-    assert trim_page_history(tmp_path, state, dry_run=False) == PAGES * (WRITES - 1 - 10)
+    assert trim_page_history(tmp_path, dry_run=False) == PAGES * (WRITES - 1 - 10)
     assert asyncio.run(_versions(tmp_path)) == PAGES * 10
-    assert load_state(tmp_path)[PAGE_VERSIONS_KEPT_KEY] == 10
 
-    # Recorded: the next update does not scan the table again.
-    assert trim_page_history(tmp_path, state, dry_run=False) is None
+    # Nothing over the cap: the next update deletes nothing.
+    assert trim_page_history(tmp_path, dry_run=False) is None
 
-    # Raising the cap trims nothing but is recorded; lowering it trims once more.
-    (tmp_path / ".repowise" / "config.yaml").write_text(
-        "wiki:\n  page_versions_keep: 20\n", encoding="utf-8"
-    )
-    assert trim_page_history(tmp_path, state, dry_run=False) == 0
-    assert state[PAGE_VERSIONS_KEPT_KEY] == 20
-    (tmp_path / ".repowise" / "config.yaml").write_text(
-        "wiki:\n  page_versions_keep: 4\n", encoding="utf-8"
-    )
-    assert trim_page_history(tmp_path, state, dry_run=False) == PAGES * 6
+    # Raising the cap deletes nothing; lowering it trims once more.
+    _write_keep(tmp_path, 20)
+    assert trim_page_history(tmp_path, dry_run=False) is None
+    _write_keep(tmp_path, 4)
+    assert trim_page_history(tmp_path, dry_run=False) == PAGES * 6
     assert asyncio.run(_versions(tmp_path)) == PAGES * 4
-    assert state[PAGE_VERSIONS_KEPT_KEY] == 4
+
+
+def test_history_grown_under_a_raised_cap_is_trimmed_after_it_drops_back(tmp_path):
+    """A raise and a lower between two updates leave no page over the cap."""
+    asyncio.run(_seed(tmp_path))
+    assert trim_page_history(tmp_path, dry_run=False) == PAGES * (WRITES - 1 - 10)
+    asyncio.run(_seed(tmp_path))  # more writes while the cap was 100
+    _write_keep(tmp_path, 10)
+    assert trim_page_history(tmp_path, dry_run=False) == PAGES * WRITES
+    assert asyncio.run(_versions(tmp_path)) == PAGES * 10
 
 
 def test_an_unreadable_cap_trims_nothing(tmp_path):
     asyncio.run(_seed(tmp_path))
-    (tmp_path / ".repowise" / "config.yaml").write_text(
-        "wiki:\n  page_versions_keep: lots\n", encoding="utf-8"
-    )
-    state: dict = {}
-    assert trim_page_history(tmp_path, state, dry_run=False) is None
+    _write_keep(tmp_path, "lots")
+    assert trim_page_history(tmp_path, dry_run=False) is None
     assert asyncio.run(_versions(tmp_path)) == PAGES * (WRITES - 1)
-    assert PAGE_VERSIONS_KEPT_KEY not in state
 
 
-def test_no_store_means_nothing_runs_and_nothing_is_recorded(tmp_path):
-    state: dict = {}
-    assert trim_page_history(tmp_path, state, dry_run=False) is None
-    assert PAGE_VERSIONS_KEPT_KEY not in state
+def test_no_store_means_nothing_runs(tmp_path):
+    assert trim_page_history(tmp_path, dry_run=False) is None

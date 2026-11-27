@@ -995,8 +995,10 @@ page; older ones are deleted on the same write.
 <!-- END GENERATED settings:wiki -->
 
 - The current page is never deleted; the cap counts earlier versions only.
-- The first `update` that indexes a commit after upgrading trims every page's
-  history once, and again after the cap changes. Raising it deletes nothing.
+- A page no write touches is trimmed by `update`: each update that indexes a
+  commit checks whether any page is over the cap (milliseconds) and trims the
+  whole repository when one is. The first one after upgrading clears the old
+  history. Raising the cap deletes nothing.
 - A value repowise cannot use (not a whole number from 1 to 100000) trims
   nothing until it is fixed; `repowise doctor` names it.
 - `wiki.db` does not shrink when versions go: SQLite reuses the freed space for

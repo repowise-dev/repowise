@@ -86,7 +86,7 @@ def _apply_page_upsert(
     created_at: datetime,
     updated_at: datetime,
     now: datetime,
-    snapshotted: list[str] | None = None,
+    snapshotted: list[tuple[str, str]] | None = None,
 ) -> Page:
     """Apply the insert / version-snapshot / idempotent-touch branch for one
     page against a PRE-RESOLVED ``existing`` row.
@@ -95,7 +95,8 @@ def _apply_page_upsert(
     callers share one implementation of the version semantics. Does NOT flush:
     the caller owns the flush (one per call for ``upsert_page``, one per batch
     for :func:`upsert_pages_from_generated`). A page that gets a new snapshot
-    has its id appended to *snapshotted*, so the caller can trim its history.
+    has ``(page id, owning repository id)`` appended to *snapshotted*, so the
+    caller can trim its history.
     """
     if existing is not None:
         # The page keeps the prose it already has (see
@@ -184,7 +185,7 @@ def _apply_page_upsert(
         )
         session.add(snapshot)
         if snapshotted is not None:
-            snapshotted.append(existing.id)
+            snapshotted.append((existing.id, existing.repository_id))
 
         # Update Page in place (preserves created_at)
         existing.page_type = page_type
@@ -290,7 +291,7 @@ async def upsert_page(
     existing_result = await session.execute(select(Page).where(Page.id == page_id))
     existing = existing_result.scalar_one_or_none()
 
-    snapshotted: list[str] = []
+    snapshotted: list[tuple[str, str]] = []
     page = _apply_page_upsert(
         session,
         existing,
@@ -324,7 +325,7 @@ async def upsert_page(
         snapshotted=snapshotted,
     )
     await session.flush()
-    await _trim_snapshotted(session, repository_id, snapshotted)
+    await _trim_snapshotted(session, snapshotted)
     return page
 
 
@@ -522,21 +523,41 @@ async def prune_page_versions(
     return deleted
 
 
-async def _trim_snapshotted(session: AsyncSession, repository_id: str, page_ids: list[str]) -> None:
-    """Hold each page that just took a snapshot to its repository's version cap.
+async def _trim_snapshotted(session: AsyncSession, snapshotted: list[tuple[str, str]]) -> None:
+    """Hold each page that just took a snapshot to its owning repository's cap.
 
-    Scoped to *repository_id*: page ids are global, so a write that resolved
-    another repository's page never trims that repository's history.
+    Page ids are global, so a write can resolve a page another repository
+    owns; the snapshot belongs to that owner and is trimmed by the owner's
+    cap, never by the writer's.
     """
-    if not page_ids:
-        return
-    local_path = (
-        await session.execute(select(Repository.local_path).where(Repository.id == repository_id))
-    ).scalar_one_or_none()
-    keep = page_versions_keep(local_path)
-    if keep is None:
-        return
-    await prune_page_versions(session, keep, page_ids=page_ids, repository_id=repository_id)
+    by_owner: dict[str, list[str]] = {}
+    for page_id, owner in snapshotted:
+        by_owner.setdefault(owner, []).append(page_id)
+    for owner, page_ids in by_owner.items():
+        local_path = (
+            await session.execute(select(Repository.local_path).where(Repository.id == owner))
+        ).scalar_one_or_none()
+        keep = page_versions_keep(local_path)
+        if keep is not None:
+            await prune_page_versions(session, keep, page_ids=page_ids, repository_id=owner)
+
+
+async def page_versions_over_cap(session: AsyncSession, keep: int) -> bool:
+    """Whether any page in the store holds more than *keep* earlier versions.
+
+    Counts through the ``page_id`` index alone, so it costs milliseconds where
+    a trim of the whole table costs seconds. Store-wide on purpose: in a store
+    shared by repositories with different caps this can answer yes for a page
+    the asking repository does not own, and the trim that follows finds
+    nothing of its own to delete.
+    """
+    over = (
+        select(PageVersion.page_id)
+        .group_by(PageVersion.page_id)
+        .having(func.count() > keep)
+        .limit(1)
+    )
+    return (await session.execute(over)).first() is not None
 
 
 # Chunk the id SELECT to stay under SQLite's host-parameter limit (same reason
@@ -588,7 +609,7 @@ async def upsert_pages_from_generated(
 
     now = _now_utc()
     out: list[Page] = []
-    snapshotted: list[str] = []
+    snapshotted: list[tuple[str, str]] = []
     for gp in pages:
         out.append(
             _apply_page_upsert(
@@ -627,7 +648,7 @@ async def upsert_pages_from_generated(
             )
         )
     await session.flush()
-    await _trim_snapshotted(session, repository_id, snapshotted)
+    await _trim_snapshotted(session, snapshotted)
     return out
 
 

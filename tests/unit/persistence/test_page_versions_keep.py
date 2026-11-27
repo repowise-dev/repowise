@@ -76,6 +76,11 @@ async def test_a_write_never_trims_another_repositorys_history(async_session, tm
     await _rewrite(async_session, dict(a, repository_id=second.id), 2, start=5)
     assert await _count(async_session, a["page_id"]) == 6
 
+    # The owner's cap still holds for snapshots another repository's writes take.
+    _write_keep(tmp_path / "a", 3)
+    await _rewrite(async_session, dict(a, repository_id=second.id), 2, start=7)
+    assert await _count(async_session, a["page_id"]) == 3
+
 
 async def test_a_loaded_snapshot_leaves_the_session_when_trimmed(async_session):
     repo = await insert_repo(async_session)
