@@ -173,7 +173,13 @@ describe("PerformanceView runtime evidence", () => {
   it("keeps a window whose statements joined no function, with its split and no list", async () => {
     const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
       const view = await statementsOnly(opts);
-      return { ...view, statements: { ...view.statements!, rows: [], total: 0 } };
+      // What the route sends: nothing ranks, and the window still lists its run.
+      return {
+        ...view,
+        basis: "unknown" as const,
+        status: "not_ranked" as const,
+        statements: { ...view.statements!, rows: [], total: 0 },
+      };
     });
     render(
       <PerformanceView adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })} />,
@@ -181,6 +187,7 @@ describe("PerformanceView runtime evidence", () => {
     expect(
       await screen.findByText("On no single function: 23.0% ambiguous · 6.0% unjoined."),
     ).toBeTruthy();
+    expect(screen.getAllByText(PROD_CLAIM).length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "Production statements" })).toBeTruthy();
     expect(screen.getByText("postgres:hosted · 42 statements · 1,854 ms stored")).toBeTruthy();
     expect(screen.queryByRole("list", { name: /^Statements in/ })).toBeNull();
