@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion.external_systems import (
     extract_external_systems,
     maven_model,
@@ -15,6 +17,24 @@ def _pom(tmp_path: Path, xml: str) -> Path:
     pom = tmp_path / "pom.xml"
     pom.write_text(xml, encoding="utf-8")
     return pom
+
+
+def _management(entry: str) -> str:
+    return (
+        "<dependencyManagement><dependencies><dependency>"
+        f"<groupId>com.acme</groupId><artifactId>x</artifactId>{entry}"
+        "</dependency></dependencies></dependencyManagement>"
+    )
+
+
+def _uses(extra: str = "") -> str:
+    return (
+        "<dependencies><dependency><groupId>com.acme</groupId>"
+        f"<artifactId>x</artifactId>{extra}</dependency></dependencies>"
+    )
+
+
+_GAV = "<groupId>com.example</groupId><artifactId>parent</artifactId><version>1</version>"
 
 
 class TestMavenParse:
@@ -97,6 +117,41 @@ class TestMavenParse:
         records = parse(pom, tmp_path)
         assert len(records) == 1
         assert records[0].version == "32.1.3-jre"
+
+    def test_dependency_management_sets_the_scope_of_a_dependency(self, tmp_path: Path) -> None:
+        managed = _management("<version>1</version><scope>test</scope>")
+        pom = _pom(tmp_path, f"<project>{_GAV}{managed}{_uses()}</project>")
+        (record,) = parse(pom, tmp_path)
+        assert (record.is_dev_dep, record.extras["scope"]) == (True, "test")
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "<version>2</version><type>pom</type>",
+            "<version>2</version><type>pom</type><scope>import</scope>",
+            "<version>2</version><type>pom</type><scope>${helper.scope}</scope>",
+        ],
+        ids=["no-scope", "import", "undefined-property"],
+    )
+    def test_an_entry_without_a_scope_replaces_the_scope_of_the_parent_s(
+        self, tmp_path: Path, entry: str
+    ) -> None:
+        managed = _management("<version>1</version><type>pom</type><scope>test</scope>")
+        _pom(
+            tmp_path,
+            f"<project>{_GAV}<packaging>pom</packaging>{managed}"
+            "<modules><module>app</module></modules></project>",
+        )
+        child = tmp_path / "app" / "pom.xml"
+        child.parent.mkdir()
+        child.write_text(
+            "<project><parent><groupId>com.example</groupId><artifactId>parent</artifactId>"
+            "<version>1</version></parent><artifactId>app</artifactId>"
+            f"{_management(entry)}{_uses('<type>pom</type>')}</project>",
+            encoding="utf-8",
+        )
+        (record,) = parse(child, tmp_path)
+        assert record.extras["scope"] == "compile"
 
     def test_malformed_xml_returns_empty(self, tmp_path: Path) -> None:
         pom = _pom(tmp_path, "not xml at all")
