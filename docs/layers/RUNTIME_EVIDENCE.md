@@ -930,7 +930,7 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   suffix (a JVM frame, which names a class and no file, is placed on the one
   indexed file its package and class name spell). What does not join is counted by reason, and a value that was not
   measured is unknown, never zero.
-- A profile joins to code for Python, Go, JavaScript, Java and Kotlin frames.
+- A profile joins to code for Python, Go, JavaScript, Java, Kotlin and Rust frames.
   A JVM frame joins by its line to the method holding it, with the method name
   and class checked; without a line, by name only when one method fits.
   Compiler-made JVM frames (bridges, accessors, `$$Lambda`) count as generated
@@ -939,6 +939,10 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   their original source through a local external source map; a frame that
   names a TypeScript file directly is refused, and so is a Go binary built
   with `-trimpath`.
+  A Rust frame (pprof-rs) joins by its line and demangled name, with the
+  type checked for a method or trait impl; closures and async bodies charge
+  the function around them, and code an attribute macro such as
+  `#[instrument]` writes joins the function the attribute sits on.
 - A profile or query-count run where more than half the entries did not map is
   refused unless `--allow-partial`.
 - A profile of one process misses the processes it starts; profile each one and
