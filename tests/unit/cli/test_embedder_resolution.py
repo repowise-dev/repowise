@@ -1604,3 +1604,16 @@ def test_switching_to_ollama_after_accepting_the_default_embeds_with_ollama(
     assert providers.resolve_embedder_choice(
         run.opts.embedder_name, repo_path=repo, provider="ollama"
     ) == ("ollama", "follows the ollama provider")
+
+
+def test_the_advanced_prompt_default_shows_the_embedder_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With --embedder, the default shown is the one the run keeps on Enter."""
+    from repowise.cli.ui import mode_selection
+
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert mode_selection._resolve_embedder_from_env(None, "gemini") == "gemini"
+    assert mode_selection._resolve_embedder_from_env("ollama", "gemini") == "gemini"

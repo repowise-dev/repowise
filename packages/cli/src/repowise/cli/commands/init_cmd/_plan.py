@@ -193,6 +193,7 @@ def _edit_plan(run: InitRun, scan: Any, editor_setup: bool, answers: _Answers) -
         language=run.opts.language_opt,
         commit_limit=run.opts.commit_limit,
         provider=getattr(answers.selection, "provider_name", None),
+        embedder_flag=run.opts.embedder_name,
     )
     _apply_advanced_answers(run, adv)
     if run.opts.run_mode == "fast":

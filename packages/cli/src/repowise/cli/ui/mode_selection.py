@@ -308,6 +308,7 @@ def _prompt_generation(
     wiki_style: str | None = None,
     language: str | None = None,
     provider: str | None = None,
+    embedder_flag: str | None = None,
 ) -> None:
     """Generation section: concurrency, reasoning, embedder, test run, tiering,
     onboarding, wiki style, and output language.
@@ -342,7 +343,7 @@ def _prompt_generation(
         result["reasoning"] = None
 
     # Embedder selection
-    detected_embedder = _resolve_embedder_from_env(provider)
+    detected_embedder = _resolve_embedder_from_env(provider, embedder_flag)
     embedder_choices = ["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock"]
     result["embedder"] = click.prompt(
         "  Embedder for RAG",
@@ -448,6 +449,7 @@ def interactive_advanced_config(
     commit_limit: int | None = None,
     ask_file_pages: bool = True,
     provider: str | None = None,
+    embedder_flag: str | None = None,
 ) -> dict[str, Any]:
     """Prompt for advanced init options, grouped into logical sections.
 
@@ -505,6 +507,7 @@ def interactive_advanced_config(
             wiki_style=wiki_style,
             language=language,
             provider=provider,
+            embedder_flag=embedder_flag,
         )
     elif result.get("run_mode") != "fast":
         # Fast mode renders no wiki at all, so there would be nothing to embed.
@@ -562,12 +565,13 @@ def chosen_embedder(adv: dict[str, Any]) -> str | None:
     return None if embedder and embedder == adv.get("embedder_default") else embedder
 
 
-def _resolve_embedder_from_env(provider: str | None = None) -> str:
+def _resolve_embedder_from_env(provider: str | None = None, flag: str | None = None) -> str:
     """The advanced prompt's default: the same answer the run itself would reach.
 
-    Delegates to the shared resolver so the two cannot drift, and passes the
-    chosen LLM *provider* so an ollama run defaults to a local embedder.
+    Delegates to the shared resolver so the two cannot drift. Passes the
+    ``--embedder`` *flag*, which the run keeps when Enter is pressed, and the
+    chosen LLM *provider*, so an ollama run defaults to a local embedder.
     """
     from repowise.cli.providers.embedders import resolve_embedder_choice
 
-    return resolve_embedder_choice(None, provider=provider)[0]
+    return resolve_embedder_choice(flag, provider=provider)[0]
