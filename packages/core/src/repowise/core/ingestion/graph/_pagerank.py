@@ -17,7 +17,7 @@ try:
     from networkx.algorithms.link_analysis.pagerank_alg import (
         _pagerank_python as _power_iteration,
     )
-except ImportError:  # pragma: no cover - depends on the networkx release
+except ImportError:
     _power_iteration = nx.pagerank
 
 
