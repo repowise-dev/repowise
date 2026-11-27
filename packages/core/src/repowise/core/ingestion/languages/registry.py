@@ -308,13 +308,43 @@ class LanguageRegistry:
         """Union of test filename-stem prefixes, sorted for determinism."""
         return tuple(sorted({p for s in self._specs.values() for p in s.test_stem_prefixes}))
 
+    def test_stem_prefixes_by_extension(self) -> dict[str, tuple[str, ...]]:
+        """Per-extension test filename-stem prefixes."""
+        result: dict[str, list[str]] = {}
+        for spec in self._specs.values():
+            if not spec.test_stem_prefixes:
+                continue
+            for ext in spec.extensions:
+                result.setdefault(ext, []).extend(spec.test_stem_prefixes)
+        return {ext: tuple(sorted(set(prefixes))) for ext, prefixes in result.items()}
+
     def test_stem_suffixes(self) -> tuple[str, ...]:
         """Union of test filename-stem suffixes, sorted for determinism."""
         return tuple(sorted({p for s in self._specs.values() for p in s.test_stem_suffixes}))
 
+    def test_stem_suffixes_by_extension(self) -> dict[str, tuple[str, ...]]:
+        """Per-extension test filename-stem suffixes."""
+        result: dict[str, list[str]] = {}
+        for spec in self._specs.values():
+            if not spec.test_stem_suffixes:
+                continue
+            for ext in spec.extensions:
+                result.setdefault(ext, []).extend(spec.test_stem_suffixes)
+        return {ext: tuple(sorted(set(suffixes))) for ext, suffixes in result.items()}
+
     def test_infixes(self) -> tuple[str, ...]:
         """Union of test filename infixes, sorted for determinism."""
         return tuple(sorted({p for s in self._specs.values() for p in s.test_infixes}))
+
+    def test_infixes_by_extension(self) -> dict[str, tuple[str, ...]]:
+        """Per-extension test filename infixes."""
+        result: dict[str, list[str]] = {}
+        for spec in self._specs.values():
+            if not spec.test_infixes:
+                continue
+            for ext in spec.extensions:
+                result.setdefault(ext, []).extend(spec.test_infixes)
+        return {ext: tuple(sorted(set(infixes))) for ext, infixes in result.items()}
 
     def test_support_extensions(self) -> frozenset[str]:
         """Extensions of a language whose runnable tests use their own extension.

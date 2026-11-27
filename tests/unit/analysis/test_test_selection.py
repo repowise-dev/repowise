@@ -1286,6 +1286,16 @@ def test_a_test_named_php_class_phpunit_does_not_collect_is_not_runnable() -> No
     assert is_runnable_test("src/Testing/Attributes/UnitTest.php")
 
 
+def test_go_test_prefixed_files_are_not_runnable() -> None:
+    """Go toolchains only compile *_test.go as tests; test_*.go are production files (#6408)."""
+    assert not is_runnable_test("pkg/gui/test_mode.go")
+    assert not is_runnable_test("pkg/integration/components/test_driver.go")
+    assert not is_runnable_test("pkg/integration/tests/test_list.go")
+    assert is_runnable_test("pkg/gui/mode_test.go")
+    assert is_runnable_test("tests/test_a.py")
+    assert is_runnable_test("tests/a_test.py")
+
+
 def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> None:
     config = TestSelectionConfig(
         always_run=("tests/test_smoke.py", "apps/android/FooTest.kt", "e2e/")

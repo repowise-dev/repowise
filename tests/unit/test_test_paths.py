@@ -41,6 +41,11 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # go
     ("app/user_test.go", None, "test"),
     ("pkg/thing_test.go", None, "test"),
+    ("pkg/gui/test_mode.go", None, ""),
+    ("pkg/integration/components/test_driver.go", None, ""),
+    ("src/test_mode.rs", None, ""),
+    ("app/models/test_user.rb", None, ""),
+    ("spec/models/spec_user.rb", None, "test"),
     # jest / vitest
     ("src/__tests__/x.js", None, "test"),
     ("src/components/Button.test.tsx", None, "test"),
