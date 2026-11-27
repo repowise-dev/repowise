@@ -707,8 +707,10 @@ function WindowRunRows({
   const rows: WindowRow[] = group?.rows ?? [];
   const total = group?.total ?? 0;
   const pending = Boolean(error) || (!data && isLoading);
-  if (!pending && rows.length === 0) return null;
   const words = WINDOW_GROUPS[kind];
+  // A statement window that joined no function keeps its line and its
+  // "On no single function" split, with no list; a route run lists handlers only.
+  if (!pending && rows.length === 0 && kind !== "statements") return null;
   const scale = Math.max(0, ...rows.map((r) => r.share ?? 0));
   const caption = windowCaption(run, words.noun, rows.length, total);
   return (
@@ -719,6 +721,8 @@ function WindowRunRows({
       <WindowClaim claim={run.window.claim} className="mb-1.5 mt-0.5" />
       {pending ? (
         <RowsPending loading={isLoading} what={words.pending} />
+      ) : rows.length === 0 ? (
+        caption ? <p className="text-xs text-[var(--color-text-tertiary)]">{caption}</p> : null
       ) : (
         <>
           <ul

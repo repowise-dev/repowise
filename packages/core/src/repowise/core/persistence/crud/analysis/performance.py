@@ -1278,9 +1278,10 @@ async def measured_costs(
       by statement time: a row's ``share`` is of the window's stored
       statement time and its ``statements`` holds calls, total and mean ms.
       Only a statement the join put on exactly one function counts toward
-      it; each run counts the rest by label in ``unattributed``. Listed only
-      when a run names a function. No rule reads a statement's cost into a
-      next step yet, so these rows never lead or mint a hotspot; their
+      it; each run counts the rest by label in ``unattributed``. A run whose
+      statements joined no function is listed with no rows (not with
+      *symbol_ids*), so its ``unattributed`` still shows. No rule reads a
+      statement's cost into a next step yet, so these rows never lead or mint a hotspot; their
       ``verify`` is the next production window, never a benchmark (a local
       benchmark does not measure a production statement).
     - ``routes``: the same for each production route workload's newest run
@@ -1326,7 +1327,11 @@ async def measured_costs(
         ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
     if symbol_ids is not None:
         ranked = [(run, [r for r in rows if r.symbol_id in symbol_ids]) for run, rows in ranked]
-    statements = _window_runs(await statement_costs(session, repository_id), run_id, symbol_ids)
+    # A window whose statements joined no function still lists its run, so
+    # where its time went (``unattributed``) shows; a hotspot's rows do not.
+    statements = _window_runs(
+        await statement_costs(session, repository_id), run_id, symbol_ids, keep_unjoined=True
+    )
     routes = _window_runs(await route_costs(session, repository_id), run_id, symbol_ids)
     benchmarks = await _benchmark_group(session, repository_id, limit, now, run_id)
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
@@ -1966,17 +1971,22 @@ def _route_run(found: Any, at: datetime) -> dict[str, Any]:
 
 
 def _window_runs(
-    found: list[Any], run_id: str | None, symbol_ids: Collection[str] | None
+    found: list[Any],
+    run_id: str | None,
+    symbol_ids: Collection[str] | None,
+    *,
+    keep_unjoined: bool = False,
 ) -> list[Any]:
     """Production window runs (``StatementRun`` or ``RouteRun``) kept to
     *run_id* and *symbol_ids* as :func:`measured_costs` reads them; a run
-    left naming no function is dropped."""
+    left naming no function is dropped, unless *keep_unjoined* and no
+    *symbol_ids* filter applies (a statement window that joined no function)."""
     kept = [
         f._replace(rows=[r for r in f.rows if symbol_ids is None or r.symbol_id in symbol_ids])
         for f in found
         if run_id in (None, f.run.id)
     ]
-    return [f for f in kept if f.rows]
+    return [f for f in kept if f.rows or (keep_unjoined and symbol_ids is None)]
 
 
 def _iso(at: datetime | None) -> str | None:

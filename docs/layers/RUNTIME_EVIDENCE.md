@@ -595,7 +595,8 @@ no statement is ever put on a function the join did not name. These rows are
 listed, never leading: no rule reads a statement's cost into a next step yet,
 so they mint no measured hotspot and no Fix first item. A store with statement
 runs is never `no_runtime_data`; one whose newest windows name no function
-reads `not_ranked`.
+reads `not_ranked`, and each such window still lists its run with no rows, so
+its `unattributed` split shows on the Performance tab, the REST route and MCP.
 
 Route runs read back the same way, as the `routes` group: one row per handler
 the route join named, ranked by the request time of its routes, with `share` of

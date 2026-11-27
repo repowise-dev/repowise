@@ -1177,7 +1177,15 @@ async def test_statements_on_no_single_function_rank_nothing_but_are_runtime_dat
     await _seed_code(async_session, repo.id)
     assert await unranked_reason(async_session, repo.id) == "no_runtime_data"
     await _seed_statements(async_session, repo.id, joined=False)
-    assert await measured_costs(async_session, repo.id, now=NOW) is None
+    # The window still lists its run, so where its time went shows; no rows.
+    group = (await measured_costs(async_session, repo.id, now=NOW))["statements"]
+    assert (group["rows"], group["total"]) == ([], 0)
+    (run,) = group["runs"]
+    assert {k: v["statements"] for k, v in run["unattributed"].items() if v["statements"]} == {
+        "ambiguous": 1, "database_schedule": 1,
+    }
+    # A hotspot's rows never list a run that names no function.
+    assert await measured_costs(async_session, repo.id, now=NOW, symbol_ids={f"{APP}::serve"}) is None
     assert await measured_status(async_session, repo.id) == "not_ranked"
 
 
