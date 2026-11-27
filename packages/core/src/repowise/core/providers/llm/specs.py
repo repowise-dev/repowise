@@ -60,9 +60,9 @@ class ProviderSpec:
     needs_repo_cwd: bool = False
     #: Runs on this machine, so high concurrency can time out.
     local: bool = False
-    #: The embedder a run on this provider uses when none was named, so a run
-    #: kept on this machine does not embed with a hosted service just because
-    #: its key is exported. Empty: the usual key detection decides.
+    #: The embedder a run on this provider uses when none was named, so it
+    #: embeds through the same server instead of a hosted service guessed
+    #: from an exported key. Empty: the usual key detection decides.
     local_embedder: str = ""
     #: Models named ``"<name>/..."`` cost nothing per token.
     zero_cost: bool = False
