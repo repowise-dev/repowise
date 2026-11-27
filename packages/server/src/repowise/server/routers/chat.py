@@ -66,6 +66,7 @@ from repowise.server.deps import (
     resolve_session_factory,
     verify_api_key,
 )
+from repowise.server.mcp_server import load_full_surface
 from repowise.server.provider_config import (
     NoProviderConfiguredError,
     UnknownProviderError,
@@ -231,7 +232,7 @@ async def _session_sse(open_session: Any, run: Any) -> AsyncIterator[str]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/api/repos/{repo_id}/chat/messages")
+@router.post("/api/repos/{repo_id}/chat/messages", dependencies=[Depends(load_full_surface)])
 @read_route
 async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     """Stream an agentic chat response via SSE."""
@@ -277,6 +278,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     # `toolHint` is absent, never null: the TypeScript contract declares it
     # optional, and a serialized null would be a value the clients do not type.
     response_model_exclude_none=True,
+    dependencies=[Depends(load_full_surface)],
 )
 async def chat_suggestions(
     repo_id: str,
@@ -488,6 +490,7 @@ async def _find_session(request: Request, session_id: str) -> StoredConversation
         200: {"content": {"text/event-stream": {}}},
         409: {"description": "The idempotency key was already sent with another message"},
     },
+    dependencies=[Depends(load_full_surface)],
 )
 @read_route
 async def send_chat_session_message(
