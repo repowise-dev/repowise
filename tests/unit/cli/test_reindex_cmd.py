@@ -603,7 +603,7 @@ async def test_a_clean_switch_clears_the_keyless_marker(monkeypatch, tmp_path: P
 
 async def test_a_failed_switch_keeps_the_keyless_marker(monkeypatch, tmp_path: Path) -> None:
     """A run that embedded nothing leaves the marker, so the next ``update`` retries."""
-    with pytest.raises(Exception):  # noqa: B017 - the abort's type is not the point
+    with pytest.raises(click.Abort):
         await _switch_embedder(
             monkeypatch, tmp_path, "openai", config="embedder: mock\n", fail=True
         )

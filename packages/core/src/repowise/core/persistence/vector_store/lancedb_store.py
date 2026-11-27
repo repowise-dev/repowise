@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -99,18 +100,14 @@ def mark_keyless_store(lance_dir: str | Path) -> None:
     Read only while *lance_dir* holds no table: the first real-embedder write
     creates one, and from then on the table's own width is the answer.
     """
-    try:
+    with contextlib.suppress(OSError):
         (Path(lance_dir).parent / KEYLESS_MARKER).touch()
-    except OSError:
-        pass
 
 
 def clear_keyless_store_mark(lance_dir: str | Path) -> None:
     """Forget the marker once a real embedder has re-embedded the wiki. Best-effort."""
-    try:
+    with contextlib.suppress(OSError):
         (Path(lance_dir).parent / KEYLESS_MARKER).unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def keyless_store_marked(lance_dir: str | Path) -> bool:
