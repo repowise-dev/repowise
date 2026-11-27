@@ -283,7 +283,7 @@ def _vite_root_glob_files(pattern: str, root: str | None, ctx: ResolverContext) 
 
 
 def _vite_root(importer_path: str, repo_path: Path | None) -> str | None:
-    """Repo-relative Vite root, or None when the configured root is outside the repo."""
+    """Repo-relative Vite root, or None when the configured root is computed or outside the repo."""
     if repo_path is None:
         return "."
     package_dir: Path | None = None
@@ -307,18 +307,26 @@ def _vite_config_in(directory: Path) -> Path | None:
 
 
 def _configured_vite_root(config: Path, config_dir: Path, repo_path: Path) -> str | None:
-    """The repo-relative root *config* sets; its own directory when it sets none."""
-    root = _literal_vite_root(config)
-    if root is None:
+    """The repo-relative root *config* sets; its own directory when it sets none.
+
+    A computed ``root`` (not a plain string) is unknown, so it gives None.
+    """
+    found, root = _literal_vite_root(config)
+    if not found:
         return config_dir.as_posix()
+    if root is None:
+        return None
     try:
         return (config.parent / root).resolve().relative_to(repo_path.resolve()).as_posix()
     except (OSError, RuntimeError, ValueError):
         return None
 
 
-def _literal_vite_root(config: Path) -> str | None:
-    """Read a top-level literal ``root`` from a Vite config object without executing it."""
+def _literal_vite_root(config: Path) -> tuple[bool, str | None]:
+    """Whether a Vite config object sets a top-level ``root``, and its value when literal.
+
+    The config is parsed, never executed.
+    """
     from tree_sitter import Parser
 
     from ..parser import _get_language
@@ -326,18 +334,18 @@ def _literal_vite_root(config: Path) -> str | None:
     try:
         source = config.read_bytes()
     except OSError:
-        return None
+        return False, None
     language = _get_language("typescript" if config.suffix.endswith("ts") else "javascript")
     if language is None:
-        return None
+        return False, None
     for statement in Parser(language).parse(source).root_node.named_children:
         config_object = _exported_config_object(statement)
         if config_object is None:
             continue
         found, root = _root_property(config_object)
         if found:
-            return root
-    return None
+            return True, root
+    return False, None
 
 
 def _exported_config_object(statement: Node) -> Node | None:

@@ -155,6 +155,22 @@ def test_root_relative_glob(tmp_path: Path, root_prefix: str, markers: dict[str,
     }
 
 
+def test_root_relative_glob_under_computed_root_gets_no_edges(tmp_path: Path) -> None:
+    # The root is computed, so it is unknown: the config directory is no stand-in.
+    graph, _ = _build(
+        tmp_path,
+        {
+            "apps/web/vite.config.ts": (
+                "import { resolve } from 'node:path';\n"
+                "export default defineConfig({ root: resolve(__dirname, 'site') });\n"
+            ),
+            "apps/web/src/main.ts": "export const pages = import.meta.glob('/src/pages/*.ts');\n",
+            "apps/web/src/pages/home.ts": "export const title = 'home';\n",
+        },
+    )
+    assert _imports_from(graph, "apps/web/src/main.ts") == {}
+
+
 def test_alias_rooted_glob_resolves_through_tsconfig_paths(tmp_path: Path) -> None:
     graph, report = _build(
         tmp_path,
