@@ -181,6 +181,11 @@ class TestDetectClient:
         assert telemetry.detect_client() == "vscode_ext"
         assert "vscode_ext" in telemetry.CLIENT_LABELS
 
+    def test_agent_in_the_extension_terminal_is_the_agent(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("REPOWISE_CLIENT", "vscode_ext")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        assert telemetry.detect_client() == "claude_code"
+
     def test_unknown_declared_client_is_ignored(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("REPOWISE_CLIENT", "anything-else")
         assert telemetry.detect_client() == "terminal"
