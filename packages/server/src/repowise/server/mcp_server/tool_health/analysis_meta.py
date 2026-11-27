@@ -108,3 +108,24 @@ def _write_health_analysis_meta(
     if status != "available":
         analysis["refresh"] = "repowise update"
     meta["health_analysis"] = analysis
+
+
+def _attach_duplication_off(meta: dict[str, Any], repo_path: Any) -> None:
+    """Say duplication is off when ``health.duplication.enabled`` is false.
+
+    Off, no clone finding is computed, so an agent must not read their absence
+    as code free of duplication. Absent while on, so a default response does
+    not grow. Read from config.yaml: the next update clears what an earlier
+    pass stored, and this says why the findings are going.
+    """
+    if repo_path is None or "health_analysis" not in meta:
+        return
+    from repowise.core.analysis.health.config import duplication_enabled
+    from repowise.core.repo_config import load_repo_config
+
+    try:
+        config = load_repo_config(repo_path)
+    except Exception:  # a broken config.yaml is doctor's to report, not get_health's
+        return
+    if not duplication_enabled(config):
+        meta["health_analysis"]["duplication"] = "off: health.duplication.enabled is false"

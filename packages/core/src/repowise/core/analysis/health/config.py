@@ -50,6 +50,7 @@ from typing import Any
 import structlog
 
 from repowise.core.repo_config import get_repowise_dir, load_repo_config
+from repowise.core.settings.model import flag
 
 from .biomarker_names import canonical_biomarker, canonical_biomarkers
 from .models import Severity
@@ -211,6 +212,17 @@ def _compile_glob(pattern: str) -> Any:
         return pathspec.PathSpec([])
 
 
+def duplication_enabled(config: object) -> bool:
+    """``health.duplication.enabled`` in a loaded config.yaml mapping.
+
+    On when absent or unreadable, the setting's default: a typo must not
+    quietly turn a finding off.
+    """
+    health = config.get("health") if isinstance(config, dict) else None
+    dup = health.get("duplication") if isinstance(health, dict) else None
+    return flag(dup.get("enabled") if isinstance(dup, dict) else None, True)
+
+
 @dataclass
 class HealthRule:
     """One per-path override entry.
@@ -259,6 +271,10 @@ class HealthConfig:
     # broad tier only (``asserts/lexicon.py``), so unlike every other key here
     # this one provably cannot move a score.
     assert_extra_names: list[str] = field(default_factory=list)
+    # ``health.duplication.enabled`` in config.yaml. Off disables the
+    # ``dry_violation`` biomarker, the one consumer of clone detection, so the
+    # duplication pass and its caches are skipped wherever that biomarker is.
+    duplication_enabled: bool = True
 
     @classmethod
     def load(cls, repo_path: Path | str) -> HealthConfig:
@@ -273,22 +289,25 @@ class HealthConfig:
         """
         cfg = cls._load_config_yaml_blocks(repo_path)
         rules_path = get_repowise_dir(repo_path) / HEALTH_RULES_FILENAME
-        if not rules_path.exists():
-            return cfg
-        try:
-            rules_cfg = cls.from_json(rules_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            log.warning("health_rules_load_failed", path=str(rules_path), error=str(exc))
-            return cfg
-        rules_cfg.refactoring_enabled = cfg.refactoring_enabled
-        rules_cfg.disabled_refactorings = cfg.disabled_refactorings
-        rules_cfg.refactoring_min_confidence = cfg.refactoring_min_confidence
-        rules_cfg.assert_extra_names = cfg.assert_extra_names
-        return rules_cfg
+        if rules_path.exists():
+            try:
+                rules_cfg = cls.from_json(rules_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                log.warning("health_rules_load_failed", path=str(rules_path), error=str(exc))
+            else:
+                rules_cfg.refactoring_enabled = cfg.refactoring_enabled
+                rules_cfg.disabled_refactorings = cfg.disabled_refactorings
+                rules_cfg.refactoring_min_confidence = cfg.refactoring_min_confidence
+                rules_cfg.assert_extra_names = cfg.assert_extra_names
+                rules_cfg.duplication_enabled = cfg.duplication_enabled
+                cfg = rules_cfg
+        if not cfg.duplication_enabled and "dry_violation" not in cfg.disabled_biomarkers:
+            cfg.disabled_biomarkers.append("dry_violation")
+        return cfg
 
     @classmethod
     def _load_config_yaml_blocks(cls, repo_path: Path | str) -> HealthConfig:
-        """Read the ``refactoring:`` and ``assertions:`` blocks of config.yaml.
+        """Read the ``refactoring:``, ``assertions:`` and ``health:`` blocks of config.yaml.
 
         Returns a config carrying only those knobs (biomarker fields left at
         their defaults). Never raises: a missing/malformed file or an
@@ -305,6 +324,7 @@ class HealthConfig:
         assertions = block.get("assertions")
         if isinstance(assertions, dict):
             cfg.assert_extra_names = _assertion_names(assertions.get("extra_names"))
+        cfg.duplication_enabled = duplication_enabled(block)
         return cfg
 
     @classmethod

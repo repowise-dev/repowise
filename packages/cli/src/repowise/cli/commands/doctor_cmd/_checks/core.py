@@ -8,7 +8,7 @@ from pathlib import Path as _DoctorPath
 from repowise.cli.helpers import db_configured, read_state, run_async
 
 from .._types import DoctorCheck, _check
-from .context import CheckContext, open_store
+from .context import CheckContext, open_store, sqlite_page_counts
 from .settings import settings_rows
 
 
@@ -199,6 +199,47 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
     except Exception as e:
         return [_check("Database", False, str(e), check_id="database")]
     return [_check("Database", True, f"{ctx.page_count} pages", check_id="database")]
+
+
+#: Share of wiki.db's pages that may sit free before doctor suggests a VACUUM.
+WIKI_DB_FREE_SHARE = 0.25
+
+
+def _wiki_db_free_row(ctx: CheckContext) -> DoctorCheck | None:
+    """A VACUUM suggestion when over a quarter of wiki.db is free pages.
+
+    Deletes (pruned page versions, a re-index) leave pages SQLite reuses before
+    it grows the file, so the file never shrinks by itself. Doctor never runs
+    the VACUUM: it rewrites the whole file, needs that much free disk again,
+    and blocks every other writer, open MCP sessions included, until it ends.
+    ``None`` below the threshold, or when the index lives in another database.
+    """
+    db_path = ctx.repowise_dir / "wiki.db"
+    if db_configured() or not db_path.is_file():
+        return None
+    try:
+        page_size, pages, free = sqlite_page_counts(db_path)
+    except Exception:
+        return None
+    if not pages or free / pages <= WIKI_DB_FREE_SHARE:
+        return None
+    mb = 1024 * 1024
+    detail = (
+        f"{free * page_size / mb:.0f} MB of {pages * page_size / mb:.0f} MB is free space "
+        f"({free / pages:.0%}); VACUUM gives it back. Close every repowise process first "
+        "(MCP sessions, serve, an update) and have free disk the size of the file"
+    )
+    target = db_path.resolve().as_posix()
+    fix = f"python -c \"import sqlite3; sqlite3.connect('{target}').execute('VACUUM')\""
+    return _check(
+        "wiki.db free space",
+        True,
+        detail,
+        check_id="wiki-db-free-space",
+        warn=True,
+        fix=fix,
+        data={"free_bytes": free * page_size, "file_bytes": pages * page_size},
+    )
 
 
 def _state_row(ctx: CheckContext) -> DoctorCheck:
@@ -435,6 +476,10 @@ def core_checks(ctx: CheckContext) -> list[DoctorCheck]:
     checks.extend(_hook_rows(ctx.repo_path))
     checks.extend(settings_rows(ctx))
     checks.extend(_database_rows(ctx))
+    if ctx.db_ok:
+        free_space = _wiki_db_free_row(ctx)
+        if free_space is not None:
+            checks.append(free_space)
     checks.append(_state_row(ctx))
     if ctx.state_ok:
         freshness = _index_freshness_row(ctx.repo_path, ctx.state)

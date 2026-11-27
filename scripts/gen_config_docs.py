@@ -128,6 +128,8 @@ BLOCKS: tuple[Block, ...] = (
     _block("refactoring"),
     _block("report"),
     _block("wiki"),
+    _block("health"),
+    _block("performance"),
     _block("contracts"),
     _block("assertions"),
     _block("tests"),
