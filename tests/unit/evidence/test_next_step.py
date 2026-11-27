@@ -583,3 +583,243 @@ def test_a_django_queryset_in_a_loop_on_the_driver_chain_says_batch() -> None:
     )
     row = _row("app/models.py::Post::tags", [DJANGO_ITER], drivers)
     assert "loop in Index.listing (N+1)" in next_step(row, "python", [loop]).next
+
+
+# --- a regular expression run per call ---------------------------------------
+
+_TIMESTAMP_FULL = (
+    r"RegExp: ^([0-9][0-9][0-9][0-9])-([0-9][0-9]?)-([0-9][0-9]?)(?:[Tt]|[ \t]+)"
+    r"([0-9][0-9]?):([0-9][0-9]):([0-9][0-9])(?:\.([0-9]*))?$"
+)
+
+
+def _regex_row(symbol: str, callee: str, share: float = 0.9, **kw: Any) -> dict[str, Any]:
+    kind = kw.pop("kind", "library")
+    leaf = kw.pop("leaf", None)
+    return _row(symbol, [_c(callee, kind, share, leaf)], klass="entry_point")
+
+
+def test_a_number_writer_spending_its_time_in_a_matcher_tests_a_cheap_condition_first() -> None:
+    # A JSON writer that validates every number's string form against a pattern (JFR).
+    row = _row(
+        "src/main/java/stream/JsonWriter.java::JsonWriter::value#1(Number)",
+        [
+            _c("java.util.regex.Matcher.matches()", "library", 0.6683),
+            _c(
+                "stream.JsonWriter.JsonWriter.writeDeferredName",
+                "repo",
+                0.2284,
+                ("java.lang.AbstractStringBuilder.ensureCapacityInternal(int)", "library", 0.17),
+            ),
+        ],
+        klass="entry_point",
+    )
+    step = next_step(row, "java")
+    assert step is not None and step.rule == "regex_match"
+    assert (
+        step.why == "67% of it is regular expression matching (67% java.util.regex.Matcher.matches)"
+    )
+    assert step.next.startswith("settle the common inputs without the regex: a cheap check first")
+    assert "startsWith or indexOf" in step.next
+    assert "hand-written scan that accepts exactly the same strings" in step.next
+
+
+def test_two_patterns_per_call_add_up_and_print_short() -> None:
+    # A YAML scalar resolver trying two date patterns on every plain scalar (V8).
+    row = _row(
+        "lib/type/timestamp.js::resolveYamlTimestamp",
+        [
+            _c("(own code)", "own", 0.4421),
+            _c(_TIMESTAMP_FULL, "library", 0.3688),
+            _c("RegExp: ^([0-9][0-9][0-9][0-9])-([0-9][0-9])-([0-9][0-9])$", "native", 0.189),
+        ],
+        klass="entry_point",
+    )
+    step = next_step(row, "javascript")
+    assert step is not None and step.rule == "regex_match" and step.share == 0.5578
+    assert "37% RegExp /^([0-9][0-9][0-9][0-9])-([0-9][0-9]?)-([.../" in step.why
+    assert "19% RegExp /^([0-9][0-9][0-9][0-9])-([0-9][0-9])-([0.../" in step.why
+    assert "startsWith or includes" in step.next and "lastIndex" in step.next
+
+
+@pytest.mark.parametrize(
+    ("language", "callee", "kind", "methods"),
+    [
+        ("go", "regexp.(*Regexp).MatchString", "library", "strings.HasPrefix"),
+        ("go", "regexp.(*Regexp).ReplaceAllString (inline)", "library", "strings.HasPrefix"),
+        ("java", "java/util/regex/Matcher.find", "library", "indexOf"),
+        ("java", "java/util/regex/Matcher.matches()Z_[j]", "library", "indexOf"),
+        ("kotlin", "kotlin.text.Regex.containsMatchIn(CharSequence)", "library", "indexOf"),
+        ("python", "Pattern.search", "native", "str.startswith"),
+        ("python", "<method 'fullmatch' of 're.Pattern' objects>", "native", "str.startswith"),
+        # A pattern source ending in a word another family holds (``end``).
+        ("typescript", r"RegExp: ^\/api\/end", "native", "startsWith"),
+    ],
+)
+def test_regex_match_per_language(language: str, callee: str, kind: str, methods: str) -> None:
+    step = next_step(_regex_row("src/util.x::is_valid_id", callee, kind=kind), language)
+    assert step is not None and step.rule == "regex_match"
+    assert methods in step.next
+
+
+@pytest.mark.parametrize(
+    ("language", "callee", "leaf", "build"),
+    [
+        ("java", "java.lang.String.matches(String)", None, "a static final Pattern"),
+        # The compile is the engine's own leaf: still the pattern built per call.
+        (
+            "java",
+            "java/lang/String.replaceAll",
+            ("java.util.regex.Pattern.compile(String)", "library", 0.7),
+            "a static final Pattern",
+        ),
+        (
+            "go",
+            "regexp.MatchString",
+            ("regexp.compile", "library", 0.7),
+            "a package-level regexp.MustCompile for a literal pattern",
+        ),
+    ],
+)
+def test_a_call_that_compiles_its_pattern_each_time_says_build_it_once(
+    language: str, callee: str, leaf: tuple[str, str, float] | None, build: str
+) -> None:
+    row = _regex_row("src/util.x::is_valid_id", callee, leaf=leaf)
+    step = next_step(row, language)
+    assert step is not None and step.rule == "regex_match"
+    assert "whose pattern is compiled on each call" in step.why
+    assert "when the pattern is a constant" in step.next and build in step.next
+
+
+@pytest.mark.parametrize(
+    ("symbol", "language", "callee"),
+    [
+        ("src/lexer.js::next", "javascript", "RegExp: ^[a-z]+"),
+        ("src/expr.lexer.ts::next", "typescript", "RegExp: ^[a-z]+"),
+        ("src/util.java::Lexer::next", "java", "java.util.regex.Matcher.lookingAt()"),
+        ("src/read.go::readToken", "go", "regexp.(*Regexp).FindStringIndex"),
+        ("app/views.py::parse_header", "python", "Pattern.match"),
+        (
+            "src/Input.java::Input::parse#1(java.lang.String)",
+            "java",
+            "java.util.regex.Matcher.matches()",
+        ),
+        ("src/http.router.ts::accept", "typescript", "RegExp: ^\\/users"),
+    ],
+)
+def test_a_function_whose_job_is_matching_stays_silent(
+    symbol: str, language: str, callee: str
+) -> None:
+    kind = "native" if language == "python" else "library"
+    assert next_step(_regex_row(symbol, callee, kind=kind), language) is None
+    # The same call in a function whose name says nothing about matching fires.
+    neutral = next_step(_regex_row("src/util.x::is_valid_id", callee, kind=kind), language)
+    assert neutral is not None and neutral.rule == "regex_match"
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "src/ComplexValue.java::ComplexValue::write",  # ``lex`` inside a word
+        "src/Out.java::Out::value#1(Token)",  # a parameter type
+    ],
+)
+def test_matching_words_count_only_as_whole_words_of_the_name(symbol: str) -> None:
+    step = next_step(_regex_row(symbol, "java.util.regex.Matcher.matches()"), "java")
+    assert step is not None and step.rule == "regex_match"
+
+
+def test_regex_match_fires_at_half_and_not_below() -> None:
+    def row(share: float) -> dict[str, Any]:
+        return _row(
+            "lib/scalar.js::captureSegment",
+            [_c("(own code)", "own", 1 - share), _c(r"RegExp: [\x00-\x08]", "native", share)],
+            klass="entry_point",
+        )
+
+    assert next_step(row(0.5), "javascript").rule == "regex_match"
+    # A segment checker whose own scan leads.
+    assert next_step(row(0.4356), "javascript") is None
+
+
+@pytest.mark.parametrize(
+    ("language", "callee", "kind", "leaf"),
+    [
+        # Bare names other libraries spell too.
+        ("python", "match", "library", None),
+        ("javascript", "test", "native", None),
+        # Not the standard library's matcher.
+        ("java", "com.vendor.Matcher.matches(Object)", "library", None),
+        ("go", "example.com/custom/regexp.(*Regexp).MatchString", "library", None),
+        ("python", "Pattern.match", "library", None),
+        # Calls that run no match in the call.
+        ("go", "regexp.(*Regexp).SubexpIndex", "library", None),
+        ("go", "regexp.(*Regexp).UnmarshalText", "library", None),
+        ("java", "java.util.regex.Matcher.results()", "library", None),
+        ("kotlin", "kotlin.text.Regex.findAll(CharSequence, int)", "library", None),
+        # A literal-string replace in JavaScript.
+        ("javascript", "String.replaceAll", "native", None),
+        # A replacement callback whose time is a file read.
+        (
+            "go",
+            "regexp.(*Regexp).ReplaceAllStringFunc",
+            "library",
+            ("os.Stat", "library", 0.75),
+        ),
+        ("python", "Pattern.sub", "native", ("stat", "native", 0.8)),
+    ],
+)
+def test_regex_match_stays_silent(
+    language: str, callee: str, kind: str, leaf: tuple[str, str, float] | None
+) -> None:
+    step = next_step(_regex_row("src/util.x::is_valid_id", callee, kind=kind, leaf=leaf), language)
+    assert step is None or step.rule != "regex_match"
+
+
+def test_a_callback_leaf_keeps_its_own_family() -> None:
+    row = _regex_row(
+        "a.go::rewrite",
+        "regexp.(*Regexp).ReplaceAllStringFunc",
+        leaf=("os.Stat", "library", 0.75),
+    )
+    assert next_step(row, "go").rule == "filesystem"
+
+
+def test_a_v8_pattern_is_never_read_as_a_call_name() -> None:
+    step = next_step(_regex_row("a.js::f", r"RegExp: ^foo\/regexp.MatchString"), "javascript")
+    assert step is not None and step.rule == "regex_match"
+    assert "compiled on each call" not in step.why
+
+
+def test_a_v8_pattern_ending_in_the_function_name_is_no_thin_wrapper() -> None:
+    step = next_step(_regex_row("api.js::end", r"RegExp: ^\/api\/end"), "javascript")
+    assert step is not None and step.rule == "regex_match"
+
+
+@pytest.mark.parametrize("leaf", ["parse", "_parse", "_compile"])
+def test_a_python_replacement_callback_is_no_regex_time(leaf: str) -> None:
+    row = _regex_row("a.py::render", "Pattern.sub", kind="native", leaf=(leaf, "library", 0.8))
+    assert next_step(row, "python") is None
+
+
+def test_a_small_compile_per_call_beside_a_built_matcher_reads_as_matching() -> None:
+    row = _row(
+        "a.go::check",
+        [
+            _c("regexp.(*Regexp).MatchString", "library", 0.55),
+            _c("regexp.MatchString", "library", 0.01),
+        ],
+        klass="entry_point",
+    )
+    step = next_step(row, "go")
+    assert step is not None and step.rule == "regex_match"
+    assert step.why.startswith("56% of it is regular expression matching")
+    assert "compiled on each call" not in step.why
+
+
+def test_a_python_matcher_leaf_is_regex_time() -> None:
+    row = _regex_row(
+        "a.py::clean", "Pattern.sub", kind="native", leaf=("Pattern.match", "native", 0.7)
+    )
+    step = next_step(row, "python")
+    assert step is not None and step.rule == "regex_match"
