@@ -3781,6 +3781,17 @@ export interface PageNotesUpdate {
   human_notes?: string | null;
 }
 
+/**
+ * POST body for /lookup/regenerate.
+ *
+ * ``steering`` lives in the body rather than the URL: the textarea allows
+ * 2000 characters, which percent-encodes to a request line the Next.js proxy
+ * rejects with a 431 before the request reaches the API.
+ */
+export interface PageRegenerateBody {
+  steering?: string | null;
+}
+
 export interface PageResponse {
   id: string;
   repository_id: string;
