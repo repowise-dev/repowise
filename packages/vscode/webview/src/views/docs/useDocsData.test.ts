@@ -42,7 +42,7 @@ describe("useDocsData", () => {
     });
     const pageById = vi.fn().mockImplementation((id: string) => Promise.resolve({ ...OVERVIEW, id }));
     const host = {
-      api: { pageSummaries: vi.fn().mockResolvedValue([OVERVIEW]), pageById },
+      api: { pageTree: vi.fn().mockResolvedValue([OVERVIEW]), pageById },
     } as unknown as WebviewHost;
     const { result } = renderHook(() => useDocsData(host, {}, 0));
 

@@ -28,7 +28,7 @@ function usePageList(host: WebviewHost, refreshToken: number) {
     let cancelled = false;
     setError(null);
     host.api
-      .pageSummaries()
+      .pageTree()
       .then((list) => {
         if (!cancelled) setPages(list as unknown as DocPageSummary[]);
       })

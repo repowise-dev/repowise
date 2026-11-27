@@ -213,15 +213,8 @@ export interface HostApi {
   /** Module paths for the record's linkage editor autocomplete. */
   moduleSuggestions(): Promise<string[]>;
   // Docs
-  /**
-   * Every page with its body: tens of megabytes on a large wiki. A tree wants
-   * pageTree() and fetches the page it shows with pageById().
-   */
-  pagesList(): Promise<PageResponse[]>;
-  /** Every page without its body, the rows a docs tree draws. */
+  /** Every page without its body, the rows a docs tree draws; the reader fetches one page by id. */
   pageTree(): Promise<PageSummary[]>;
-  /** Every page without its body; the reader fetches one page by id. */
-  pageSummaries(): Promise<PageSummary[]>;
   /** Full-text and semantic hits for the search palette, in that order. */
   searchPages(query: string): Promise<SearchResultResponse[]>;
   pageById(pageId: string): Promise<PageResponse>;

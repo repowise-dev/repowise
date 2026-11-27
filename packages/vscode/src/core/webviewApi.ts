@@ -43,7 +43,7 @@ import {
 } from "@repowise-dev/api-client/decisions";
 import { listEpisodes } from "@repowise-dev/api-client/episodes";
 import { listModuleHealth } from "@repowise-dev/api-client/modules";
-import { getPageById, listAllPages, listPageTree } from "@repowise-dev/api-client/pages";
+import { getPageById, listPageTree } from "@repowise-dev/api-client/pages";
 import {
   analyzeBlastRadius,
   analyzeChangeBlastRadius,
@@ -76,9 +76,6 @@ function populationParams(p?: GraphPopulation) {
     ? { include_tests: p.tests, include_examples: p.examples, include_docs: p.docs }
     : undefined;
 }
-
-/** Page types the docs tree needs in full; see `pageSummaries`. */
-const HYDRATED_PAGE_TYPES = ["repo_overview", "architecture_diagram", "onboarding", "scc_page"];
 
 /** Thrown by the dispatcher when a request arrives while disconnected. */
 class NotReadyError extends Error {
@@ -396,24 +393,9 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
         ),
       ),
 
-    // Docs
-    pagesList: () => cached("docs:pages", (id) => listAllPages(id)),
+    // Docs. The tree's listing carries no bodies (tens of megabytes on a large
+    // wiki); the reader fetches the one page it shows.
     pageTree: () => cached("docs:tree", (id) => listPageTree(id)),
-    // Docs. The listing carries no bodies: on a large wiki the full listing is
-    // tens of megabytes, and the reader fetches the one page it shows.
-    pageSummaries: () =>
-      cached("docs:summaries", async (id) => {
-        // A few page types draw their tree row from what a summary drops (an
-        // onboarding slot in metadata, a cycle label in the body), so those
-        // are listed in full and merged in, as the web docs hook does. A
-        // couple of dozen pages against thousands of files.
-        const [summaries, ...hydrated] = await Promise.all([
-          listAllPages(id, { fields: "summary" }),
-          ...HYDRATED_PAGE_TYPES.map((page_type) => listAllPages(id, { page_type })),
-        ]);
-        const full = new Map(hydrated.flat().map((p) => [p.id, p]));
-        return summaries.map((p) => full.get(p.id) ?? p);
-      }),
     searchPages: async (query) => {
       const id = repoId();
       const [fulltext, semantic] = await Promise.all([

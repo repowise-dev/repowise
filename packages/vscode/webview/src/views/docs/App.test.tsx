@@ -82,7 +82,7 @@ function summaries(pages: DocPage[]) {
 
 function mockHost(pages: DocPage[]) {
   const api = {
-    pageSummaries: vi.fn().mockResolvedValue(summaries(pages)),
+    pageTree: vi.fn().mockResolvedValue(summaries(pages)),
     pageById: vi.fn((id: string) => {
       const page = pages.find((p) => p.id === id);
       return page ? Promise.resolve(page) : Promise.reject(new Error("Not found"));
@@ -124,7 +124,7 @@ describe("docs App", () => {
     expect(
       await screen.findByText("Overview intro paragraph rendered by the reader."),
     ).toBeTruthy();
-    expect(api.pageSummaries).toHaveBeenCalledTimes(1);
+    expect(api.pageTree).toHaveBeenCalledTimes(1);
     expect(api.pageById).toHaveBeenCalledTimes(1);
     expect(api.pageById).toHaveBeenCalledWith("ov");
     // The web explorer's header bar: one tab and the search button.
@@ -149,7 +149,7 @@ describe("docs App", () => {
   it("opens an asked-for page id without waiting for the list", async () => {
     const { host, api } = mockHost(PAGES);
     let release: (value: unknown) => void = () => {};
-    api.pageSummaries.mockReturnValue(new Promise((r) => (release = r)));
+    api.pageTree.mockReturnValue(new Promise((r) => (release = r)));
     render(<App host={host} repo={REPO} params={{ pageId: "fp" }} refreshToken={0} />);
 
     expect(await screen.findByText("The application entry point.")).toBeTruthy();
@@ -159,7 +159,7 @@ describe("docs App", () => {
 
   it("keeps an asked-for page when the listing fails", async () => {
     const { host, api } = mockHost(PAGES);
-    api.pageSummaries.mockRejectedValue(new Error("listing timed out"));
+    api.pageTree.mockRejectedValue(new Error("listing timed out"));
     render(<App host={host} repo={REPO} params={{ pageId: "fp" }} refreshToken={0} />);
 
     expect(await screen.findByText("The application entry point.")).toBeTruthy();
