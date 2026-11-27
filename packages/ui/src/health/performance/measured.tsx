@@ -564,9 +564,10 @@ function WindowClaim({ claim, className = "" }: { claim: string; className?: str
   );
 }
 
-/** 102.44 reads "102.4 ms", 1234.5 reads "1,235 ms", 2,400,000 reads "2,400 s". */
+/** 102.44 reads "102 ms", 12.34 reads "12.3 ms", 0.04 reads "under 0.1 ms", 2,400,000 reads "2,400 s". */
 function msText(ms: number): string {
   if (Math.abs(ms) >= 100_000) return secondsText(ms / 1000);
+  if (ms > 0 && ms < 0.05) return "under 0.1 ms";
   return `${formatNumber(Math.abs(ms) >= 100 ? Math.round(ms) : Math.round(ms * 10) / 10)} ms`;
 }
 

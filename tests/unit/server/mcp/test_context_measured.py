@@ -464,3 +464,20 @@ async def test_non_production_lines_read_no_window(setup_mcp, session, populated
         'rank 3 of repo code in entry_point "cli build" (12% self, 10-14%; repo code itself 40%), '
     )
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_window_read_keeps_the_plain_line(
+    setup_mcp, session, populated_db, monkeypatch
+):
+    from repowise.server.mcp_server import get_context
+
+    await _production_run(session, populated_db)
+    await _add(session, populated_db, LOGIN, workload_class="production", workload_name="api")
+
+    async def _broken(*args, **kwargs):
+        raise ValueError("a stored window time that does not parse")
+
+    monkeypatch.setattr(measured, "production_window_claims", _broken)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in production "api" (12% self')

@@ -58,7 +58,10 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
   const out: RuntimeNotice[] = [];
   const status = view.overview?.status;
   const unranked = status === "stale" || status === "not_ranked" || status === "ahead_of_index";
-  if (!view.run && view.testRun) out.push({ kind: "tests_only", workload: view.testRun.workload_name });
+  // Production statement windows are measured outside tests, so "tests only" would be false.
+  if (!view.run && view.testRun && view.statementRuns.length === 0) {
+    out.push({ kind: "tests_only", workload: view.testRun.workload_name });
+  }
   // An unranked status is explained by the runs; say no more until they are read.
   if (unranked && view.runs === undefined) return out;
   const newest = newestProfile(view);

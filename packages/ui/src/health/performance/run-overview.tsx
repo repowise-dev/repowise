@@ -202,6 +202,11 @@ export function RunOverview({
           </span>
         ) : null}
       </p>
+      {heading && summary.window ? (
+        <p className="font-mono text-[11px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+          {summary.window.claim}
+        </p>
+      ) : null}
       {shares ? (
         <div className="max-w-2xl">
           <SplitBar

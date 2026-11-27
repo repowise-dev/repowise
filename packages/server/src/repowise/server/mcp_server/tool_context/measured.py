@@ -159,7 +159,7 @@ async def _windows(session: AsyncSession, repository_id: str, rows: Any) -> dict
         return {}
     try:
         return await production_window_claims(session, repository_id, run_ids)
-    except SQLAlchemyError:
+    except Exception:  # Optional part: a failed read or a stored time that does not parse.
         _log.debug("get_context: production window read failed", exc_info=True)
         return {}
 
