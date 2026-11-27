@@ -933,7 +933,17 @@ def filter_edge_rows(
     """
     if not spec:
         return list(rows)
-    return [r for r in rows if not any(node_is_excluded(n, spec) for n in endpoints(r))]
+    # Edge lists repeat each node many times over (a full export reads ~400k
+    # rows over ~30k nodes), so each id's verdict is worked out once.
+    verdicts: dict[str | None, bool] = {}
+
+    def excluded(node_id: str | None) -> bool:
+        hit = verdicts.get(node_id)
+        if hit is None:
+            hit = verdicts[node_id] = node_is_excluded(node_id, spec)
+        return hit
+
+    return [r for r in rows if not any(excluded(n) for n in endpoints(r))]
 
 
 async def fetch_allowed_edges(

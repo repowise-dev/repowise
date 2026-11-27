@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +21,7 @@ from repowise.server.mcp_server._graph_utils import _node_id_is_excluded
 from repowise.server.mcp_server._helpers import filter_edge_rows
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import GraphExportResponse, NodeSearchResult
-from repowise.server.services.graph_views import edge_response
+from repowise.server.services.graph_views import _EDGE_COLUMNS, edge_response
 from repowise.server.services.node_signals import (
     EMPTY_SIGNALS,
     collect_node_signals,
@@ -48,7 +50,7 @@ router = APIRouter()
 
 
 def _flow_member_ids(
-    edges: list[GraphEdge],
+    edges: list[Any],
     entry_ids: list[str],
     max_depth: int = _FLOW_MAX_DEPTH,
 ) -> set[str]:
@@ -64,7 +66,7 @@ def _flow_member_ids(
     is reduced to its containing file — the reservation is for "the files this
     flow runs through", which is what the canvas can actually highlight.
     """
-    adjacency: dict[str, list[GraphEdge]] = {}
+    adjacency: dict[str, list[Any]] = {}
     for e in edges:
         if is_walkable_execution_edge(e.edge_type, e.resolution_origin, e.confidence):
             adjacency.setdefault(e.source_node_id, []).append(e)
@@ -160,12 +162,6 @@ async def export_graph(
     # superset of what `node_to_response` reads plus `node_id`: a deferred
     # column accessed under asyncio raises MissingGreenlet rather than lazily
     # loading, so adding a field there means adding it here.
-    #
-    # Caveat worth knowing before trusting the saving: on the truncated path
-    # `crud.get_top_entry_points` runs its own unnarrowed query over every
-    # symbol node to read `community_meta_json`. Those rows are already in the
-    # identity map, so SQLAlchemy back-fills their deferred columns and the
-    # saving applies only to file nodes there. Correctness is unaffected.
     node_result = await session.execute(
         select(GraphNode)
         .options(
@@ -191,14 +187,17 @@ async def export_graph(
     total_node_count = len(all_nodes)
     truncated = total_node_count > limit
 
-    # The canvas has no doc-link edge kind yet.
+    # The canvas has no doc-link edge kind yet. Read as column rows, not ORM
+    # entities: this is every edge in the repo (~400k on a 7k-file one) and
+    # hydrating each into a GraphEdge was most of the request. The columns are
+    # what `edge_response` and `_flow_member_ids` read.
     edge_result = await session.execute(
-        select(GraphEdge).where(
+        select(*_EDGE_COLUMNS, GraphEdge.resolution_origin).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
-    edges = filter_edge_rows(edge_result.scalars().all(), exclude_spec)
+    edges = filter_edge_rows(edge_result.all(), exclude_spec)
 
     # Repo-wide signals: needed for the *_total counts and, when truncating,
     # for reserved-slot selection (flagged nodes are known before the cut).
