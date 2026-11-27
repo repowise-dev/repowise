@@ -139,9 +139,10 @@ class UnreachableFilePass:
         """``path -> (writer, name)`` for each candidate production code names.
 
         One identifier scan over the indexed source. A writer counts only when
-        it is another file of the candidate's language whose origin is
-        production: a test naming its subject, a doc listing it or a file in
-        another language says nothing about runtime use. A name is not proof
+        it is a file of the candidate's language whose origin is production
+        and that is not itself a candidate: a test naming its subject, a doc
+        listing it, a file in another language or another unreachable file
+        says nothing about runtime use. A name is not proof
         of use, so this caps a finding and never drops it. Ceiling: a common
         stem (``utils``) matches by coincidence, which can only cap a dead file
         too low, the safe direction.
@@ -159,7 +160,7 @@ class UnreachableFilePass:
                 (writer, name.decode())
                 for name in names
                 for writer in writers.get(name, ())
-                if writer != path
+                if writer not in wanted
                 and _family(self.graph.nodes[writer].get("language")) == languages[path]
                 and self._is_production(writer)
             )

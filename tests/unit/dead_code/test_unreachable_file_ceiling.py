@@ -105,6 +105,8 @@ def test_cpp_header_production_code_names_is_capped_and_a_silent_one_is_not(tmp_
             # A test or a doc naming a header is not production code using it.
             "tests/orphan_math_test.cpp": "// orphan_math is checked by hand\nint t() { return 0; }\n",
             "docs/notes.md": "orphan_math is kept for the old build.\n",
+            # Nor is another unreachable file naming it.
+            "rwengine/stats/orphan_stats.cpp": "// scaled by orphan_math\nint s() { return 1; }\n",
         },
     )
     assert found["rwengine/compat/rw_mingw.hpp"] == pytest.approx(UNPROVEN_FILE_CONFIDENCE)
