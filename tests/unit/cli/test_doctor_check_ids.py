@@ -62,6 +62,7 @@ PINNED_IDS = {
     "update-lock",
     "vector-store",
     "vector-store-sync",
+    "wiki-db-free-space",
 }
 
 _KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")

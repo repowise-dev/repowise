@@ -955,10 +955,10 @@ Cycle / Split File plans behind `repowise health --refactoring-targets`,
 <!-- BEGIN GENERATED settings:refactoring (python scripts/gen_config_docs.py) -->
 | Key | Default | Values | What it does |
 |-----|---------|--------|--------------|
-| `enabled` | `true` |  | Work out refactoring plans in the health pass. |
 | `detectors.disabled` | `[]` |  | Refactoring detectors to silence, such as extract_class or split_file. |
 | `min_confidence` | unset | `low`, `medium`, `high` | Least confidence a refactoring plan needs to show. |
 | `llm.enabled` | `false` |  | Let a model write refactoring code when asked; indexing never calls it. |
+| `enabled` | `true` |  | Work out refactoring plans in the health pass. |
 <!-- END GENERATED settings:refactoring -->
 
 - Code generation uses chat's provider and model, and is the only part that
@@ -1005,7 +1005,43 @@ page; older ones are deleted on the same write.
 - `wiki.db` does not shrink when versions go: SQLite reuses the freed space for
   later writes before it grows the file. To get the disk back at once, run
   `VACUUM` on `.repowise/wiki.db` with no `repowise` process open (it needs
-  free disk the size of the file).
+  free disk the size of the file). `repowise doctor` prints that command once
+  more than a quarter of the file is free space.
+
+## The `health:` and `performance:` blocks
+
+Switches for work you can turn off to save time, disk or memory. `repowise
+config list --area performance` and the web settings page show them in one
+Performance group, together with `wiki.page_versions_keep` and
+`refactoring.enabled`.
+
+<!-- BEGIN GENERATED settings:health (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `duplication.enabled` | `true` | Find duplicated code, which DRY violation findings, copied test assertion blocks and Extract Helper plans are built from. Off skips it in init and update and deletes its cache files under .repowise/. |
+<!-- END GENERATED settings:health -->
+
+<!-- BEGIN GENERATED settings:performance (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `warm_caches` | `true` | Build the MCP server's search caches right after an agent connects, so the first question is fast. Off leaves them to the first question that needs them. |
+<!-- END GENERATED settings:performance -->
+
+- `health.duplication.enabled: false` skips clone detection in `init` and
+  `update`, so what is built from clones goes with it: DRY violation and
+  duplicated assertion block findings, Extract Helper plans and the per-file
+  duplication share. The next update deletes `duplication_cache.pkl`,
+  `duplication_cache_delta.pkl` and `duplication_pairs.pkl` from `.repowise/`
+  (on a fresh index they are 14 to 24% of its size). The next `update` after
+  the change re-scores health without them; `get_health` says
+  `"duplication": "off: ..."` under `_meta.health_analysis` while it is off.
+  Turning it back on finds clones again on the next `update`.
+- `performance.warm_caches: false` stops the MCP server from building its
+  search caches right after an agent connects. The first `get_answer` or
+  `search_codebase` then builds what it reads (a few seconds on a large
+  index), and an idle session holds less memory until then. It applies to MCP
+  servers started after the change. The server also skips the warmup on its
+  own when the machine has less than 2 GB of free memory.
 
 ## The `contracts:` block
 

@@ -68,3 +68,22 @@ async def open_store(repo_path: Path):
     await reconcile_schema_best_effort(url)
     engine = create_engine(url)
     return engine, create_session_factory(engine)
+
+
+def sqlite_page_counts(db_path: Path) -> tuple[int, int, int]:
+    """``(page_size, page_count, freelist_count)`` of a SQLite file, read-only.
+
+    SQLite keeps pages freed by deletes in the file for reuse instead of
+    shrinking it, so the file size is a high-water mark; the free pages say
+    how much of it holds nothing.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        pages = conn.execute("PRAGMA page_count").fetchone()[0]
+        free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    finally:
+        conn.close()
+    return page_size, pages, free
