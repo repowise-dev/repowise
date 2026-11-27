@@ -41,7 +41,13 @@ import {
   type RuntimeEvidenceView,
 } from "./runtime";
 import { RuntimeEvidenceNotices, runtimeNotices } from "./runtime-states";
-import { overviewRun, RunOverview, SplitBar, type LowSignalPromptBuilder } from "./run-overview";
+import {
+  overviewRun,
+  RunOverview,
+  SplitBar,
+  WindowClaim,
+  type LowSignalPromptBuilder,
+} from "./run-overview";
 import {
   changeMark,
   changeText,
@@ -553,17 +559,6 @@ function BenchmarksGroup({ view, adapter }: { view: RuntimeEvidenceView; adapter
   );
 }
 
-/** A production window's claim, "in production over 2026-10-30 to 2026-11-26, deployed ee257d145f19". */
-function WindowClaim({ claim, className = "" }: { claim: string; className?: string }) {
-  return (
-    <p
-      className={`font-mono text-[11px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere] ${className}`}
-    >
-      {claim}
-    </p>
-  );
-}
-
 /** 102.44 reads "102 ms", 12.34 reads "12.3 ms", 0.04 reads "under 0.1 ms", 2,400,000 reads "2,400 s". */
 function msText(ms: number): string {
   if (Math.abs(ms) >= 100_000) return secondsText(ms / 1000);
@@ -583,6 +578,17 @@ function unattributedText(run: StatementRun): string | null {
         : `${plural(u.statements, "statement")} ${name}`;
     });
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** What the list leaves out: functions past the preview, and the statements on no single function. */
+function statementsCaption(run: StatementRun, shown: number, total: number): string {
+  const elsewhere = unattributedText(run);
+  return [
+    total > shown ? `Showing ${formatNumber(shown)} of ${plural(total, "function")}.` : null,
+    elsewhere ? `On no single function: ${elsewhere}.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /** One function's statements in the window: its share, calls and mean time, and how to check a fix. */
@@ -636,13 +642,7 @@ function StatementRunRows({ adapter, run }: { adapter: PerformanceViewAdapter; r
   const pending = Boolean(error) || (!data && isLoading);
   if (!pending && rows.length === 0) return null;
   const scale = Math.max(0, ...rows.map((r) => r.share ?? 0));
-  const elsewhere = unattributedText(run);
-  const caption = [
-    total > rows.length ? `Showing ${formatNumber(rows.length)} of ${plural(total, "function")}.` : null,
-    elsewhere ? `On no single function: ${elsewhere}.` : null,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const caption = statementsCaption(run, rows.length, total);
   return (
     <div>
       <p className="font-mono text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
@@ -805,7 +805,7 @@ function RunsTable({ runs, reference }: { runs: EvidenceRunSummary[]; reference:
               <tr key={run.run_id}>
                 <td className={`${TD} font-mono text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}>
                   {run.workload}
-                  {run.window ? <WindowClaim claim={run.window.claim} className="mt-0.5" /> : null}
+                  <WindowClaim claim={run.window?.claim} className="mt-0.5" />
                 </td>
                 <td className={TD}>{humanizeToken(run.kind).toLowerCase()}</td>
                 <td className={TD}>{workloadClassLabel(run.class)}</td>
@@ -906,7 +906,7 @@ function LeadRun({
           ) : null}
         </div>
         <StatRibbon stats={stripStats(run, runs)} />
-        {run.window ? <WindowClaim claim={run.window.claim} className="mt-2" /> : null}
+        <WindowClaim claim={run.window?.claim} className="mt-2" />
         {summary && runs ? (
           <div className="mt-4">
             <RunOverview
