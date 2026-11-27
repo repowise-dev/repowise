@@ -389,10 +389,29 @@ _SWEEP_INTERVAL_SECONDS = 3600.0
 _MAX_MARKER_CLEANUP_PER_RUN = 500
 
 
-def _marker_dir() -> Path:
+def _marker_dir() -> Path | None:
+    """This user's marker dir, or None when the path is not one we can trust.
+
+    The temp dir can be shared between OS users (``/tmp``), so the name carries
+    the uid where there is one and the dir is created 0o700. A path that is a
+    symlink, not a directory, or owned by someone else is refused: the sweep
+    unlinks what it lists, so it must only ever list a directory this user owns.
+    """
+    import os
+    import stat
     import tempfile
 
-    return Path(tempfile.gettempdir()) / _MARKER_DIR_NAME
+    getuid = getattr(os, "getuid", None)  # absent on Windows, where temp is per-user
+    name = _MARKER_DIR_NAME if getuid is None else f"{_MARKER_DIR_NAME}-{getuid()}"
+    path = Path(tempfile.gettempdir()) / name
+    with contextlib.suppress(FileExistsError):
+        path.mkdir(mode=0o700)
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    if getuid is not None and info.st_uid != getuid():
+        return None
+    return path
 
 
 def _is_sweep_throttled(marker_dir: Path, now: float) -> bool:
@@ -463,7 +482,8 @@ def _claim_emission(event: str, context: str) -> bool:
     try:
         key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
         marker_dir = _marker_dir()
-        marker_dir.mkdir(exist_ok=True)
+        if marker_dir is None:
+            return True
         marker = marker_dir / key
         now = time.time()
         claimed = False
