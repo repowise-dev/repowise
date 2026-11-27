@@ -1234,8 +1234,7 @@ installed:
 | Installed with | Command run |
 |---|---|
 | `uv tool install repowise` | `uv pip install --python <repowise's python> "litellm>=1.90.7,<2"` |
-| `pipx install repowise` | `pipx inject repowise "litellm>=1.90.7,<2"` |
-| pip, in a virtualenv or conda env | `<python> -m pip install "litellm>=1.90.7,<2"` |
+| `pipx install repowise`, or pip in a virtualenv or conda env | `<python> -m pip install "litellm>=1.90.7,<2"`, with repowise's own interpreter |
 
 A source checkout, a system-managed Python, or an environment you cannot write
 to gets the command printed instead. So do `--yes` runs, the MCP server, and

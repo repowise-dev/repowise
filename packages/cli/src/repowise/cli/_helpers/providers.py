@@ -154,12 +154,14 @@ def resolve_explicit_provider_or_prompt(
     try:
         return _facade.resolve_provider(provider_name, model, repo_path=repo_path)
     except click.ClickException as original_error:
-        if not interactive or provider_name is None:
+        if not interactive:
             raise
         if getattr(original_error, "extra", None):
             if not _installed_missing_extra(original_error):
                 raise
             return _facade.resolve_provider(provider_name, model, repo_path=repo_path)
+        if provider_name is None:
+            raise
 
         try:
             configured = interactive_provider_credentials(
@@ -185,6 +187,7 @@ def resolve_provider_or_prompt(
     *,
     reasoning: str | None = None,
     interactive: bool,
+    allow_install: bool = True,
 ) -> Any:
     """Resolve a provider, falling back to init's interactive setup on a miss.
 
@@ -213,7 +216,7 @@ def resolve_provider_or_prompt(
         if getattr(original_error, "extra", None):
             # The provider is chosen; only its package is missing. Install it
             # rather than send the user back through the provider picker.
-            if not _installed_missing_extra(original_error):
+            if not allow_install or not _installed_missing_extra(original_error):
                 raise
             return _facade.resolve_provider(provider_name, model, repo_path=repo_path)
         from repowise.cli.ui import interactive_provider_config_select

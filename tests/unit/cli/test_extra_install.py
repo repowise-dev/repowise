@@ -212,3 +212,26 @@ def test_config_set_provider_json_carries_the_command(
     config_cmd._write("set", "provider", "litellm", None, "json")
     assert json.loads(capsys.readouterr().out)["install_command"] == _PLAN.command
     assert missing["runs"] == []
+
+
+def test_update_yes_never_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: dict
+) -> None:
+    from repowise.cli._helpers.providers import resolve_provider_or_prompt
+
+    monkeypatch.setattr(click, "confirm", lambda *_a, **_k: pytest.fail("asked"))
+    with pytest.raises(click.ClickException):
+        resolve_provider_or_prompt("litellm", None, tmp_path, interactive=True, allow_install=False)
+    assert missing["runs"] == []
+
+
+def test_init_offers_the_install_for_a_saved_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: dict
+) -> None:
+    from repowise.cli._helpers.providers import resolve_explicit_provider_or_prompt
+
+    monkeypatch.setenv("REPOWISE_PROVIDER", "litellm")
+    monkeypatch.setattr(click, "confirm", lambda *_a, **_k: True)
+    provider = resolve_explicit_provider_or_prompt(None, "groq/x", tmp_path, interactive=True)
+    assert provider.provider_name == "litellm"
+    assert missing["runs"] == [_PLAN]

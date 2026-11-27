@@ -9,8 +9,9 @@ sees is always the one that matches how *this* copy of repowise was installed:
 * ``uv tool``: the environment holds ``uv-receipt.toml``; ``uv pip install
   --python <this interpreter>`` adds the packages without reinstalling the
   tool (whose running ``repowise.exe`` Windows keeps locked).
-* ``pipx``: the environment holds ``pipx_metadata.json``; ``pipx inject``
-  records the package, so a later ``pipx upgrade`` keeps it.
+* ``pipx``: the environment holds ``pipx_metadata.json``; its own pip adds
+  the package to exactly this venv, and ``pipx upgrade`` keeps it.
+  ``pipx inject`` is the fallback when the venv has no pip.
 * conda, a virtualenv, or a writable system Python: ``<python> -m pip install``
   (``uv pip install --python`` when the environment has no pip, as ``uv venv``
   makes them).
@@ -183,7 +184,7 @@ def detect_install_method(
         return EDITABLE
     if (root / "uv-receipt.toml").is_file():
         return UV_TOOL
-    if (root / "pipx_metadata.json").is_file() or "pipx" in {p.lower() for p in root.parts}:
+    if (root / "pipx_metadata.json").is_file():
         return PIPX
     if (root / "conda-meta").is_dir():
         return CONDA
@@ -226,37 +227,47 @@ def plan_install(
     _get(extra)
     method = method or detect_install_method()
     python = python or sys.executable or "python"
-    reqs = requirements(extra)
-    uv = which("uv")
     pip_ok = _has_pip() if has_pip is None else has_pip
+    argv, blocker = _command(method, python, requirements(extra), which, pip_ok)
+    if blocker is None and method != UV_TOOL and argv[0] != "pipx":
+        blocker = _environment_blocker(method, writable, externally_managed)
+    return InstallPlan(extra, method, argv, blocker is None, blocker or "")
+
+
+def _command(
+    method: str, python: str, reqs: tuple[str, ...], which, pip_ok: bool
+) -> tuple[tuple[str, ...], str | None]:
+    """The command for *method*, and why it must not run here (None: it may)."""
     # Bare names: the process resolves them on PATH, and the printed command
     # stays short. The interpreter is a full path, since it is the target.
     uv_pip = ("uv", "pip", "install", "--python", python, *reqs)
     pip = (python, "-m", "pip", "install", *reqs)
-
+    has_uv = which("uv") is not None
     if method == UV_TOOL:
-        return InstallPlan(extra, method, uv_pip, uv is not None, "" if uv else "uv is not on PATH")
-    if method == PIPX:
-        if which("pipx") is not None:
-            return InstallPlan(extra, method, ("pipx", "inject", "repowise", *reqs), True)
-        return InstallPlan(extra, method, pip, pip_ok, "" if pip_ok else "pipx is not on PATH")
+        return uv_pip, None if has_uv else "uv is not on PATH"
+    if method == PIPX and not pip_ok and which("pipx") is not None:
+        # pip in the venv targets exactly this interpreter and survives
+        # `pipx upgrade`; `pipx inject` resolves the venv by name in pipx's
+        # own home, which may not be this one, so it is the fallback.
+        return ("pipx", "inject", Path(python).parent.parent.name, *reqs), None
+    argv = pip if pip_ok or not has_uv else uv_pip
     if method == EDITABLE:
-        return InstallPlan(
-            extra, method, pip if pip_ok or not uv else uv_pip, False, "this is a source checkout"
-        )
-    if (externally_managed if externally_managed is not None else _externally_managed()) and (
-        method == SYSTEM
-    ):
-        return InstallPlan(extra, method, pip, False, "this Python is managed by the system")
-    if not (writable if writable is not None else _site_writable()):
-        return InstallPlan(
-            extra, method, pip, False, "this user cannot write to the Python environment"
-        )
-    if pip_ok:
-        return InstallPlan(extra, method, pip, True)
-    if uv is not None:
-        return InstallPlan(extra, method, uv_pip, True)
-    return InstallPlan(extra, method, pip, False, "this environment has no pip")
+        return argv, "this is a source checkout"
+    if not pip_ok and not has_uv:
+        return pip, "pipx is not on PATH" if method == PIPX else "this environment has no pip"
+    return argv, None
+
+
+def _environment_blocker(
+    method: str, writable: bool | None, externally_managed: bool | None
+) -> str | None:
+    """Why pip must not write to this environment, or None."""
+    managed = _externally_managed() if externally_managed is None else externally_managed
+    if method == SYSTEM and managed:
+        return "this Python is managed by the system"
+    if not (_site_writable() if writable is None else writable):
+        return "this user cannot write to the Python environment"
+    return None
 
 
 def missing_message(extra: str, what: str) -> str:
@@ -284,7 +295,10 @@ def install(extra: str, *, run=subprocess.run, plan: InstallPlan | None = None) 
     plan = plan or plan_install(extra)
     if not plan.runnable:
         raise ExtraInstallError(f"Not run here ({plan.reason}). Run it yourself: {plan.command}")
-    result = run(list(plan.argv), capture_output=True, text=True, check=False)
+    try:
+        result = run(list(plan.argv), capture_output=True, text=True, check=False)
+    except OSError as exc:
+        raise ExtraInstallError(f"Could not run {plan.command}: {exc}") from exc
     if result.returncode != 0:
         tail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-5:])
         raise ExtraInstallError(

@@ -47,10 +47,10 @@ def test_a_pipx_environment_is_known_by_its_metadata(tmp_path: Path) -> None:
     assert detect_install_method(prefix=root, base_prefix="/usr", editable=False) == PIPX
 
 
-def test_a_pipx_venv_path_counts_without_the_metadata_file(tmp_path: Path) -> None:
+def test_a_path_named_pipx_is_not_proof_of_pipx(tmp_path: Path) -> None:
     root = tmp_path / "pipx" / "venvs" / "repowise"
     root.mkdir(parents=True)
-    assert detect_install_method(prefix=root, base_prefix="/usr", editable=False) == PIPX
+    assert detect_install_method(prefix=root, base_prefix="/usr", editable=False) == VENV
 
 
 def test_a_conda_environment_is_known_by_conda_meta(tmp_path: Path) -> None:
@@ -101,16 +101,22 @@ def test_uv_tool_without_uv_on_path_prints_the_command() -> None:
     assert "uv is not on PATH" in plan.reason
 
 
-def test_pipx_injects_so_an_upgrade_keeps_the_package() -> None:
+def test_pipx_uses_the_venvs_own_pip_so_the_target_is_this_interpreter() -> None:
     plan = _plan(PIPX, which=_which("pipx"))
+    assert plan.runnable
+    assert plan.argv[:4] == (PY, "-m", "pip", "install")
+
+
+def test_pipx_without_pip_injects_into_the_venv_by_its_name() -> None:
+    plan = _plan(PIPX, has_pip=False, which=_which("pipx"))
     assert plan.runnable
     assert plan.argv[:3] == ("pipx", "inject", "repowise")
 
 
-def test_pipx_without_pipx_on_path_falls_back_to_the_venvs_pip() -> None:
-    plan = _plan(PIPX)
-    assert plan.runnable
-    assert plan.argv[:4] == (PY, "-m", "pip", "install")
+def test_pipx_with_neither_pip_nor_pipx_prints_the_command() -> None:
+    plan = _plan(PIPX, has_pip=False)
+    assert not plan.runnable
+    assert "pipx is not on PATH" in plan.reason
 
 
 @pytest.mark.parametrize("method", [CONDA, VENV, SYSTEM])
@@ -196,6 +202,14 @@ def test_an_extra_that_still_does_not_import_is_a_failure(monkeypatch: pytest.Mo
     monkeypatch.setattr(extras.importlib, "import_module", fail)
     with pytest.raises(ExtraInstallError, match="still does not import"):
         extras.install("litellm", plan=_plan(VENV), run=lambda *_a, **_k: _done(0))
+
+
+def test_an_installer_that_cannot_start_is_a_failure_not_a_traceback() -> None:
+    def missing(*_a: object, **_k: object) -> None:
+        raise FileNotFoundError("uv")
+
+    with pytest.raises(ExtraInstallError, match="Could not run"):
+        extras.install("litellm", plan=_plan(VENV), run=missing)
 
 
 def test_a_print_only_plan_is_never_run() -> None:

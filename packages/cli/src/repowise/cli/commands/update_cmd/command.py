@@ -2253,6 +2253,8 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         run.repo_path,
         reasoning=opts.reasoning,
         interactive=_docs_provider_prompt_allowed(run.emitter),
+        # --yes answers no questions, so it never installs a package either.
+        allow_install=not opts.yes,
     )
 
     # Persist this update's model spend to llm_costs, as init does.
