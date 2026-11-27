@@ -91,7 +91,7 @@ class TestReadAliases:
         config = "export default { resolve: { alias: { '@': '/old', '~': '/lib', '@': '/new' } } }"
         assert _read(config) == [("@", "/repo/app/new"), ("~", "/repo/app/lib")]
 
-    def test_array_form_in_order_and_regex_find_skipped(self) -> None:
+    def test_array_form_stops_at_a_regex_find(self) -> None:
         config = """
         export default {
           resolve: {
@@ -103,7 +103,23 @@ class TestReadAliases:
           },
         }
         """
-        assert [f for f, _ in _read(config)] == ["~", "@"]
+        # Vite tries ``/^#/`` before ``@``; what it matches is not read, so
+        # nothing after it is either.
+        assert [f for f, _ in _read(config)] == ["~"]
+
+    def test_only_the_alias_under_resolve_counts(self) -> None:
+        config = """
+        export default {
+          plugins: [somePlugin({ alias: { '@': '/mocks' } })],
+          test: { alias: { '~': '/fixtures' } },
+          resolve: { alias: { '@': '/src' } },
+        }
+        """
+        assert _read(config) == [("@", "/repo/app/src")]
+
+    def test_unread_trailing_slash_find_claims_the_wider_match(self) -> None:
+        config = "export default { resolve: { alias: { '@/': getSrc() } } }"
+        assert _read(config) == [("@", None)]
 
     def test_object_form_keeps_order_and_skips_spreads(self) -> None:
         config = """
@@ -206,6 +222,18 @@ class TestResolveThroughVite:
         assert resolver.resolve("@/foo/x", importer) is None
         # An entry whose replacement is not read still claims its ``find``.
         assert resolver.resolve("~/y", importer) is None
+
+    def test_nearest_vite_config_answers_even_without_aliases(self, tmp_path: Path) -> None:
+        resolver = _resolver(
+            tmp_path,
+            {
+                "vite.config.ts": _VITE % 'import.meta.dirname + "/src"',
+                "packages/web/vite.config.ts": "export default defineConfig({})",
+            },
+            {"src/lib/x.ts", "packages/web/src/main.ts"},
+        )
+        assert resolver.resolve("@/lib/x", str(tmp_path / "src/main.ts")) == "src/lib/x.ts"
+        assert resolver.resolve("@/lib/x", str(tmp_path / "packages/web/src/main.ts")) is None
 
     def test_dynamic_alias_adds_nothing(self, tmp_path: Path) -> None:
         resolver = _resolver(

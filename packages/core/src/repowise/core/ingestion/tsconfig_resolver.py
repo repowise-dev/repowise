@@ -297,12 +297,13 @@ class TsconfigResolver:
         # but the graph keeps one resolution per import, so a test-only alias
         # that maps a ``find`` elsewhere than the app's is not followed.
         for config_file in sorted(vite_configs, key=lambda p: (str(p.parent), p.name)):
+            # Recorded even when empty: the nearest Vite config answers for the
+            # files under it, and an ancestor's aliases never apply there.
             entries = self._vite_alias_entries(config_file.resolve())
-            if entries:
-                directory = config_file.parent.resolve()
-                merged = self._dir_to_vite_entries.setdefault(directory, [])
-                seen = {pattern for pattern, _ in merged}
-                merged.extend(e for e in entries if e[0] not in seen)
+            directory = config_file.parent.resolve()
+            merged = self._dir_to_vite_entries.setdefault(directory, [])
+            seen = {pattern for pattern, _ in merged}
+            merged.extend(e for e in entries if e[0] not in seen)
 
     def _vite_alias_entries(self, config_path: Path) -> list[tuple[str, list[str]]]:
         """A Vite config's ``resolve.alias`` as ``paths``-style entries, in its order.

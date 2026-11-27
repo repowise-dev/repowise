@@ -22,7 +22,8 @@ replacement: X}]``) are read. A replacement is read when it is one of:
 Any other replacement still claims its ``find`` (target ``None``), so a later
 entry never answers for a specifier Vite would hand to an earlier one.
 
-Ceiling: the config is never evaluated. A regex ``find``, a replacement built
+Ceiling: the config is never evaluated. A regex ``find`` (and every entry
+after it in the list), a replacement built
 from a variable or a helper call, a ``./`` literal (Vite keeps it relative to
 the importer), a bare one (a package redirect) and aliases spread in from
 another module are not followed, so those imports keep today's behaviour (no
@@ -74,37 +75,55 @@ def is_vite_config(name: str) -> bool:
 
 
 def vite_aliases(text: bytes, config_dir: Path) -> list[tuple[str, Path | None]]:
-    """``(find, replacement path)`` for each string ``find`` in a Vite config, in order.
+    """``(find, replacement path)`` for each string ``find`` in ``resolve.alias``, in order.
 
-    The path is ``None`` where the replacement is not read statically.
+    The path is ``None`` where the replacement is not read statically. Only an
+    ``alias`` inside a ``resolve`` object counts: one under ``test`` or in a
+    plugin's options does not redirect the app's imports.
     """
     out: list[tuple[str, Path | None]] = []
-    for span in value_spans(text, ("alias",)):
-        span = span.strip()
-        if span.startswith(b"{") and span.endswith(b"}"):
-            # A repeated key keeps its first position and its last value, as in JS.
-            pairs = list(dict(_object_entries(span)).items())
-        elif span.startswith(b"[") and span.endswith(b"]"):
-            pairs = []
-            for element in split_top_level(span[1:-1]):
-                element = element.strip()
-                if not (element.startswith(b"{") and element.endswith(b"}")):
-                    continue
-                fields = dict(_object_entries(element))
-                find = _literal(fields.get("find", ""))
-                if find is not None:
-                    pairs.append((find, fields.get("replacement", "")))
-        else:
+    for resolve_span in value_spans(text, ("resolve",)):
+        resolve_span = resolve_span.strip()
+        if not resolve_span.startswith(b"{"):
             continue
-        for find, value in pairs:
-            if not find:
-                continue
-            target, trailing_slash = _target(value, config_dir)
-            # Vite drops a trailing ``/`` from both sides when both carry one.
-            if find.endswith("/") and trailing_slash and len(find) > 1:
-                find = find[:-1]
-            out.append((find, target))
+        for span in value_spans(resolve_span, ("alias",)):
+            out.extend(
+                _entry(find, value, config_dir)
+                for find, value in _alias_pairs(span.strip())
+                if find
+            )
     return out
+
+
+def _alias_pairs(span: bytes) -> list[tuple[str, str]]:
+    """``(find, replacement expression)`` for the object or array form of an alias value."""
+    if span.startswith(b"{") and span.endswith(b"}"):
+        # A repeated key keeps its first position and its last value, as in JS.
+        return list(dict(_object_entries(span)).items())
+    if not (span.startswith(b"[") and span.endswith(b"]")):
+        return []
+    pairs: list[tuple[str, str]] = []
+    for element in split_top_level(span[1:-1]):
+        element = element.strip()
+        if not (element.startswith(b"{") and element.endswith(b"}")):
+            continue
+        fields = dict(_object_entries(element))
+        find = _literal(fields.get("find", ""))
+        if find is None:
+            # A regex (or computed) ``find`` is tried first and may match what
+            # the entries after it do, so none of them is read.
+            break
+        pairs.append((find, fields.get("replacement", "")))
+    return pairs
+
+
+def _entry(find: str, value: str, config_dir: Path) -> tuple[str, Path | None]:
+    target, trailing_slash = _target(value, config_dir)
+    # Vite drops a trailing ``/`` from both sides when both carry one. An unread
+    # replacement might, so its ``find`` claims the wider match.
+    if find.endswith("/") and len(find) > 1 and (trailing_slash or target is None):
+        find = find[:-1]
+    return find, target
 
 
 def _object_entries(obj: bytes) -> list[tuple[str, str]]:
