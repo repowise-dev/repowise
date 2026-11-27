@@ -143,10 +143,13 @@ def resolve_rust_import(
             if resolved is not None:
                 return resolved
 
-    # Cargo workspace sibling crate: `use sibling_crate::...`
+    # Cargo workspace sibling crate: `use sibling_crate::...`. The importer's
+    # own crate counts too: a binary names its library by the crate's import
+    # name (`use leviathan::engine` in `src/main.rs`), and the probe above
+    # only tried the whole path, prefix included, as a module path.
     if ws_index is not None:
         sibling_src = ws_index.lookup(prefix)
-        if sibling_src is not None and sibling_src != crate_root:
+        if sibling_src is not None:
             resolved = _probe_rust_path(sibling_src, parts[1:], frozen_path_set)
             if resolved is None and _reexport_depth == 0:
                 # `use crate_x::ReexportedName`: the name is no module file —
