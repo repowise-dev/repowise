@@ -90,6 +90,53 @@ def test_a_single_word_string_elsewhere_names_nothing():
     assert _kept(findings, {"README.md": b'run "cli" to start\n'}) == {("src/tool/cli.py", None)}
 
 
+def test_celery_command_flags_in_manifest_name_modules_and_scheduler_attribute():
+    findings = [
+        _finding(DeadCodeKind.UNREACHABLE_FILE, "app/celery_app.py"),
+        _finding(DeadCodeKind.UNREACHABLE_FILE, "app/schedulers.py"),
+        _finding(DeadCodeKind.UNUSED_EXPORT, "app/schedulers.py", "PersistentScheduler"),
+    ]
+    pyproject = b"""[tool.poe.tasks]
+beat = "celery -A app.celery_app beat --scheduler app.schedulers.PersistentScheduler"
+"""
+    source = {
+        "pyproject.toml": pyproject,
+        "app/celery_app.py": b"app = Celery()\n",
+        "app/schedulers.py": b"class PersistentScheduler:\n    pass\n",
+    }
+    assert _kept(findings, source) == set()
+
+
+def test_celery_app_flag_with_equal_and_colon_attribute():
+    findings = [
+        _finding(DeadCodeKind.UNREACHABLE_FILE, "app/celery_app.py"),
+        _finding(DeadCodeKind.UNUSED_EXPORT, "app/celery_app.py", "celery_app"),
+        _finding(DeadCodeKind.UNREACHABLE_FILE, "app/schedulers.py"),
+        _finding(DeadCodeKind.UNUSED_EXPORT, "app/schedulers.py", "CustomScheduler"),
+    ]
+    pyproject = b"""[tool.poe.tasks]
+worker = "celery --app=app.celery_app:celery_app worker --scheduler=app.schedulers:CustomScheduler"
+"""
+    source = {
+        "pyproject.toml": pyproject,
+        "app/celery_app.py": b"celery_app = Celery()\n",
+        "app/schedulers.py": b"class CustomScheduler:\n    pass\n",
+    }
+    assert _kept(findings, source) == set()
+
+
+def test_a_command_string_without_celery_flags_names_nothing():
+    findings = [_finding(DeadCodeKind.UNREACHABLE_FILE, "app/celery_app.py")]
+    pyproject = b"""[tool.poe.tasks]
+beat = "celery beat app.celery_app"
+"""
+    source = {
+        "pyproject.toml": pyproject,
+        "app/celery_app.py": b"app = Celery()\n",
+    }
+    assert _kept(findings, source) == {("app/celery_app.py", None)}
+
+
 def test_the_analyzer_reads_a_string_map_in_a_lazy_package():
     init = b"""from importlib import import_module
 

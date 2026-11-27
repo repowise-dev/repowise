@@ -51,13 +51,21 @@ from .token_cache import scanned
 _MODULE_STRING_RE = re.compile(
     rb"""['"]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::([A-Za-z_]\w*))?['"]"""
 )
+#: Module paths passed to Celery flags (--scheduler, -A, --app) in command strings.
+_CELERY_FLAG_RE = re.compile(
+    rb"""(?:^|(?<=[\s'"]))(?:--scheduler|-A|--app)(?:[ \t]*=[ \t]*|[ \t]+)['"]?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::([A-Za-z_]\w*))?['"]?(?=[\s'"]|$)"""
+)
 
 
 def _module_strings(text: bytes) -> frozenset[tuple[bytes, bytes | None]]:
     """The distinct ``(module, attr)`` groups of the module-path strings in *text*."""
-    return scanned(
-        "module_strings", text, lambda: (m.groups() for m in _MODULE_STRING_RE.finditer(text))
-    )
+    def _extract() -> Iterator[tuple[bytes, bytes | None]]:
+        for m in _MODULE_STRING_RE.finditer(text):
+            yield m.groups()
+        for m in _CELERY_FLAG_RE.finditer(text):
+            yield m.groups()
+
+    return scanned("module_strings", text, _extract)
 
 
 def _has_module_getattr(tokens: list[tokenize.TokenInfo]) -> bool:
