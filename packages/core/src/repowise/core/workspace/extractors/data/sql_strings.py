@@ -7,7 +7,8 @@ Precision rules (this is where the false links would come from):
    not inside a string carrying a verb shape.
 2. When the literal parses under sqlglot, table names come from the AST (the
    high-precision path). When parsing fails (interpolation placeholders break
-   the grammar), a verb-anchored regex extracts the table token instead.
+   the grammar), a verb-anchored regex extracts the table token instead; a name the
+   literal binds with ``WITH`` is not a table on either path.
 3. A table token that is itself interpolated (``FROM {table}`` /
    ``FROM ${table}`` / ``FROM " + name``) is skipped: normalization rejects
    non-identifier tokens, so an interpolated target emits nothing.
@@ -22,16 +23,20 @@ Precision rules (this is where the false links would come from):
 from __future__ import annotations
 
 import bisect
+import functools
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import ScanContext, line_at
 from ..langs import CSHARP, GO, JAVA, JS_TS, KOTLIN, PHP, PYTHON, RUBY
+from ..strings import match_paren
 from .dialect import build_table_consumer
 
 if TYPE_CHECKING:
+    from sqlglot import Tokenizer
+
     from repowise.core.workspace.contracts import Contract
 
 # String-literal shapes as ONE left-to-right alternation (longest delimiter
@@ -113,6 +118,100 @@ _SQL_OPENER_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+# ``WITH name [(columns)] AS (``: one named subquery of a WITH clause. The next one follows a
+# comma. A name may be quoted the way a dialect quotes an identifier: ``"name"``, ```name```,
+# ``[name]``.
+_CTE_HEAD_RE = re.compile(
+    r'\s*(?P<name>"[^"]+"|`[^`]+`|\[[^\]]+\]|[A-Za-z_]\w*)\s*(?:\([^()]*\))?\s*AS\s*'
+    r"(?:NOT\s+MATERIALIZED\s*|MATERIALIZED\s*)?\(",
+    re.IGNORECASE,
+)
+_WITH_RE = re.compile(r"\bWITH\s+(?:RECURSIVE\s+)?", re.IGNORECASE)
+
+
+def _unquote(name: str) -> str:
+    """The name of one quoted identifier without its quotes (``"a"``, ```a```, ``[a]``).
+
+    Any other text is returned as it is.
+    """
+    if len(name) > 1 and (name[0], name[-1]) in (('"', '"'), ("`", "`"), ("[", "]")):
+        return name[1:-1]
+    return name
+
+
+# A literal sqlglot's tokenizer cannot read: the quoted names and strings are taken whole, and the
+# comments are what the scan meets outside them, from left to right.
+_UNREAD_SCAN_RE = re.compile(
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|`[^`]*`|\[[^\]]*\]|(?P<comment>--[^\n]*|/\*.*?(?:\*/|\Z))",
+    re.DOTALL,
+)
+_NOT_SPACE_RE = re.compile(r"\S")
+
+
+@functools.lru_cache(maxsize=1)
+def _tokenizer() -> Tokenizer | None:
+    """sqlglot's tokenizer with the three ways a name is quoted: ``"a"``, ```a``` and ``[a]``. None
+    where sqlglot is not installed."""
+    try:
+        from sqlglot import Tokenizer
+    except ImportError:
+        return None
+
+    class Quoted(Tokenizer):
+        IDENTIFIERS: ClassVar[list[str | tuple[str, str]]] = ['"', "`", ("[", "]")]
+
+    return Quoted()
+
+
+def _without_comments(literal: str) -> str:
+    """*literal* with its ``--`` and ``/* */`` comments blanked, offsets and line breaks kept.
+
+    A comment between two named subqueries then does not end the WITH clause. The comments are
+    those sqlglot's tokenizer skips: the text between two tokens that is not white space. A
+    literal the tokenizer cannot read has its comments read by a left to right scan that takes
+    each quoted name or string whole.
+    """
+    tokenizer = _tokenizer()
+    if tokenizer is None:
+        return literal
+    try:
+        from sqlglot.errors import TokenError
+
+        tokens = tokenizer.tokenize(literal)
+    except TokenError:
+        return _UNREAD_SCAN_RE.sub(
+            lambda m: _NOT_SPACE_RE.sub(" ", m.group(0)) if m.group("comment") else m.group(0),
+            literal,
+        )
+    out: list[str] = []
+    end = -1  # the offset of the last character of the previous token
+    for token in tokens:
+        out.append(_NOT_SPACE_RE.sub(" ", literal[end + 1 : token.start]))
+        out.append(literal[token.start : token.end + 1])
+        end = token.end
+    out.append(_NOT_SPACE_RE.sub(" ", literal[end + 1 :]))
+    return "".join(out)
+
+
+def _cte_names(literal: str) -> set[str]:
+    """The lower-cased, unquoted names the literal binds with WITH.
+
+    They are not tables, though ``FROM name`` reads them. Comments are read out first.
+    """
+    literal = _without_comments(literal)
+    names: set[str] = set()
+    for start in _WITH_RE.finditer(literal):
+        at = start.end()
+        while head := _CTE_HEAD_RE.match(literal, at):
+            names.add(_unquote(head.group("name")).lower())
+            close = match_paren(literal, head.end() - 1)
+            after = literal[close + 1 :].lstrip() if close >= 0 else ""
+            if close < 0 or not after.startswith(","):
+                break
+            at = literal.index(",", close) + 1
+    return names
 
 
 def _opens_with_sql(literal: str) -> bool:
@@ -316,9 +415,11 @@ class SqlStringsDialect:
         if parsed is not None:
             return parsed
         found: list[tuple[str, str]] = []
+        defined = _cte_names(literal)
         for verb, pattern in _VERB_TABLE_RES:
             for m in pattern.findall(literal):
-                found.append((m, verb))
+                if _unquote(m).lower() not in defined:
+                    found.append((m, verb))
         return found
 
     @staticmethod

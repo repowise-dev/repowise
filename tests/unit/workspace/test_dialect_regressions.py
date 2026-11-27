@@ -207,6 +207,74 @@ SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.
         assert "ranked" in tables
 
 
+class TestSqlCteAliasWhereTheLiteralDoesNotParse:
+    """The names a literal binds with WITH are no tables on the regex path either."""
+
+    # ``%s`` stands for a value the code puts in: the literal is a format string, which no grammar
+    # parses.
+    LITERAL = """
+with order_events as (
+    select id, created, 'Refund' as kind from event_log
+),
+refund as (
+    select id, created from refund_request where created > date '%s'
+),
+merged as (
+    select id, created from order_events union all select id, created from refund
+)
+select * from merged where id = %d order by created desc limit 10
+"""
+
+    def tables(self, literal: str) -> set[str]:
+        dialect = SqlStringsDialect()
+        assert dialect._parse_tables(literal) is None  # the regex path is the one under test
+        return {t for t, _verb in dialect._tables_in(literal)}
+
+    def test_the_names_a_with_clause_binds_are_not_tables(self) -> None:
+        assert self.tables(self.LITERAL) == {"event_log", "refund_request"}
+
+    def test_a_name_with_columns_or_after_recursive_is_bound_too(self) -> None:
+        literal = (
+            "with recursive tree(id, parent) as (select id, parent from node where id = %d) "
+            "select * from tree"
+        )
+        assert self.tables(literal) == {"node"}
+
+    def test_a_table_read_by_a_literal_with_no_with_is_a_table(self) -> None:
+        assert self.tables("select id from order_events where id = %d") == {"order_events"}
+
+    def test_a_name_that_only_follows_a_comma_is_not_bound(self) -> None:
+        # The WITH list ends at the `)` that no comma follows: `b as (x)` of the select list binds
+        # nothing.
+        literal = (
+            "with a as (select id from node) "
+            "select 1 as one, b as (x) from refund_request where id = %d"
+        )
+        assert self.tables(literal) == {"node", "refund_request"}
+
+    def test_a_comment_between_two_named_subqueries_does_not_end_the_with_clause(self) -> None:
+        literal = (
+            "with first as (select id from node where id = %d), /* the second */ "
+            "second as (select id from first),\n"
+            "-- the third\nthird as (select id from second) select id from third"
+        )
+        assert self.tables(literal) == {"node"}
+
+    def test_a_comment_marker_in_a_string_is_no_comment(self) -> None:
+        literal = (
+            "with a as (select '--' as x, id from node where id = %d), "
+            "b as (select id from a) select id from b"
+        )
+        assert self.tables(literal) == {"node"}
+
+    def test_a_quoted_name_is_bound_in_each_way_a_dialect_quotes(self) -> None:
+        for quoted in ('"Ranked"', "`Ranked`", "[Ranked]"):
+            literal = (
+                f"with {quoted} as (select id from node where id = %d) select id from {quoted}"
+            )
+            assert self.tables(literal) == {"node"}, quoted
+
+
 class TestSqlProseRejection:
     """Regression 4: a docstring became the tables ``path`` and ``would``."""
 
