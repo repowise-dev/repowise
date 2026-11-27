@@ -185,13 +185,6 @@ const GROUPS: Group[] = [
           "Offer lightbulb code actions that hand a detected refactoring plan to your AI agent, alongside the copy-to-clipboard action.",
         kind: "toggle",
       },
-      {
-        key: "agentTools.enabled",
-        label: "Chat tools",
-        description:
-          "Expose Repowise index lookups (search, health, plans, risk, symbols, docs) as native tools your editor's AI chat can call.",
-        kind: "toggle",
-      },
     ],
   },
   {

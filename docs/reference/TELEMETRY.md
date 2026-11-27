@@ -43,9 +43,11 @@ Every event, whatever its type, carries the same anonymous envelope:
 | `is_ci` | `true` / `false` | Separate automation from humans |
 
 Every event's `properties.client` names the host that ran repowise, as one
-fixed label: `claude_code`, `codex`, `cursor`, `vscode`, `ci` or `terminal`.
-It comes from which host-specific environment variables are set (never their
-values), from a hook's `--client` flag, or for an MCP tool call from the name
+fixed label: `vscode_ext`, `claude_code`, `codex`, `cursor`, `vscode`, `ci` or
+`terminal`. `vscode_ext` marks a run the VS Code extension started: it sets
+`REPOWISE_CLIENT=vscode_ext`, and only a known label in that variable counts.
+Otherwise the label comes from which host-specific environment variables are
+set (never their values), from a hook's `--client` flag, or for an MCP tool call from the name
 the client announces when it connects, which can also name another supported
 agent such as `opencode` (`unknown` when nothing matches).
 

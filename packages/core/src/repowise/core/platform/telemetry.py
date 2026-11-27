@@ -161,16 +161,27 @@ _HOST_ENV_VARS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("vscode", ("VSCODE_PID", "VSCODE_IPC_HOOK_CLI")),
 )
 
+#: A launcher that knows what it is names itself here (the VS Code extension
+#: sets ``vscode_ext`` on every process it starts). Only these values count.
+CLIENT_ENV = "REPOWISE_CLIENT"
+_DECLARED_CLIENTS = frozenset({"vscode_ext"})
+
 #: Every value :func:`detect_client` can return.
-CLIENT_LABELS = frozenset({label for label, _ in _HOST_ENV_VARS} | {"ci", "terminal"})
+CLIENT_LABELS = frozenset(
+    {label for label, _ in _HOST_ENV_VARS} | {"ci", "terminal"} | _DECLARED_CLIENTS
+)
 
 
 def detect_client() -> str:
     """Name the host that launched this process, from its environment alone.
 
-    One fixed label, never an env value: ``claude_code``, ``codex``,
-    ``cursor``, ``vscode``, ``ci``, else ``terminal``.
+    One fixed label, never an env value: a known ``REPOWISE_CLIENT``
+    (``vscode_ext``) first, then ``claude_code``, ``codex``, ``cursor``,
+    ``vscode``, ``ci``, else ``terminal``.
     """
+    declared = os.environ.get(CLIENT_ENV, "").strip().lower()
+    if declared in _DECLARED_CLIENTS:
+        return declared
     for label, names in _HOST_ENV_VARS:
         if any(os.environ.get(name) for name in names):
             return label

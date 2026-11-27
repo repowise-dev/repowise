@@ -88,6 +88,18 @@ describe("Repowise extension", () => {
     assert.ok(notInstalled?.contents.includes("src=vscode_no_python"));
   });
 
+  it("activates only for indexed folders and contributes no chat tools", () => {
+    const manifest = getExtension().packageJSON as {
+      activationEvents: string[];
+      contributes: Record<string, unknown>;
+    };
+    assert.deepStrictEqual(manifest.activationEvents, [
+      "workspaceContains:.repowise",
+      "workspaceContains:.repowise-workspace",
+    ]);
+    assert.strictEqual(manifest.contributes["languageModelTools"], undefined);
+  });
+
   it("runs Show Log without throwing", async () => {
     const ext = getExtension();
     await ext.activate();

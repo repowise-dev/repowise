@@ -28,7 +28,6 @@ const DEFAULTS: SettingsValues = {
   "changeIntel.cochangeNudge": true,
   "changeIntel.cochangeMinScore": 4,
   "agentHandoff.enabled": true,
-  "agentTools.enabled": true,
 };
 
 /** Host whose updateSetting echoes the merged map back, like the real one. */

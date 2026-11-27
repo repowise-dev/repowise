@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { Commands } from "../constants";
+import { Commands, InternalCommands } from "../constants";
 import type {
   RepowiseContext,
   StatusBarDetail,
@@ -36,11 +36,12 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
         return;
 
       // A stale lockfile reports the same way as no server: it is not
-      // running, and the click affordance starts it.
+      // running, and the click menu offers to start it.
       case "server-down":
-        item.text = "$(circle-slash) Repowise: offline";
-        item.tooltip = "Local server not running. Click to start.";
-        item.command = Commands.startServer;
+        item.text = "$(circle-slash) Repowise: server stopped";
+        item.tooltip =
+          "The local Repowise server is not running. Click to start it. Your agent's MCP tools work without it.";
+        item.command = InternalCommands.serverMenu;
         item.backgroundColor = undefined;
         break;
 
@@ -53,7 +54,7 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
 
       case "connected": {
         item.text = "$(check) Repowise";
-        const lines = ["Connected to the local Repowise server."];
+        const lines = ["Connected to the local Repowise server. Click to stop or restart it."];
         if (detail?.version) lines.push(`Version ${detail.version}`);
         if (detail?.url) lines.push(detail.url);
         // One quiet way to the hosted side, inside the tooltip rather than as
@@ -64,7 +65,7 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
         );
         tooltip.isTrusted = { enabledCommands: [Commands.publish] };
         item.tooltip = tooltip;
-        item.command = Commands.showLog;
+        item.command = InternalCommands.serverMenu;
         item.backgroundColor = undefined;
         break;
       }
