@@ -17,6 +17,12 @@ Silence is the default. No step when:
   with no static finding that says it spawns one), the framework spine (router
   and middleware chain), a response write, or a database write or commit that
   no loop repeats: each request needs its own, and "batch" would be wrong;
+- the dominant time is irreducible work: a stream decoder reading the next
+  value from its reader (decoding the run's input or a request body reads each
+  byte once, so "parse once" has nothing to reuse), a package metadata scan
+  (plugin discovery runs once per process on the commands that load plugins),
+  or one grouped or ``IN`` read that no loop repeats (it already loads the
+  rows for every item at once);
 - the function is a thin wrapper named like its dominant callee (the cost
   belongs to its drivers);
 - the dominant time is a regular expression run by a function whose job is
@@ -275,9 +281,15 @@ _PARSE = frozenset(
         "json.Unmarshal",
         "yaml.Unmarshal",
         "xml.Unmarshal",
-        "(*Decoder).Decode",
     }
 )
+# Stream decoders: each call reads the next value off a reader (Go's json, xml,
+# gob and yaml ``Decoder``, a type that only reads a stream), so the bytes are
+# new every call. PyYAML's ``load_all`` takes a stream or a held string alike,
+# so it stays a parse. Ceiling: a decoder built per call over the same buffer
+# re-parses it and stays silent too; upgrade path: a static fact that the
+# reader wraps a value the function already holds.
+_STREAM_DECODE = frozenset({"(*Decoder).Decode"})
 _DEEP_COPY = frozenset(
     {"deepcopy", "_deepcopy_dict", "_deepcopy_list", "cloneDeep", "structuredClone"}
 )
@@ -313,6 +325,14 @@ _PATH_INTERNALS = frozenset(
     }
 )
 _PACKAGE_METADATA = frozenset({"entry_points", "distributions", "packages_distributions"})
+# Query builders that make one read cover many items: a GROUP BY, or an IN over
+# a list of keys (gorm's ``(*DB).Group``; SQLAlchemy's ``group_by`` and
+# ``ColumnOperators.in_``). Builders cost little, so they show only when the run
+# sampled them: silence on what the run saw, never a guess from the name.
+_GO_GROUPED = frozenset({"(*DB).Group"})
+_PY_GROUPED = frozenset(
+    {"Query.group_by", "Select.group_by", "GenerativeSelect.group_by", "ColumnOperators.in_"}
+)
 _GO_MAP = re.compile(r"^(?:runtime\.(?:mapassign|makemap|mapiter|mapIter)|internal/runtime/maps\.)")
 _GO_CGO = "runtime.cgocall"
 
@@ -433,7 +453,19 @@ _AGREES = {
     "db": frozenset({"db_read", "db_write_loop"}),
 }
 
-_SILENT = frozenset({"wait", "spine", "response_write", "db_write", "unknown_native", "regex_work"})
+_SILENT = frozenset(
+    {
+        "wait",
+        "spine",
+        "response_write",
+        "db_write",
+        "db_grouped",
+        "unknown_native",
+        "regex_work",
+        "input_decode",
+        "package_metadata",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -529,7 +561,9 @@ def next_step(
         return None
     family, share, group = picked
     drivers = _items(row.get("drivers"))
-    family, loop = _refine(family, group, symbol, drivers, findings, row.get("workload_class"))
+    family, loop = _refine(
+        family, group, inside, lang, symbol, drivers, findings, row.get("workload_class")
+    )
     if family in _SILENT:
         return None
     lead = _lead(group)
@@ -583,15 +617,18 @@ def _dominant(
 def _refine(
     family: str,
     group: Sequence[Mapping[str, Any]],
+    inside: Sequence[Mapping[str, Any]],
+    lang: str,
     symbol: str,
     drivers: Sequence[Mapping[str, Any]],
     findings: Sequence[Mapping[str, Any]],
     workload_class: Any,
 ) -> tuple[str, str | None]:
     """A database family split into read and write, with the loop that repeats it:
-    a write a loop repeats in one entry point run is ``db_write_loop``; a regex run
-    by a function whose job is matching its input (a lexer, a parser, a router) is
-    the work (``regex_work``)."""
+    a write a loop repeats in one entry point run is ``db_write_loop``; one
+    grouped or ``IN`` read that no loop repeats (in a caller or in the function
+    itself) is ``db_grouped``; a regex run by a function whose job is matching
+    its input (a lexer, a parser, a router) is the work (``regex_work``)."""
     if family == "regex_match":
         return ("regex_work" if _matching_is_the_job(symbol) else family), None
     if family != "database":
@@ -600,7 +637,27 @@ def _refine(
     loop = _loop_owner(symbol, drivers, findings)
     if family == "db_write" and loop and workload_class == "entry_point":
         family = "db_write_loop"
+    if (
+        family == "db_read"
+        and not loop
+        and _one_grouped_read(group, inside, lang, symbol, findings)
+    ):
+        family = "db_grouped"
     return family, loop
+
+
+def _own_loop(
+    group: Sequence[Mapping[str, Any]], symbol: str, findings: Sequence[Mapping[str, Any]]
+) -> bool:
+    """A database loop in the function *symbol* whose sink may be its read."""
+    read = _last(str(_lead(group).get("name") or ""))
+    return any(
+        f.get("kind") == "io_in_loop"
+        and f.get("boundary") == "db"
+        and _on(f, symbol)
+        and _sink_may_be(f.get("sink"), read)
+        for f in findings
+    )
 
 
 # --- classification ----------------------------------------------------------
@@ -794,17 +851,19 @@ _RULES: tuple[tuple[str, Callable[[_Callee], bool]], ...] = (
         lambda c: bool(c.names & _TEMPLATE_RENDER and c.leaf_names & _FILE_READ_LEAVES),
     ),
     ("other", lambda c: bool(c.names & _TEMPLATE_RENDER)),  # rendering itself is the work
+    # Before the filesystem rule: the metadata scan's leaves are file reads and stats.
+    ("package_metadata", lambda c: c.lang == "python" and bool(c.names & _PACKAGE_METADATA)),
     ("etag", lambda c: bool(c.names & _ETAG)),
     ("filesystem", _filesystem_callee),
     ("hash", lambda c: bool(c.names & _HASH)),
     ("subprocess", lambda c: _subprocess(c.name, c.lang)),
     ("regex_compile", _regex_callee),
+    ("input_decode", lambda c: bool(c.names & _STREAM_DECODE)),
     ("parse", lambda c: bool(c.names & _PARSE)),
     ("deep_copy", lambda c: bool(c.names & _DEEP_COPY)),
     ("map_build", lambda c: c.lang == "go" and bool(_GO_MAP.match(c.name))),
     ("reflection", _reflection_callee),
     ("path_parse", _path_callee),
-    ("package_metadata", lambda c: c.lang == "python" and bool(c.names & _PACKAGE_METADATA)),
     # cgo time with nothing above it saying what it is.
     ("unknown_native", _cgo_callee),
 )
@@ -833,6 +892,37 @@ def _database(name: str, lang: str) -> bool:
             last in _JVM_DB_VERBS or last in _DB_WRITE_VERBS
         )
     return False
+
+
+def _sink_may_be(sink: Any, call: str) -> bool:
+    """Whether a loop finding's sink call (``Find``, ``db.Find(&rows)``) may be
+    *call*; a finding that names no sink may be any call."""
+    return not sink or _last(str(sink).split("(")[0]) == call
+
+
+def _one_grouped_read(
+    group: Sequence[Mapping[str, Any]],
+    inside: Sequence[Mapping[str, Any]],
+    lang: str,
+    symbol: str,
+    findings: Sequence[Mapping[str, Any]],
+) -> bool:
+    """One database call (the family's only one, whatever its share) whose query
+    the run saw built with a GROUP BY or an ``IN`` (:data:`_GO_GROUPED`,
+    :data:`_PY_GROUPED`), and no database loop in the function repeats it: it
+    already loads every item's rows at once."""
+    if len(group) != 1 or not any(_grouping_builder(c, lang) for c in inside):
+        return False
+    return not _own_loop(group, symbol, findings)
+
+
+def _grouping_builder(callee: Mapping[str, Any], lang: str) -> bool:
+    name = str(callee.get("name") or "")
+    if callee.get("kind") != "library":
+        return False
+    if lang == "go":
+        return bool(_names(name) & _GO_GROUPED) and _db_package(name)
+    return lang == "python" and bool(_names(name) & _PY_GROUPED)
 
 
 def _subprocess(name: str, lang: str) -> bool:
@@ -1206,10 +1296,6 @@ _WORDS = {
     "path_parse": _simple(
         "{pct} of it builds and parses a path object per call ({split})",
         "test the plain string first (str.endswith, os.path) and build the path object only when that passes",
-    ),
-    "package_metadata": _simple(
-        "{pct} of it reads installed package metadata ({callee}), which scans every installed distribution",
-        "run it only on the commands that need it, and at most once per process",
     ),
 }
 

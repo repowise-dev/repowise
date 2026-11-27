@@ -375,12 +375,7 @@ def test_a_static_finding_writes_why_only_when_it_agrees_with_the_callee() -> No
             [_c("suffix", "library", 0.875, ("_tail", "library", 0.375))],
             "path_parse",
         ),
-        (
-            "plugins.py::_discover",
-            "python",
-            [_c("entry_points", "library", 1.0, ("open", "library", 0.2))],
-            "package_metadata",
-        ),
+        ("conf.go::load", "go", [_c("encoding/json.Unmarshal", "library", 0.8)], "parse"),
         ("conf.go::load", "go", [_c("regexp.MustCompile", "library", 0.7)], "regex_compile"),
         (
             "conf.py::load",
@@ -399,6 +394,162 @@ def test_lexicon_entries(
 ) -> None:
     step = next_step(_row(symbol, inside, klass="entry_point"), language)
     assert step is not None and step.rule == rule
+
+
+# Irreducible work (F-NS-2, F-NS-4): decoding the run's input, plugin discovery.
+
+
+def test_a_stream_decoder_reading_the_input_is_silent() -> None:
+    # A CLI's input iterator: a json.Decoder over stdin returns the next value
+    # each call (the run's input, read once); "parse once" would be wrong.
+    row = _row(
+        "cli/inputs.go::newJSONInputIter",
+        [
+            _c(
+                "encoding/json.(*Decoder).Decode",
+                "library",
+                1.0,
+                ("encoding/json.(*Decoder).readValue", "library", 0.1183),
+            )
+        ],
+        [{"name": "Next", "share": 1.0, "symbol": "cli/inputs.go::jsonInputIter::Next"}],
+        klass="entry_point",
+    )
+    assert next_step(row, "go") is None
+    for decoder in ("encoding/xml.(*Decoder).Decode", "gopkg.in/yaml.v3.(*Decoder).Decode"):
+        assert next_step(_row("api.go::bind", [_c(decoder, "library", 0.9)]), "go") is None
+
+
+def test_parsing_a_value_the_function_holds_still_says_parse_once() -> None:
+    for symbol, language, callee in (
+        ("conf.go::load", "go", "encoding/json.Unmarshal"),
+        ("conf.go::load", "go", "encoding/xml.Unmarshal"),
+        ("conf.py::load", "python", "loads"),
+        ("conf.py::load", "python", "safe_load"),
+        # load_all reads a stream or a held string alike: a parse.
+        ("conf.py::documents", "python", "load_all"),
+    ):
+        step = next_step(_row(symbol, [_c(callee, "library", 0.8)], klass="entry_point"), language)
+        assert step is not None and step.rule == "parse", callee
+        assert "parse once" in step.next
+
+
+def test_plugin_discovery_scanning_package_metadata_is_silent() -> None:
+    # Plugin discovery: entry_points scans installed metadata once per process,
+    # on the commands that load plugins, so neither half of a step applies.
+    row = _row(
+        "registry/plugins.py::_discover",
+        [_c("entry_points", "library", 1.0, ("open", "library", 0.204))],
+        [{"name": "load_plugins", "share": 1.0, "symbol": "registry/plugins.py::load_plugins"}],
+        workload="app status",
+        klass="entry_point",
+    )
+    assert next_step(row, "python") is None
+    # Its leaves are file stats: still the metadata scan, never a filesystem step.
+    stat_leaf = _row(
+        "registry/plugins.py::_discover",
+        [_c("entry_points", "library", 0.9, ("stat", "native", 0.75))],
+        klass="entry_point",
+    )
+    assert next_step(stat_leaf, "python") is None
+
+
+# One grouped read (F-NS-3).
+
+
+def _counts_row(inside: list[dict[str, Any]]) -> dict[str, Any]:
+    return _row(
+        "articles/models.go::BatchGetFavoriteCounts",
+        inside,
+        [
+            {
+                "name": "ArticlesSerializer.Response",
+                "share": 1.0,
+                "symbol": "articles/serializers.go::ArticlesSerializer::Response",
+            }
+        ],
+    )
+
+
+GORM_FIND = _c("gorm.io/gorm.(*DB).Find", "library", 0.9956, ("runtime.cgocall", "native", 0.9356))
+GORM_GROUP = _c(
+    "gorm.io/gorm.(*DB).Group",
+    "library",
+    0.0022,
+    ("internal/runtime/maps.(*Map).getWithoutKeySmallFastStr", "library", 0.0022),
+)
+
+
+def test_one_grouped_read_is_silent() -> None:
+    # A count per article for a whole page in one GROUP BY: already one query.
+    where = _c("gorm.io/gorm.(*DB).Where", "library", 0.0022)
+    assert next_step(_counts_row([GORM_FIND, GORM_GROUP, where]), "go") is None
+    py = _row(
+        "app.py::counts",
+        [_c("Session.execute", "library", 0.9), _c("GenerativeSelect.group_by", "library", 0.01)],
+    )
+    assert next_step(py, "python") is None
+    in_list = _row(
+        "app.py::by_ids",
+        [_c("Session.execute", "library", 0.9), _c("ColumnOperators.in_", "library", 0.004)],
+    )
+    assert next_step(in_list, "python") is None
+
+
+def test_a_read_without_a_grouping_builder_keeps_its_step() -> None:
+    # The run did not sample a builder: nothing says the query is grouped.
+    assert next_step(_counts_row([GORM_FIND]), "go").rule == "db_read"
+    # A Group from a package that is not a database driver says nothing.
+    other = _c("example.com/stats.(*Agg).Group", "library", 0.01)
+    assert next_step(_counts_row([GORM_FIND, other]), "go").rule == "db_read"
+    # A dataframe group_by, or the repo's own group_by, is no query builder.
+    for name, kind in (("DataFrame.group_by", "library"), ("report.group_by", "repo")):
+        row = _row("report.py::rows", [_c("Session.execute", "library", 0.9), _c(name, kind, 0.03)])
+        assert next_step(row, "python").rule == "db_read", name
+
+
+def test_a_grouped_read_beside_another_query_or_in_a_loop_keeps_its_step() -> None:
+    count = _c("gorm.io/gorm.(*DB).Count", "library", 0.2, ("runtime.cgocall", "native", 0.2))
+    find = _c("gorm.io/gorm.(*DB).Find", "library", 0.78, ("runtime.cgocall", "native", 0.7))
+    step = next_step(_counts_row([find, count, GORM_GROUP]), "go")
+    assert step.rule == "db_read" and "2 ORM or driver calls" in step.why
+    # A second read, however small its share, is a second query.
+    tiny = _c("gorm.io/gorm.(*DB).Count", "library", 0.005)
+    assert next_step(_counts_row([GORM_FIND, GORM_GROUP, tiny]), "go").rule == "db_read"
+    # A loop in the function itself repeats the grouped read.
+    own = static_finding(
+        "articles/models.go",
+        "BatchGetFavoriteCounts",
+        "io_in_loop",
+        "a database call runs once per loop iteration",
+        {"boundary_kind": "db", "sink_call": "Find"},
+    )
+    assert next_step(_counts_row([GORM_FIND, GORM_GROUP]), "go", [own]).rule == "db_read"
+    # A loop in the function over some other I/O does not repeat the read.
+    http = {**own, "boundary": "network", "sink": "http.Get"}
+    assert next_step(_counts_row([GORM_FIND, GORM_GROUP]), "go", [http]) is None
+    # Nor does a loop over another database call, one the run never measured.
+    count = {**own, "sink": "Count"}
+    assert next_step(_counts_row([GORM_FIND, GORM_GROUP]), "go", [count]) is None
+    # A loop whose sink is the grouped read, or names none, keeps the step.
+    for sink in ("db.Find(&rows)", None):
+        found = {**own, "sink": sink}
+        assert next_step(_counts_row([GORM_FIND, GORM_GROUP]), "go", [found]).rule == "db_read"
+    loop = static_finding(
+        "articles/serializers.go",
+        "Response",
+        "io_in_loop",
+        "a database call ...",
+        {
+            "boundary_kind": "db",
+            "path": [
+                "articles/serializers.go::ArticlesSerializer::Response",
+                "articles/models.go::BatchGetFavoriteCounts",
+            ],
+        },
+    )
+    step = next_step(_counts_row([GORM_FIND, GORM_GROUP]), "go", [loop])
+    assert step.rule == "db_read" and "N+1" in step.next
 
 
 def test_only_leading_workloads_get_a_step() -> None:
