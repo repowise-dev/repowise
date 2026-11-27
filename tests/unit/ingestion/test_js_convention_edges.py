@@ -39,6 +39,9 @@ _REPO = {
     "web/package.json": _pkg({"next": "14"}),
     "web/pages/about.tsx": _NONE,
     "web/src/pages/blog/[slug].tsx": _NONE + "export async function getStaticProps() { return {}; }\n",
+    "web/app/(shop)/cart/page.tsx": _NONE + "export const metadata = {};\n",
+    "web/app/sitemap.ts": "export default function sitemap() { return []; }\n",
+    "web/middleware.ts": "export function middleware() { return null; }\n",
     "rmx/package.json": _pkg({"@remix-run/react": "2"}),
     "rmx/app/routes/_index.tsx": _NONE + "export function loader() { return null; }\n",
     "rmx/app/root.tsx": _NONE,
@@ -48,15 +51,22 @@ _REPO = {
     "nux/components/Card.ts": _NONE,  # auto-imported when used: not an entry
     "svk/package.json": _pkg({"@sveltejs/kit": "2"}, dev=True),
     "svk/src/hooks.server.ts": "export async function handle() { return null; }\n",
+    "svk/src/routes/blog/+page.ts": "export function load() { return {}; }\n",
     "ast/package.json": _pkg({"astro": "4"}),
     "ast/src/middleware.ts": "export function onRequest() { return null; }\n",
+    "ast/src/pages/rss.xml.ts": "export function GET() { return null; }\n",
     "exp/package.json": _pkg({"expo-router": "3"}),
     "exp/app/_layout.tsx": _NONE,
     "exp/app/(tabs)/settings.tsx": _NONE,
+    "vpp/package.json": _pkg({"vite-plugin-pages": "0.33"}, dev=True),
+    "vpp/src/pages/e/[id].vue": '<template><div /></template>\n<script setup lang="ts">\nconst x = 1\n</script>\n',
     # Controls: the same paths in a package that depends on none of them.
     "plain/package.json": _pkg({"react": "18"}),
     "plain/emails/x.tsx": _NONE,
     "plain/pages/y.tsx": _NONE,
+    "plain/app/z/page.tsx": _NONE,
+    "plain/middleware.ts": "export function middleware() { return null; }\n",
+    "plain/src/pages/feed.ts": "export function GET() { return null; }\n",
 }
 
 
@@ -89,20 +99,35 @@ def _analyze(repo: Path):
 def test_convention_loaded_files_are_anchored_and_not_dead(tmp_path: Path) -> None:
     graph, findings = _analyze(_write(tmp_path, _REPO))
     anchored = {
-        "framework:react-email": "mail/emails/auth/welcome.tsx",
-        "framework:nextjs": "web/src/pages/blog/[slug].tsx",
-        "framework:remix": "rmx/app/routes/_index.tsx",
-        "framework:nuxt": "nux/server/api/health.ts",
-        "framework:sveltekit": "svk/src/hooks.server.ts",
-        "framework:astro": "ast/src/middleware.ts",
-        "framework:expo-router": "exp/app/(tabs)/settings.tsx",
+        "framework:react-email": ("mail/emails/auth/welcome.tsx",),
+        "framework:nextjs": (
+            "web/src/pages/blog/[slug].tsx",
+            "web/app/(shop)/cart/page.tsx",
+            "web/app/sitemap.ts",
+            "web/middleware.ts",
+        ),
+        "framework:remix": ("rmx/app/routes/_index.tsx",),
+        "framework:nuxt": ("nux/server/api/health.ts",),
+        "framework:sveltekit": ("svk/src/hooks.server.ts", "svk/src/routes/blog/+page.ts"),
+        "framework:astro": ("ast/src/middleware.ts", "ast/src/pages/rss.xml.ts"),
+        "framework:expo-router": ("exp/app/(tabs)/settings.tsx",),
+        "framework:vite-pages": ("vpp/src/pages/e/[id].vue",),
     }
-    for anchor, path in anchored.items():
-        assert graph.has_edge(anchor, path), (anchor, path)
+    for anchor, paths in anchored.items():
+        for path in paths:
+            assert graph.has_edge(anchor, path), (anchor, path)
     assert not graph.has_edge("framework:nuxt", "nux/components/Card.ts")
     flagged = {f.file_path for f in findings}
-    # Only the auto-imported component nothing uses and the controls remain.
-    assert flagged == {"nux/components/Card.ts", "plain/emails/x.tsx", "plain/pages/y.tsx"}
+    # Only the auto-imported component nothing uses and the controls remain:
+    # a framework's file names mean nothing in a package that does not use it.
+    assert flagged == {
+        "nux/components/Card.ts",
+        "plain/emails/x.tsx",
+        "plain/pages/y.tsx",
+        "plain/app/z/page.tsx",
+        "plain/middleware.ts",
+        "plain/src/pages/feed.ts",
+    }
     # The auto-imported component is listed, but never as deletion-ready.
     card = [f for f in findings if f.file_path == "nux/components/Card.ts"]
     assert card and not any(f.safe_to_delete for f in card)
@@ -353,3 +378,12 @@ def test_react_email_dir_edge_cases(script: str, paths: list[str], expected: lis
     assert manifest is not None
     ((facts, _pkg),) = js_frameworks(manifest)
     assert facts.entry_files("", paths) == expected
+
+
+def test_a_root_next_app_does_not_anchor_a_sibling_package_s_app_dir() -> None:
+    """``app/`` belongs to the app at the manifest root, not to a nested package."""
+    from repowise.core.ingestion.framework_facts import NEXT_APP
+
+    paths = ["app/layout.tsx", "src/app/(shop)/page.tsx", "packages/ui/app/layout.tsx"]
+    assert NEXT_APP.entry_files("", paths) == ["app/layout.tsx", "src/app/(shop)/page.tsx"]
+    assert NEXT_APP.entry_files("packages/ui", paths) == ["packages/ui/app/layout.tsx"]
