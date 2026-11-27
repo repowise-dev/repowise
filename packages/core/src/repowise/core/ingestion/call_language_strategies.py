@@ -285,7 +285,30 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         inherited_typed_receiver=True,
         inherited_fields=True,
     ),
+    # A Ruby constant resolves through the Zeitwerk index, as an import would:
+    # ``Foo.new`` runs ``Foo#initialize`` and ``FooJob.perform_later`` runs
+    # ``FooJob#perform``. A receiver named after a model (``@conversation``)
+    # is typed by that Rails convention, after every other tier declined.
+    "ruby": _LanguageCallStrategies(
+        constructor=("_resolve_ruby_constant_call",),
+        member_fallback=("_resolve_ruby_conventional_receiver",),
+    ),
 }
+
+# Class-level calls that run an instance method of the receiver class.
+# ActiveJob (``perform_later``/``perform_now``) and Sidekiq (``perform_async``,
+# ``perform_in``, ``perform_at``) enqueue or run ``perform``.
+_RUBY_CLASS_CALL_TARGETS: dict[str, str] = {
+    "new": "initialize",
+    "perform_later": "perform",
+    "perform_now": "perform",
+    "perform_async": "perform",
+    "perform_in": "perform",
+    "perform_at": "perform",
+}
+
+# ``conversation`` / ``@conversation`` / ``@@conversation``: a snake_case name.
+_RUBY_CONVENTIONAL_RECEIVER = re.compile(r"^@{0,2}([a-z][a-z0-9]*(?:_[a-z0-9]+)*)$")
 
 
 def _csharp_lookup_levels(
@@ -359,6 +382,10 @@ class LanguageStrategiesMixin:
 
         # Perl packages and their parents (lazy PerlPackageIndex)
         self._perl_index: PerlPackageIndex | None = None
+
+        # Rails / Zeitwerk autoload index (lazy RailsIndex; None outside Rails)
+        self._rails_index: Any = None
+        self._rails_index_built = False
 
         # C/C++ same-target resolution (lazy CppWorkspaceIndex)
         self._cpp_index: Any = None
@@ -1281,6 +1308,79 @@ class LanguageStrategiesMixin:
         if path == file_path:
             return ResolvedCall(caller_id, target, 0.93, line, "receiver_same_file")
         return ResolvedCall(caller_id, target, 0.90, line, origin)
+
+    def _get_rails_index(self) -> Any:
+        """The repository's Zeitwerk index, built once; None outside a Rails app."""
+        if not self._rails_index_built:
+            self._rails_index_built = True
+            if self._repo_path:
+                from pathlib import Path
+
+                from .resolvers.ruby_rails import build_rails_index
+
+                self._rails_index = build_rails_index(Path(self._repo_path))
+        return self._rails_index
+
+    def _ruby_method_in(self, path: str, method: str) -> str | None:
+        """The one method named *method* that the file at *path* declares."""
+        found = {
+            sym_id
+            for (_, name), sym_id in self._file_methods.get(path, {}).items()
+            if name == method
+        }
+        return next(iter(found)) if len(found) == 1 else None
+
+    def _resolve_ruby_constant_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``Foo.new`` → ``Foo#initialize``; ``FooJob.perform_later`` → ``FooJob#perform``.
+
+        ``new`` and the job enqueuers are no symbol of the repository, so no
+        other tier can bind them. The receiver constant is resolved through
+        the Zeitwerk index from the caller's file, which is as good as an
+        import. A namespaced receiver arrives as its last segment (see
+        ``ruby.scm``), so ``A::Foo.new`` is looked up as ``Foo``.
+        """
+        method = _RUBY_CLASS_CALL_TARGETS.get(call.target_name)
+        receiver = call.receiver_name or ""
+        if method is None or not receiver[:1].isupper():
+            return None
+        index = self._get_rails_index()
+        target = index.resolve(receiver, file_path) if index is not None else None
+        callee = self._ruby_method_in(target, method) if target else None
+        if callee is None or callee == caller_id:
+            return None
+        return ResolvedCall(caller_id, callee, 0.88, call.line, "receiver_import")
+
+    def _resolve_ruby_conventional_receiver(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``@conversation.toggle_status`` → ``Conversation#toggle_status``.
+
+        Rails names a variable after the model it holds. The receiver is
+        camelized, resolved through the Zeitwerk index, and bound only when
+        that class's file declares the method. Ceiling: a variable named after
+        a model but holding something else binds wrongly when the model also
+        declares the method, so the edge carries the global tier's confidence.
+        """
+        m = _RUBY_CONVENTIONAL_RECEIVER.match(call.receiver_name or "")
+        index = self._get_rails_index() if m is not None else None
+        if index is None:
+            return None
+        constant = "".join(part.capitalize() for part in m.group(1).split("_"))
+        target = index.resolve(constant, file_path)
+        if target is None or target == file_path:
+            return None
+        callee = self._ruby_method_in(target, call.target_name)
+        if callee is None:
+            return None
+        return ResolvedCall(caller_id, callee, 0.75, call.line, "receiver_typed_global")
 
     def _resolve_apex_namespace_type(
         self,

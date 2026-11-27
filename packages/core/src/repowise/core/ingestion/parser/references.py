@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from tree_sitter import Node
 
 from ..extractors import node_text
+from ..lang_helpers.type_heads import ruby_constant_origin
 from ..models import CallSite, FileInfo, Import, Symbol, TypeReference
 from ..parser_helpers import (
     TYPE_HEAD_EXTRACTORS,
@@ -235,7 +236,11 @@ def _extract_type_refs(
             if key in seen:
                 continue
             seen.add(key)
-            origin = _classify_param_origin(type_node)
+            origin = (
+                ruby_constant_origin(type_node)
+                if lang == "ruby"
+                else _classify_param_origin(type_node)
+            )
             refs.append(TypeReference(type_name=head, line=line, origin=origin))
 
     return refs
