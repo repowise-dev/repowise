@@ -81,17 +81,29 @@ def test_update_trims_old_history_once_and_again_when_the_cap_drops(tmp_path):
     # Recorded: the next update does not scan the table again.
     assert trim_page_history(tmp_path, state, dry_run=False) is None
 
-    # Raising the cap has nothing to trim; lowering it trims once more.
+    # Raising the cap trims nothing but is recorded; lowering it trims once more.
     (tmp_path / ".repowise" / "config.yaml").write_text(
         "wiki:\n  page_versions_keep: 20\n", encoding="utf-8"
     )
-    assert trim_page_history(tmp_path, state, dry_run=False) is None
+    assert trim_page_history(tmp_path, state, dry_run=False) == 0
+    assert state[PAGE_VERSIONS_KEPT_KEY] == 20
     (tmp_path / ".repowise" / "config.yaml").write_text(
         "wiki:\n  page_versions_keep: 4\n", encoding="utf-8"
     )
     assert trim_page_history(tmp_path, state, dry_run=False) == PAGES * 6
     assert asyncio.run(_versions(tmp_path)) == PAGES * 4
     assert state[PAGE_VERSIONS_KEPT_KEY] == 4
+
+
+def test_an_unreadable_cap_trims_nothing(tmp_path):
+    asyncio.run(_seed(tmp_path))
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "wiki:\n  page_versions_keep: lots\n", encoding="utf-8"
+    )
+    state: dict = {}
+    assert trim_page_history(tmp_path, state, dry_run=False) is None
+    assert asyncio.run(_versions(tmp_path)) == PAGES * (WRITES - 1)
+    assert PAGE_VERSIONS_KEPT_KEY not in state
 
 
 def test_no_store_means_nothing_runs_and_nothing_is_recorded(tmp_path):

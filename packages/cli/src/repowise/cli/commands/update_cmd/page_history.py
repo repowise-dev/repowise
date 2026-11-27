@@ -1,15 +1,17 @@
 """Trim every page's version history to ``wiki.page_versions_keep``.
 
 A page write trims only that page's history, so a page no update rewrites
-keeps whatever history it had before the cap existed, or before the cap was
-lowered. This pass trims all of them once, and again only when the cap goes
-down. ``state.json`` records the cap the store was last trimmed to.
+keeps whatever history it had before the cap existed, or before the cap
+changed. This pass trims all of them once, and again whenever the cap changes.
+``state.json`` records the cap the store was last trimmed to. (A raised cap
+trims nothing, but recording it means lowering it again later trims the
+history pages grew under the raised one.)
 
 The file does not shrink: SQLite keeps the freed pages and reuses them for
-later writes, so the store stops growing instead. No VACUUM runs here. On a
-store of a gigabyte or more it takes tens of seconds, needs as much free disk
-again, and holds every other reader and writer off for that time, which a
-post-commit update must not do.
+later writes before it grows the file. No VACUUM runs here. It rewrites the
+whole store (5 s for 1.6 GB on a fast SSD, longer on slower disks), needs that
+much free disk again, and holds off every other writer, including open MCP
+sessions, for the duration; a post-commit update must not do that unasked.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ PAGE_VERSIONS_KEPT_KEY = "page_versions_kept"
 
 
 def trim_page_history(repo_path: Path, state: dict[str, Any], *, dry_run: bool) -> int | None:
-    """Trim every page's history when the store has not been trimmed to the current cap.
+    """Trim every page's history when the store was not trimmed to the current cap.
 
     Returns the versions deleted, or ``None`` when nothing ran. Best-effort:
     a failure is logged and the next update tries again.
@@ -37,8 +39,9 @@ def trim_page_history(repo_path: Path, state: dict[str, Any], *, dry_run: bool) 
     from repowise.core.persistence.crud import page_versions_keep
 
     keep = page_versions_keep(repo_path)
-    recorded = state.get(PAGE_VERSIONS_KEPT_KEY)
-    if isinstance(recorded, int) and not isinstance(recorded, bool) and recorded <= keep:
+    if keep is None:  # an unreadable cap trims nothing; doctor names the bad value
+        return None
+    if state.get(PAGE_VERSIONS_KEPT_KEY) == keep:
         return None
     try:
         deleted = run_async(_trim(repo_path, keep))
@@ -47,8 +50,12 @@ def trim_page_history(repo_path: Path, state: dict[str, Any], *, dry_run: bool) 
         return None
     if deleted is None:
         return None
+    try:
+        save_state(repo_path, {**state, PAGE_VERSIONS_KEPT_KEY: keep})
+    except Exception as exc:  # unrecorded: the next update trims again, finding little
+        log.debug("page_history_mark_failed", error=str(exc))
+        return deleted
     state[PAGE_VERSIONS_KEPT_KEY] = keep
-    save_state(repo_path, state)
     if deleted:
         log.info("page_history_trimmed", deleted=deleted, keep=keep)
     return deleted

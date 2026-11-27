@@ -22,5 +22,6 @@ SETTINGS: tuple[Setting, ...] = (
         # Read on every page write, so a change applies to the next one; pages
         # no write touches are trimmed by the next update that indexes a commit.
         minimum=1,
+        maximum=100_000,
     ),
 )

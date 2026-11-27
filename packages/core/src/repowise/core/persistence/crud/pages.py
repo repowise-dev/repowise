@@ -436,22 +436,31 @@ async def upsert_page_from_generated(
 DEFAULT_PAGE_VERSIONS_KEEP = 10
 
 
-def page_versions_keep(repo_root: Path | str | None) -> int:
+#: Highest cap the setting accepts; any SQL integer bind holds it.
+MAX_PAGE_VERSIONS_KEEP = 100_000
+
+
+def page_versions_keep(repo_root: Path | str | None) -> int | None:
     """How many earlier versions each page keeps: ``wiki.page_versions_keep``.
 
-    Read from *repo_root*'s config; the default when there is no root, no
-    config, or a value the setting refuses (it must be a whole number >= 1).
+    The default when there is no root or the config does not set it. ``None``
+    when the config cannot be read or holds a value the setting refuses: a
+    user who set a higher cap must not lose history to a typo, so the caller
+    trims nothing until the value is fixed.
     """
     if not repo_root:
         return DEFAULT_PAGE_VERSIONS_KEEP
     try:
         from repowise.core.settings.writers import current
 
-        value = current(repo_root, "wiki.page_versions_keep").value
+        resolved = current(repo_root, "wiki.page_versions_keep")
     except Exception:  # a broken config.yaml must not fail a page write
-        return DEFAULT_PAGE_VERSIONS_KEEP
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return DEFAULT_PAGE_VERSIONS_KEEP
+        return None
+    value = resolved.value
+    if resolved.problem is not None or isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not 1 <= value <= MAX_PAGE_VERSIONS_KEEP:
+        return None
     return value
 
 
@@ -469,12 +478,12 @@ async def prune_page_versions(
     (or in *repository_id*) is trimmed, which reads the whole table once.
     The live page is a ``wiki_pages`` row and is never touched here.
 
-    Newest is the highest ``version``, then the highest id. The ordering reads
-    no column stored after ``content``, so a full trim never walks the page
-    bodies it keeps.
+    Newest is the highest ``version``, then the latest ``archived_at`` (two
+    writers racing on one page can snapshot the same version), then the id.
     """
     if keep < 1:
         raise ValueError(f"keep must be at least 1, got {keep}")
+    keep = min(keep, MAX_PAGE_VERSIONS_KEEP)
     chunks: list[list[str] | None]
     if page_ids is None:
         chunks = [None]
@@ -485,36 +494,49 @@ async def prune_page_versions(
         ]
     deleted = 0
     for chunk in chunks:
-        rank = (
+        recency = (
             func.row_number()
             .over(
                 partition_by=PageVersion.page_id,
-                order_by=(PageVersion.version.desc(), PageVersion.id.desc()),
+                order_by=(
+                    PageVersion.version.desc(),
+                    PageVersion.archived_at.desc(),
+                    PageVersion.id.desc(),
+                ),
             )
-            .label("rank")
+            .label("recency")
         )
-        ranked = select(PageVersion.id, rank)
+        ranked = select(PageVersion.id, recency)
         if chunk is not None:
             ranked = ranked.where(PageVersion.page_id.in_(chunk))
         if repository_id is not None:
             ranked = ranked.where(PageVersion.repository_id == repository_id)
         sub = ranked.subquery()
         stmt = delete(PageVersion).where(
-            PageVersion.id.in_(select(sub.c.id).where(sub.c.rank > keep))
+            PageVersion.id.in_(select(sub.c.id).where(sub.c.recency > keep))
         )
-        result = await session.execute(stmt, execution_options={"synchronize_session": False})
+        # "fetch" drops the deleted rows from the session too, so a snapshot the
+        # caller loaded earlier is not flushed or read back after it is gone.
+        result = await session.execute(stmt, execution_options={"synchronize_session": "fetch"})
         deleted += result.rowcount or 0
     return deleted
 
 
 async def _trim_snapshotted(session: AsyncSession, repository_id: str, page_ids: list[str]) -> None:
-    """Hold each page that just took a snapshot to its repository's version cap."""
+    """Hold each page that just took a snapshot to its repository's version cap.
+
+    Scoped to *repository_id*: page ids are global, so a write that resolved
+    another repository's page never trims that repository's history.
+    """
     if not page_ids:
         return
     local_path = (
         await session.execute(select(Repository.local_path).where(Repository.id == repository_id))
     ).scalar_one_or_none()
-    await prune_page_versions(session, page_versions_keep(local_path), page_ids=page_ids)
+    keep = page_versions_keep(local_path)
+    if keep is None:
+        return
+    await prune_page_versions(session, keep, page_ids=page_ids, repository_id=repository_id)
 
 
 # Chunk the id SELECT to stay under SQLite's host-parameter limit (same reason
@@ -937,7 +959,7 @@ async def get_page_versions(
     result = await session.execute(
         select(PageVersion)
         .where(PageVersion.page_id == page_id)
-        .order_by(PageVersion.version.desc())
+        .order_by(PageVersion.version.desc(), PageVersion.archived_at.desc())
         .limit(limit)
     )
     return list(result.scalars().all())

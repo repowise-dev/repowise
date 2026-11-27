@@ -50,11 +50,41 @@ def test_keep_reads_the_repo_config(tmp_path):
     assert page_versions_keep(tmp_path) == DEFAULT_PAGE_VERSIONS_KEEP
     _write_keep(tmp_path, 3)
     assert page_versions_keep(tmp_path) == 3
-    for refused in (0, -2, "many"):
+    # A value the setting refuses, or a config that does not parse, trims nothing.
+    for refused in (0, -2, "many", 10**20):
         _write_keep(tmp_path, refused)
-        assert page_versions_keep(tmp_path) == DEFAULT_PAGE_VERSIONS_KEEP
+        assert page_versions_keep(tmp_path) is None
     (tmp_path / ".repowise" / "config.yaml").write_text("wiki: [unclosed\n", encoding="utf-8")
-    assert page_versions_keep(tmp_path) == DEFAULT_PAGE_VERSIONS_KEEP
+    assert page_versions_keep(tmp_path) is None
+
+
+async def test_a_bad_cap_keeps_all_history(async_session, tmp_path):
+    _write_keep(tmp_path, "lots")
+    repo = await insert_repo(async_session, local_path=str(tmp_path))
+    kwargs = make_page_kwargs(repo.id)
+    await _rewrite(async_session, kwargs, DEFAULT_PAGE_VERSIONS_KEEP + 4)
+    assert await _count(async_session) == DEFAULT_PAGE_VERSIONS_KEEP + 3
+
+
+async def test_a_write_never_trims_another_repositorys_history(async_session, tmp_path):
+    _write_keep(tmp_path / "b", 1)
+    first = await insert_repo(async_session, local_path=str(tmp_path / "a"))
+    second = await insert_repo(async_session, name="b", local_path=str(tmp_path / "b"))
+    a = make_page_kwargs(first.id, page_id="file_page:shared.py")
+    await _rewrite(async_session, a, 5)
+    # The same global page id, written by the other repository whose cap is 1.
+    await _rewrite(async_session, dict(a, repository_id=second.id), 2, start=5)
+    assert await _count(async_session, a["page_id"]) == 6
+
+
+async def test_a_loaded_snapshot_leaves_the_session_when_trimmed(async_session):
+    repo = await insert_repo(async_session)
+    kwargs = make_page_kwargs(repo.id)
+    await _rewrite(async_session, kwargs, 4)
+    oldest = (await get_page_versions(async_session, kwargs["page_id"]))[-1]
+    await prune_page_versions(async_session, 1, repository_id=repo.id)
+    await async_session.flush()
+    assert await async_session.get(PageVersion, oldest.id) is None
 
 
 async def test_a_rewrite_keeps_only_the_newest_versions(async_session):
