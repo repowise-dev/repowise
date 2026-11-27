@@ -557,9 +557,12 @@ def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
 def chosen_embedder(adv: dict[str, Any]) -> str | None:
     """The embedder the user picked on the advanced screen, or ``None``.
 
-    Pressing Enter on the generation prompt's default is not a choice: that
-    default was resolved from the environment at the time, and stored as one
-    it would outrank the provider picked afterwards, like ``--embedder``.
+    An answer equal to the generation prompt's default counts as accepting
+    it, not as a choice: that default was resolved from the environment at
+    the time, and stored as one it would outrank the provider picked
+    afterwards, like ``--embedder``. ``click.prompt`` returns the same value
+    for Enter and for typing the default's name, so typing it also counts as
+    accepting it.
     """
     embedder = adv.get("embedder")
     return None if embedder and embedder == adv.get("embedder_default") else embedder
