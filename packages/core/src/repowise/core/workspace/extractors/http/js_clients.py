@@ -46,8 +46,9 @@ _FETCH_RE = re.compile(
     r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""",
 )
 _HTTP_RESOURCE_RE = re.compile(r"\bhttpResource\s*(?:<[^()\n]*>)?\s*\(")
-_URL_PROP_RE = re.compile(r"""(?<![\w$.])url\s*(?::\s*([^,\n}]+)|(?=[,}\n]|$))""")
+_URL_PROP_RE = re.compile(r"""(?<![\w$.])url\s*(?::\s*|(?=[,}\n]|$))""")
 _METHOD_PROP_RE = re.compile(r"""\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]""")
+_QUOTES = "'\"`"
 
 
 def _clean_resource_url(url: str | None) -> str | None:
@@ -56,16 +57,62 @@ def _clean_resource_url(url: str | None) -> str | None:
     return url
 
 
+def _scan_quote(text: str, i: int, end: int, quote: str, depth: int, tmpl: list[int]) -> tuple[int, str | None, int]:
+    ch = text[i]
+    if ch == "\\":
+        return i + 2, quote, depth
+    if quote == "`" and ch == "$" and i + 1 < end and text[i + 1] == "{":
+        tmpl.append(depth)
+        return i + 2, None, depth + 1
+    return i + 1, (None if ch == quote else quote), depth
+
+
+def _extract_url_value(text: str, start: int) -> str:
+    depth = 0
+    tmpl: list[int] = []
+    quote: str | None = None
+    i, end = start, len(text)
+    while i < end:
+        if quote is not None:
+            i, quote, depth = _scan_quote(text, i, end, quote, depth, tmpl)
+            continue
+        ch = text[i]
+        if ch in _QUOTES:
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return text[start:i].strip()
+            depth -= 1
+            if tmpl and depth == tmpl[-1]:
+                tmpl.pop()
+                quote = "`"
+        elif ch == "," and depth == 0:
+            return text[start:i].strip()
+        i += 1
+    return text[start:i].strip()
+
+
+def _arrow_target(text: str) -> str | None:
+    if "=>" not in text:
+        return text
+    rhs = text.split("=>", 1)[1].strip()
+    if rhs.startswith("(") and rhs.endswith(")"):
+        rhs = rhs[1:-1].strip()
+    return None if rhs.startswith("{") and rhs.endswith("}") else rhs
+
+
 def _http_resource_url(arg_text: str) -> str | None:
     if m_url := _URL_PROP_RE.search(arg_text):
-        val = m_url.group(1)
-        return _clean_resource_url(val.strip() if val else "`${url}`")
+        if ":" in m_url.group(0):
+            val = _extract_url_value(arg_text, m_url.end())
+            val = _arrow_target(val) if val else None
+        else:
+            val = "`${url}`"
+        return _clean_resource_url(val)
     if "=>" in arg_text:
-        rhs = arg_text.split("=>", 1)[1].strip()
-        if rhs.startswith("(") and rhs.endswith(")"):
-            rhs = rhs[1:-1].strip()
-        url = None if rhs.startswith("{") and rhs.endswith("}") else rhs
-        return _clean_resource_url(url)
+        return _clean_resource_url(_arrow_target(arg_text))
     if not (arg_text.startswith("{") and arg_text.endswith("}")):
         return _clean_resource_url(arg_text)
     return None

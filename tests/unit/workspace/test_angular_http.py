@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.core.workspace.extractors.http import HttpExtractor
+from repowise.core.workspace.extractors.http.js_clients import http_resource_calls
 from repowise.core.workspace.matching import match_contracts
 
 _IMPORT = "import { HttpClient } from '@angular/common/http';\n"
@@ -337,6 +338,24 @@ class TestHttpResource:
             ("angular", "GET", "/api/other", ""),
             ("angular", "POST", "/api/post", ""),
         ]
+
+    def test_template_literal_interpolation_and_commas(self, tmp_path: Path) -> None:
+        text = (
+            "class Base { protected base = '/api'; }\n"
+            "export class Service extends Base {\n"
+            "  res1 = httpResource({ url: `${this.base}/items` });\n"
+            "  res2 = httpResource(() => ({ url: `${this.base}/users` }));\n"
+            "  res3 = httpResource({ url: `${this.base}/items/${id}`, method: 'POST' });\n"
+            "}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/service.ts": text})) == [
+            ("angular", "GET", "/api/items", ""),
+            ("angular", "GET", "/api/users", ""),
+            ("angular", "POST", "/api/items/{param}", ""),
+        ]
+        calls = list(http_resource_calls("httpResource({ url: buildUrl(id, x), method: 'GET' })"))
+        assert len(calls) == 1
+        assert calls[0].url == "buildUrl(id, x)"
 
 
 def test_an_angular_service_links_to_nest_and_laravel(tmp_path: Path) -> None:
