@@ -362,3 +362,15 @@ def test_rust_attribute_on_an_item_that_is_not_the_function_does_not_reach_it() 
     symbols = [_sym("w.rs", "w.W", 6, 7)]
     res = _run(_rs(1, "w::W", "w.rs"), symbols, source)
     assert res.skipped == {"no_span": 1}
+
+
+def test_rust_attribute_on_a_nested_fn_joins_the_nested_fn() -> None:
+    source = ["fn outer() {", "    #[inline(never)]", "    fn nested() {", "        work();", "    }", "}"]
+    outer, nested = _sym("n.rs", "n.outer", 1, 6), _sym("n.rs", "n.nested", 3, 5)
+    assert _hit(_run(_rs(2, "n::outer::nested", "n.rs"), [outer, nested], source)) == (nested, False)
+    assert _hit(_run(_rs(4, "n::outer::nested", "n.rs"), [outer, nested], source)) == (nested, False)
+
+
+def test_rust_qualified_self_with_an_inner_as_splits_at_its_own() -> None:
+    frame = "<cart::Cart<<u8 as cart::Conv>::Out> as core::fmt::Display>::fmt"
+    assert _hit(_lib(27, frame)) == (LIB[3], False)

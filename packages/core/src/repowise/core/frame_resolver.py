@@ -474,7 +474,7 @@ def _rust_path(name: str) -> tuple[list[str], list[str], bool]:
         close = _rust_matching_angle(name)
         if close < 0:
             return [], [], folded
-        self_type, *trait = _RUST_QSELF_RE.split(name[1:close], maxsplit=1)
+        self_type, *trait = _rust_split_as(name[1:close])
         name = self_type + name[close + 1 :]
         owners = [p for p in (_rust_last(self_type), *map(_rust_last, trait)) if p]
     segments = [s for s in _rust_drop_generics(name).split("::") if s]
@@ -490,6 +490,15 @@ def _rust_angle_steps(text: str) -> list[int]:
         depth += (ch == "<") - (ch == ">" and text[i - 1 : i] != "-")
         steps.append(depth)
     return steps
+
+
+def _rust_split_as(qself: str) -> list[str]:
+    """``T as Trait`` split at its own ``as``, not one inside ``T``'s generic arguments."""
+    steps = _rust_angle_steps(qself)
+    for m in _RUST_QSELF_RE.finditer(qself):
+        if steps[m.start()] == 0:
+            return [qself[: m.start()], qself[m.end() :]]
+    return [qself]
 
 
 def _rust_matching_angle(text: str) -> int:
@@ -593,11 +602,15 @@ def _rust(
     if frame.line < 1:
         named = _rust_by_name(segments, owners, callables, lines)
         return (named, folded) if named is not None else "bad_line"
-    symbol = symbol_at(callables, frame.line) or _rust_attributed(frame.line, symbols, lines)
-    if symbol is None:
+    at_line = symbol_at(callables, frame.line)
+    if at_line is not None and _rust_agrees(at_line, segments, owners):
+        return (at_line, folded)
+    # An attribute on a fn nested in another lies on the outer fn's lines.
+    attributed = _rust_attributed(frame.line, symbols, lines)
+    if attributed is not None and _rust_agrees(attributed, segments, owners):
+        return (attributed, folded)
+    if at_line is None and attributed is None:
         return (None, True) if folded else "no_span"
-    if _rust_agrees(symbol, segments, owners):
-        return (symbol, folded)
     return "second_signal_mismatch"
 
 
