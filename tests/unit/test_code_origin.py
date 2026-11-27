@@ -47,6 +47,13 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
+        ("tests-build/src/lib.rs", "test"),
+        ("tests-integration/src/lib.rs", "test"),
+        ("tests-integration/tests/macros.rs", "test"),
+        ("app/tests_results/service.py", "production"),
+        ("lab/tests_catalog/models.py", "production"),
+        ("src/tests-ui/app.ts", "production"),
+        ("internal/tests_api/handler.go", "production"),
         (
             "packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx",
             "test",
