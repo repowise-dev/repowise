@@ -279,6 +279,14 @@ def _needs_extra(provider: str) -> bool:
     return provider_missing_extra(provider) is not None
 
 
+def _extra_ready(console: Console, provider: str) -> bool:
+    """False when *provider*'s ``repowise[<extra>]`` is missing and was not installed."""
+    if not _needs_extra(provider):
+        return True
+    extra = _PICKER_SPECS[provider].extra
+    return offer_extra(console, extra, f"The {provider} provider", interactive=True)
+
+
 def _interactive_provider_name(
     console: Console,
     model_flag: str | None,
@@ -384,9 +392,7 @@ def _interactive_provider_name(
         os.environ["OPENAI_BASE_URL"] = _OPENAI_DEFAULT_BASE_URL
 
     # --- the optional package, installed after one question ---
-    if _needs_extra(chosen) and not offer_extra(
-        console, _PICKER_SPECS[chosen].extra, f"The {chosen} provider", interactive=True
-    ):
+    if not _extra_ready(console, chosen):
         if _go_without_model(console, subscription.allow_skip, keyed=False):
             return None
         return _interactive_provider_name(
