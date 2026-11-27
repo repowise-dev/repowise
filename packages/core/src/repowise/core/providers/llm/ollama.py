@@ -175,15 +175,24 @@ def _read_model_facts(base_url: str, model: str) -> _ModelFacts:
         (v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int)),
         None,
     )
-    capabilities = data.get("capabilities")
-    if not isinstance(capabilities, list):
-        capabilities = None
+    thinks, generates = _capability_facts(data.get("capabilities"))
     return _ModelFacts(
         trained,
         _modelfile_num_ctx(str(data.get("parameters") or "")),
-        "thinking" in (capabilities or ()),
-        "completion" in capabilities if capabilities else None,
+        thinks,
+        generates,
     )
+
+
+def _capability_facts(capabilities: object) -> tuple[bool, bool | None]:
+    """``(thinks, generates)`` from /api/show's ``capabilities`` list.
+
+    ``generates`` is None when the server reports no capabilities, so the
+    caller can fall back to the model's name.
+    """
+    if not isinstance(capabilities, list) or not capabilities:
+        return False, None
+    return "thinking" in capabilities, "completion" in capabilities
 
 
 def _modelfile_num_ctx(parameters: str) -> int | None:
