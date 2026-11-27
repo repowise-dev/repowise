@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Security
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
+from repowise.core.extras import MissingExtraError
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.providers.llm.base import ChatProvider
@@ -168,6 +169,9 @@ def _chat_provider(
             # Names only the URL, already stripped of any credentials.
             raise HTTPException(400, str(exc)) from exc
         raise HTTPException(400, INVALID_PROVIDER_MESSAGE) from exc
+    except MissingExtraError as exc:
+        # Names a package and the install command, nothing from the config.
+        raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
         logger.warning(
             "chat_provider_start_failed: %s: %s", type(exc).__name__, redact_secrets(str(exc))
