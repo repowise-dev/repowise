@@ -380,3 +380,58 @@ def test_nuxt_extends_layer(tmp_path: Path) -> None:
     )
     assert "base/components/BaseCard.vue" in reasons
     assert "stray/pages/stray.vue" not in reasons
+
+
+def test_nuxt_extends_layer_server_routes_default_src(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "app/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "app/nuxt.config.ts": "export default defineNuxtConfig({ extends: ['../base'] });\n",
+            "app/pages/index.vue": "<template><h1>App</h1></template>\n",
+            "base/server/api/layer_route.ts": "export default () => 'layer';\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "base/server/api/layer_route.ts")
+    reasons = convention_load_reasons(tmp_path, ["app/pages/index.vue", "base/server/api/layer_route.ts"])
+    assert "base/server/api/layer_route.ts" in reasons
+
+
+def test_nuxt_extends_repo_root_layer(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "apps/web/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "apps/web/nuxt.config.ts": "export default defineNuxtConfig({ extends: ['../..'] });\n",
+            "apps/web/pages/index.vue": "<template><h1>Web</h1></template>\n",
+            "pages/root.vue": "<template><h1>Root</h1></template>\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "pages/root.vue")
+    reasons = convention_load_reasons(tmp_path, ["apps/web/pages/index.vue", "pages/root.vue"])
+    assert "pages/root.vue" in reasons
+
+
+def test_nuxt_layer_server_routes_with_custom_server_dir(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "app/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "app/nuxt.config.ts": (
+                "export default defineNuxtConfig({ serverDir: 'custom-server', extends: ['../base'] });\n"
+            ),
+            "app/custom-server/api/app.ts": "export default () => 'app';\n",
+            "base/server/api/layer.ts": "export default () => 'layer';\n",
+            "base/custom-server/api/wrong.ts": "export default () => 'wrong';\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "app/custom-server/api/app.ts")
+    assert builder.graph().has_edge("framework:nuxt", "base/server/api/layer.ts")
+    assert not builder.graph().has_edge("framework:nuxt", "base/custom-server/api/wrong.ts")
+

@@ -52,14 +52,14 @@ def _nuxt_globs(
     layer_dirs = tuple(dict.fromkeys((*app_dirs, "pages/*", "layouts/*", "middleware/*", "plugins/*")))
 
     all_srcs = tuple(dict.fromkeys((*srcs, *layers)))
-    servers = ("",) if srcs == _NUXT_SRC else tuple(dict.fromkeys(("", *all_srcs)))
-    server_globs = (f"{server_dir}/*",)
+    app_servers = ("",) if srcs == _NUXT_SRC else tuple(dict.fromkeys(("", *srcs)))
 
     entry = (
         *_under(srcs, *app_dirs),
         *_under(layers, *layer_dirs),
         *_under(all_srcs, "app.vue", "error.vue", *_js("app.config", "router.options")),
-        *_under(servers, *server_globs),
+        *_under(app_servers, f"{server_dir}/*"),
+        *_under(layers, "server/*"),
     )
     review = (*_under(all_srcs, "components/*", "composables/*", "utils/*"), "shared/*")
     return entry, review
@@ -184,7 +184,7 @@ def _layer_srcs(root: str, config: str) -> list[str]:
         if layer_path.startswith(("../", "/")) or layer_path == "..":
             continue
         if root:
-            rel_layer = posixpath.relpath(layer_path, root)
+            rel_layer = posixpath.relpath(layer_path or ".", root)
             extra_srcs.append(f"{rel_layer}/")
         else:
             extra_srcs.append(f"{layer_path}/" if layer_path else "")
