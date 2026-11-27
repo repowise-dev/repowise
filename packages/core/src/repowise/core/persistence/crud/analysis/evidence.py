@@ -506,11 +506,13 @@ async def measured_callers(
 
 async def _eager_defaults(
     session: AsyncSession, repository_id: str, symbols: list[str]
-) -> list[tuple[str, str]]:
-    """``(symbol id, eager_defaults_json)`` for the *symbols* whose walk found one."""
+) -> list[dict[str, Any]]:
+    """The eager default facts of the *symbols* whose walk found one
+    (:func:`~repowise.core.evidence.next_step.eager_default_fact`)."""
+    from ....evidence.next_step import eager_default_fact
     from ...models import FunctionFact
 
-    out: list[tuple[str, str]] = []
+    out: list[dict[str, Any]] = []
     for i in range(0, len(symbols), _BATCH_SIZE):
         result = await session.execute(
             select(FunctionFact.symbol_id, FunctionFact.eager_defaults_json).where(
@@ -519,8 +521,8 @@ async def _eager_defaults(
                 FunctionFact.eager_defaults_json.is_not(None),
             )
         )
-        out.extend((sid, raw) for sid, raw in result.all())
-    return out
+        out.extend(filter(None, (eager_default_fact(sid, raw) for sid, raw in result.all())))
+    return sorted(out, key=lambda f: f["symbol"])
 
 
 async def step_findings(
@@ -537,7 +539,7 @@ async def step_findings(
     import json
 
     from ....evidence.ingest import load_origins
-    from ....evidence.next_step import eager_default_fact, static_finding
+    from ....evidence.next_step import static_finding
     from ....ingestion.symbol_identity import file_of_symbol
     from ...models import HealthFinding
 
@@ -576,7 +578,7 @@ async def step_findings(
         )
         found.update({f.id: f for f in result.scalars()})
     eager = await _eager_defaults(session, repository_id, named)
-    paths = {f.file_path for f in found.values()} | {file_of_symbol(sid) for sid, _ in eager}
+    paths = {f.file_path for f in found.values()} | {f["file_path"] for f in eager}
     origins = await load_origins(session, repository_id, paths)
     out = [
         static_finding(
@@ -585,11 +587,7 @@ async def step_findings(
         for f in sorted(found.values(), key=lambda f: (f.file_path, f.line_start or 0, f.id))
         if origins.get(f.file_path) == "production"
     ]
-    for sid, raw in sorted(eager):
-        fact = eager_default_fact(sid, raw)
-        if fact is not None and origins.get(fact["file_path"]) == "production":
-            out.append(fact)
-    return out
+    return out + [f for f in eager if origins.get(f["file_path"]) == "production"]
 
 
 async def ranked_by_workload(

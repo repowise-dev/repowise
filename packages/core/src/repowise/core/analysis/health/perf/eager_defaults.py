@@ -105,10 +105,19 @@ def _functions_around(node: Node, functions: Mapping[int, object]) -> list[int]:
 
 def _eager_default(call: Node) -> EagerDefault | None:
     """``(callee, line)`` when *call* is ``<x>.setdefault(<key>, <callee>(...))``."""
-    fn = call.child_by_field_name("function")
-    if fn is None or fn.type != "attribute":
+    built = _unwrapped(_setdefault_default(call))
+    if built is None or built.type != "call":
         return None
-    attr = fn.child_by_field_name("attribute")
+    name = _callee(built)
+    return (name, built.start_point[0] + 1) if name is not None else None
+
+
+def _setdefault_default(call: Node) -> Node | None:
+    """The default argument of a two-argument ``<x>.setdefault(key, default)`` call."""
+    fn = call.child_by_field_name("function")
+    attr = (
+        fn.child_by_field_name("attribute") if fn is not None and fn.type == "attribute" else None
+    )
     if attr is None or attr.text != b"setdefault":
         return None
     args = call.child_by_field_name("arguments")
@@ -117,16 +126,15 @@ def _eager_default(call: Node) -> EagerDefault | None:
     named = [a for a in args.named_children if a.type != "comment"]
     if len(named) != 2 or any(a.type in _SKIP_ARGS for a in named):
         return None
-    built = named[1]
-    while built.type == "parenthesized_expression":
-        inner = [c for c in built.named_children if c.type != "comment"]
-        if len(inner) != 1:
-            return None
-        built = inner[0]
-    if built.type != "call":
-        return None
-    name = _callee(built)
-    return (name, built.start_point[0] + 1) if name is not None else None
+    return named[1]
+
+
+def _unwrapped(node: Node | None) -> Node | None:
+    """*node* without grouping parentheses (comments inside them ignored)."""
+    while node is not None and node.type == "parenthesized_expression":
+        inner = [c for c in node.named_children if c.type != "comment"]
+        node = inner[0] if len(inner) == 1 else None
+    return node
 
 
 def _owner(node: Node, functions: Mapping[int, object]) -> int | None:

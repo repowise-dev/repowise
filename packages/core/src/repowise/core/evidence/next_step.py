@@ -595,12 +595,8 @@ def _eager_default(
     """The eager ``setdefault`` step: the function's own dominant callee is a
     value it builds as one, or this row is that build and a driver holding
     :data:`DOMINANT` of its time builds it so."""
-    if lang != "python" or not symbol:
-        return None
-    facts = {f["symbol"]: f for f in findings if f.get("kind") == EAGER_DEFAULT and f.get("symbol")}
-    if not facts:
-        return None
-    found = _own_eager_build(symbol, inside, facts) or _driver_eager_build(symbol, row, facts)
+    facts = _eager_facts(findings) if lang == "python" else {}
+    found = _eager_build(symbol, row, inside, facts) if facts and symbol else None
     if found is None:
         return None
     why, fact, (call, line), where, callee, share = found
@@ -615,6 +611,20 @@ def _eager_default(
         callee=callee,
         share=round(share, 4),
     )
+
+
+def _eager_facts(findings: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    """The eager default facts among *findings*, by function symbol id."""
+    return {f["symbol"]: f for f in findings if f.get("kind") == EAGER_DEFAULT and f.get("symbol")}
+
+
+def _eager_build(
+    symbol: str,
+    row: Mapping[str, Any],
+    inside: Sequence[Mapping[str, Any]],
+    facts: Mapping[str, Mapping[str, Any]],
+) -> tuple[Any, ...] | None:
+    return _own_eager_build(symbol, inside, facts) or _driver_eager_build(symbol, row, facts)
 
 
 def _own_eager_build(
