@@ -397,7 +397,7 @@ def _depth_newer_than(
     walk, and both traverse the same revisions in the same order, so every
     commit past this depth is one the walk's ``ts <= since_ts`` check drops.
     """
-    fmt = "%H %ct" if known_shas else "%ct"
+    fmt = "%H %ct" if known_shas is not None else "%ct"
     try:
         lines = repo.git.log(  # type: ignore[attr-defined]
             f"-{commit_limit}", "--no-merges", f"--format={fmt}"
@@ -424,7 +424,7 @@ def _entry_needed(
     if not parts:
         return False
     if len(parts) == 1:
-        return _stamp_after(parts[0], since_ts, allow_equal=bool(known_shas))
+        return _stamp_after(parts[0], since_ts, allow_equal=known_shas is not None)
     sha, stamp = parts[0], parts[1]
     try:
         val = int(stamp)
@@ -433,7 +433,7 @@ def _entry_needed(
     if val > since_ts:
         return True
     if val == since_ts:
-        return sha not in (known_shas or ())
+        return sha not in (known_shas if known_shas is not None else ())
     return False
 
 
@@ -701,9 +701,7 @@ def load_commit_index(
     # diffing commits whose fate is already known.
     depth = commit_limit
     if since_ts is not None:
-        newer = _depth_newer_than(
-            repo, commit_limit, since_ts, known_shas=known_shas
-        )
+        newer = _depth_newer_than(repo, commit_limit, since_ts, known_shas=known_shas)
         if newer is None:
             return {}
         depth = newer
@@ -905,9 +903,7 @@ class _RegionReader:
     a walk that stops early leaves at most that many reads unused.
     """
 
-    def __init__(
-        self, read: Callable[..., list[str]], regions: dict[int, tuple[int, str]]
-    ) -> None:
+    def __init__(self, read: Callable[..., list[str]], regions: dict[int, tuple[int, str]]) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
         self._ahead = max(1, min(_DEEP_READ_AHEAD, (os.cpu_count() or 1) // 2))
@@ -1148,9 +1144,7 @@ def load_sampled_commit_index(
     )
     underfilled = _underfilled(sample, indexable_files, per_file_limit)
     try:
-        while (
-            not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more()
-        ):
+        while not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more():
             if not walks.walk_next(sample, per_file_limit, underfilled):
                 break
             report(sample.global_commits + sample.deep_commits, total_commits)

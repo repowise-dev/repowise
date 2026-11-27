@@ -168,6 +168,10 @@ async def test_capture_new_commit_rows_retains_same_second_commits(tmp_path) -> 
     idle_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas={c1_sha, c2_sha})
     assert len(idle_rows) == 0
 
+    # When since_ts is 1700000000 and known_shas is empty set, both same-second commits are captured
+    empty_known_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas=set())
+    assert len(empty_known_rows) == 2
+
 
 def _configure_author(repo, name: str, email: str) -> None:
     with repo.config_writer() as cw:
@@ -197,7 +201,6 @@ async def test_index_repo_captures_whole_history_totals(tmp_path) -> None:
     assert totals.total_contributor_count == 1
     assert totals.first_commit_author == "Ada Lovelace"
     assert totals.first_commit_at is not None
-
 
 
 @pytest.mark.asyncio
