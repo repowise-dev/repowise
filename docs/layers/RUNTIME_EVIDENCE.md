@@ -939,6 +939,10 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   their original source through a local external source map; a frame that
   names a TypeScript file directly is refused, and so is a Go binary built
   with `-trimpath`.
+  A Rust frame (pprof-rs) joins by its line and demangled name, with the
+  type checked for a method or trait impl; closures and async bodies charge
+  the function around them, and code an attribute macro such as
+  `#[instrument]` writes joins the function the attribute sits on.
 - A profile or query-count run where more than half the entries did not map is
   refused unless `--allow-partial`.
 - A profile of one process misses the processes it starts; profile each one and

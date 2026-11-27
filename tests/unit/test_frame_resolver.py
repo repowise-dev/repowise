@@ -385,17 +385,20 @@ def test_rust_bare_function_resolves() -> None:
 
 
 def test_rust_method_mismatch_is_second_signal_mismatch() -> None:
-    assert _resolve(_rs(15, "cart::Cart::add::h1234")).skipped == {"second_signal_mismatch": 1}
-    assert _resolve(_rs(15, "cart::Other::total::h1234")).skipped == {"second_signal_mismatch": 1}
+    assert _resolve(_rs(15, "cart::Cart::add::h0123456789abcdef")).skipped == {"second_signal_mismatch": 1}
+    assert _resolve(_rs(15, "cart::Other::total::h0123456789abcdef")).skipped == {"second_signal_mismatch": 1}
 
 
-def test_rust_struct_body_resolves_to_file() -> None:
-    res = _resolve(_rs(2, "cart::Cart"))
-    assert len(res.resolved) == 1
-    hit = res.resolved[0]
-    assert hit.symbol is None and not hit.folded
+def test_rust_hash_cut_needs_sixteen_hex_digits() -> None:
+    # A method named ``head`` is not a hash: the frame keeps its name.
+    head = _sym("src/cart.rs", "src.cart.Cart.head", 14, 23, "method")
+    symbols = {**SYMBOLS, "src/cart.rs": [RS_CART, head]}
+    assert _one(_resolve(_rs(15, "cart::Cart::head"), symbols_by_file=symbols)) is head
+
+
+def test_rust_type_line_is_not_put_on_the_file() -> None:
+    assert _resolve(_rs(2, "cart::Cart")).skipped == {"no_span": 1}
 
 
 def test_rust_frame_without_name_is_no_second_signal() -> None:
     assert _resolve(_rs(15, "")).skipped == {"no_second_signal": 1}
-
