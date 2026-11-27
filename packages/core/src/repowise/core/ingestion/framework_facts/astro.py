@@ -32,12 +32,14 @@ def astro_directory(manifest: NpmManifest, key: str, default: str) -> str:
     """Read a package-relative literal directory without evaluating JavaScript."""
     config = ASTRO.config(manifest) or ""
     match = re.search(
-        rf"""\b{re.escape(key)}\s*:\s*(["'\x60])([^"'\x60\\\r\n]*)\1\s*(?=[,}}])""",
+        rf"""(?:\b{re.escape(key)}|(?P<key_quote>["']){re.escape(key)}(?P=key_quote))"""
+        r"""\s*:\s*(?P<quote>["'\x60])(?P<value>[^"'\x60\\\r\n]*)(?P=quote)"""
+        r"""\s*(?:(?://[^\r\n]*|/\*[\s\S]*?\*/)\s*)*(?=[,}])""",
         config,
     )
-    if match is None or "${" in match.group(2):
+    if match is None or "${" in match.group("value"):
         return default
-    directory = posixpath.normpath(match.group(2))
+    directory = posixpath.normpath(match.group("value"))
     if directory.startswith(("/", "../")) or directory == ".." or ":" in directory:
         return default
     return directory
