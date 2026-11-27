@@ -614,7 +614,6 @@ async def _package_calls(
     from ....evidence.ingest import load_origins
     from ....evidence.next_step import never_called, package_calls
     from ....evidence.payloads import json_list
-    from ...models import GraphEdge, WikiSymbol
     from ..external_call_sites import external_call_sites_complete, list_external_call_sites
 
     packages = sorted(
@@ -636,41 +635,14 @@ async def _package_calls(
         )
     origins = await load_origins(session, repository_id, {s.file_path for s in sites})
     sites = [s for s in sites if origins.get(s.file_path) == "production"]
-    callers = sorted({s.caller_symbol_id for s in sites})
-    spans: dict[str, tuple[str, int, int]] = {}
-    for i in range(0, len(callers), _BATCH_SIZE):
-        result = await session.execute(
-            select(
-                WikiSymbol.symbol_id, WikiSymbol.kind, WikiSymbol.start_line, WikiSymbol.signature
-            ).where(
-                WikiSymbol.repository_id == repository_id,
-                WikiSymbol.symbol_id.in_(callers[i : i + _BATCH_SIZE]),
-            )
-        )
-        for sid, kind, start, signature in result:
-            head = (signature or "").count("\n") + 1
-            spans[sid] = (kind, start or 0, (start or 0) + head - 1)
+    spans = await _caller_spans(session, repository_id, {s.caller_symbol_id for s in sites})
     by_package: dict[str, list[tuple[str, str | None]]] = {}
     for site in sites:
         kind, start, head_end = spans.get(site.caller_symbol_id, (None, 0, 0))
         if start <= site.line <= head_end:
             kind = None  # in the signature: runs when the function is defined
         by_package.setdefault(site.package, []).append((site.caller_symbol_id, kind))
-    importers: dict[str, set[str]] = {}
-    for package in by_package:
-        result = await session.execute(
-            select(GraphEdge.source_node_id).where(
-                GraphEdge.repository_id == repository_id,
-                GraphEdge.edge_type == "imports",
-                or_(
-                    GraphEdge.target_node_id == f"external:{package}",
-                    GraphEdge.target_node_id.startswith(f"external:{package}.", autoescape=True),
-                ),
-                GraphEdge.type_only.is_(False),
-                GraphEdge.deferred.is_(False),
-            )
-        )
-        importers[package] = {path for (path,) in result}
+    importers = await _top_level_importers(session, repository_id, sorted(by_package))
     origins = await load_origins(
         session, repository_id, {p for found in importers.values() for p in found}
     )
@@ -680,6 +652,67 @@ async def _package_calls(
         )
         for p, found in sorted(by_package.items())
     ]
+
+
+async def _caller_spans(
+    session: AsyncSession, repository_id: str, callers: set[str]
+) -> dict[str, tuple[str, int, int]]:
+    """Per caller symbol: its kind, its first line and its signature's last line."""
+    from ...models import WikiSymbol
+
+    ordered = sorted(callers)
+    spans: dict[str, tuple[str, int, int]] = {}
+    for i in range(0, len(ordered), _BATCH_SIZE):
+        result = await session.execute(
+            select(
+                WikiSymbol.symbol_id, WikiSymbol.kind, WikiSymbol.start_line, WikiSymbol.signature
+            ).where(
+                WikiSymbol.repository_id == repository_id,
+                WikiSymbol.symbol_id.in_(ordered[i : i + _BATCH_SIZE]),
+            )
+        )
+        for sid, kind, start, signature in result:
+            head = (signature or "").count("\n") + 1
+            spans[sid] = (kind, start or 0, (start or 0) + head - 1)
+    return spans
+
+
+async def _top_level_importers(
+    session: AsyncSession, repository_id: str, packages: list[str]
+) -> dict[str, set[str]]:
+    """Per package, the files importing it (or a submodule) when they load,
+    not inside a function and not for type checking only."""
+    from ...models import GraphEdge
+
+    if not packages:
+        return {}
+    # One statement: the few packages an import row names, each as its node or a submodule's.
+    result = await session.execute(
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.edge_type == "imports",
+            or_(
+                *(
+                    clause
+                    for package in packages
+                    for clause in (
+                        GraphEdge.target_node_id == f"external:{package}",
+                        GraphEdge.target_node_id.startswith(
+                            f"external:{package}.", autoescape=True
+                        ),
+                    )
+                )
+            ),
+            GraphEdge.type_only.is_(False),
+            GraphEdge.deferred.is_(False),
+        )
+    )
+    out: dict[str, set[str]] = {package: set() for package in packages}
+    for source, target in result:
+        package = target.removeprefix("external:").split(".", 1)[0]
+        if package in out:
+            out[package].add(source)
+    return out
 
 
 async def ranked_by_workload(
