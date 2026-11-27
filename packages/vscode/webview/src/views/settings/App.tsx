@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, RotateCcw, Settings2 } from "lucide-react";
+import { ExternalLink, RotateCcw } from "lucide-react";
 import {
   SaveIndicator,
   SettingsRow,
@@ -16,6 +16,7 @@ import {
   type SaveState,
 } from "@repowise-dev/ui/settings/settings-primitives";
 import { OverviewSection } from "@repowise-dev/ui/overview";
+import { Button } from "@repowise-dev/ui/ui/button";
 import { Input } from "@repowise-dev/ui/ui/input";
 import { Switch } from "@repowise-dev/ui/ui/switch";
 import type {
@@ -316,10 +317,7 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
 
   return (
     <div className="mx-auto flex min-h-full max-w-3xl flex-col gap-6 bg-[var(--color-bg-root)] px-6 py-6 sm:gap-8">
-      <header className="flex items-center gap-2.5">
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-bg-selected)] text-[var(--color-text-secondary)]">
-          <Settings2 className="h-4 w-4" />
-        </span>
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="min-w-0 flex-1">
           <h1 className="text-[22px] font-semibold tracking-tight text-[var(--color-text-primary)]">
             Repowise Settings
@@ -337,15 +335,16 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
         <span role="alert" className="sr-only">
           {saveState === "error" ? (error ?? "Could not save") : ""}
         </span>
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => host.openNativeSettings()}
           title="Open these settings in the VS Code Settings editor (search, sync, per-scope overrides)"
-          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
+          className="shrink-0 gap-1.5 [&_svg]:size-3.5"
         >
-          <ExternalLink className="h-3.5 w-3.5" />
+          <ExternalLink />
           Open in Settings editor
-        </button>
+        </Button>
       </header>
 
       {GROUPS.map((group) => (
@@ -500,7 +499,7 @@ function Control({
  * a webview in exchange for no visual difference at these three call sites.
  */
 const CONTROL_CLASS =
-  "h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 text-xs text-[var(--color-text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)] disabled:cursor-not-allowed disabled:opacity-50";
+  "h-9 rounded-md border border-[var(--color-field-border)] bg-[var(--color-field-bg)] px-3 text-xs text-[var(--color-text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50";
 
 function Select({
   id,
@@ -691,15 +690,17 @@ function TextInput({
         className="w-44"
       />
       {value !== "" ? (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="icon"
           title="Clear"
+          aria-label="Clear"
           disabled={disabled}
           onClick={() => onCommit("")}
-          className="text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed"
+          className="h-7 w-7 [&_svg]:size-3.5"
         >
-          <RotateCcw className="h-3.5 w-3.5" />
-        </button>
+          <RotateCcw />
+        </Button>
       ) : null}
     </span>
   );

@@ -25,7 +25,6 @@ import {
   getRefactoringOpportunities,
   getRefactoringOpportunity,
   getRefactoringPlan,
-  getRefactoringTargets,
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
@@ -204,8 +203,8 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
   /**
    * Aggregates the sidebar Home payload. Sub-fetches go through the same
    * cached() keys the dashboards use (limits included), so opening a dashboard
-   * after the sidebar costs nothing extra. Refactoring uses the lighter
-   * medium-confidence query, not the panel's unfiltered multi-megabyte one.
+   * after the sidebar costs nothing extra. Refactoring asks for one
+   * opportunity and reads the page total, so the count costs one small row.
    * allSettled: one failing endpoint degrades its section to null.
    */
   async function homeSummary(): Promise<HomeSummary> {
@@ -214,8 +213,10 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       await Promise.allSettled([
         cached("health:overview:25", () => getHealthOverview(id, 25)),
         cached("health:trend:20", () => getHealthTrend(id, 20)),
+        // One row and the page total: the same opportunities the Refactoring
+        // panel lists, without downloading every plan to count them.
         cached("home:refactor", () =>
-          getRefactoringTargets(id, { minConfidence: "medium" }),
+          getRefactoringOpportunities(id, { stepPreview: 0, limit: 1 }),
         ),
         cached("decisions:timeline", () =>
           listDecisions(id, { include_proposed: true, limit: 500 }),
@@ -251,8 +252,8 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
           }
         : null,
       counts: {
-        refactoringPlans:
-          refactor.status === "fulfilled" ? refactor.value.plans.length : null,
+        refactoringOpportunities:
+          refactor.status === "fulfilled" ? refactor.value.total : null,
         decisions: decisions.status === "fulfilled" ? decisions.value.length : null,
       },
       freshness: {

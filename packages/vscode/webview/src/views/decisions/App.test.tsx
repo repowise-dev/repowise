@@ -72,11 +72,11 @@ describe("decisions App", () => {
     expect(screen.getByText("We split the app.")).toBeTruthy();
   });
 
-  it("filters the list by status chip", async () => {
+  it("filters the list by status", async () => {
     render(<App host={makeHost(DECISIONS)} repo={REPO} params={{}} refreshToken={0} />);
     await screen.findAllByText("Adopt hexagonal ports");
 
-    fireEvent.click(screen.getByRole("button", { name: /^Deprecated/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Deprecated/ }));
 
     expect(screen.queryByText("Adopt hexagonal ports")).toBeNull();
     expect(screen.getAllByText("Deprecate the legacy client").length).toBeGreaterThan(0);

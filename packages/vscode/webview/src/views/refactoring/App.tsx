@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft, Layers, Sparkles } from "lucide-react";
 import { ApiError, EmptyState, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
+import { Badge, Button } from "@repowise-dev/ui/ui";
 import {
   CONFIDENCE_DOT,
   CONFIDENCE_LABEL,
   EFFORT_LABEL,
-  typeAccent,
   typeMeta,
 } from "@repowise-dev/ui/refactoring/meta";
 import { PlanDetail } from "@repowise-dev/ui/refactoring/plan-detail";
@@ -123,18 +123,14 @@ function OpportunityDetailView({
   const anyRelocated = detail.steps.some((step) => Boolean(step.relocated_by));
   return (
     <div className="mx-auto max-w-4xl px-6 py-6">
-      <button
-        type="button"
-        onClick={onBack}
-        className="inline-flex items-center gap-1.5 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-      >
-        <ArrowLeft className="h-4 w-4" aria-hidden />
+      <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2 gap-1.5 px-2 [&_svg]:size-3.5">
+        <ArrowLeft aria-hidden />
         All opportunities
-      </button>
+      </Button>
       <h1 className="mt-4 break-all font-mono text-lg font-semibold text-[var(--color-text-primary)]">
         {detail.file_path}
       </h1>
-      <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+      <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
         {detail.step_count} step{detail.step_count === 1 ? "" : "s"}, {detail.mechanical_steps}{" "}
         mechanical · {EFFORT_LABEL[detail.effort_bucket]} effort ·{" "}
         {CONFIDENCE_LABEL[detail.confidence]} confidence
@@ -145,13 +141,13 @@ function OpportunityDetailView({
             "A step below is moved by an earlier one, so its file and lines say where the symbol was. Find it again before applying it."}
         </p>
       ) : null}
-      <ol className="mt-4 space-y-2">
+      <ol className="mt-4 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
         {detail.steps.map((step, i) => (
           <li key={step.plan_id}>
             <button
               type="button"
               onClick={() => onOpenStep(step.plan_id)}
-              className="w-full rounded-lg border border-[var(--color-border-default)] px-3.5 py-3 text-left hover:border-[var(--color-border-hover)]"
+              className="w-full px-1.5 py-3 text-left transition-colors hover:bg-[var(--color-bg-wash-hover)]"
             >
               <span className="text-xs text-[var(--color-text-secondary)]">
                 {String(i + 1).padStart(2, "0")} · {typeMeta(step.refactoring_type).label} ·{" "}
@@ -270,27 +266,23 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
   return (
     <div className="mx-auto max-w-3xl px-6 py-6" onClick={onFileClick}>
       {onBack ? (
-        <button
-          type="button"
-          onClick={onBack}
-          className="mb-4 inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-medium text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)]"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
+        <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2 mb-4 gap-1.5 px-2 [&_svg]:size-3.5">
+          <ArrowLeft aria-hidden />
           All refactoring plans
-        </button>
+        </Button>
       ) : null}
 
       <PlanHeader plan={plan} onOpenFile={() => host.openFile(plan.file_path, plan.line_start ?? undefined)} />
 
       {wins.length > 0 ? (
-        <div className="mt-5 flex flex-wrap gap-2">
+        <div className="mt-5 flex flex-wrap gap-x-4 gap-y-1">
           {wins.map((win, i) => (
             <span
               key={i}
               className={
                 win.hero
-                  ? "inline-flex items-center gap-1.5 rounded-full bg-[var(--color-success)]/10 px-3 py-1 text-xs font-semibold text-[var(--color-success)]"
-                  : "inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1 text-xs text-[var(--color-text-secondary)]"
+                  ? "inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--color-success)]"
+                  : "inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]"
               }
             >
               {win.label}
@@ -313,11 +305,11 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
 
       {evidence.length > 0 ? (
         <Section title="Evidence">
-          <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <dl className="grid grid-cols-2 gap-x-6 sm:grid-cols-3">
             {evidence.map((row) => (
               <div
                 key={row.label}
-                className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2"
+                className="border-t border-[var(--color-border-default)] py-2"
               >
                 <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                   {row.label}
@@ -341,9 +333,9 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
               : "No dependent files recorded."}
         </div>
         {affected.length > 0 ? (
-          <ul className="mt-2 divide-y divide-[var(--color-border-default)] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+          <ul className="mt-2 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
             {affected.slice(0, 25).map((file) => (
-              <li key={file} className="px-3.5 py-2">
+              <li key={file} className="px-1.5 py-2">
                 <a
                   href={fileHref(file)}
                   className="block truncate font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
@@ -354,7 +346,7 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
               </li>
             ))}
             {affected.length > 25 ? (
-              <li className="px-3.5 py-2 text-xs text-[var(--color-text-tertiary)]">
+              <li className="px-1.5 py-2 text-xs text-[var(--color-text-tertiary)]">
                 +{affected.length - 25} more
               </li>
             ) : null}
@@ -374,7 +366,6 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
 
 function PlanHeader({ plan, onOpenFile }: { plan: RefactoringPlan; onOpenFile: () => void }) {
   const meta = typeMeta(plan.refactoring_type);
-  const accent = typeAccent(plan.refactoring_type);
   const { Icon } = meta;
   const effort = (plan.effort_bucket || "M") as EffortBucket;
   const confidence = (plan.confidence || "medium") as Confidence;
@@ -382,25 +373,28 @@ function PlanHeader({ plan, onOpenFile }: { plan: RefactoringPlan; onOpenFile: (
   return (
     <header>
       <div className="flex flex-wrap items-center gap-3">
-        <span
-          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[15px] font-semibold"
-          style={{
-            backgroundColor: `color-mix(in srgb, ${accent} 14%, transparent)`,
-            color: accent,
-          }}
-        >
-          <Icon className="h-4 w-4" />
+        {/* The type is named in text, so it takes a neutral mark rather than
+            a tinted category chip, as the list rows do. */}
+        <span className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-[var(--color-text-primary)]">
+          <Icon className="h-4 w-4 text-[var(--color-text-tertiary)]" />
           {meta.label}
         </span>
         {plan.impact_delta > 0 ? (
-          <Badge title="Health recovered if applied" tone="success">
+          <span
+            title="Health recovered if applied"
+            className="text-xs font-medium tabular-nums text-[var(--color-success)]"
+          >
             +{plan.impact_delta.toFixed(1)} health
-          </Badge>
+          </span>
         ) : null}
-        <Badge title={`Effort: ${EFFORT_LABEL[effort]}`}>
+        <Badge variant="outline" title={`Effort: ${EFFORT_LABEL[effort]}`} className="tabular-nums">
           {effort} · {EFFORT_LABEL[effort]}
         </Badge>
-        <Badge title={`Detector confidence: ${CONFIDENCE_LABEL[confidence]}`}>
+        <Badge
+          variant="outline"
+          title={`Detector confidence: ${CONFIDENCE_LABEL[confidence]}`}
+          className="gap-1.5"
+        >
           <span className={`h-1.5 w-1.5 rounded-full ${CONFIDENCE_DOT[confidence]}`} />
           {CONFIDENCE_LABEL[confidence]} confidence
         </Badge>
@@ -450,15 +444,15 @@ function CopyForAgentRow({ host, planId }: { host: WebviewHost; planId: string }
       </div>
       <div className="flex flex-wrap gap-2">
         {FLAVORS.map(({ label, flavor }) => (
-          <button
+          <Button
             key={flavor}
-            type="button"
+            variant="outline"
+            size="sm"
             disabled={busy != null}
             onClick={() => void copy(flavor, label)}
-            className="inline-flex items-center rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
           >
             {label}
-          </button>
+          </Button>
         ))}
       </div>
       {copyError ? <p className="mt-2 text-xs text-[var(--color-error)]">{copyError}</p> : null}
@@ -528,7 +522,7 @@ function OpportunitySummaryStrip({
   const steps = page.items.reduce((n, o) => n + o.step_count, 0);
   const mechanical = page.items.reduce((n, o) => n + o.mechanical_steps, 0);
   return (
-    <p className="text-sm text-[var(--color-text-secondary)]">
+    <p className="text-[15px] text-[var(--color-text-secondary)]">
       <span className="font-semibold text-[var(--color-text-primary)] tabular-nums">
         {page.total.toLocaleString()}
       </span>{" "}
@@ -551,29 +545,6 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       </h2>
       {children}
     </section>
-  );
-}
-
-function Badge({
-  children,
-  title,
-  tone = "neutral",
-}: {
-  children: ReactNode;
-  title?: string;
-  tone?: "neutral" | "success";
-}) {
-  const cls =
-    tone === "success"
-      ? "bg-[var(--color-success)]/10 text-[var(--color-success)]"
-      : "border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)]";
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium tabular-nums ${cls}`}
-      title={title}
-    >
-      {children}
-    </span>
   );
 }
 
