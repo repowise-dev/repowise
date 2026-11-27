@@ -33,6 +33,21 @@ It is a recommendation, not a requirement. Nothing is wiped until you choose to 
 
 ## Behaviour changes worth knowing about
 
+### 0.63.0: the litellm provider installs separately
+
+**Only if your provider is `litellm`.** The `litellm` package moved out of the
+default install into the `repowise[litellm]` extra, so a fresh install or a
+rebuilt environment no longer has it. Every other provider is unaffected. When
+it is missing, the first command that needs a model says so and, in a
+terminal, offers to install it; `repowise doctor` shows the exact command for
+how repowise was installed. To keep it in one step when you upgrade:
+
+```bash
+uv tool install "repowise[litellm]"     # uv tool: later upgrades keep it
+pipx inject repowise litellm            # pipx: later upgrades keep it
+pip install -U "repowise[litellm]"      # pip
+```
+
 ### 0.62.0: health, the parse cache and ownership refresh once
 
 **Your first `update` does the rest once, on its own.** It re-scores health (analyzer 45 to 46), refreshes the parse cache (parser schema 13 to 14) and walks git history once to recompute ownership (git history 4 to 5) and rescans security (scanner 6 to 7). A workspace update re-extracts contracts once (contracts 16 to 17). Database migrations 0124 to 0140 apply automatically. Nothing needs re-indexing: the store format is unchanged.

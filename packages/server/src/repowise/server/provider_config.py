@@ -464,6 +464,7 @@ def set_active_provider(
     """
     if provider_id not in _CATALOG_BY_ID:
         raise UnknownProviderError(f"Unknown provider: {provider_id}")
+    _refuse_missing_extra(provider_id)
     choice = _Choice(
         provider_id,
         (model or "").strip() or None,
@@ -473,6 +474,20 @@ def set_active_provider(
         _save_repo_choice(choice, repo_id, repo_path)
     else:
         update_global_config(choice.apply_global)
+
+
+def _refuse_missing_extra(provider_id: str) -> None:
+    """Refuse a provider whose ``repowise[<extra>]`` is not installed, naming the command.
+
+    The server never installs packages itself: the person runs the command
+    where repowise is installed, then picks the provider again.
+    """
+    from repowise.core.extras import missing_message
+    from repowise.core.providers.llm.registry import provider_missing_extra
+
+    extra = provider_missing_extra(provider_id)
+    if extra:
+        raise ValueError(missing_message(extra, f"The {provider_id} provider"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,6 +555,7 @@ def set_api_key(
         key = key.strip()
         if not key:
             raise ValueError("API key must not be empty")
+
     def change(config: dict[str, Any]) -> None:
         keys = config.setdefault("keys", {})
         if key:

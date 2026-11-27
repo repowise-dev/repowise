@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **litellm is the `repowise[litellm]` extra.** The default install is about 215 MB smaller, and every provider but `litellm` works exactly as before. Picking `litellm` in `repowise init` or `repowise config set provider litellm` asks once and installs it the way repowise was installed (uv tool, pipx, or pip); a source checkout, `--yes`, the MCP server and the web UI print the command instead. **If your provider is `litellm` and the package is gone after upgrading,** install the extra (`uv tool install "repowise[litellm]"`, `pipx inject repowise litellm`, or `pip install -U "repowise[litellm]"`), or answer yes when the first run asks. `repowise doctor` names the command. See [UPGRADING](reference/UPGRADING.md).
+
+---
+
 ## [0.62.0] - 2026-11-22
 
 repowise 0.62 shows what your code costs at run time. Store a profile, benchmark or test run with `repowise evidence add`, and the Performance tab ranks the functions it measured and confirms the causes behind them. `repowise evidence setup` shows how to collect that evidence for each part of your repository.

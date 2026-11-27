@@ -28,7 +28,8 @@ classifiers = [
 
 # ---------------------------------------------------------------------------
 # Core dependencies — everything needed for analysis + generation + CLI + server,
-# including all LLM provider SDKs (anthropic, openai, google-genai, litellm).
+# including the direct LLM provider SDKs (anthropic, openai, google-genai).
+# litellm is the `litellm` extra below.
 # ---------------------------------------------------------------------------
 dependencies = [
     # HTTP client
@@ -104,14 +105,20 @@ dependencies = [
     "mcp>=1.30.0,<2",
     "apscheduler>=3.10,<4",
     "cryptography>=50.0.0,<51",
-    # LLM providers (bundled — no extras needed)
+    # LLM providers. Every built-in provider but litellm runs on these.
     "anthropic>=0.40,<1",
     "openai>=1.50,<3",
     "google-genai>=1.0,<2",
-    "litellm>=1.90.7,<2",
 ]
 
 [project.optional-dependencies]
+# The `litellm` provider only (about 215 MB with what it pulls in). Choosing
+# that provider in `repowise init` or `repowise config set provider litellm`
+# offers to install it; repowise.core.extras has the command for each way
+# repowise can be installed.
+litellm = [
+    "litellm>=1.90.7,<2",
+]
 postgres = [
     "pgvector>=0.3,<1",
     "asyncpg>=0.29,<1",
@@ -138,6 +145,8 @@ dev = [
     "mypy>=1.11,<2",
     "types-networkx>=3.3,<4",
     "build>=1.0",
+    # The litellm provider's tests.
+    "litellm>=1.90.7,<2",
 ]
 
 [project.scripts]
@@ -206,6 +215,8 @@ dev = [
     "mypy>=1.11,<2",
     "types-networkx>=3.3,<4",
     "httpx>=0.27,<1",
+    # The litellm provider's tests.
+    "litellm>=1.90.7,<2",
 ]
 
 # ---------------------------------------------------------------------------

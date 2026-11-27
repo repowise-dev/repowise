@@ -1287,6 +1287,9 @@ _EMBEDDERS = frozenset(_BUILTIN_EMBEDDERS)
 
 #: Path (relative to ``packages/``) -> names it may spell, and why.
 _ALLOWED: dict[str, frozenset[str]] = {
+    # The extras table is keyed by extra name, and the ``litellm`` extra
+    # shares its name with the package it installs.
+    "core/src/repowise/core/extras.py": frozenset({"litellm"}),
     # ``opencode`` is a ``--target`` id as well as a provider.
     "cli/src/repowise/cli/agent_targets/registry.py": frozenset({"opencode"}),
     # Commit-trailer patterns naming the agent that wrote a commit.

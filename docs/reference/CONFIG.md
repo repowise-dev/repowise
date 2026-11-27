@@ -1225,6 +1225,34 @@ repowise init --provider ollama --model llama3.2
 
 ### LiteLLM (100+ providers)
 
+The `litellm` package ships as the `repowise[litellm]` extra (about 215 MB with
+what it pulls in), so the default install leaves it out. Picking `litellm` in
+the `repowise init` provider list, or running `repowise config set provider
+litellm` in a terminal, asks once and installs it the way repowise was
+installed:
+
+| Installed with | Command run |
+|---|---|
+| `uv tool install repowise` | `uv pip install --python <repowise's python> "litellm>=1.90.7,<2"` |
+| `pipx install repowise` | `pipx inject repowise "litellm>=1.90.7,<2"` |
+| pip, in a virtualenv or conda env | `<python> -m pip install "litellm>=1.90.7,<2"` |
+
+A source checkout, a system-managed Python, or an environment you cannot write
+to gets the command printed instead. So do `--yes` runs, the MCP server, and
+the web UI: they never install anything, and they name the command when the
+package is missing. `repowise doctor` reports a chosen provider whose package
+is missing, with the same command.
+
+`uv tool upgrade repowise` rebuilds the tool's environment from what it was
+installed with, so a package added in place is gone afterwards and the next
+run asks again. Installing the extra into the tool keeps it across upgrades:
+
+```bash
+uv tool install "repowise[litellm]"     # also switches an existing uv tool install
+pipx install "repowise[litellm]"
+pip install "repowise[litellm]"
+```
+
 ```bash
 export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
