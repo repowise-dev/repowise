@@ -655,18 +655,18 @@ class HealthAnalyzer:
             return DuplicationReport()
 
     def _duplication_off(self, run: _RunConfig) -> bool:
-        """Whether the pass skips clone detection; when it does, the caches go.
+        """Whether the pass skips clone detection, and with the switch off, drop its caches.
 
         Clone detection runs only for ``dry_violation`` (the duplicated
-        assertion block marker and Extract Helper reuse its pairs), so with it
-        disabled (``health.duplication.enabled: false`` disables it) the token,
-        delta and pair caches under ``.repowise`` are dead weight. They are deleted
-        here so turning duplication off frees the disk on the next pass, and
-        turning it back on rebuilds them from scratch on the pass after.
+        assertion block marker and Extract Helper reuse its pairs). With
+        ``health.duplication.enabled: false`` the token, delta and pair caches
+        under ``.repowise`` are deleted so the disk is freed on the next pass;
+        turning it back on rebuilds them on the pass after. A biomarker
+        disabled in ``health-rules.json`` alone keeps them, as before.
         """
         if "dry_violation" not in run.disabled:
             return False
-        if self.duplication_cache_dir is not None:
+        if not run.duplication_enabled and self.duplication_cache_dir is not None:
             drop_clone_caches(Path(self.duplication_cache_dir))
         return True
 

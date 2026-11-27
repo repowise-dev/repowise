@@ -102,3 +102,17 @@ def test_off_is_merged_with_the_health_rules_file(tmp_path):
     cfg = HealthConfig.load(tmp_path)
     assert cfg.disabled_biomarkers == ["god_class", "dry_violation"]
     assert cfg.has_overrides()
+
+
+def test_a_biomarker_disabled_in_the_rules_file_keeps_the_caches(make_repo):
+    repo = make_repo()
+    repo.commit("seed", _FILES)
+    root = Path(repo.path)
+    _index_pass(root)
+    kept = _caches(root)
+    (root / ".repowise" / "health-rules.json").write_text(
+        '{"disabled_biomarkers": ["dry_violation"]}', encoding="utf-8"
+    )
+
+    assert _dry(_index_pass(root)) == set()
+    assert _caches(root) == kept

@@ -230,6 +230,8 @@ class _RunConfig:
     disabled_refactorings: list[str]
     refactoring_enabled: bool
     refactoring_min_confidence: str | None
+    #: ``health.duplication.enabled``: off, the pass drops the clone caches too.
+    duplication_enabled: bool = True
 
     @classmethod
     def read(cls, config: dict | None) -> _RunConfig:
@@ -243,6 +245,7 @@ class _RunConfig:
             disabled_refactorings=list(cfg.get("disabled_refactorings", ())),
             refactoring_enabled=flag(cfg.get("refactoring_enabled"), True),
             refactoring_min_confidence=cfg.get("refactoring_min_confidence"),
+            duplication_enabled=flag(cfg.get("duplication_enabled"), True),
         )
 
     @property

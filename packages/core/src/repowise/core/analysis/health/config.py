@@ -495,4 +495,5 @@ class HealthConfig:
             "disabled_refactorings": list(self.disabled_refactorings),
             "refactoring_min_confidence": self.refactoring_min_confidence,
             "assert_extra_names": list(self.assert_extra_names),
+            "duplication_enabled": self.duplication_enabled,
         }
