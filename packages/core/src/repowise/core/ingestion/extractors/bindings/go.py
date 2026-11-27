@@ -27,11 +27,15 @@ def extract_go_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Name
 
     path_text = node_text(path_node, src).strip("\"'` ")
     # For an external import path, strip /vN and .vN from the path element.
+    # The strip only applies when a dot-free identifier element remains before the version element;
+    # otherwise fall back to the original last element (e.g. "gopkg.in/v2" -> "v2").
     trimmed = path_text.rstrip("/")
     if "/" in trimmed:
         candidate = re.sub(r"/v\d+$", "", trimmed)
         if candidate:
-            trimmed = candidate
+            candidate_last = candidate.rsplit("/", 1)[-1]
+            if "." not in candidate_last and candidate_last.isidentifier():
+                trimmed = candidate
     default_name = trimmed.rsplit("/", 1)[-1]
     default_name = re.sub(r"\.v\d+$", "", default_name)
 
@@ -47,7 +51,7 @@ def extract_go_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Name
             source_file=None,
             is_module_alias=True,
         )
-        b.is_explicit_alias = True  # type: ignore[attr-defined]
+        b.is_explicit_alias = True
         return [alias], [b]
 
     b = NamedBinding(
@@ -56,44 +60,38 @@ def extract_go_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Name
         source_file=None,
         is_module_alias=True,
     )
-    b.is_explicit_alias = False  # type: ignore[attr-defined]
+    b.is_explicit_alias = False
     return [default_name], [b]
 
 
-def sync_go_import_binding(
-    imp: Any,
-    resolved_file: str,
-    parsed_files: Any,
-) -> None:
-    """Sync a Go import's binding and local names with the declared package name.
+def _majority_package_name(candidates: list[str]) -> str:
+    from collections import Counter
 
-    For an in-repo import, name the binding from the ``package`` clause of the
-    resolved directory's files. An explicit alias still wins; ``_`` and ``.``
-    are unchanged. Must not change: imports whose path element already matches.
-    """
-    if not resolved_file or resolved_file.startswith("external:"):
-        return
+    counts = Counter(candidates)
+    non_main = [c for c in candidates if c != "main"]
+    return Counter(non_main).most_common(1)[0][0] if non_main else counts.most_common(1)[0][0]
 
-    raw = getattr(imp, "raw_statement", "").strip()
-    if raw and not raw.startswith(('"', "'", "`")):
-        return
 
-    target_pf = parsed_files.get(resolved_file) if hasattr(parsed_files, "get") else None
-    pkg_name = target_pf.module_name if target_pf is not None else None
-    if not pkg_name and hasattr(parsed_files, "items"):
-        pkg_dir = posixpath.dirname(resolved_file)
+def _resolve_dir_package_name(pkg_dir: str, parsed_files: Any, resolved_file: str) -> str | None:
+    candidates: list[str] = []
+    if hasattr(parsed_files, "items"):
         for p, pf in parsed_files.items():
             if (
                 posixpath.dirname(p) == pkg_dir
                 and getattr(pf, "module_name", None)
                 and not p.endswith("_test.go")
             ):
-                pkg_name = pf.module_name
-                break
+                candidates.append(pf.module_name)
+    target_pf = parsed_files.get(resolved_file) if hasattr(parsed_files, "get") else None
+    if not candidates and target_pf is not None and getattr(target_pf, "module_name", None):
+        candidates.append(target_pf.module_name)
 
-    if not pkg_name:
-        return
+    if not candidates:
+        return None
+    return _majority_package_name(candidates)
 
+
+def _apply_go_binding_name(imp: Any, pkg_name: str) -> None:
     has_explicit = False
     for b in imp.bindings:
         if getattr(b, "is_explicit_alias", False) or b.local_name in ("*", "_"):
@@ -109,4 +107,38 @@ def sync_go_import_binding(
         and "*" not in imp.imported_names
     ):
         imp.imported_names = [pkg_name]
+
+
+def sync_go_import_binding(
+    imp: Any,
+    resolved_file: str,
+    parsed_files: Any,
+    dir_to_pkg: dict[str, str] | None = None,
+) -> None:
+    """Sync a Go import's binding and local names with the declared package name.
+
+    For an in-repo import, name the binding from the ``package`` clause of the
+    resolved directory's files. An explicit alias still wins; ``_`` and ``.``
+    are unchanged. Must not change: imports whose path element already matches.
+    """
+    if not resolved_file or resolved_file.startswith("external:"):
+        return
+
+    raw = getattr(imp, "raw_statement", "").strip()
+    if raw and not raw.startswith(('"', "'", "`")):
+        return
+
+    pkg_dir = posixpath.dirname(resolved_file)
+    if dir_to_pkg is not None and pkg_dir in dir_to_pkg:
+        pkg_name = dir_to_pkg[pkg_dir]
+    else:
+        pkg_name = _resolve_dir_package_name(pkg_dir, parsed_files, resolved_file)
+        if dir_to_pkg is not None and pkg_name:
+            dir_to_pkg[pkg_dir] = pkg_name
+
+    if not pkg_name:
+        return
+
+    _apply_go_binding_name(imp, pkg_name)
+
 

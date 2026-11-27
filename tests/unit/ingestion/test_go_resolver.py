@@ -374,3 +374,42 @@ class TestPackageClauseImportBindings:
         edges = _call_edges(tmp_path, sources)
         assert ("app/main.go::Run", "pkg/util.go::Helper") in edges
 
+    def test_bare_major_version_import_fallback_to_version_element(self) -> None:
+        parser = ASTParser()
+        content = b'package main\n\nimport "gopkg.in/v2"\n'
+        info = FileInfo(
+            path="app/main.go",
+            abs_path="/tmp/app/main.go",
+            language="go",
+            size_bytes=len(content),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        parsed = parser.parse_file(info, content)
+        (imp,) = parsed.imports
+        # Does not leave dotted "gopkg.in"; falls back to valid identifier "v2"
+        assert imp.local_names == ["v2"]
+        assert imp.bindings[0].local_name == "v2"
+
+    def test_sibling_package_clause_wins_over_first_main_file(self, tmp_path: Path) -> None:
+        sources = {
+            "go.mod": "module example.com/m\n\ngo 1.22\n",
+            # Alphabetically first file has package main (e.g. generator/script)
+            "db/0_gen.go": "package main\n\nfunc Gen() {}\n",
+            "db/db.go": "package db\n\nfunc Open() {}\n",
+            "app/main.go": (
+                "package main\n\n"
+                'import "example.com/m/db"\n\n'
+                "func Run() {\n"
+                "\tdb.Open()\n"
+                "}\n"
+            ),
+        }
+        edges = _call_edges(tmp_path, sources)
+        assert ("app/main.go::Run", "db/db.go::Open") in edges
+
+
