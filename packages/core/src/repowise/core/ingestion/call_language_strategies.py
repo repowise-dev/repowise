@@ -395,7 +395,8 @@ class LanguageStrategiesMixin:
         if ws:
             for crate in ws.crates:
                 for import_name in crate.import_names:
-                    self._rust_crate_src[import_name] = crate.src_dir
+                    # First crate wins, as CargoWorkspaceIndex.lookup does.
+                    self._rust_crate_src.setdefault(import_name, crate.src_dir)
         return self._rust_crate_src
 
     def _get_go_index(self) -> Any:

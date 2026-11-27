@@ -85,6 +85,29 @@ class TestCargoWorkspaceIndex:
         assert idx.lookup("leviathan") == "crates/core/src"
         assert idx.lookup("lev_core") == "crates/core/src"
 
+    def test_two_crates_claiming_one_lib_name_resolve_to_the_first_in_both_resolvers(
+        self, tmp_path: Path
+    ) -> None:
+        from repowise.core.ingestion.call_language_strategies import LanguageStrategiesMixin
+
+        _write_workspace(tmp_path, ["crates/a", "crates/b"])
+        for member, package in (("crates/a", "a-pkg"), ("crates/b", "b-pkg")):
+            (tmp_path / member / "src").mkdir(parents=True)
+            (tmp_path / member / "src/lib.rs").write_text("pub mod engine;\n")
+            (tmp_path / member / "Cargo.toml").write_text(
+                f'[package]\nname = "{package}"\nversion = "0.1.0"\n\n[lib]\nname = "shared"\n'
+            )
+        paths = ["crates/a/src/lib.rs", "crates/b/src/lib.rs"]
+        idx = get_or_build_cargo_workspace_index(_ctx(tmp_path, paths))
+        assert idx is not None
+        first = idx.lookup("shared")
+
+        calls = object.__new__(LanguageStrategiesMixin)
+        calls._rust_crate_src = None
+        calls._repo_path = tmp_path
+        calls._parsed_files = {p: None for p in paths}
+        assert calls._get_rust_crate_src()["shared"] == first
+
 
 class TestCargoWorkspaceGlobExpansion:
     def test_glob_member_pattern(self, tmp_path: Path) -> None:
