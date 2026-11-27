@@ -47,6 +47,15 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.sh",
     "*.bash",
     "*.zsh",
+    # Ruby tools load these by filename or convention, not by imports.
+    "*.rake",
+    "*.jbuilder",
+    "Capfile",
+    "*/Capfile",
+    "Guardfile",
+    "*/Guardfile",
+    "Vagrantfile",
+    "*/Vagrantfile",
     # An Apex trigger is run by the platform on DML, and an anonymous-Apex
     # script by a person or a CI job; nothing names either.
     "*.trigger",

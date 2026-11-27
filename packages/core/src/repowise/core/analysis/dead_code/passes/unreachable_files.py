@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ....ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from ..constants import (
     _DEAD_CODE_EXEMPT_LANGUAGES,
     _NAMESPACE_IMPORT_LANGUAGES,
@@ -64,6 +65,10 @@ class UnreachableFilePass:
             if node_data.get("is_test", False):
                 continue
             if _is_fixture_path(str(node)):
+                continue
+            # Package managers load manifests by name. Exempt the file from
+            # deletion findings without making its unused symbols flow entries.
+            if _LANG_REGISTRY.is_package_manifest(str(node)):
                 continue
 
             if is_file_reachable(str(node), self.graph, rescues):

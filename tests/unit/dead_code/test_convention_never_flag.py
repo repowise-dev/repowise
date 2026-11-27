@@ -6,6 +6,8 @@ misses that must stay flaggable.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import networkx as nx
 import pytest
 
@@ -14,7 +16,10 @@ from repowise.core.analysis.dead_code.constants import (
     never_flag_match,
     never_flag_path,
 )
-from repowise.core.analysis.dead_code.file_reachability import is_file_reachable
+from repowise.core.analysis.dead_code.file_reachability import (
+    ReachabilityRescues,
+    is_file_reachable,
+)
 
 
 def _unreachable(path: str) -> bool:
@@ -86,6 +91,26 @@ def test_python_startup_hooks_are_never_flagged(path):
 @pytest.mark.parametrize(
     "path",
     [
+        "cleanup.rake",
+        "lib/tasks/cleanup.rake",
+        "show.json.jbuilder",
+        "app/views/api/show.json.jbuilder",
+        "Capfile",
+        "config/Capfile",
+        "Guardfile",
+        "config/Guardfile",
+        "Vagrantfile",
+        "config/Vagrantfile",
+    ],
+)
+def test_ruby_tool_convention_files_are_never_flagged(path):
+    assert never_flag_match(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "src/config.ts",  # no tool name before ``.config``
         "src/settings.config.py",  # not a JS-family config
         "src/myconfig.js",
@@ -97,6 +122,9 @@ def test_python_startup_hooks_are_never_flagged(path):
         "src/sitecustomize_helpers.py",
         "src/lib/pages/format.ts",  # a pages dir outside src/pages routes nothing
         "src/components/Header.astro",
+        "lib/Capfile.rb",
+        "lib/Guardfile.rb",
+        "lib/Vagrantfile.rb",
     ],
 )
 def test_near_misses_stay_flaggable(path):
@@ -132,12 +160,18 @@ def test_origin_near_misses_stay_flaggable(path):
 
 @pytest.mark.parametrize("path", ["Gemfile", "apps/api/Gemfile"])
 def test_package_manifests_are_not_unreachable(path):
+    from repowise.core.analysis.dead_code import DeadCodeAnalyzer
+
+    graph = nx.DiGraph()
+    graph.add_node(path, node_type="file", language="ruby")
     assert not never_flag_path(path)
-    assert not _unreachable(path)
+    assert not is_file_reachable(path, graph)
+    assert not DeadCodeAnalyzer(graph, {})._detect_unreachable_files(set())
 
 
 def test_reachable_gemfile_still_reports_unused_symbols(tmp_path):
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+    from repowise.core.generation.context.assembler import _flow_entry_is_reachable
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
     source = b"def unused_helper\n  1\nend\n"
@@ -147,8 +181,9 @@ def test_reachable_gemfile_still_reports_unused_symbols(tmp_path):
     builder = GraphBuilder(repo_path=tmp_path)
     builder.add_file(parsed)
     builder.set_source_map({"Gemfile": source})
+    graph = builder.build()
     report = DeadCodeAnalyzer(
-        builder.build(),
+        graph,
         {},
         parsed_files={"Gemfile": parsed},
         source_map={"Gemfile": source},
@@ -160,6 +195,9 @@ def test_reachable_gemfile_still_reports_unused_symbols(tmp_path):
         f.kind is DeadCodeKind.UNUSED_EXPORT and f.symbol_name == "unused_helper"
         for f in report.findings
     )
+    helper_id = next(n for n, data in graph.nodes(data=True) if data.get("name") == "unused_helper")
+    flow = SimpleNamespace(entry_point_id=helper_id)
+    assert not _flow_entry_is_reachable(flow, graph, ReachabilityRescues())
 
 
 @pytest.mark.parametrize(
