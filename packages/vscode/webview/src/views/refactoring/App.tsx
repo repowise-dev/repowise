@@ -11,7 +11,7 @@
  * is a local-server setting the web page owns; the panel leaves it out.
  */
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
 import { RotateCw, Wrench } from "lucide-react";
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
@@ -33,6 +33,7 @@ import type {
   EffortBucket,
   OpportunityStatus,
   RefactoringOpportunity,
+  RefactoringOpportunityPage,
   RefactoringOrder,
   RefactoringScope,
 } from "@repowise-dev/types/refactoring";
@@ -115,40 +116,7 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
   // The host can push new params into an open panel; honor them.
   useEffect(() => setOpenPlanId(params.planId ?? null), [params.planId]);
 
-  const listKey = JSON.stringify([type, { ...filters, query: deferredQuery }, refreshToken]);
-  const list = useHostData(
-    () =>
-      host.api.refactoringOpportunities({
-        refactoringType: leadTypeFor(type),
-        status: filters.status,
-        scope: filters.scope,
-        search: deferredQuery || undefined,
-        effort: filters.effort ?? undefined,
-        confidence: filters.confidence ?? undefined,
-        mechanical: filters.mechanicalOnly,
-        order: filters.order,
-        // The row renders step counts, not steps.
-        stepPreview: 0,
-        limit: PAGE_SIZE,
-        offset: filters.offset,
-      }),
-    listKey,
-  );
-  // The structural head for Start here: the whole repository in the list's
-  // scope, not a slice of whatever filter the reader chose.
-  const structural = useHostData(
-    () =>
-      type === "all"
-        ? host.api.refactoringOpportunities({
-            refactoringType: STRUCTURAL_CSV,
-            scope: filters.scope,
-            order: "rank",
-            stepPreview: 0,
-            limit: 100,
-          })
-        : Promise.resolve(null),
-    JSON.stringify([type, filters.scope, refreshToken]),
-  );
+  const { list, structural, reloadList } = useBoardReads(host, type, filters, deferredQuery, refreshToken);
   const detail = useHostData(
     () => (openId ? host.api.refactoringOpportunity(openId) : Promise.resolve(null)),
     `${openId}:${refreshToken}`,
@@ -160,14 +128,7 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
     false,
   );
   const prompt = usePromptDialog(host);
-  const { reload: reloadBoard } = list;
-  const { reload: reloadStructural } = structural;
   const { reload: reloadDetail } = detail;
-  // Start here is its own read; a triage or a refresh moves it too.
-  const reloadList = useCallback(() => {
-    reloadBoard();
-    reloadStructural();
-  }, [reloadBoard, reloadStructural]);
 
   const onStatusChange = useCallback(
     async (opportunity: { opportunity_id: string }, status: OpportunityStatus) => {
@@ -220,42 +181,30 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
           onValueChange={(id) => changeType(id as TypeFilter)}
         />
         <div id={PANEL_ID} role="tabpanel" aria-labelledby={`${PANEL_ID}-tab-${type}`} tabIndex={0}>
-          {/* A failed read replaces the rows: rows left from the last query
-              would sit under controls describing the new one. */}
-          {list.error ? (
-            <ApiError
-              title={COPY.loadFailedTitle}
-              message={COPY.loadFailed}
-              retryLabel={COPY.retry}
-              onRetry={reloadList}
-            />
-          ) : data?.summary?.status === "unavailable" ? (
-            <EmptyState title={COPY.unavailableTitle} description={COPY.unavailableDescription} />
-          ) : !data ? (
-            <SkeletonRegion className="space-y-8" label={COPY.loading}>
-              <Skeleton className="h-32 rounded-xl" />
-              <Skeleton className="h-16 rounded-xl" />
-              <Skeleton className="h-72 rounded-xl" />
-            </SkeletonRegion>
-          ) : (
-            <RefactoringBoard
-              opportunities={data.items}
-              summary={data.summary ?? null}
-              facets={data.facets}
-              structuralOpportunities={structural.data?.items}
-              serverState={serverState}
-              onServerStateChange={(change) => setFilters((f) => ({ ...f, ...change }))}
-              onOpen={(o) => setOpenId(o.opportunity_id)}
-              onAiPrompt={prompt.forOpportunity}
-              onStatusChange={onStatusChange}
-              onSeeStructural={() => changeType("structural")}
-              fileHref={fileHref}
-              // The lede and Start here describe the whole repository, so they
-              // only belong on the unfiltered view.
-              showLede={type === "all"}
-              sectionTitle={sectionTitle(type, serverState.appliedScope)}
-            />
-          )}
+          <BoardBody
+            error={list.error !== null}
+            data={data}
+            onRetry={reloadList}
+            board={(page) => (
+              <RefactoringBoard
+                opportunities={page.items}
+                summary={page.summary ?? null}
+                facets={page.facets}
+                structuralOpportunities={structural.data?.items}
+                serverState={serverState}
+                onServerStateChange={(change) => setFilters((f) => ({ ...f, ...change }))}
+                onOpen={(o) => setOpenId(o.opportunity_id)}
+                onAiPrompt={prompt.forOpportunity}
+                onStatusChange={onStatusChange}
+                onSeeStructural={() => changeType("structural")}
+                fileHref={fileHref}
+                // The lede and Start here describe the whole repository, so
+                // they only belong on the unfiltered view.
+                showLede={type === "all"}
+                sectionTitle={sectionTitle(type, serverState.appliedScope)}
+              />
+            )}
+          />
         </div>
       </div>
 
@@ -297,6 +246,95 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
       />
     </PageShell>
   );
+}
+
+/**
+ * The board's two reads: the page under the reader's filters, and the
+ * structural head for Start here (the whole repository in the list's scope,
+ * not a slice of whatever filter the reader chose). A triage or a refresh
+ * reloads both.
+ */
+function useBoardReads(
+  host: WebviewHost,
+  type: TypeFilter,
+  filters: Filters,
+  query: string,
+  refreshToken: number,
+) {
+  const list = useHostData(
+    () =>
+      host.api.refactoringOpportunities({
+        refactoringType: leadTypeFor(type),
+        status: filters.status,
+        scope: filters.scope,
+        search: query || undefined,
+        effort: filters.effort ?? undefined,
+        confidence: filters.confidence ?? undefined,
+        mechanical: filters.mechanicalOnly,
+        order: filters.order,
+        // The row renders step counts, not steps.
+        stepPreview: 0,
+        limit: PAGE_SIZE,
+        offset: filters.offset,
+      }),
+    JSON.stringify([type, { ...filters, query }, refreshToken]),
+  );
+  const structural = useHostData(
+    () =>
+      type === "all"
+        ? host.api.refactoringOpportunities({
+            refactoringType: STRUCTURAL_CSV,
+            scope: filters.scope,
+            order: "rank",
+            stepPreview: 0,
+            limit: 100,
+          })
+        : Promise.resolve(null),
+    JSON.stringify([type, filters.scope, refreshToken]),
+  );
+  const { reload: reloadBoard } = list;
+  const { reload: reloadStructural } = structural;
+  const reloadList = useCallback(() => {
+    reloadBoard();
+    reloadStructural();
+  }, [reloadBoard, reloadStructural]);
+  return { list, structural, reloadList };
+}
+
+/**
+ * The tab panel's states, as the web page orders them. A failed read replaces
+ * the rows: rows left from the last query would sit under controls
+ * describing the new one.
+ */
+function BoardBody({
+  error,
+  data,
+  onRetry,
+  board,
+}: {
+  error: boolean;
+  data: RefactoringOpportunityPage | undefined;
+  onRetry: () => void;
+  board: (page: RefactoringOpportunityPage) => ReactNode;
+}) {
+  if (error) {
+    return (
+      <ApiError title={COPY.loadFailedTitle} message={COPY.loadFailed} retryLabel={COPY.retry} onRetry={onRetry} />
+    );
+  }
+  if (data?.summary?.status === "unavailable") {
+    return <EmptyState title={COPY.unavailableTitle} description={COPY.unavailableDescription} />;
+  }
+  if (!data) {
+    return (
+      <SkeletonRegion className="space-y-8" label={COPY.loading}>
+        <Skeleton className="h-32 rounded-xl" />
+        <Skeleton className="h-16 rounded-xl" />
+        <Skeleton className="h-72 rounded-xl" />
+      </SkeletonRegion>
+    );
+  }
+  return <>{board(data)}</>;
 }
 
 function buildTabs(facetCounts: Record<string, number>) {
