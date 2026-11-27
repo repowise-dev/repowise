@@ -165,13 +165,19 @@ points (`__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`,
 `asgi.py`, `setup.py`, `main.go`), build files (Gradle, Maven, CMake,
 Makefiles, Meson, Bazel, MSBuild, `build.rs`, bundler configs), shell scripts,
 files a CI workflow, task file, manifest or script names by path, framework
-routes (Next.js, SvelteKit, Nuxt, Remix, Astro, ASP.NET minimal APIs, Blazor and
-Razor code-behind), test layouts, generated code (protoc, Qt, Bison/Flex, SWIG,
+routes with no manifest signal (Remix entry files, ASP.NET minimal APIs,
+Blazor and Razor code-behind), test layouts, generated code (protoc, Qt, Bison/Flex, SWIG,
 Cython, Roslyn `*.g.cs`, Dart `*.g.dart`, `**/generated/**`), reflective
 loading (Alembic and Django migrations, EF configurations, COM class
 factories), vendored trees, build artifacts, and non-code languages from the
 language registry. Read the constants for the exact globs; they change more
 often than this page.
+
+Other JS framework files (Next.js Pages and App Router, Remix routes, SvelteKit, Nuxt,
+Astro, Expo Router, React Email, `vite-plugin-pages`) are not on that list.
+They are anchored to a `framework:` node from the `package.json` that depends
+on the framework (`ingestion/framework_facts/`), so a `page.tsx` or
+`middleware.ts` in a package without Next.js can still be reported.
 
 ## Serving
 

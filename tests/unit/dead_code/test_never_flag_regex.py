@@ -107,7 +107,7 @@ class TestShouldNeverFlag:
         assert self._analyzer()._should_never_flag("anything.py", {"anything.py"})
 
     def test_glob_hit(self):
-        assert self._analyzer()._should_never_flag("app/dashboard/page.tsx", set())
+        assert self._analyzer()._should_never_flag("apps/web/next.config.mjs", set())
 
     def test_glob_miss(self):
         assert not self._analyzer()._should_never_flag("core/router.py", set())

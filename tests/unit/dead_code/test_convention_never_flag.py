@@ -41,10 +41,6 @@ def _unreachable(path: str) -> bool:
         # pnpm's install hook.
         ".pnpmfile.cjs",
         "tools/.pnpmfile.cjs",
-        # Next.js request proxy, the successor of ``middleware.ts``.
-        "proxy.ts",
-        "apps/web/proxy.ts",
-        "apps/web/src/proxy.js",
     ],
 )
 def test_js_tool_convention_files_are_never_flagged(path):
@@ -55,18 +51,22 @@ def test_js_tool_convention_files_are_never_flagged(path):
 @pytest.mark.parametrize(
     "path",
     [
-        # Astro pages and endpoints: routed by their path under src/pages, never imported.
+        # Framework convention files are anchored from the package.json that
+        # depends on the framework (framework_facts), not exempt by path: the
+        # same names in a repo without it can be dead.
+        "proxy.ts",
+        "apps/web/src/proxy.js",
+        "src/middleware.ts",
+        "app/dashboard/page.tsx",
+        "app/api/users/route.ts",
+        "src/routes/+page.svelte",
+        "pages/index.vue",
         "src/pages/index.astro",
-        "apps/web/src/pages/blog/[slug].astro",
-        "src/pages/robots.txt.ts",
-        "apps/site/src/pages/api/products/[id].json.ts",
-        "src/pages/rss.xml.js",
         "src/pages/feed.json.mjs",
     ],
 )
-def test_astro_routes_are_never_flagged(path):
-    assert never_flag_match(path)
-    assert not _unreachable(path)
+def test_framework_convention_files_are_not_exempt_by_path(path):
+    assert not never_flag_match(path)
 
 
 @pytest.mark.parametrize(

@@ -1160,11 +1160,14 @@ def apex_rest_routes(content: str, code: str | None = None) -> Iterator[RouteMat
 # Next.js App Router
 # ---------------------------------------------------------------------------
 
-#: App Router files loaded by filesystem convention rather than by import.
+#: App Router files loaded by filesystem convention rather than by import:
+#: segment files, then the metadata files that serve their own URL.
 NEXT_APP_ROUTER_BASENAMES: frozenset[str] = frozenset({
     "page", "layout", "route", "middleware", "template", "default",
     "error", "loading", "not-found", "global-error", "forbidden",
     "unauthorized", "instrumentation",
+    "sitemap", "robots", "manifest", "icon", "apple-icon",
+    "opengraph-image", "twitter-image",
 })
 NEXT_APP_ROUTER_EXTS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs")
 
