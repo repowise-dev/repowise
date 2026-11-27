@@ -73,27 +73,27 @@ def _joined(root: str, rel: str) -> str:
 
 
 def _with_junit(command: str, stack: Stack) -> tuple[str, str | None]:
-    """*command* writing JUnit XML too, and the comment to show when the flag cannot be added.
-
-    The flag goes at the end, which a command chaining a second step with
-    ``&&`` (a c8 report) would hand to that step instead. The runner's
-    environment for the report goes first; CI runs the line in sh or bash.
+    """*command* writing JUnit XML too (:meth:`Stack.with_junit`), and the comment to show
+    when the flag cannot be added. The runner's environment for the report goes first;
+    CI runs the line in sh or bash.
     """
+    own = f"{stack.env} " if stack.env else ""
     if not stack.junit_flag:
-        return command, None
+        return own + command, None
     env = stack.junit_vars()
-    if "&&" in command:
+    timed = stack.with_junit(command)
+    if timed is None:
         with_env = f" with {env} in its environment" if env else ""
-        return command, f"# add {stack.junit_flag} to the test command{with_env} for test timings"
-    return f"{env + ' ' if env else ''}{command} {stack.junit_flag}", None
+        return own + command, f"# add {stack.junit_flag} to the test command{with_env} for test timings"
+    return f"{own}{env + ' ' if env else ''}{timed}", None
 
 
 def _junit_path(stack: Stack) -> str | None:
-    """The JUnit XML the unit's run writes, repo-relative; a directory as its XML files."""
+    """The test results the unit's run writes, repo-relative; a directory as its XML files."""
     if not stack.junit_report:
         return None
     path = _joined(stack.root, stack.junit_report)
-    return path if path.endswith(".xml") else f"{path}/*.xml"
+    return path if path.endswith((".xml", ".json")) else f"{path}/*.xml"
 
 
 def _kept(stack: Stack) -> list[str]:
@@ -221,8 +221,9 @@ def _gitlab_job(name: str, stack: Stack) -> list[str]:
         *(f"      - {json.dumps(p, ensure_ascii=False)}" for p in _kept(stack)),
     ]
     junit = _junit_path(stack)
-    if junit:
-        lines += ["    reports:", f"      junit: {json.dumps(junit, ensure_ascii=False)}"]
+    # GitLab reads JUnit XML only; ``go test -json`` stays an artifact.
+    if junit and junit.endswith(".xml"):
+        lines +=["    reports:", f"      junit: {json.dumps(junit, ensure_ascii=False)}"]
     return lines
 
 

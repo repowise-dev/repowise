@@ -33,7 +33,7 @@ from .callees import _MAX_CALLEE_DEPTH
 from .lookup import _resolve_symbol, _rows_in_scope
 from .misses import _not_found_response
 from .omission import _extract_omission_ref, _resolve_omission_ref
-from .ranges import _line_id_target, _range_id_read
+from .ranges import _line_id_target, _range_id_read, _repo_relative_id
 from .text import _elapsed_ms
 
 
@@ -189,6 +189,7 @@ async def get_symbol(
         routed = await _routed_read(symbol_id, context_lines, query, depth)
         if routed is not None:
             return routed
+    symbol_id = _repo_relative_id(symbol_id, ctx.path)
     # A "path:line" id reads as the symbol holding that line, or the lines around it.
     symbol_id = await _line_id_target(symbol_id, ctx) or symbol_id
     ranged = await _range_id_read(symbol_id, context_lines, ctx, t0)

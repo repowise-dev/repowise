@@ -1,0 +1,17 @@
+{
+  "format": "repowise-evidence-v1",
+  "kind": "route_latency",
+  "tool": {"name": "access-log"},
+  "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "base_commit_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "window": {"start": "2026-11-19T00:00:00Z", "end": "2026-11-26T00:00:00+00:00"},
+  "routes": [
+    {"method": "get", "route": "/api/repos/:id", "count": 48210, "p50_ms": 41.5, "p95_ms": 380, "total_ms": 3105000, "errors": 12},
+    {"method": "POST", "route": "/api/repos", "count": 310, "p50_ms": 120, "p95_ms": 900, "total_ms": 61000},
+    {"method": "GET", "route": "/api/search?q=secret", "count": 3},
+    {"method": "GET", "route": "users/1", "count": 3},
+    {"method": "get it", "route": "/x", "count": 3},
+    {"method": "GET", "route": "/api/repos/:id", "count": 1},
+    {"method": "GET", "route": "/health"}
+  ]
+}

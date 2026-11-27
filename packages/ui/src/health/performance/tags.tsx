@@ -11,10 +11,22 @@ function markWords(mark: PerformanceEvidenceMark): { word: string; why: string; 
     case "confirmed":
       return {
         word: "Confirmed",
-        why: mark.basis === "query_count" ? "by query counts that grow" : "by a measured run",
+        why:
+          mark.basis === "query_count"
+            ? "by query counts that grow"
+            : mark.basis === "measured_in_tests"
+              ? "by a measured test run"
+              : "by a measured run",
         ink: true,
       };
     case "measured":
+      if (mark.basis === "measured_in_tests") {
+        return {
+          word: "Measured in tests",
+          why: mark.workload ? `in ${mark.workload}` : "",
+          ink: true,
+        };
+      }
       return { word: "Measured", why: mark.workload ? `in ${mark.workload}` : "", ink: true };
     case "counter_evidence":
       return { word: "Counter-evidence", why: "query counts stay flat as the input grows", ink: false };
@@ -35,6 +47,9 @@ function evidenceMarkOf(opportunity: PerformanceOpportunity): PerformanceEvidenc
   const facets = opportunity.facets;
   if (facets?.confirmed) return { state: "confirmed", basis: facets.confirmed };
   if (facets?.measured) return { state: "measured", workload: facets.measured };
+  if (facets?.measured_in_tests) {
+    return { state: "measured", basis: "measured_in_tests", workload: facets.measured_in_tests };
+  }
   return null;
 }
 

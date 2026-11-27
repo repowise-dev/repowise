@@ -22,6 +22,7 @@ from repowise.core.ingestion.resolvers.typescript import (
     resolve_ts_js_import,
     resolve_ts_js_import_all,
 )
+from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
 
 
 def _ctx(repo: Path, paths: list[str], has_sfc: bool = False) -> ResolverContext:
@@ -1028,3 +1029,77 @@ class TestQuerySuffix:
         )
         # A specifier that is only a query has no path before the ``?`` to keep.
         assert resolve_ts_js_import("?raw", "src/main.ts", ctx) == "external:?raw"
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            ("raw-loader!../../lib/page-check.js", "lib/page-check.js"),
+            ("!!raw-loader!../../lib/page-check.js?x=1", "lib/page-check.js"),
+            # A loader's own query is not the file's.
+            ("worker-loader?inline=true!../worker", "src/worker.ts"),
+            ("-!svg-loader!../logo.svg", "src/logo.svg"),
+        ],
+    )
+    def test_a_webpack_inline_loader_resolves_to_the_file_after_it(
+        self, tmp_path: Path, spec: str, expected: str
+    ) -> None:
+        ctx = _ctx(tmp_path, list(self._PATHS))
+        assert resolve_ts_js_import(spec, "src/lib/page-check.test.ts", ctx) == expected
+        assert resolve_ts_js_import_all(spec, "src/lib/page-check.test.ts", ctx) == (expected,)
+
+    def test_a_loader_with_no_file_after_it_is_left_alone(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, list(self._PATHS))
+        assert resolve_ts_js_import("raw-loader!", "src/main.ts", ctx) == "external:raw-loader!"
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            ("./components/Oops!.tsx", "src/components/Oops!.tsx"),
+            ("./components/Oops!", "src/components/Oops!.tsx"),
+            ("./components/Oops!.tsx?raw", "src/components/Oops!.tsx"),
+        ],
+    )
+    def test_a_relative_file_named_with_a_bang_keeps_its_path(
+        self, tmp_path: Path, spec: str, expected: str
+    ) -> None:
+        # ``!`` is legal in a file name: a relative specifier that names a
+        # file as written is not a loader chain.
+        ctx = _ctx(tmp_path, [*self._PATHS, "src/components/Oops!.tsx"])
+        assert resolve_ts_js_import(spec, "src/main.ts", ctx) == expected
+        assert resolve_ts_js_import_all(spec, "src/main.ts", ctx) == (expected,)
+
+    def test_a_loader_given_by_a_relative_path_is_still_cut(self, tmp_path: Path) -> None:
+        # ``./my-loader!./worker`` names no file as written, so it is a loader chain.
+        ctx = _ctx(tmp_path, [*self._PATHS, "src/my-loader.js"])
+        assert resolve_ts_js_import("./my-loader!./worker", "src/main.ts", ctx) == "src/worker.ts"
+
+    @staticmethod
+    def _alias_ctx(repo: Path, paths: list[str]) -> ResolverContext:
+        """A repository on disk whose tsconfig maps ``@/*`` to ``src/*``."""
+        (repo / "tsconfig.json").write_text(
+            json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+            encoding="utf-8",
+        )
+        for rel in paths:
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("export {};\n", encoding="utf-8")
+        ctx = _ctx(repo, paths)
+        ctx.tsconfig_resolver = TsconfigResolver(repo, ctx.path_set)
+        return ctx
+
+    @pytest.mark.parametrize(
+        "spec",
+        ["@/components/Oops!.tsx", "@/components/Oops!", "@/components/Oops!.tsx?raw"],
+    )
+    def test_an_aliased_file_named_with_a_bang_keeps_its_path(
+        self, tmp_path: Path, spec: str
+    ) -> None:
+        # The alias names the file as written, so the ``!`` is part of its name.
+        ctx = self._alias_ctx(tmp_path, ["src/main.ts", "src/components/Oops!.tsx"])
+        expected = "src/components/Oops!.tsx"
+        assert resolve_ts_js_import(spec, "src/main.ts", ctx) == expected
+        assert resolve_ts_js_import_all(spec, "src/main.ts", ctx) == (expected,)
+
+    def test_a_loader_before_an_aliased_file_is_still_cut(self, tmp_path: Path) -> None:
+        ctx = self._alias_ctx(tmp_path, ["src/main.ts", "src/worker.ts"])
+        assert resolve_ts_js_import("worker-loader!@/worker", "src/main.ts", ctx) == "src/worker.ts"

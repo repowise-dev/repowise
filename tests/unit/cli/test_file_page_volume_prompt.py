@@ -225,23 +225,40 @@ class TestTheRunSaysSo:
     evidence would be a page count nobody can explain."""
 
     @staticmethod
-    def _parsed(n: int):
+    def _parsed(n: int, *, empty: int = 0):
         from types import SimpleNamespace
 
-        return [
+        scored = [
             SimpleNamespace(
                 file_info=SimpleNamespace(
                     path=f"pkg/mod_{i}.py",
                     language="python",
                     is_test=False,
                     is_api_contract=False,
+                    is_entry_point=False,
+                    size_bytes=200,
                 ),
-                symbols=[],
+                symbols=[SimpleNamespace(name="fn")],
             )
             for i in range(n)
         ]
+        symbolless = [
+            SimpleNamespace(
+                file_info=SimpleNamespace(
+                    path=f"pkg/empty_{i}.py",
+                    language="python",
+                    is_test=False,
+                    is_api_contract=False,
+                    is_entry_point=False,
+                    size_bytes=0,
+                ),
+                symbols=[],
+            )
+            for i in range(empty)
+        ]
+        return scored + symbolless
 
-    def _announce(self, files: int, cap):
+    def _announce(self, files: int, cap, *, empty: int = 0):
         from types import SimpleNamespace
 
         from repowise.cli.commands.init_cmd.generation import announce_file_page_cap
@@ -250,7 +267,9 @@ class TestTheRunSaysSo:
         with mock.patch(
             "repowise.cli.commands.init_cmd.generation.console", Console(file=buffer, width=100)
         ):
-            announce_file_page_cap(self._parsed(files), SimpleNamespace(max_file_pages=cap))
+            announce_file_page_cap(
+                self._parsed(files, empty=empty), SimpleNamespace(max_file_pages=cap)
+            )
         return buffer.getvalue()
 
     def test_policy_cap_is_announced_with_the_undo(self):
@@ -272,3 +291,16 @@ class TestTheRunSaysSo:
 
     def test_nothing_is_said_on_an_explicit_refusal(self):
         assert self._announce(FILE_PAGE_AUTO_CEILING + 500, 0) == ""
+
+    def test_under_ceiling_after_scoring_but_over_before_prints_no_notice(self):
+        """Empty files that score 0.0 must not push the repo over the ceiling."""
+        assert self._announce(FILE_PAGE_AUTO_CEILING - 10, None, empty=20) == ""
+
+    def test_explicit_cap_above_scored_count_prints_no_notice(self):
+        assert self._announce(100, 150, empty=200) == ""
+
+    def test_real_cap_counts_only_scored_files(self):
+        out = self._announce(FILE_PAGE_AUTO_CEILING + 100, None, empty=50)
+        assert f"{FILE_PAGE_AUTO_CEILING:,}" in out
+        assert f"{FILE_PAGE_AUTO_CEILING + 100:,}" in out
+        assert f"{FILE_PAGE_AUTO_CEILING + 150:,}" not in out

@@ -5,8 +5,9 @@ values), so nothing here evaluates them. A key's value is the expression after
 ``key:`` / ``key =``, up to the first ``,`` / ``;`` / unmatched closing
 bracket or line end outside brackets; the string literals inside it are what
 the config names. Comments are dropped first, so a path a config only mentions
-in one is not read. Dead-code analysis (files a config loads) and the
-test-runner setup edges both read configs through this module.
+in one is not read. Dead-code analysis (files a config loads), the
+test-runner setup edges and the Vite ``resolve.alias`` reader all read
+configs through this module.
 """
 
 from __future__ import annotations
@@ -43,6 +44,27 @@ def value_spans(text: bytes, keys: tuple[str, ...]) -> list[bytes]:
     """The value expression of every occurrence of *keys* in a config's *text*."""
     text = strip_comments(text)
     return [text[m.end() : _value_end(text, m.end())] for m in _key_re(keys).finditer(text)]
+
+
+def split_top_level(span: bytes) -> list[bytes]:
+    """*span* split at every ``,`` outside brackets and string literals."""
+    parts: list[bytes] = []
+    depth = start = i = 0
+    while i < len(span):
+        ch = span[i]
+        if ch in _QUOTES:
+            i = _string_end(span, i) + 1
+            continue
+        if ch in _OPEN:
+            depth += 1
+        elif ch in _CLOSE:
+            depth -= 1
+        elif ch == ord(",") and depth == 0:
+            parts.append(span[start:i])
+            start = i + 1
+        i += 1
+    parts.append(span[start:])
+    return parts
 
 
 def string_literals(span: bytes) -> list[str]:

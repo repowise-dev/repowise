@@ -83,3 +83,64 @@ def test_an_end_left_out_is_not_counted_as_a_missed_call(tmp_path) -> None:
     assert contracts == []
     assert stats[NON_PRODUCTION_ENDS_STAT] == 1
     assert stats[UNRECOGNISED_CALL_FILES_STAT] == 0
+
+
+def test_a_data_folders_code_is_left_out_on_its_stored_origin(monkeypatch) -> None:
+    """Only a stored origin carries ``data``: the path alone reads production."""
+    import repowise.core.evidence.ingest as ingest
+
+    async def _stored(_session, _repo_id, paths):
+        return {p: "data" if "/data/" in p else "production" for p in paths}
+
+    monkeypatch.setattr(ingest, "load_origins", _stored)
+
+    class _Index:
+        repo_id = "r"
+        session = object()
+
+    contracts = [_end("backend/data/problems/p0/solution.js"), _end("frontend/lib/api/client.ts")]
+    kept, dropped = asyncio.run(_production_ends(contracts, _Index()))
+    assert [c.file_path for c in kept] == ["frontend/lib/api/client.ts"]
+    assert dropped == 1
+
+
+def test_origins_handed_to_an_index_built_from_rows_judge_its_ends() -> None:
+    """A host builds member indexes with no session; the origins it stored still decide."""
+    from repowise.core.workspace.repo_index import RepoIndex
+
+    index = RepoIndex.from_symbols(
+        "app",
+        [],
+        repo_id="r",
+        origins={
+            "backend/data/problems/p0/solution.js": "data",
+            "frontend/lib/gen/client.ts": "generated",
+        },
+    )
+    contracts = [
+        _end("backend/data/problems/p0/solution.js"),
+        _end("frontend/lib/gen/client.ts"),
+        _end("frontend/lib/api/client.ts"),
+        # Not in the map: its path decides, as load_origins does.
+        _end("frontend/e2e/login.spec.ts"),
+    ]
+    kept, dropped = asyncio.run(_production_ends(contracts, index))
+    assert [c.file_path for c in kept] == ["frontend/lib/api/client.ts"]
+    assert dropped == 3
+    assert RepoIndex.from_symbols("app", [], repo_id="r").origins is None
+
+
+def test_a_mock_index_still_reads_its_session(monkeypatch) -> None:
+    """A stand-in whose ``origins`` is not a mapping keeps the session path."""
+    from unittest.mock import MagicMock
+
+    import repowise.core.evidence.ingest as ingest
+
+    async def _stored(_session, _repo_id, paths):
+        return {p: "test" if "e2e" in p else "production" for p in paths}
+
+    monkeypatch.setattr(ingest, "load_origins", _stored)
+    contracts = [_end("frontend/e2e/login.spec.ts"), _end("frontend/lib/api/client.ts")]
+    kept, dropped = asyncio.run(_production_ends(contracts, MagicMock(repo_id="r")))
+    assert [c.file_path for c in kept] == ["frontend/lib/api/client.ts"]
+    assert dropped == 1

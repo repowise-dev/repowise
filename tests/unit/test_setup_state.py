@@ -88,5 +88,10 @@ def test_the_mcp_instructions_carry_the_line_only_while_offered(tmp_path: Path) 
     assert text.endswith(MCP_SETUP_LINE)
     # About 25 tokens: the per-repo cap the instructions tests hold is 1500 chars.
     assert len(MCP_SETUP_LINE) < 200 and len(text) < 1500
+    # Addressed to the agent, so it is not pasted into an answer.
+    assert MCP_SETUP_LINE.startswith("Agent note, not for answers")
+    # A host that prints the instructions under every tool never gets it.
+    brief = server_instructions(None, extra=_setup_extra(str(tmp_path)), brief=True)
+    assert "setup" not in brief
     _offered(tmp_path, offer=None)
     assert _setup_extra(str(tmp_path)) == []

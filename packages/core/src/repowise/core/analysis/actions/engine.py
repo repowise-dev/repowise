@@ -51,6 +51,8 @@ class ActionStateRecord:
     state: str
     fingerprint: str
     until: datetime | None = None
+    #: Why the person answered so; ``None`` when they gave no reason.
+    note: str | None = None
 
 
 class Ranked(NamedTuple):
@@ -60,14 +62,19 @@ class Ranked(NamedTuple):
     action: dict[str, Any]
 
 
-def _hidden(action: dict[str, Any], record: ActionStateRecord | None, now: datetime) -> bool:
+def answer_holds(record: ActionStateRecord | None, fingerprint: str, now: datetime) -> bool:
+    """Whether a person's answer still stands on something whose facts read *fingerprint*."""
     if record is None:
         return False
     if record.state == "snoozed":
         return record.until is not None and _naive(record.until) > _naive(now)
     # Dismissed and done both hold only while the facts are the ones the person
     # saw. A dismissed "raise coverage" returns when ten more fixes land.
-    return record.fingerprint == action["fingerprint"]
+    return record.fingerprint == fingerprint
+
+
+def _hidden(action: dict[str, Any], record: ActionStateRecord | None, now: datetime) -> bool:
+    return answer_holds(record, action["fingerprint"], now)
 
 
 def _naive(value: datetime) -> datetime:
@@ -132,6 +139,12 @@ def _reserve_fix_first(ordered: list[Ranked]) -> list[Ranked]:
     out = list(ordered)
     out.insert(first, out.pop(at))
     return out
+
+
+def actions_by_id(facts: RepoFacts) -> dict[str, Action]:
+    """Every stored rule's action by id: :func:`find_action` for many ids at once."""
+    ctx = build_context(facts)
+    return {a.action_id: a for rule in RULES for a in rule(facts, ctx).actions}
 
 
 def find_action(

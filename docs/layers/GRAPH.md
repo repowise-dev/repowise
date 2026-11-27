@@ -9,18 +9,10 @@ an optional upgrade for wiki prose, so the graph is reproducible.
 
 <p>
   <img src="https://img.shields.io/badge/18-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="18 edge types" />
-  <img src="https://img.shields.io/badge/39-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="39 resolution origins" />
-  <img src="https://img.shields.io/badge/28-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="28 full-AST languages" />
+  <img src="https://img.shields.io/badge/40-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="40 resolution origins" />
+  <img src="https://img.shields.io/badge/29-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="29 full-AST languages" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
 </p>
-
-**Contents:** [Quick start](#quick-start), [How an edge is made](#how-an-edge-is-made),
-[How far to trust it](#how-far-to-trust-it), [What is in the graph](#what-is-in-the-graph),
-[Every edge says how it got there](#every-edge-says-how-it-got-there),
-[Typing the receiver](#typing-the-receiver), [Edge types](#edge-types),
-[Flows that say why they stopped](#flows-that-say-why-they-stopped),
-[What the graph powers](#what-the-graph-powers), [Seeing it yourself](#seeing-it-yourself),
-[Limits](#limits)
 
 ## Quick start
 
@@ -42,7 +34,9 @@ depth 2 also returns the bodies the symbol calls. Both expansions drop call
 edges below 0.7, which keeps the repo-wide name guesses out of them (see
 [how an agent should read confidence](#how-an-agent-should-read-confidence)).
 
-## How an edge is made
+## Reading the results
+
+### How an edge is made
 
 To draw an edge for `user.save()`, a tool has to know what `user` is.
 repowise reads the receiver's declared type and resolves `save` on that type.
@@ -55,7 +49,7 @@ An edge is two claims, made in two stages that fail in different ways:
 | Stage | What it does | Fails when | Costs you |
 |---|---|---|---|
 | Capture | A per-language tree-sitter query notices that a call was written | no query covers that call shape | recall: the edge does not exist |
-| Resolution | Turns the captured name and receiver into one declaration in one file; the 39 resolution origins live here | the receiver cannot be typed, or the name is ambiguous | precision if it guesses, recall if it declines |
+| Resolution | Turns the captured name and receiver into one declaration in one file; the 40 resolution origins live here | the receiver cannot be typed, or the name is ambiguous | precision if it guesses, recall if it declines |
 
 A missed capture is silent, so it is measured against a compiler. A bad
 resolution is visible, because the origin on the edge names the strategy, so a
@@ -64,25 +58,7 @@ repowise declines to guess, trading recall for precision. The design and the
 capture queries are in
 [architecture/graph-algorithms.md](../architecture/graph-algorithms.md#call-edges-capture-resolution-and-measurement).
 
-## How far to trust it
-
-| Answer key | Scope | Result |
-|---|---|---|
-| Compiler (Go RTA call graph, `tsc`) | Go and TypeScript, 7 cells over 5 repositories, 37,853 compiler edges | Precision 0.976 to 0.995 |
-| javac | Java, 7 repositories (3 held out) | Precision 0.898 to 1.000 |
-| Compiler index | C on git, held out from all tuning | Precision 0.979 at 0.837 recall |
-
-In all seven Go and TypeScript cells, no tool in the five-tool comparison that
-finds as much of the call graph gets more of it right; two tools post higher
-precision in some cells by drawing much smaller graphs. Recall leads in three of
-the seven cells, and most misses are dynamic dispatch. Dart, Kotlin, C#, C++,
-Rust and Python (against jedi, a static analyser) are measured in the same table.
-
-Per-language figures, the five-tool table and sample sizes:
-[BENCHMARKS.md: accuracy by language](../BENCHMARKS.md#accuracy-by-language)
-and [call graph against a compiler](../BENCHMARKS.md#call-graph-against-a-compiler-five-tools).
-
-## What is in the graph
+### What is in the graph
 
 **Two tiers of node.** Files and packages on one tier; functions, classes,
 methods and interfaces on the other. Third-party packages appear as lightweight
@@ -103,36 +79,18 @@ features disagree about what counts as a dependency:
 | Symbol use | "what reaches this symbol?" Containment is excluded, since a class holding a method is not a use of it |
 | Reachability | "does anything use this at all?" The dead-code view |
 
-## Every edge says how it got there
+### Every edge says how it got there
 
 Each `calls` and `references` edge is stamped with a **resolution origin**: the
-named strategy that produced it. There are 39, from a closed vocabulary, and
+named strategy that produced it. There are 40, from a closed vocabulary, and
 each one carries exactly one confidence, so the origin distribution and the
-confidence histogram are two views of the same data. The table lists the 18
-base origins; the other 21 are [receiver-typing variants](#typing-the-receiver).
+confidence histogram are two views of the same data. 19 are base origins
+(same file, own class, import, package, ancestor, repo-wide name); the other 21
+are [receiver-typing variants](#typing-the-receiver). Every origin, with its
+confidence and what it establishes, is in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#every-call-edge-says-how-it-was-resolved).
 
-| Confidence | Origin | What was established |
-|:---:|---|---|
-| 0.95 | `same_file` | The callee is defined in the calling file |
-| 0.95 | `self_scope` | `self` / `this`: a method on the caller's own class |
-| 0.95 | `enclosing_class` | A bare call, bound to the caller's own class |
-| 0.93 | `receiver_same_file` | The receiver names a type declared in this file |
-| 0.93 | `scoped_name` | C/C++ `Qualifier::name()`: the class is written at the call site |
-| 0.90 | `import_scoped` | The name was imported from the file that defines it |
-| 0.90 | `same_package` | A sibling file that needs no import (Go, JVM) |
-| 0.90 | `receiver_same_package` | The receiver is a class in the same package (JVM) |
-| 0.90 | `self_inherited` | `self` / `this` or Python `super()`, found on exactly one ancestor |
-| 0.90 | `enclosing_inherited` | A bare call, found on exactly one ancestor |
-| 0.88 | `package_alias` | Go `pkg.Func`, resolved across the whole package |
-| 0.88 | `module_alias` | The receiver is an imported module, or a Rust module path (`crate::index::open_ro()`, `super::f()`, a `mod` the file declares) walked down the module tree |
-| 0.88 | `crate_root` | A Rust crate-scoped reference |
-| 0.88 | `receiver_import` | The receiver's type was found in an imported file |
-| 0.85 | `import_merged` | It is in one of the imported files; which one is unattributed |
-| 0.85 | `same_target` | C/C++: a sibling translation unit of the same build target |
-| 0.75 | `receiver_global` | The `(class, method)` pair exists somewhere in the repo |
-| 0.50 | `global_unique` | The name is unique repo-wide. A guess, and stored as one |
-
-### How an agent should read confidence
+#### How an agent should read confidence
 
 | Confidence | Read it as |
 |:---:|---|
@@ -145,9 +103,9 @@ An agent tracing a flow can decline anything below a threshold and know what it
 declined. A reviewer reading a blast radius can tell "this definitely breaks"
 from "this shares a method name with something that breaks".
 
-## Typing the receiver
+### Typing the receiver
 
-21 of the 39 origins read the receiver's declaration and resolve the method on
+21 of the 40 origins read the receiver's declaration and resolve the method on
 that type, instead of matching a bare method name.
 
 ```java
@@ -164,7 +122,7 @@ void handle(UserRepo repo) {     // parameter declares the type
 | Fields of the enclosing class | `this.cache.evict(...)` | 4 |
 | Framework-retyped symbols | `@shared_task def add` makes `add` a `Task`, so `add.s()` is `Task::s` | 4 |
 | C# extension methods and Kotlin extension functions, via the type they extend or one of its ancestors | `items.Paged(10)`, `helper.logScreenView(name)` | 3 |
-| Dotted receivers typed hop by hop through declared fields | `this.a.b.m()` | 2 |
+| Dotted receivers typed hop by hop through declared fields, including Go package variables and the fields an embedded struct promotes | `this.a.b.m()`, `router.RouterGroupApp.System.InitBaseRouter()` | 2 |
 | The declared return type of an inner call | `repo.find(id).save()` | 4 |
 
 The families map onto the same scopes as the base origins (same file, same
@@ -174,8 +132,8 @@ emitted. A Python function whose every `return` hands on an imported module
 (`def load(): import mod; return mod`) types its call as that module, so
 `load().f()` and `m = load(); m.f()` reach `mod.f` under the return-type and
 local-typed origins. Declaration scanning covers Java, C#, Python, Go, Kotlin, Swift,
-TypeScript, Rust and C++. Other languages use the base origins and say so on
-every edge.
+TypeScript, Rust and C++. Other languages use the base origins, and every
+edge names which one it used.
 
 A chained call nothing types on the result of a library call or a constructor
 (`Path(p).resolve()`, a library builder) never falls back to a module-level
@@ -184,7 +142,7 @@ method. A repo function's result may be a module (`_lazy_mod().helper()`), so
 it keeps the fallback. Ceiling: a library call that returns a module
 (`importlib.import_module(name).f()`) stays unlinked.
 
-## Edge types
+### Edge types
 
 The graph has 18 edge types, each one a distinct claim. These seven matter most
 when you read an answer:
@@ -205,7 +163,7 @@ The other eleven are `imports`, `defines`, `has_method`, `extends`,
 registration layers out of dead-code reports, and a `framework_binds` hop counts
 as a use without appearing in an execution flow as a call.
 
-## Flows that say why they stopped
+### Flows that say why they stopped
 
 An execution flow walks the call graph from an entry point, and every flow ends
 with one of six reasons:
@@ -223,22 +181,44 @@ with one of six reasons:
 the same as a function that calls nothing. When a confidence floor stopped the
 walk, the flow reports which origins it declined.
 
-## What the graph powers
+## Accuracy and limits
 
-| Feature | What the graph contributes |
-|---|---|
-| Blast radius | The set of things a change can break, with confidence on every hop |
-| Dead code | Reachability over the union view, so a symbol reached only by a framework, a dispatch table or a type reference is not dead |
-| Communities | Leiden clustering (Louvain as fallback) finds the modules your codebase actually has, often not the directory layout |
-| Centrality | PageRank over the file tier ranks what everything depends on, and betweenness finds the bridges. Neither is fed co-change or `documents` edges |
-| Cycles | Strongly connected components, documented together because nothing in them can be explained before the others |
-| Execution flows | Entry point to leaf, ranked, with the termination reason attached |
-| Framework wiring | Routes to handlers, DI registrations to implementations, ORM entities to relationships, across Django, FastAPI, Flask, Spring, ASP.NET, Rails, Laravel, Next.js, Express, Axum, Gin and more |
+| Answer key | Scope | Result |
+|---|---|---|
+| Compiler (Go RTA call graph, `tsc`) | Go and TypeScript, 7 cells over 5 repositories, 37,853 compiler edges | Precision 0.976 to 0.995 |
+| javac | Java, 7 repositories (3 held out) | Precision 0.898 to 1.000 |
+| Compiler index | C on git, held out from all tuning | Precision 0.979 at 0.837 recall |
 
-The algorithms behind these are in
-[architecture/graph-algorithms.md](../architecture/graph-algorithms.md).
+In all seven Go and TypeScript cells, no tool in the five-tool comparison that
+finds as much of the call graph gets more of it right; two tools post higher
+precision in some cells by drawing much smaller graphs. Recall leads in three of
+the seven cells, and most misses are dynamic dispatch. Dart, Kotlin, C#, C++,
+Rust and Python (against jedi, a static analyser) are measured in the same table.
 
-## Seeing it yourself
+Per-language figures, the five-tool table and sample sizes:
+[BENCHMARKS.md: accuracy by language](../BENCHMARKS.md#accuracy-by-language)
+and [call graph against a compiler](../BENCHMARKS.md#call-graph-against-a-compiler-five-tools).
+
+- Statically typed languages with explicit declarations resolve best;
+  dynamically typed and reflective code falls back to the low-confidence origins.
+- Receiver typing reads declarations with per-language patterns, not a full
+  type checker, so a declaration the patterns cannot see leaves a weaker origin.
+- `dispatches_to` compares no signature: a possible target, not a proven override.
+- `global_unique` at 0.50 is a labelled guess, kept for reachability.
+- Unused methods are not reported for any language, because method-level
+  precision is too low to recommend deletions.
+- Recall is lower than the leading tool in four of seven compiler-graded cells.
+- The graph keeps one node per overload set, so on Java and C# a call can land
+  on the wrong overload. C# reads 0.780 to 0.942 against
+  the compiler.
+- Precision is published for eleven languages. Go, TypeScript, Dart, Python, C,
+  C++, Java, Kotlin, C# and Rust are graded against a compiler or analyser;
+  Apex against 90 hand-graded rows, with recall against a census of literal
+  references.
+- Read a precision figure together with its recall. Two tools post higher
+  precision in some compiler cells, each by drawing a much smaller graph.
+
+## Where it shows up
 
 **For your agent**, over MCP:
 
@@ -263,32 +243,27 @@ and a 1-10 architecture score; see
 [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance) and
 [Architecture Metrics](../scale/WORKSPACES.md#architecture-metrics).
 
-## Limits
+### What the graph powers
 
-- Statically typed languages with explicit declarations resolve best;
-  dynamically typed and reflective code falls back to the low-confidence origins.
-- Receiver typing reads declarations with per-language patterns, not a full
-  type checker, so a declaration the patterns cannot see leaves a weaker origin.
-- `dispatches_to` compares no signature: a possible target, not a proven override.
-- `global_unique` at 0.50 is a labelled guess, kept for reachability.
-- Unused methods are not reported for any language, because method-level
-  precision is too low to recommend deletions.
-- Recall is lower than the leading tool in four of seven compiler-graded cells.
-- The graph keeps one node per overload set, so on Java and C# a call can land
-  on the wrong overload. C# reads 0.780 to 0.942 against
-  the compiler.
-- Precision is published for eleven languages. Go, TypeScript, Dart, Python, C,
-  C++, Java, Kotlin, C# and Rust are graded against a compiler or analyser;
-  Apex against 90 hand-graded rows, with recall against a census of literal
-  references.
-- Read a precision figure together with its recall. Two tools post higher
-  precision in some compiler cells, each by drawing a much smaller graph.
+| Feature | What the graph contributes |
+|---|---|
+| Blast radius | The set of things a change can break, with confidence on every hop |
+| Dead code | Reachability over the union view, so a symbol reached only by a framework, a dispatch table or a type reference is not dead |
+| Communities | Leiden clustering (Louvain as fallback) finds the modules your codebase actually has, often not the directory layout |
+| Centrality | PageRank over the file tier ranks what everything depends on, and betweenness finds the bridges. Neither is fed co-change or `documents` edges |
+| Cycles | Strongly connected components, documented together because nothing in them can be explained before the others |
+| Execution flows | Entry point to leaf, ranked, with the termination reason attached |
+| Framework wiring | Routes to handlers, DI registrations to implementations, ORM entities to relationships, across Django, FastAPI, Flask, Spring, ASP.NET, Rails, Laravel, Next.js, Express, Axum, Gin and more |
+
+The algorithms behind these are in
+[architecture/graph-algorithms.md](../architecture/graph-algorithms.md).
 
 ## See also
 
-- [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md): what works per language, and the tier each one sits in
-- [architecture/language-support.md](../architecture/language-support.md): call resolution internals and the contributor recipe
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance
 - [architecture/graph-algorithms.md](../architecture/graph-algorithms.md): PageRank, Leiden, betweenness and SCC, plus how call edges are captured and measured
+- [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md): what works per language, the tier each one sits in, and every resolution origin
+- [architecture/language-support.md](../architecture/language-support.md): call resolution internals and the contributor recipe
 - [DEAD_CODE.md](DEAD_CODE.md): how reachability becomes a confidence-tiered report
 - [CHANGE_RISK.md](CHANGE_RISK.md): how live diff-shape review and structural PR impact stay distinct
 - [reference/COMPUTED_GLOSSARY.md](../reference/COMPUTED_GLOSSARY.md): every derived metric, defined

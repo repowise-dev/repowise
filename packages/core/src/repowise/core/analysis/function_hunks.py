@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..persistence.index_cache import IndexStampCache
+from ..pyparse import parse_python
 from ..test_paths import is_test_related_path
 from .changed_lines import working_tree_label
 
@@ -107,7 +108,7 @@ class _Source:
         if text is None:
             return None
         try:
-            tree = ast.parse(text)
+            tree = parse_python(text)
         except (SyntaxError, ValueError):
             return None
         strings = {
@@ -652,7 +653,7 @@ def _main_blocks(path: Path) -> list[range]:
     if text is None or "__main__" not in text:
         return []
     try:
-        tree = ast.parse(text)
+        tree = parse_python(text)
     except (SyntaxError, ValueError):
         return []
     return [

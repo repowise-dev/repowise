@@ -22,3 +22,17 @@ func BenchmarkConcat(b *testing.B) {
 		})
 	}
 }
+
+func TestJoin(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			if Join(make([]string, n), ",") == "x" {
+				t.Fatal("unexpected")
+			}
+		})
+	}
+}
+
+func TestSkipped(t *testing.T) {
+	t.Skip("not on this platform")
+}

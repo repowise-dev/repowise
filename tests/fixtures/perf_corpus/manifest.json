@@ -1,6 +1,6 @@
 {
   "corpus_version": 2,
-  "performance_model_version": 3,
+  "performance_model_version": 5,
   "purpose": "characterization of grouping, identity, actionability, confidence facets and ranking",
   "runner": "uv run pytest tests/unit/health/test_perf_corpus_golden.py -v",
   "rewrite_env": "REPOWISE_REWRITE_PERF_GOLDEN=1",

@@ -19,6 +19,7 @@ from repowise.cli.errors import reasoned_error
 from repowise.cli.ui import subscription as subscription_module
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, VALUE, WARN
 from repowise.cli.ui.env_persistence import _save_key_to_dotenv
+from repowise.cli.ui.extra_install import offer_extra
 from repowise.cli.ui.model_tier import is_flagship_model
 from repowise.cli.ui.openai_compatible import (
     discover_models as _discover_openai_compatible_models,
@@ -118,7 +119,12 @@ def ollama_base_url() -> str:
 
 
 def _ollama_endpoint() -> tuple[str, int] | None:
-    """``(host, port)`` for the configured Ollama URL, or ``None`` if unusable.
+    """``(host, port)`` for the configured Ollama URL, or ``None`` if unusable."""
+    return _tcp_endpoint(ollama_base_url())
+
+
+def _tcp_endpoint(url: str) -> tuple[str, int] | None:
+    """``(host, port)`` for a local model server's URL, or ``None`` if unusable.
 
     A bare ``host:port`` is accepted, since that is a natural thing to put in
     ``OLLAMA_BASE_URL`` and urlparse would otherwise read the host as a scheme.
@@ -127,7 +133,7 @@ def _ollama_endpoint() -> tuple[str, int] | None:
     localhost: that reports someone's typo'd remote box as ready and defers the
     failure to the first generation call.
     """
-    raw = ollama_base_url().strip()
+    raw = url.strip()
     if "://" not in raw:
         raw = f"http://{raw}"
     try:
@@ -151,7 +157,12 @@ def _detect_ollama_status() -> bool:
     unavailable and then asked to paste a key that does not exist. A TCP
     connect is the cheapest honest answer.
     """
-    endpoint = _ollama_endpoint()
+    return endpoint_answers(ollama_base_url())
+
+
+def endpoint_answers(url: str) -> bool:
+    """Whether something is listening at *url*: a TCP connect, nothing more."""
+    endpoint = _tcp_endpoint(url)
     if endpoint is None:
         return False
     try:
@@ -261,6 +272,21 @@ _LOCAL_PROVIDER_SETUP: dict[str, Callable[[], list[str]]] = {
 }
 
 
+def _needs_extra(provider: str) -> bool:
+    """Whether *provider* ships as a ``repowise[<extra>]`` that is not installed here."""
+    from repowise.core.providers.llm.registry import provider_missing_extra
+
+    return provider_missing_extra(provider) is not None
+
+
+def _extra_ready(console: Console, provider: str) -> bool:
+    """False when *provider*'s ``repowise[<extra>]`` is missing and was not installed."""
+    if not _needs_extra(provider):
+        return True
+    extra = _PICKER_SPECS[provider].extra
+    return offer_extra(console, extra, f"The {provider} provider", interactive=True)
+
+
 def _interactive_provider_name(
     console: Console,
     model_flag: str | None,
@@ -306,6 +332,8 @@ def _interactive_provider_name(
             default_model = "discover from /models"
         else:
             note = _PICKER_SPECS[prov].note
+            if _needs_extra(prov):
+                note = f"{note}, installs on pick" if note else "installs on pick"
             label = f"{prov} [dim]({note})[/dim]" if note else prov
             default_model = _PROVIDER_DEFAULTS.get(runtime_provider, "")
         table.add_row(f"[{idx}]", label, status_text, default_model)
@@ -362,6 +390,18 @@ def _interactive_provider_name(
         # Pin the official row so a previously saved custom endpoint cannot
         # silently redirect an OpenAI selection back to the local gateway.
         os.environ["OPENAI_BASE_URL"] = _OPENAI_DEFAULT_BASE_URL
+
+    # --- the optional package, installed after one question ---
+    if not _extra_ready(console, chosen):
+        if _go_without_model(console, subscription.allow_skip, keyed=False):
+            return None
+        return _interactive_provider_name(
+            console,
+            model_flag,
+            repo_path=repo_path,
+            save_key=save_key,
+            subscription=subscription,
+        )
 
     # --- inline API key entry if missing ---
     has_official_openai_key = chosen == "openai" and bool(

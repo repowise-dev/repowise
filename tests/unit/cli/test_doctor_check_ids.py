@@ -35,6 +35,8 @@ PINNED_IDS = {
     "database",
     "distill-config",
     "distill-rewrite-hook",
+    "embedder-package",
+    "provider-extra",
     "evidence-freshness",
     "fts-index-sync",
     "git-repository",

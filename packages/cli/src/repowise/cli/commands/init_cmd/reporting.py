@@ -22,6 +22,7 @@ from repowise.cli.ui import (
 )
 from repowise.cli.ui.finish_panel import (
     FinishFacts,
+    FirstLook,
     StoodOut,
     print_finish_panel,
 )
@@ -130,6 +131,7 @@ def show_completion(
     files_written: list[Path] | None = None,
     verbose: bool = False,
     owl: str = mascot.DONE,
+    first_look: FirstLook | None = None,
 ) -> Completion:
     """Render the one finish panel and return what it showed; generation checks only under ``-v``.
 
@@ -138,7 +140,8 @@ def show_completion(
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot and *files_written* what editor setup put in the working tree,
     so the panel reports what setup actually did. Its ``first_index`` also
-    keeps the ``init_success`` hint off a first index.
+    keeps the ``init_success`` hint off a first index. *first_look* is the
+    first-look report this run wrote.
     """
     from repowise.core.agent_prompts import first_prompt
     from repowise.core.index_scope import resolve_index_scope
@@ -163,6 +166,7 @@ def show_completion(
         embed_failed=getattr(result, "embed_failed_pages", 0),
         stood_out=stood_out,
         pr_bot_url=pr_bot_link_once(),
+        first_look=first_look,
     )
     steps = build_contextual_next_steps(fast_mode=(run_mode == "fast"), setup=setup)
     console.print()
@@ -230,7 +234,8 @@ def _health_finding(result: Any) -> dict[str, Any]:
 
 
 def _dead_finding(result: Any) -> dict[str, Any]:
-    """Unreachable files, and the findings that pass the deletion gate.
+    """Unreachable files outside docs and examples, and the findings that pass
+    the deletion gate.
 
     A whole unreachable file is review-only and never passes the gate, so the
     safe count is over every finding, not over those files.
@@ -238,11 +243,13 @@ def _dead_finding(result: Any) -> dict[str, Any]:
     report = getattr(result, "dead_code_report", None)
     if report is None:
         return {}
-    from repowise.core.analysis.dead_code.serving import is_safe
+    from repowise.core.analysis.dead_code.serving import headline_unreachable, is_safe
 
+    metrics = getattr(getattr(result, "health_report", None), "metrics", None) or []
+    origins = {m.file_path: m.code_origin for m in metrics}
     findings = report.findings
     return {
-        "dead_unreachable": sum(1 for f in findings if f.kind.value == "unreachable_file"),
+        "dead_unreachable": headline_unreachable(findings, origins),
         "dead_safe": sum(1 for f in findings if is_safe(f)),
     }
 

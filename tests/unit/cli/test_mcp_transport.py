@@ -21,9 +21,7 @@ def test_mcp_help_lists_streamable_http_transport() -> None:
 def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(
         cli, ["mcp", str(tmp_path), "--tools", "+get_execution_flows,-get_dead_code"]
@@ -38,9 +36,7 @@ def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
 def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--all", "--tools", "get_answer"])
 
@@ -50,14 +46,10 @@ def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
     assert captured["workspace_mode"] is True
 
 
-def test_mcp_cli_no_workspace_flag_forces_single_repo(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_mcp_cli_no_workspace_flag_forces_single_repo(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--no-workspace"])
 
@@ -65,9 +57,7 @@ def test_mcp_cli_no_workspace_flag_forces_single_repo(
     assert captured["workspace_mode"] is False
 
 
-def test_mcp_cli_no_workspace_ignores_enclosing_workspace(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_mcp_cli_no_workspace_ignores_enclosing_workspace(monkeypatch, tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     nested = workspace / "vendor" / "microdot"
     nested.mkdir(parents=True)
@@ -84,9 +74,7 @@ def test_mcp_cli_no_workspace_ignores_enclosing_workspace(
     (nested / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(cli, ["mcp", str(nested), "--no-workspace"])
 
@@ -250,7 +238,16 @@ def test_mcp_cli_passes_host_to_run_mcp(monkeypatch, tmp_path: Path) -> None:
 
     result = CliRunner().invoke(
         cli,
-        ["mcp", str(tmp_path), "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "7342"],
+        [
+            "mcp",
+            str(tmp_path),
+            "--transport",
+            "streamable-http",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "7342",
+        ],
     )
 
     assert result.exit_code == 0
@@ -398,10 +395,10 @@ def test_a_group_from_startup_is_unwrapped_too(monkeypatch, isolated_run_mcp) ->
 
     from repowise.server.mcp_server import _server
 
-    def boom():
+    def boom(_names):
         raise ExceptionGroup("startup", [PermissionError("wiki.db is not writable")])
 
-    monkeypatch.setattr("repowise.server.mcp_server.ensure_full_surface", boom)
+    monkeypatch.setattr("repowise.server.mcp_server.ensure_surface", boom)
 
     with pytest.raises(PermissionError):
         _server.run_mcp(transport="stdio")
@@ -441,9 +438,7 @@ def test_a_crash_carries_the_names_of_every_leaf(monkeypatch, isolated_run_mcp) 
     )
 
 
-def test_the_root_group_reports_those_names(
-    monkeypatch, tmp_path: Path, isolated_run_mcp
-) -> None:
+def test_the_root_group_reports_those_names(monkeypatch, tmp_path: Path, isolated_run_mcp) -> None:
     """End to end through the CLI: the names reach the invocation's outcome."""
 
     from repowise.cli.platform import telemetry
@@ -497,9 +492,7 @@ def test_the_way_a_session_ended_reaches_the_invocation_outcome(
     (tmp_path / ".repowise").mkdir()
     recorded: dict[str, object] = {}
     monkeypatch.setattr(telemetry, "add_command_outcome", recorded.update)
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **_kw: "client_closed"
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **_kw: "client_closed")
 
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
@@ -574,9 +567,7 @@ def test_mcp_cli_streamable_http_prints_no_deprecation_notice(
     (tmp_path / ".repowise").mkdir()
     monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kwargs: None)
 
-    result = CliRunner().invoke(
-        cli, ["mcp", str(tmp_path), "--transport", "streamable-http"]
-    )
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--transport", "streamable-http"])
 
     assert result.exit_code == 0
     assert "deprecated" not in result.output

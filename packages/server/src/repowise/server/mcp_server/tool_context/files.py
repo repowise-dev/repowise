@@ -15,6 +15,8 @@ from sqlalchemy import select
 from repowise.core.analysis.pr_blast import FileTests, file_tests
 from repowise.core.analysis.test_reachability import cached_test_files
 from repowise.core.persistence.models import GraphNode
+from repowise.core.test_paths import in_test_tree
+from repowise.core.test_runners import is_code_file
 from repowise.server.mcp_server._directory import _dir_prefix, _rows_under
 from repowise.server.mcp_server._helpers import LIKE_ESCAPE, escape_like
 
@@ -34,7 +36,7 @@ _MAX_TESTS_PER_ROW = 2
 
 _BASIS = (
     "has_test is true when a test file has its file name (named_tests, nearest "
-    "directory first, possibly elsewhere in the repo), a test reaches it through "
+    "directory first; elsewhere only if no same-named file is nearer), a test reaches it through "
     "calls or imports (reached_by), or a per-test coverage row exists "
     "(covered_by); false when none does. type_only (only types or re-exports) and "
     "test files need no test; test_owed false marks generated, vendored, build, tooling, "
@@ -50,26 +52,33 @@ async def files_section(card: CardState) -> None:
         card.data["files_basis"] = "directory targets only"
         return
     test_files = await cached_test_files(card.session, card.repo_id)
-    # Code files first: a cap then cuts test files, which need no test themselves.
-    paths = sorted(await _paths_under(card), key=lambda p: (p in test_files, p))
+    paths = _listing_order(await _paths_under(card), test_files)
     found = await file_tests(card.session, card.repo_id, paths[:MAX_FILE_ROWS])
     rows = _fit([_row(path, tests) for path, tests in found.items()])
     block: dict[str, Any] = {
         "total": len(paths),
         "complete": len(rows) == len(paths),
-        "counts": _counts(found[row["path"]] for row in rows),
+        # Over the listed rows only: a capped listing names the rest in `omitted`.
+        "listed_counts": _counts(found[row["path"]] for row in rows),
         "rows": rows,
         "basis": _BASIS,
     }
     if len(rows) < len(paths):
         block["omitted"] = len(paths) - len(rows)
         block["hint"] = (
-            f"first {len(rows)}, code files before tests, each by path; "
+            f"first {len(rows)}, code files before other files and tests, each by path; "
             "a subdirectory target lists its own files"
         )
     if not test_files:
         block["note"] = "the index holds no test files, so has_test false is not evidence"
     card.data["files"] = block
+
+
+def _listing_order(paths: set[str], test_files: Any) -> list[str]:
+    """Code files first, then other files, then tests, each by path: a cap cuts
+    what needs no test (a locale catalog, a manifest, a test file) before code."""
+    # The test rule ``file_tests`` labels rows by, so the order matches the rows.
+    return sorted(paths, key=lambda p: (p in test_files or in_test_tree(p), not is_code_file(p), p))
 
 
 async def _paths_under(card: CardState) -> set[str]:

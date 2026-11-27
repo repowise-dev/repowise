@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
 
-from repowise.core.providers.embedding.base import Embedder
+from repowise.core.providers.embedding.base import Embedder, MockEmbedder
 
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
 from ._base import (
@@ -85,6 +86,35 @@ def record_vector_dim(db_path: str | Path, table_name: str, dim: int | None) -> 
         pass
 
 
+#: Beside ``.repowise/lancedb``: this repo's pages were embedded keyless, so no
+#: store was written. Keyless runs skip LanceDB (8-wide hash vectors carry no
+#: signal and nothing searches them), and this file keeps the one fact the old
+#: mock-filled table told later runs: once a real embedder is pinned, every page
+#: needs embedding, not only the changed ones.
+KEYLESS_MARKER = "lancedb.keyless"
+
+
+def mark_keyless_store(lance_dir: str | Path) -> None:
+    """Record that *lance_dir*'s pages were embedded keyless. Best-effort.
+
+    Read only while *lance_dir* holds no table: the first real-embedder write
+    creates one, and from then on the table's own width is the answer.
+    """
+    with contextlib.suppress(OSError):
+        (Path(lance_dir).parent / KEYLESS_MARKER).touch()
+
+
+def clear_keyless_store_mark(lance_dir: str | Path) -> None:
+    """Forget the marker once a real embedder has re-embedded the wiki. Best-effort."""
+    with contextlib.suppress(OSError):
+        (Path(lance_dir).parent / KEYLESS_MARKER).unlink(missing_ok=True)
+
+
+def keyless_store_marked(lance_dir: str | Path) -> bool:
+    """Whether a keyless run stood in for a store at *lance_dir* it never wrote."""
+    return (Path(lance_dir).parent / KEYLESS_MARKER).is_file()
+
+
 def _evidence(stored: str, query: str | None) -> str:
     """The served snippet, cut from the wider text a row keeps.
 
@@ -139,6 +169,10 @@ def _last_row_per_page(batches: list[Any]) -> Any:
 
 class LanceDBUnavailableError(RuntimeError):
     """lancedb is missing or broken: an install problem, not a store one."""
+
+
+class MockWouldReplaceStoreError(RuntimeError):
+    """A mock-width write was refused over a table a real embedder filled."""
 
 
 def store_open_fix_hint(exc: BaseException) -> str:
@@ -250,6 +284,18 @@ class LanceDBVectorStore(VectorStore):
                     record_vector_dim(self._db_path, self._table_name, existing_dim)
                     self._dim_recorded = True
                 return
+            if isinstance(self._embedder, MockEmbedder) and existing_dim > dim:
+                # The drop below is the intended rebuild when a real embedder
+                # changes model, and never for test or keyless vectors: it
+                # would trade every real page and decision vector for ones no
+                # query can rank on. Refused here, where the table is dropped,
+                # so no path that opens the store with the mock can do it.
+                raise MockWouldReplaceStoreError(
+                    f"The vector table at {self._db_path} holds {existing_dim}-wide "
+                    f"vectors from a real embedder; {dim}-wide mock vectors would "
+                    "replace every one of them, so the write was refused. Delete "
+                    "that folder to replace it on purpose."
+                )
             # Embedder changed dimensions — the old vectors are unusable.
             # Forget the record first so a crash mid-rebuild leaves none.
             record_vector_dim(self._db_path, self._table_name, None)

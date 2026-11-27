@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import (
@@ -14,9 +15,9 @@ from repowise.core.analysis.decisions.lifecycle import (
     status_rank,
 )
 from repowise.core.analysis.decisions.scope import binds_to_paths
-from repowise.core.test_paths import is_test_related_path
+from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS, stored_origin
 
-from ..models import DecisionRecord, GitMetadata
+from ..models import DecisionRecord, GitMetadata, HealthFileMetric
 from .decision_staleness import is_stale
 
 
@@ -169,13 +170,26 @@ def _history_lane(d: DecisionRecord, currency: str) -> str:
 _PATH_CHUNK = 500
 
 
+def _with_origin(stmt: Select[Any]) -> Select[Any]:
+    """*stmt* over git rows, plus each file's stored origin columns (outer-joined)."""
+    h = HealthFileMetric
+    return stmt.add_columns(h.code_origin, h.is_test).outerjoin(
+        h, and_(h.repository_id == GitMetadata.repository_id, h.file_path == GitMetadata.file_path)
+    )
+
+
+def _shown(code_origin: Any, is_test: Any) -> bool:
+    """A hotspot the Code Health list shows by default: its origin is not held."""
+    return stored_origin(code_origin, is_test) not in MAP_HELD_ORIGINS
+
+
 async def decision_hotspot_files(
     session: AsyncSession, repository_id: str, decisions: list[DecisionRecord]
 ) -> dict[str, list[str]]:
     """The files each of *decisions* names that are churn hotspots, in its own order.
 
-    Test files are left out, as in ``_ungoverned_hotspots``: churn in a test is
-    not a reason to review a design choice sooner. A decision naming no hotspot
+    Files of a held origin are left out, as in ``_ungoverned_hotspots``: churn in
+    a test is not a reason to review a design choice sooner. A decision naming no hotspot
     is absent from the result.
 
     Only records whose scope binds to its paths are read. A commit footprint
@@ -187,17 +201,17 @@ async def decision_hotspot_files(
         for d in decisions
         if binds_to_paths(d.scope_basis)
     }
-    wanted = sorted({f for files in named.values() for f in files if not is_test_related_path(f)})
+    wanted = sorted({f for files in named.values() for f in files})
     hot: set[str] = set()
     for start in range(0, len(wanted), _PATH_CHUNK):
         result = await session.execute(
-            select(GitMetadata.file_path).where(
+            _with_origin(select(GitMetadata.file_path)).where(
                 GitMetadata.repository_id == repository_id,
                 GitMetadata.is_hotspot.is_(True),
                 GitMetadata.file_path.in_(wanted[start : start + _PATH_CHUNK]),
             )
         )
-        hot.update(result.scalars().all())
+        hot.update(path for path, origin, is_test in result.all() if _shown(origin, is_test))
     out: dict[str, list[str]] = {}
     for decision_id, files in named.items():
         hits = [f for f in files if f in hot]
@@ -212,22 +226,27 @@ async def _ungoverned_hotspots(
     """Hotspot production files no accepted decision names, hottest first.
 
     Same key as ``routers/overview.py``: score descending with NULLs last, then churn.
-    Test files are left out: churn in a test is not a design choice to record.
+    The hotspots are the ones the Code Health list shows by default: a file whose
+    stored origin the list holds out (tests, build, generated, ...) is left out,
+    as churn there is not a design choice to record. So this list is never longer
+    than the hotspot count the overview quotes.
     """
     hotspot_result = await session.execute(
-        select(
-            GitMetadata.file_path,
-            GitMetadata.temporal_hotspot_score,
-            GitMetadata.churn_percentile,
+        _with_origin(
+            select(
+                GitMetadata.file_path,
+                GitMetadata.temporal_hotspot_score,
+                GitMetadata.churn_percentile,
+            )
         ).where(
             GitMetadata.repository_id == repository_id,
             GitMetadata.is_hotspot == True,  # noqa: E712
         )
     )
     hotspot_rows = {
-        row[0]: (row[1], row[2])
-        for row in hotspot_result.all()
-        if not is_test_related_path(row[0])
+        path: (score, churn)
+        for path, score, churn, origin, is_test in hotspot_result.all()
+        if _shown(origin, is_test)
     }
 
     def _hotspot_rank(file_path: str) -> tuple[bool, float, float, str]:

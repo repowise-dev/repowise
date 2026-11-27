@@ -320,7 +320,7 @@ def build_fix_first(
     units, planned_files = _refactor_units(refactoring, plans, gate, judged)
     units += _perf_units(performance, gate, symbol_lines)
     units += _finding_units(split, planned_files, gate, validate)
-    ordered = order(units)
+    ordered = measured_lead(order(units))
     if item_id is not None:
         shown = [(i, u) for i, u in enumerate(ordered) if u.id == item_id]
     else:
@@ -339,6 +339,23 @@ def build_fix_first(
         by_improves={k: by_improves.get(k, 0) for k in FIX_IMPROVES},
         basis=dict(basis) if basis is not None else _basis(metrics),
     )
+
+
+def measured_lead(ordered: list[_Unit]) -> list[_Unit]:
+    """*ordered* with the measured hotspot that may lead first, when there is
+    one: of those, the one its run measured the largest self share in.
+
+    Founder rule (0.63, evidence D2): a function a leading run (an entry point,
+    a load test or production; never unit tests or benchmarks) measured above
+    the lead bar, carrying a next step a rule fired on, is the first thing to
+    fix. A measured cost with a concrete step outranks every static estimate.
+    One item moves; every other measured item keeps its place by value.
+    """
+    leads = [(u.measured_share, -i) for i, u in enumerate(ordered) if u.measured_share is not None]
+    if not leads:
+        return ordered
+    at = -max(leads)[1]
+    return [ordered[at], *ordered[:at], *ordered[at + 1 :]]
 
 
 def _refactor_units(

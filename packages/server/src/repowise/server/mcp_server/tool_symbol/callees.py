@@ -7,12 +7,13 @@ from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
-from repowise.core.persistence.models import WikiSymbol
+from repowise.core.persistence.models import GraphEdge, WikiSymbol
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_symbol as _pkg
 from repowise.server.mcp_server._helpers import (
     clean_signature,
+    fetch_allowed_edges,
 )
 from repowise.server.mcp_server._references import (
     source_reference,
@@ -102,15 +103,17 @@ async def _unseen_callees_of(
     repo_id: str,
     frontier: list[str],
     seen: set[str],
+    exclude_spec: Any = None,
 ) -> tuple[list[str], dict[str, float]]:
     """Call targets of *frontier* not already in *seen*, with their confidence.
 
     Mutates *seen*, which is what keeps a diamond from being walked twice.
     Edges below the confidence floor are dropped here: tier-3 resolution
     invents edges, and a guessed one drags a whole unrelated body into the
-    payload.
+    payload. A target in a file the repo rules exclude is dropped before the
+    per-node cap and never joins the next frontier, so nothing is reached
+    only through it.
     """
-    from repowise.core.persistence.crud import get_graph_edges_for_node
     from repowise.server.mcp_server.tool_context.enrichment import (
         _CALL_EDGE_TYPES,
         _MIN_CALL_CONFIDENCE,
@@ -119,14 +122,17 @@ async def _unseen_callees_of(
     next_ids: list[str] = []
     confidence_of: dict[str, float] = {}
     for node_id in frontier:
-        edges = await get_graph_edges_for_node(
-            session,
-            repo_id,
-            node_id,
-            direction="callees",
-            edge_types=_CALL_EDGE_TYPES,
-            limit=_MAX_CALLEES_PER_HOP,
+        # The ranking ``get_graph_edges_for_node`` gives callees.
+        stmt = (
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.confidence)
+            .where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.source_node_id == node_id,
+                GraphEdge.edge_type.in_(_CALL_EDGE_TYPES),
+            )
+            .order_by(GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type)
         )
+        edges = await fetch_allowed_edges(session, stmt, exclude_spec, limit=_MAX_CALLEES_PER_HOP)
         for e in edges:
             if (e.confidence or 0) < _MIN_CALL_CONFIDENCE or e.target_node_id in seen:
                 continue
@@ -165,7 +171,9 @@ async def _discover_callee_hops(
     for hop_number in range(1, depth):
         if not frontier:
             break
-        next_ids, confidence_of = await _unseen_callees_of(session, repo_id, frontier, seen)
+        next_ids, confidence_of = await _unseen_callees_of(
+            session, repo_id, frontier, seen, exclude_spec
+        )
         if not next_ids:
             break
 

@@ -123,7 +123,9 @@ class InProcessGraphStore(GraphStore):
             if file_subgraph.number_of_nodes() == 0:
                 self._pagerank_cache = {}
             else:
-                self._pagerank_cache = nx.pagerank(file_subgraph)
+                from repowise.core.ingestion.graph._pagerank import pagerank
+
+                self._pagerank_cache = pagerank(file_subgraph)
         return dict(self._pagerank_cache)
 
     def betweenness_centrality(self) -> dict[str, float]:

@@ -27,6 +27,7 @@ from .commits import persist_incremental_commits
 from .external_systems import refresh_external_systems
 from .health import persist_partial_health
 from .prune import prune_deleted_files
+from .routes import refresh_routes, refresh_sites
 
 
 @dataclass(kw_only=True)
@@ -127,6 +128,7 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
     from repowise.core.pipeline.persist import (
         sweep_absent_cycle_pages,
         sweep_absent_symbol_spotlights,
+        sweep_deselected_flow_pages,
         sweep_deselected_pages,
         sweep_store_hygiene,
     )
@@ -154,6 +156,10 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
             ctx.graph_builder,
             _generation_config(ctx.repo_path),
             ctx.git_meta_map,
+        )
+        # A flow page the selection dropped: no update renders it again.
+        deselected += await sweep_deselected_flow_pages(
+            ctx.session, ctx.repo_id, ctx.graph_builder, ctx.parsed_files
         )
         ctx.swept_page_ids += deselected
         ctx.deselected_page_ids = hygiene + deselected
@@ -304,7 +310,11 @@ async def persist_nodes(ctx: IncrementalPersist) -> None:
 async def persist_health(ctx: IncrementalPersist) -> None:
     with timed(ctx.timings, "persist.health"):
         await persist_partial_health(
-            ctx.session, ctx.repo_id, ctx.partial_health_report, ctx.repo_path
+            ctx.session,
+            ctx.repo_id,
+            ctx.partial_health_report,
+            ctx.repo_path,
+            timings=ctx.timings,
         )
 
 
@@ -353,6 +363,16 @@ async def persist_units(ctx: IncrementalPersist) -> None:
         await persist_build_units(ctx.session, ctx.repo_id, ctx.graph_builder)
 
 
+async def persist_external_calls(ctx: IncrementalPersist) -> None:
+    # Follows the graph build: every file on a full build, the patch scope on
+    # a scoped one. A failed write clears the stamp, and the next update then
+    # rebuilds the graph in full, so the step heals itself.
+    from repowise.core.pipeline.persist import persist_external_call_sites
+
+    with timed(ctx.timings, "persist.external_calls"):
+        await persist_external_call_sites(ctx.session, ctx.repo_id, ctx.graph_builder)
+
+
 async def backfill_related(ctx: IncrementalPersist) -> None:
     # Refresh related-pages metadata across the whole wiki. LLM-free, so even
     # index-only updates heal pages generated before the feature shipped (or
@@ -387,6 +407,19 @@ async def refresh_externals(ctx: IncrementalPersist) -> None:
         await refresh_external_systems(
             ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs, log=ctx.log
         )
+
+
+async def refresh_route_table(ctx: IncrementalPersist) -> None:
+    # Handlers bind to the stored symbols and the code_origin rule reads the
+    # stored origins, so this follows both. Gated inside on the diff.
+    with timed(ctx.timings, "persist.routes"):
+        await refresh_routes(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs, log=ctx.log)
+
+
+async def refresh_statement_site_index(ctx: IncrementalPersist) -> None:
+    # Like the route table: sites bind to the stored functions. Gated inside on the diff.
+    with timed(ctx.timings, "persist.statement_sites"):
+        await refresh_sites(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs, log=ctx.log)
 
 
 async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
@@ -497,6 +530,13 @@ BUILD_UNITS_STEP = Step(
     when=lambda ctx: getattr(ctx.graph_builder, "build_units", None) is not None,
 )
 
+#: Shared with the docs-mode writer. Skipped when no graph build ran here.
+EXTERNAL_CALLS_STEP = Step(
+    "External call sites persist",
+    persist_external_calls,
+    when=lambda ctx: getattr(ctx.graph_builder, "external_call_sites", None) is not None,
+)
+
 # Range-scoped steps are the ones a later run cannot heal on its own; the
 # membership test is in persist_incremental_index's docstring.
 INCREMENTAL_STEPS: tuple[Step, ...] = (
@@ -545,6 +585,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
     BUILD_UNITS_STEP,
+    EXTERNAL_CALLS_STEP,
     Step("Related-pages backfill", backfill_related),
     Step(
         "Knowledge-graph persist",
@@ -560,6 +601,9 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    # After the prune, so a handler never binds to a deleted file's symbol.
+    Step("Route table refresh", refresh_route_table),
+    Step("Statement site refresh", refresh_statement_site_index),
     Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step(
         "Deferred page staleness",
@@ -778,13 +822,15 @@ async def save_graph_snapshot(ctx: IncrementalPersist) -> None:
     from repowise.core.pipeline.persist.graph import _graph_is_complete
 
     from .feature import incremental_graph_enabled
+    from .graph_seed import discard_set_aside_seed, save_seed_edge_cache
 
-    if not incremental_graph_enabled() or ctx.graph_builder is None:
+    if (
+        not incremental_graph_enabled()
+        or ctx.graph_builder is None
+        or not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or [])
+    ):
+        discard_set_aside_seed(ctx.repo_path)
         return
-    if not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or []):
-        return
-    from .graph_seed import save_seed_edge_cache
-
     with timed(ctx.timings, "persist.graph_seed_cache"):
         await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
 
@@ -865,5 +911,9 @@ async def _write(ctx: IncrementalPersist) -> None:
 
     if persisted:
         await save_graph_snapshot(ctx)
+    else:
+        from .graph_seed import discard_set_aside_seed
+
+        discard_set_aside_seed(ctx.repo_path)
 
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))

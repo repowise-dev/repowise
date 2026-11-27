@@ -1,0 +1,110 @@
+name: Repowise evidence
+
+# Sends runtime evidence for this repository to repowise.dev: a CPU profile of
+# indexing the repository itself, and the unit suite's test timings. The
+# Performance tab ranks by what these runs measured.
+#
+# Best effort and separate from CI: it never runs on pull requests, every step
+# continues on error, and the job cannot fail.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: repowise-evidence-${{ github.ref }}
+  # A newer push waits for the running job instead of cancelling it, so a
+  # busy main still finishes a run and uploads both measurements.
+  cancel-in-progress: false
+
+env:
+  UV_HTTP_TIMEOUT: "120"
+  REPOWISE_TELEMETRY_DISABLED: "1"
+
+jobs:
+  evidence:
+    name: Runtime evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    permissions:
+      contents: read
+      id-token: write   # signs the upload; no secret is stored
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
+
+      - name: Install dependencies
+        continue-on-error: true
+        run: |
+          uv python install 3.12
+          uv sync --all-packages --python 3.12
+
+      - name: Stage runtime grammars
+        continue-on-error: true
+        run: |
+          dir="$RUNNER_TEMP/grammars/libs"
+          for attempt in 1 2 3; do
+            if uv run repowise grammars fetch "$dir"; then
+              echo "REPOWISE_GRAMMAR_DIR=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+
+      # Indexing this repository is the CLI's heaviest real workload. py-spy
+      # samples the parse and health worker processes too (most of the run's
+      # time), keeps every frame and records sample counts. 25 samples a
+      # second keeps the profile under the 20 MiB upload cap.
+      - name: Profile indexing
+        continue-on-error: true
+        run: >
+          uv run --with py-spy py-spy record --subprocesses --rate 25
+          --format speedscope -o index.speedscope.json
+          -- .venv/bin/python .venv/bin/repowise init . --mode fast --no-prose -y
+
+      - name: Profile size
+        if: always()
+        continue-on-error: true
+        run: ls -l index.speedscope.json || true
+
+      - name: Time the unit tests
+        continue-on-error: true
+        run: >
+          uv run pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -q
+          --junitxml=junit.xml -o junit_family=xunit1
+
+      - name: Upload runtime evidence to Repowise
+        if: always()
+        continue-on-error: true
+        run: |
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=repowise" | jq -r '.value // empty')
+          if [ -z "$token" ]; then echo "::warning::Repowise: no OIDC token"; exit 0; fi
+          # A py-spy profile does not say which clock it sampled, and the upload
+          # is refused without one; py-spy without --idle samples on-CPU time.
+          upload() {  # file, workload, class, value kind (profiles that need one)
+            if [ ! -s "$1" ]; then echo "::warning::Repowise: $1 was not written"; return 0; fi
+            kind=()
+            if [ -n "${4:-}" ]; then kind=(-F "value_kind=$4"); fi
+            curl -sS --fail-with-body --max-time 120 -H "Authorization: Bearer $token" \
+              -F "evidence=@$1" -F "repository=$GITHUB_REPOSITORY" -F "commit=$GITHUB_SHA" \
+              -F "workload=$2" -F "class=$3" -F "environment=linux-ci" "${kind[@]}" \
+              -F "checkout_root=$GITHUB_WORKSPACE" \
+              https://api.repowise.dev/ci/evidence \
+              || echo "::warning::Repowise: upload of $1 failed; see the message above."
+            echo
+          }
+          upload index.speedscope.json "repowise init --mode fast" entry_point cpu
+          upload junit.xml "pytest tests/unit" unit_test

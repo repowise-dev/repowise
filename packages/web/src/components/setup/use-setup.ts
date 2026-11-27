@@ -41,32 +41,6 @@ export function useOnboardingState(enabled = true) {
   return useSWR(enabled ? ONBOARDING_KEY : null, getOnboardingState, QUIET);
 }
 
-// -- essentials done, remembered ----------------------------------------------
-
-const DONE_KEY = (repoId: string) => `repowise:setup-done:${repoId}`;
-
-/**
- * Once the essentials are done the sidebar pill stops asking, so a page load
- * does not run doctor just to hide it. The Setup page itself always checks
- * and clears this when something comes undone.
- */
-export function rememberSetupDone(repoId: string, done: boolean) {
-  try {
-    if (done) window.localStorage.setItem(DONE_KEY(repoId), "1");
-    else window.localStorage.removeItem(DONE_KEY(repoId));
-  } catch {
-    /* storage blocked: the pill checks every session */
-  }
-}
-
-export function setupRememberedDone(repoId: string): boolean {
-  try {
-    return window.localStorage.getItem(DONE_KEY(repoId)) === "1";
-  } catch {
-    return false;
-  }
-}
-
 // -- agents first seen connected ---------------------------------------------
 
 const SEEN_KEY = (repoId: string) => `repowise:setup-agent-seen:${repoId}`;
@@ -220,7 +194,7 @@ export function useHideOnThisMachine() {
   const { mutate } = useSWRConfig();
   const [hiddenNow, setHiddenNow] = useState<Set<keyof OnboardingPatch>>(new Set());
   const hide = useCallback(
-    async (field: "setup_pill_hidden" | "hosted_card_hidden") => {
+    async (field: "hosted_card_hidden") => {
       setHiddenNow((prev) => new Set(prev).add(field));
       try {
         const next = await updateOnboardingState({ [field]: true });

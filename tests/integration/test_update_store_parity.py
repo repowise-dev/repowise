@@ -478,3 +478,93 @@ def test_editing_one_decorated_file_keeps_the_graph_patchable(
         ("src/app/registry.py::rule", "src/app/checks_b.py::check_b"),
     }, "fixture must register both checks"
     assert _store(incremental)["graph_edges"] == expected
+
+
+def _timings(repo: Path) -> dict[str, float]:
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    return state["phase_timings"]
+
+
+def _node_rows(repo: Path) -> dict[str, list[tuple]]:
+    """Every column of the node tables, write stamps included."""
+    with closing(sqlite3.connect(repo / ".repowise" / "wiki.db")) as conn:
+        return {
+            table: _rows(conn, f"SELECT * FROM {table}")
+            for table in ("graph_nodes", "graph_metrics", "graph_node_membership")
+        }
+
+
+def _assert_store_matches_init(tmp_path: Path, monkeypatch, incremental: Path, name: str) -> None:
+    runner = CliRunner()
+    control = tmp_path / name / "repo"
+    shutil.copytree(incremental, control, ignore=shutil.ignore_patterns(".repowise"))
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{control / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, control, *_INIT)
+    expected, actual = _store(control), _store(incremental)
+    bad = [table for table, rows in expected.items() if actual[table] != rows]
+    assert not bad, bad
+    _assert_centrality_matches(control, incremental)
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
+    )
+
+
+def test_an_update_that_leaves_the_graph_unchanged_keeps_its_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An edit no graph step reads replays the last update's graph metrics,
+    writes no graph node row, leaves the snapshot file as it was, and the
+    store ends as init's. An edge change computes the metrics afresh."""
+    incremental = tmp_path / "incremental" / "repo"
+    incremental.mkdir(parents=True)
+    _write(incremental, {**_REGISTRAR, "NOTES.txt": "first\n"})
+    _git(incremental, "init", "-q")
+    _commit(incremental, "seed")
+    runner = CliRunner()
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, incremental, *_INIT)
+    snapshot = incremental / ".repowise" / "graph_seed_edges.pkl"
+
+    # Init primes its metrics before the co-change edges go in, so the first
+    # update computes them on the final graph and stores them with the snapshot.
+    _write(incremental, {"NOTES.txt": "second\n"})
+    _commit(incremental, "docs: notes")
+    _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+
+    assert _graph_update(incremental)["mode"] == "patch", _graph_update(incremental)
+    assert "metrics" not in _graph_update(incremental)
+    assert "rebuild.metrics" in _timings(incremental)
+    before = (snapshot.read_bytes(), snapshot.stat().st_mtime_ns)
+    rows = _node_rows(incremental)
+    assert rows["graph_nodes"] and rows["graph_metrics"]
+
+    _write(incremental, {"NOTES.txt": "third\n"})
+    _commit(incremental, "docs: more notes")
+    _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+
+    assert _graph_update(incremental)["mode"] == "patch", _graph_update(incremental)
+    assert _graph_update(incremental)["metrics"] == "reused"
+    timings = _timings(incremental)
+    assert "rebuild.metrics" not in timings
+    assert "persist.graph_nodes.upsert" not in timings
+    assert _node_rows(incremental) == rows
+    assert (snapshot.read_bytes(), snapshot.stat().st_mtime_ns) == before
+    assert not snapshot.with_name("graph_seed_edges.pkl.kept").exists()
+    _assert_store_matches_init(tmp_path, monkeypatch, incremental, "control-unchanged")
+
+    # An edge change computes afresh, rewrites the snapshot, and the update
+    # still patches from the kept file.
+    util = "def helper(value):\n    return value + 2\n\n\ndef other():\n    return helper(1)\n"
+    _write(incremental, {"src/app/util.py": util})
+    _commit(incremental, "feat: other")
+    _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+
+    assert _graph_update(incremental)["mode"] == "patch", _graph_update(incremental)
+    assert "metrics" not in _graph_update(incremental)
+    assert "rebuild.metrics" in _timings(incremental)
+    assert snapshot.read_bytes() != before[0]
+    _assert_store_matches_init(tmp_path, monkeypatch, incremental, "control-changed")

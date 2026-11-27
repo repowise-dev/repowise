@@ -39,6 +39,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.code_origin import prefer_production
+from repowise.core.exclusion import is_excluded, spec_key
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
@@ -177,19 +178,13 @@ async def _resolve_question_anchors(
 
     tokens = sorted({t for t in _question_terms(question) if len(t) >= 4})
     if tokens:
-        res = await session.execute(
-            select(Page.target_path)
-            .where(
-                Page.repository_id == repo_id,
-                Page.page_type == "file_page",
-            )
-            # Same reason as the symbol query: this feeds anchor insertion order.
-            .order_by(Page.target_path)
+        stem_to_paths = await per_index(
+            session,
+            repo_id,
+            "file_page_stems",
+            lambda: _file_page_stems(session, repo_id),
+            persist=True,
         )
-        stem_to_paths: dict[str, list[str]] = {}
-        for (tp,) in res.all():
-            if tp:
-                stem_to_paths.setdefault(_basename_stem(tp), []).append(tp)
         for token in tokens:
             for stem, paths in stem_to_paths.items():
                 if not _token_matches_stem(token, stem):
@@ -201,6 +196,24 @@ async def _resolve_question_anchors(
                         anchors.setdefault(p, "module")
 
     return anchors
+
+
+async def _file_page_stems(session: Any, repo_id: str) -> dict[str, list[str]]:
+    """Each file page's basename stem, to the paths of the pages carrying it."""
+    res = await session.execute(
+        select(Page.target_path)
+        .where(
+            Page.repository_id == repo_id,
+            Page.page_type == "file_page",
+        )
+        # Same reason as the symbol query: this feeds anchor insertion order.
+        .order_by(Page.target_path)
+    )
+    stem_to_paths: dict[str, list[str]] = {}
+    for (tp,) in res.all():
+        if tp:
+            stem_to_paths.setdefault(_basename_stem(tp), []).append(tp)
+    return stem_to_paths
 
 
 async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str]]:
@@ -237,10 +250,38 @@ async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str
     return {node: sorted(neighbours) for node, neighbours in adj.items()}
 
 
-async def file_adjacency(session: Any, repo_id: str) -> dict[str, list[str]]:
-    """:func:`_load_file_adjacency`, built once per index state. Read-only."""
+async def file_adjacency(
+    session: Any, repo_id: str, exclude_spec: Any = None
+) -> dict[str, list[str]]:
+    """:func:`_load_file_adjacency`, built once per index state. Read-only.
+
+    With *exclude_spec*, excluded files are gone both as keys and as
+    neighbours, so no walk passes through one. The raw adjacency is what goes
+    to disk; the filtered copy is kept in memory per rule set, since the rules
+    can change without the index moving.
+    """
+    raw = await per_index(
+        session,
+        repo_id,
+        "file_adjacency",
+        lambda: _load_file_adjacency(session, repo_id),
+        persist=True,
+    )
+    if not exclude_spec:
+        return raw
+
+    async def _filtered() -> dict[str, list[str]]:
+        return {
+            node: [n for n in neighbours if not is_excluded(n, exclude_spec)]
+            for node, neighbours in raw.items()
+            if not is_excluded(node, exclude_spec)
+        }
+
     return await per_index(
-        session, repo_id, "file_adjacency", lambda: _load_file_adjacency(session, repo_id)
+        session,
+        repo_id,
+        f"file_adjacency:{hash(spec_key(exclude_spec))}",
+        _filtered,
     )
 
 
@@ -367,6 +408,7 @@ async def expand_via_flow_path(
     hits: list[dict],
     question: str,
     question_ids: set[str],
+    exclude_spec: Any = None,
 ) -> tuple[list[dict], list[list[str]]]:
     """Inject the graph path between question-anchored endpoints into ``hits``.
 
@@ -409,7 +451,7 @@ async def expand_via_flow_path(
         endpoints.append(top_hit)
     endpoints = endpoints[:_FLOW_MAX_ANCHORS]
 
-    adj = await file_adjacency(session, repo_id)
+    adj = await file_adjacency(session, repo_id, exclude_spec)
 
     retrieved = {file_of_symbol(h.get("target_path") or "") for h in hits}
     retrieved.update(p for p, src in anchors.items() if src == "symbol")

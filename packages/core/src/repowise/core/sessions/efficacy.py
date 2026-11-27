@@ -119,6 +119,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repowise.core.test_commands import TEST_COMMAND_IN_TEXT_RE
+
 #: Tool calls after a firing that are still credited to it. Generous on
 #: purpose — the measured action-distance histogram puts almost all of the
 #: signal in the first three calls, so a wide window costs little and proves
@@ -492,7 +494,6 @@ _STRUCTURE_TOOLS = ("get_context", "get_symbol", "search_codebase")
 #: fix-history notice means reaching for one of these, or running a test.
 _HISTORY_TOOLS = ("get_risk", "get_why", "get_change_risk", "get_health", "get_context")
 
-_TEST_CMD = re.compile(r"\b(pytest|jest|vitest|go test|cargo test|npm (run )?test|tox|nose)\b")
 _HISTORY_CMD = re.compile(r"\bgit (log|blame|show|bisect)\b")
 
 
@@ -631,7 +632,7 @@ def _acted_rescue(firing: Firing, name: str, norm: str, raw: str) -> str:
 def _acted_fix_history(firing: Firing, name: str, norm: str, raw: str) -> str:
     """Ran a test, or asked history about the file."""
     if name in ("Bash", "PowerShell"):
-        if _TEST_CMD.search(raw):
+        if TEST_COMMAND_IN_TEXT_RE.search(raw):
             return "ran_test"
         if _HISTORY_CMD.search(raw):
             return "read_history"
@@ -639,7 +640,7 @@ def _acted_fix_history(firing: Firing, name: str, norm: str, raw: str) -> str:
     target = firing.targets[0] if firing.targets else ""
     if any(t in name for t in _HISTORY_TOOLS) and target and target in norm:
         return "history_tool"
-    if name == "Task" and _TEST_CMD.search(raw):
+    if name == "Task" and TEST_COMMAND_IN_TEXT_RE.search(raw):
         return "ran_test"
     return ""
 

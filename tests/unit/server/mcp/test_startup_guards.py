@@ -153,6 +153,7 @@ def test_missing_tool_dependency_skips_that_tool_and_keeps_the_rest(
         return real_import(name, package)
 
     monkeypatch.setattr(mcp_pkg, "_surface_applied", False)
+    monkeypatch.setattr(mcp_pkg, "_surface_complete", False)
     monkeypatch.setattr(importlib, "import_module", _import)
 
     with caplog.at_level(logging.WARNING, logger="repowise.mcp"):

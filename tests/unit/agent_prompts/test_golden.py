@@ -18,8 +18,11 @@ import pytest
 from repowise.core.agent_prompts import (
     FLAVORS,
     render_action,
+    render_first_look_item,
+    render_first_look_report,
     render_fix_item,
     render_opportunity,
+    render_perf_opportunity,
     render_plan,
     render_verify_lines,
 )
@@ -36,6 +39,9 @@ _ACTIONS = _load("actions.json")["cases"]
 _ITEMS = _load("fix_items.json")["cases"]
 _PLANS = _load("refactoring.json")["plans"]
 _OPPORTUNITIES = _load("refactoring.json")["opportunities"]
+_PERF = _load("first_look.json")["perf_opportunities"]
+_FL_ITEMS = _load("first_look.json")["items"]
+_FL_REPORTS = _load("first_look.json")["reports"]
 
 
 def _render_all() -> dict:
@@ -62,6 +68,24 @@ def _render_all() -> dict:
                 lambda f, c=c: render_opportunity(c["detail"], f, c.get("repo_name"))
             )
             for c in _OPPORTUNITIES
+        },
+        "perf_opportunity": {
+            c["name"]: per_flavor(
+                lambda f, c=c: render_perf_opportunity(c["detail"], f, c.get("repo_name"))
+            )
+            for c in _PERF
+        },
+        "first_look_item": {
+            c["name"]: per_flavor(
+                lambda f, c=c: render_first_look_item(c["item"], f, c.get("repo_name"))
+            )
+            for c in _FL_ITEMS
+        },
+        "first_look_report": {
+            c["name"]: per_flavor(
+                lambda f, c=c: render_first_look_report(c["items"], f, c.get("repo_name"))
+            )
+            for c in _FL_REPORTS
         },
     }
 
@@ -97,6 +121,30 @@ def test_every_case_has_a_golden() -> None:
     assert set(_GOLDEN["fix_item"]) == {c["name"] for c in _ITEMS}
     assert set(_GOLDEN["refactoring_plan"]) == {c["name"] for c in _PLANS}
     assert set(_GOLDEN["refactoring_opportunity"]) == {c["name"] for c in _OPPORTUNITIES}
+    assert set(_GOLDEN["perf_opportunity"]) == {c["name"] for c in _PERF}
+    assert set(_GOLDEN["first_look_item"]) == {c["name"] for c in _FL_ITEMS}
+    assert set(_GOLDEN["first_look_report"]) == {c["name"] for c in _FL_REPORTS}
+
+
+@pytest.mark.parametrize("flavor", FLAVORS)
+@pytest.mark.parametrize("case", _PERF, ids=lambda c: c["name"])
+def test_perf_opportunity_matches_golden(case: dict, flavor: str) -> None:
+    text = render_perf_opportunity(case["detail"], flavor, case.get("repo_name"))
+    assert text == _GOLDEN["perf_opportunity"][case["name"]][flavor]
+
+
+@pytest.mark.parametrize("flavor", FLAVORS)
+@pytest.mark.parametrize("case", _FL_ITEMS, ids=lambda c: c["name"])
+def test_first_look_item_matches_golden(case: dict, flavor: str) -> None:
+    text = render_first_look_item(case["item"], flavor, case.get("repo_name"))
+    assert text == _GOLDEN["first_look_item"][case["name"]][flavor]
+
+
+@pytest.mark.parametrize("flavor", FLAVORS)
+@pytest.mark.parametrize("case", _FL_REPORTS, ids=lambda c: c["name"])
+def test_first_look_report_matches_golden(case: dict, flavor: str) -> None:
+    text = render_first_look_report(case["items"], flavor, case.get("repo_name"))
+    assert text == _GOLDEN["first_look_report"][case["name"]][flavor]
 
 
 @pytest.mark.parametrize("flavor", FLAVORS)

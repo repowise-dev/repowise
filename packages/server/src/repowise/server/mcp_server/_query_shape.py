@@ -107,7 +107,8 @@ def _is_path(query: str) -> bool:
 
 
 _TOKEN_EDGE_CHARS = "`'\"()[]{},;?!"
-_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
+# ``:12``, ``:12-20``, or an editor's ``:12:5`` (line, then column).
+_LINE_SUFFIX_RE = re.compile(r":\d+(?::\d+)?(?:-\d+(?::\d+)?)?$")
 
 
 def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
@@ -125,11 +126,16 @@ def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
             continue
         token = raw.strip(_TOKEN_EDGE_CHARS).split("::", 1)[0].rstrip(".:")
         token = _LINE_SUFFIX_RE.sub("", token)
-        if os.path.splitext(token)[1] in _code_exts() or (
+        if _has_code_extension(token) or (
             ("/" in token or "\\" in token) and _names_indexed_segments(token, paths)
         ):
             out.append(token)
     return out
+
+
+def _has_code_extension(token: str) -> bool:
+    """``plugin.go``, ``x.py``: a file name, not a dotted symbol name."""
+    return os.path.splitext(token)[1].lower() in _code_exts()
 
 
 def _names_indexed_segments(token: str, paths: Sequence[str]) -> bool:
@@ -215,10 +221,15 @@ def _folds_case(token: str) -> bool:
 
 def _names_symbol(token: str, names: Container[str]) -> bool:
     """Case-sensitive first, then case-insensitive where ``_folds_case`` allows;
-    a dotted token also counts when its last part names a symbol."""
+    a dotted token also counts when its last part names a symbol. A file name
+    (``call_resolver.py``) names a file: its extension is never a symbol."""
     if token in names or (_folds_case(token) and token.lower() in names):
         return True
-    return "." in token and _names_symbol(token.rsplit(".", 1)[1], names)
+    return (
+        "." in token
+        and not _has_code_extension(token)
+        and _names_symbol(token.rsplit(".", 1)[1], names)
+    )
 
 
 def _embedded_identifiers(query: str, names: Container[str] | None = None) -> list[str]:
@@ -336,7 +347,9 @@ def _in_code_context(query: str, m: re.Match[str]) -> bool:
 def _name_lookup_keys(query: str) -> set[str]:
     """Lowered names ``_embedded_identifiers`` may test for ``query``, so a
     caller loads only these rows of the symbol table."""
-    return {t.rsplit(".", 1)[-1].lower() for t in _name_tokens(query)}
+    return {
+        t.rsplit(".", 1)[-1].lower() for t in _name_tokens(query) if not _has_code_extension(t)
+    }
 
 
 _CAMEL_HUMP_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
@@ -585,6 +598,27 @@ def query_pattern(query: str) -> tuple[str, Any] | None:
     if pattern := regex_query(query):
         return "regex", pattern
     return None
+
+
+# A declaration copied from source (``class Article``, ``pub fn new(``,
+# ``export interface Props``): the name after the keyword is the lookup.
+_DECLARATION_RE = re.compile(
+    r"^\s*(?:(?:export|pub|public|private|protected|internal|static|abstract|final|"
+    r"sealed|open|async|unsafe|default|data|partial)\s+)*"
+    r"(?:class|def|func|fn|function|interface|struct|type|enum|trait|impl|object|"
+    r"record|protocol|module|mod|namespace|union|typedef)\s+"
+    r"([A-Za-z_$][\w$]*)\s*[:({<\[.;]?\s*$"
+)
+
+
+def declared_name(query: str, names: Container[str]) -> str | None:
+    """The indexed name a ``class Article``-shaped query declares, else None.
+
+    Only an indexed name counts, so prose such as ``type checking`` stays a
+    concept search: ``_name_lookup_keys`` never loads a plain lowercase word.
+    """
+    m = _DECLARATION_RE.match(query)
+    return m.group(1) if m and m.group(1) in names else None
 
 
 _VALID_MODES = {"auto", "concept", "symbol", "path", "hybrid"}

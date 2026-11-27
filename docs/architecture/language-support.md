@@ -76,7 +76,7 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           TS/JS:  relative paths, tsconfig aliases, workspace exports,
                   `export ... from` re-export barrels, node_modules,
                   package.json "imports" (`#alias/*`) subpath imports
-          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> src/lib
+          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> kit.files.lib (src/lib)
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories
@@ -426,6 +426,10 @@ Steps 1–5 give you the symbols, imports and calls your query captures. They do
   node map. See [the three registries](#the-three-code-health-dialect-registries).
 - **Receiver typing.** Steps 9–11 above, and each is gated on measurement.
 - **Framework edges.** One module per framework under `framework_edges/`.
+- **Runtime evidence.** Profile frames join to functions only for languages
+  the frame resolver has a join for, and test timings need the stack to name a
+  JUnit report. See
+  [runtime-evidence-languages.md](runtime-evidence-languages.md).
 - **Class-level metrics, if the language does not nest method bodies in the
   type.** Go's external receivers and Object Pascal's split
   declaration/implementation sections both fail this, and both are deliberately
@@ -466,13 +470,16 @@ A language absent from the dict runs only the shared tiers. The seam exists so a
 language-specific tier can claim a call *before* a weaker shared one gets it.
 Go's package tier is the load-bearing example: `pkg.Func()` is claimed outright
 by `_resolve_go_package_call`, so a package qualifier never reaches the typed
-fallback and cannot be mistaken for a variable.
+fallback and cannot be mistaken for a variable. `_resolve_go_package_var_call`
+follows it for a receiver that is a package variable or a chain through one
+(`router.RouterGroupApp.System.InitBaseRouter()`), typed hop by hop by
+`languages/go_selector_types.py`.
 
 Registered today:
 
 | Language | `free` | `member` | `member_fallback` |
 |---|---|---|---|
-| Go | same-package | package call | typed receiver |
+| Go | same-package | package call, package variable | typed receiver |
 | Java / Kotlin | JVM same-package | JVM receiver same-package | typed receiver |
 | C# / Python / Swift | — | — | typed receiver |
 | C / C++ | same build target | — | — |
@@ -500,7 +507,7 @@ The tiers, highest evidence first:
 | 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `receiver_chain_import`, `return_type_import` | The receiver, chained field, returned type, or target resolved through an imported file or scoped alias |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
 | 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
-| 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
+| 0.50 | `global_unique`, `import_elsewhere` | The name is unique repo-wide, or (Python) imported only inside another function of the file. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,
 because they are three different scans over three different scopes:
@@ -785,7 +792,7 @@ dependency surface their syntax supports.
 | Tier | Language | Extensions | Import resolution |
 |------|----------|-----------|-------------------|
 | Full | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
-| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig and Vite `resolve.alias` path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
 | Full | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` and `require()`, including CommonJS re-export shapes |
 | Full | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and `#` subpath imports |
 | Full | **Vue** | `.vue` | The TS/JS resolver plus config aliases, directory-index components, router `import()` specifiers |

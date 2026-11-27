@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import { useSWRConfig } from "swr";
 import Link from "next/link";
 import { useFormatter, useTranslations } from "next-intl";
@@ -19,7 +19,7 @@ import { HostedSetupCard } from "./hosted-setup-card";
 import { SetupRowView, useLinkedRow, useSetupText } from "./setup-row";
 import { firstCallerName, type SetupRow, type SetupView } from "./setup-rows";
 import { useSetupControls } from "./setup-controls";
-import { rememberSetupDone, setupKey, useEvidenceConnected, useSetupData, useSetupView } from "./use-setup";
+import { setupKey, useEvidenceConnected, useSetupData, useSetupView } from "./use-setup";
 
 const MICRO = "font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--color-text-tertiary)]";
 
@@ -52,10 +52,6 @@ export function SetupPage({ repoId, repoName }: { repoId: string; repoName: stri
   const { data, error, isLoading, mutate } = useSetupData(repoId);
   const view = useSetupView(repoId, repoName, data, useEvidenceConnected(repoId));
   useLinkedRow(Boolean(view));
-
-  useEffect(() => {
-    if (view) rememberSetupDone(repoId, view.allDone);
-  }, [repoId, view]);
 
   if (!data || !view) {
     return (

@@ -168,7 +168,8 @@ def test_node_internals_and_node_modules_are_charged_to_the_repo_caller() -> Non
     entry = conv.document["symbols"][0]
     assert (entry["function"], entry["self_samples"]) == ("app.hashAll", 3)
     assert conv.document["skipped"] == {"outside_repo": 1, "vendored": 1}
-    assert conv.share(conv.libraries) == pytest.approx(1 / 3, abs=1e-3)
+    # Node's own modules count as libraries in the run's split, like node_modules.
+    assert (conv.libraries, conv.repo_self) == (conv.total, 0)
 
 
 def test_typescript_frames_of_the_checkout_are_refused() -> None:

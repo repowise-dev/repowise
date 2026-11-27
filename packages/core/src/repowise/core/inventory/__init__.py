@@ -4,5 +4,7 @@
 :mod:`.cyclonedx` exports that as CycloneDX 1.6 ``evidence.occurrences``;
 :mod:`.advisories` reads a user-supplied Syft, SPDX, CycloneDX or OSV file
 (the ``advisory-source`` seam) and joins it to usage by name;
+:mod:`.roots` reads where execution starts (root files, framework-loaded files, route handlers);
+:mod:`.vuln_reach` folds roots, reach, imports and calls into one tier per advisory;
 :mod:`.components` builds the component inventory document.
 """

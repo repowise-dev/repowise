@@ -380,8 +380,7 @@ async def _serve_symbol(
 
     from repowise.server.mcp_server._savings.reads import note_served, read_tokens
 
-    full_tokens = read_tokens(text)
-    note_served(row.file_path, full_tokens)
+    note_served(row.file_path, read_tokens(text))
 
     # Stored bounds are checked against the live file first: stale ones are
     # corrected and healed, unfindable ones served as approximate.
@@ -391,7 +390,7 @@ async def _serve_symbol(
 
     body = await _served_body(ctx, repository, row, text, check, context_lines)
     async with get_session(ctx.session_factory) as session:
-        card_facts = await symbol_card_facts(session, repository.id, row.symbol_id)
+        card_facts = await symbol_card_facts(session, repository.id, row.symbol_id, exclude_spec)
     response = _symbol_body_response(row, check, body, repository, ctx.alias, t0, card_facts)
     # An outline answers for the shape; callee bodies would undo its size.
     if depth > 1 and body.outline is None:
@@ -408,8 +407,9 @@ async def _serve_symbol(
         if callee_block is not None:
             response["callee_bodies"] = callee_block
 
-    # Serving one symbol replaced reading the whole file.
+    # The first symbol served from a file replaced reading that file.
     from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.reads import read_credit
 
-    declare_replaced(response, full_tokens)
+    declare_replaced(response, read_credit(repo_root, row.file_path, text))
     return response

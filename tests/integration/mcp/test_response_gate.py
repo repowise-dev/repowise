@@ -70,6 +70,14 @@ _CALLS: list[tuple[str, str, dict[str, Any], tuple[str, ...]]] = [
         {"targets": ["python_pkg/calculator.py::Calculator"]},
         ("targets",),
     ),
+    # A route file and the client calling it, linked by .repowise/contracts.json.
+    ("context_route_provider", "get_context", {"targets": ["go_pkg/main.go"]}, ("targets",)),
+    (
+        "context_route_client",
+        "get_context",
+        {"targets": ["typescript_pkg/src/client.ts"]},
+        ("targets",),
+    ),
     (
         "symbol",
         "get_symbol",
@@ -85,6 +93,12 @@ _CALLS: list[tuple[str, str, dict[str, Any], tuple[str, ...]]] = [
     ),
     ("search_path", "search_codebase", {"query": "python_pkg/models.py"}, ("results",)),
     ("risk", "get_risk", {"targets": ["python_pkg/calculator.py"]}, ("targets",)),
+    (
+        "risk_since",
+        "get_risk",
+        {"targets": ["python_pkg/calculator.py"], "since": "3650d"},
+        ("targets",),
+    ),
     ("change_risk", "get_change_risk", {"revspec": "HEAD"}, ("directive",)),
     (
         "change_risk_per_commit",
@@ -96,7 +110,10 @@ _CALLS: list[tuple[str, str, dict[str, Any], tuple[str, ...]]] = [
     (
         "why_targeted",
         "get_why",
-        {"query": "why does the calculator keep a history", "targets": ["python_pkg/calculator.py"]},
+        {
+            "query": "why does the calculator keep a history",
+            "targets": ["python_pkg/calculator.py"],
+        },
         ("mode", "decisions"),
     ),
     ("health", "get_health", {}, ("mode", "kpis")),
@@ -139,6 +156,52 @@ def _build_repo(src: Path, dest: Path) -> None:
         newline="\n",
     )
     _git(dest, "commit", "-q", "-am", "add triple")
+
+
+def _write_contract_links(repo: Path) -> None:
+    """Two routes in go_pkg/main.go, called from the TypeScript client.
+
+    What ``contracts.in_repo`` writes; the sample repo's own code has no route,
+    so the rows are stated here.
+    """
+
+    def contract(role: str, file: str, method: str, line: int) -> dict[str, Any]:
+        return {
+            "repo": "repo",
+            "contract_id": f"http::{method}::/api/history/{{param}}",
+            "contract_type": "http",
+            "role": role,
+            "file_path": file,
+            "symbol_name": f"{method} /api/history/{{id}}",
+            "confidence": 0.85,
+            "line": line,
+            "origin": "route_registration" if role == "provider" else "name_heuristic",
+        }
+
+    def link(method: str) -> dict[str, Any]:
+        return {
+            "contract_id": f"http::{method}::/api/history/{{param}}",
+            "contract_type": "http",
+            "match_type": "exact",
+            "confidence": 0.85,
+            "provider_repo": "repo",
+            "provider_file": "go_pkg/main.go",
+            "consumer_repo": "repo",
+            "consumer_file": "typescript_pkg/src/client.ts",
+            "strategy": "exact_id",
+        }
+
+    store = {
+        "version": 17,
+        "contracts": [
+            contract("provider", "go_pkg/main.go", "GET", 12),
+            contract("provider", "go_pkg/main.go", "DELETE", 20),
+            contract("consumer", "typescript_pkg/src/client.ts", "GET", 140),
+            contract("consumer", "typescript_pkg/src/client.ts", "DELETE", 150),
+        ],
+        "contract_links": [link("GET"), link("DELETE")],
+    }
+    (repo / ".repowise" / "contracts.json").write_text(json.dumps(store), encoding="utf-8")
 
 
 def _index(repo: Path) -> None:
@@ -197,6 +260,7 @@ def served(tmp_path_factory: pytest.TempPathFactory, sample_repo_path: Path) -> 
         mp.setattr(_state, "_release_check", None, raising=False)
         mp.setattr(_state, "_release_announced", None, raising=False)
         _index(repo)
+        _write_contract_links(repo)
         payloads = asyncio.run(_call_all(repo))
     return normalize_payload(payloads, path_placeholders(repo))
 
@@ -255,6 +319,15 @@ def test_routine_response_is_lean(served, case_id) -> None:
     assert lean_response(copy.deepcopy(payload)) == payload
 
 
+def test_risk_since_counts_the_files_commits_in_the_window(served) -> None:
+    """A ``since`` window walks the checkout: both sample commits touched the file."""
+    (card,) = served["risk_since"]["targets"].values()
+    window = card["co_change_window"]
+    assert window["target_commits"] == 2
+    assert "since" in window
+    assert "co_change_window" not in next(iter(served["risk"]["targets"].values()))
+
+
 def test_why_with_no_decision_is_a_compact_verdict(served) -> None:
     """No record governs the file: the verdict and its best evidence, not the file's card."""
     payload = served["why_targeted"]
@@ -280,3 +353,25 @@ def test_answer_grade_holds(served, case_id) -> None:
         assert grade == _GRADE_IS[case_id], f"{case_id} graded {grade}"
     if case_id in _GRADE_NOT:
         assert grade != _GRADE_NOT[case_id], f"{case_id} graded {grade}"
+
+
+def _lines_named(payload: Any, key: str) -> list[Any]:
+    if isinstance(payload, dict):
+        return [v for k, v in payload.items() if k == key] + [
+            x for v in payload.values() for x in _lines_named(v, key)
+        ]
+    if isinstance(payload, list):
+        return [x for v in payload for x in _lines_named(v, key)]
+    return []
+
+
+def test_only_linked_files_carry_the_in_repo_contract_line(served) -> None:
+    assert _lines_named(served["context_route_provider"], "in_repo_contracts") == [
+        "2 routes called from 2 places in this repo: typescript_pkg/src/client.ts:140,150"
+    ]
+    assert _lines_named(served["context_route_client"], "in_repo_contracts") == [
+        "calls 2 routes served in this repo: go_pkg/main.go "
+        "(GET /api/history/{param} L12, DELETE /api/history/{param} L20)"
+    ]
+    for case in ("context_file", "context_dir", "context_symbol", "change_risk"):
+        assert _lines_named(served[case], "in_repo_contracts") == []

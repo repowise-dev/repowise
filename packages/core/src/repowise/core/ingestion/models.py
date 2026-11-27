@@ -324,6 +324,15 @@ class Import:
     type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
     # Inside a function or lambda body: runs on first call, not at module load.
     deferred: bool = False
+    # Python: in a ``try`` body with an ``except ImportError`` handler; runs at
+    # load, but the module already survives it failing.
+    guarded: bool = False
+    # Python: ``import b`` / ``import a.b`` (not ``from``) whose bound name no
+    # module-level code mentions, so it cannot fail at import inside a cycle.
+    module_form: bool = False
+    # Python: the ``(start_line, end_line)`` of each function whose body holds
+    # the statement, the only code its names are bound for. None: file-wide.
+    scopes: tuple[tuple[int, int], ...] | None = None
 
     @property
     def local_names(self) -> list[str]:
@@ -342,6 +351,17 @@ class Import:
         being the token that appears in this file.
         """
         return [b.local_name for b in self.bindings] or list(self.imported_names)
+
+
+@dataclass
+class GlobImport(Import):
+    """A Vite ``import.meta.glob`` call: it loads every indexed file its patterns match.
+
+    ``module_path`` is the first pattern; ``glob_patterns`` holds all of them in
+    order, ``!`` negations included.
+    """
+
+    glob_patterns: tuple[str, ...] = ()
 
 
 @dataclass
@@ -555,6 +575,10 @@ ResolutionOrigin = Literal[
     # named for Rust trait impls but is gated on no language.
     "receiver_global",
     "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # 0.50 — Python: the name is imported only inside another function of
+    # this file, so here it is a local or a global that import never binds.
+    # The one such import is read as a guess.
+    "import_elsewhere",
     # The four below reach the same scopes as their untyped twins, but through
     # a receiver whose type was read off its declaration rather than written at
     # the call. They share their twin's confidence deliberately: the inferred
@@ -745,19 +769,24 @@ def is_dynamic_edge(edge_type: str | None) -> bool:
 
 
 def combine_load_kinds(
-    first: tuple[bool, bool], second: tuple[bool, bool]
-) -> tuple[bool, bool]:
-    """``(type_only, deferred)`` for two imports of one target folded together.
+    first: tuple[bool, bool, bool], second: tuple[bool, bool, bool]
+) -> tuple[bool, bool, bool]:
+    """``(type_only, deferred, guarded)`` for two imports of one target folded together.
 
-    Each side is runtime ``R`` (neither flag), type-only ``T`` or deferred
-    ``D``; the result is the one that runs earliest::
+    Each side is runtime ``R`` (no flag), type-only ``T``, deferred ``D`` or
+    guarded ``G`` (runs at load, failure caught); the result is the one that
+    runs earliest, and an unguarded load beats a guarded one::
 
-        T + T -> T      T + D -> D      D + T -> D
-        D + D -> D      D + R -> R      R + D -> R      T + R -> R
+        T + T -> T      T + D -> D      D + T -> D      D + D -> D
+        G + T -> G      G + D -> G      G + G -> G
+        R + anything -> R
     """
+    if not any(first) or not any(second):
+        return False, False, False
+    if first[2] or second[2]:
+        return False, False, True
     type_only = first[0] and second[0]
-    deferred = not type_only and any(first) and any(second)
-    return type_only, deferred
+    return type_only, not type_only, False
 
 
 @dataclass

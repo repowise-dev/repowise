@@ -18,12 +18,14 @@ from typing import Any
 import structlog
 
 from repowise.core.author_identity import IdentityResolver, build_identity_resolver
+from repowise.core.code_origin import path_origin
 from repowise.core.forges import CHANGE_BODY_MARKERS, ForgeKind, change_number
 
 from ._constants import (
     _COMMIT_CATEGORIES,
     _DECISION_SIGNAL_WORDS,
     _MAX_BLAME_SIZE_BYTES,
+    _MAX_FUNCTION_BLAME_SIZE_BYTES,
     _MAX_SIGNIFICANT_COMMITS,
     _MAX_TOP_AUTHORS,
     HOTSPOT_HALFLIFE_DAYS,
@@ -42,6 +44,7 @@ from .records import (
     _CommitRec,
     _extract_rename_paths,
     _parse_commit_record,
+    commit_credit,
 )
 
 
@@ -202,6 +205,7 @@ def _parse_per_file_log(
             is_merge=header["is_merge"],
             subject=header["subject"],
             body=header["body"],
+            credit=commit_credit(header),
         )
         commits.append(current)
         changed_paths = _add_own_churn(current, numstat_lines, known_paths)
@@ -387,7 +391,7 @@ def index_file(
         _add_agent_rollup(meta, commits)
         meta["temporal_hotspot_score"] = _temporal_hotspot_score(authored, now)
         if include_blame:
-            _add_blame_ownership(meta, repo, repo_path, now, authors)
+            _add_blame_ownership(meta, repo, repo_path, now, authors, authored)
         _add_commit_messages(meta, authored, forge)
         # Only the per-file ``--follow`` walk reports an original path.
         if orig_path:
@@ -513,13 +517,15 @@ class _Authors:
         """*resolve* is the repo's people resolver; without one, the file's own
         authors are merged by the same rules."""
         authored = [c for c in commits if not c.pure_move]  # moving a file is not authoring it
+        # A coding agent's commit counts for the person behind it, when git names one.
+        credited = [c.credit or (c.author_name, c.author_email) for c in authored]
         if resolve is None:
-            resolve = build_identity_resolver((c.author_name, c.author_email) for c in authored)
+            resolve = build_identity_resolver(credited)
         authors = cls(resolve)
-        for c in authored:
-            key = resolve(c.author_name, c.author_email)
+        for c, (name, email) in zip(authored, credited, strict=True):
+            key = resolve(name, email)
             authors.counts[key] += 1
-            authors.seen_names.setdefault(key, c.author_name)
+            authors.seen_names.setdefault(key, name)
             if c.ts >= recent_since_ts:
                 authors.recent_counts[key] += 1
             if c.ts > 0:
@@ -573,29 +579,36 @@ def _temporal_hotspot_score(commits: list[_CommitRec], now: datetime) -> float:
 
 
 def _add_ownership(meta: dict[str, Any], authors: _Authors) -> None:
-    """Contributor count, bus factor, top authors and the overall and 90-day owners."""
-    meta["contributor_count"] = len(authors.counts)
-    total_commits = sum(authors.counts.values())
-    if total_commits > 0:
-        meta["bus_factor"] = _bus_factor(authors.counts, total_commits)
+    """Contributor count, bus factor, top authors and the overall and 90-day owners.
 
-    top_authors = [
-        authors.entry(key, count) for key, count in authors.counts.most_common(_MAX_TOP_AUTHORS)
-    ]
+    Automation accounts (kind ``bot``: dependabot, renovate, CI) are not
+    owners or contributors, so they are left out of every figure here. Coding
+    agents (kind ``agent``) are kept. Commit counts and churn are computed
+    elsewhere and still include bot commits.
+    """
+    resolve = authors.resolve
+    counts = Counter({k: n for k, n in authors.counts.items() if resolve.kind(k) != "bot"})
+    recent_counts = Counter(
+        {k: n for k, n in authors.recent_counts.items() if resolve.kind(k) != "bot"}
+    )
+    meta["contributor_count"] = len(counts)
+    total_commits = sum(counts.values())
+    if total_commits > 0:
+        meta["bus_factor"] = _bus_factor(counts, total_commits)
+
+    top_authors = [authors.entry(key, count) for key, count in counts.most_common(_MAX_TOP_AUTHORS)]
     meta["top_authors_json"] = json.dumps(top_authors)
 
     if top_authors:
         primary = top_authors[0]
         meta["primary_owner_name"] = primary["name"]
         meta["primary_owner_email"] = primary["email"]
-        meta["primary_owner_commit_pct"] = (
-            primary["commit_count"] / total_commits if total_commits > 0 else 0.0
-        )
+        meta["primary_owner_commit_pct"] = primary["commit_count"] / total_commits
 
-    if authors.recent_counts:
-        recent_top = authors.recent_counts.most_common(1)[0]
+    if recent_counts:
+        recent_top = recent_counts.most_common(1)[0]
         meta["recent_owner_name"] = authors.name(recent_top[0])
-        recent_total = sum(authors.recent_counts.values())
+        recent_total = sum(recent_counts.values())
         meta["recent_owner_commit_pct"] = recent_top[1] / recent_total if recent_total > 0 else 0.0
 
 
@@ -613,7 +626,12 @@ def _bus_factor(author_counts: Counter[str], total_commits: int) -> int:
 
 
 def _add_blame_ownership(
-    meta: dict[str, Any], repo: Any, repo_path: Path, now: datetime, authors: _Authors
+    meta: dict[str, Any],
+    repo: Any,
+    repo_path: Path,
+    now: datetime,
+    authors: _Authors,
+    commits: list[_CommitRec],
 ) -> None:
     """Blame ownership plus the per-line ``BlameIndex`` (FULL tier), best effort.
 
@@ -625,28 +643,51 @@ def _add_blame_ownership(
     One ``git blame --line-porcelain`` pass serves both the primary-owner
     signal and the index ``function_hotspot`` / ``code_age_volatility`` read.
     Files over the size cap are skipped: blame is O(lines) and can block the
-    executor thread. The commit floor only gates whether the index is kept.
+    executor thread. The commit floor and the size cap gate the index the
+    biomarkers read (``"blame_index"``). A file under the floor, or a
+    production file between the size cap and
+    :data:`_MAX_FUNCTION_BLAME_SIZE_BYTES`, keeps its index under
+    ``"history_blame_index"`` instead: its functions get an owner and a last
+    change, and nothing health scores reads it. A file over the size cap keeps
+    its commit-based file owner.
+
+    Lines from a coding agent's commit go to the person the commit tally
+    credits (:attr:`_CommitRec.credit`). *commits* are the file's walked
+    commits, so an agent commit older than the walk keeps its agent author.
     """
     file_path = meta["file_path"]
     try:
-        if (repo_path / file_path).stat().st_size > _MAX_BLAME_SIZE_BYTES:
+        size = (repo_path / file_path).stat().st_size
+        oversize = size > _MAX_BLAME_SIZE_BYTES
+        if oversize and (
+            size > _MAX_FUNCTION_BLAME_SIZE_BYTES or path_origin(file_path) != "production"
+        ):
             return
-        blame_idx = build_blame_index(repo, file_path, repo_path=repo_path)
+        blame_idx = build_blame_index(
+            repo, file_path, repo_path=repo_path, max_size_bytes=_MAX_FUNCTION_BLAME_SIZE_BYTES
+        )
         if not blame_idx.lines:
             return
         blame_idx.as_of_ts = int(now.timestamp())
-        if meta["commit_count_total"] >= _MIN_COMMITS_FOR_BLAME:
-            meta["blame_index"] = blame_idx
+        scored = not oversize and meta["commit_count_total"] >= _MIN_COMMITS_FOR_BLAME
+        meta["blame_index" if scored else "history_blame_index"] = blame_idx
         # Blame credits lines to the same identities the commit tally counts.
+        blame_idx.authors.update(
+            {c.sha: c.credit for c in commits if c.credit and c.sha in blame_idx.authors}
+        )
         blame_idx.resolve = authors.resolve
+        if oversize:
+            return
         for name, email in blame_idx.authors.values():
             authors.seen_names.setdefault(authors.resolve(name, email), name)
         blame_key, blame_pct = top_blame_identity(blame_idx, blame_idx.lines)
-        if blame_key is not None:
+        if blame_key is not None and authors.resolve.kind(blame_key) != "bot":
             meta["primary_owner_name"] = authors.name(blame_key)
             meta["primary_owner_email"] = authors.resolve.email(blame_key)
             meta["primary_owner_line_pct"] = blame_pct
-            total_commits = sum(authors.counts.values())
+            total_commits = sum(
+                n for k, n in authors.counts.items() if authors.resolve.kind(k) != "bot"
+            )
             own_commits = authors.counts.get(blame_key, 0)
             meta["primary_owner_commit_pct"] = (
                 own_commits / total_commits if own_commits and total_commits else None

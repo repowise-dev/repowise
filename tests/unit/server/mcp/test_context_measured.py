@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from repowise.core.persistence.models import SymbolHotness
+from repowise.core.persistence.models import GraphEdge, SymbolHotness
 from repowise.server.mcp_server.tool_context import measured
 from repowise.server.mcp_server.tool_context.measured import file_line, symbol_line
 
@@ -105,7 +105,7 @@ def test_body_unchanged_says_earlier_commit():
 
 
 def test_file_line_caps_named_functions_and_counts_the_rest():
-    rows = [_row(f"{FILE}::f{i}", rank=i + 1, samples=100 - i) for i in range(5)]
+    rows = [_row(f"{FILE}::f{i}", rank=i + 1, self_share=0.10 - i / 1000) for i in range(5)]
     rows.append(_row(f"{FILE}::old", freshness="stale", rank=None))
     line = file_line(rows, NOW)
     assert line.startswith('in entry_point "cli build" (repo code itself 40%), 2d old: ')
@@ -212,10 +212,10 @@ async def test_store_without_the_table_answers_as_no_evidence(
 
 
 def test_low_share_interval_never_rounds_past_the_estimate():
-    row = _row(samples=4, run_samples=1000, share_low=0.0016, share_high=0.0102)
+    row = _row(self_share=0.004, share_low=0.0016, share_high=0.0102)
     assert "(<1% self, 0-1%;" in symbol_line(row, NOW)
     # A lower end that is exact in decimal but not in binary keeps its value.
-    row = _row(samples=600, share_low=0.57, share_high=0.63)
+    row = _row(self_share=0.6, share_low=0.57, share_high=0.63)
     assert "(60% self, 57-63%;" in symbol_line(row, NOW)
 
 
@@ -245,3 +245,239 @@ async def test_class_target_and_missed_symbol(setup_mcp, session, populated_db):
     # A missed name degrades to the file's card, which carries the file's line.
     assert cards[miss]["resolved_to"] == FILE
     assert cards[miss]["measured"].endswith("login rank 3 (12% self, 10-14%)")
+
+
+# -- why and drivers -----------------------------------------------------------
+
+#: What a run measured inside ``login``: stat calls per entry of a directory walk.
+INSIDE = [
+    {
+        "name": "is_file",
+        "kind": "library",
+        "share": 0.57,
+        "leaf": {"name": "stat", "kind": "native", "share": 0.57},
+    },
+    {"name": "select_recursive", "kind": "library", "share": 0.25},
+    {"name": "stat", "kind": "library", "share": 0.15},
+]
+MIDDLEWARE = "src/auth/middleware.py::require_user"
+TEST_CALLER = "tests/test_service.py::test_login"
+#: Measured callers: one production caller in the graph, one test caller in the
+#: graph, one production name the graph does not list as a caller.
+DRIVERS = [
+    {"name": "require_user", "share": 0.6, "symbol": MIDDLEWARE},
+    {"name": "test_login", "share": 0.3, "symbol": TEST_CALLER},
+    {"name": "ghost", "share": 0.1, "symbol": "src/auth/other.py::ghost"},
+]
+
+
+async def _callers(session, repo_id: str) -> None:
+    for source in (MIDDLEWARE, TEST_CALLER):
+        session.add(
+            GraphEdge(
+                repository_id=repo_id,
+                source_node_id=source,
+                target_node_id=LOGIN,
+                edge_type="calls",
+            )
+        )
+    await session.flush()
+
+
+def test_symbol_line_appends_why_and_drivers_after_the_measurement():
+    line = symbol_line(_row(), NOW, ["why: w", "driven by: d 60%"])
+    assert line == (
+        'rank 3 of repo code in entry_point "cli build" '
+        "(12% self, 10-14%; repo code itself 40%), 2d old; why: w; driven by: d 60%"
+    )
+    assert symbol_line(_row(), NOW, []) == symbol_line(_row(), NOW)
+
+
+@pytest.mark.asyncio
+async def test_a_measured_function_names_why_and_its_production_drivers(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    cards = (await get_context([LOGIN, FILE]))["targets"]
+    line = cards[LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in entry_point "cli build"')
+    assert "; why: " in line and "directory walk" in line
+    # Only the production caller the graph lists: no test caller, no unlisted name.
+    assert line.endswith(f"; driven by: {MIDDLEWARE} 60%")
+    assert "test_login" not in line and "ghost" not in line
+    # A file's line never takes a function's why or drivers.
+    assert "why:" not in cards[FILE]["measured"]
+    assert "driven by" not in cards[FILE]["measured"]
+
+
+@pytest.mark.asyncio
+async def test_why_and_drivers_only_with_their_data(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    # A unit-test run gets no step; its measured production caller still drives it.
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        workload_class="unit_test",
+        workload_name="pytest",
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert "why:" not in line and line.endswith(f"; driven by: {MIDDLEWARE} 60%")
+
+
+@pytest.mark.asyncio
+async def test_stale_or_bare_rows_keep_the_plain_line(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        freshness="stale",
+        rank=None,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('stale: measured in entry_point "cli build" before the body changed, ')
+    assert line.endswith("d old")
+    # Only a test caller measured, and no rule fires: the plain line.
+    row = await session.get(SymbolHotness, (populated_db, LOGIN))
+    row.freshness, row.rank = "current", 3
+    row.inside_json = json.dumps([{"name": "helper", "kind": "repo", "share": 0.2}])
+    row.drivers_json = json.dumps(DRIVERS[1:2])
+    await session.flush()
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.endswith("d old")
+    assert "why" not in line and "driven" not in line
+
+
+@pytest.mark.asyncio
+async def test_a_failure_behind_why_or_drivers_keeps_the_plain_line(
+    setup_mcp, session, populated_db, monkeypatch
+):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+
+    async def _broken(*args, **kwargs):
+        raise ValueError("a stored finding that does not parse")
+
+    monkeypatch.setattr(measured, "step_findings", _broken)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in entry_point "cli build"')
+    assert "why" not in line and "driven" not in line
+
+
+# -- production window ---------------------------------------------------------
+
+CLAIM = "in production over 2026-10-30 to 2026-11-26, deployed ee257d145f19"
+
+
+def test_a_production_row_names_its_window_and_nothing_else_changes():
+    prod = _row(workload_class="production", workload_name="api")
+    assert symbol_line(prod, NOW, (), {"r1": CLAIM}) == (
+        'rank 3 of repo code in production "api" over 2026-10-30 to 2026-11-26, '
+        "deployed ee257d145f19 (12% self, 10-14%; repo code itself 40%), 2d old"
+    )
+    assert file_line([prod], NOW, {"r1": CLAIM}).startswith(
+        'in production "api" over 2026-10-30 to 2026-11-26, deployed ee257d145f19 ('
+    )
+    # A claim for another run, or a window on a row that is not production, is never read.
+    assert symbol_line(prod, NOW, (), {"r2": CLAIM}) == symbol_line(prod, NOW)
+    assert symbol_line(_row(), NOW, (), {"r1": CLAIM}) == symbol_line(_row(), NOW)
+    assert 'production "api", window unknown, deployed commit unknown' in symbol_line(
+        prod, NOW, (), {"r1": "in production, window unknown, deployed commit unknown"}
+    )
+
+
+async def _production_run(session, repo_id: str, run_id: str = "r1") -> None:
+    from repowise.core.persistence.models import EvidenceRun
+
+    session.add(
+        EvidenceRun(
+            id=run_id, repository_id=repo_id, run_key=run_id, kind="profile",
+            format="repowise-evidence-v1", source="cli", workload_name="api",
+            workload_class="production", value_kind="cpu", unit="samples",
+            commit_sha="ee257d145f19" + "0" * 28,
+            window_start=datetime(2026, 10, 30, tzinfo=UTC),
+            window_end=datetime(2026, 11, 26, tzinfo=UTC),
+        )
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_a_function_measured_in_production_names_the_window(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_context
+
+    await _production_run(session, populated_db)
+    await _add(session, populated_db, LOGIN, workload_class="production", workload_name="api")
+    cards = (await get_context([LOGIN, FILE]))["targets"]
+    assert cards[LOGIN]["measured"].startswith(
+        'rank 3 of repo code in production "api" over 2026-10-30 to 2026-11-26, '
+        "deployed ee257d145f19 (12% self"
+    )
+    assert cards[FILE]["measured"].startswith(f'in production "api" {CLAIM[14:]} (')
+
+
+@pytest.mark.asyncio
+async def test_non_production_lines_read_no_window(setup_mcp, session, populated_db, monkeypatch):
+    from repowise.server.mcp_server import get_context
+
+    # A stored production run elsewhere: an entry_point row's line is unchanged
+    # and the window read never runs.
+    await _production_run(session, populated_db, "r-prod")
+    await _add(session, populated_db, LOGIN)
+    calls: list = []
+
+    async def _spy(*args, **kwargs):
+        calls.append(args)
+        return {}
+
+    monkeypatch.setattr(measured, "production_window_claims", _spy)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith(
+        'rank 3 of repo code in entry_point "cli build" (12% self, 10-14%; repo code itself 40%), '
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_window_read_keeps_the_plain_line(
+    setup_mcp, session, populated_db, monkeypatch
+):
+    from repowise.server.mcp_server import get_context
+
+    await _production_run(session, populated_db)
+    await _add(session, populated_db, LOGIN, workload_class="production", workload_name="api")
+
+    async def _broken(*args, **kwargs):
+        raise ValueError("a stored window time that does not parse")
+
+    monkeypatch.setattr(measured, "production_window_claims", _broken)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in production "api" (12% self')

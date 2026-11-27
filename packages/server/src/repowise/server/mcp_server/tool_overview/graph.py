@@ -37,6 +37,20 @@ def reset_cache() -> None:
     _DEPENDENCY_CACHE.clear()
 
 
+def drop_repo(repo_id: str) -> None:
+    """Drop every dependency block cached for *repo_id*."""
+    for key in [k for k in _DEPENDENCY_CACHE if k[0] == repo_id]:
+        del _DEPENDENCY_CACHE[key]
+
+
+def set_limit(entries: int) -> None:
+    """Keep at most *entries* blocks; like a full cache, an over-full one clears."""
+    global _DEPENDENCY_CACHE_LIMIT
+    _DEPENDENCY_CACHE_LIMIT = entries
+    if len(_DEPENDENCY_CACHE) > entries:
+        _DEPENDENCY_CACHE.clear()
+
+
 async def _load_community_nodes(
     session: Any, repository: Any, exclude_spec: Any, all_git: list
 ) -> list[GraphNode]:
@@ -207,7 +221,7 @@ def _build_commands(repo_root: Any, package_roots: list[str]) -> dict[str, dict[
     if not repo_root:
         return {}
     # Imported here: the editor-files package is heavy and only this reads it.
-    from repowise.core.generation.editor_files.tech_stack import detect_build_commands
+    from repowise.core.ingestion.tech_stack import detect_build_commands
 
     base = Path(repo_root)
     root = detect_build_commands(base)

@@ -6,14 +6,16 @@ workspace mode, :class:`AvailabilityFacts`) and applies the resolved set to
 the FastMCP instance.
 
 The registry attaches *every* tool to the FastMCP instance the first time a
-caller asks for the full surface (``mcp_server.ensure_full_surface``).
-:func:`apply_tool_selection` then trims that set once, at boot, by removing the
+caller asks for the full surface (``mcp_server.ensure_full_surface``). A server
+that boots through :func:`apply_tool_selection` attaches only the tools its
+selection can enable (``candidate_tools``), so a narrowed profile imports
+fewer tool modules. :func:`apply_tool_selection` then trims that set once, at boot, by removing the
 deselected tools from the FastMCP tool manager, so raw MCP clients see the
 surface as it stood when the server started. Each MCP session then sees that
 set narrowed to its client's default profile (:func:`session_tool_names`) when
 the configuration names no profile; tools outside it stay callable. Chat calls
 :func:`selected_tool_entries` instead, which re-resolves on every turn. There
-is no per-call cost and tool schemas are untouched.
+is no per-call cost, and the only schema edit is :func:`single_repo_schemas`.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from repowise.core.registry.tool_selection import (
     DEFERRED_SCHEMA_CLIENTS,
     PROFILES,
     AvailabilityFacts,
+    candidate_tools,
     default_profile,
     is_delta,
     normalize_override,
@@ -87,6 +90,22 @@ def snapshot_full_surface(mcp: Any) -> None:
     registered = getattr(manager, "_tools", None)
     if registered:
         _full_surface = dict(registered)
+
+
+def extend_full_surface(definition: Any, entries: Iterable[ToolEntry]) -> None:
+    """Add to the snapshot each of *entries* it lacks, built by *definition*.
+
+    For a narrowed boot completed later (``mcp_server.ensure_full_surface``):
+    the snapshot is what descriptions and chat read, so it gains the rest of
+    the catalog, while the server's own tool list stays as it booted.
+    """
+    global _full_surface
+    surface = _full_surface if _full_surface is not None else {}
+    for entry in entries:
+        # The server keeps the first tool registered under a name.
+        if entry.name not in surface:
+            surface[entry.name] = definition(entry)
+    _full_surface = surface
 
 
 def _read_repo_config(repo_path: str | None) -> dict[str, Any] | None:
@@ -174,12 +193,15 @@ def apply_tool_selection(
     block when not given on the CLI), then removes every registered tool that is
     not enabled. Returns the enabled set. Safe to call once per server boot.
     """
-    _ensure_registered()
-
     if override is None:
         override = _read_config_override(repo_path)
 
     is_workspace = _is_workspace(repo_path)
+    # Import only the tools this selection can enable; the rest load if
+    # something later asks for the whole catalog.
+    from repowise.server.mcp_server import ensure_surface
+
+    ensure_surface(candidate_tools(override, is_workspace=is_workspace))
     facts = _availability_facts(repo_path)
     enabled = resolve_enabled_tools(
         mcp_tool_registry.entries(),
@@ -274,6 +296,32 @@ def mark_always_loaded(tools: list[Any]) -> list[Any]:
         else t
         for t in tools
     ]
+
+
+#: What a single-repo server lists for a ``repo`` argument whose description
+#: offers ``"all"``: one repository has nothing to fan out over.
+SINGLE_REPO_REPO_DESCRIPTION = "Usually omitted."
+
+
+def without_repo_all(tool: Any) -> Any:
+    """*tool* (``mcp.types.Tool``) with no ``repo="all"`` offer in its schema."""
+    props = tool.inputSchema.get("properties") or {}
+    repo = props.get("repo")
+    if not isinstance(repo, dict) or '"all"' not in (repo.get("description") or ""):
+        return tool
+    repo = {**repo, "description": SINGLE_REPO_REPO_DESCRIPTION}
+    schema = {**tool.inputSchema, "properties": {**props, "repo": repo}}
+    return tool.model_copy(update={"inputSchema": schema})
+
+
+def single_repo_schemas(tools: list[Any]) -> list[Any]:
+    """*tools* without the ``repo="all"`` offer when this server serves one repository.
+
+    A workspace server, or one with no boot selection, gets the list as given.
+    """
+    if _selected_surface is None or _selected_surface[0]:
+        return tools
+    return [without_repo_all(tool) for tool in tools]
 
 
 def selected_tool_names(*, is_workspace: bool) -> set[str]:
@@ -482,7 +530,6 @@ def schema_tokens(name: str) -> int:
         "name": tool.name,
         "description": tool.description,
         "inputSchema": tool.parameters,
-        "outputSchema": tool.output_schema,
     }
     return len(json.dumps(listed, separators=(",", ":"))) // 4
 

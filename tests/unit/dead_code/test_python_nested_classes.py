@@ -245,3 +245,74 @@ def test_pydantic_config_block_is_read_by_the_framework():
 def test_top_level_config_class_stays_reported():
     src = b"class Config:\n    debug = False\n"
     assert (None, "Config") in _unused_exports("app/settings.py", src)
+
+
+def _unused_exports_in_repo(tmp_path, files: dict[str, str]) -> set[tuple[str, str]]:
+    """``(file, name)`` unused-export rows from a real graph build."""
+    from pathlib import Path
+
+    from repowise.core.ingestion import FileTraverser, GraphBuilder
+
+    for rel, text in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=tmp_path)
+    source_map: dict[str, bytes] = {}
+    parsed_files = {}
+    for fi in FileTraverser(tmp_path).traverse():
+        source = Path(fi.abs_path).read_bytes()
+        source_map[fi.path] = source
+        parsed_files[fi.path] = parser.parse_file(fi, source)
+        builder.add_file(parsed_files[fi.path])
+    builder.set_source_map(source_map)
+    graph = builder.build()
+    report = DeadCodeAnalyzer(
+        graph, {}, parsed_files=parsed_files, source_map=source_map, repo_root=tmp_path
+    ).analyze({"detect_unreachable_files": False, "detect_zombie_packages": False})
+    return {
+        (f.file_path, f.symbol_name)
+        for f in report.findings
+        if f.kind == DeadCodeKind.UNUSED_EXPORT
+    }
+
+
+# One inner ``Arguments`` per file, so each row names exactly one class.
+_GRAPHENE_REPO = {
+    "app/main.py": (
+        "from app.post_create import PostCreate\n"
+        "from app.post_delete import PostDelete\n"
+        "from app.jobs import Job\n\n"
+        "MUTATIONS = [PostCreate, PostDelete, Job]\n"
+    ),
+    # Shaped on saleor: ``import graphene`` and a mutation's argument block.
+    "app/post_create.py": (
+        "import graphene\n\n\n"
+        "class PostCreate(graphene.Mutation):\n"
+        "    class Arguments:\n"
+        "        title = graphene.String(required=True)\n\n"
+        "    ok = graphene.Boolean()\n\n"
+        "    def mutate(self, info, title):\n"
+        "        return PostCreate(ok=True)\n"
+    ),
+    "app/post_delete.py": (
+        "from graphene import ID, Mutation\n\n\n"
+        "class PostDelete(Mutation):\n"
+        "    class Arguments:\n"
+        "        id = ID(required=True)\n"
+    ),
+    # No Graphene import: an inner ``Arguments`` here is an ordinary class.
+    "app/jobs.py": "class Job:\n    class Arguments:\n        retries = 3\n",
+}
+
+
+def test_graphene_mutation_arguments_block_is_read_by_the_framework(tmp_path):
+    unused = _unused_exports_in_repo(tmp_path, _GRAPHENE_REPO)
+    assert ("app/post_create.py", "Arguments") not in unused
+    assert ("app/post_delete.py", "Arguments") not in unused
+
+
+def test_inner_arguments_class_without_graphene_import_stays_reported(tmp_path):
+    unused = _unused_exports_in_repo(tmp_path, _GRAPHENE_REPO)
+    assert ("app/jobs.py", "Arguments") in unused

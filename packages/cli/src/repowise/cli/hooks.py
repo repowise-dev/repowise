@@ -95,22 +95,69 @@ _HOOK_SCRIPT = """\
     printf '\\n--- post-commit hook fired at %s for HEAD %s ---\\n' \\
       "$(date 2>/dev/null)" "$HEAD"
   } >> "$LOG" 2>/dev/null || true
+  # Coalesce a burst of commits into one update (#5353). The directory is the
+  # guard, and it is taken inside the backgrounded subshell so the trap that
+  # releases it fires when the update exits — a trap on the outer block never
+  # does, because that block exits as soon as it has backgrounded the work.
+  #
+  # The age escape is the part that matters: a run killed mid-flight leaves the
+  # directory, and without it every later commit is silently skipped. A hook
+  # that does nothing looks exactly like one that is working.
+  #
+  # A hook that finds the guard held leaves .update.hook-pending so the holder
+  # runs again for its commit. It writes the marker before it tries the guard,
+  # and the holder releases the guard before it looks for the marker, so every
+  # commit is either seen through the marker or takes the guard itself.
+  GUARD="$ROOT/.repowise/.update.lock.d"
+  PENDING="$ROOT/.repowise/.update.hook-pending"
+  : > "$PENDING" 2>/dev/null || true
+  find "$GUARD" -maxdepth 0 -mmin +120 -exec rmdir {} \\; 2>/dev/null
   (
-    cd "$ROOT" || exit 1
-    if command -v repowise >/dev/null 2>&1; then
-      repowise update >> "$LOG" 2>&1
-    elif [ -x "$ROOT/.venv/bin/repowise" ]; then
-      "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
-    elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
-      "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
+    if ! mkdir "$GUARD" 2>/dev/null; then
+      exit 0
     fi
+    trap 'rmdir "$GUARD" 2>/dev/null' EXIT
+    cd "$ROOT" || exit 1
+    run_update() {
+      if command -v repowise >/dev/null 2>&1; then
+        repowise update >> "$LOG" 2>&1
+      elif [ -x "$ROOT/.venv/bin/repowise" ]; then
+        "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
+      elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
+        "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
+      fi
+    }
+    # A commit that lands while a run is in flight cannot take the guard, and
+    # the run has already read HEAD, so it would leave that commit unindexed
+    # and, because it also clears .update.queued, silence the stale warning that
+    # would have said so. Run again until HEAD holds still (#5518). No cap on
+    # passes: a capped loop drops the commit that lands during the last one.
+    while :; do
+      rm -f "$PENDING"
+      # Refresh the guard's age so a long burst is not taken for a killed run.
+      touch "$GUARD" 2>/dev/null || :
+      before=$(git rev-parse HEAD 2>/dev/null) || before=""
+      run_update
+      after=$(git rev-parse HEAD 2>/dev/null) || after=""
+      [ "$after" != "$before" ] && continue
+      trap - EXIT
+      rmdir "$GUARD" 2>/dev/null || :
+      # A commit after the HEAD check above found the guard still held and left
+      # only the marker. Take the guard back and run for it; if that commit's
+      # own hook took the guard first, that hook runs instead.
+      [ -f "$PENDING" ] || break
+      after=$(git rev-parse HEAD 2>/dev/null) || after=""
+      [ "$after" != "$before" ] || break
+      mkdir "$GUARD" 2>/dev/null || break
+      trap 'rmdir "$GUARD" 2>/dev/null' EXIT
+    done
   ) &
 } >/dev/null 2>&1
 # repowise-hook-end
 """
 
-_PATH_LOOKUP = "    if command -v repowise >/dev/null 2>&1; then\n"
-_PINNED_RE = re.compile(r"^    if \[ -x '((?:[^']|'\"'\"')*)' \]; then$", re.MULTILINE)
+_PATH_LOOKUP = "      if command -v repowise >/dev/null 2>&1; then\n"
+_PINNED_RE = re.compile(r"^      if \[ -x '((?:[^']|'\"'\"')*)' \]; then$", re.MULTILINE)
 
 
 def _pinned_repowise() -> str:
@@ -130,7 +177,7 @@ def _hook_script() -> str:
     if "/" not in pinned and "\\" not in pinned:
         return _HOOK_SCRIPT
     quoted = "'" + pinned.replace("'", "'\"'\"'") + "'"
-    run = f'    if [ -x {quoted} ]; then\n      {quoted} update >> "$LOG" 2>&1\n    el'
+    run = f'      if [ -x {quoted} ]; then\n        {quoted} update >> "$LOG" 2>&1\n      el'
     return _HOOK_SCRIPT.replace(_PATH_LOOKUP, run + _PATH_LOOKUP.lstrip(), 1)
 
 

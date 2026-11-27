@@ -7,7 +7,7 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import Collection
+from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -135,8 +135,11 @@ _warned_ambiguous: set[str] = set()
 
 
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
-    """Resolve a repository by path, ID or name; with none, the served directory's."""
-    if repo:
+    """Resolve a repository by path, ID or name; with none, the served directory's.
+
+    ``.`` names the served directory, as it does in a shell.
+    """
+    if repo and Path(repo) != Path("."):
         # Try by path
         result = await session.execute(select(Repository).where(Repository.local_path == repo))
         obj = result.scalar_one_or_none()
@@ -899,6 +902,69 @@ def filter_path_list(paths: list | None, spec: Any) -> list:
     if not spec:
         return list(paths)
     return [p for p in paths if not is_excluded(p, spec)]
+
+
+def node_is_excluded(node_id: str | None, spec: Any) -> bool:
+    """True if the file a graph node id (file or ``path::Name``) names is excluded."""
+    from repowise.core.exclusion import node_is_excluded as _core_node_is_excluded
+
+    return _core_node_is_excluded(node_id, spec)
+
+
+def edge_is_excluded(source_id: str | None, target_id: str | None, spec: Any) -> bool:
+    """True if either end of a graph edge is excluded."""
+    from repowise.core.exclusion import edge_is_excluded as _core_edge_is_excluded
+
+    return _core_edge_is_excluded(source_id, target_id, spec)
+
+
+def _edge_endpoints(row: Any) -> tuple[str | None, str | None]:
+    return row.source_node_id, row.target_node_id
+
+
+def filter_edge_rows(
+    rows: Any, spec: Any, endpoints: Callable[[Any], Iterable[str | None]] = _edge_endpoints
+) -> list:
+    """Shape F: drop edge rows with an excluded endpoint.
+
+    *endpoints* names the node ids a row carries; the default reads
+    ``source_node_id`` and ``target_node_id``. A row is kept only when none of
+    them is excluded, so a hop through an excluded file never reaches a walk.
+    """
+    if not spec:
+        return list(rows)
+    # Edge lists repeat each node many times over (a full export reads ~400k
+    # rows over ~30k nodes), so each id's verdict is worked out once.
+    verdicts: dict[str | None, bool] = {}
+
+    def excluded(node_id: str | None) -> bool:
+        hit = verdicts.get(node_id)
+        if hit is None:
+            hit = verdicts[node_id] = node_is_excluded(node_id, spec)
+        return hit
+
+    return [r for r in rows if not any(excluded(n) for n in endpoints(r))]
+
+
+async def fetch_allowed_edges(
+    session: AsyncSession,
+    stmt: Any,
+    spec: Any,
+    *,
+    limit: int,
+    endpoints: Callable[[Any], Iterable[str | None]] = _edge_endpoints,
+    keep_excluded: bool = False,
+) -> list:
+    """Shape G: the first *limit* rows of an edge query with no excluded endpoint.
+
+    Delegates to :func:`repowise.core.exclusion.fetch_allowed_edges`, which
+    reads on in bounded pages so excluded rows never take an allowed row's place.
+    """
+    from repowise.core.exclusion import fetch_allowed_edges as _core_fetch_allowed_edges
+
+    return await _core_fetch_allowed_edges(
+        session, stmt, spec, limit=limit, endpoints=endpoints, keep_excluded=keep_excluded
+    )
 
 
 def filter_embedded_path_ids(ids: list, spec: Any) -> list:

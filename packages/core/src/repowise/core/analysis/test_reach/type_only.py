@@ -14,9 +14,10 @@ import ast
 from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 
+from repowise.core.ingestion.ts_declarations import is_declaration_file
+from repowise.core.pyparse import parse_python
 from repowise.core.test_paths import is_test_related_path
 
-_DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
 _DECLARATION_NAMES = frozenset({"package-info.java", "module-info.java"})
 _TS_SUFFIXES = frozenset({".ts", ".mts", ".cts", ".tsx"})
 
@@ -68,7 +69,7 @@ def may_be_type_only(path: str) -> bool:
 
 def _declared_by_name(lowered: str) -> bool:
     return (
-        lowered.endswith(_DECLARATION_SUFFIXES) or PurePosixPath(lowered).name in _DECLARATION_NAMES
+        is_declaration_file(lowered) or PurePosixPath(lowered).name in _DECLARATION_NAMES
     )
 
 
@@ -164,7 +165,7 @@ def _ts_type_export(node) -> bool:
 
 def _python_type_only(source: bytes) -> bool:
     try:
-        tree = ast.parse(source)
+        tree = parse_python(source)
     except (SyntaxError, ValueError):
         return False
     # Imports, a docstring and ``__all__`` alone are no code of their own either.

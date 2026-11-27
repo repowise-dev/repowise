@@ -42,8 +42,11 @@ ROW = {
     "freshness": "current",
     "callers_total": 2,
     "callers": ["src/main.py::main"],
-    "owner": {"name": "Ada", "commit_pct": 0.8},
+    "owner": {"name": "Ada", "line_pct": 0.8},
+    "last_change": {"sha": "abcdef1234", "date": "2026-10-03", "subject": "x (#42)", "pr": 42},
     "tests": ["tests/test_app.py::test_serve"],
+    "tests_basis": "call_graph",
+    "verify": None,
 }
 VIEW = {
     "measured": {"runs": [RUN], "rows": [ROW]},
@@ -73,12 +76,26 @@ def test_each_run_states_its_basis_and_where_its_time_went() -> None:
     # The cost leads; inclusive time is context, never "94% of the run".
     assert (
         "self 30% of the run (27% to 33%) · with callees 94% · 1,590 samples · 2 callers · "
-        "owner Ada" in out
+        "owner Ada · last changed 2026-10-03 (abcdef1, #42) · nearest test" in out
     )
     assert "94% of the run" not in out
-    assert "nearest test tests/test_app.py::test_serve" in out
+    assert "nearest test by call graph tests/test_app.py::test_serve" in out
     assert "tests not mapped · static cause perf3_x" in out
     assert not re.search(r"\b(hot|cold)\b", out, re.IGNORECASE)
+
+
+def test_a_row_names_the_test_that_ran_it_and_the_benchmark_that_verifies() -> None:
+    row = {
+        **ROW,
+        "tests": ["tests/test_app.py::test_run"],
+        "tests_basis": "per_test_map",
+        "verify": "pytest benches/bench_app.py::test_serve --benchmark-only",
+    }
+    out = _rendered({"measured": {"runs": [RUN], "rows": [row]}})
+    assert "test that ran it tests/test_app.py::test_run" in out
+    assert "verify: pytest benches/bench_app.py::test_serve --benchmark-only" in out
+    empty = _rendered({"measured": {"runs": [RUN], "rows": [{**row, "tests": []}]}})
+    assert "no test ran it" in empty
 
 
 def test_a_run_stored_before_the_split_says_so() -> None:
@@ -132,3 +149,51 @@ def test_the_connect_line_comes_last(monkeypatch) -> None:
         monkeypatch.setattr(health_module, name, lambda *_a, _n=name: calls.append(_n))
     _run(monkeypatch)
     assert calls == ["_render_files_table", "_render_findings_table", "_render_connect_line"]
+
+
+def test_benchmarks_show_the_function_each_measures_and_numbers_per_op() -> None:
+    bench_run = {"run_id": "b1", "workload_class": "benchmark", "workload_name": "go bench",
+                 "commit": "abcdef1234", "measured_at": None, "age_days": 0}
+    row = {"run_id": "b1", "benchmark": "BenchmarkGetMapFromFormData/Large_Bracket",
+           "benchmark_symbol_id": "context_test.go::BenchmarkGetMapFromFormData",
+           "measures": "context.go::getMapFromFormData", "time": 10244.0, "unit": "ns",
+           "allocs_per_op": 11.0, "bytes_per_op": 5456.0}
+    unnamed = {**row, "benchmark": "Benchmark404", "measures": None, "time": 62.58,
+               "allocs_per_op": 0.0, "bytes_per_op": None}
+    out = _rendered({"benchmarks": {"runs": [bench_run], "rows": [row, unnamed], "total": 2}})
+    assert 'Benchmarks ("go bench" at abcdef1)' in out
+    assert "BenchmarkGetMapFromFormData/Large_Bracket -> context.go::getMapFromFormData" in out
+    assert "10,244 ns/op, 11 allocs/op, 5,456 B/op" in out
+    assert "Benchmark404\n" in out and "62.6 ns/op, 0 allocs/op" in out
+    assert "of the run" not in out
+
+
+def test_an_import_row_reads_as_the_file_and_import_time() -> None:
+    row = {**ROW, "symbol_id": "src/app.py::<module>", "lines": None, "label": "import time"}
+    out = _rendered({"measured": {"runs": [RUN], "rows": [row]}})
+    assert "1. src/app.py import time" in out
+    assert "<module>" not in out
+
+
+def test_production_statements_say_their_window_and_what_is_on_no_function() -> None:
+    from repowise.core.evidence.action_row import action_row, statement_facts
+    from repowise.core.evidence.measured_fold import StatementCost
+
+    cost = StatementCost("src/app.py::save", "s1", 1, 0.6, 600.0, 40, 2)
+    row = action_row(
+        cost, workload_name="orders-db", workload_class="production",
+        statements=statement_facts(cost),
+    ).as_dict()
+    run = {
+        "run_id": "s1", "workload_class": "production", "workload_name": "orders-db",
+        "commit": "d" * 40, "window_start": "2026-11-01T00:00:00+00:00",
+        "window_end": "2026-11-26T00:00:00+00:00", "total_ms": 1000.0, "statements": 5,
+        "unattributed": {"ambiguous": {"statements": 2, "total_ms": 300.0, "share": 0.3}},
+    }
+    out = _rendered({"statements": {"runs": [run], "rows": [row], "total": 1}})
+    assert (
+        'Production statements (production "orders-db" at ddddddd over 2026-11-01 to '
+        "2026-11-26: 1,000 ms in 5 statements, 30% on no single function)"
+    ) in out
+    assert "60% of the window's statement time · 40 calls · 15 ms mean · 2 statements" in out
+    assert "verify: compare this row in the next orders-db window" in out

@@ -140,8 +140,10 @@ def migrate_codex_rewrite_hook() -> bool:
 
 
 def _codex_hooks_path() -> Path:
-    """The user-level Codex hooks file (~/.codex/hooks.json)."""
-    return Path.home() / ".codex" / "hooks.json"
+    """The user-level Codex hooks file (``$CODEX_HOME/hooks.json``)."""
+    from repowise.core.codex_home import codex_home
+
+    return codex_home() / "hooks.json"
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +218,11 @@ def install_codex_rewrite_hook() -> Path | None:
         return None
 
 
-def uninstall_codex_rewrite_hook() -> bool:
+def uninstall_codex_rewrite_hook(hooks_path: Path | None = None) -> bool:
     """Remove the distill rewrite entry; True when something was removed."""
     from repowise.cli.mcp_config import load_existing_config
 
-    hooks_path = _codex_hooks_path()
+    hooks_path = hooks_path or _codex_hooks_path()
     if not hooks_path.exists():
         return False
     try:
