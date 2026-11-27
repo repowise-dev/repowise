@@ -11,6 +11,7 @@ arguments, router navigation and i18n keys, are not mistaken for service calls.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from collections.abc import Iterator
 from dataclasses import replace
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..calls import FileStrings, receiver_name
-from ..langs import JS_TS
+from ..langs import JS_EXTENSION_RE, JS_TS
 from ..strings import (
     JS_SYNTAX,
     call_arguments,
@@ -44,7 +45,6 @@ from .node_clients import (
     FieldScope,
     _imports,
     _is_package,
-    _module_name,
     client_calls,
     client_mounts,
 )
@@ -178,6 +178,11 @@ _NOT_A_REQUEST_RE = re.compile(
 )
 
 
+def _module_path(rel_path: str) -> str:
+    path = JS_EXTENSION_RE.sub("", rel_path)
+    return path.removesuffix("/index") if path.endswith("/index") else path
+
+
 def _mounted_wrapper_prefixes(
     ctx: ScanContext,
     callees: set[str],
@@ -194,10 +199,13 @@ def _mounted_wrapper_prefixes(
         if callee in prefixes or callee not in imported_map:
             continue
         imported_name, spec = imported_map[callee]
-        module = _module_name(spec)
+        target = (
+            posixpath.normpath(posixpath.join(posixpath.dirname(ctx.rel_path), spec))
+            if spec.startswith(".")
+            else spec
+        )
+        module = _module_path(target)
         mounted = ctx.mounts.get(f"{_WRAPPER_MOUNT_KEY}{module}:{imported_name}")
-        if mounted is None and imported_name == "default":
-            mounted = ctx.mounts.get(f"{_WRAPPER_MOUNT_KEY}{module}:{callee}")
         if mounted is not None:
             prefixes[callee] = mounted
 
@@ -412,7 +420,7 @@ def wrapper_mounts(ctx: ScanContext) -> dict[str, str]:
     if not http_names:
         return {}
     prefixes = wrapper_prefixes(content, http_names, strings, fields)
-    module = _module_name(ctx.rel_path)
+    module = _module_path(ctx.rel_path)
     mounts = {f"{_WRAPPER_MOUNT_KEY}{module}:{name}": prefix for name, prefix in prefixes.items() if prefix}
     for m in _EXPORT_NAMES_RE.finditer(content):
         if m.group("default"):

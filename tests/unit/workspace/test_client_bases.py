@@ -388,3 +388,60 @@ def test_a_wrapper_prefix_not_applied_to_unrelated_import(tmp_path: Path) -> Non
     }
     assert ("wrapper", "/users") in paths
     assert ("wrapper", "/api/users") not in paths
+
+
+def test_wrapper_prefix_not_leaked_across_same_named_modules_in_different_dirs(tmp_path: Path) -> None:
+    src_api = (
+        "import axios from 'axios';\n"
+        "export function apiGet(url: string) { return axios.get(`/api${url}`); }\n"
+    )
+    lib_api = (
+        "export function apiGet(url: string, opts?: any) { return fetch(url, opts); }\n"
+    )
+    lib_client = (
+        "import { apiGet } from './api';\n"
+        "apiGet('/users', { method: 'GET' });\n"
+    )
+    src_client = (
+        "import { apiGet } from './api';\n"
+        "apiGet('/items', { method: 'GET' });\n"
+    )
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "lib").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "api.ts").write_text(src_api, encoding="utf-8")
+    (repo / "lib" / "api.ts").write_text(lib_api, encoding="utf-8")
+    (repo / "src" / "client.ts").write_text(src_client, encoding="utf-8")
+    (repo / "lib" / "client.ts").write_text(lib_client, encoding="utf-8")
+    paths = {
+        (c.meta["client"], c.meta["path"])
+        for c in HttpExtractor().extract(repo, "web")
+        if c.role == "consumer"
+    }
+    assert ("wrapper", "/api/items") in paths
+    assert ("wrapper", "/users") in paths
+    assert ("wrapper", "/api/users") not in paths
+
+
+def test_default_import_does_not_take_named_export_prefix(tmp_path: Path) -> None:
+    api_mod = (
+        "import axios from 'axios';\n"
+        "export const request = (url: string) => axios.get(`/api${url}`);\n"
+        "export default function req(url: string, opts?: any) { return fetch(url, opts); }\n"
+    )
+    client_mod = (
+        "import request from './api';\n"
+        "request('/users', { method: 'GET' });\n"
+    )
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "api.ts").write_text(api_mod, encoding="utf-8")
+    (repo / "src" / "client.ts").write_text(client_mod, encoding="utf-8")
+    paths = {
+        (c.meta["client"], c.meta["path"])
+        for c in HttpExtractor().extract(repo, "web")
+        if c.role == "consumer"
+    }
+    assert ("wrapper", "/users") in paths
+    assert ("wrapper", "/api/users") not in paths
+
