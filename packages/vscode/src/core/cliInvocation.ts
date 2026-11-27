@@ -74,9 +74,12 @@ export function shellKindOf(shell: string | undefined, platform = process.platfo
   return platform === "win32" ? "powershell" : "posix";
 }
 
-/** Executable names that need no quoting; POSIX shells also eat backslashes. */
-const PLAIN_EXE = /^[\w@+=:,./\\-]+$/;
-const PLAIN_POSIX_EXE = /^[\w@+=:,./-]+$/;
+/**
+ * Executable names that need no quoting. POSIX shells also eat backslashes,
+ * and read a leading `name=value` word as an assignment, so `=` always quotes.
+ */
+const PLAIN_EXE = /^[\w@+:,./\\-]+$/;
+const PLAIN_POSIX_EXE = /^[\w@+:,./-]+$/;
 
 /**
  * The line to type into a terminal to run the CLI. A path with spaces is
@@ -90,7 +93,8 @@ export function terminalCommandLine(executable: string, args: string[], kind: Sh
   if (plain.test(executable)) return `${executable}${tail}`;
   switch (kind) {
     case "powershell":
-      return `& '${executable.replace(/'/g, "''")}'${tail}`;
+      // PowerShell also ends a single-quoted string at the typographic quotes.
+      return `& '${executable.replace(/['‘’‚‛]/g, "$&$&")}'${tail}`;
     case "cmd":
       return `"${executable}"${tail}`;
     case "posix":

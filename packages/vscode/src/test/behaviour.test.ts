@@ -187,6 +187,17 @@ describe("terminal quoting", () => {
     );
   });
 
+  it("quotes what a shell would misread", () => {
+    assert.strictEqual(
+      terminalCommandLine("C:\\it\u2019s\\repowise.exe", ["init"], "powershell"),
+      "& 'C:\\it\u2019\u2019s\\repowise.exe' init",
+    );
+    assert.strictEqual(
+      terminalCommandLine("tools=stable/repowise", ["init"], "posix"),
+      "'tools=stable/repowise' init",
+    );
+  });
+
   it("leaves a plain executable alone", () => {
     for (const kind of ["powershell", "cmd", "posix"] as const) {
       assert.strictEqual(terminalCommandLine("repowise", ["init"], kind), "repowise init");

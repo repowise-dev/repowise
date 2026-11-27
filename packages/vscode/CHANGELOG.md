@@ -40,6 +40,13 @@ release history.
   `REPOWISE_CLIENT=vscode_ext`, so the CLI's usage telemetry labels them as the
   extension rather than a plain VS Code terminal.
 
+### Color
+
+- The gutter and overview ruler mark findings in red and amber, as the web UI
+  does, with low findings in neutral gray; the custom orange tier is gone.
+- The "index behind" status bar item is neutral. The warning background is kept
+  for a server too old for the extension.
+
 ### Removed
 
 - The six Copilot Chat language model tools and the `repowise.agentTools.enabled`

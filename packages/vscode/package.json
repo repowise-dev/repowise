@@ -49,8 +49,8 @@
     }
   },
   "activationEvents": [
-    "workspaceContains:.repowise",
-    "workspaceContains:.repowise-workspace"
+    "workspaceContains:.repowise/**",
+    "workspaceContains:.repowise-workspace/**"
   ],
   "contributes": {
     "configuration": {

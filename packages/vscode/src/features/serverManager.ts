@@ -11,7 +11,7 @@ import {
   removeStaleLockfile,
   waitForPidExit,
 } from "../core/serverProcess";
-import { resolveAutoStart, serverMenuItems } from "./serverActions";
+import { resolveAutoStart, serverMenuItems, type AutoStartMode } from "./serverActions";
 import type { HealthResult } from "../core/api";
 import { cliSpawn } from "../core/cliInvocation";
 
@@ -69,11 +69,19 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
   /** Show the version-too-old warning at most once per session. */
   let warnedVersionLow = false;
   /**
-   * The start prompt shows at most once per session: discovery re-runs on
-   * every lockfile change, and a user who stopped the server or dismissed the
-   * prompt has answered.
+   * Set once the start prompt has shown or the user stopped the server:
+   * discovery re-runs on every lockfile change (a stop rewrites it), and
+   * neither the prompt nor "always" may start a server the user just stopped.
+   * An explicit start clears it.
    */
-  let askedToStart = false;
+  let autoStartSuppressed = false;
+  /**
+   * Bumped by every stop. A start or prompt that began before the stop sees
+   * the change after its next await and abandons its work.
+   */
+  let lifecycle = 0;
+  /** Lockfile of the server we spawned, fixed at spawn time. */
+  let ownedLockfilePath: string | null = null;
   /** Set on dispose so in-flight polls abandon their work. */
   let disposed = false;
   /** Subscription to lockfile-change events; recreated after a rescan. */
@@ -192,21 +200,34 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
     // "always" starts silently; "ask" prompts once per session; "never" waits
     // for the status bar or a welcome-view action.
     const mode = ctx.config.autoStart();
-    if (mode === "ask") {
-      if (askedToStart) return;
-      askedToStart = true;
-    }
+    if (autoStartSuppressed || mode === "never") return;
+    if (mode === "ask") autoStartSuppressed = true;
+    const generation = lifecycle;
     const start = await resolveAutoStart(mode, {
       ask: (message, ...items) => vscode.window.showInformationMessage(message, ...items),
-      persist: (value) =>
-        vscode.workspace
-          .getConfiguration("repowise")
-          .update("server.autoStart", value, vscode.ConfigurationTarget.Global),
+      persist: (value) => persistAutoStart(value),
     });
-    // The prompt can sit open for a while: start only if still needed.
-    if (start && !disposed && !isConnected()) {
+    // The prompt can sit open for a while: start only if still needed and
+    // nothing was stopped meanwhile.
+    if (start && !disposed && !isConnected() && generation === lifecycle) {
       void startFlow({ silent: mode === "always" });
     }
+  }
+
+  /**
+   * Saves an Always / Never answer where the effective value comes from, so a
+   * folder or workspace override does not keep asking.
+   */
+  function persistAutoStart(value: AutoStartMode): Thenable<void> {
+    const config = vscode.workspace.getConfiguration("repowise");
+    const seen = config.inspect<string>("server.autoStart");
+    const target =
+      seen?.workspaceFolderValue !== undefined
+        ? vscode.ConfigurationTarget.WorkspaceFolder
+        : seen?.workspaceValue !== undefined
+          ? vscode.ConfigurationTarget.Workspace
+          : vscode.ConfigurationTarget.Global;
+    return config.update("server.autoStart", value, target);
   }
 
   /**
@@ -260,6 +281,8 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
     // invocations (a double-click, or command plus welcome view) cannot both
     // reach the spawn.
     starting = true;
+    // An explicit start is consent again after a stop.
+    if (!opts.silent) autoStartSuppressed = false;
     try {
       await startFlowLocked(opts);
     } finally {
@@ -268,6 +291,8 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
   }
 
   async function startFlowLocked(opts: { silent: boolean }): Promise<void> {
+    const generation = lifecycle;
+    const cancelled = (): boolean => disposed || generation !== lifecycle;
     const ws = ctx.workspace;
     if (!ws.repoRoot || !ws.lockfilePath) {
       if (!opts.silent) {
@@ -293,11 +318,13 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
     const existing = await readLocalLockfile(ws.lockfilePath);
     if (existing && isPidAlive(existing.pid)) {
       const health = await ctx.api.checkHealth(existing.url);
+      if (cancelled()) return;
       if (health) {
         await onConnected(ws.repoRoot, existing.url, health);
         return;
       }
     }
+    if (cancelled()) return;
 
     // A dead server's lock would otherwise sit there until ours overwrites it.
     if (removeStaleLockfile(ws.lockfilePath)) {
@@ -325,6 +352,7 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
 
     owned = child;
     ownedSince = Date.now();
+    ownedLockfilePath = ws.lockfilePath;
     let enoent = false;
     child.on("error", (err: Error) => {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") enoent = true;
@@ -337,7 +365,17 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
       if (owned === child) owned = null;
     });
 
-    const result = await pollForHealth(ws.lockfilePath, () => enoent);
+    const result = await pollForHealth(ws.lockfilePath, () => enoent || cancelled());
+
+    if (cancelled()) {
+      // Stopped (or the window closed) while starting: the stop saw no server
+      // yet, so take down the one we just spawned.
+      if (owned === child) {
+        owned = null;
+        killOwned(child);
+      }
+      return;
+    }
 
     if (result) {
       await onConnected(ws.repoRoot, result.url, result.health);
@@ -372,7 +410,7 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
   ): Promise<void> {
     ctx.log.error(`failed to start server: ${String(err)}`);
     if (toKill) {
-      killOwned(toKill, null);
+      killOwned(toKill);
       if (owned === toKill) owned = null;
     }
 
@@ -408,21 +446,22 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
   }
 
   /**
-   * Terminates the server this window spawned, its child tree, and (when the
-   * launcher already exited and orphaned it) the server the lockfile names,
-   * then removes the lockfile once that server is gone. Synchronous on
-   * Windows so it completes during extension shutdown. Returns the pid the
-   * lockfile named, if any.
+   * Terminates the server this window spawned and its child tree. If the
+   * launcher already exited and orphaned the server, the server is found
+   * through the lockfile recorded at spawn time. The lockfile is removed once
+   * its pid is gone. Synchronous on Windows so it completes during extension
+   * shutdown. Returns the server pid the lockfile named, if any.
    */
-  function killOwned(child: ChildProcess, lockfilePath: string | null): number | null {
+  function killOwned(child: ChildProcess): number | null {
+    const lockfilePath = ownedLockfilePath;
+    ownedLockfilePath = null;
+    const lock = lockfilePath ? readLockfileSync(lockfilePath) : null;
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
       killProcessTree(child.pid);
     } else {
       child.kill();
+      if (lock && isPidAlive(lock.pid)) killProcessTree(lock.pid);
     }
-    // While we own a server, the lock is the one it wrote.
-    const lock = lockfilePath ? readLockfileSync(lockfilePath) : null;
-    if (lock && isPidAlive(lock.pid)) killProcessTree(lock.pid);
     if (lockfilePath) removeStaleLockfile(lockfilePath);
     return lock?.pid ?? null;
   }
@@ -441,8 +480,9 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
    * server is running afterwards. `verb` words the confirm for a restart.
    */
   async function stopServer(verb: "Stop" | "Restart" = "Stop"): Promise<boolean> {
-    // Stopping is an answer: the lockfile change it causes must not re-ask.
-    askedToStart = true;
+    // Stopping is an answer: the lockfile change it causes must not restart it.
+    autoStartSuppressed = true;
+    lifecycle++;
     const lockfilePath = ctx.workspace.lockfilePath;
     const lock = lockfilePath ? await readLocalLockfile(lockfilePath) : null;
     const plan = planStop(owned !== null, lock);
@@ -450,10 +490,15 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
     if (plan === "own" && owned) {
       const child = owned;
       owned = null;
-      const serverPid = killOwned(child, lockfilePath);
-      if (serverPid !== null && lockfilePath && (await waitForPidExit(serverPid, 5_000))) {
-        removeStaleLockfile(lockfilePath);
+      const ownLock = ownedLockfilePath;
+      const serverPid = killOwned(child);
+      if (serverPid !== null && !(await waitForPidExit(serverPid, 5_000))) {
+        void vscode.window.showErrorMessage(
+          `Could not stop the Repowise server (pid ${serverPid}).`,
+        );
+        return false;
       }
+      if (ownLock) removeStaleLockfile(ownLock);
       settleStopped();
       ctx.log.info("Stopped the local Repowise server.");
       return true;
@@ -465,6 +510,20 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
         verb,
       );
       if (choice !== verb) return false;
+      // The confirm can sit open: kill only if the same server still holds
+      // the lockfile and answers, so a reused pid is never touched.
+      const again = await readLocalLockfile(lockfilePath);
+      const answers =
+        again?.pid === lock.pid && isPidAlive(lock.pid)
+          ? await ctx.api.checkHealth(lock.url)
+          : null;
+      if (!answers) {
+        if (removeStaleLockfile(lockfilePath)) settleStopped();
+        void vscode.window.showInformationMessage(
+          "That Repowise server is no longer answering, so it was left alone.",
+        );
+        return false;
+      }
       killProcessTree(lock.pid);
       if (!(await waitForPidExit(lock.pid, 5_000))) {
         void vscode.window.showErrorMessage(
@@ -608,8 +667,9 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
       // Closing the window that started the server stops it: no orphan keeps
       // holding memory after the editor is gone.
       if (owned) {
-        killOwned(owned, ctx.workspace.lockfilePath);
+        const child = owned;
         owned = null;
+        killOwned(child);
       }
       for (const d of disposables) d.dispose();
     },

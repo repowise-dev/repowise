@@ -94,8 +94,8 @@ describe("Repowise extension", () => {
       contributes: Record<string, unknown>;
     };
     assert.deepStrictEqual(manifest.activationEvents, [
-      "workspaceContains:.repowise",
-      "workspaceContains:.repowise-workspace",
+      "workspaceContains:.repowise/**",
+      "workspaceContains:.repowise-workspace/**",
     ]);
     assert.strictEqual(manifest.contributes["languageModelTools"], undefined);
   });
