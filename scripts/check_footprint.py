@@ -117,32 +117,47 @@ def indexed_repo(tmp: Path) -> Path:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"repowise init on the sample repository failed:\n{proc.stderr[-2000:]}")
+    # A staged change, so the health gate hook has a commit to check.
+    (repo / "app.py").write_text(_FIXTURE["app.py"] + "\n\ndef sub(a, b):\n    return a - b\n")
+    subprocess.run([*git, "add", "app.py"], cwd=repo, check=True)
     return repo
 
 
-def run_path(path: dict, repo: Path, home: Path) -> tuple[set[str], str, float]:
-    """Modules one startup path leaves loaded, what it printed, and its wall seconds."""
-    spec = dict(path)
-    if "stdin" in spec:
-        payload = json.dumps(spec["stdin"]).replace("{repo}", json.dumps(str(repo))[1:-1])
+def _drive(path: dict, stdin: dict | None, repo: Path, home: Path) -> dict:
+    """One fresh interpreter running *path* on *stdin*: its modules and output."""
+    spec = {key: path[key] for key in ("module", "call", "argv") if key in path}
+    if stdin is not None:
+        payload = json.dumps(stdin).replace("{repo}", json.dumps(str(repo))[1:-1])
         spec["stdin"] = {"cwd": str(repo), **json.loads(payload)}
     out = home.parent / "result.json"
-    started = time.perf_counter()
     # -I: the installed package only, never a checkout on the path.
     proc = subprocess.run(
         [sys.executable, "-I", "-c", _DRIVER, json.dumps(spec), str(out)],
         cwd=repo,
-        env=_env(home),
+        env={**_env(home), **path.get("env", {})},
         capture_output=True,
         text=True,
         timeout=300,
     )
-    seconds = time.perf_counter() - started
     if proc.returncode != 0 or not out.exists():
         raise RuntimeError(f"{path['name']} failed:\n{proc.stderr[-2000:]}")
     result = json.loads(out.read_text(encoding="utf-8"))
     out.unlink()
-    return set(result["modules"]), result["stdout"], seconds
+    return result
+
+
+def run_path(path: dict, repo: Path, home: Path) -> tuple[set[str], str, float]:
+    """Modules one startup path leaves loaded, what it printed, and its wall seconds.
+
+    ``before`` payloads run first, each in its own interpreter, the way earlier
+    tool calls in the same session would (a Read, then an Edit, before the
+    Read that is measured).
+    """
+    for stdin in path.get("before", []):
+        _drive(path, stdin, repo, home)
+    started = time.perf_counter()
+    result = _drive(path, path.get("stdin"), repo, home)
+    return set(result["modules"]), result["stdout"], time.perf_counter() - started
 
 
 def heavy_loaded(modules: set[str], forbidden: list[str]) -> list[str]:
