@@ -362,6 +362,7 @@ async def load_prior_pages(
             metadata=metadata,
             provider_name=row.provider_name,
             freshness_status=row.freshness_status or "",
+            summary=row.summary or "",
         )
     return prior
 
