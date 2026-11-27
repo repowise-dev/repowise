@@ -1332,3 +1332,56 @@ def test_rust_detects_nextest_config_from_ancestor_directory(tmp_path: Path):
     assert stack.test == "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info"
     assert stack.junit_report == "target/nextest/ci/junit.xml"
 
+
+def test_swift_repository_yields_swift_stack(tmp_path):
+    _write(tmp_path, {
+        "Package.swift": "// swift-tools-version: 5.9\nimport PackageDescription\n",
+        "Sources/App/main.swift": "print(\"hello\")\n",
+        "Tests/AppTests/AppTests.swift": "import XCTest\n",
+    })
+    stacks = detect_repo_stacks(tmp_path)
+    assert len(stacks) == 1
+    stack = stacks[0]
+    assert stack.language == "swift"
+    assert stack.runner == "swift test"
+    assert stack.package_manager == "swift"
+    assert stack.reports == ".build/debug/codecov/*.json"
+    assert stack.test == "swift test --enable-code-coverage"
+    assert stack.setup == ("- uses: swiftlang/setup-swift@v1",)
+
+
+def test_dart_repository_yields_dart_stack(tmp_path):
+    _write(tmp_path, {
+        "pubspec.yaml": "name: my_app\n",
+        "lib/main.dart": "void main() {}\n",
+        "test/app_test.dart": "void main() {}\n",
+    })
+    stacks = detect_repo_stacks(tmp_path)
+    assert len(stacks) == 1
+    stack = stacks[0]
+    assert stack.language == "dart"
+    assert stack.runner == "dart test"
+    assert stack.package_manager == "dart"
+    assert stack.reports == "coverage/lcov.info"
+    assert "format_coverage" in stack.test
+    assert stack.setup == ("- uses: dart-lang/setup-dart@v1",)
+    assert stack.prepare == ("- run: dart pub global activate coverage",)
+    assert stack.requires == ("dart pub global activate coverage",)
+
+
+def test_scala_repository_yields_scala_stack(tmp_path):
+    _write(tmp_path, {
+        "build.sbt": 'name := "my-project"\n',
+        "src/main/scala/Main.scala": 'object Main extends App { println("hi") }\n',
+        "src/test/scala/MainSpec.scala": "class MainSpec\n",
+    })
+    stacks = detect_repo_stacks(tmp_path)
+    assert len(stacks) == 1
+    stack = stacks[0]
+    assert stack.language == "scala"
+    assert stack.runner == "sbt test"
+    assert stack.package_manager == "sbt"
+    assert stack.reports == "target/scala-*/scoverage-report/scoverage.xml"
+    assert stack.test == "sbt coverage test coverageReport"
+    assert any("setup-java" in line for line in stack.setup)
+    assert any("cache: sbt" in line for line in stack.setup)
