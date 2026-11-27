@@ -207,11 +207,15 @@ class _ReaderIndex:
         beside = [h for d in dirs for h in self.parent.get(d, ())]
         if beside and _LISTING.search(text):
             found.update(beside)
-        found.update(self.always)
+        return found | self._named_in(runs)
+
+    def _named_in(self, runs: Mapping[str, list[int]]) -> set[str]:
+        """The helpers a text holding *runs* may name: every run of one of its names is there."""
+        found = set(self.always)
         for run in runs:
-            for needed, h in self.by_run.get(run, ()):
-                if all(r in runs for r in needed):
-                    found.add(h)
+            found.update(
+                h for needed, h in self.by_run.get(run, ()) if all(map(runs.__contains__, needed))
+            )
         return found
 
 
