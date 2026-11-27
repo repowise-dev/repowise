@@ -27,7 +27,7 @@ import io
 import posixpath
 import re
 import tokenize
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from pathlib import PurePosixPath
 
 from ..test_paths import is_test_related_path
@@ -146,13 +146,12 @@ def helper_readers(
         return {}
     out: dict[str, list[str]] = {h: [] for h in names}
     pairs = _ReaderIndex(names)
-    try:
-        for p in sorted(test_files):  # file by file, so its per-text reads are cached once
-            for h in pairs.helpers_for(p, texts.get(p)):
-                if p != h and _reads(p, h, names[h], texts):
-                    out[h].append(p)
-    finally:
-        _run_starts.cache_clear()  # a text's index is several times its size
+    for p in sorted(test_files):  # file by file, so its per-text reads are cached once
+        text = texts.get(p)
+        runs = None if text is None else _run_starts(text)
+        for h in pairs.helpers_for(p, text, runs):
+            if p != h and _reads(p, h, names[h], texts, runs):
+                out[h].append(p)
     return out
 
 
@@ -191,8 +190,11 @@ class _ReaderIndex:
                 else:
                     self.always.append(h)
 
-    def helpers_for(self, p: str, text: str | None) -> set[str]:
-        """The helpers test file *p* (code *text*, ``None`` when unread) may reach."""
+    def helpers_for(
+        self, p: str, text: str | None, runs: Mapping[str, list[int]] | None
+    ) -> set[str]:
+        """The helpers test file *p* (code *text* and its :func:`_run_starts` *runs*,
+        ``None`` when unread) may reach."""
         from .test_selection import is_runnable_test
 
         dirs = [p[:i] for i, c in enumerate(p) if c == "/"]
@@ -200,13 +202,12 @@ class _ReaderIndex:
         near = [h for d in dirs for h in self.near.get(d, ())]
         if near and is_runnable_test(p):
             found.update(near)
-        if text is None:
+        if text is None or runs is None:
             return found
         beside = [h for d in dirs for h in self.parent.get(d, ())]
         if beside and _LISTING.search(text):
             found.update(beside)
         found.update(self.always)
-        runs = _run_starts(text)
         for run in runs:
             for needed, h in self.by_run.get(run, ()):
                 if all(r in runs for r in needed):
@@ -232,9 +233,14 @@ def _naming_texts(
 
 
 def _reads(
-    p: str, helper: str, found: tuple[tuple[str, ...], tuple[str, ...]], texts: Mapping[str, str]
+    p: str,
+    helper: str,
+    found: tuple[tuple[str, ...], tuple[str, ...]],
+    texts: Mapping[str, str],
+    runs: Mapping[str, list[int]] | None = None,
 ) -> bool:
-    """Whether test file *p* may reach *helper* (:func:`helper_readers`)."""
+    """Whether test file *p* (its text's :func:`_run_starts` *runs*, if held) may
+    reach *helper* (:func:`helper_readers`)."""
     from .test_selection import is_runnable_test
 
     parent, near = _helper_dirs(helper)
@@ -246,7 +252,9 @@ def _reads(
     if p.startswith(f"{parent}/") and _LISTING.search(text):
         return True
     _, dirs = found
-    return _names_helper(text, helper, reader=p) or any(_writes_dir(text, d) for d in dirs)
+    return _names_helper(text, helper, reader=p, runs=runs) or any(
+        _writes_dir(text, d, runs) for d in dirs
+    )
 
 
 @functools.lru_cache(maxsize=4096)
@@ -310,7 +318,11 @@ _PATH_TOKEN = re.compile(r"(?<![\w.\-@~#$])[\w.\-@~#$]*(?:[/\\][\w.\-@~#$]*)+")
 
 
 def _names_helper(
-    text: str, helper: str, reader: str | None, at: PurePosixPath | None = None
+    text: str,
+    helper: str,
+    reader: str | None,
+    at: PurePosixPath | None = None,
+    runs: Mapping[str, list[int]] | None = None,
 ) -> bool:
     """Whether lowercased *text* names *helper* by its file name or stem.
 
@@ -322,12 +334,13 @@ def _names_helper(
     an import of this exact file (``from . import client``), so it counts for a
     test file *reader*; in a config (*reader* ``None``, in directory *at*) only a bare
     file name does, and a relative path counts when it resolves to the helper from *at*.
+    *runs* is the text's :func:`_run_starts` when the caller holds it.
     """
     path, stem, words = _named_by(helper)
     module = (*path.parts[:-1], stem)
     for word in words:
         target = path.parts if word == path.name else module
-        for start in _word_starts(text, word):
+        for start in _word_starts(text, word, runs):
             before = text[max(0, start - _WINDOW) : start]
             if before.endswith(("/", "\\")):
                 found = _path_refers(before, word, target, at)
@@ -340,38 +353,38 @@ def _names_helper(
     return False
 
 
-def _word_starts(text: str, word: str) -> list[int]:
-    """Where *word* stands alone in *text*, as ``re.finditer`` finds it (no overlaps)."""
-    starts = _alone(text, word)
-    if starts is None:
-        return [m.start() for m in re.finditer(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", text)]
-    out: list[int] = []
-    for start in starts:
-        if not out or start >= out[-1] + len(word):
-            out.append(start)
-    return out
+def _word_starts(
+    text: str, word: str, runs: Mapping[str, list[int]] | None = None
+) -> Iterator[int]:
+    """Where *word* stands alone in *text*, in order, as ``re.finditer`` finds it (no overlaps).
 
-
-def _alone(text: str, word: str) -> list[int] | None:
-    """Every start of *word* in *text* with no ``[\\w-]`` on either side, overlapping
-    ones included; ``None`` when *word* does not open with such a character.
-
-    Read off :func:`_run_starts`, so the many helpers asking one text about a
-    common name (``models``, ``tests``) each pay a lookup, not a scan: where the
-    word stands alone, its first run is the whole run in the text.
+    With *runs*, the text's :func:`_run_starts`, they are read off it: the many
+    helpers asking one text about a common name (``models``, ``tests``) each pay
+    a lookup, not a scan.
     """
     first = _RUN.match(word)
-    if first is None:
-        return None
+    if runs is None or first is None:
+        for m in re.finditer(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", text):
+            yield m.start()
+        return
+    resume = 0
+    for start in _alone(text, word, runs.get(first.group(), ())):
+        if start >= resume:
+            yield start
+            resume = start + len(word)
+
+
+def _alone(text: str, word: str, starts: Iterable[int]) -> Iterator[int]:
+    """Those of *starts*, where *word*'s first ``[\\w-]`` run opens a run of *text*,
+    at which *word* stands alone: no ``[\\w-]`` on either side, overlaps included.
+
+    Where the word stands alone its first run is a whole run of the text, so no
+    other start can hold it.
+    """
     end = len(word)
-    return [
-        s
-        for s in _run_starts(text).get(first.group(), ())
-        if text.startswith(word, s) and not _RUN.match(text, s + end)
-    ]
+    return (s for s in starts if text.startswith(word, s) and not _RUN.match(text, s + end))
 
 
-@functools.lru_cache(maxsize=1)  # the file-by-file loop asks about one text at a time
 def _run_starts(text: str) -> dict[str, list[int]]:
     """``{[\\w-] run: where it starts}`` for every maximal run in *text*."""
     out: dict[str, list[int]] = {}
@@ -500,21 +513,22 @@ def _helper_names(helper: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return tuple(dict.fromkeys(w for w in words if w)), tuple(d for d in dirs if d)
 
 
-def _writes_dir(text: str, name: str) -> bool:
+def _writes_dir(text: str, name: str, runs: Mapping[str, list[int]] | None = None) -> bool:
     """Whether *text* writes directory *name* as a path: next to a quote or a slash.
 
     ``from typing import`` names a module, ``"typing"`` or ``tests/typing/`` a directory.
+    *runs* is the text's :func:`_run_starts` when the caller holds it.
     """
     if not name:
         return False
-    starts = _alone(text, name := name.lower())
-    if starts is None:
+    first = _RUN.match(name := name.lower())
+    if runs is None or first is None:
         n = re.escape(name)
         return re.search(rf"[\"'/\\]{n}(?![\w\-])|(?<![\w\-]){n}[\"'/\\]", text) is not None
     end = len(name)
     return any(
         (s > 0 and text[s - 1] in _PATH_EDGES) or text[s + end : s + end + 1] in _PATH_EDGES
-        for s in starts
+        for s in _alone(text, name, runs.get(first.group(), ()))
     )
 
 

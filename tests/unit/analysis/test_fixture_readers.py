@@ -508,15 +508,16 @@ def _corpus(seed: int, count: int) -> list[str]:
 def test_a_name_is_found_where_the_regex_finds_it() -> None:
     import re
 
-    from repowise.core.analysis.fixture_readers import _word_starts, _writes_dir
+    from repowise.core.analysis.fixture_readers import _run_starts, _word_starts, _writes_dir
 
     for text in _corpus(7, 400):
+        runs = _run_starts(text)
         for name in _NAMES:
             n = re.escape(name)
             alone = [m.start() for m in re.finditer(rf"(?<![\w\-]){n}(?![\w\-])", text)]
             path = re.search(rf"[\"'/\\]{n}(?![\w\-])|(?<![\w\-]){n}[\"'/\\]", text)
-            assert _word_starts(text, name) == alone, (text, name)
-            assert _writes_dir(text, name) is (path is not None), (text, name)
+            assert list(_word_starts(text, name, runs)) == alone, (text, name)
+            assert _writes_dir(text, name, runs) is (path is not None), (text, name)
 
 
 def test_helper_readers_matches_checking_every_test_file_against_every_helper() -> None:
