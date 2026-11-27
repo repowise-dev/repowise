@@ -392,18 +392,23 @@ def _exported_locals(content: str) -> dict[str, tuple[str, str | None]]:
     """
     out: dict[str, tuple[str, str | None]] = {}
     for m in _EXPORT_LIST_RE.finditer(content):
-        spec = m.group(2)
-        for part in m.group(1).split(","):
-            pair = _EXPORT_PAIR_RE.fullmatch(part.strip())
-            if pair is None:
-                continue
-            if pair.group("key") is not None:
-                if spec is None:  # ``key: value`` is an object literal, never a from-list
-                    out[pair.group("key")] = (pair.group("value"), None)
-            else:
-                out[pair.group("alias") or pair.group("name")] = (pair.group("name"), spec)
+        out.update(_export_list_entries(m.group(1), m.group(2)))
     for m in _EXPORTS_ASSIGN_RE.finditer(content):
         out[m.group(1)] = (m.group(2), None)
+    return out
+
+
+def _export_list_entries(body: str, spec: str | None) -> dict[str, tuple[str, str | None]]:
+    """``exported name -> (local name, spec)`` for the entries of one export list *body*."""
+    out: dict[str, tuple[str, str | None]] = {}
+    for part in body.split(","):
+        pair = _EXPORT_PAIR_RE.fullmatch(part.strip())
+        if pair is None:
+            continue
+        if pair.group("key") is None:
+            out[pair.group("alias") or pair.group("name")] = (pair.group("name"), spec)
+        elif spec is None:  # ``key: value`` is an object literal, never a from-list
+            out[pair.group("key")] = (pair.group("value"), None)
     return out
 
 
