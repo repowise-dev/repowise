@@ -32,7 +32,21 @@ import type {
   NodeSearchResult,
   PageResponse,
   PageSummary,
+  SearchResultResponse,
 } from "@repowise-dev/api-client/types";
+import type { listDecisions } from "@repowise-dev/api-client/decisions";
+import type {
+  DecisionAgentPromptKind,
+  DecisionAgentPromptResponse,
+  DecisionCounts,
+  DecisionCreateInput,
+  DecisionEvidence,
+  DecisionHealthResponse,
+  DecisionLaneCounts,
+  DecisionLineageEntry,
+  DecisionStatusUpdate,
+} from "@repowise-dev/types/decisions";
+import type { EpisodeListResponse } from "@repowise-dev/types/episodes";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
 import type {
   AffectedSignal,
@@ -178,15 +192,31 @@ export interface HostApi {
   /** Built host-side so the prompt matches the CodeLens copy path exactly. */
   refactoringPrompt(suggestionId: string, flavor: AiPromptFlavor): Promise<string>;
   // Decisions
-  decisionsList(): Promise<DecisionRecordResponse[]>;
+  /** One window of one review lane, as the web board pages it. */
+  listDecisions(query?: DecisionListQuery): Promise<DecisionRecordResponse[]>;
+  decisionLaneCounts(): Promise<DecisionLaneCounts>;
+  decisionCounts(): Promise<DecisionCounts>;
+  decisionHealth(): Promise<DecisionHealthResponse>;
+  decisionAgentPrompt(
+    kind: DecisionAgentPromptKind,
+    decisionId?: string,
+  ): Promise<DecisionAgentPromptResponse>;
+  decision(decisionId: string): Promise<DecisionRecordResponse>;
+  decisionLineage(decisionId: string): Promise<DecisionLineageEntry[]>;
+  decisionEvidence(decisionId: string): Promise<DecisionEvidence[]>;
+  createDecision(input: DecisionCreateInput): Promise<DecisionRecordResponse>;
+  patchDecision(decisionId: string, patch: DecisionStatusUpdate): Promise<DecisionRecordResponse>;
+  reaffirmDecision(decisionId: string): Promise<DecisionRecordResponse>;
+  setDecisionPinned(decisionId: string, pinned: boolean): Promise<DecisionRecordResponse>;
+  /** The structural episode tier: facts about the checkout. */
+  checkoutFacts(): Promise<EpisodeListResponse>;
+  /** Module paths for the record's linkage editor autocomplete. */
+  moduleSuggestions(): Promise<string[]>;
   // Docs
-  /**
-   * Every page with its body: tens of megabytes on a large wiki. A tree wants
-   * pageTree() and fetches the page it shows with pageById().
-   */
-  pagesList(): Promise<PageResponse[]>;
-  /** Every page without its body, the rows a docs tree draws. */
+  /** Every page without its body, the rows a docs tree draws; the reader fetches one page by id. */
   pageTree(): Promise<PageSummary[]>;
+  /** Full-text and semantic hits for the search palette, in that order. */
+  searchPages(query: string): Promise<SearchResultResponse[]>;
   pageById(pageId: string): Promise<PageResponse>;
   fileDetail(relPath: string): Promise<FileDetailResponse>;
   // Change risk (the web Review page's impact view)
@@ -262,6 +292,9 @@ export interface ChangeImpactReport {
   /** True when git could not be read at all (distinct from a clean tree). */
   gitUnavailable: boolean;
 }
+
+/** Query for {@link HostApi.listDecisions}: the api-client's own options. */
+export type DecisionListQuery = NonNullable<Parameters<typeof listDecisions>[1]>;
 
 export type HostApiMethod = keyof HostApi;
 

@@ -79,7 +79,7 @@ describe("webview rpc round trip", () => {
     const host = createHost();
 
     await expect(host.api.healthTrend(5)).resolves.toEqual({ history: [] });
-    await expect(host.api.decisionsList()).rejects.toThrow("Unknown method");
+    await expect(host.api.decisionLaneCounts()).rejects.toThrow("Unknown method");
   });
 
   it("routes one-way services with their payloads", async () => {

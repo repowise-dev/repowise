@@ -27,8 +27,23 @@ import {
   getRefactoringPlan,
   updateRefactoringOpportunityStatus,
 } from "@repowise-dev/api-client/refactoring";
-import { listDecisions } from "@repowise-dev/api-client/decisions";
-import { getPageById, listAllPages, listPageTree } from "@repowise-dev/api-client/pages";
+import {
+  createDecision,
+  getDecision,
+  getDecisionAgentPrompt,
+  getDecisionCounts,
+  getDecisionEvidence,
+  getDecisionHealth,
+  getDecisionLaneCounts,
+  getDecisionLineage,
+  listDecisions,
+  patchDecision,
+  reaffirmDecision,
+  setDecisionPinned,
+} from "@repowise-dev/api-client/decisions";
+import { listEpisodes } from "@repowise-dev/api-client/episodes";
+import { listModuleHealth } from "@repowise-dev/api-client/modules";
+import { getPageById, listPageTree } from "@repowise-dev/api-client/pages";
 import {
   analyzeBlastRadius,
   analyzeChangeBlastRadius,
@@ -36,6 +51,7 @@ import {
   listBlastRadiusChanges,
 } from "@repowise-dev/api-client/blast-radius";
 import { getHotspots } from "@repowise-dev/api-client/git";
+import { search } from "@repowise-dev/api-client/search";
 import { CONFIG_SECTION } from "../constants";
 import {
   SETTING_KEYS,
@@ -351,13 +367,45 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       return planPrompt(ctx, plan, flavor);
     },
 
-    // Decisions
-    decisionsList: () =>
-      cached("decisions:timeline", (id) => listDecisions(id, { include_proposed: true, limit: 500 })),
+    // Decisions. A review write changes the records, their lanes, the counts
+    // and what the agent prompts list, so every read a write can move is live:
+    // the head-commit tag would keep serving the rows from before the review.
+    listDecisions: (query) => listDecisions(repoId(), query),
+    decisionLaneCounts: () => getDecisionLaneCounts(repoId()),
+    decisionCounts: () => getDecisionCounts(repoId(), { include_proposed: true }),
+    decisionHealth: () => getDecisionHealth(repoId()),
+    decisionAgentPrompt: (kind, decisionId) =>
+      getDecisionAgentPrompt(repoId(), kind, decisionId),
+    decision: (decisionId) => getDecision(repoId(), decisionId),
+    decisionLineage: (decisionId) => getDecisionLineage(repoId(), decisionId),
+    decisionEvidence: (decisionId) => getDecisionEvidence(repoId(), decisionId),
+    createDecision: (input) => createDecision(repoId(), input),
+    patchDecision: (decisionId, patch) => patchDecision(repoId(), decisionId, patch),
+    reaffirmDecision: (decisionId) => reaffirmDecision(repoId(), decisionId),
+    setDecisionPinned: (decisionId, pinned) => setDecisionPinned(repoId(), decisionId, pinned),
+    // Derived at index time, so the head-commit tag is the right key for both.
+    checkoutFacts: () =>
+      cached("decisions:facts", (id) => listEpisodes(id, { tier: "structural", limit: 50 })),
+    moduleSuggestions: () =>
+      cached("decisions:modules", (id) =>
+        listModuleHealth(id, { sort: "file_count", limit: 500 }).then((m) =>
+          m.items.map((x) => x.module_path),
+        ),
+      ),
 
-    // Docs
-    pagesList: () => cached("docs:pages", (id) => listAllPages(id)),
+    // Docs. The tree's listing carries no bodies (tens of megabytes on a large
+    // wiki); the reader fetches the one page it shows.
     pageTree: () => cached("docs:tree", (id) => listPageTree(id)),
+    searchPages: async (query) => {
+      const id = repoId();
+      const [fulltext, semantic] = await Promise.all([
+        search(query, { repo_id: id, limit: 20, search_type: "fulltext" }),
+        // A server without an embedder refuses semantic search; the title,
+        // path and full-text matches still answer.
+        search(query, { repo_id: id, limit: 20, search_type: "semantic" }).catch(() => []),
+      ]);
+      return [...fulltext, ...semantic];
+    },
     pageById: (pageId) =>
       cached(`docs:page:${pageId}`, (id) => getPageById(pageId, id)),
     fileDetail: (relPath) => cached(`docs:file:${relPath}`, (id) => getFileDetail(id, relPath)),
