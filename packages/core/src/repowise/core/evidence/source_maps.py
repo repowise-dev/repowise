@@ -204,17 +204,24 @@ def _read_map(
     return map_path, _decode("\n".join(map_lines), map_path, exists)
 
 
-def _position(frame: ProfileFrame, lines: list[list[_Position]]) -> _Position:
+def _position(frame: ProfileFrame, lines: list[list[_Position]]) -> _Position | None:
+    """The original position of *frame*, or None where the map gives it none.
+
+    A generated position the map leaves unmapped (tsc's shebang line, a helper
+    the compiler wrote) has no original source; the frame is skipped, not the
+    profile. A column-less frame on a line with several segments is refused:
+    it cannot say which one ran.
+    """
     positions = lines[frame.line - 1] if 1 <= frame.line <= len(lines) else []
+    if not positions:
+        return None
     if frame.column is None:
         if len(positions) != 1 or positions[0].column != 0:
             raise _refuse("the frame has no column to distinguish mapped positions")
-        position = positions[0]
+        position: _Position | None = positions[0]
     else:
         position = next((p for p in reversed(positions) if p.column < frame.column), None)
-    if position is None or position.source is None:
-        raise _refuse("the frame has no original source position")
-    return position
+    return position if position is not None and position.source is not None else None
 
 
 def remap_profile(
@@ -229,6 +236,7 @@ def remap_profile(
 
     A column-less format can use a line only when it has one mapped segment;
     otherwise it cannot distinguish functions on that line and is refused.
+    A frame at a position the map leaves unmapped is skipped as ``not_indexed``.
     Generated files with a usable map are included; vendored files stay libraries.
     """
     if read_lines is None:
@@ -265,8 +273,14 @@ def remap_profile(
             position = _position(frame, lines)
         except EvidenceFormatError as exc:
             raise _named(exc, rel) from None
-        assert position.source is not None
-        frames.append(replace(frame, path=root.replace("\\", "/").rstrip("/") + "/" + position.source,
+        base = root.replace("\\", "/").rstrip("/") + "/"
+        if position is None or position.source is None:
+            # A path that is never a checkout file: the frame counts as
+            # ``not_indexed`` and the rest of the profile still joins.
+            unmapped = posixpath.join(posixpath.dirname(rel), "<unmapped position>")
+            frames.append(replace(frame, path=base + unmapped))
+            continue
+        frames.append(replace(frame, path=base + position.source,
                               line=position.line, column=position.original_column,
                               function=position.name or frame.function))
     return replace(run, frames=tuple(frames))

@@ -55,7 +55,7 @@ def test_profiles_join_the_original_typescript_file(bundle, fmt):
     assert result.document["symbols"][0]["function"] == "original"
 
 
-@pytest.mark.parametrize("change", ["missing", "remote", "escape", "invalid", "unmapped"])
+@pytest.mark.parametrize("change", ["missing", "remote", "escape", "invalid"])
 def test_bad_maps_are_explicit_refusals(bundle, change):
     root, data = bundle
     if change == "missing":
@@ -65,15 +65,50 @@ def test_bad_maps_are_explicit_refusals(bundle, change):
     else:
         if change == "escape":
             data["sources"] = ["../outside.ts"]
-        elif change == "invalid":
-            data["mappings"] = "!"
         else:
-            data["mappings"] = "S"
+            data["mappings"] = "!"
         (root / "bundle.js.map").write_text(json.dumps(data))
     # The refusal names the bundle whose map could not be used.
     with pytest.raises(EvidenceFormatError, match=r"source map.*\(in bundle\.js\)"):
         convert_profile(_run(root, "cpuprofile"), root=str(root), value_kind="cpu",
                         symbols_by_file={}, read_lines=checkout_reader(root))
+
+
+@pytest.mark.parametrize(
+    ("mappings", "body", "func"),
+    [
+        # tsc leaves a shebang line unmapped: the module body at 1:1 has no position.
+        (";AAASA", (0, 0), (1, 9)),
+        # A generated segment with no source (a helper the compiler wrote).
+        ("S;AAASA", (0, 10), (1, 9)),
+        # A frame that starts before its line's first mapped segment.
+        ("AAASA;SAASA", (1, 0), (0, 9)),
+    ],
+)
+def test_an_unmapped_frame_is_skipped_and_the_rest_joins(tmp_path, mappings, body, func):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.ts").write_text("function original() {}\n", encoding="utf-8")
+    (tmp_path / "bundle.js").write_text(
+        "#!/usr/bin/env node\nfunction a() {}\n//# sourceMappingURL=bundle.js.map\n",
+        encoding="utf-8",
+    )
+    data = {"version": 3, "sources": ["src/app.ts"], "names": ["original"], "mappings": mappings}
+    (tmp_path / "bundle.js.map").write_text(json.dumps(data), encoding="utf-8")
+    url = (tmp_path / "bundle.js").as_uri()
+    run = profile_formats.get("cpuprofile").read(_profile(
+        [(1, "(root)", "", -1, -1, [2]), (2, "", url, *body, [3]), (3, "a", url, *func, [])],
+        [2, 3, 3],
+    ))
+    result = convert_profile(
+        run, root=str(tmp_path), value_kind="cpu",
+        symbols_by_file={"src/app.ts": [_sym("src/app.ts", "original", 1, 1, "function")]},
+        read_lines=checkout_reader(tmp_path),
+    )
+    # The unmapped frame is counted, never joined; the mapped one still joins.
+    assert [(s["path"], s["function"]) for s in result.document["symbols"]] == [
+        ("src/app.ts", "original")
+    ]
+    assert result.document["skipped"] == {"not_indexed": 1}
 
 
 @pytest.mark.parametrize("source", ["webpack://_N_E/./src/app.ts", "webpack:///src/app.ts"])
