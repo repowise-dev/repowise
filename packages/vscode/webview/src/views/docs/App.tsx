@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, FileCode, PanelLeft, PanelLeftClose } from "lucide-react";
 import { ApiError, EmptyState, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
+import { Button } from "@repowise-dev/ui/ui";
 import type { DocPage } from "@repowise-dev/types/docs";
 import { DocsTree } from "@repowise-dev/ui/docs/docs-tree";
 import { DocsReader, type ReaderLinkComponent } from "@repowise-dev/ui/docs/docs-reader";
@@ -146,30 +147,31 @@ export function App({ host, repo, params, refreshToken }: ViewProps<"docs">) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-center gap-2 border-b border-[var(--color-border-default)] px-3 py-2">
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             onClick={() => setTreeOpen((open) => !open)}
             aria-label={treeOpen ? "Hide pages" : "Show pages"}
+            title={treeOpen ? "Hide pages" : "Show pages"}
             aria-expanded={treeOpen}
-            className="rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+            className="h-7 w-7"
           >
-            {treeOpen ? (
-              <PanelLeftClose className="h-4 w-4" />
-            ) : (
-              <PanelLeft className="h-4 w-4" />
-            )}
-          </button>
+            {treeOpen ? <PanelLeftClose /> : <PanelLeft />}
+          </Button>
           <span className="truncate text-xs font-medium text-[var(--color-text-secondary)]">
             {repo.name}
           </span>
           <div className="flex-1" />
           {sourcePath && (
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => host.openFile(sourcePath)}
-              className="flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-accent)] hover:text-[var(--color-accent-primary)]"
+              className="gap-1.5 [&_svg]:size-3.5"
             >
-              <FileCode className="h-3.5 w-3.5" />
+              <FileCode />
               Open source file
-            </button>
+            </Button>
           )}
         </div>
 

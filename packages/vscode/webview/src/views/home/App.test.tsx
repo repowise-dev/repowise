@@ -57,13 +57,14 @@ function renderApp(host: WebviewHost) {
 afterEach(cleanup);
 
 describe("Home sidebar", () => {
-  it("renders the hero score, freshness, and live card stats", async () => {
+  it("renders the health ribbon, freshness, and live dashboard counts", async () => {
     const { host } = makeHost();
     renderApp(host);
 
-    // Average health leads the hero; hotspot health is the inline secondary.
+    // Average health leads the ribbon; hotspot health sits beside it.
     expect(await screen.findByText("7.4")).toBeTruthy();
-    expect(screen.getByText(/hotspot 5\.1/)).toBeTruthy();
+    expect(screen.getByText("Hotspot health")).toBeTruthy();
+    expect(screen.getByText("5.1")).toBeTruthy();
     expect(screen.getByText("demo-repo")).toBeTruthy();
     expect(screen.getByText("Index up to date")).toBeTruthy();
     expect(screen.getByText("12 ranked plans")).toBeTruthy();
@@ -71,7 +72,7 @@ describe("Home sidebar", () => {
     expect(screen.getByText(/42 open findings/)).toBeTruthy();
   });
 
-  it("opens the matching panel when a launcher card is clicked", async () => {
+  it("opens the matching panel when a dashboard row is clicked", async () => {
     const { host, openView } = makeHost();
     renderApp(host);
 
@@ -127,6 +128,17 @@ describe("Home sidebar", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(false);
   });
 
+  it("opens the site through the host from the wordmark", async () => {
+    const { host } = makeHost();
+    const openExternal = vi.fn();
+    (host as unknown as { openExternal: typeof openExternal }).openExternal = openExternal;
+    renderApp(host);
+    await screen.findByText("7.4");
+
+    fireEvent.click(screen.getByTitle("repowise.dev"));
+    expect(openExternal).toHaveBeenCalledWith("https://repowise.dev/?utm_source=vscode");
+  });
+
   it("keeps the launcher usable when the summary fails", async () => {
     const host = {
       api: { homeSummary: () => Promise.reject(new Error("down")) },
@@ -141,7 +153,7 @@ describe("Home sidebar", () => {
     renderApp(host);
 
     expect(await screen.findByText("Knowledge Graph")).toBeTruthy();
-    expect(screen.getByText("Server-ranked refactoring opportunities")).toBeTruthy();
+    expect(screen.getByText("Refactoring")).toBeTruthy();
     // findByText, not getByText: the launcher renders before the summary
     // promise rejection flushes, so on a slow runner the hero card can still
     // be in its loading skeleton when the launcher assertions pass.

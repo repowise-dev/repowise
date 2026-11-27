@@ -289,7 +289,7 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
       }
     >
       <p>
-        Scored from the shape of this range's diff — how much it adds and
+        Scored from the shape of this range's diff: how much it adds and
         deletes, how many files, directories and subsystems it spreads across,
         and how experienced its author is in them.{" "}
         {ranked ? (
@@ -310,8 +310,9 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
         <strong className="font-semibold tabular-nums">
           {r.score.toFixed(1)}/10
         </strong>{" "}
-        — how big and spread out the change is, not where it lands. Anchored to
-        a corpus of single commits, so a range reads high by construction.
+        measures how big and spread out the change is, not where it lands. It
+        is anchored to a corpus of single commits, so a range reads high by
+        construction.
       </p>
     </PageLede>
   );
@@ -431,7 +432,7 @@ function VerdictStrip({
           key={`${c.id}:${c.label}`}
           type="button"
           onClick={() => scrollToSection(c.id)}
-          className="inline-flex items-center rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface)]"
+          className="inline-flex items-center rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
         >
           {c.label}
         </button>
@@ -465,8 +466,8 @@ function RiskBreakdown({ report }: { report: RiskRangeReport }) {
             {drivers.map((d) => {
               const raises = d.contribution >= 0;
               const barColor = raises
-                ? "var(--color-error)"
-                : "var(--color-success)";
+                ? "var(--color-risk-high)"
+                : "var(--color-risk-low)";
               const pct =
                 maxDriver > 0
                   ? (Math.abs(d.contribution) / maxDriver) * 100
@@ -773,7 +774,7 @@ function PathRow({
       type="button"
       onClick={onOpen}
       title={`Open ${path}`}
-      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] transition-colors hover:bg-[var(--color-bg-surface)]"
+      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] transition-colors hover:bg-[var(--color-bg-wash-hover)]"
     >
       <span className="min-w-0 flex-1 truncate">
         {dir && (
@@ -806,7 +807,7 @@ function DirectRiskRow({
       type="button"
       onClick={onOpen}
       title={`Open ${risk.path}`}
-      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] transition-colors hover:bg-[var(--color-bg-surface)]"
+      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] transition-colors hover:bg-[var(--color-bg-wash-hover)]"
     >
       <span className="min-w-0 flex-1 truncate">
         {dir && (
@@ -901,9 +902,15 @@ function Reviewers({
                 </span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-[var(--color-bg-elevated)]">
+                {/* A relative ranking, not a verdict: neutral ink, like
+                    the structural-weight bars above. */}
                 <div
-                  className="h-full rounded-full bg-[var(--color-accent-primary)]"
-                  style={{ width: `${pct}%` }}
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${pct}%`,
+                    backgroundColor:
+                      "color-mix(in srgb, var(--color-text-secondary) 45%, transparent)",
+                  }}
                 />
               </div>
               {r.reasons.length > 0 && (

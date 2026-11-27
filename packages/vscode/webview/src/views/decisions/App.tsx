@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FileText, Landmark, Lightbulb } from "lucide-react";
 import { Badge } from "@repowise-dev/ui/ui";
 import { EmptyState } from "@repowise-dev/ui/shared";
+import { Segmented } from "@repowise-dev/ui/shared/segmented";
 import {
   DecisionStatusMark,
   decisionStatusColor,
@@ -178,26 +179,19 @@ export function App({ host, refreshToken }: ViewProps<"decisions">) {
           <Landmark className="h-5 w-5 text-[var(--color-text-secondary)]" />
           Decisions
         </h1>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {chips.map((chip) => {
-            const on = filter === chip.key;
-            return (
-              <button
-                key={chip.key}
-                type="button"
-                onClick={() => setFilter(chip.key)}
-                className={
-                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
-                  (on
-                    ? "border-[var(--color-border-hover)] bg-[var(--color-bg-selected)] text-[var(--color-text-primary)]"
-                    : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)]")
-                }
-              >
-                {chip.label}
-                <span className="text-[var(--color-text-tertiary)]">{chip.count}</span>
-              </button>
-            );
-          })}
+        <div className="mt-3">
+          {/* Status is one axis with mutually exclusive values: the shared
+              segmented control, with each count beside its label. */}
+          <Segmented<Status | "all">
+            label="Status"
+            value={filter}
+            onChange={setFilter}
+            options={chips.map((chip) => ({
+              value: chip.key,
+              label: chip.label,
+              count: String(chip.count),
+            }))}
+          />
         </div>
       </header>
 
@@ -211,10 +205,10 @@ export function App({ host, refreshToken }: ViewProps<"decisions">) {
                   type="button"
                   onClick={() => setSelectedId(d.id)}
                   className={
-                    "flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors " +
+                    "flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors " +
                     (on
-                      ? "bg-[var(--color-bg-elevated)]"
-                      : "hover:bg-[var(--color-bg-elevated)]")
+                      ? "bg-[var(--color-bg-selected)]"
+                      : "hover:bg-[var(--color-bg-wash-hover)]")
                   }
                 >
                   <span
