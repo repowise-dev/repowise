@@ -76,11 +76,6 @@ class _PhpFile:
         self.lower_aliases = {k.lower(): v for k, v in self.aliases.items()}
 
     def qualify(self, name: str) -> str:
-        name_clean = name.lstrip("\\")
-        first, sep, rest = name_clean.partition("\\")
-        if not name.startswith("\\") and first.lower() in self.lower_aliases:
-            target = self.lower_aliases[first.lower()]
-            return f"{target}\\{rest}" if sep else target
         return qualify_php_name(name, self.namespace, self.aliases)
 
 
