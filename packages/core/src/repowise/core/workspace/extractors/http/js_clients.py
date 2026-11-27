@@ -64,6 +64,34 @@ _HTTP_NAME_RE = re.compile(r"(?i)fetch|request|http|api|ajax|rest|rpc")
 
 # Callees already handled elsewhere (`ofetch(` is a fetch call), or never an HTTP wrapper.
 _WRAPPER_SKIP = frozenset({"fetch", "ofetch", "if", "for", "while", "switch", "catch", "return"})
+# A factory with an HTTP-ish name (`createUsersApi`) is a builder, not a call:
+# with no method option its bare prefix argument is a base, not a GET.
+_FACTORY_NAME_RE = re.compile(r"(?i)^(?:create|make|build)")
+
+
+def _bare_prefix(literal: str) -> bool:
+    """A factory's base argument: rooted, and free of path parameters or a query."""
+    return literal.startswith("/") and "${" not in literal and "?" not in literal
+
+
+
+def _enclosing_paren(content: str, before: int) -> int:
+    """Index of the `(` that opens the call *before* is inside, or -1.
+
+    Walks backwards from *before* over balanced ``)``/``(`` pairs, so the first
+    unmatched ``(`` met is the immediately-enclosing call's own.
+    """
+    depth = 0
+    for i in range(before - 1, -1, -1):
+        c = content[i]
+        if c == ")":
+            depth += 1
+        elif c == "(":
+            if depth:
+                depth -= 1
+            else:
+                return i
+    return -1
 
 
 def fetch_calls(content: str) -> Iterator[ClientCallMatch]:
@@ -117,6 +145,29 @@ def wrapper_calls(content: str, clients: frozenset[str]) -> Iterator[ClientCallM
         method = _options_method(content, m.start())
         # Require an HTTP signal: an HTTP-ish callee name or a method option.
         if not (_HTTP_NAME_RE.search(callee) or method):
+            # One call outward: `request(withQuery(`${base}/x`))` — the callee
+            # before the URL literal is the query builder, the HTTP wrapper is
+            # the call that wraps it. Read the outer call and, when its own
+            # callee is the HTTP signal, attribute the consumer to it.
+            outer = _enclosing_paren(content, head.start())
+            head2 = (
+                _CALLEE_BEFORE_RE.search(content, max(0, outer - _CALLEE_WINDOW), outer)
+                if outer > -1
+                else None
+            )
+            callee2 = head2.group(1) if head2 else ""
+            if not (head2 and _HTTP_NAME_RE.search(callee2) and callee2 not in _WRAPPER_SKIP):
+                continue
+            if _callee(content, head2.start(1), head2.end(1)) in clients:
+                continue
+            if clients and _receiver(content, head2.start(1)) in clients:
+                continue
+            head, callee = head2, callee2
+        elif _FACTORY_NAME_RE.search(callee) and not method and _bare_prefix(m.group(1)):
+            # `createUsersApi('/api/v1')`: an HTTP-sounding factory name with a
+            # bare prefix argument and no method option builds a client, it
+            # does not call one. A bare prefix carries no path parameter and
+            # no query, so a template like `/overview/${id}?x=1` still reads.
             continue
         # No `method:` option: the callee name is the only verb evidence there
         # is, and `apiPost`/`apiDelete` carry it.

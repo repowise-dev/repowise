@@ -495,3 +495,38 @@ def test_a_spaced_comparison_is_not_read_as_type_arguments():
     from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
 
     assert list(wrapper_calls('if (api < limit && max > ("/api/x")) {}', frozenset())) == []
+
+
+class TestWrapperDetectionGates:
+    """The two wrapper-detection gaps of repowise-dev/repowise#6447."""
+
+    def test_a_url_nested_in_a_query_builder_is_read_as_the_outer_call(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        content = 'request(withQuery(`${base}/x`, { a: 1 }));'
+        (row,) = wrapper_calls(content, frozenset())
+        assert (row.callee, row.url) == ("request", "`${base}/x`")
+
+    def test_a_non_http_inner_and_outer_callee_is_not_read(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        assert list(wrapper_calls('format(escape(`/x`))', frozenset())) == []
+
+    def test_an_http_sounding_factory_name_is_not_a_call(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        assert list(wrapper_calls("createUsersApi('/api/v1')", frozenset())) == []
+
+    def test_a_factory_call_with_a_method_option_still_reads(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        content = "makeRequest('/api/v1', { method: 'POST' });"
+        (row,) = wrapper_calls(content, frozenset())
+        assert row.method == "POST"
+
+    def test_a_make_call_with_a_path_parameter_and_query_still_reads(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        content = "makeRequest<Overview>(`/overview/${userId}?date_range=30`)"
+        (row,) = wrapper_calls(content, frozenset())
+        assert row.url == "`/overview/${userId}?date_range=30`"
