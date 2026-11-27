@@ -22,6 +22,7 @@ import hmac
 import os
 import pickle
 import secrets
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ __all__ = [
     "load_sealed_pickle",
     "reset_key_cache_for_tests",
     "seal",
+    "sweep_orphan_temps",
     "unseal",
 ]
 
@@ -41,6 +43,10 @@ _MAGIC = b"RWCH1"
 _MAC_LEN = 32  # sha256 digest
 _MIN_KEY_LEN = 16
 _STREAM_CHUNK = 1024 * 1024
+#: Suffix of every temp file :func:`dump_sealed_pickle` writes, and only of those.
+_TEMP_SUFFIX = ".pkltmp"
+#: A temp file untouched this long is an orphan of a killed write, never one in flight.
+ORPHAN_TEMP_SECONDS = 3600
 
 
 def _key_path() -> Path:
@@ -222,7 +228,7 @@ def dump_sealed_pickle(path: Path, obj: Any, *, domain: str) -> None:
                 h.update(chunk)
         mac = h.digest()
 
-        fd_out, tmp_out = make_temp_file(path.parent, prefix=path.name, suffix=".tmp")
+        fd_out, tmp_out = make_temp_file(path.parent, prefix=path.name, suffix=_TEMP_SUFFIX)
         try:
             with os.fdopen(fd_out, "wb") as out, open(tmp_pkl, "rb") as src:
                 fd_out = -1
@@ -247,3 +253,48 @@ def dump_sealed_pickle(path: Path, obj: Any, *, domain: str) -> None:
                 os.close(fd_pkl)
         with contextlib.suppress(OSError):
             os.unlink(tmp_pkl)
+
+
+def _is_orphan_temp_name(name: str) -> bool:
+    # ``<cache>.pkl<token>.tmp`` is what the second temp was called before it
+    # took the ``.pkltmp`` suffix too, so orphans from earlier releases go as well.
+    return name.endswith(_TEMP_SUFFIX) or (".pkl" in name and name.endswith(".tmp"))
+
+
+def sweep_orphan_temps(directory: Path, *, max_age: float = ORPHAN_TEMP_SECONDS) -> int:
+    """Remove temp files killed :func:`dump_sealed_pickle` calls left; return how many.
+
+    Looks in *directory* and its direct subdirectories, where every sealed
+    cache lives (``.repowise/`` and its cache folders), so it never walks a
+    deep store such as the vector index. Only names this module writes, and
+    only files older than *max_age*: a write in flight keeps touching its temp
+    file, so it is never that old. A file another process holds open (Windows
+    refuses the delete) or one already gone is skipped.
+    """
+    cutoff = time.time() - max_age
+    removed = 0
+    try:
+        with os.scandir(directory) as it:
+            entries = list(it)
+    except OSError:
+        return 0
+    folders = [directory, *(Path(e.path) for e in entries if _is_dir(e))]
+    for folder in folders:
+        try:
+            with os.scandir(folder) as it:
+                names = [e for e in it if _is_orphan_temp_name(e.name)]
+        except OSError:
+            continue
+        for entry in names:
+            with contextlib.suppress(OSError):
+                if entry.is_file(follow_symlinks=False) and entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+                    removed += 1
+    return removed
+
+
+def _is_dir(entry: os.DirEntry[str]) -> bool:
+    try:
+        return entry.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
