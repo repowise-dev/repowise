@@ -488,3 +488,23 @@ def test_other_barrel_export_forms_reach_the_router_file(tmp_path: Path, barrel:
             "server/routes/user.js": _USER_ROUTER,
         },
     ) == {("/api/user/plugins", "server/routes/user.js")}
+
+
+def test_a_barrel_importing_the_router_by_its_own_name_reaches_it(tmp_path: Path) -> None:
+    # user.ts exports one router both as default and by name; the barrel imports the name.
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.ts": """
+                import { router as user } from './user';
+                export { user };
+            """,
+            "server/routes/user.ts": """
+                import { Router } from 'express';
+                export const router = Router();
+                router.get('/plugins', list);
+                export default router;
+            """,
+        },
+    ) == {("/api/user/plugins", "server/routes/user.ts")}

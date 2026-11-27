@@ -429,8 +429,11 @@ def _mount_of(ctx: ScanContext, f: _File, var: str, offset: int) -> str:
     if not mounted:
         mounted, outer = served_prefix(ctx.mounts, _key(f.module, root))
     if not mounted:
-        # Mounted only as a member of a barrel that re-exports it.
-        _declared, barrel = declared_mount(ctx.mounts, _REEXPORT + f.key(root))
-        if barrel:
-            _mounted, outer = served_prefix(ctx.mounts, barrel)
+        # Mounted only as a member of a barrel that re-exports it, under either
+        # name the router is imported by, as for a direct mount above.
+        for key in dict.fromkeys((f.key(root), _key(f.module, root))):
+            _declared, barrel = declared_mount(ctx.mounts, _REEXPORT + key)
+            if barrel:
+                _mounted, outer = served_prefix(ctx.mounts, barrel)
+                break
     return compose_prefix(outer or "", within)
