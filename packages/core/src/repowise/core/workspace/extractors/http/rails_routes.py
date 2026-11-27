@@ -54,10 +54,10 @@ _CONCERN_DEF_RE = re.compile(
     r"\bconcern\s+(?::(\w+)|[\"']([^\"']+)[\"'])\s+do(?:\s*\|[^|]*\|)?\s*$"
 )
 _CONCERNS_CALL_RE = re.compile(
-    r"^\s*concerns?\s+(?:\[([^\]]*)\]|:(\w+)|[\"']([^\"']+)[\"'])"
+    r"^\s*concerns?\s+(?:%[iw]\[([^\]]*)\]|\[([^\]]*)\]|(.+))$"
 )
 _CONCERNS_OPT_RE = re.compile(
-    r"concerns?:\s*(?:\[([^\]]*)\]|:(\w+)|[\"']([^\"']+)[\"'])"
+    r"concerns?:\s*(?:%[iw]\[([^\]]*)\]|\[([^\]]*)\]|:(\w+)|[\"']([^\"']+)[\"'])"
 )
 _DRAW_CALL_RE = re.compile(
     r"^\s*draw\s*(?:\(\s*(?::(\w+)|['\"]([^'\"]+)['\"])\s*\)|(?::(\w+)|['\"]([^'\"]+)['\"]))"
@@ -224,7 +224,7 @@ def _parse_concerns(text: str) -> list[str]:
 
 
 def _apply_resource_concerns(
-    concerns: dict[str, list[tuple[int, str]]],
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
     res_concerns: list[str],
     res_names: list[str],
     stack: list[_Scope],
@@ -236,7 +236,8 @@ def _apply_resource_concerns(
         c_stack = [*stack, _Scope(kind="resource", resource=name, singular=is_singular)]
         for c_name in res_concerns:
             if c_name in concerns:
-                out.extend(_extract_statements(concerns[c_name], c_stack, ctx, concerns))
+                c_ctx, c_stmts = concerns[c_name]
+                out.extend(_extract_statements(c_stmts, c_stack, c_ctx, concerns))
     return out
 
 
@@ -246,7 +247,7 @@ def _handle_resources(
     push_block: bool,
     stack: list[_Scope],
     ctx: ScanContext,
-    concerns: dict[str, list[tuple[int, str]]],
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
 ) -> list[Contract] | None:
     m = _RESOURCES_RE.search(line)
     if not m:
@@ -392,16 +393,23 @@ def _handle_draw(
     name: str,
     stack: list[_Scope],
     ctx: ScanContext,
-    concerns: dict[str, list[tuple[int, str]]],
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
 ) -> list[Contract]:
     if ctx.repo_root is None:
         return []
-    child_rel = f"config/routes/{name}.rb"
+    norm_name = posixpath.normpath(name)
+    if norm_name.startswith("..") or norm_name.startswith("/"):
+        return []
+    child_rel = posixpath.normpath(f"config/routes/{norm_name}.rb")
+    if not child_rel.startswith("config/routes/"):
+        return []
     child_file = ctx.repo_root / child_rel
     if not child_file.is_file():
         alt_rel = posixpath.normpath(
-            posixpath.join(posixpath.dirname(ctx.rel_path), "routes", f"{name}.rb")
+            posixpath.join(posixpath.dirname(ctx.rel_path), "routes", f"{norm_name}.rb")
         )
+        if not alt_rel.startswith("config/routes/"):
+            return []
         child_file = ctx.repo_root / alt_rel
         if not child_file.is_file():
             return []
@@ -454,7 +462,8 @@ def _collect_concern_body(
 
 def _collect_concerns(
     statements: list[tuple[int, str]],
-    concerns: dict[str, list[tuple[int, str]]],
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+    ctx: ScanContext,
 ) -> list[tuple[int, str]]:
     remaining: list[tuple[int, str]] = []
     i = 0
@@ -464,7 +473,7 @@ def _collect_concerns(
         if concern_def:
             name = next(g for g in concern_def.groups() if g is not None)
             body, i = _collect_concern_body(statements, i + 1)
-            concerns[name] = body
+            concerns[name] = (ctx, body)
         else:
             remaining.append((line_no, raw))
             i += 1
@@ -475,7 +484,7 @@ def _handle_draw_or_concerns(
     line: str,
     stack: list[_Scope],
     ctx: ScanContext,
-    concerns: dict[str, list[tuple[int, str]]],
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
 ) -> list[Contract] | None:
     draw_match = _DRAW_CALL_RE.search(line)
     if draw_match:
@@ -487,7 +496,8 @@ def _handle_draw_or_concerns(
         out: list[Contract] = []
         for c_name in re.findall(r"\w+", raw_c):
             if c_name in concerns:
-                out.extend(_extract_statements(concerns[c_name], list(stack), ctx, concerns))
+                c_ctx, c_stmts = concerns[c_name]
+                out.extend(_extract_statements(c_stmts, list(stack), c_ctx, concerns))
         return out
     return None
 
@@ -504,10 +514,10 @@ def _extract_statements(
     statements: list[tuple[int, str]],
     stack: list[_Scope],
     ctx: ScanContext,
-    concerns: dict[str, list[tuple[int, str]]],
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
 ) -> list[Contract]:
     out: list[Contract] = []
-    remaining = _collect_concerns(statements, concerns)
+    remaining = _collect_concerns(statements, concerns, ctx)
 
     for line_no, raw in remaining:
         if _handle_statement_end(raw, stack):
@@ -550,5 +560,5 @@ class RailsRoutesDialect:
 
         stack: list[_Scope] = []
         statements = _read_statements(lines, ctx)
-        concerns: dict[str, list[tuple[int, str]]] = {}
+        concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]] = {}
         return _extract_statements(statements, stack, ctx, concerns)
