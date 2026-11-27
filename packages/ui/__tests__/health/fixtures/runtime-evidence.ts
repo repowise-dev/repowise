@@ -7,6 +7,8 @@ import type {
   MeasuredResponse,
   MeasuredRow,
   MeasuredRun,
+  RouteRow,
+  RouteRun,
   StatementRow,
   StatementRun,
 } from "@repowise-dev/types/runtime-evidence";
@@ -314,5 +316,61 @@ export async function statementsOnly(
       rows: STATEMENT_ROWS.slice(0, opts.limit ?? 10),
       total: STATEMENT_ROWS.length,
     },
+  };
+}
+
+export const ROUTE_RUN: RouteRun = {
+  run_id: "run-api",
+  workload_class: "production",
+  workload_name: "api",
+  commit: "ee257d145f19",
+  measured_at: new Date(Date.now() - 86_400_000).toISOString(),
+  age_days: 1,
+  window_start: "2026-10-30T00:00:00+00:00",
+  window_end: "2026-11-26T00:00:00+00:00",
+  total_ms: 9876.4,
+  requests: 1200,
+  routes: 12,
+  unattributed: { unjoined: { routes: 3, total_ms: 493.8, share: 0.05 } },
+  window: { start: "2026-10-30T00:00:00+00:00", end: "2026-11-26T00:00:00+00:00", base_commit: null, claim: PROD_CLAIM },
+};
+
+function routeRow(name: string, rank: number, share: number, route: string, requests: number): RouteRow {
+  return {
+    symbol_id: `app/routers/repos.py::${name}`,
+    file_path: "app/routers/repos.py",
+    lines: [10 + rank, 30 + rank],
+    run_id: "run-api",
+    rank,
+    share,
+    share_low: null,
+    share_high: null,
+    inclusive: null,
+    samples: null,
+    callers_total: null,
+    callers: [],
+    owner: null,
+    last_change: null,
+    tests: null,
+    verify: "compare this row in the next api window",
+    verify_basis: "workload",
+    routes: { requests, total_ms: requests * 12.5, mean_ms: 12.5, p95_ms: 80, errors: rank === 1 ? 2 : 0, routes: [route] },
+  };
+}
+
+/** The route for a repository whose only runtime evidence is production route windows. */
+export async function routesOnly(opts: { runId?: string; limit?: number } = {}): Promise<MeasuredResponse> {
+  const rows = [
+    routeRow("get_repo", 1, 0.41, "GET /repos/{repo_id}", 320),
+    routeRow("list_repos", 2, 0.22, "GET /repos", 175),
+  ];
+  return {
+    basis: "measured",
+    status: "measured",
+    command: null,
+    measured: null,
+    measured_in_tests: null,
+    statements: null,
+    routes: { runs: [ROUTE_RUN], rows: rows.slice(0, opts.limit ?? 10), total: rows.length },
   };
 }

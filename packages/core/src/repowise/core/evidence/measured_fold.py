@@ -10,7 +10,10 @@ Two pure folds over rows a host already holds, with no store or session:
   call site's strongest reading (``evidence.query_counts``), its ``queries``;
 - :func:`fold_statements`: each production ``statement_stats`` workload's newest
   run and its statements into what each issuing function's statements cost in
-  that window (``crud.measured_costs``'s ``statements`` group).
+  that window (``crud.measured_costs``'s ``statements`` group);
+- :func:`fold_routes`: each production ``route_latency`` workload's newest run
+  and its routes into what each handler's requests cost in that window
+  (``crud.measured_costs``'s ``routes`` group).
 
 The engine's own writer reads the rows from its store and calls these, so a
 host that keeps evidence elsewhere builds the same queue from the same rows.
@@ -261,15 +264,139 @@ def fold_statements(runs: Iterable[Any], points: Iterable[StatementPoint]) -> li
     return out
 
 
+class RouteCost(NamedTuple):
+    """One handler's production requests in one run: the ``measured`` row
+    ``evidence.action_row.action_row`` reads, plus what the requests did.
+
+    ``self_share`` is the handler's request time as a share of all the
+    request time the run stored; a request window has no interval, samples
+    or freshness, so those are ``None``.
+    """
+
+    symbol_id: str
+    run_id: str
+    #: 1-based place among the run's handlers by request time.
+    rank: int
+    self_share: float | None
+    total_ms: float
+    requests: int
+    #: Failed requests across its routes; None when the source did not say.
+    errors: int | None
+    #: The slowest 95th percentile among its routes; None when none said.
+    p95_ms: float | None
+    #: Its routes as ``METHOD template``, costliest first.
+    routes: tuple[str, ...]
+    share_low: float | None = None
+    share_high: float | None = None
+    total_share: float | None = None
+    samples: int | None = None
+    freshness: str | None = None
+
+
+class RouteRun(NamedTuple):
+    """One production route run, folded."""
+
+    run: Any
+    #: Every handler the route join named, costliest first.
+    rows: list[RouteCost]
+    #: All the request time, requests and routes the run stored.
+    total_ms: float
+    requests: int
+    routes: int
+    #: Routes on no handler (:data:`UNJOINED`: no stored route, several, or
+    #: an inline handler): ``{"routes", "total_ms", "share"}``.
+    unattributed: dict[str, dict[str, Any]]
+
+
+#: One ``evidence_route_latency`` row: ``(run_id, handler_symbol_id, method,
+#: route, request_count, total_ms, p95_ms, error_count)``.
+RoutePoint = tuple[str, "str | None", str, str, int, "float | None", "float | None", "int | None"]
+
+
+def fold_routes(runs: Iterable[Any], points: Iterable[RoutePoint]) -> list[RouteRun]:
+    """Each production route workload's newest run, newest first, with what
+    each handler's requests cost in its window.
+
+    *runs* are the repository's ``route_latency`` runs (as
+    :func:`fold_statements` reads them); *points* their rows as
+    :data:`RoutePoint` tuples. Only each workload's newest complete run
+    speaks. A route counts toward a function only when the route join named
+    its handler when the run was stored (``evidence.route_join``); the rest
+    are counted under :data:`UNJOINED`. Shares are of all the request time
+    the run stored, so they sum to at most 1 with ``unattributed``.
+    """
+    runs = list(runs)
+    keep = set(query_runs_to_read(runs))
+    if not keep:
+        return []
+    by_fn: dict[str, dict[str, list[tuple[float, str, int, float | None, int | None]]]] = {
+        rid: {} for rid in keep
+    }
+    totals: dict[str, list[float]] = {rid: [0.0, 0, 0] for rid in keep}
+    other: dict[str, list[float]] = {rid: [0.0, 0] for rid in keep}
+    for run_id, symbol_id, method, route, count, total_ms, p95_ms, errors in points:
+        if run_id not in keep:
+            continue
+        ms = float(total_ms or 0.0)
+        totals[run_id][0] += ms
+        totals[run_id][1] += count or 0
+        totals[run_id][2] += 1
+        if symbol_id:
+            by_fn[run_id].setdefault(symbol_id, []).append(
+                (ms, f"{method} {route}", count or 0, p95_ms, errors)
+            )
+        else:
+            other[run_id][0] += ms
+            other[run_id][1] += 1
+
+    def share(ms: float, whole: float) -> float | None:
+        return ms / whole if whole > 0 else None
+
+    out = []
+    for run in sorted((r for r in runs if r.id in keep), key=_age_key, reverse=True):
+        whole, requests, count = totals[run.id]
+        costs = []
+        for sid, held in by_fn[run.id].items():
+            held.sort(key=lambda h: (-h[0], -h[2], h[1]))
+            ms = sum(h[0] for h in held)
+            p95s = [h[3] for h in held if h[3] is not None]
+            errs = [h[4] for h in held if h[4] is not None]
+            costs.append(
+                (
+                    sid,
+                    ms,
+                    sum(h[2] for h in held),
+                    max(p95s) if p95s else None,
+                    sum(errs) if errs else None,
+                    tuple(h[1] for h in held),
+                )
+            )
+        costs.sort(key=lambda c: (-c[1], -c[2], c[0]))
+        rows = [
+            RouteCost(sid, run.id, rank, share(ms, whole), ms, n, errs, p95, names)
+            for rank, (sid, ms, n, p95, errs, names) in enumerate(costs, start=1)
+        ]
+        ms, n = other[run.id]
+        unattributed = (
+            {UNJOINED: {"routes": int(n), "total_ms": ms, "share": share(ms, whole)}} if n else {}
+        )
+        out.append(RouteRun(run, rows, whole, int(requests), int(count), unattributed))
+    return out
+
+
 __all__ = [
     "UNJOINED",
     "MeasuredFold",
     "QueryPoint",
+    "RouteCost",
+    "RoutePoint",
+    "RouteRun",
     "StatementCost",
     "StatementPoint",
     "StatementRun",
     "fold_measured",
     "fold_query_readings",
+    "fold_routes",
     "fold_statements",
     "query_runs_to_read",
 ]

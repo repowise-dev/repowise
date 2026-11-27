@@ -560,3 +560,82 @@ def test_a_statement_row_reads_as_statements_in_every_form() -> None:
         " · tests not mapped",
         "verify: compare this row in the next orders-db window",
     ]
+
+
+@pytest.mark.asyncio
+async def test_production_routes_are_handler_rows_on_the_measured_route(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    """A connected route source and no profile: status says measured, and each
+    handler the route join named is a row with its requests; routes on no
+    handler are counted, never on a function."""
+    from repowise.core.persistence.models import EvidenceRouteLatency
+
+    repo_id = await _repo(ev_client, session_factory)
+    async with session_factory() as session:
+        session.add(
+            EvidenceRun(
+                id="q1", repository_id=repo_id, run_key="q1", kind="route_latency",
+                format="repowise-evidence-v1", source="plugin", workload_name="api",
+                workload_class="production", value_kind="wall", unit="ms", environment="prod",
+                commit_sha=HEAD, measured_at=MEASURED_AT,
+                window_start=datetime(2026, 11, 1, tzinfo=UTC), window_end=MEASURED_AT,
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                EvidenceRouteLatency(
+                    run_id="q1", method="GET", route="/login", repository_id=repo_id,
+                    handler_symbol_id=LOGIN, request_count=8, p50_ms=5.0, p95_ms=30.0,
+                    total_ms=80.0, error_count=1,
+                ),
+                EvidenceRouteLatency(
+                    run_id="q1", method="GET", route="/elsewhere", repository_id=repo_id,
+                    handler_symbol_id=None, request_count=2, p50_ms=None, p95_ms=None,
+                    total_ms=20.0, error_count=None,
+                ),
+            ]
+        )
+        await session.commit()
+
+    status = (await ev_client.get(f"/api/repos/{repo_id}/evidence/status")).json()
+    assert status["status"] == "measured"
+    body = (await ev_client.get(f"/api/repos/{repo_id}/evidence/measured")).json()
+    assert (body["basis"], body["measured"], body["statements"]) == ("measured", None, None)
+    (row,) = body["routes"]["rows"]
+    assert (row["symbol_id"], row["share"], row["freshness"]) == (LOGIN, 0.8, None)
+    assert row["routes"] == {
+        "requests": 8, "total_ms": 80.0, "mean_ms": 10.0, "p95_ms": 30.0, "errors": 1,
+        "routes": ["GET /login"],
+    }
+    assert row["verify"] == "compare this row in the next api window"
+    (run,) = body["routes"]["runs"]
+    assert (run["requests"], run["routes"]) == (10, 2)
+    assert run["unattributed"] == {"unjoined": {"routes": 1, "total_ms": 20.0, "share": 0.2}}
+
+
+def test_a_route_row_reads_as_requests_in_every_form() -> None:
+    """The JSON form validates against the closed ``RouteRow``; the text and
+    MCP forms name the route and say requests, mean and p95."""
+    from repowise.core.evidence.action_row import action_row, route_facts, row_compact, row_text
+    from repowise.core.evidence.measured_fold import RouteCost
+    from repowise.server.schemas.runtime_evidence import RouteRow
+
+    cost = RouteCost("src/app.py::serve", "q1", 1, 0.25, 500.0, 1000, 4, 12.5, ("GET /x/{id}",))
+    row = action_row(
+        cost, workload_name="api", workload_class="production", routes=route_facts(cost)
+    ).as_dict()
+    parsed = RouteRow.model_validate(row)
+    assert parsed.routes.mean_ms == 0.5 and parsed.next_step is None
+    assert parsed.model_dump(exclude_unset=True).keys() == row.keys()
+    assert row["sources"] == {"share": "route_latency", "verify": "workload"}
+    assert row_compact(row) == {
+        "symbol_id": "src/app.py::serve", "run_id": "q1", "share": 0.25,
+        "route": "GET /x/{id}", "requests": 1000, "mean_ms": 0.5, "p95_ms": 12.5,
+    }
+    assert row_text(row) == [
+        "GET /x/{id} · 25% of the window's request time · 1,000 requests · 0.5 ms mean"
+        " · 12.5 ms p95 · 4 errors · tests not mapped",
+        "verify: compare this row in the next api window",
+    ]

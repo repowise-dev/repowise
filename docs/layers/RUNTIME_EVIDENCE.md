@@ -534,8 +534,21 @@ changed since. Every run listing names a production run's window and deploy
 as its rows' claim, `window`: "in production over 2026-10-30 to 2026-11-26,
 deployed commit unknown" (`evidence status`, the REST `status`, `runs` and
 `measured` routes, and `get_health`'s measured `runs`). A run of any other
-class has no `window` key. A route row is stored without a function until the
-route table joins it, and nothing reads route rows yet.
+class has no `window` key.
+
+A route row names the function that handles it. Every index stores the repo's
+routes (`http_routes`: method, path template and handler), and the join reads
+both templates in one form first: every parameter is the same whatever its
+syntax (`{repo_id}`, `{path:path}`, `:id`, `<int:id>`, `[id]`, a whole-segment
+`*` or `*name`), with case and a trailing slash ignored. It then needs the same
+method (a stored route that serves every method answers only when no route
+names the method) and the same template, never a pattern match of one against
+the other. A row names a handler only when every matching route names that one;
+otherwise it names none and `evidence add` counts why in `unlinked`:
+`ambiguous_route` (routes with different handlers match), `no_handler` (the
+route's handler is inline, so the index names none) or `unknown_route` (no
+stored route matches: a prefix the index could not see, a route another
+service serves). A route row is joined once, when it is stored.
 
 A statement row names the function that issues it. Every index stores the
 repo's statement sites (`statement_sites`): each PostgREST client call
@@ -580,6 +593,16 @@ listed, never leading: no rule reads a statement's cost into a next step yet,
 so they mint no measured hotspot and no Fix first item. A store with statement
 runs is never `no_runtime_data`; one whose newest windows name no function
 reads `not_ranked`.
+
+Route runs read back the same way, as the `routes` group: one row per handler
+the route join named, ranked by the request time of its routes, with `share` of
+the window's stored request time, `routes` (`requests`, `total_ms`, `mean_ms`
+per request, the slowest route's `p95_ms`, `errors`, and its `routes` as
+`METHOD template`, costliest first) and `verify` the next production window.
+The run's `unattributed` counts the routes on no handler as `unjoined`. Route
+rows never lead either, and a store with route runs is never
+`no_runtime_data`. The group is left out of every response when no route run
+names a handler, so those responses are unchanged.
 
 A Postgres database's statement statistics are one SELECT away, run by whoever
 may read the database, with no connector:
