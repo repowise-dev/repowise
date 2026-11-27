@@ -2,8 +2,8 @@
 
 A page write trims only that page's history, so a page no update rewrites
 keeps whatever history it had before the cap existed, or before the cap was
-lowered. Each update asks the ``page_id`` index whether any page holds more
-than the cap (milliseconds) and trims the whole repository only when one does.
+lowered. Each update asks the index whether any of the repository's pages
+holds more than the cap (milliseconds) and trims the whole repository only when one does.
 No marker is kept: the store itself says whether a trim is owed, so a failed
 trim, or a cap raised and lowered again between updates, is caught next time.
 
@@ -55,6 +55,6 @@ async def _trim(repo_path: Path, keep: int) -> int | None:
         if opened is None:
             return None
         session, repo_id = opened
-        if not await page_versions_over_cap(session, keep):
+        if not await page_versions_over_cap(session, repo_id, keep):
             return None
         return await prune_page_versions(session, keep, repository_id=repo_id)

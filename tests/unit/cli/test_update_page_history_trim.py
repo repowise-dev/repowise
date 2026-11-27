@@ -27,23 +27,29 @@ def _url(root: Path) -> str:
     return f"sqlite+aiosqlite:///{(root / '.repowise' / 'wiki.db').as_posix()}"
 
 
-async def _seed(root: Path) -> None:
-    """A store whose pages carry more history than the default cap, as before it existed."""
-    (root / ".repowise").mkdir(parents=True, exist_ok=True)
+async def _seed(root: Path, owner: Path | None = None) -> None:
+    """A store whose pages carry more history than the default cap, as before it existed.
+
+    The pages belong to the repository at *owner* (``root`` by default), kept
+    in ``root``'s store.
+    """
+    owner = owner or root
+    for path in {root, owner}:
+        (path / ".repowise").mkdir(parents=True, exist_ok=True)
     # A cap of 100 while seeding stands in for the unbounded history of older stores.
-    (root / ".repowise" / "config.yaml").write_text(
+    (owner / ".repowise" / "config.yaml").write_text(
         "wiki:\n  page_versions_keep: 100\n", encoding="utf-8"
     )
     engine = create_engine(_url(root))
     await init_db(engine)
     factory = create_session_factory(engine)
     async with get_session(factory) as session:
-        repo = await upsert_repository(session, name="r", local_path=str(root))
+        repo = await upsert_repository(session, name=owner.name, local_path=str(owner))
         for p in range(PAGES):
             for i in range(WRITES):
                 await upsert_page(
                     session,
-                    page_id=f"file_page:m{p}.py",
+                    page_id=f"file_page:{owner.name}/m{p}.py",
                     repository_id=repo.id,
                     page_type="file_page",
                     title=f"m{p}",
@@ -54,7 +60,8 @@ async def _seed(root: Path) -> None:
                     provider_name="mock",
                 )
     await engine.dispose()
-    (root / ".repowise" / "config.yaml").unlink()
+    if owner == root:
+        (root / ".repowise" / "config.yaml").unlink()
 
 
 async def _versions(root: Path) -> int:
@@ -111,3 +118,26 @@ def test_an_unreadable_cap_trims_nothing(tmp_path):
 
 def test_no_store_means_nothing_runs(tmp_path):
     assert trim_page_history(tmp_path, dry_run=False) is None
+
+
+def test_another_repositorys_history_never_sets_off_a_trim(tmp_path, monkeypatch):
+    """A shared store: only the other repository holds pages over this one's cap."""
+    root = tmp_path / "this"
+    asyncio.run(_seed(root))
+    assert trim_page_history(root, dry_run=False) == PAGES * (WRITES - 1 - 10)
+    other = tmp_path / "other"
+    asyncio.run(_seed(root, owner=other))  # its cap stays 100
+
+    from repowise.core.persistence import crud
+
+    calls: list[object] = []
+    real = crud.prune_page_versions
+
+    async def counting(*args, **kwargs):
+        calls.append(kwargs.get("repository_id"))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(crud, "prune_page_versions", counting)
+    assert trim_page_history(root, dry_run=False) is None
+    assert calls == []
+    assert asyncio.run(_versions(root)) == PAGES * 10 + PAGES * (WRITES - 1)

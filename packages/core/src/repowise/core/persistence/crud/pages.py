@@ -542,17 +542,16 @@ async def _trim_snapshotted(session: AsyncSession, snapshotted: list[tuple[str, 
             await prune_page_versions(session, keep, page_ids=page_ids, repository_id=owner)
 
 
-async def page_versions_over_cap(session: AsyncSession, keep: int) -> bool:
-    """Whether any page in the store holds more than *keep* earlier versions.
+async def page_versions_over_cap(session: AsyncSession, repository_id: str, keep: int) -> bool:
+    """Whether any of *repository_id*'s pages holds more than *keep* earlier versions.
 
-    Counts through the ``page_id`` index alone, so it costs milliseconds where
-    a trim of the whole table costs seconds. Store-wide on purpose: in a store
-    shared by repositories with different caps this can answer yes for a page
-    the asking repository does not own, and the trim that follows finds
-    nothing of its own to delete.
+    Counts through the ``(repository_id, page_id)`` index alone, so it costs
+    milliseconds where a trim of the whole table costs seconds, and another
+    repository's history in a shared store never sets it off.
     """
     over = (
         select(PageVersion.page_id)
+        .where(PageVersion.repository_id == repository_id)
         .group_by(PageVersion.page_id)
         .having(func.count() > keep)
         .limit(1)
