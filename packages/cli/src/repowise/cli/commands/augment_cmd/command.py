@@ -384,8 +384,8 @@ _SWEEP_STAMP_NAME = ".sweep.stamp"
 # they only cost disk entries; sweeping hourly keeps the directory small
 # without listing it on every emission.
 _SWEEP_INTERVAL_SECONDS = 3600.0
-# Bounds one sweep's unlink cost. Hourly, this clears far more markers than
-# the hooks create in an hour; any backlog is cleared by the next sweep.
+# Bounds one sweep's unlink cost. A sweep that hits the cap releases the
+# hourly throttle, so a backlog drains over the next claims, one capped run each.
 _MAX_MARKER_CLEANUP_PER_RUN = 500
 
 
@@ -425,7 +425,8 @@ def _is_sweep_throttled(marker_dir: Path, now: float) -> bool:
     return False
 
 
-def _sweep_dir(marker_dir: Path, now: float, max_delete: int) -> None:
+def _sweep_dir(marker_dir: Path, now: float, max_delete: int) -> bool:
+    """Unlink expired markers; return True when the cap stopped the sweep early."""
     import os
 
     deleted = 0
@@ -438,15 +439,17 @@ def _sweep_dir(marker_dir: Path, now: float, max_delete: int) -> None:
                     os.unlink(entry.path)
                     deleted += 1
                     if deleted >= max_delete:
-                        return
+                        return True
+    return False
 
 
 def _cleanup_stale_markers(
     marker_dir: Path, now: float, max_delete: int = _MAX_MARKER_CLEANUP_PER_RUN
 ) -> None:
     """Delete expired markers from repowise's own marker dir, at most once per sweep interval."""
-    if not _is_sweep_throttled(marker_dir, now):
-        _sweep_dir(marker_dir, now, max_delete)
+    if not _is_sweep_throttled(marker_dir, now) and _sweep_dir(marker_dir, now, max_delete):
+        with contextlib.suppress(OSError):
+            (marker_dir / _SWEEP_STAMP_NAME).unlink()
 
 
 def _take_over_stale_marker(marker: Path, now: float) -> bool:

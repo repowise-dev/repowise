@@ -304,9 +304,9 @@ def test_claim_emission_cleanup_is_rate_limited(
     sweeps: list[Path] = []
     real_sweep = command._sweep_dir
 
-    def counting_sweep(marker_dir: Path, now: float, max_delete: int) -> None:
+    def counting_sweep(marker_dir: Path, now: float, max_delete: int) -> bool:
         sweeps.append(marker_dir)
-        real_sweep(marker_dir, now, max_delete)
+        return real_sweep(marker_dir, now, max_delete)
 
     monkeypatch.setattr(command, "_sweep_dir", counting_sweep)
 
@@ -348,19 +348,29 @@ def test_cleanup_stale_markers_direct(tmp_path: Path) -> None:
     assert active.exists()
 
 
-def test_cleanup_stale_markers_caps_deletes_per_sweep(tmp_path: Path) -> None:
+def test_capped_sweep_releases_the_throttle_so_a_backlog_drains(tmp_path: Path) -> None:
     import time
 
-    from repowise.cli.commands.augment_cmd.command import _cleanup_stale_markers
+    from repowise.cli.commands.augment_cmd.command import (
+        _SWEEP_STAMP_NAME,
+        _cleanup_stale_markers,
+    )
+
+    def remaining() -> int:
+        return len([p for p in tmp_path.iterdir() if p.name.startswith("expired-")])
 
     for i in range(5):
-        _age_target = tmp_path / f"expired-{i}"
-        _age_target.write_text("x", encoding="utf-8")
-        _age(_age_target, 20)
+        target = tmp_path / f"expired-{i}"
+        target.write_text("x", encoding="utf-8")
+        _age(target, 20)
 
     _cleanup_stale_markers(tmp_path, time.time(), max_delete=3)
+    assert remaining() == 2
+    assert not (tmp_path / _SWEEP_STAMP_NAME).exists()  # cap hit: next claim sweeps
 
-    assert len([p for p in tmp_path.iterdir() if p.name.startswith("expired-")]) == 2
+    _cleanup_stale_markers(tmp_path, time.time(), max_delete=3)
+    assert remaining() == 0
+    assert (tmp_path / _SWEEP_STAMP_NAME).exists()  # drained: hourly throttle holds
 
 
 def test_claim_emission_takeover_stale_marker(
