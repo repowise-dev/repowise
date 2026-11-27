@@ -1358,12 +1358,31 @@ class LanguageStrategiesMixin:
         if method is None or not receiver[:1].isupper():
             return None
         index = self._get_rails_index()
-        target = index.resolve(receiver, file_path) if index is not None else None
-        owner = receiver.rpartition("::")[2]
+        if index is None:
+            return None
+        written = self._ruby_written_receiver(file_path, call)
+        target = index.resolve(written, file_path)
+        owner = bare_type_name(written)
         callee = self._ruby_method_in(target, owner, method) if target else None
         if callee is None or callee == caller_id:
             return None
         return ResolvedCall(caller_id, callee, 0.88, call.line, "receiver_import")
+
+    def _ruby_written_receiver(self, file_path: str, call: CallSite) -> str:
+        """The receiver as written at the call: ``Billing::Invoice`` where the site holds ``Invoice``.
+
+        ``ruby.scm`` captures only a namespaced receiver's last segment, which
+        the class index keys on; the Zeitwerk lookup needs the whole path, or
+        ``Billing::Invoice.new`` binds to a top-level ``Invoice``. Read back
+        off the call's line; a line that does not show the call as expected
+        leaves the captured name.
+        """
+        lines = self._lines_of(file_path)
+        text = lines[call.line - 1] if 0 < call.line <= len(lines) else ""
+        receiver = re.escape(call.receiver_name or "")
+        pattern = rf"((?:::)?(?:[A-Z]\w*::)*{receiver})\s*\.\s*{re.escape(call.target_name)}\b"
+        m = re.search(pattern, text)
+        return m.group(1) if m else (call.receiver_name or "")
 
     def _resolve_ruby_conventional_receiver(
         self,

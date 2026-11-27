@@ -144,3 +144,28 @@ def test_class_call_binds_only_the_receivers_own_method(tmp_path: Path) -> None:
     assert not graph.has_edge(caller, "app/services/report.rb::Report::Row::initialize")
     assert graph.has_edge(caller, "app/jobs/export_job.rb::ExportJob::perform")
     assert not graph.has_edge(caller, "app/jobs/export_job.rb::ExportJob::Retry::perform")
+
+
+def test_namespaced_receiver_resolves_its_whole_path(tmp_path: Path) -> None:
+    """``Billing::Invoice.new`` is the namespaced class, not a top-level ``Invoice``."""
+    root = tmp_path / "repo"
+    files = {
+        "config/application.rb": "module App; class Application; end; end\n",
+        "app/models/invoice.rb": "class Invoice\n  def initialize(id)\n  end\nend\n",
+        "app/services/billing/invoice.rb": (
+            "class Billing::Invoice\n  def initialize(id)\n  end\nend\n"
+        ),
+        "app/controllers/invoices_controller.rb": (
+            "class InvoicesController\n  def create\n    Billing::Invoice.new(1)\n  end\nend\n"
+        ),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    _parsed, _sources, builder, _structure, _count = build_repo_graph(
+        root, [], collect_sources=True, read_only=True
+    )
+    graph = builder.graph()
+    caller = "app/controllers/invoices_controller.rb::InvoicesController::create"
+    assert graph.has_edge(caller, "app/services/billing/invoice.rb::Billing::Invoice::initialize")
+    assert not graph.has_edge(caller, "app/models/invoice.rb::Invoice::initialize")

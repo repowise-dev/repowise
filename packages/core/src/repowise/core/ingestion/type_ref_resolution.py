@@ -1005,6 +1005,7 @@ def _resolve_ruby_type_refs(
     ``config/application.rb`` has no index and gets no edges.
     """
     from .resolvers.ruby_rails import get_or_build_rails_index
+    from .type_names import bare_type_name, type_qualifier
 
     if not parsed.type_refs:
         return 0
@@ -1018,10 +1019,9 @@ def _resolve_ruby_type_refs(
         while target is None:
             target = index.resolve(constant, from_path)
             if target is None:
-                head, sep, _ = constant.rpartition("::")
-                if not sep or head in ("", ":"):
+                constant = type_qualifier(constant)
+                if constant.strip(":") == "":
                     break
-                constant = head
         if target is None or target == from_path or not graph.has_node(target):
             continue
         _add_or_merge_type_use_edge(
@@ -1029,7 +1029,7 @@ def _resolve_ruby_type_refs(
             src=from_path,
             dst=target,
             # The class name the target defines, as the unused-export pass reads it.
-            type_name=constant.rpartition("::")[2],
+            type_name=bare_type_name(constant),
             origin=ref.origin,
             widens_scope=ref.origin in _RUBY_SCOPE_ORIGINS,
         )

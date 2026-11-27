@@ -9,7 +9,7 @@ from tree_sitter import Node
 
 from ..extractors import fsharp_type_name, node_text
 from ..language_data import get_builtin_types
-from ..type_names import is_resolvable_type_name
+from ..type_names import is_resolvable_type_name, scoped_type_segments
 
 _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
     "type_argument_list": "generic_argument",
@@ -724,7 +724,7 @@ def _ruby_head_constant(type_node: Node, src: str) -> str | None:
         if parent.type == "assignment" and parent.child_by_field_name("left") == type_node:
             return None
     text = "".join(node_text(type_node, src).split())
-    segments = text.removeprefix("::").split("::")
+    segments = scoped_type_segments(text)
     # ``self.class::FOO`` or ``foo::Bar``: a scope that is no constant path.
     if not all(seg[:1].isupper() and seg.replace("_", "").isalnum() for seg in segments):
         return None
