@@ -54,13 +54,9 @@ def test_literal_glob_edges_every_match_and_keeps_them_reachable(tmp_path: Path)
     graph, report = _build(
         tmp_path,
         {
-            "src/main.ts": (
-                "import { load } from './loader';\nload();\n"
-            ),
+            "src/main.ts": ("import { load } from './loader';\nload();\n"),
             "src/loader.ts": (
-                "export function load() {\n"
-                "  return import.meta.glob('./pages/*.ts');\n"
-                "}\n"
+                "export function load() {\n  return import.meta.glob('./pages/*.ts');\n}\n"
             ),
             "src/pages/home.ts": "export const title = 'home';\n",
             "src/pages/about.ts": "export const title = 'about';\n",
@@ -178,6 +174,64 @@ def test_glob_never_matches_the_importer_or_unindexed_files(tmp_path: Path) -> N
     )
     edges = _imports_from(graph, "src/all.ts")
     assert set(edges) == {"src/one.ts"}
+
+
+def test_root_relative_glob_reads_from_the_vite_config_directory(tmp_path: Path) -> None:
+    # No config anywhere near: the repository root is the fallback root.
+    graph, report = _build(
+        tmp_path,
+        {
+            "src/main.ts": (
+                "const pages = import.meta.glob('/src/pages/*.vue');\n"
+                "export function use() { return pages; }\n"
+            ),
+            "src/pages/Home.vue": "<template><p>a</p></template>\n",
+            "other/src/pages/Other.vue": "<template><p>b</p></template>\n",
+        },
+    )
+    edges = _imports_from(graph, "src/main.ts")
+    assert set(edges) == {"src/pages/Home.vue"}
+    assert "src/pages/Home.vue" not in _unreachable(report)
+
+
+def test_root_relative_glob_in_a_nested_package_reads_its_own_config(tmp_path: Path) -> None:
+    # A nested package with a vite.config: its directory, not the repo root,
+    # is the root the leading ``/`` is read against.
+    graph, report = _build(
+        tmp_path,
+        {
+            "package.json": json.dumps({"workspaces": ["packages/*"]}),
+            "packages/web/vite.config.ts": "export default defineConfig({});\n",
+            "packages/web/src/registry.ts": (
+                "const mods = import.meta.glob(['/src/mods/*.ts', '!/src/mods/skip.ts']);\n"
+                "export function use() { return mods; }\n"
+            ),
+            "packages/web/src/mods/a.ts": "export const a = 1;\n",
+            "packages/web/src/mods/skip.ts": "export const s = 1;\n",
+            "src/mods/root-level.ts": "export const r = 1;\n",
+        },
+    )
+    edges = _imports_from(graph, "packages/web/src/registry.ts")
+    assert set(edges) == {"packages/web/src/mods/a.ts"}
+    assert "packages/web/src/mods/a.ts" not in _unreachable(report)
+    assert "src/mods/root-level.ts" in _unreachable(report)
+
+
+def test_a_literal_root_option_moves_the_vite_root(tmp_path: Path) -> None:
+    graph, _ = _build(
+        tmp_path,
+        {
+            "vite.config.mjs": ("export default defineConfig({ root: 'src' });\n"),
+            "src/main.ts": (
+                "const pages = import.meta.glob('/pages/*.ts');\n"
+                "export function use() { return pages; }\n"
+            ),
+            "src/pages/home.ts": "export const h = 1;\n",
+            "pages/outside.ts": "export const o = 1;\n",
+        },
+    )
+    edges = _imports_from(graph, "src/main.ts")
+    assert set(edges) == {"src/pages/home.ts"}
 
 
 def test_new_url_with_import_meta_url_edges_the_relative_file(tmp_path: Path) -> None:
