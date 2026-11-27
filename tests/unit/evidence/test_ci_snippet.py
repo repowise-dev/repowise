@@ -190,3 +190,23 @@ def test_go_keeps_its_test2json_events_and_gitlab_reads_no_junit_from_them() -> 
     gitlab = yaml.safe_load(ci_snippet(stacks, "gitlab", None)["content"])
     (job,) = gitlab.values()
     assert "go-test.json" in job["artifacts"]["paths"] and "reports" not in job["artifacts"]
+
+
+@pytest.mark.parametrize("tree", [
+    (["Package.swift", "Sources/main.swift"], {"Package.swift": "// swift-tools-version: 5.9\n"}),
+    (["pubspec.yaml", "lib/main.dart"], {"pubspec.yaml": "name: my_app\n"}),
+    (["build.sbt", "src/main/scala/A.scala"], {"build.sbt": 'name := "app"\n'}),
+])
+def test_new_coverage_stacks_carry_ci_toolchain_and_non_alpine_image(tree) -> None:
+    stacks = detect_stacks(*tree)
+    assert len(stacks) == 1
+    github = yaml.safe_load(ci_snippet(stacks, "github", "main")["content"])
+    gitlab = yaml.safe_load(ci_snippet(stacks, "gitlab", "main")["content"])
+
+    (gh_job,) = github["jobs"].values()
+    toolchain_steps = [s.get("uses", "") for s in gh_job["steps"] if s.get("uses")]
+    assert any("setup-" in step for step in toolchain_steps)
+
+    (gl_job,) = gitlab.values()
+    assert gl_job["image"] != "alpine"
+    assert "alpine" not in gl_job["image"].split(":")[-1]

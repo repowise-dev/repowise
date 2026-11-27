@@ -1180,7 +1180,6 @@ def test_an_ignored_folder_git_tracks_a_file_in_lists_only_that_file(tmp_path):
     assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
 
 
-<<<<<<< HEAD
 # ---------------------------------------------------------------------------
 # Test timings ride on the test command
 # ---------------------------------------------------------------------------

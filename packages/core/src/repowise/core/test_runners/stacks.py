@@ -1419,6 +1419,7 @@ def _swift() -> Stack:
         "swift test",
         "swift",
         ".build/debug/codecov/*.json",
+        setup=("- uses: swiftlang/setup-swift@v1",),
         test="swift test --enable-code-coverage",
     )
 
@@ -1429,7 +1430,10 @@ def _dart() -> Stack:
         "dart test",
         "dart",
         "coverage/lcov.info",
-        test="dart test --coverage=coverage",
+        setup=("- uses: dart-lang/setup-dart@v1",),
+        prepare=("- run: dart pub global activate coverage",),
+        requires=("dart pub global activate coverage",),
+        test="dart test --coverage=coverage && dart pub global run coverage:format_coverage --lcov --in=coverage --out=coverage/lcov.info --packages=.dart_tool/package_config.json --report-on=lib",
     )
 
 
@@ -1439,6 +1443,7 @@ def _scala() -> Stack:
         "sbt test",
         "sbt",
         "target/scala-*/scoverage-report/scoverage.xml",
+        setup=(*_JAVA_SETUP, "    cache: sbt"),
         test="sbt coverage test coverageReport",
     )
 

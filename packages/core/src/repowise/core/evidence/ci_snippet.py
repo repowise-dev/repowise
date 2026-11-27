@@ -48,6 +48,10 @@ _GITLAB_IMAGES = {
     "dotnet": "mcr.microsoft.com/dotnet/sdk:8.0",
     "ruby": "ruby:3.3",
     "php": "composer:2",
+    "swift": "swift:5.10",
+    "dart": "dart:stable",
+    "sbt": "sbtscala/scala-sbt:eclipse-temurin-21_1.10.0_3.4.2",
+    "scala": "sbtscala/scala-sbt:eclipse-temurin-21_1.10.0_3.4.2",
 }
 #: The line that installs a package manager the image lacks.
 _GITLAB_TOOLS = {
@@ -58,6 +62,7 @@ _GITLAB_TOOLS = {
     "bundler": "bundle install",
     "pnpm": "corepack enable",
     "yarn": "corepack enable",
+    "dart": "dart pub global activate coverage",
 }
 
 
