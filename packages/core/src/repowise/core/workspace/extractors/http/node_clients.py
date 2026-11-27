@@ -48,6 +48,7 @@ from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
 from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument, method_from_options
 from .commonjs import imported_exports
 from .dialect import build_consumer_contract
+from .url_builders import settle_url_builders
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
@@ -133,9 +134,10 @@ class _Client:
     direct: bool = False  # the library itself, not an instance of it
 
 
-# `import x from 'm'`, `import x, { a, b as c } from 'm'`, `import { a } from 'm'`.
+# `import x from 'm'`, `import x, { a, b as c } from 'm'`, `import { a } from 'm'`, `import * as x from 'm'`.
 _IMPORT_RE = re.compile(
     r"""import(?<![\w$]import)\s+(?:type\s+)?(?:(?P<default>[A-Za-z_$][\w$]*)\s*,?\s*)?"""
+    r"""(?:\*\s+as\s+(?P<star>[A-Za-z_$][\w$]*)\s*,?\s*)?"""
     r"""(?:\{(?P<named>[^{}]*)\}\s*)?from\s*['"](?P<spec>[^'"]+)['"]"""
 )
 # `const x = require('m')`, the binding read back from the `require`.
@@ -177,6 +179,8 @@ def _imports(content: str) -> list[tuple[str, str, str]]:
         for m in _IMPORT_RE.finditer(content):
             if m.group("default"):
                 out.append((m.group("default"), "default", m.group("spec")))
+            if m.group("star"):
+                out.append((m.group("star"), "*", m.group("spec")))
             out.extend((alias, name, m.group("spec")) for name, alias in _named(m.group("named") or ""))
     if "require" in content:
         for m in _REQUIRE_RE.finditer(content):
@@ -433,6 +437,7 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
     imports = _imports(content)
     strings.settled.update(imported_environment(ctx, imports))
     strings.settled.update(imported_exports(ctx, imports))
+    settle_url_builders(ctx, imports, strings)
     clients = _file_clients(ctx, imports, strings).callable
     # `ofetch(url)` is a fetch call the fetch reader already reads.
     names = tuple(n for n, c in clients.items() if not (c.direct and not c.library.verbs))
