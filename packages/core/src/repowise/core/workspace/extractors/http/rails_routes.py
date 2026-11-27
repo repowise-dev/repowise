@@ -434,7 +434,7 @@ def _collect_concern_body(
     while idx < len(statements):
         line_no, raw = statements[idx]
         idx += 1
-        if raw == "end" or raw.startswith("end "):
+        if raw.startswith("end"):
             depth -= 1
             if depth == 0:
                 break
@@ -492,6 +492,14 @@ def _handle_draw_or_concerns(
     return None
 
 
+def _handle_statement_end(raw: str, stack: list[_Scope]) -> bool:
+    if raw.startswith("end"):
+        if stack:
+            stack.pop()
+        return True
+    return False
+
+
 def _extract_statements(
     statements: list[tuple[int, str]],
     stack: list[_Scope],
@@ -502,9 +510,7 @@ def _extract_statements(
     remaining = _collect_concerns(statements, concerns)
 
     for line_no, raw in remaining:
-        if raw == "end" or raw.startswith("end "):
-            if stack:
-                stack.pop()
+        if _handle_statement_end(raw, stack):
             continue
 
         line, has_inline_end = _strip_inline_end(raw)
