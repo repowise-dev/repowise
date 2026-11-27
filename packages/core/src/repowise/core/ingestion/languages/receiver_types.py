@@ -47,13 +47,17 @@ _TYPE = r"[A-Z]\w*(?:\.\w+)*(?:<(?:[^<>]|<[^<>]*>)*>)?(?:\[(?:,\s*)*\])*"
 # The same spelling, anchored: distinguishes ``Item[]`` from ``Item``.
 _TYPE_SPELLING = re.compile(_TYPE)
 
+
+def _typed_declaration(name: str) -> re.Pattern[str]:
+    """``T name``, the name written as *name*, closed as ``_TYPED_DECLARATION`` closes it."""
+    return re.compile(rf"(?<![\w.])(?P<type>{_TYPE})\s+(?P<name>{name})\s*(?=(?P<closer>[=;,):]))")
+
+
 # ``T name`` closed by punctuation that can end a declaration, which keeps it
 # off ``(Foo) bar`` and ``foo(Bar.BAZ, qux)``. The closer is captured because it
 # alone separates a field (`T name;`) from a parameter (`T name,`) at class
 # scope, where unextracted constructors leave their parameter lists.
-_TYPED_DECLARATION = re.compile(
-    rf"(?<![\w.])(?P<type>{_TYPE})\s+(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,):]))"
-)
+_TYPED_DECLARATION = _typed_declaration(r"[a-z_]\w*")
 
 _INFERRED_FROM_NEW = re.compile(
     r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*new\s+(?P<type>[A-Z]\w*(?:\.\w+)*)"
@@ -366,6 +370,11 @@ _PASCAL_DECLARATION = re.compile(
     rf"(?P<type>{_PASCAL_TYPE})\s*(?P<closer>[;)=]))"
 )
 
+# A Java field or local whose name starts with a capital (``ImmutableSet<Kind> KINDS = ..``, a
+# constant). The shape of ``_TYPED_DECLARATION``: Java writes the type first, and a keyword
+# (``return KINDS;``) is no type.
+_JAVA_CAPITALISED_DECLARATION = _typed_declaration(r"[A-Z]\w*")
+
 # A Java primitive or primitive array, ``long start`` / ``int[] xs``. Kept as an
 # external type: no call is made on one, but an overload is chosen by it.
 _JAVA_PRIMITIVE_DECLARATION = re.compile(
@@ -399,6 +408,7 @@ _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "go": _GO_FAMILY,
     "java": (
         *_C_FAMILY,
+        _JAVA_CAPITALISED_DECLARATION,
         _JAVA_PRIMITIVE_DECLARATION,
         _JAVA_VARARGS_DECLARATION,
         _JAVA_PATTERN_VARIABLE,

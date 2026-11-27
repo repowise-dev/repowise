@@ -542,7 +542,7 @@ Pattern families today:
 
 | Family | Languages | Shapes |
 |---|---|---|
-| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name`, `var name = new Type()` |
+| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name` (Java also `Type NAME`, a constant), `var name = new Type()` |
 | Go | Go | parameters, `name := Type{}`, `var name Type` |
 | Kotlin | Kotlin | `name: Type`, `= Type(...)` |
 | Swift | Swift | `name: Type`, `= Type(...)` |
