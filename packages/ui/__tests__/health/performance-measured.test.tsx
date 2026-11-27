@@ -10,7 +10,10 @@ import {
   measuredRow,
   measuredRun,
   NOTHING_MEASURED,
+  PROD_CLAIM,
   RUNS,
+  runSummary,
+  statementsOnly,
   withBenchmarks,
 } from "./fixtures/runtime-evidence";
 
@@ -42,7 +45,7 @@ describe("PerformanceView runtime evidence", () => {
     expect(within(strip).getByText("at 4f9c2a1, the indexed commit")).toBeTruthy();
     expect(within(strip).getByText("3 runs")).toBeTruthy();
     // The lede names how much of the run repo code can move.
-    expect(screen.getByText(/so a fix in repo code moves at most that share/)).toBeTruthy();
+    expect(screen.getByText(/a fix in repo code moves that share and the library calls/)).toBeTruthy();
     expect(screen.getByRole("list", { name: "Where the cli build run spent its time" })).toBeTruthy();
     expect(
       screen.getByText(/41 functions measured in test and tooling code are counted, not listed/),
@@ -102,6 +105,87 @@ describe("PerformanceView runtime evidence", () => {
     expect(screen.getByRole("heading", { name: "Benchmarks" })).toBeTruthy();
     expect(screen.queryByText("Repo code explains")).toBeNull();
     expect(screen.queryByRole("list", { name: /^Measured in/ })).toBeNull();
+  });
+
+  it("lists production statement rows when they are the only runtime evidence", async () => {
+    const getMeasured = vi.fn(statementsOnly);
+    const statementRun = runSummary({
+      run_id: "run-pg",
+      kind: "statement_stats",
+      workload: "postgres:hosted",
+      class: "production",
+      environment: "production",
+      tool: null,
+      window: { start: null, end: null, base_commit: null, claim: PROD_CLAIM },
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured,
+          listEvidenceRuns: async () => ({ ...RUNS, runs: [statementRun] }),
+        })}
+      />,
+    );
+    const list = await screen.findByRole("list", { name: "Statements in postgres:hosted" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    expect(within(rows[0]!).getByText("explore_repos")).toBeTruthy();
+    expect(within(rows[0]!).getByText("33.0%")).toBeTruthy();
+    expect(within(rows[0]!).getByText("6 calls · mean 102 ms")).toBeTruthy();
+    expect(
+      within(rows[0]!).getByText("Check a fix: compare this row in the next postgres:hosted window"),
+    ).toBeTruthy();
+    expect(within(rows[1]!).getByText("346 calls · mean 0.9 ms")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Production statements" })).toBeTruthy();
+    expect(screen.getByText("postgres:hosted · 42 statements · 1,854 ms stored")).toBeTruthy();
+    // The window claim on the run line; the unattributed shares as one quiet line, on no row.
+    expect(screen.getAllByText(PROD_CLAIM).length).toBeGreaterThan(0);
+    expect(screen.getByText("On no single function: 23.0% ambiguous · 6.0% unjoined.")).toBeTruthy();
+    expect(within(list).queryByText(/ambiguous/)).toBeNull();
+    expect(getMeasured).toHaveBeenCalledWith({ runId: "run-pg", limit: 5 });
+    // Statements never lead: no profile strip, no workload lens, no ranked table.
+    expect(screen.queryByText("Repo code explains")).toBeNull();
+    expect(screen.queryByRole("radio", { name: /postgres:hosted/ })).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Measured in/ })).toBeNull();
+  });
+
+  it("names a production run's window on its run line and in the runs list", async () => {
+    const window = { start: null, end: null, base_commit: null, claim: PROD_CLAIM };
+    const evidence = evidenceAdapter();
+    evidence.getMeasured.mockImplementation(async (opts = {}) => {
+      const view = await measured(opts);
+      return {
+        ...view,
+        measured: view.measured && {
+          ...view.measured,
+          runs: view.measured.runs.map((r) =>
+            r.run_id === "run-cli" ? { ...r, workload_class: "production", window } : r,
+          ),
+        },
+      };
+    });
+    evidence.listEvidenceRuns.mockImplementation(async () => ({
+      ...RUNS,
+      runs: RUNS.runs.map((r) => (r.run_id === "run-cli" ? { ...r, class: "production", window } : r)),
+    }));
+    render(<PerformanceView adapter={adapter(evidence)} />);
+    await table();
+    expect(screen.getByText(PROD_CLAIM)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Runs/ }));
+    const runs = await screen.findByRole("table");
+    expect(within(runs).getByText(PROD_CLAIM)).toBeTruthy();
+    // Only the production run carries a claim.
+    expect(within(runs).getAllByText(/in production over/)).toHaveLength(1);
+  });
+
+  it("adds nothing for runs that are not production and no statements", async () => {
+    render(<PerformanceView adapter={adapter(evidenceAdapter())} />);
+    await table();
+    fireEvent.click(screen.getByRole("button", { name: /Runs/ }));
+    await screen.findByRole("table");
+    expect(screen.queryByText(/in production/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Production statements" })).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Statements in/ })).toBeNull();
   });
 
   it("opens the static cause a measured function carries", async () => {
@@ -337,6 +421,36 @@ describe("buildMeasuredFunctionsPrompt", () => {
     expect(prompt).toContain(
       "Benchmark to run before and after: `pytest benchmarks/bench_render.py::test_render --benchmark-only`",
     );
+  });
+
+  it("leads a row with its next step and names a workload rerun as the verify", () => {
+    const prompt = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [
+        measuredRow({
+          next_step: {
+            rule: "filesystem",
+            why: "90% of it is stat calls",
+            next: "walk with os.scandir",
+            callee: "is_file",
+            share: 0.9,
+          },
+          verify: "repowise perf measure --save before -- cli build before the change",
+          verify_basis: "workload",
+        }),
+      ],
+    });
+    expect(prompt).toContain("Next step: walk with os.scandir");
+    expect(prompt).toContain("Why: 90% of it is stat calls");
+    expect(prompt).toContain(
+      "How to check a fix: repowise perf measure --save before -- cli build before the change",
+    );
+    expect(prompt).not.toContain("Benchmark to run");
+    const production = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [measuredRow({ verify: "compare this row in the next prod window", verify_basis: "workload" })],
+    });
+    expect(production).toContain("How to check a fix: compare this row in the next prod window");
   });
 
   it("names production callers, with the share each measured caller drove", () => {

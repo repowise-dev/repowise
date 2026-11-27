@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowRight, CornerDownRight, FilePlus2, Layers, Scissors } from "lucide-react";
-import { getLanguageFromPath } from "../c4/panels/CodeViewer";
+import { getLanguageFromPath } from "../lib/language-from-path";
 import { HighlightedCodeBlock } from "../shared/code-block";
 import { FilePath, type FilePathMode } from "../shared/file-path";
 import { PlaceholderHint } from "./placeholder-hint";

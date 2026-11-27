@@ -115,8 +115,21 @@ async def cache_key(
         repr(include_paths),
         str(baseline),
         await _index_inputs(ctx),
+        # The in-repo contract block reads this store; a rewrite is a new answer.
+        _contracts_stamp(root),
     )
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
+def _contracts_stamp(root: str) -> str:
+    """``.repowise/contracts.json``'s mtime and size, or ``-`` without one."""
+    from repowise.core.workspace.repo_contracts import repo_contracts_path
+
+    try:
+        stat = repo_contracts_path(Path(root)).stat()
+    except OSError:
+        return "-"
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
 def _live_inputs(root: str, revspec: str) -> tuple[str, ...] | None:
@@ -154,7 +167,13 @@ def branch_inputs(root: str) -> str | None:
     ``origin/HEAD`` or a trunk among them, and names the checked-out branch.
     """
     tips = _git_out(
-        root, ["for-each-ref", "--format=%(objectname) %(refname) %(symref)", "refs/heads", "refs/remotes"]
+        root,
+        [
+            "for-each-ref",
+            "--format=%(objectname) %(refname) %(symref)",
+            "refs/heads",
+            "refs/remotes",
+        ],
     )
     # Exit 1 is a detached HEAD, which is an answer, not a failure.
     branch = _git_out(root, ["symbolic-ref", "-q", "HEAD"], ok=(0, 1))
@@ -174,7 +193,7 @@ def _git_out(root: str, args: list[str], ok: tuple[int, ...] = (0,)) -> bytes | 
 
 
 async def _index_inputs(ctx: Any) -> str:
-    """The index state and the newest coverage ingest; ``""`` without an index."""
+    """The index state and the newest coverage and evidence ingests; ``""`` without an index."""
     from sqlalchemy import func, select
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -199,4 +218,30 @@ async def _index_inputs(ctx: Any) -> str:
             ).one()
     except (LookupError, SQLAlchemyError):
         return ""
-    return f"{index_state_key(repository)}|{newest or ''}|{count}"
+    return f"{index_state_key(repository)}|{newest or ''}|{count}|{await _evidence_inputs(ctx)}"
+
+
+async def _evidence_inputs(ctx: Any) -> str:
+    """The newest evidence ingest and the run count, which the measured block
+    reads and an ingest writes without an index stamp; ``""`` when unreadable
+    (an index older than the evidence tables), which keeps the rest of the key."""
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import EvidenceRun
+    from repowise.server.mcp_server import tool_change_risk as _pkg
+
+    try:
+        async with get_session(ctx.session_factory) as session:
+            repository = await _pkg._get_repo(session)
+            newest, count = (
+                await session.execute(
+                    select(func.max(EvidenceRun.ingested_at), func.count()).where(
+                        EvidenceRun.repository_id == repository.id
+                    )
+                )
+            ).one()
+    except (LookupError, SQLAlchemyError):
+        return ""
+    return f"{newest or ''}|{count}"

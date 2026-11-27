@@ -10,10 +10,14 @@ the list, the panel and the drill-down count the same files.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.exclusion import build_exclude_spec
 from repowise.core.persistence import crud
+from repowise.core.persistence.models import Repository
 from repowise.server.deps import cross_repo_cut_inputs, get_db_session
 from repowise.server.mcp_server._graph_utils import (
     community_cohesion,
@@ -63,6 +67,11 @@ def population_params(
     )
 
 
+def _under_rules(population: Population, repo: Repository) -> Population:
+    """*population* with the repo's exclude rules, so excluded files count nowhere."""
+    return replace(population, exclude_spec=build_exclude_spec(repo.local_path))
+
+
 @router.get("/{repo_id}/architecture", response_model=ArchitectureGraphResponse)
 async def architecture_graph(
     repo_id: str,
@@ -71,11 +80,11 @@ async def architecture_graph(
     ),
     population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> ArchitectureGraphResponse:
     """High-level architecture view: one node per detected community."""
     return await build_architecture_graph(
-        session, repo_id, min_members=min_members, population=population
+        session, repo_id, min_members=min_members, population=_under_rules(population, repo)
     )
 
 
@@ -90,7 +99,7 @@ async def community_slice(
     member_limit: int = Query(SLICE_MEMBER_CAP, ge=1, le=600),
     population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> CommunitySliceResponse:
     """Return a single community's sub-graph for the drill-down."""
     return await build_community_slice(
@@ -98,7 +107,7 @@ async def community_slice(
         repo_id,
         community_id,
         member_limit=member_limit,
-        population=population,
+        population=_under_rules(population, repo),
         cut=cross_repo_cut_inputs(request, repo_id),
     )
 
@@ -109,12 +118,13 @@ async def list_communities(
     limit: int = Query(20, ge=1, le=100),
     population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> list[CommunitySummaryItem]:
     """Return top communities by visible member count with labels and shape scores."""
+    population = _under_rules(population, repo)
     all_nodes = await crud.get_all_file_metrics(session, repo_id)
     visible, _counts = split_population(all_nodes, population)
-    buckets, hidden = bucket_by_community(all_nodes, visible)
+    buckets, hidden = bucket_by_community(all_nodes, visible, population)
 
     items: list[CommunitySummaryItem] = []
     for cid, members in sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])):
@@ -148,9 +158,10 @@ async def get_community_detail(
     member_limit: int = Query(30, ge=1, le=200),
     population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> CommunityDetailResponse:
     """Return detailed info for a single community."""
+    population = _under_rules(population, repo)
     all_members = await crud.get_community_members(
         session, repo_id, community_id, node_type="file", limit=MEMBER_READ_CAP
     )

@@ -93,13 +93,57 @@ def split_words(shares: Mapping[str, float | None]) -> str | None:
     return ", ".join(parts)
 
 
+def window_claim(
+    start: datetime | None, end: datetime | None, commit: str | None, base_commit: str | None
+) -> str:
+    """What a production run's rows claim, in words: ``in production over
+    2026-10-30 to 2026-11-26, deployed 1a2b3c4d5e6f``. A window inside one
+    day names its hours (UTC); a commit the source did not name is
+    ``deployed commit unknown``, and a window that spans deploys names the
+    oldest commit it covered and the newest."""
+    if start is not None and end is not None:
+        if start.date() == end.date():
+            span = f"{start:%Y-%m-%d %H:%M} to {end:%H:%M} UTC"
+        else:
+            span = f"{start:%Y-%m-%d} to {end:%Y-%m-%d}"
+        words = f"in production over {span}"
+    else:
+        words = "in production, window unknown"
+    if commit is None:
+        if base_commit:
+            return f"{words}, deployed from {base_commit[:12]}, newest commit unknown"
+        return f"{words}, deployed commit unknown"
+    if base_commit and base_commit != commit:
+        return f"{words}, deployed {base_commit[:12]} to {commit[:12]}"
+    return f"{words}, deployed {commit[:12]}"
+
+
+def production_window(run: Any) -> dict[str, Any] | None:
+    """The window a stored production run covers, the oldest commit it
+    covered (``base_commit``, when the source knows) and :func:`window_claim`.
+    ``None`` for every other class: their payloads carry no ``window`` key,
+    so they do not grow."""
+    if run.workload_class != "production":
+        return None
+    start, end = _utc(run.window_start), _utc(run.window_end)
+    start = start.astimezone(UTC) if start else None
+    end = end.astimezone(UTC) if end else None
+    return {
+        "start": start.isoformat() if start else None,
+        "end": end.isoformat() if end else None,
+        "base_commit": run.base_commit_sha,
+        "claim": window_claim(start, end, run.commit_sha, run.base_commit_sha),
+    }
+
+
 def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
     """One stored run as the status view shows it.
 
     *reference_commit* is the indexed commit: a run measured there is
     ``current``, at any other commit ``stale``, and ``unknown`` without one.
+    A production run also names its ``window`` (:func:`production_window`).
     """
-    return {
+    out = {
         "run_id": run.id,
         "kind": run.kind,
         "workload": run.workload_name,
@@ -134,6 +178,10 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         "mapping_partial": bool(run.mapping_partial),
         "tests_failed": run.tests_failed,
     }
+    window = production_window(run)
+    if window is not None:
+        out["window"] = window
+    return out
 
 
 def evidence_status(runs: Iterable[Any], reference_commit: str | None) -> dict[str, Any]:

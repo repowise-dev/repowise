@@ -8,6 +8,7 @@ import type {
   EvidenceRunsResponse,
   MeasuredResponse,
   MeasuredRun,
+  StatementRun,
   SuiteCostResponse,
 } from "@repowise-dev/types/runtime-evidence";
 
@@ -91,6 +92,11 @@ export interface RuntimeEvidenceView {
   testsTotal: number;
   /** Each workload's newest benchmark run, listed apart: a benchmark never ranks. */
   benchmarkRuns: BenchmarkRun[];
+  /**
+   * Each production statement workload's newest window that names a function,
+   * listed apart: statement rows never lead or reorder the queue.
+   */
+  statementRuns: StatementRun[];
   /** Every stored run, newest first, once read; empty when the read failed. */
   runs: EvidenceRunSummary[] | undefined;
   /** The commit the index is at, as the runs route names it. */
@@ -151,6 +157,7 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
     testRun: tests?.runs[0] ?? null,
     testsTotal: tests && tests.runs.length === 1 ? tests.total : 0,
     benchmarkRuns: overview?.benchmarks?.runs ?? [],
+    statementRuns: overview?.statements?.runs ?? [],
     // A failed read, or a host that cannot list runs, is no runs, so the
     // notices fall back to the status alone.
     runs: runs?.runs ?? (runsError || !adapter.listEvidenceRuns ? [] : undefined),

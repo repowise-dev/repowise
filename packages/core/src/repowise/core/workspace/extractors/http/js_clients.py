@@ -32,6 +32,7 @@ from ..strings import (
 from .angular import environment_mounts
 from .client_calls import ClientCallMatch, consumer_contracts, join_base, method_from_options
 from .commonjs import exports_mounts
+from .js_factories import factory_bases, factory_mounts
 from .node_clients import FieldScope, client_calls, client_mounts
 from .wrappers import GENERIC_ARGS
 
@@ -353,14 +354,14 @@ class JsClientsDialect:
     requires = ("fetch", "'/", '"/', "`/", "${", "http", "axios", "import", "require", "export")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
-        return client_mounts(ctx) | environment_mounts(ctx) | exports_mounts(ctx)
+        return client_mounts(ctx) | environment_mounts(ctx) | exports_mounts(ctx) | factory_mounts(ctx)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
         from_clients, clients = client_calls(ctx)
         # A client named like `apifetch` is read with its base above, not as `fetch`.
         fetches = [m for m in fetch_calls(content) if _callee(content, m.offset, m.offset + 5) not in clients]
-        matches = with_bases(ctx, [*fetches, *wrapper_calls(content, clients)])
+        matches = factory_bases(ctx, with_bases(ctx, [*fetches, *wrapper_calls(content, clients)]))
         # A `${BASE}` interpolation folds when the file binds BASE to a constant.
         constants = string_constants(content, JS_SYNTAX) if any("${" in m.url for m in matches) else {}
         return from_clients + consumer_contracts(ctx, matches, JS_SYNTAX, constants=constants)

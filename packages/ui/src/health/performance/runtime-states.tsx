@@ -25,7 +25,8 @@ interface Commits {
 }
 
 type RuntimeNotice =
-  | { kind: "tests_only"; workload: string }
+  /** `statements`: production statement windows are stored too; they do not rank functions. */
+  | { kind: "tests_only"; workload: string; statements: boolean }
   | { kind: "ahead"; commits: Commits; showing: boolean; ranksNothing: boolean; command: string | null }
   | { kind: "stale"; command: string | null; older: Commits | null; changed: boolean }
   | { kind: "needs_update"; command: string | null }
@@ -58,7 +59,13 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
   const out: RuntimeNotice[] = [];
   const status = view.overview?.status;
   const unranked = status === "stale" || status === "not_ranked" || status === "ahead_of_index";
-  if (!view.run && view.testRun) out.push({ kind: "tests_only", workload: view.testRun.workload_name });
+  if (!view.run && view.testRun) {
+    out.push({
+      kind: "tests_only",
+      workload: view.testRun.workload_name,
+      statements: view.statementRuns.length > 0,
+    });
+  }
   // An unranked status is explained by the runs; say no more until they are read.
   if (unranked && view.runs === undefined) return out;
   const newest = newestProfile(view);
@@ -128,11 +135,12 @@ function NoticeFor({
       return (
         <Notice tone="neutral">
           <strong className="font-semibold text-[var(--color-text-primary)]">
-            Measured in tests only.
+            {notice.statements ? "Profiled in tests only." : "Measured in tests only."}
           </strong>{" "}
           The <code className="font-mono">{notice.workload}</code> profile orders functions within
-          the test run, so the queue keeps its code-shape order. Profile a benchmark or the CLI to
-          rank by real work.
+          the test run
+          {notice.statements ? ", and production statement windows do not rank functions" : ""}, so
+          the queue keeps its code-shape order. Profile a benchmark or the CLI to rank by real work.
           <span className="mt-2 block">
             <AiPromptButton
               label="Copy prompt for your agent"

@@ -26,8 +26,6 @@ from collections.abc import Iterable, Sequence
 from pathlib import PurePosixPath
 from typing import Any, NamedTuple
 
-import networkx as nx
-
 from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.fsutils import strip_dir_prefix as relative_to
 from repowise.core.ingestion.symbol_identity import file_of_symbol
@@ -368,7 +366,10 @@ def build_module_facts(
     flows: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """The JSON-ready facts a module page is written from."""
-    graph = graph if graph is not None else nx.DiGraph()
+    if graph is None:
+        import networkx as nx
+
+        graph = nx.DiGraph()
     members = set(ctx.files)
     base = module_base(ctx.files)
     part_of = _part_resolver(base, ctx.child_pages)

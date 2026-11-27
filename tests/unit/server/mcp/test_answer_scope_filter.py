@@ -51,10 +51,10 @@ def _patch_pipeline(monkeypatch, answer_mod) -> None:
             h["page_type"] = "file_page"
         return hits
 
-    async def _fake_flow(session, repo_id, hits, question, question_ids):
+    async def _fake_flow(session, repo_id, hits, question, question_ids, exclude_spec=None):
         return hits, [[_IN, _OUT]]
 
-    async def _fake_expand(hits, ctx, repo_id):
+    async def _fake_expand(hits, ctx, repo_id, exclude_spec=None):
         # A 1-hop neighbour outside the scope, ranked above the scoped hit.
         neighbour = {
             "page_id": f"file_page:{_OUT}",

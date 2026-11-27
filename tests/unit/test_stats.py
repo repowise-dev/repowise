@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import math
 import random
-import time
 from typing import Any
 
 import pytest
 
 from repowise.core.stats import bootstrap_median_ratio, percentile, wilson_interval
+from tests.unit._timing import assert_linear_growth
 
 # -- percentile parity ---------------------------------------------------------
 # Verbatim copies of the private percentile helpers that callers used before
@@ -189,11 +189,12 @@ def test_bootstrap_rejects_bad_input() -> None:
         bootstrap_median_ratio([1.0], [1.0], confidence=0.0)
 
 
-def test_bootstrap_is_fast_at_fifty_per_side() -> None:
+def test_bootstrap_grows_linearly_with_the_samples() -> None:
     rng = random.Random(4)
-    head = [rng.uniform(1.0, 2.0) for _ in range(50)]
-    base = [rng.uniform(1.0, 2.0) for _ in range(50)]
-    start = time.perf_counter()
-    bootstrap_median_ratio(head, base, resamples=2000)
-    # Generous ceiling for slow CI machines; about 0.1 s on a laptop.
-    assert time.perf_counter() - start < 2.0
+
+    def sides(n: int) -> tuple[list[float], list[float]]:
+        return [rng.uniform(1.0, 2.0) for _ in range(n)], [rng.uniform(1.0, 2.0) for _ in range(n)]
+
+    assert_linear_growth(
+        lambda pair: bootstrap_median_ratio(*pair, resamples=2000), sides(50), sides(200)
+    )

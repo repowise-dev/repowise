@@ -23,7 +23,12 @@ from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line
 from repowise.server.mcp_server._graph_files import graph_file_paths
-from repowise.server.mcp_server._helpers import filter_dicts_by_key
+from repowise.server.mcp_server._helpers import (
+    fetch_allowed_edges,
+    filter_dicts_by_key,
+    is_excluded,
+    node_is_excluded,
+)
 from repowise.server.mcp_server._query_shape import _unmistakably_code
 from repowise.server.mcp_server._wrapper_callers import (
     MIN_CALL_CONFIDENCE,
@@ -147,7 +152,11 @@ def _qualifier_matches(node: GraphNode, qualifier: str) -> bool:
 
 
 async def _named_targets(
-    session: AsyncSession, repo_id: str, names: list[str], question: str = ""
+    session: AsyncSession,
+    repo_id: str,
+    names: list[str],
+    question: str = "",
+    exclude_spec: Any = None,
 ) -> list[GraphNode]:
     res = await session.execute(
         select(GraphNode).where(
@@ -159,7 +168,11 @@ async def _named_targets(
     )
     by_leaf: dict[str, list[GraphNode]] = {}
     for node in res.scalars().all():
-        if node.file_path and not is_test_path(node.file_path, node.language):
+        if (
+            node.file_path
+            and not is_test_path(node.file_path, node.language)
+            and not is_excluded(node.file_path, exclude_spec)
+        ):
             by_leaf.setdefault(node.name, []).append(node)
     modules = await _modules_meant(session, repo_id, names, question)
     out: list[GraphNode] = []
@@ -285,10 +298,19 @@ def caller_row(
 
 
 async def _direct_edges(
-    session: AsyncSession, repo_id: str, target: GraphNode, *, cross_file: bool
+    session: AsyncSession,
+    repo_id: str,
+    target: GraphNode,
+    *,
+    cross_file: bool,
+    exclude_spec: Any = None,
 ) -> list[GraphEdge]:
-    """One target's inbound calls, capped on their own so a hub cannot starve the rest."""
-    res = await session.execute(
+    """One target's inbound calls, capped on their own so a hub cannot starve the rest.
+
+    Callers in excluded files are dropped before the cap, so they never take an
+    allowed caller's place.
+    """
+    stmt = (
         select(GraphEdge)
         .where(
             GraphEdge.repository_id == repo_id,
@@ -296,12 +318,18 @@ async def _direct_edges(
             GraphEdge.edge_type == "calls",
             GraphEdge.confidence >= MIN_CALL_CONFIDENCE,
         )
-        .order_by(GraphEdge.confidence.desc(), GraphEdge.source_node_id)
-        .limit(_MAX_DIRECT)
+        .order_by(GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.id)
+    )
+    found = await fetch_allowed_edges(
+        session,
+        stmt,
+        exclude_spec,
+        limit=_MAX_DIRECT,
+        endpoints=lambda row: (row[0].source_node_id,),
     )
     return [
         e
-        for e in res.scalars().all()
+        for (e,) in found
         if e.source_node_id != target.node_id
         and not (cross_file and file_of_symbol(e.source_node_id) == target.file_path)
     ]
@@ -328,7 +356,7 @@ async def caller_evidence(
     if not is_caller_question(question, question_ids):
         return NO_EVIDENCE
     named = _named_ids(question_ids)
-    targets = await _named_targets(session, repo_id, named, question) if named else []
+    targets = await _named_targets(session, repo_id, named, question, exclude_spec) if named else []
     cross_file = not targets
     if cross_file:
         if not _CALLER_QUESTION.search(question):
@@ -338,7 +366,9 @@ async def caller_evidence(
         return NO_EVIDENCE
 
     edges = {
-        t.node_id: await _direct_edges(session, repo_id, t, cross_file=cross_file)
+        t.node_id: await _direct_edges(
+            session, repo_id, t, cross_file=cross_file, exclude_spec=exclude_spec
+        )
         for t in targets
     }
     nodes = await get_graph_nodes_by_ids(
@@ -365,7 +395,12 @@ async def caller_evidence(
                 )
             )
         hop = await forwarding_wrapper_callers(
-            session, repo_id, target, [e.source_node_id for e in mine], known_nodes=nodes
+            session,
+            repo_id,
+            target,
+            [e.source_node_id for e in mine],
+            known_nodes=nodes,
+            exclude_spec=exclude_spec,
         )
         for h in hop:
             caller = h.get("symbol_id") or h["file"]
@@ -385,7 +420,7 @@ async def caller_evidence(
             row["via_wrapper"] = h["via_wrapper"]
             rows.append(row)
 
-    rows.extend(await _registering_files(session, repo_id, rows, nodes))
+    rows.extend(await _registering_files(session, repo_id, rows, nodes, exclude_spec))
     for row in rows:
         if is_test_path(row["file"]):
             row["test"] = True
@@ -399,9 +434,17 @@ async def caller_evidence(
 
 
 async def _registering_files(
-    session: AsyncSession, repo_id: str, rows: list[dict], nodes: dict[str, GraphNode]
+    session: AsyncSession,
+    repo_id: str,
+    rows: list[dict],
+    nodes: dict[str, GraphNode],
+    exclude_spec: Any = None,
 ) -> list[dict]:
-    """Files importing, by name, a production caller that no production code calls."""
+    """Files importing, by name, a production caller that no production code calls.
+
+    A caller in an excluded file does not count as production code calling it,
+    so it cannot suppress an allowed importer.
+    """
     callers = [
         nodes[r["caller"]]
         for r in rows
@@ -421,13 +464,19 @@ async def _registering_files(
             GraphEdge.confidence >= MIN_CALL_CONFIDENCE,
         )
     )
-    called = {dst for src, dst in res.all() if not is_test_path(file_of_symbol(src))}
+    called = {
+        dst
+        for src, dst in res.all()
+        if not is_test_path(file_of_symbol(src)) and not node_is_excluded(src, exclude_spec)
+    }
     unreached = [c for c in callers if c.node_id not in called]
     if not unreached:
         return []
     listed = {r["file"] for r in rows} | {c.file_path for c in unreached}
     # A wholesale import (a barrel, ``import *``) does not say this symbol is used.
-    imported = [t for t in await files_importing(session, repo_id, unreached, listed) if t[3]]
+    imported = [
+        t for t in await files_importing(session, repo_id, unreached, listed, exclude_spec) if t[3]
+    ]
     # Production importers first, so a test importing the same symbol cannot
     # take the only slots.
     imported.sort(key=lambda t: is_test_path(t[0]))

@@ -221,7 +221,7 @@ def _build_commands(repo_root: Any, package_roots: list[str]) -> dict[str, dict[
     if not repo_root:
         return {}
     # Imported here: the editor-files package is heavy and only this reads it.
-    from repowise.core.generation.editor_files.tech_stack import detect_build_commands
+    from repowise.core.ingestion.tech_stack import detect_build_commands
 
     base = Path(repo_root)
     root = detect_build_commands(base)

@@ -76,8 +76,6 @@ jobs:
               - 'packages/ui/**'
               - 'packages/types/**'
               - 'packages/api-client/**'
-              - 'packages/claude-mod/**'
-              - 'plugins/claude-code/**'
               - 'scripts/check-shared-imports.mjs'
             vscode:
               - *shared
@@ -209,8 +207,12 @@ jobs:
   # The index builds beside the tests and is saved twice: as
   # repowise-index-<sha>-early right after the build (carrying the per-test map
   # it restored), then as repowise-index-<sha>-full once the Python 3.12 shards
-  # (not 3.11 or 3.13) have passed and their per-test coverage is added. A pull
-  # request opened meanwhile gets this commit's graph instead of an older one.
+  # (not 3.11 or 3.13) have run to the end and their per-test coverage is
+  # added. A pull request opened meanwhile gets this commit's graph instead of
+  # an older one. The full index is also kept as this run's
+  # repowise-index-full artifact, which pull requests find by commit: unlike
+  # the cache, which keeps only the newest three commits, it outlives a burst
+  # of merges.
   repowise-index:
     name: Repowise index (main)
     runs-on: ubuntu-latest
@@ -271,6 +273,7 @@ jobs:
             uv run repowise init --yes --no-prose --no-editor-setup --no-hook
           fi
 
+      # "Test selection (recorded only)" waits on this step by name.
       - name: Save the index before the per-test map
         if: steps.build.outcome == 'success'
         continue-on-error: true
@@ -280,9 +283,13 @@ jobs:
           key: repowise-index-${{ github.sha }}-early
 
       # Which test ran which lines, the map `repowise impacted-tests` selects
-      # from. Taken only when all three shards passed: a map missing a shard's
-      # tests would leave them out of every selection. Otherwise the early save
-      # is this commit's last, with the map it restored.
+      # from. Taken only when all three shards ran to the end: a map missing a
+      # shard's tests would leave them out of every selection. A shard with a
+      # failing test still ran every test (the failing one up to its failure),
+      # so it counts; a cancelled shard, one that wrote no report or coverage,
+      # or one whose report names a crashed worker or a collection error (the
+      # run stops there) does not. Otherwise the early save is this commit's last, with the map it
+      # restored.
       - name: Wait for the Python 3.12 shards
         id: shards
         if: steps.build.outcome == 'success'
@@ -295,11 +302,11 @@ jobs:
           jobs="repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100"
           filter='[.jobs[] | select(.name | startswith("Python 3.12 tests (shard"))]'
           while :; do
-            state=$(gh api "$jobs" --jq "$filter | [length, (map(select(.status == \"completed\")) | length), (map(select(.conclusion == \"success\")) | length)] | @tsv") || state=""
-            read -r total done passed <<< "$state"
+            state=$(gh api "$jobs" --jq "$filter | [length, (map(select(.status == \"completed\")) | length), (map(select(.conclusion == \"success\" or .conclusion == \"failure\")) | length)] | @tsv") || state=""
+            read -r total done ended <<< "$state"
             if [ "${total:-0}" -eq 3 ] && [ "$done" -eq 3 ]; then
-              [ "$passed" -eq 3 ] && exit 0
-              echo "::warning::A Python 3.12 shard did not pass; the index keeps its previous per-test map."
+              [ "$ended" -eq 3 ] && exit 0
+              echo "::warning::A Python 3.12 shard was cancelled; the index keeps its previous per-test map."
               exit 1
             fi
             sleep 30
@@ -314,15 +321,31 @@ jobs:
           pattern: coverage-data-*
           path: ${{ runner.temp }}/coverage-data
 
+      - name: Download the shards' test reports
+        id: reports
+        if: steps.per-test.outcome == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: junit-*
+          path: ${{ runner.temp }}/junit
+
       - name: Add the per-test coverage
         id: add-map
-        if: steps.per-test.outcome == 'success'
+        if: steps.reports.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 15
         env:
           PYTHONUTF8: "1"
           DO_NOT_TRACK: "1"
         run: |
+          shopt -s nullglob
+          reports=("$RUNNER_TEMP"/junit/*/junit.xml)
+          data=("$RUNNER_TEMP"/coverage-data/*/.coverage)
+          if [ "${#reports[@]}" -ne 3 ] || [ "${#data[@]}" -ne 3 ] || grep -qE "worker '?gw[0-9]+'? crashed|collection failure" "${reports[@]}"; then
+            echo "::warning::A Python 3.12 shard did not run to the end; the index keeps its previous per-test map."
+            exit 1
+          fi
           uvx coverage combine --data-file="$RUNNER_TEMP/per-test.coverage" "$RUNNER_TEMP"/coverage-data/*/.coverage
           uv run repowise coverage add "$RUNNER_TEMP/per-test.coverage"
 
@@ -355,6 +378,31 @@ jobs:
           path: .repowise
           key: repowise-index-${{ github.sha }}-full
 
+      # Artifacts of this public repository can be downloaded by anyone, so
+      # local credentials and session logs stay out (CI writes none today).
+      # Already zstd-compressed, so the upload stores it as is.
+      - name: Pack the index with the per-test map
+        id: pack
+        if: steps.add-map.outcome == 'success'
+        continue-on-error: true
+        run: |
+          tar --zstd -cf "$RUNNER_TEMP/repowise-index.tar.zst" \
+            --exclude='.repowise/.env*' --exclude=.repowise/credentials.json \
+            --exclude=.repowise/tokens.yaml --exclude=.repowise/sessions \
+            --exclude='.repowise/*.jsonl' .repowise
+
+      - name: Publish the index with the per-test map
+        if: steps.pack.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: repowise-index-full
+          path: ${{ runner.temp }}/repowise-index.tar.zst
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: ignore
+          overwrite: true
+
       # Keep the indexes of the three newest commits so they never evict the
       # dependency caches the test jobs restore (each is about 300 MB). An
       # early index goes once its commit's full one is saved. One with no full
@@ -381,15 +429,18 @@ jobs:
               | .key' \
             | xargs -r -n1 gh cache delete || true
 
+  # Runs once the tests have, so the wait for the base's per-test map below
+  # mostly overlaps them instead of holding a runner idle beside them.
   impacted-tests-shadow:
     name: Test selection (recorded only)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: changes
-    if: needs.changes.outputs.python == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    timeout-minutes: 60
+    needs: [changes, test-python]
+    if: ${{ !cancelled() && needs.changes.outputs.python == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') }}
     continue-on-error: true
     permissions:
       contents: read
+      actions: read   # sees whether the base's index is saved yet, and downloads it
 
     steps:
       - uses: actions/checkout@v7
@@ -419,11 +470,108 @@ jobs:
         continue-on-error: true
         run: echo "sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
 
+      # The base's full index (its graph and per-test map) is published by its
+      # main run about 25 minutes after the push. A pull request opened right
+      # after a merge waits for it, for up to 25 minutes past the tests, and
+      # stops early once the base's index job (Repowise index (main)) has
+      # ended, as nothing more is coming then. Without it, the base's cached
+      # index (graph current, map older) comes next, then the full index of the
+      # nearest first-parent ancestor that has one, then the newest cached one.
+      - name: Find the base's per-test map
+        id: map
+        continue-on-error: true
+        timeout-minutes: 28
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          api="repos/$GH_REPO/actions"
+          push_run() {  # the CI run of the main push of commit $1
+            gh api "$api/runs?head_sha=$1&event=push&branch=main&per_page=20" \
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")][0].id // empty'
+          }
+          has_map() {  # whether run $1 published the full index
+            [ -n "$(gh api "$api/runs/$1/artifacts?name=repowise-index-full" --jq '.artifacts[] | select(.expired | not) | .id')" ]
+          }
+          use() {
+            printf 'run=%s\ncommit=%s\nsource=%s\n' "$1" "$2" "$3" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          [ -n "$BASE" ] || use "" "" cache
+          run=""
+          failures=0
+          SECONDS=0
+          while :; do
+            # The index job's state is read before the artifact, so a publish
+            # that lands in between is still found below.
+            if [ -z "$run" ]; then
+              run=$(push_run "$BASE") || run=""
+            fi
+            state=missing
+            if [ -n "$run" ]; then
+              state=$(gh api "$api/runs/$run/jobs?filter=latest&per_page=100" --jq '
+                [.jobs[] | select(.name == "Repowise index (main)")][0]
+                | if . == null then "missing" elif .status == "completed" then "gone" else "pending" end') || state=error
+            fi
+            # An API that keeps failing ends the wait instead of polling it out.
+            if [ "$state" = error ]; then
+              failures=$((failures + 1))
+              if [ "$failures" -ge 5 ]; then state=gone; else state=pending; fi
+            else
+              failures=0
+            fi
+            # A run or job seen as missing in the first 90s may not be listed yet.
+            if [ "$state" = missing ]; then
+              if [ "$SECONDS" -lt 90 ]; then state=pending; else state=gone; fi
+            fi
+            if [ -n "$run" ] && has_map "$run"; then
+              echo "The base's per-test map is published (waited ${SECONDS}s)."
+              use "$run" "$BASE" full
+            fi
+            [ "$state" = gone ] && break
+            if [ "$SECONDS" -ge 1500 ]; then
+              echo "The base's per-test map is not published after ${SECONDS}s."
+              break
+            fi
+            sleep 30
+          done
+          if [ -n "$(gh cache list --key "repowise-index-$BASE-" --json key --jq '.[].key')" ]; then
+            echo "Using the base's cached index."
+            use "" "" cache
+          fi
+          for commit in $(git rev-list --first-parent --max-count=10 "$BASE^" 2>/dev/null); do
+            run=$(push_run "$commit") || continue
+            if [ -n "$run" ] && has_map "$run"; then
+              echo "Using the full index of ${commit:0:8}, the nearest ancestor that has one."
+              use "$run" "$commit" ancestor
+            fi
+          done
+          use "" "" cache
+
+      - name: Download the published index
+        id: fetched
+        if: steps.map.outputs.run != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: repowise-index-full
+          run-id: ${{ steps.map.outputs.run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/index
+
+      - name: Unpack the published index
+        id: unpacked
+        if: steps.fetched.outcome == 'success'
+        continue-on-error: true
+        run: tar --zstd -xf "$RUNNER_TEMP/index/repowise-index.tar.zst" || { rm -rf .repowise; exit 1; }
+
       # Read-only: pull requests, forks included, restore main's index and
       # never save one. An older index is used as is.
       # The base's full index, else its early one, else the newest older one.
       - name: Restore the main index
         id: index
+        if: steps.unpacked.outcome != 'success'
         continue-on-error: true
         uses: actions/cache/restore@v6
         with:
@@ -438,25 +586,33 @@ jobs:
         timeout-minutes: 10
         env:
           BASE: ${{ steps.base.outputs.sha }}
+          UNPACKED: ${{ steps.unpacked.outcome }}
+          SOURCE: ${{ steps.map.outputs.source }}
           CACHE_HIT: ${{ steps.index.outputs.cache-hit }}
           CACHE_KEY: ${{ steps.index.outputs.cache-matched-key }}
           PYTHONUTF8: "1"
           DO_NOT_TRACK: "1"
         run: |
           mkdir -p shadow
+          # The commit the per-test map was measured at, read straight from
+          # the index (the selection's JSON does not carry it).
+          map=$(uv run python scripts/impacted_tests_shadow.py --map-commit .repowise/wiki.db) || map=""
           SECONDS=0
           code=0
           uv run repowise impacted-tests "$BASE...HEAD" --format json --runner pytest --prioritize \
             > shadow/selection.json 2> shadow/selection.log || code=$?
           seconds=$SECONDS
           # full: the base's index and per-test map. early: the base's index
-          # with an older map. older: an earlier commit's index. none: no index.
+          # with an older map. ancestor: the full index of the nearest
+          # first-parent ancestor that has one. older: an earlier commit's
+          # cached index. none: no index.
           cache=none
-          if [ "$CACHE_HIT" = "true" ]; then cache=full
+          if [ "$UNPACKED" = "success" ]; then cache=$SOURCE
+          elif [ "$CACHE_HIT" = "true" ]; then cache=full
           elif [ "$CACHE_KEY" = "repowise-index-$BASE-early" ]; then cache=early
           elif [ -n "$CACHE_KEY" ]; then cache=older; fi
-          printf '{"base": "%s", "selector_exit": %d, "selector_seconds": %d, "index_cache": "%s"}\n' \
-            "$BASE" "$code" "$seconds" "$cache" > shadow/selector.json
+          printf '{"base": "%s", "selector_exit": %d, "selector_seconds": %d, "index_cache": "%s", "map_commit": "%s"}\n' \
+            "$BASE" "$code" "$seconds" "$cache" "$map" > shadow/selector.json
           tail -n 20 shadow/selection.log
           exit 0
 
@@ -687,6 +843,39 @@ jobs:
         # running, which would silently reinstall the newest tree-sitter and
         # undo the pin above.
         run: uv run --no-sync pytest tests/unit/ingestion/parser/test_query_compilation.py -v --tb=short
+
+  # ---------------------------------------------------------------------------
+  # Footprint: install size, distribution count, and the modules each startup
+  # path loads (CLI, MCP server, serve, the Claude Code hooks), against
+  # ci/footprint_budget.json. The install is the default one, no extras, into
+  # a fresh venv, pinned to uv.lock so only this repo's changes move it.
+  # ---------------------------------------------------------------------------
+  footprint:
+    name: Footprint (install size, startup imports)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
+
+      - name: Install the default package into a fresh venv
+        run: |
+          uv python install 3.12
+          uv export --locked --no-dev --no-emit-workspace --no-hashes --package repowise -o "$RUNNER_TEMP/pins.txt"
+          uv venv --python 3.12 "$RUNNER_TEMP/footprint"
+          uv pip install --python "$RUNNER_TEMP/footprint/bin/python" -c "$RUNNER_TEMP/pins.txt" .
+
+      - name: Check the footprint budget
+        run: '"$RUNNER_TEMP/footprint/bin/python" scripts/check_footprint.py'
 
   # ---------------------------------------------------------------------------
   # Windows smoke test — repowise init and status under a native Windows console
@@ -1017,15 +1206,6 @@ jobs:
       - name: Report catalog key gaps (warn only)
         run: npm run i18n:check --workspace packages/web
         continue-on-error: true
-
-      - name: Type check claude-mod
-        run: npm run type-check --workspace @repowise-dev/claude-mod
-
-      - name: Test claude-mod
-        run: npm run test --workspace @repowise-dev/claude-mod
-
-      - name: Check the committed Lens bundle is current
-        run: npm run build:mod --workspace @repowise-dev/claude-mod -- --check
 
   # ---------------------------------------------------------------------------
   # VS Code extension — type check, bundle-size gate, and Electron smoke test

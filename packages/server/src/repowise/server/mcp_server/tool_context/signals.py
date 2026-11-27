@@ -25,7 +25,11 @@ from repowise.core.persistence.crud import (
     load_coverage_for_repo,
 )
 from repowise.core.persistence.crud.analysis.shown import ungated
-from repowise.core.persistence.models import HealthFileMetric, HealthFinding, Repository
+from repowise.core.persistence.models import (
+    HealthFileMetric,
+    HealthFinding,
+    Repository,
+)
 from repowise.server.mcp_server._helpers import filter_path_list
 from repowise.server.mcp_server.tool_context.call_graph import _SYMBOL_USE_EDGE_TYPES
 
@@ -39,6 +43,8 @@ async def _resolve_metrics(
     repository: Repository,
     target: str,
     result_data: dict[str, Any],
+    *,
+    exclude_spec: Any = None,
 ) -> None:
     """Resolve graph importance metrics and attach to result_data["metrics"]."""
     repo_id = repository.id
@@ -58,12 +64,11 @@ async def _resolve_metrics(
         session,
         repo_id,
         node.node_id,
+        # Every use edge type, as `routers/graph/intelligence.py` reports it.
         edge_types=(
-            # Every use edge type, as `routers/graph/intelligence.py` reports it.
-            _SYMBOL_USE_EDGE_TYPES
-            if node.node_type == "symbol"
-            else _FILE_DEPENDENCY_EDGE_TYPES
+            _SYMBOL_USE_EDGE_TYPES if node.node_type == "symbol" else _FILE_DEPENDENCY_EDGE_TYPES
         ),
+        exclude_spec=exclude_spec,
     )
 
     # Percentile computation against same-type peers
@@ -124,7 +129,9 @@ async def _resolve_community(
     member_paths = filter_path_list([m.node_id for m in members], exclude_spec)
 
     # Neighboring communities (cap at 5)
-    cross_edges = await get_cross_community_edges(session, repo_id, node.community_id)
+    cross_edges = await get_cross_community_edges(
+        session, repo_id, node.community_id, exclude_spec=exclude_spec
+    )
     neighbors: list[dict[str, Any]] = []
     for ce in cross_edges[:5]:
         nid = ce["target_community_id"]
@@ -159,6 +166,8 @@ async def _resolve_health(
     target: str,
     target_type: str,
     result_data: dict[str, Any],
+    *,
+    exclude_spec: Any = None,
 ) -> None:
     """Attach per-file health metric + top 2 biomarkers + coverage row.
 
@@ -249,7 +258,11 @@ async def _resolve_health(
     node = await get_graph_node(session, repo_id, file_path)
     degrees = (
         await get_node_degree_counts(
-            session, repo_id, file_path, edge_types=_FILE_DEPENDENCY_EDGE_TYPES
+            session,
+            repo_id,
+            file_path,
+            edge_types=_FILE_DEPENDENCY_EDGE_TYPES,
+            exclude_spec=exclude_spec,
         )
         if node is not None
         else None

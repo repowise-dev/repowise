@@ -363,6 +363,59 @@ def test_an_unimported_helper_adds_nothing_when_every_known_test_runs() -> None:
     assert "no test imports that helper" in sel.reasons[0]
 
 
+def _helper_route(readers):
+    tiers = _tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/test_a.py", "call-graph"),
+            _inferred("src/a.py", "tests/autobahn/client.py", "import-graph"),
+        ]
+    )
+    if readers is not None:
+        tiers["helper_readers"] = {"tests/autobahn/client.py": readers}
+    known = ["tests/test_a.py", "tests/test_b.py", "tests/autobahn/test_autobahn.py"]
+    return _select(["src/a.py"], tiers, known_tests=known)
+
+
+def test_an_unimported_helper_only_tests_name_selects_those_tests() -> None:
+    """A test starting the helper by path is its user; nothing else can be."""
+    sel = _helper_route(["tests/autobahn/test_autobahn.py"])
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_a.py", "tests/autobahn/test_autobahn.py")
+    assert sel.reasons == (
+        "tests/autobahn/client.py is a test helper no test imports; the 1 test file(s) "
+        "naming it run for it (e.g. tests/autobahn/test_autobahn.py).",
+    )
+
+
+def test_an_unimported_helper_no_test_names_runs_nothing_for_itself() -> None:
+    """A type-check input or a script run by hand: no test can run it."""
+    sel = _helper_route([])
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_a.py",)
+    assert sel.reasons == (
+        "tests/autobahn/client.py is a test helper no test imports or names, so no test runs it.",
+    )
+
+
+@pytest.mark.parametrize("readers", [None, ["tests/conftest.py"], ["tests/other_helper.py"]])
+def test_an_unimported_helper_other_test_code_names_still_runs_everything(readers) -> None:
+    """A conftest or helper naming it reaches tests unknown; one not read for is unknown."""
+    sel = _helper_route(readers)
+    assert sel.run_all
+    assert "no test imports that helper" in sel.reasons[0]
+
+
+def test_a_changed_helper_no_test_imports_or_names_needs_no_test() -> None:
+    path = "tests/typing/typing_options.py"
+    tiers = _tiers(inferred=[_inferred(path, path, "changed-test")])
+    tiers["helper_readers"] = {path: []}
+    sel = _select([path], tiers)
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ()
+    tiers["helper_readers"] = {path: ["tests/test_typing.py"]}
+    assert _select([path], tiers).test_files == ("tests/test_typing.py",)
+
+
 def test_an_unimported_helper_still_runs_everything_when_a_peer_is_not_selected() -> None:
     tiers = _tiers(
         inferred=[
@@ -1335,6 +1388,44 @@ def test_a_module_level_change_keeps_the_graph_tests_beside_coverage() -> None:
     selection = _select(["src/a.py"], tiers)
     assert set(selection.test_files) == {"tests/test_a.py", "tests/test_wide.py"}
     assert selection.tests == ("tests/test_a.py::t", "tests/test_wide.py")
+
+
+def _module_tiers(readers: list[str], **extra):
+    tiers = _tiers(
+        covered={
+            "tests/test_a.py::t|run": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}
+        },
+        **extra,
+    )
+    tiers["module_covered"] = {"src/a.py": readers}
+    tiers["measured_test_files"] = ["tests/test_a.py", "tests/test_wide.py", "tests/test_far.py"]
+    return tiers
+
+
+def test_a_module_level_change_runs_the_tests_reading_its_names() -> None:
+    """A measured test that ran no code reading a changed name, and imports none, is left out."""
+    tiers = _module_tiers(
+        ["tests/test_a.py", "tests/test_far.py"],
+        inferred=[
+            _inferred("src/a.py", "tests/test_wide.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_new.py", "import-graph"),
+        ],
+    )
+    selection = _select(["src/a.py"], tiers)
+    assert not selection.run_all
+    # test_far reads a changed name through a module the graph walk did not name;
+    # test_new was never measured, so the graph's word stands.
+    assert set(selection.test_files) == {
+        "tests/test_a.py",
+        "tests/test_far.py",
+        "tests/test_new.py",
+    }
+    assert "module-readers" in selection.why["tests/test_far.py"]
+    assert any(
+        r.startswith("src/a.py: 2 test file(s) ran code reading a name its module-level change")
+        and "1 test file(s) the map never ran still run for it" in r
+        for r in selection.reasons
+    )
 
 
 def test_function_coverage_still_runs_the_tests_every_subset_runs() -> None:

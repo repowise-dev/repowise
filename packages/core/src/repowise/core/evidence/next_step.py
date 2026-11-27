@@ -19,6 +19,10 @@ Silence is the default. No step when:
   no loop repeats: each request needs its own, and "batch" would be wrong;
 - the function is a thin wrapper named like its dominant callee (the cost
   belongs to its drivers);
+- the row is a module body's import time (``<path>::<module>``): whether the
+  run needed what the file imports is not in the row (ceiling; upgrade path:
+  mark a library the run imported but never called, then say "import it
+  inside the function that uses it");
 - the time sits under ``runtime.cgocall`` and no database call above it says
   what the C code is: a Go profile taken on Windows samples threads inside cgo
   while they wait, so that time is unknown, never a cost claim.
@@ -47,6 +51,8 @@ from repowise.core.analysis.health.perf.dialects.python_lexicon import (
 )
 from repowise.core.ingestion.external_systems.io_kind import classify_io_kind
 from repowise.core.ingestion.symbol_identity import file_of_symbol
+
+from .format_v1 import is_import_row
 
 #: Workload classes whose rows lead, so their rows get a step.
 STEP_CLASSES = frozenset({"entry_point", "load_test", "production"})
@@ -314,6 +320,13 @@ _PY_DB_RECEIVERS = frozenset(
     }
 )
 _PY_DB_VERBS = PY_DB_UNAMBIGUOUS | PY_DB_NEEDS_EVIDENCE | {"all", "first", "one", "one_or_none"}
+# Django: iterating a queryset (or ``len``, ``bool``, ``iterator()``) runs its query;
+# ``filter`` or ``all`` only build one. Left out: single-row lookups (``first``,
+# ``get``, ``count``), whose one call per request is the request's own work, and
+# raw SQL (``RawQuerySet``, cursor ``execute``), which can be a write: nothing in the
+# row says which (ceiling; upgrade path: read them once the static loop analysis
+# sees Django ORM calls and the statement kind).
+_DJANGO_EVALUATE = frozenset({"__iter__", "__len__", "__bool__", "iterator"})
 _JS_DB_READS = frozenset(
     {
         "findOne",
@@ -436,10 +449,12 @@ def next_step(
     function or naming it or its drivers in a loop are read, the rest ignored.
     """
     inside = _items(row.get("inside"))
+    symbol = row.get("symbol_id") or ""
     if row.get("workload_class") not in STEP_CLASSES or not inside:
         return None
+    if is_import_row(symbol):
+        return None
     lang = _family(language)
-    symbol = row.get("symbol_id") or ""
     findings = list(findings)
     own_static = [f for f in findings if _on(f, symbol)]
     picked = _dominant(inside, lang, own_static, symbol)
@@ -677,9 +692,10 @@ def _database(name: str, lang: str) -> bool:
     if lang == "go":
         return last in _GO_DB_EXEC and _db_package(name)
     if lang == "python":
-        return _receiver(name) in _PY_DB_RECEIVERS and (
-            last in _PY_DB_VERBS or last in _DB_WRITE_VERBS
-        )
+        receiver = _receiver(name)
+        if receiver == "QuerySet":
+            return last in _DJANGO_EVALUATE
+        return receiver in _PY_DB_RECEIVERS and (last in _PY_DB_VERBS or last in _DB_WRITE_VERBS)
     if lang == "javascript":
         return last in _JS_DB_READS
     if lang == "jvm":

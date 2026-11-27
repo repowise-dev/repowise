@@ -31,11 +31,17 @@ export type {
   MeasuredResponse,
   MeasuredRow,
   MeasuredRun,
+  ProductionWindow,
   SlowTest,
+  StatementFacts,
+  StatementGroup,
+  StatementRow,
+  StatementRun,
   SuiteCost,
   SuiteCostResponse,
   SuiteFileTime,
   SuiteSummary,
+  UnattributedStatements,
 } from "./generated/http.js";
 
 import type { EvidenceStatusResponse } from "./generated/http.js";

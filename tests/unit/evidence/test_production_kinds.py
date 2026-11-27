@@ -37,17 +37,15 @@ from repowise.core.persistence.models import (
     EvidenceRun,
     EvidenceStatementStats,
 )
-from tests.unit.cli.test_evidence_cmd import _git_repo, _index
+from tests.unit.cli.test_evidence_cmd import _indexed_copy
 from tests.unit.evidence.test_add import _ingest
 
 FIXTURES = Path(__file__).parent / "fixtures" / "production"
 
 
 @pytest.fixture
-def indexed(tmp_path: Path) -> tuple[Path, str]:
-    head = _git_repo(tmp_path)
-    _index(tmp_path)
-    return tmp_path, head
+def indexed(tmp_path: Path, tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
+    return tmp_path, _indexed_copy(tmp_path, tmp_path_factory)
 
 
 def _fixture(name: str) -> bytes:
@@ -178,6 +176,8 @@ def test_a_statement_stats_file_keeps_normalized_text_and_masks_values() -> None
     assert first == {
         "statement_fp": "a0b1c2d3e4f50617",
         "query": "select * from search_repos($1, $2)",
+        # The uncut masked text the statement-site join reads; never stored.
+        "shape_text": "select * from search_repos($1, $2)",
         "calls": 50000,
         "total_ms": 31950000.5,
         "mean_ms": 639.0,

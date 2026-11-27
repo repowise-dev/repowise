@@ -390,7 +390,7 @@ async def _serve_symbol(
 
     body = await _served_body(ctx, repository, row, text, check, context_lines)
     async with get_session(ctx.session_factory) as session:
-        card_facts = await symbol_card_facts(session, repository.id, row.symbol_id)
+        card_facts = await symbol_card_facts(session, repository.id, row.symbol_id, exclude_spec)
     response = _symbol_body_response(row, check, body, repository, ctx.alias, t0, card_facts)
     # An outline answers for the shape; callee bodies would undo its size.
     if depth > 1 and body.outline is None:

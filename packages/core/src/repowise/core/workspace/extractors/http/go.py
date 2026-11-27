@@ -14,6 +14,9 @@ records its full ``/api/v1/...`` path. A path built as ``base + "/x"`` is read
 through the file's constants; a base the file does not settle (an environment
 value) is the service's deployment prefix and is dropped, as a consumer's
 leading base is.
+
+A group handed to a register function (``articles.Register(v1.Group("/articles"))``)
+serves that function's routes under the call site's prefix: see :mod:`.go_register`.
 """
 
 from __future__ import annotations
@@ -35,27 +38,18 @@ from ..calls import FileStrings, outside_comments
 from ..langs import GO
 from ..strings import GO_SYNTAX, call_arguments
 from .dialect import build_provider_contract
+from .go_register import RegisterPaths, route_prefix, router_args, unreadable_groups
 from .mounts import compose_prefix, group_prefixes
 from .paths import strip_leading_base_expr
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from repowise.core.ingestion.framework_routes import GroupMatch, RouteMatch
+    from repowise.core.ingestion.framework_routes import RouteMatch
     from repowise.core.ingestion.framework_routes_chi import RouteScope
     from repowise.core.workspace.contracts import Contract
 
     from ..base import ScanContext
-
-
-def _prefix(
-    receiver: str, offset: int, scopes: Sequence[RouteScope], groups: Mapping[str, str]
-) -> str:
-    """The prefix *receiver* serves under at *offset*: its innermost ``Route`` closure, else its group."""
-    for scope in reversed(scopes):
-        if scope.inner == receiver and scope.start < offset < scope.end:
-            return compose_prefix(_prefix(scope.outer, scope.start, scopes, groups), scope.prefix)
-    return groups.get(receiver, "")
 
 
 def _handler(route: RouteMatch) -> str | None:
@@ -68,17 +62,6 @@ def _method(verb: str) -> str | None:
     if verb in GO_VERBLESS:
         return "*"
     return verb if verb in HTTP_METHODS else None
-
-
-def _unreadable_groups(groups: Sequence[GroupMatch]) -> set[str]:
-    """Group variables whose prefix, or an ancestor's, is not a literal."""
-    refused = {g.var for g in groups if g.prefix is None}
-    grew = True
-    while grew:
-        before = len(refused)
-        refused |= {g.var for g in groups if g.parent in refused}
-        grew = len(refused) > before
-    return refused
 
 
 def _expression_path(route: RouteMatch, strings: FileStrings) -> str | None:
@@ -102,15 +85,24 @@ class GoDialect:
         "HandleFunc(", "github.com/go-chi/chi", "github.com/gofiber/fiber",
         "github.com/gorilla/mux",
     )  # fmt: skip
+    # A file handing a router to a register function may hold no route of its own.
+    mount_requires = (
+        "Group(", "github.com/gin-gonic/gin", "github.com/labstack/echo",
+        "github.com/go-chi/chi", "github.com/gofiber/fiber", "github.com/gorilla/mux",
+    )  # fmt: skip
+
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
+        return router_args(ctx)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
         groups = [*go_groups(content), *gorilla_groups(content)]
-        refused = _unreadable_groups(groups)
+        refused = unreadable_groups(groups)
         prefixes = group_prefixes(g for g in groups if g.var not in refused)
         scopes = route_scopes(content)
         strings = FileStrings(content, GO_SYNTAX)
         routes = chain(go_routes(content), title_case_routes(content), gorilla_routes(content))
+        register = RegisterPaths.for_file(ctx)
         out: list[Contract] = []
         for route in outside_comments(ctx, routes):
             if ctx.in_string(route.offset):
@@ -124,15 +116,31 @@ class GoDialect:
             # An empty path under a group is still that group's route, so the
             # emptiness rule is `build_provider_contract`'s, after stitching —
             # the same order ASP.NET's MapGroup uses.
-            prefix = _prefix(route.receiver or "", route.offset, scopes, prefixes)
-            c = build_provider_contract(
-                ctx,
-                method=method,
-                path_raw=compose_prefix(prefix, path),
-                framework="go",
-                line=line_at(content, route.offset),
-                handler=_handler(route),
-            )
-            if c is not None:
-                out.append(c)
+            for path_raw in _paths(route, path, scopes, prefixes, register):
+                c = build_provider_contract(
+                    ctx,
+                    method=method,
+                    path_raw=path_raw,
+                    framework="go",
+                    line=line_at(content, route.offset),
+                    handler=_handler(route),
+                )
+                if c is not None:
+                    out.append(c)
         return out
+
+
+def _paths(
+    route: RouteMatch,
+    path: str,
+    scopes: Sequence[RouteScope],
+    prefixes: Mapping[str, str],
+    register: RegisterPaths | None,
+) -> list[str]:
+    """The paths *route* serves: under the groups its function is handed, else its own."""
+    served = register.paths(route, path, scopes) if register is not None else None
+    if served is not None:
+        return served
+    return [
+        compose_prefix(route_prefix(route.receiver or "", route.offset, scopes, prefixes), path)
+    ]

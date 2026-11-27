@@ -215,6 +215,7 @@ def _statement_row(entry: Mapping[str, Any], symbol_id: str | None) -> Row:
         "statement_fp": entry["statement_fp"],
         "query_text": entry["query"],
         "symbol_id": symbol_id,
+        "issuer": entry.get("issuer"),
         "calls": entry["calls"],
         "total_ms": entry["total_ms"],
         "mean_ms": entry["mean_ms"],

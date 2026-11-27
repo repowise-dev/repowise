@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.exclusion import build_exclude_spec, node_is_excluded
 from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
 from repowise.core.persistence.crud import indexed_file
-from repowise.core.persistence.models import GraphEdge, GraphNode, Page
+from repowise.core.persistence.models import GraphEdge, GraphNode, Page, Repository
 from repowise.server.deps import get_db_session
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import (
@@ -28,14 +29,19 @@ router = APIRouter()
 async def module_graph(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> ModuleGraphResponse:
     """Collapsed directory-level graph: one node per top-level path segment."""
     # Indexed files only: symbol rows and import targets are not a module's files.
+    # A file the repo rules exclude is not one either, and since edges are
+    # counted only between mapped files, its edges drop out with it.
     node_result = await session.execute(
         select(GraphNode).where(GraphNode.repository_id == repo_id, indexed_file())
     )
-    nodes = node_result.scalars().all()
+    exclude_spec = build_exclude_spec(repo.local_path)
+    nodes = [
+        n for n in node_result.scalars().all() if not node_is_excluded(n.node_id, exclude_spec)
+    ]
 
     # Group nodes by first path segment, detecting monorepo roots
     first_level: dict[str, list[GraphNode]] = {}

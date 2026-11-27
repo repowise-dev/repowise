@@ -7,6 +7,8 @@ import type {
   MeasuredResponse,
   MeasuredRow,
   MeasuredRun,
+  StatementRow,
+  StatementRun,
 } from "@repowise-dev/types/runtime-evidence";
 
 /** Runtime evidence shaped exactly like the `/evidence/*` routes return it. */
@@ -242,5 +244,75 @@ export function evidenceAdapter() {
   return {
     getMeasured: vi.fn(measured),
     listEvidenceRuns: vi.fn(async () => RUNS),
+  };
+}
+
+export const PROD_CLAIM = "in production over 2026-10-30 to 2026-11-26, deployed ee257d145f19";
+
+export const STATEMENT_RUN: StatementRun = {
+  run_id: "run-pg",
+  workload_class: "production",
+  workload_name: "postgres:hosted",
+  commit: "ee257d145f19",
+  measured_at: new Date(Date.now() - 86_400_000).toISOString(),
+  age_days: 1,
+  window_start: "2026-10-30T00:00:00+00:00",
+  window_end: "2026-11-26T00:00:00+00:00",
+  total_ms: 1854.2,
+  statements: 42,
+  unattributed: {
+    ambiguous: { statements: 9, total_ms: 426.5, share: 0.23 },
+    unjoined: { statements: 3, total_ms: 111.3, share: 0.06 },
+  },
+  window: { start: "2026-10-30T00:00:00+00:00", end: "2026-11-26T00:00:00+00:00", base_commit: null, claim: PROD_CLAIM },
+};
+
+function statementRow(name: string, rank: number, share: number, calls: number, mean: number): StatementRow {
+  return {
+    symbol_id: `app/api/repos.py::${name}`,
+    file_path: "app/api/repos.py",
+    lines: [40 + rank, 60 + rank],
+    run_id: "run-pg",
+    rank,
+    share,
+    share_low: null,
+    share_high: null,
+    inclusive: null,
+    samples: null,
+    callers_total: null,
+    callers: [],
+    owner: null,
+    last_change: null,
+    tests: null,
+    verify: "compare this row in the next postgres:hosted window",
+    verify_basis: "workload",
+    statements: { calls, total_ms: calls * mean, mean_ms: mean, statements: 2 },
+  };
+}
+
+const STATEMENT_ROWS: StatementRow[] = [
+  statementRow("explore_repos", 1, 0.33, 6, 102.4),
+  statementRow("ingest_event", 2, 0.17, 346, 0.9),
+  statementRow("record_sighting", 3, 0.11, 88, 2.3),
+];
+
+/**
+ * The route for a repository whose only runtime evidence is production
+ * statement windows: `limit` rows of the statement run.
+ */
+export async function statementsOnly(
+  opts: { runId?: string; limit?: number } = {},
+): Promise<MeasuredResponse> {
+  return {
+    basis: "measured",
+    status: "measured",
+    command: null,
+    measured: null,
+    measured_in_tests: null,
+    statements: {
+      runs: [STATEMENT_RUN],
+      rows: STATEMENT_ROWS.slice(0, opts.limit ?? 10),
+      total: STATEMENT_ROWS.length,
+    },
   };
 }

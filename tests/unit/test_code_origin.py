@@ -153,6 +153,14 @@ _OWN_HEADER = (
         ("db/migrate/20240101_add_users.rb", "tooling"),
         ("db/data_migrations/20240101_backfill.rb", "tooling"),
         ("src/django_test_migrations/logic.py", "production"),
+        # A singular migration/ directory counts when its entries are numbered.
+        ("packages/database/migration/20240101_add_x/migration.ts", "tooling"),
+        ("src/migration/1700000000000-Init.ts", "tooling"),
+        ("src/main/resources/db/migration/V2__backfill.java", "tooling"),
+        ("modules/migration/comment.go", "production"),
+        # Semgrep rule targets are written to break the rule they test.
+        (".semgrep/authz.py", "test"),
+        ("semgrep/authz.py", "production"),
         ("src/__generated__/schema.ts", "generated"),
         ("api/user_pb2.py", "generated"),
         ("api/user_grpc.pb.go", "generated"),
@@ -956,6 +964,17 @@ def test_migration_paths() -> None:
     assert is_migration_path("alembic/versions/abc.py")
     assert not is_migration_path("api/versions/v1.py")
     assert not is_migration_path("src/migrate.py")
+
+
+def test_singular_migration_dir_needs_numbered_entries() -> None:
+    assert is_migration_path("packages/database/migration/20240101_add_x/migration.ts")
+    assert is_migration_path("src/migration/1700000000000-Init.ts")
+    assert is_migration_path("db/migration/V1__init.java")
+    # An importer that migrates a user's data from another service ships.
+    assert not is_migration_path("modules/migration/comment.go")
+    assert not is_migration_path("src/migration/index.ts")
+    assert not is_migration_path("src/migration.ts")
+    assert not is_migration_path("src/migration/1password.ts")
 
 
 def test_prefixed_migration_dirs_under_db() -> None:

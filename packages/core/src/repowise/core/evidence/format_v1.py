@@ -15,7 +15,7 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
       "explained": 580,                   # profile, optional: value with a repo frame on the stack
       "repo_self": 310,                   # profile, optional: value in production repo code itself
       "waits": 900,                       # profile, optional: value blocked waiting
-      "libraries": 120,                   # profile, optional: value in dependencies
+      "libraries": 120,                   # profile, optional: value in libraries
       "total_samples": 5300,              # profile, optional: samples in the whole run, any unit
       "skipped": {"outside_repo": 812},   # optional: entries the converter dropped, by reason
       "symbols": [{"path": "src/app/cli.py", "function": "build", "line": 40,
@@ -41,7 +41,10 @@ oldest commit deployed in it (``commit_sha`` is then the newest). A code locatio
 symbol's id after its file as a test runner names it: ``TestCache::test_get``)
 and ``line`` (where the function starts). A profile entry's ``self`` is what
 the function costs: its own time and the built-ins and libraries it called,
-never time spent waiting; ``total`` adds its callees in the repo.
+never time spent waiting; ``total`` adds its callees in the repo. A profile
+entry whose ``function`` is ``<module>`` (no ``line``) is the file's module
+body: its time is the file's import time, stored as the row
+``<path>::<module>``.
 Optional on a profile entry, as shares of ``total``: ``inside``, up to three
 callees by ``name`` and ``kind`` (``own``, ``repo``, ``wait``, ``import``,
 ``native``, ``library``) with an optional ``leaf`` of the same shape (the
@@ -84,6 +87,17 @@ TEST_OUTCOMES = frozenset({"passed", "failed", "skipped", "error"})
 QUERY_SCOPES = frozenset({"test", "request"})
 #: A profile entry's ``inside`` kinds (``evidence.profile_convert`` says what each means).
 INSIDE_KINDS = ("own", "repo", "wait", "import", "native", "library")
+#: A profile entry's ``function`` for a file's module body (its import time).
+MODULE_FUNCTION = "<module>"
+#: What a surface calls a module body's row.
+IMPORT_TIME = "import time"
+
+
+def is_import_row(symbol_id: str) -> bool:
+    """Whether *symbol_id* is a module body's row (``<path>::<module>``): import time."""
+    return symbol_id.endswith("::" + MODULE_FUNCTION)
+
+
 #: Items of ``inside`` and of ``drivers`` read per entry; more are dropped, lightest first.
 MAX_SPLIT_ITEMS = 3
 
@@ -519,6 +533,12 @@ def query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
         return None, reason
     scope_kind, scope_id, items = scope
     site, reason = _location(raw.get("site"))
+    if raw.get("site") is None and isinstance(raw.get("query"), str):
+        # No call site, but the statement's text: the statement-site index
+        # joins it to the function that issues it (``evidence.statement_join``).
+        shape_text = masked_statement(raw["query"])
+        if shape_text is not None:
+            site = {"path": None, "function": None, "line": None, "shape_text": shape_text}
     if site is None:
         return None, reason
     fp = raw.get("statement_fp")
@@ -586,13 +606,21 @@ def statement_text(value: Any) -> str | None:
     for text from any other source too, so no value reaches the store. The
     text is read as PostgreSQL: a double-quoted word is a name and is kept.
     """
+    text = masked_statement(value)
+    if text is None:
+        return None
+    return text if len(text) <= STATEMENT_TEXT_MAX else text[: STATEMENT_TEXT_MAX - 3] + "..."
+
+
+def masked_statement(value: Any) -> str | None:
+    """:func:`statement_text` before the cut, for the statement-site join only
+    (a PostgREST call names its function past the first 200 characters).
+    Never stored."""
     if not isinstance(value, str):
         return None
     text = _SQL_TOKEN_RE.sub(_mask, value)
     text = " ".join("".join(c if ord(c) >= 0x20 else " " for c in text).split())
-    if not text:
-        return None
-    return text if len(text) <= STATEMENT_TEXT_MAX else text[: STATEMENT_TEXT_MAX - 3] + "..."
+    return text or None
 
 
 def route_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
@@ -640,6 +668,8 @@ def statement_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | N
     return {
         "statement_fp": fp,
         "query": statement_text(raw.get("query")),
+        # The whole masked text, for the statement-site join; never stored.
+        "shape_text": masked_statement(raw.get("query")),
         "calls": calls,
         "total_ms": _amount(raw.get("total_ms")),
         "mean_ms": _amount(raw.get("mean_ms")),
@@ -649,6 +679,8 @@ def statement_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | N
 
 __all__ = [
     "EVIDENCE_FORMAT",
+    "IMPORT_TIME",
+    "MODULE_FUNCTION",
     "QUERY_SCOPES",
     "STATEMENT_TEXT_MAX",
     "TEST_OUTCOMES",
@@ -656,6 +688,8 @@ __all__ = [
     "EvidenceDocument",
     "EvidenceFormatError",
     "benchmark_entry",
+    "is_import_row",
+    "masked_statement",
     "parse_evidence",
     "profile_entry",
     "query_entry",

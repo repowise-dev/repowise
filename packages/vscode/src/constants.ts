@@ -28,6 +28,7 @@ export const MIN_SERVER_VERSION = "0.47.0";
 export const Commands = {
   startServer: "repowise.startServer",
   stopServer: "repowise.stopServer",
+  restartServer: "repowise.restartServer",
   showLog: "repowise.showLog",
   configureMcp: "repowise.configureMcp",
   runInit: "repowise.runInit",
@@ -50,6 +51,8 @@ export const Commands = {
  * package.json on purpose.
  */
 export const InternalCommands = {
+  /** Start / Stop / Restart / Open web UI menu; bound to the status-bar item. */
+  serverMenu: "repowise.serverMenu",
   copyRefactoringPrompt: "repowise.copyRefactoringPrompt",
   openRefactoringPlan: "repowise.openRefactoringPlan",
   /** Opens the co-change nudge QuickPick; bound to the status-bar item only. */
@@ -63,23 +66,6 @@ export const InternalCommands = {
   /** Re-asks every Repowise tree; bound to the "Retry" row of a failed load. */
   retryTrees: "repowise.retryTrees",
 } as const;
-
-/**
- * Language model tool names, mirrored from the `languageModelTools`
- * contribution in package.json. The runtime registration in features/lmTools
- * must cover exactly this set or VS Code drops the missing tools.
- */
-export const LmToolNames = {
-  searchCodebase: "repowise_searchCodebase",
-  getFileHealth: "repowise_getFileHealth",
-  getRefactoringPlans: "repowise_getRefactoringPlans",
-  getBranchRisk: "repowise_getBranchRisk",
-  getSymbolInfo: "repowise_getSymbolInfo",
-  getFileDocs: "repowise_getFileDocs",
-} as const;
-
-/** Context key gating the language model tools (mirrors agentTools.enabled). */
-export const AGENT_TOOLS_CONTEXT_KEY = "repowise.agentToolsEnabled";
 
 /** Sidebar view ids, mirrored from package.json `contributes.views`. */
 export const Views = {

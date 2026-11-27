@@ -82,7 +82,7 @@ from .persist_index import (
 from .prune import (
     prune_deleted_files,
 )
-from .routes import refresh_routes
+from .routes import refresh_routes, refresh_sites
 
 __all__ = [
     "DocDriftUpdate",
@@ -120,6 +120,7 @@ __all__ = [
     "refresh_external_systems",
     "refresh_knowledge_graph",
     "refresh_routes",
+    "refresh_sites",
     "refresh_unchanged_history",
     "run_doc_drift_partial",
     "run_partial_analysis",

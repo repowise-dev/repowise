@@ -61,7 +61,7 @@ Repowise handles this with multiple layers of filtering, including **dynamic imp
 | Test files | Tests import production code, not the other way around |
 | `__init__.py` | Package initializers, loaded by Python automatically |
 | Config files (`setup.py`, `next.config.js`, `vite.config.ts`) | Loaded by frameworks |
-| Migrations (`*migrations*`) | Run by migration tools, not imported |
+| Migrations (`*migrations*`, `alembic/versions/`, `db/migrate/`, numbered entries of `migration/`) | Run by migration tools, not imported |
 | Schema/seed files | Data definitions, not code |
 | Fixture directories (`fixtures/`, `testdata/`, `sample_repo/`) | Test data, not production code |
 | Non-code languages (JSON, YAML, Markdown, SQL, Terraform) | No import semantics |

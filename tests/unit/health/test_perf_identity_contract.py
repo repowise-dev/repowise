@@ -29,12 +29,12 @@ from repowise.core.analysis.health.refactoring.performance_fix import (
     performance_fix_suggestions,
 )
 
-# The kernel, pinned under the v4 prefix. A change to either string is a
+# The kernel, pinned under the v5 prefix. A change to either string is a
 # model-version change.
 # A loop is one cause whether its sink sits in the loop or behind a call, so a
 # same-function row and a two-node cross-function row in ``run`` share one id.
-LOOP_ID = "perf4_50c66a6cb588ad3e8cda"
-HELPER_ID = "perf4_95f1f1ce1ad1162a1399"
+LOOP_ID = "perf5_50c66a6cb588ad3e8cda"
+HELPER_ID = "perf5_95f1f1ce1ad1162a1399"
 
 
 def _row(**overrides):
@@ -78,7 +78,7 @@ def test_the_model_version_is_pinned_and_is_carried_by_the_id_prefix() -> None:
     alias table cannot: an id says which model minted it, so a caller holding a
     stale one is told to refresh instead of being handed the wrong group.
     """
-    assert PERFORMANCE_MODEL_VERSION == 4
+    assert PERFORMANCE_MODEL_VERSION == 5
     assert opportunity_id_for_finding(_row()) == LOOP_ID
     assert opportunity_id_for_finding(_local_row()) == LOOP_ID
     assert opportunity_id_for_finding(_helper_row()) == HELPER_ID
@@ -88,7 +88,7 @@ def test_the_model_version_is_pinned_and_is_carried_by_the_id_prefix() -> None:
 @pytest.mark.parametrize(
     ("opportunity_id", "state", "version"),
     [
-        (LOOP_ID, "current", 4),
+        (LOOP_ID, "current", 5),
         ("perf2_5662c38bc84c9a677164", "stale_model", 2),
         ("perf_e358397251b660183fdd", "stale_model", 1),
         ("perf9_e358397251b660183fdd", "stale_model", 9),

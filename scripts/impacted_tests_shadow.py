@@ -11,11 +11,17 @@ note in the job summary and it exits 0.
 
 ``--selection`` is ``impacted-tests --format json --runner pytest
 --prioritize`` output, ``--meta`` the selector job's own facts (base, exit
-code, seconds, index cache match) and each ``--junit`` one pytest
+code, seconds, index cache match, the commit its per-test map was measured
+at) and each ``--junit`` one pytest
 ``--junitxml`` report, one per shard. Any of them may be missing; the record
 then says which. A failure outside the selection is
 recorded, not judged: whether that test was already red on main is decided
 later, from main's own records.
+
+    python scripts/impacted_tests_shadow.py --map-commit .repowise/wiki.db
+
+prints the commit the index's per-test map was measured at (nothing when it
+has none), for the selector job to put in ``--meta``.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ import argparse
 import contextlib
 import json
 import os
+import sqlite3
 import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -34,10 +41,12 @@ from repowise.core.ci.github import append_step_summary, notice
 from repowise.core.ci.markdown import ROW_LIMIT, code, details, more_line, plural
 from repowise.core.forges.ci import detect_ci
 
-#: Record layout version, bumped when a field changes meaning. 2: ``index_cache``
-#: is ``full``, ``early``, ``older`` or ``none``; version 1 said ``exact`` for
-#: the base's own index, saved once with its per-test map when there was one.
-RECORD_VERSION = 2
+#: Record layout version, bumped when a field changes meaning. 3: adds
+#: ``map_commit`` and ``map_at_base``, and ``index_cache`` may be ``ancestor``.
+#: 2: ``index_cache`` is ``full``, ``early``, ``older`` or ``none``; version 1
+#: said ``exact`` for the base's own index, saved once with its per-test map
+#: when there was one.
+RECORD_VERSION = 3
 
 
 def split_classname(dotted: str) -> tuple[str, list[str]]:
@@ -154,6 +163,11 @@ def build_record(
         "version": RECORD_VERSION,
         **context,
         **{k: meta.get(k) for k in ("base", "selector_exit", "selector_seconds", "index_cache")},
+        # The measured tier narrows only on a map taken at the base (or head).
+        "map_commit": meta.get("map_commit") or None,
+        "map_at_base": (
+            (meta.get("map_commit") or None) == meta["base"] if meta.get("base") else None
+        ),
         "has_selection": selection is not None,
         "has_junit": junit is not None,
         "junit_expected": junit_expected,
@@ -272,6 +286,12 @@ def render_summary(record: Mapping[str, Any]) -> str:
             "- The index is the base's, saved before its per-test map: the map is an "
             "earlier commit's."
         )
+    elif record.get("index_cache") == "ancestor":
+        lines.append(
+            "- The base had no index in time, so this is the nearest earlier commit's "
+            "with its per-test map."
+        )
+    lines.append(_map_line(record))
     if record.get("selector_seconds") is not None:
         lines.append(
             f"- Selector time: {record['selector_seconds']} s "
@@ -285,6 +305,35 @@ def render_summary(record: Mapping[str, Any]) -> str:
         *details("Selection reasons", [code(r) for r in record["reasons"]]),
     ]
     return "\n".join(lines)
+
+
+def _map_line(record: Mapping[str, Any]) -> str:
+    measured, base = record.get("map_commit"), record.get("base")
+    if not measured:
+        return "- Per-test map: none in the index."
+    if record.get("map_at_base"):
+        return f"- Per-test map: measured at the base ({code(measured[:8])})."
+    where = f", not the base {code(base[:8])}" if base else ""
+    return f"- Per-test map: measured at {code(measured[:8])}{where}."
+
+
+def map_commit(db: str) -> str | None:
+    """The commit the newest per-test map in the index at *db* was measured at.
+
+    Read straight from the table: the selection's JSON does not carry it.
+    ``None`` when the index is missing, unreadable or has no map.
+    """
+    try:
+        with contextlib.closing(
+            sqlite3.connect(f"{Path(db).resolve().as_uri()}?mode=ro", uri=True)
+        ) as con:
+            row = con.execute(
+                "SELECT ingested_commit_sha FROM test_coverage_sources "
+                "ORDER BY ingested_at DESC LIMIT 1"
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and row[0] else None
 
 
 def _load(path: str | None, parse: Callable[[str], Any]) -> Any:
@@ -331,7 +380,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(f"--{name}")
     parser.add_argument("--junit", action="append", help="a JUnit report; repeat per shard")
     parser.add_argument("--expect-junit", type=int, help="how many shard reports the run has")
+    parser.add_argument("--map-commit", metavar="DB", help="print the index's per-test map commit")
     args = parser.parse_args(argv)
+    if args.map_commit:
+        print(map_commit(args.map_commit) or "")
+        return 0
     # Recorded only: whatever goes wrong here becomes a note, never a failed job.
     try:
         record = compare(args, os.environ)

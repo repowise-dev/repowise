@@ -1,5 +1,4 @@
 {
-  "modules": ["./lens/lens.js"],
   "hooks": {
     "SessionStart": [
       {
