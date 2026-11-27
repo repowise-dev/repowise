@@ -178,6 +178,82 @@ def test_an_import_row_takes_no_next_step() -> None:
     assert next_step({**row, "symbol_id": "src/app.py::load"}, "python").rule == "import"
 
 
+# --- a library the run loaded and never ran ----------------------------------
+
+_LOADER = [
+    {"name": "<module>", "file": "C:\\venv\\Scripts\\app.py", "line": 1},  # 0 entry script
+    {"name": "_find_and_load", "file": "<frozen importlib._bootstrap>", "line": 1},  # 1
+    {"name": "<module>", "file": _f("pkg\\app.py"), "line": 1},  # 2 imported module
+    {"name": "<module>", "file": f"{_SITE}\\dateutil\\__init__.py", "line": 1},  # 3
+    {"name": "_handle_fromlist", "file": "<frozen importlib._bootstrap>", "line": 1},  # 4
+    {"name": "__getattr__", "file": f"{_SITE}\\dateutil\\__init__.py", "line": 9},  # 5
+    {"name": "<module>", "file": f"{_SITE}\\sqlalchemy\\__init__.py", "line": 1},  # 6
+    {"name": "App.run", "file": _f("pkg\\app.py"), "line": 10},  # 7
+    {"name": "Mapper.configure", "file": f"{_SITE}\\sqlalchemy\\orm\\mapper.py", "line": 9},  # 8
+    {"name": "<module>", "file": f"{_SITE}\\structlog\\__init__.py", "line": 1},  # 9
+    {"name": "get_logger", "file": f"{_SITE}\\structlog\\_config.py", "line": 4},  # 10
+    {"name": "_parse", "file": f"{_SITE}\\dateutil\\parser\\_parser.py", "line": 7},  # 11
+]
+
+
+def _loaded(samples):
+    return _entries(_convert(_LOADER, samples))[("pkg/app.py", "<module>")]["inside"]
+
+
+def test_a_library_an_import_loads_and_the_run_never_runs_reads_called_false() -> None:
+    inside = _loaded(
+        [
+            ([0, 1, 2, 1, 3], 4),  # importing app loads dateutil
+            ([0, 1, 2, 4, 5], 1),  # ``from dateutil import parser``: loading, not use
+            ([0, 1, 2, 3, 11], 1),  # dateutil's own top level runs its code: loading
+            ([0, 1, 2, 1, 6], 3),  # it loads sqlalchemy, which App.run calls later
+            ([0, 7, 8], 5),
+            ([0, 1, 2, 1, 9], 2),  # and structlog, which its top level calls
+            ([0, 1, 2, 10], 1),
+        ]
+    )
+    called = {item["name"]: item.get("called", True) for item in inside}
+    assert called == {"dateutil": False, "sqlalchemy": True, "structlog": True}
+    # Only a never-run library says so: every other item reads as before.
+    assert [set(item) for item in inside if item["name"] != "dateutil"] == [
+        {"name", "kind", "share"},
+        {"name", "kind", "share"},
+    ]
+
+
+def test_the_entry_scripts_libraries_carry_no_called() -> None:
+    # pkg/app.py runs as the program (no import machinery above it): what it
+    # loads is the program's start, and no item says whether the run ran it.
+    inside = _loaded([([2, 1, 3], 4), ([2, 1, 6], 3)])
+    assert [item["name"] for item in inside] == ["dateutil", "sqlalchemy"]
+    assert all("called" not in item for item in inside)
+
+
+def test_called_false_survives_the_v1_parser() -> None:
+    doc = {
+        "format": "repowise-evidence-v1",
+        "kind": "profile",
+        "value_kind": "wall",
+        "unit": "s",
+        "symbols": [
+            {
+                "path": "pkg/app.py",
+                "function": "<module>",
+                "self": 1.0,
+                "inside": [
+                    {"name": "dateutil", "kind": "library", "share": 0.6, "called": False},
+                    {"name": "click", "kind": "library", "share": 0.3, "called": True},
+                ],
+            }
+        ],
+    }
+    [entry] = parse_evidence(json.dumps(doc).encode()).entries
+    assert entry["inside"] == [
+        {"name": "dateutil", "kind": "library", "share": 0.6, "called": False},
+        {"name": "click", "kind": "library", "share": 0.3},
+    ]
+
+
 def test_a_cprofile_import_is_the_same_row() -> None:
     main = (_f("pkg\\app.py"), 1, "<module>")
     boot = ("<frozen importlib._bootstrap>", 1, "_find_and_load")
@@ -218,3 +294,17 @@ def test_measured_hotspots_mint_no_item_for_import_time() -> None:
     module, fn = "src/app.py::<module>", "src/app.py::load"
     items = measured_hotspots({}, {module: "15% of run", fn: "9% of run"}, frozenset({module, fn}))
     assert [i.evidence[0]["function_name"] for i in items] == ["load"]
+
+
+def test_an_import_row_with_a_step_is_an_item_that_may_lead() -> None:
+    from repowise.core.analysis.health.perf.opportunities import measured_hotspots
+
+    module, fn = "src/app.py::<module>", "src/app.py::load"
+    step = {"rule": "unused_import", "why": "60% of this import loads dateutil", "next": "x"}
+    rows = {module: {"share": 0.15, "next_step": step}, fn: {"share": 0.09, "next_step": None}}
+    items = measured_hotspots(
+        {}, {module: "15% of run", fn: "9% of run"}, frozenset({module, fn}), rows=rows
+    )
+    by_name = {i.evidence[0]["function_name"]: i for i in items}
+    assert set(by_name) == {"<module>", "load"}
+    assert by_name["<module>"].may_lead and not by_name["load"].may_lead

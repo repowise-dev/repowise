@@ -536,17 +536,25 @@ async def step_findings(
     eager ``setdefault`` defaults the rows and drivers build
     (:func:`~repowise.core.evidence.next_step.eager_default_fact`). Facts in
     files that are not production code (``code_origin``) are left out, so a loop
-    in a test never reads as an N+1."""
+    in a test never reads as an N+1. An import row that loaded a library the
+    run never ran adds that package's production call sites
+    (:func:`_package_calls`)."""
     import json
 
+    from ....evidence.format_v1 import is_import_row
     from ....evidence.ingest import load_origins
-    from ....evidence.next_step import static_finding
+    from ....evidence.next_step import never_called, static_finding
+    from ....evidence.payloads import json_list
     from ....ingestion.symbol_identity import file_of_symbol
     from ...models import HealthFinding
 
+    rows = list(rows)
     targets: set[str] = set()
+    packages: set[str] = set()
     for row in rows:
         targets.add(row.symbol_id)
+        if is_import_row(row.symbol_id):
+            packages.update(never_called(json_list(getattr(row, "inside_json", None))))
         try:
             drivers = json.loads(getattr(row, "drivers_json", None) or "[]")
         except ValueError:
@@ -588,7 +596,47 @@ async def step_findings(
         for f in sorted(found.values(), key=lambda f: (f.file_path, f.line_start or 0, f.id))
         if origins.get(f.file_path) == "production"
     ]
-    return out + [f for f in eager if origins.get(f["file_path"]) == "production"]
+    return (
+        out
+        + [f for f in eager if origins.get(f["file_path"]) == "production"]
+        + await _package_calls(session, repository_id, packages)
+    )
+
+
+async def _package_calls(
+    session: AsyncSession, repository_id: str, packages: set[str]
+) -> list[dict[str, Any]]:
+    """Per Python package, its production call sites with each caller's symbol
+    kind (:func:`~repowise.core.evidence.next_step.package_calls`). None until the
+    stored call sites are complete, and none for a package nothing calls."""
+    from ....evidence.ingest import load_origins
+    from ....evidence.next_step import package_calls
+    from ...models import WikiSymbol
+    from ..external_call_sites import external_call_sites_complete, list_external_call_sites
+
+    if not packages or not await external_call_sites_complete(session, repository_id):
+        return []
+    sites = await list_external_call_sites(
+        session, repository_id, packages=[("pypi", p) for p in sorted(packages)]
+    )
+    origins = await load_origins(session, repository_id, {s.file_path for s in sites})
+    sites = [s for s in sites if origins.get(s.file_path) == "production"]
+    callers = sorted({s.caller_symbol_id for s in sites})
+    kinds: dict[str, str] = {}
+    for i in range(0, len(callers), _BATCH_SIZE):
+        result = await session.execute(
+            select(WikiSymbol.symbol_id, WikiSymbol.kind).where(
+                WikiSymbol.repository_id == repository_id,
+                WikiSymbol.symbol_id.in_(callers[i : i + _BATCH_SIZE]),
+            )
+        )
+        kinds.update({sid: kind for sid, kind in result})
+    by_package: dict[str, list[tuple[str, str | None]]] = {}
+    for site in sites:
+        by_package.setdefault(site.package, []).append(
+            (site.caller_symbol_id, kinds.get(site.caller_symbol_id))
+        )
+    return [package_calls(p, found) for p, found in sorted(by_package.items())]
 
 
 async def ranked_by_workload(

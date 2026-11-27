@@ -517,6 +517,16 @@ class MeasuredCallee(_Strict):
     share: float
     #: The callee's heaviest leaf, when its stacks end below it.
     leaf: MeasuredLeaf | None = None
+    #: ``false`` on an import row's library the run loaded and never ran; sent
+    #: only then, so other callees do not grow.
+    called: bool | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_called(self, handler):  # no return annotation: keeps the schema
+        data = handler(self)
+        if self.called is None:
+            data.pop("called", None)
+        return data
 
 
 class MeasuredDriver(_Strict):

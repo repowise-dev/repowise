@@ -48,7 +48,9 @@ body: its time is the file's import time, stored as the row
 Optional on a profile entry, as shares of ``total``: ``inside``, up to three
 callees by ``name`` and ``kind`` (``own``, ``repo``, ``wait``, ``import``,
 ``native``, ``library``) with an optional ``leaf`` of the same shape (the
-frame the callee's stacks end in), and ``drivers``, up to three callers by
+frame the callee's stacks end in) and, on a ``<module>`` entry's ``library``
+item, ``"called": false`` when the run loaded that package and never ran it,
+and ``drivers``, up to three callers by
 ``function`` (with ``path`` and ``line`` when the caller is repo code). A bad
 item is dropped; the entry stays.
 A test entry with no ``path`` may carry ``classname``, the dotted name a
@@ -430,6 +432,8 @@ def _inside_item(raw: dict[str, Any]) -> dict[str, Any] | None:
     if name is None or kind is None or share is None:
         return None
     item: dict[str, Any] = {"name": name, "kind": kind, "share": share}
+    if raw.get("called") is False:  # an import loaded this package and the run never ran it
+        item["called"] = False
     leaf = raw.get("leaf")
     # One level only: a leaf names no leaf of its own.
     if isinstance(leaf, dict) and "leaf" not in leaf and (read := _inside_item(leaf)):

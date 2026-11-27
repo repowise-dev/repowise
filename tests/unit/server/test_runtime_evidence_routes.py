@@ -641,3 +641,12 @@ def test_a_route_row_reads_as_requests_in_every_form() -> None:
         " · 12.5 ms p95 · 4 errors · tests not mapped",
         "verify: compare this row in the next api window",
     ]
+
+
+def test_a_callee_sends_called_only_when_the_run_never_ran_it() -> None:
+    from repowise.server.schemas.runtime_evidence import MeasuredCallee
+
+    never = MeasuredCallee(name="dateutil", kind="library", share=0.6, called=False)
+    plain = MeasuredCallee(name="click", kind="library", share=0.3)
+    assert never.model_dump(mode="json")["called"] is False
+    assert "called" not in plain.model_dump(mode="json")

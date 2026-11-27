@@ -16,6 +16,7 @@ from repowise.core.analysis.health.queue.value import (
 )
 from repowise.core.analysis.health.rows import detail_map, field
 from repowise.core.analysis.health.worth import execution_role
+from repowise.core.evidence.format_v1 import is_import_row
 from repowise.core.evidence.function_tests import PER_TEST_MAP
 
 from . import text
@@ -262,6 +263,8 @@ def _row_verify(row: Mapping[str, Any], stored: FixVerify) -> FixVerify:
 def _perf_name(cause: _PerfCause) -> tuple[str, str | None]:
     """What the item calls the function, and the symbol its target names:
     ``None`` at module scope or when no symbol is stored."""
+    if cause.symbol and is_import_row(cause.symbol):  # a measured import: the file's top level
+        return f"the import of {text.basename(cause.path)}", None
     # A cause with no intervention symbol is named by the function its plan edits.
     first = cause.plan_steps[0] if cause.plan_steps else {}
     name = (

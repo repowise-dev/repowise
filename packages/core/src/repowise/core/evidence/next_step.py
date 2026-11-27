@@ -28,10 +28,15 @@ Silence is the default. No step when:
 - the dominant time is a regular expression run by a function whose job is
   matching its input (a lexer, tokenizer, parser or router, by its name or its
   file's): the regex is the work;
-- the row is a module body's import time (``<path>::<module>``): whether the
-  run needed what the file imports is not in the row (ceiling; upgrade path:
-  mark a library the run imported but never called, then say "import it
-  inside the function that uses it");
+- the row is a module body's import time (``<path>::<module>``), unless its
+  heaviest item is a library the run loaded and never ran (``"called": false``,
+  ``profile_convert``) holding :data:`IMPORT_LEADS` of the import, and the
+  repo calls that package only from inside functions (a :func:`package_calls`
+  fact): then the step is to import it inside those functions. A package the
+  repo calls at import time (``log = structlog.get_logger()``, a decorator, a
+  class body) is needed at startup by construction, and one with no proven
+  call site may be read some other way, so both stay silent. So does the
+  program's entry script, whose items carry no ``called``;
 - the time sits under ``runtime.cgocall`` and no database call above it says
   what the C code is: a Go profile taken on Windows samples threads inside cgo
   while they wait, so that time is unknown, never a cost claim.
@@ -83,6 +88,17 @@ ALSO = 0.1
 #: The rule, and the fact kind, of a value built as an eager ``setdefault`` default.
 EAGER_DEFAULT = "eager_default"
 _CONSTRUCTORS = frozenset({"__init__", "__new__"})
+
+#: Share of an import row's time one never-run library must hold to be named: an
+#: import spreads its time over many packages, and the step moves one of them.
+IMPORT_LEADS = 0.25
+#: The :func:`next_step` *findings* kind of a :func:`package_calls` fact.
+PACKAGE_CALLS = "package_calls"
+#: Caller kinds that run only when called; any other caller (a module-level
+#: assignment, a class body, the module itself) runs at import time.
+_CALLED_KINDS = frozenset({"function", "method"})
+#: Functions a step names before it counts them instead.
+_NAMED_CALLERS = 3
 
 # --- the lexicon: last name segments, per family -----------------------------
 
@@ -568,6 +584,34 @@ def eager_default_fact(symbol_id: str, eager_defaults_json: str | None) -> dict[
     }
 
 
+def never_called(inside: Iterable[Any] | None) -> list[str]:
+    """The libraries an import row's *inside* says the run loaded and never ran."""
+    return [
+        str(item["name"])
+        for item in _items(inside)
+        if item.get("kind") == "library" and item.get("called") is False and item.get("name")
+    ]
+
+
+def package_calls(package: str, callers: Iterable[tuple[str, str | None]]) -> dict[str, Any]:
+    """A package's production call sites as :func:`next_step` reads them.
+
+    *callers* are ``(caller symbol id, its symbol kind)`` per call site the
+    index proved (``external_call_sites``); a kind outside function and method
+    (a module-level assignment, a class body, ``None`` for the module itself)
+    runs the call at import time.
+    """
+    callers = list(callers)
+    functions = sorted({sid for sid, kind in callers if kind in _CALLED_KINDS})
+    return {
+        "kind": PACKAGE_CALLS,
+        "package": package,
+        "callers": functions[:_NAMED_CALLERS],
+        "callers_total": len(functions),
+        "at_import": any(kind not in _CALLED_KINDS for _, kind in callers),
+    }
+
+
 def next_step(
     row: Mapping[str, Any],
     language: str,
@@ -579,14 +623,15 @@ def next_step(
     and ``symbol_id`` (a ``functions`` route row; ``inside`` and ``drivers`` as
     lists). *language* is the function's file language (``python``, ``go``,
     ``javascript`` ...). *findings* are :func:`static_finding` dicts: those on the
-    function or naming it or its drivers in a loop are read, the rest ignored.
+    function or naming it or its drivers in a loop are read, the rest ignored;
+    and :func:`package_calls` facts, which an import row reads.
     """
     inside = _items(row.get("inside"))
     symbol = row.get("symbol_id") or ""
     if row.get("workload_class") not in STEP_CLASSES or not inside:
         return None
     if is_import_row(symbol):
-        return None
+        return _unused_import(row, inside, findings)
     lang = _family(language)
     findings = list(findings)
     eager = _eager_default(row, symbol, inside, lang, findings)
@@ -643,6 +688,48 @@ def _eager_default(
         next=_eager_next(fact["file_path"], line, call, where),
         verify=verify_command(row.get("workload_name"), row.get("workload_class")),
         callee=callee,
+        share=round(share, 4),
+    )
+
+
+def _unused_import(
+    row: Mapping[str, Any],
+    inside: Sequence[Mapping[str, Any]],
+    findings: Iterable[Mapping[str, Any]],
+) -> NextStep | None:
+    """An import row's step: its heaviest item is a library the run never ran,
+    which the repo calls only from inside functions (module docstring)."""
+    lead = _lead(inside)
+    share = float(lead.get("share") or 0.0)
+    package = str(lead.get("name") or "")
+    if share < IMPORT_LEADS or package not in never_called([lead]):
+        return None
+    fact = next(
+        (f for f in findings if f.get("kind") == PACKAGE_CALLS and f.get("package") == package),
+        None,
+    )
+    if fact is None or fact.get("at_import") or not fact.get("callers"):
+        return None
+    callers = [str(c) for c in fact["callers"]]
+    total = int(fact.get("callers_total") or len(callers))
+    files = {file_of_symbol(c) for c in callers}
+    named = _and([_fn(c) for c in callers]) + (f" in {files.pop()}" if len(files) == 1 else "")
+    if total == 1:
+        where = f"{named}, the one function that calls it"
+    elif total <= len(callers):
+        where = f"{named}, the functions that call it"
+    else:
+        where = f"the {total} functions that call it"
+    return NextStep(
+        rule="unused_import",
+        why=f"{_pct(share)} of this import loads {package}, and no sample of the run ran {package}",
+        next=(
+            f"import {package} inside {where}, not at module level, so a run that never calls "
+            f"them skips loading it; a name the module reads from {package} at import time keeps "
+            "the load, so move that read too"
+        ),
+        verify=verify_command(row.get("workload_name"), row.get("workload_class")),
+        callee=package,
         share=round(share, 4),
     )
 
@@ -738,6 +825,11 @@ def _eager_next(file_path: str, line: int, call: str, where: str | None) -> str:
         f"a plain dict stores and returns; leave it eager only if building a {call} has a side "
         "effect every call needs"
     )
+
+
+def _and(names: Sequence[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def _items(value: Any) -> list[Mapping[str, Any]]:
@@ -1464,10 +1556,14 @@ _LEAF_RULES = frozenset({"filesystem", "template_reread", "template_include", "e
 __all__ = [
     "DOMINANT",
     "EAGER_DEFAULT",
+    "IMPORT_LEADS",
+    "PACKAGE_CALLS",
     "STEP_CLASSES",
     "NextStep",
     "eager_default_fact",
+    "never_called",
     "next_step",
+    "package_calls",
     "static_finding",
     "verify_command",
 ]
