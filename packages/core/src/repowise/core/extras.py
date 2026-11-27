@@ -308,7 +308,7 @@ def install(extra: str, *, run=subprocess.run, plan: InstallPlan | None = None) 
     for module in _get(extra).modules:
         try:
             importlib.import_module(module)
-        except ImportError as exc:
+        except Exception as exc:  # a broken package can fail its import any way
             raise ExtraInstallError(
                 f"{plan.command} finished, but {module} still does not import: {exc}"
             ) from exc

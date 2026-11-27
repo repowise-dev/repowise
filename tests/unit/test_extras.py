@@ -204,6 +204,15 @@ def test_an_extra_that_still_does_not_import_is_a_failure(monkeypatch: pytest.Mo
         extras.install("litellm", plan=_plan(VENV), run=lambda *_a, **_k: _done(0))
 
 
+def test_an_import_that_fails_with_any_error_is_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(_name: str) -> None:
+        raise AttributeError("module has no attribute 'x'")
+
+    monkeypatch.setattr(extras.importlib, "import_module", broken)
+    with pytest.raises(ExtraInstallError, match="still does not import"):
+        extras.install("litellm", plan=_plan(VENV), run=lambda *_a, **_k: _done(0))
+
+
 def test_an_installer_that_cannot_start_is_a_failure_not_a_traceback() -> None:
     def missing(*_a: object, **_k: object) -> None:
         raise FileNotFoundError("uv")
