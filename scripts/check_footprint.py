@@ -188,7 +188,12 @@ def check_startup_paths(paths: list[dict], rows: list[str], failures: list[str])
         repo = indexed_repo(Path(tmp))
         home = Path(tmp) / "home"
         for path in paths:
-            modules, printed, seconds = run_path(path, repo, home)
+            try:
+                modules, printed, seconds = run_path(path, repo, home)
+            except (RuntimeError, subprocess.TimeoutExpired) as exc:
+                rows.append(f"| {path['name']} | did not finish | see the error below |")
+                failures.append(str(exc))
+                continue
             heavy = heavy_loaded(modules, path["forbidden"])
             status = ", ".join(heavy) if heavy else "none"
             rows.append(
