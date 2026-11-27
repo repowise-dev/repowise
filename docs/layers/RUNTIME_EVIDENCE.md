@@ -422,7 +422,10 @@ migration.
   (missing, inline `data:`, remote, indexed, or with sources outside the
   checkout or in another scheme), a generated bundle stays a library frame,
   and any other bundle refuses the whole profile with an error naming that
-  bundle; so does a frame whose position the map does not cover. Generate
+  bundle. A frame at a position the map leaves unmapped (tsc's shebang line,
+  a helper the compiler wrote) is skipped as `not_indexed` and the rest of the
+  profile joins; a frame past the map's last line still refuses it, since that
+  map was built from another bundle. Generate
   external maps for every bundle the profile runs. Collapsed frames without
   columns need exactly one mapping segment starting at column zero on their
   generated line.
