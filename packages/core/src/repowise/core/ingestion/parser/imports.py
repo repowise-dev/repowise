@@ -12,11 +12,24 @@ from ..extractors import node_text
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Import, combine_load_kinds
 from ..parser_helpers import (
+    collect_type_checking_aliases,
     import_load_kind,
     python_bound_module_name,
     python_import_scope,
     python_load_time_names,
 )
+
+
+def _python_type_checking_aliases(
+    matches: list[dict], language: str, src: str
+) -> frozenset[str] | None:
+    if language != "python":
+        return None
+    for capture_dict in matches:
+        stmt_nodes = capture_dict.get("import.statement", [])
+        if stmt_nodes:
+            return collect_type_checking_aliases(stmt_nodes[0], src)
+    return frozenset()
 
 
 def _extract_imports(
@@ -34,6 +47,7 @@ def _extract_imports(
     seen_own: set[str] = set()
     # Python: names module-level code mentions at load, read once per file.
     load_names: list[frozenset[str]] = []
+    type_checking_aliases = _python_type_checking_aliases(matches, language, src)
 
     for capture_dict in matches:
         stmt_nodes = capture_dict.get("import.statement", [])
@@ -49,7 +63,9 @@ def _extract_imports(
 
         raw = node_text(stmt_node, src).strip()
         dedup_key = rules.dedup_key(stmt_node, raw, src) if rules.dedup_key else raw
-        kind = import_load_kind(stmt_node, language, src)
+        kind = import_load_kind(
+            stmt_node, language, src, type_checking_aliases=type_checking_aliases
+        )
         scopes = python_import_scope(stmt_node) if language == "python" else None
         if dedup_key in seen_imports:
             # A lazy copy must not hide a load-time twin: runtime wins.

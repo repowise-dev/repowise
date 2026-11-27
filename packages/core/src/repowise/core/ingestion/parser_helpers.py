@@ -95,6 +95,7 @@ __all__ = [
     "_rust_head_type_identifier",
     "_rust_shadowed_by_type_param",
     "_ts_nested_object_method_owner",
+    "collect_type_checking_aliases",
     "cpp_template_type_name",
     "follow_renamed_hosts",
     "import_load_kind",
@@ -215,33 +216,96 @@ _TS_TYPE_STATEMENTS = frozenset({"import_statement", "export_statement"})
 _TS_TYPE_POSITIONS = frozenset(
     {"type_query", "type_annotation", "type_alias_declaration", "interface_declaration"}
 )
+_TYPE_CHECKING_MODULES = frozenset({"typing", "typing_extensions"})
 
 
-def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
-    """``TYPE_CHECKING`` or ``<module>.TYPE_CHECKING``, matched on the node.
+def _module_root(node: Node) -> Node:
+    """Walk up to the root node of ``node``'s syntax tree."""
+    root = node
+    while root.parent is not None:
+        root = root.parent
+    return root
 
-    Ceiling: anything else is runtime, so ``not``/``and``/``or``, parentheses
-    and an alias (``from typing import TYPE_CHECKING as TC``) are missed on
-    the safe side: the import stays a runtime edge.
+
+def _aliases_in_import_from(node: Node, src: str) -> list[str]:
+    """Return local names aliased from ``TYPE_CHECKING`` in an ``import_from_statement``."""
+    mod_node = node.child_by_field_name("module_name")
+    if mod_node is None or node_text(mod_node, src) not in _TYPE_CHECKING_MODULES:
+        return []
+    aliases: list[str] = []
+    for child in node.children:
+        if child.type != "aliased_import":
+            continue
+        orig = child.child_by_field_name("name")
+        alias = child.child_by_field_name("alias")
+        if orig is not None and alias is not None and node_text(orig, src) == "TYPE_CHECKING":
+            aliases.append(node_text(alias, src))
+    return aliases
+
+
+def collect_type_checking_aliases(node: Node, src: str) -> frozenset[str]:
+    """Collect top-level aliases of ``TYPE_CHECKING`` from ``typing`` or ``typing_extensions``."""
+    aliases: set[str] = set()
+    stack = [_module_root(node)]
+    while stack:
+        current = stack.pop()
+        if current.type in ("function_definition", "class_definition"):
+            continue
+        if current.type == "import_from_statement":
+            aliases.update(_aliases_in_import_from(current, src))
+            continue
+        stack.extend(current.children)
+    return frozenset(aliases)
+
+
+def _is_type_checking_flag(
+    condition: Node | None,
+    src: str,
+    type_checking_aliases: frozenset[str] | None = None,
+) -> bool:
+    """``TYPE_CHECKING``, ``<module>.TYPE_CHECKING``, ``False``, ``0``, or an alias.
+
+    Ceiling: anything else is runtime, so ``not``/``and``/``or`` and parentheses
+    are missed on the safe side: the import stays a runtime edge.
     """
     if condition is None:
         return False
+    if condition.type == "false":
+        return True
+    if condition.type == "integer" and node_text(condition, src).strip() == "0":
+        return True
     if condition.type == "attribute":
-        condition = condition.child_by_field_name("attribute")
-    return (
-        condition is not None
-        and condition.type == "identifier"
-        and node_text(condition, src) == "TYPE_CHECKING"
+        attr = condition.child_by_field_name("attribute")
+        return (
+            attr is not None
+            and attr.type == "identifier"
+            and node_text(attr, src) == "TYPE_CHECKING"
+        )
+    if condition.type != "identifier":
+        return False
+    name = node_text(condition, src)
+    if name == "TYPE_CHECKING":
+        return True
+    aliases = (
+        type_checking_aliases
+        if type_checking_aliases is not None
+        else collect_type_checking_aliases(condition, src)
     )
+    return name in aliases
 
 
-def _is_type_checking_branch(node: Node, child: Node, src: str) -> bool:
+def _is_type_checking_branch(
+    node: Node,
+    child: Node,
+    src: str,
+    type_checking_aliases: frozenset[str] | None = None,
+) -> bool:
     """``child`` is the body of ``if``/``elif TYPE_CHECKING:``, not an ``else``."""
     if node.type not in ("if_statement", "elif_clause"):
         return False
     if child != node.child_by_field_name("consequence"):
         return False
-    return _is_type_checking_flag(node.child_by_field_name("condition"), src)
+    return _is_type_checking_flag(node.child_by_field_name("condition"), src, type_checking_aliases)
 
 
 def python_import_scope(stmt_node: Node) -> tuple[tuple[int, int], ...] | None:
@@ -364,7 +428,13 @@ def _is_import_guard_body(node: Node, child: Node, src: str) -> bool:
     return bool(handlers) and all(_handler_lets_the_module_go_on(h, src) for h in handlers)
 
 
-def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bool, bool]:
+def import_load_kind(
+    stmt_node: Node,
+    language: str,
+    src: str,
+    *,
+    type_checking_aliases: frozenset[str] | None = None,
+) -> tuple[bool, bool, bool]:
     """``(type_only, deferred, guarded)`` for an import, from the statement and where it sits.
 
     Type-only: ``import type`` / ``export type`` (TS), under ``if
@@ -387,7 +457,7 @@ def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bo
         if node.type in scopes:
             deferred = True
         elif (
-            _is_type_checking_branch(node, child, src)
+            _is_type_checking_branch(node, child, src, type_checking_aliases)
             if language == "python"
             else node.type in _TS_TYPE_POSITIONS
         ):
