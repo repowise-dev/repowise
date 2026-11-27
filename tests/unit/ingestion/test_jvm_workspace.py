@@ -170,6 +170,10 @@ class TestJvmWorkspaceIndex:
             "    exports com.github.benmanes.caffeine.cache.stats;\n"
             "}\n"
         )
+        # A module at the repo root is keyed by "".
+        mi_root = tmp_path / "src" / "main" / "java" / "module-info.java"
+        mi_root.parent.mkdir(parents=True)
+        mi_root.write_text("module root {\n    exports com.example.root;\n}\n")
         mi_javalin = tmp_path / "javalin" / "module-info.java"
         mi_javalin.parent.mkdir(parents=True)
         mi_javalin.write_text(
@@ -187,6 +191,7 @@ class TestJvmWorkspaceIndex:
         assert "com.example.blockcomment" not in index.jpms_exports["caffeine"]
         assert "com.example.string" not in index.jpms_exports["caffeine"]
         assert index.jpms_exports["javalin"] == frozenset({"io.javalin"})
+        assert index.jpms_exports[""] == frozenset({"com.example.root"})
 
 
 class TestMemberFqnResolution:
