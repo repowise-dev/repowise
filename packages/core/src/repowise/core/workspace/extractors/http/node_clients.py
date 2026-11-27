@@ -398,11 +398,25 @@ class FieldScope:
         """The source text the class entered last sets field *name* (``this.x``) to."""
         return self._current.get(name) if self._current else None
 
+    def _resolve_fields(self, found: ClassFields, pos: int) -> dict[str, str]:
+        chain = [found]
+        current = found
+        while current.base_name:
+            base = next((c for c in self._classes or () if c.name == current.base_name), None)
+            if base is None or base in chain:
+                break
+            chain.append(base)
+            current = base
+        merged: dict[str, str] = {}
+        for cls in reversed(chain):
+            merged.update(cls.fields_at(pos))
+        return merged
+
     def enter(self, pos: int) -> None:
         if self._classes is None:
             self._classes = js_class_fields(self._strings.content)
         found = next((c for c in self._classes if c.start <= pos < c.end), None)
-        fields = found.fields_at(pos) if found is not None else None
+        fields = self._resolve_fields(found, pos) if found is not None else None
         if fields is self._current:
             return
         settled = self._strings.settled

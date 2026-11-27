@@ -45,6 +45,46 @@ if TYPE_CHECKING:
 _FETCH_RE = re.compile(
     r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""",
 )
+_HTTP_RESOURCE_RE = re.compile(r"\bhttpResource\s*\(")
+_URL_PROP_RE = re.compile(r"""\burl\s*:\s*([^,\n}]+)""")
+_METHOD_PROP_RE = re.compile(r"""\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]""")
+
+
+def http_resource_calls(content: str) -> Iterator[ClientCallMatch]:
+    """Angular ``httpResource(...)`` calls; method defaults to GET."""
+    if "httpResource" not in content:
+        return
+    for m in _HTTP_RESOURCE_RE.finditer(content):
+        paren = m.end() - 1
+        close = match_paren(content, paren)
+        if close <= 0:
+            continue
+        arg_text = content[paren + 1 : close].strip()
+        if not arg_text:
+            continue
+        m_method = _METHOD_PROP_RE.search(arg_text)
+        method = m_method.group(1).upper() if m_method else "GET"
+        url: str | None = None
+        if m_url := _URL_PROP_RE.search(arg_text):
+            url = m_url.group(1).strip()
+        elif "=>" in arg_text:
+            rhs = arg_text.split("=>", 1)[1].strip()
+            if rhs.startswith("(") and rhs.endswith(")"):
+                rhs = rhs[1:-1].strip()
+            if not (rhs.startswith("{") and rhs.endswith("}")):
+                url = rhs
+        elif not (arg_text.startswith("{") and arg_text.endswith("}")):
+            url = arg_text
+        if url:
+            if url.startswith("this."):
+                url = f"`${{{url}}}`"
+            yield ClientCallMatch(
+                client="angular",
+                url=url,
+                offset=m.start(),
+                callee="httpResource",
+                method=method,
+            )
 
 # Wrapper call: IDENT("<url>" | `<url>`, ...) where the URL literal is concrete,
 # i.e. starts with `/`, a `${...}` base placeholder, or a scheme. The scan is
@@ -361,7 +401,13 @@ class JsClientsDialect:
         from_clients, clients = client_calls(ctx)
         # A client named like `apifetch` is read with its base above, not as `fetch`.
         fetches = [m for m in fetch_calls(content) if _callee(content, m.offset, m.offset + 5) not in clients]
-        matches = factory_bases(ctx, with_bases(ctx, [*fetches, *wrapper_calls(content, clients)]))
+        matches = factory_bases(
+            ctx,
+            with_bases(
+                ctx,
+                [*fetches, *http_resource_calls(content), *wrapper_calls(content, clients)],
+            ),
+        )
         # A `${BASE}` interpolation folds when the file binds BASE to a constant.
         constants = string_constants(content, JS_SYNTAX) if any("${" in m.url for m in matches) else {}
         return from_clients + consumer_contracts(ctx, matches, JS_SYNTAX, constants=constants)

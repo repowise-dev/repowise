@@ -262,6 +262,38 @@ class TestClassFields:
             ("angular", "GET", "/users", "base"),
         ]
 
+    def test_an_inherited_class_field_resolves(self, tmp_path: Path) -> None:
+        text = (
+            f"{_IMPORT}class Base {{\n  protected resourceUrl = '/api/items';\n}}\n"
+            "export class ItemService extends Base {\n"
+            "  constructor(private http: HttpClient) { super(); }\n"
+            "  list() { return this.http.get(this.resourceUrl); }\n}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/item.service.ts": text})) == [
+            ("angular", "GET", "/api/items", ""),
+        ]
+
+
+class TestHttpResource:
+    def test_literal_and_field_forms(self, tmp_path: Path) -> None:
+        text = (
+            "class Base { protected resourceUrl = '/api/items'; }\n"
+            "export class ItemService extends Base {\n"
+            "  res1 = httpResource({ url: '/api/other' });\n"
+            "  res2 = httpResource({ url: this.resourceUrl });\n"
+            "  res3 = httpResource(() => ({ url: this.resourceUrl }));\n"
+            "  res4 = httpResource({ url: '/api/post', method: 'POST' });\n"
+            "  res5 = httpResource(() => '/api/arrow');\n"
+            "}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/service.ts": text})) == [
+            ("angular", "GET", "/api/arrow", ""),
+            ("angular", "GET", "/api/items", ""),
+            ("angular", "GET", "/api/items", ""),
+            ("angular", "GET", "/api/other", ""),
+            ("angular", "POST", "/api/post", ""),
+        ]
+
 
 def test_an_angular_service_links_to_nest_and_laravel(tmp_path: Path) -> None:
     nest = _write(
