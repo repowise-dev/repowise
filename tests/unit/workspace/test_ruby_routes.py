@@ -110,6 +110,14 @@ class TestRailsRoutes:
         # Scoped routes
         assert "http::GET::/v1/status" in ids
 
+        # Concerns mixed into resources
+        assert "http::GET::/users/{param}" in ids
+        assert "http::GET::/users/{param}/followers" in ids
+        assert "http::GET::/followers" not in ids
+
+        # Drawn routes file
+        assert "http::GET::/api/v1/accounts" in ids
+
         # Commented-out route yields nothing
         assert not any("commented" in cid for cid in ids)
 
