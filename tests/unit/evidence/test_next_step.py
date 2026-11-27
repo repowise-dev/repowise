@@ -853,8 +853,10 @@ def test_a_dominant_build_as_a_setdefault_default_says_build_only_when_missing()
     assert step is not None and step.rule == "eager_default"
     assert step.why.startswith("73% of it builds ValueTracker() (")
     assert "on every call, even when the key is already there" in step.why
-    assert step.next.startswith("at sqlite_utils/utils.py:445, check whether the key is there")
-    assert "d[key] = ValueTracker()" in step.next
+    assert step.next.startswith(
+        "at sqlite_utils/utils.py:445, build the default only when the key is missing: "
+        "d[key] if key in d else d.setdefault(key, ValueTracker(...))"
+    )
     assert step.callee == "sqlite_utils.utils.ValueTracker.__init__" and step.share == 0.7311
 
 
@@ -875,14 +877,14 @@ def test_the_constructor_row_names_the_driver_that_builds_it_eagerly() -> None:
         "TypeTracker.wrap, which drives 100% of its time, builds a ValueTracker"
     )
     assert step.next.startswith("at sqlite_utils/utils.py:445 in TypeTracker.wrap,")
-    # A factory function's own row reads the same way.
+    # A plain function's own row is not read: only a constructor names what it builds.
     factory = _row(
         "pkg/m.py::make_tracker",
         [_c("(own code)", "own", 1.0)],
         [{"name": "wrap", "share": 0.9, "symbol": "pkg/m.py::wrap"}],
     )
     fact = eager_default_fact("pkg/m.py::wrap", '[["make_tracker", 9]]')
-    assert next_step(factory, "python", [fact]).rule == "eager_default"
+    assert next_step(factory, "python", [fact]) is None
 
 
 @pytest.mark.parametrize(
@@ -901,6 +903,13 @@ def test_the_constructor_row_names_the_driver_that_builds_it_eagerly() -> None:
         (_WRAP_INSIDE, [], "python", []),
         # Python only.
         (_WRAP_INSIDE, [], "javascript", [_WRAP_FACT]),
+        # A call written with another module in front builds another class.
+        (
+            [_c("pkg.hot.Tracker.__init__", "repo", 0.9)],
+            [],
+            "python",
+            [eager_default_fact(_WRAP, '[["cheap.Tracker", 3]]')],
+        ),
         # A wait or the framework spine never reads as a build.
         ([_c("ValueTracker", "wait", 0.9)], [], "python", [_WRAP_FACT]),
         ([_c("dispatch_request", "library", 0.9)], [], "python", [_WRAP_FACT]),
@@ -923,6 +932,12 @@ def test_the_constructor_row_stays_silent_on_a_minor_or_unrelated_driver() -> No
         "pkg/m.py::Other::__init__", inside, [{"name": "w", "share": 1.0, "symbol": _WRAP}]
     )
     assert next_step(other, "python", [_WRAP_FACT]) is None
+    # The driver builds a Tracker from another module than this one.
+    fact = eager_default_fact(_WRAP, '[["cheap.ValueTracker", 445]]')
+    hot = _row(init, inside, [{"name": "w", "share": 1.0, "symbol": _WRAP}], "i", "entry_point")
+    assert next_step(hot, "python", [fact]) is None
+    same = eager_default_fact(_WRAP, '[["utils.ValueTracker", 445]]')
+    assert next_step(hot, "python", [same]).rule == "eager_default"
     # A unit test run never gets a step.
     tests = _row(
         init, inside, [{"name": "w", "share": 1.0, "symbol": _WRAP}], "pytest", "unit_test"

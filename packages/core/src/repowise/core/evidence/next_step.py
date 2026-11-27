@@ -33,7 +33,7 @@ Silence is the default. No step when:
 A value built as an eager ``setdefault`` default (``d.setdefault(k, Tracker())``
 builds a Tracker on every call, even on a hit) is named only when the build
 holds :data:`DOMINANT` of the time: the function's own callee, or, on the
-constructor's own row, a driver holding that much of its calls
+constructor's own row, a driver holding that much of its time
 (:func:`eager_default_fact`, read on the walk; Python only).
 
 A database call says "batch" only when a static loop sits on the driver chain:
@@ -623,13 +623,13 @@ def _eager_default(
                     callee=name,
                     share=round(share, 4),
                 )
-    built = _built_name(symbol)
-    for driver in _items(row.get("drivers")):
+    built = _built_class(symbol)
+    for driver in _items(row.get("drivers")) if built else ():
         share = float(driver.get("share") or 0.0)
         fact = facts.get(str(driver.get("symbol") or ""))
-        if share < DOMINANT or fact is None or not built:
+        if share < DOMINANT or fact is None:
             continue
-        build = next((b for b in fact["builds"] if _last(b[0]) == built), None)
+        build = next((b for b in fact["builds"] if _builds(_frame_of(symbol), b[0])), None)
         if build is not None:
             call, line = build
             where = _fn(str(driver["symbol"]))
@@ -650,28 +650,41 @@ def _eager_default(
 
 def _builds(callee: str, call: str) -> bool:
     """Whether the profile's *callee* is the value *call* builds: the called
-    function itself, or the constructor of the class it names."""
+    function itself, or the constructor of the class it names. A call written
+    with a module or class in front (``hot.Tracker``) must name the frame's
+    (``pkg.cheap.Tracker.__init__`` is no ``hot.Tracker()``); ``self`` and
+    ``cls`` name nothing a frame shows."""
     segs = _short(callee).split(".")
-    target = _last(call)
     if segs[-1] in _CONSTRUCTORS:
-        return len(segs) >= 2 and segs[-2] == target
-    return segs[-1] == target
+        segs = segs[:-1]
+    want = call.split(".")
+    if not segs or segs[-1] != want[-1]:
+        return False
+    if len(want) < 2 or want[-2] in ("self", "cls"):
+        return True
+    return len(segs) >= 2 and segs[-2] == want[-2]
 
 
-def _built_name(symbol: str) -> str:
-    """What a row's function builds when called: its class for a constructor."""
+def _frame_of(symbol: str) -> str:
+    """A symbol id as a profile frame names it: ``pkg/hot.py::Tracker::__init__``
+    -> ``hot.Tracker.__init__`` (the module's stem and the qualified name)."""
+    path, _, rest = base_symbol_id(symbol).partition("::")
+    stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return ".".join([stem, *rest.split("::")])
+
+
+def _built_class(symbol: str) -> str:
+    """The class a constructor row builds (``m.py::Tracker::__init__``), else ``""``."""
     parts = base_symbol_id(symbol).split("::")
-    if parts[-1] in _CONSTRUCTORS:
-        return parts[-2] if len(parts) >= 3 else ""
-    return parts[-1] if len(parts) >= 2 else ""
+    return parts[-2] if len(parts) >= 3 and parts[-1] in _CONSTRUCTORS else ""
 
 
 def _eager_next(file_path: str, line: int, call: str, where: str | None) -> str:
     at = f"at {file_path}:{line}" + (f" in {where}" if where else "")
     return (
-        f"{at}, check whether the key is there first and build {call}() only when it is "
-        f"missing (if key not in d: d[key] = {call}()); setdefault keeps its default only on "
-        "a miss, so the result is the same"
+        f"{at}, build the default only when the key is missing: d[key] if key in d else "
+        f"d.setdefault(key, {call}(...)) keeps the value it stores and returns; leave it eager "
+        f"only if building a {call} has a side effect every call needs"
     )
 
 

@@ -39,6 +39,17 @@ def outer(items):
 
     lazy = lambda d, k: d.setdefault(k, Counter())
     return inner, lazy
+
+
+def twice(d, rows):
+    first = Tracker()
+    d.setdefault(rows[0], Tracker())
+    d.setdefault(rows[1], (Box()))
+    return (d.setdefault(r, Later()) for r in rows), first
+
+
+def defined(d, k, arg=cache.setdefault(1, Once())):
+    return arg
 """
 
 
@@ -54,6 +65,11 @@ def test_a_call_as_the_setdefault_default_is_read_per_function() -> None:
     # A nested function owns its own; a lambda's runs on the lambda's calls.
     assert eager["inner"] == (("models.Counter", 25),)
     assert eager["outer"] == ()
+    # A name the function also calls elsewhere is no fact (the frame cannot tell
+    # the two apart); grouping parentheses are read through; a generator
+    # expression's default runs later, a parameter default once.
+    assert eager["twice"] == (("Box", 34),)
+    assert eager["defined"] == ()
 
 
 def test_other_languages_and_files_without_setdefault_read_nothing() -> None:

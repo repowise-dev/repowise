@@ -2,17 +2,21 @@
 
 ``d.setdefault(key, Tracker())`` evaluates ``Tracker()`` before it looks the key
 up, so it builds one on every call, and throws it away whenever the key is
-already there. The fix is to build only when the key is missing, which is the
-same program for any default: ``setdefault`` stores and returns the default
-only on a miss. Read off the syntax of one Python function on the complexity
+already there. Read off the syntax of one Python function on the complexity
 walk; the next step (``evidence.next_step``) names it only when a profile shows
 that build holding the function's time.
 
-Python's ``dict.setdefault`` only: the name is unambiguous and its default is a
-positional argument. Left out: ``d.get(key, Tracker())`` and ``d.pop``, whose
-receiver may not be a mapping (``requests.get(url, params())``), and
-``getattr(obj, name, Tracker())`` (ceiling; upgrade path: read them once the
-walk knows the receiver is a mapping).
+A default is recorded only when it is the function's one call to that name:
+a profile frame names the callee, not the call site, so a second call to the
+same name (``Tracker()`` beside the default, or ``copy.deepcopy`` beside a
+``self.deepcopy()`` default) leaves the time unattributed and the function
+without a fact.
+
+Python's ``setdefault`` by name only. Ceiling: a receiver whose own
+``setdefault`` reads its default on a hit (a ``dict`` subclass override) reads
+the same; upgrade path: the receiver's type once the walk resolves it. Left out:
+``d.get(key, Tracker())`` and ``d.pop``, whose receiver may not be a mapping
+(``requests.get(url, params())``), and ``getattr(obj, name, Tracker())``.
 """
 
 from __future__ import annotations
@@ -29,6 +33,12 @@ EagerDefault = tuple[str, int]
 # A callee longer than this is not a name a reader looks for; it is left out.
 _MAX_CALLEE = 120
 _SKIP_ARGS = frozenset({"comment", "keyword_argument", "list_splat", "dictionary_splat"})
+# Code that does not run on the function's own calls: a lambda's or a nested
+# class body's runs elsewhere, a generator expression's later, and a parameter
+# default or decorator once, when the function is defined.
+_OTHER_SCOPE = frozenset(
+    {"lambda", "class_definition", "generator_expression", "parameters", "decorator"}
+)
 
 
 def eager_defaults(
@@ -36,24 +46,49 @@ def eager_defaults(
 ) -> dict[int, tuple[EagerDefault, ...]]:
     """``{function node id: eager defaults}`` for a Python tree.
 
-    *functions* holds the node ids of the walk's function nodes; each default
-    belongs to the innermost one around it. A default inside a lambda or a
-    class body nested in the function is left out: it does not run on the
-    function's own calls.
+    *functions* holds the node ids of the walk's function nodes; each call
+    belongs to the innermost one whose own calls run it.
     """
     if b"setdefault" not in source:
         return {}
-    out: dict[int, list[EagerDefault]] = {}
+    found: dict[int, list[EagerDefault]] = {}
+    calls: dict[tuple[int, str], int] = {}
     stack = [root]
     while stack:
         node = stack.pop()
-        if node.type == "call":
-            found = _eager_default(node)
-            owner = _owner(node, functions) if found else None
-            if found and owner is not None:
-                out.setdefault(owner, []).append(found)
         stack.extend(node.children)
-    return {owner: tuple(sorted(found, key=lambda d: d[1])) for owner, found in out.items()}
+        if node.type != "call":
+            continue
+        owner = _owner(node, functions)
+        if owner is None:
+            continue
+        name = _callee(node)
+        if name is not None:
+            key = (owner, _last(name))
+            calls[key] = calls.get(key, 0) + 1
+        eager = _eager_default(node)
+        if eager is not None:
+            found.setdefault(owner, []).append(eager)
+    out: dict[int, tuple[EagerDefault, ...]] = {}
+    for owner, defaults in found.items():
+        kept = sorted(
+            (d for d in defaults if calls.get((owner, _last(d[0]))) == 1), key=lambda d: d[1]
+        )
+        if kept:
+            out[owner] = tuple(kept)
+    return out
+
+
+def _callee(call: Node) -> str | None:
+    fn = call.child_by_field_name("function")
+    if fn is None or fn.text is None:
+        return None
+    name = fn.text.decode("utf-8", "replace")
+    return None if len(name) > _MAX_CALLEE or "\n" in name else name
+
+
+def _last(name: str) -> str:
+    return name.rsplit(".", 1)[-1].strip()
 
 
 def _eager_default(call: Node) -> EagerDefault | None:
@@ -71,15 +106,12 @@ def _eager_default(call: Node) -> EagerDefault | None:
     if len(named) != 2 or any(a.type in _SKIP_ARGS for a in named):
         return None
     built = named[1]
+    while built.type == "parenthesized_expression" and len(built.named_children) == 1:
+        built = built.named_children[0]
     if built.type != "call":
         return None
-    callee = built.child_by_field_name("function")
-    if callee is None or callee.text is None:
-        return None
-    name = callee.text.decode("utf-8", "replace")
-    if len(name) > _MAX_CALLEE or "\n" in name:
-        return None
-    return name, built.start_point[0] + 1
+    name = _callee(built)
+    return (name, built.start_point[0] + 1) if name is not None else None
 
 
 def _owner(node: Node, functions: Mapping[int, object]) -> int | None:
@@ -87,7 +119,7 @@ def _owner(node: Node, functions: Mapping[int, object]) -> int | None:
     while parent is not None:
         if parent.id in functions:
             return parent.id
-        if parent.type in ("lambda", "class_definition"):
+        if parent.type in _OTHER_SCOPE:
             return None
         parent = parent.parent
     return None
