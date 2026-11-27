@@ -185,7 +185,12 @@ def check_install(
 def check_startup_paths(paths: list[dict], rows: list[str], failures: list[str]) -> None:
     """Start each path in a fresh interpreter and flag the forbidden modules it loads."""
     with tempfile.TemporaryDirectory() as tmp:
-        repo = indexed_repo(Path(tmp))
+        try:
+            repo = indexed_repo(Path(tmp))
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            rows.append("| Startup paths | not measured | the sample repository did not index |")
+            failures.append(f"The sample repository could not be set up: {exc}")
+            return
         home = Path(tmp) / "home"
         for path in paths:
             try:
