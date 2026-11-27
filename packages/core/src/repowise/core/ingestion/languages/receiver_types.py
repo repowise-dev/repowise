@@ -26,7 +26,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping
 from typing import NamedTuple
 
-from ..framework_routes import scan_code
+from ..framework_routes import java_code, scan_code
 from ..language_data import get_builtin_types
 from ..type_names import (
     bare_type_name,
@@ -1252,13 +1252,21 @@ def _inside_ts_type(cleaned: str) -> Callable[[int], bool]:
     return inside
 
 
+def _declaration_text(text: str, language: str) -> str:
+    """*text* as declarations are read from it: Java with its strings blanked too.
+
+    The text of a string (`"Applying step: class={}"`) makes no declaration, as `Type name :` does.
+    """
+    return java_code(text) if language == "java" else _without_comments(text, language)
+
+
 def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     """Every declaration *text* makes, in line order."""
     patterns = _LANGUAGE_PATTERNS.get(language)
     if not patterns:
         return ()
 
-    cleaned = _without_comments(text, language)
+    cleaned = _declaration_text(text, language)
     # Scanned by the regex engine rather than a Python loop over characters:
     # the loop costs more than the declaration scan it exists to serve.
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
