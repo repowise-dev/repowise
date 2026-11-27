@@ -223,6 +223,23 @@ def _parse_concerns(text: str) -> list[str]:
     return re.findall(r"\w+", raw)
 
 
+def _apply_resource_concerns(
+    concerns: dict[str, list[tuple[int, str]]],
+    res_concerns: list[str],
+    res_names: list[str],
+    stack: list[_Scope],
+    is_singular: bool,
+    ctx: ScanContext,
+) -> list[Contract]:
+    out: list[Contract] = []
+    for name in res_names:
+        c_stack = [*stack, _Scope(kind="resource", resource=name, singular=is_singular)]
+        for c_name in res_concerns:
+            if c_name in concerns:
+                out.extend(_extract_statements(concerns[c_name], c_stack, ctx, concerns))
+    return out
+
+
 def _handle_resources(
     line: str,
     line_no: int,
@@ -248,11 +265,7 @@ def _handle_resources(
     out = _expand_actions(actions, res_names, base, filter_opts, line_no, ctx)
     res_concerns = _parse_concerns(rest)
     if res_concerns:
-        for name in res_names:
-            c_stack = [*stack, _Scope(kind="resource", resource=name, singular=is_singular)]
-            for c_name in res_concerns:
-                if c_name in concerns:
-                    out.extend(_extract_statements(concerns[c_name], c_stack, ctx, concerns))
+        out.extend(_apply_resource_concerns(concerns, res_concerns, res_names, stack, is_singular, ctx))
     if push_block:
         for name in res_names:
             stack.append(_Scope(kind="resource", resource=name, singular=is_singular))
@@ -411,6 +424,74 @@ def _handle_draw(
     return _extract_statements(statements, list(stack), child_ctx, concerns)
 
 
+def _collect_concern_body(
+    statements: list[tuple[int, str]],
+    start_idx: int,
+) -> tuple[list[tuple[int, str]], int]:
+    depth = 1
+    body: list[tuple[int, str]] = []
+    idx = start_idx
+    while idx < len(statements):
+        line_no, raw = statements[idx]
+        idx += 1
+        if raw == "end" or raw.startswith("end "):
+            depth -= 1
+            if depth == 0:
+                break
+            body.append((line_no, raw))
+            continue
+        line, has_inline_end = _strip_inline_end(raw)
+        had_do = bool(_DO_BLOCK_RE.search(line))
+        if had_do and not has_inline_end:
+            depth += 1
+        elif has_inline_end and not had_do:
+            depth -= 1
+            if depth == 0:
+                break
+        body.append((line_no, raw))
+    return body, idx
+
+
+def _collect_concerns(
+    statements: list[tuple[int, str]],
+    concerns: dict[str, list[tuple[int, str]]],
+) -> list[tuple[int, str]]:
+    remaining: list[tuple[int, str]] = []
+    i = 0
+    while i < len(statements):
+        line_no, raw = statements[i]
+        concern_def = _CONCERN_DEF_RE.search(raw)
+        if concern_def:
+            name = next(g for g in concern_def.groups() if g is not None)
+            body, i = _collect_concern_body(statements, i + 1)
+            concerns[name] = body
+        else:
+            remaining.append((line_no, raw))
+            i += 1
+    return remaining
+
+
+def _handle_draw_or_concerns(
+    line: str,
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, list[tuple[int, str]]],
+) -> list[Contract] | None:
+    draw_match = _DRAW_CALL_RE.search(line)
+    if draw_match:
+        d_name = next(g for g in draw_match.groups() if g is not None)
+        return _handle_draw(d_name, stack, ctx, concerns)
+    concerns_call = _CONCERNS_CALL_RE.search(line)
+    if concerns_call:
+        raw_c = next(g for g in concerns_call.groups() if g is not None)
+        out: list[Contract] = []
+        for c_name in re.findall(r"\w+", raw_c):
+            if c_name in concerns:
+                out.extend(_extract_statements(concerns[c_name], list(stack), ctx, concerns))
+        return out
+    return None
+
+
 def _extract_statements(
     statements: list[tuple[int, str]],
     stack: list[_Scope],
@@ -418,38 +499,9 @@ def _extract_statements(
     concerns: dict[str, list[tuple[int, str]]],
 ) -> list[Contract]:
     out: list[Contract] = []
-    current_concern: str | None = None
-    concern_depth = 0
+    remaining = _collect_concerns(statements, concerns)
 
-    for line_no, raw in statements:
-        if current_concern is not None:
-            if raw == "end" or raw.startswith("end "):
-                concern_depth -= 1
-                if concern_depth == 0:
-                    current_concern = None
-                else:
-                    concerns[current_concern].append((line_no, raw))
-                continue
-            line, has_inline_end = _strip_inline_end(raw)
-            had_do = bool(_DO_BLOCK_RE.search(line))
-            if had_do and not has_inline_end:
-                concern_depth += 1
-            elif has_inline_end and not had_do:
-                concern_depth -= 1
-                if concern_depth == 0:
-                    current_concern = None
-                    continue
-            concerns[current_concern].append((line_no, raw))
-            continue
-
-        concern_def = _CONCERN_DEF_RE.search(raw)
-        if concern_def:
-            name = next(g for g in concern_def.groups() if g is not None)
-            current_concern = name
-            concern_depth = 1
-            concerns[name] = []
-            continue
-
+    for line_no, raw in remaining:
         if raw == "end" or raw.startswith("end "):
             if stack:
                 stack.pop()
@@ -463,19 +515,9 @@ def _extract_statements(
         had_do = bool(_DO_BLOCK_RE.search(line))
         push_block = had_do and not has_inline_end
 
-        draw_match = _DRAW_CALL_RE.search(line)
-        if draw_match:
-            d_name = next(g for g in draw_match.groups() if g is not None)
-            out.extend(_handle_draw(d_name, stack, ctx, concerns))
-            _pop_if_enclosing(has_inline_end, had_do, stack)
-            continue
-
-        concerns_call = _CONCERNS_CALL_RE.search(line)
-        if concerns_call:
-            raw_c = next(g for g in concerns_call.groups() if g is not None)
-            for c_name in re.findall(r"\w+", raw_c):
-                if c_name in concerns:
-                    out.extend(_extract_statements(concerns[c_name], list(stack), ctx, concerns))
+        special = _handle_draw_or_concerns(line, stack, ctx, concerns)
+        if special is not None:
+            out.extend(special)
             _pop_if_enclosing(has_inline_end, had_do, stack)
             continue
 
