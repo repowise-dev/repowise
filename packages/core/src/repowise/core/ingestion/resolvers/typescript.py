@@ -282,23 +282,29 @@ def _vite_root(importer_path: str, ctx: ResolverContext) -> str:
     well as in the index: the traverser does not index every config file.
     """
     config_dir, config_rel = _nearest_config(_VITE_CONFIG_NAMES, importer_path, ctx)
-    if config_rel:
-        text = _config_text(config_rel, ctx)
-        if text:
-            spans = value_spans(text, ("root",))
-            if spans:
-                literals = string_literals(spans[0])
-                if literals:
-                    root = literals[0].strip()
-                    if root:
-                        return (
-                            posixpath.normpath(posixpath.join(config_dir, root))
-                            if not root.startswith("/")
-                            else posixpath.normpath(root)
-                        )
+    if not config_rel:
+        package_dir, package_rel = _nearest_config(("package.json",), importer_path, ctx)
+        return package_dir if package_rel else ""
+    root = _literal_root_value(config_rel, ctx)
+    if not root:
         return config_dir
-    package_dir, package_rel = _nearest_config(("package.json",), importer_path, ctx)
-    return package_dir if package_rel else ""
+    if root.startswith("/"):
+        return posixpath.normpath(root)
+    return posixpath.normpath(posixpath.join(config_dir, root))
+
+
+def _literal_root_value(config_rel: str, ctx: ResolverContext) -> str:
+    """The literal ``root:`` string in a Vite config, or "" when absent."""
+    text = _config_text(config_rel, ctx)
+    if not text:
+        return ""
+    spans = value_spans(text, ("root",))
+    if not spans:
+        return ""
+    literals = string_literals(spans[0])
+    if not literals:
+        return ""
+    return literals[0].strip()
 
 
 def _nearest_config(
