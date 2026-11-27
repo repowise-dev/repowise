@@ -273,8 +273,37 @@ class TestClassFields:
             ("angular", "GET", "/api/items", ""),
         ]
 
+    def test_base_instance_fields_do_not_leak_into_static_members(self, tmp_path: Path) -> None:
+        text = (
+            "class Base {\n"
+            "  protected instanceUrl = '/api/instance';\n"
+            "  static staticUrl = '/api/static';\n"
+            "}\n"
+            "export class Sub extends Base {\n"
+            "  static load() { return fetch(`${this.instanceUrl}`); }\n"
+            "  static loadStatic() { return fetch(`${this.staticUrl}`); }\n"
+            "}\n"
+        )
+        _write(tmp_path, {"src/sub.ts": text})
+        paths = {c.meta["path"] for c in HttpExtractor().extract(tmp_path, "web") if c.role == "consumer"}
+        assert "/api/static" in paths
+        assert "/api/instance" not in paths
+
 
 class TestHttpResource:
+    def test_shorthand_url_property_and_arrow_shorthand(self, tmp_path: Path) -> None:
+        text = (
+            "const url = '/api/shorthand';\n"
+            "export class ItemService {\n"
+            "  res1 = httpResource({ url });\n"
+            "  res2 = httpResource(() => ({ url }));\n"
+            "}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/shorthand.ts": text})) == [
+            ("angular", "GET", "/api/shorthand", ""),
+            ("angular", "GET", "/api/shorthand", ""),
+        ]
+
     def test_literal_and_field_forms(self, tmp_path: Path) -> None:
         text = (
             "class Base { protected resourceUrl = '/api/items'; }\n"

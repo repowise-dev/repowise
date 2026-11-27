@@ -46,7 +46,7 @@ _FETCH_RE = re.compile(
     r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""",
 )
 _HTTP_RESOURCE_RE = re.compile(r"\bhttpResource\s*\(")
-_URL_PROP_RE = re.compile(r"""\burl\s*:\s*([^,\n}]+)""")
+_URL_PROP_RE = re.compile(r"""\burl\s*(?::\s*([^,\n}]+)|(?=[,}\n]|$))""")
 _METHOD_PROP_RE = re.compile(r"""\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]""")
 
 
@@ -66,7 +66,8 @@ def http_resource_calls(content: str) -> Iterator[ClientCallMatch]:
         method = m_method.group(1).upper() if m_method else "GET"
         url: str | None = None
         if m_url := _URL_PROP_RE.search(arg_text):
-            url = m_url.group(1).strip()
+            val = m_url.group(1)
+            url = val.strip() if val else "`${url}`"
         elif "=>" in arg_text:
             rhs = arg_text.split("=>", 1)[1].strip()
             if rhs.startswith("(") and rhs.endswith(")"):
@@ -76,7 +77,7 @@ def http_resource_calls(content: str) -> Iterator[ClientCallMatch]:
         elif not (arg_text.startswith("{") and arg_text.endswith("}")):
             url = arg_text
         if url:
-            if url.startswith("this."):
+            if url.startswith("this.") or (url.isidentifier() and not url.startswith(("'", '"', "`"))):
                 url = f"`${{{url}}}`"
             yield ClientCallMatch(
                 client="angular",
