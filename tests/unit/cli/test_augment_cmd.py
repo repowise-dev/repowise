@@ -348,10 +348,11 @@ def test_cleanup_stale_markers_direct(tmp_path: Path) -> None:
     assert active.exists()
 
 
-def test_capped_sweep_releases_the_throttle_so_a_backlog_drains(tmp_path: Path) -> None:
+def test_capped_sweep_retries_soon_so_a_backlog_drains(tmp_path: Path) -> None:
     import time
 
     from repowise.cli.commands.augment_cmd.command import (
+        _BACKLOG_RETRY_SECONDS,
         _SWEEP_STAMP_NAME,
         _cleanup_stale_markers,
     )
@@ -364,13 +365,20 @@ def test_capped_sweep_releases_the_throttle_so_a_backlog_drains(tmp_path: Path) 
         target.write_text("x", encoding="utf-8")
         _age(target, 20)
 
-    _cleanup_stale_markers(tmp_path, time.time(), max_delete=3)
+    now = time.time()
+    _cleanup_stale_markers(tmp_path, now, max_delete=3)
     assert remaining() == 2
-    assert not (tmp_path / _SWEEP_STAMP_NAME).exists()  # cap hit: next claim sweeps
 
-    _cleanup_stale_markers(tmp_path, time.time(), max_delete=3)
+    # Cap hit: the next claim inside the retry window still does not sweep...
+    _cleanup_stale_markers(tmp_path, now + _BACKLOG_RETRY_SECONDS / 2, max_delete=3)
+    assert remaining() == 2
+
+    # ...but one after it does, and draining restores the hourly throttle.
+    later = now + _BACKLOG_RETRY_SECONDS + 1
+    _cleanup_stale_markers(tmp_path, later, max_delete=3)
     assert remaining() == 0
-    assert (tmp_path / _SWEEP_STAMP_NAME).exists()  # drained: hourly throttle holds
+    # Not capped this time, so the stamp is fresh rather than backdated.
+    assert (tmp_path / _SWEEP_STAMP_NAME).stat().st_mtime >= now - 1
 
 
 def test_claim_emission_takeover_stale_marker(
