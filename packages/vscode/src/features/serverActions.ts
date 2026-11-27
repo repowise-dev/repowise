@@ -57,12 +57,20 @@ export async function resolveAutoStart(
     AutoStartPrompt.always,
     AutoStartPrompt.never,
   );
+  // A failed settings write still honours this answer; it is only not saved.
+  const save = async (value: AutoStartMode): Promise<void> => {
+    try {
+      await ui.persist(value);
+    } catch {
+      // Read-only or invalid settings file: nothing more to do here.
+    }
+  };
   if (choice === AutoStartPrompt.always) {
-    await ui.persist("always");
+    await save("always");
     return true;
   }
   if (choice === AutoStartPrompt.never) {
-    await ui.persist("never");
+    await save("never");
     return false;
   }
   return choice === AutoStartPrompt.start;

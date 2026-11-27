@@ -216,17 +216,17 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
 
   /**
    * Saves an Always / Never answer where the effective value comes from, so a
-   * folder or workspace override does not keep asking.
+   * workspace override does not keep asking.
    */
   function persistAutoStart(value: AutoStartMode): Thenable<void> {
+    // Read unscoped, like every other setting the extension reads, so the
+    // workspace value is the override that matters.
     const config = vscode.workspace.getConfiguration("repowise");
     const seen = config.inspect<string>("server.autoStart");
     const target =
-      seen?.workspaceFolderValue !== undefined
-        ? vscode.ConfigurationTarget.WorkspaceFolder
-        : seen?.workspaceValue !== undefined
-          ? vscode.ConfigurationTarget.Workspace
-          : vscode.ConfigurationTarget.Global;
+      seen?.workspaceValue !== undefined
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
     return config.update("server.autoStart", value, target);
   }
 
@@ -455,7 +455,11 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
   function killOwned(child: ChildProcess): number | null {
     const lockfilePath = ownedLockfilePath;
     ownedLockfilePath = null;
-    const lock = lockfilePath ? readLockfileSync(lockfilePath) : null;
+    const read = lockfilePath ? readLockfileSync(lockfilePath) : null;
+    // Only a lock written after our spawn is our server's. An older one names
+    // a dead server whose pid the OS may have handed to anything.
+    const lock =
+      read && Date.parse(read.started_at) >= ownedSince - 2_000 ? read : null;
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
       killProcessTree(child.pid);
     } else {

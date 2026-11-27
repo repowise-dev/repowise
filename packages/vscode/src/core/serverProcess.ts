@@ -75,7 +75,7 @@ export function killProcessTree(pid: number, platform = process.platform): void 
     } catch {
       // Exited between the probe and the kill.
     }
-  }, KILL_GRACE_MS).unref?.();
+  }, KILL_GRACE_MS);
 }
 
 /** Resolves true once `pid` is gone, false if it outlives `timeoutMs`. */

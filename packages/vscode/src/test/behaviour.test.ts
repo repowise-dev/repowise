@@ -84,6 +84,14 @@ describe("autoStart", () => {
     assert.deepStrictEqual(never.calls.persisted, ["never"]);
   });
 
+  it("still starts on Always when the setting cannot be saved", async () => {
+    const deps = {
+      ask: () => Promise.resolve<string | undefined>(AutoStartPrompt.always),
+      persist: () => Promise.reject(new Error("read-only settings")),
+    };
+    assert.strictEqual(await resolveAutoStart("ask", deps), true);
+  });
+
   it("treats a dismissed prompt as no", async () => {
     const { calls, ui: deps } = ui(undefined);
     assert.strictEqual(await resolveAutoStart("ask", deps), false);

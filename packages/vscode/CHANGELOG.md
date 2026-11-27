@@ -44,8 +44,10 @@ release history.
 
 - The gutter and overview ruler mark findings in red and amber, as the web UI
   does, with low findings in neutral gray; the custom orange tier is gone.
-- The "index behind" status bar item is neutral. The warning background is kept
-  for a server too old for the extension.
+- No status bar item keeps a warning background: "index behind" and "update
+  needed" carry their state in the icon and wording.
+- The activity bar icon is a single-colour vector of the owl, so it follows the
+  theme like the built-in icons.
 
 ### Removed
 

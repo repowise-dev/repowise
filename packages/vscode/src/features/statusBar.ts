@@ -21,9 +21,6 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
     0,
   );
 
-  const warnBackground = new vscode.ThemeColor(
-    "statusBarItem.warningBackground",
-  );
 
   const setState = (state: StatusBarState, detail?: StatusBarDetail): void => {
     switch (state) {
@@ -38,7 +35,7 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
       // A stale lockfile reports the same way as no server: it is not
       // running, and the click menu offers to start it.
       case "server-down":
-        item.text = "$(circle-slash) Repowise: server stopped";
+        item.text = "$(debug-disconnect) Repowise: server stopped";
         item.tooltip =
           "The local Repowise server is not running. Click to start it. Your agent's MCP tools work without it.";
         item.command = InternalCommands.serverMenu;
@@ -75,7 +72,9 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
         item.tooltip =
           "Server version below the minimum this extension supports. Update the repowise package.";
         item.command = Commands.checkSetup;
-        item.backgroundColor = warnBackground;
+        // No warning background: it is a persistent state, and the icon and
+        // wording carry it without a standing orange bar.
+        item.backgroundColor = undefined;
         break;
     }
     item.show();
