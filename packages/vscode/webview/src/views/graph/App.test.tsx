@@ -1,28 +1,38 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
+import type { ZoomNode } from "@repowise-dev/ui/zoom";
+import type { WebviewHost } from "../../runtime/rpc";
+import { App } from "./App";
 
 afterEach(cleanup);
-import type { WebviewHost } from "../../runtime/rpc";
-import { useGraphData } from "./use-graph-data";
-import { GraphHeader } from "./graph-header";
 
-/** A WebviewHost whose every api method is a vi.fn resolving to empty data, so a
- *  test can assert exactly which slices a scope requested. */
-function mockHost(): { host: WebviewHost; api: Record<string, ReturnType<typeof vi.fn>> } {
-  const api = {
-    moduleGraph: vi.fn().mockResolvedValue({ nodes: [], edges: [] }),
-    fullGraph: vi.fn().mockResolvedValue({ nodes: [], links: [] }),
-    architectureCommunityGraph: vi.fn().mockResolvedValue({ nodes: [], edges: [] }),
-    communities: vi.fn().mockResolvedValue([]),
-    communitySlice: vi
-      .fn()
-      .mockResolvedValue({ nodes: [], links: [], community_id: 0, member_count: 0 }),
-    deadCodeGraph: vi.fn().mockResolvedValue({ nodes: [], links: [] }),
-    hotFilesGraph: vi.fn().mockResolvedValue({ nodes: [], links: [] }),
-    executionFlows: vi.fn().mockResolvedValue({ total_entry_points: 0, flows: [] }),
+// The real canvas paints with Canvas 2D, which jsdom lacks. The stand-in
+// reports a focus chain and lets a test select a node, which is all the
+// panel wires.
+const ROOT = { id: "root", parent_id: null, kind: "system", name: "repowise", path: "" };
+const FILE = { id: "f1", parent_id: "root", kind: "file", name: "app.py", path: "src/app.py" };
+vi.mock("@repowise-dev/ui/zoom", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@repowise-dev/ui/zoom")>();
+  const { forwardRef, useEffect } = await import("react");
+  return {
+    ...actual,
+    ZoomCanvas: forwardRef(function FakeCanvas(
+      props: { onFocusChange?: (c: ZoomNode[]) => void; onSelect?: (n: ZoomNode | null) => void },
+      _ref,
+    ) {
+      useEffect(() => props.onFocusChange?.([ROOT as unknown as ZoomNode]), []);
+      return (
+        <button type="button" onClick={() => props.onSelect?.(FILE as unknown as ZoomNode)}>
+          canvas
+        </button>
+      );
+    }),
   };
-  const host = {
-    api: api as unknown as WebviewHost["api"],
+});
+
+function mockHost(zoomMap: Promise<unknown>): WebviewHost {
+  return {
+    api: { zoomMap: vi.fn(() => zoomMap) } as unknown as WebviewHost["api"],
     onInit: () => () => {},
     onRefresh: () => () => {},
     onUpdateDone: () => () => {},
@@ -36,61 +46,31 @@ function mockHost(): { host: WebviewHost; api: Record<string, ReturnType<typeof 
     openNativeSettings: vi.fn(),
     updateIndex: vi.fn(),
     setTheme: vi.fn(),
-  } satisfies WebviewHost;
-  return { host, api };
+  };
 }
 
-describe("useGraphData", () => {
-  it("requests only the constellation scope on mount", () => {
-    const { host, api } = mockHost();
-    renderHook(() => useGraphData(host, 0));
+const REPO = { id: "r", name: "repowise", headCommit: null, defaultBranch: "main" };
+const MAP = { root_id: "root", nodes: [ROOT, FILE], relations: [], total_files: 1 };
 
-    // Default scope = radial community constellation.
-    expect(api.architectureCommunityGraph).toHaveBeenCalledTimes(1);
-    expect(api.communities).toHaveBeenCalledTimes(1);
+describe("Knowledge Graph panel", () => {
+  it("draws the zoom map with its breadcrumb and opens a selected file", async () => {
+    const host = mockHost(Promise.resolve(MAP));
+    render(<App host={host} repo={REPO} params={{}} refreshToken={0} />);
 
-    // Nothing that a different scope renders is fetched upfront.
-    expect(api.moduleGraph).not.toHaveBeenCalled();
-    expect(api.fullGraph).not.toHaveBeenCalled();
-    expect(api.deadCodeGraph).not.toHaveBeenCalled();
-    expect(api.hotFilesGraph).not.toHaveBeenCalled();
-    expect(api.executionFlows).not.toHaveBeenCalled();
-    expect(api.communitySlice).not.toHaveBeenCalled();
+    expect(await screen.findByText("canvas")).toBeTruthy();
+    expect(host.api.zoomMap).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("navigation", { name: "Zoom location" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Map controls" })).toBeTruthy();
+
+    screen.getByText("canvas").click();
+    expect(host.openFile).toHaveBeenCalledWith("src/app.py");
   });
 
-  it("fetches the file graph and flows only on switch to the full scope", () => {
-    const { host, api } = mockHost();
-    const { result } = renderHook(() => useGraphData(host, 0));
+  it("shows the error when the map cannot load", async () => {
+    const host = mockHost(Promise.reject(new Error("no index")));
+    render(<App host={host} repo={REPO} params={{}} refreshToken={0} />);
 
-    expect(api.fullGraph).not.toHaveBeenCalled();
-
-    act(() => result.current.setViewMode("full"));
-
-    expect(api.fullGraph).toHaveBeenCalledTimes(1);
-    expect(api.executionFlows).toHaveBeenCalledTimes(1);
-    // The constellation graph is not refetched on the switch.
-    expect(api.architectureCommunityGraph).toHaveBeenCalledTimes(1);
-  });
-
-  it("fetches a slice for each newly-expanded hub exactly once", () => {
-    const { host, api } = mockHost();
-    const { result } = renderHook(() => useGraphData(host, 0));
-
-    act(() => result.current.setExpandedHubs([1, 2]));
-    expect(api.communitySlice).toHaveBeenCalledTimes(2);
-
-    // Re-expanding an already-loaded hub does not refetch it.
-    act(() => result.current.setExpandedHubs([1, 2, 3]));
-    expect(api.communitySlice).toHaveBeenCalledTimes(3);
-  });
-});
-
-describe("GraphHeader", () => {
-  it("renders the repo name and node/edge counts", () => {
-    render(<GraphHeader repoName="acme/repo" stats={{ nodes: 2048, edges: 5120 }} />);
-    expect(screen.getByText("Knowledge Graph")).toBeTruthy();
-    expect(screen.getByText("acme/repo")).toBeTruthy();
-    expect(screen.getByText("2,048")).toBeTruthy();
-    expect(screen.getByText("5,120")).toBeTruthy();
+    expect(await screen.findByText("Could not load the knowledge graph.")).toBeTruthy();
+    expect(screen.getByText("no index")).toBeTruthy();
   });
 });

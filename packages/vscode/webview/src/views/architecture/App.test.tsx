@@ -1,93 +1,29 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import type { ArchitectureView } from "@repowise-dev/ui/c4";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { PRODUCTION_ONLY } from "@repowise-dev/types/graph";
 import type { WebviewHost } from "../../runtime/rpc";
-import { App } from "./App";
+import {
+  useArchitectureData,
+  useHostQuery,
+  type ArchitectureDataInput,
+} from "./use-architecture-data";
 
-// React Flow observes canvas size and visibility; jsdom ships neither.
-beforeAll(() => {
-  class ObserverStub {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-    takeRecords(): [] {
-      return [];
-    }
-  }
-  vi.stubGlobal("ResizeObserver", ObserverStub);
-  vi.stubGlobal("IntersectionObserver", ObserverStub);
-});
+afterEach(cleanup);
 
-afterEach(() => {
-  cleanup();
-  vi.restoreAllMocks();
-});
-
-function makeNode(id: string, filePath: string | null): ArchitectureView["nodes"][number] {
-  return {
-    id,
-    node_type: "file",
-    name: id,
-    file_path: filePath,
-    line_range: null,
-    summary: "",
-    complexity: "simple",
-    tags: [],
-    language: "typescript",
-    pagerank: 0,
-    pagerank_percentile: 0,
-    betweenness: 0,
-    in_degree: 0,
-    out_degree: 0,
-    community_id: null,
-    is_entry_point: false,
-    is_test: false,
-    is_hotspot: false,
-    is_dead: false,
-    has_doc: false,
-    primary_owner: null,
-    primary_owner_pct: null,
-    bus_factor: null,
-  };
-}
-
-const FIXTURE: ArchitectureView = {
-  project_name: "demo",
-  project_description: "A demo system.",
-  layers: [
-    {
-      id: "layer:app",
-      name: "Application",
-      description: "App layer",
-      node_ids: ["a", "b"],
-      file_count: 2,
-      complexity_distribution: { simple: 2 },
-      health_score: 8,
-      sub_groups: [],
-      display_order: 0,
-    },
-  ],
-  nodes: [makeNode("a", "src/a.ts"), makeNode("b", "src/b.ts")],
-  edges: [{ source: "a", target: "b", edge_type: "import", direction: "forward", weight: 1, confidence: 1 }],
-  tour: [],
-  total_files: 2,
-  total_symbols: 2,
-  total_edges: 1,
-  languages: ["typescript"],
-  frameworks: [],
-  external_systems: [],
-  entry_points: [],
-  entry_candidates: [],
-};
-
-function makeHost(overrides: Partial<WebviewHost["api"]> = {}): WebviewHost {
+/** A WebviewHost whose every graph call is a vi.fn resolving to empty data, so
+ *  a test can assert exactly which slices a scope requested. */
+function mockHost(): { host: WebviewHost; api: Record<string, ReturnType<typeof vi.fn>> } {
   const api = {
-    architectureView: vi.fn().mockResolvedValue(FIXTURE),
-    fileContent: vi.fn().mockResolvedValue(""),
-    ...overrides,
-  } as unknown as WebviewHost["api"];
-  return {
-    api,
+    fullGraph: vi.fn().mockResolvedValue({ nodes: [], links: [] }),
+    architectureCommunityGraph: vi.fn().mockResolvedValue({ nodes: [], edges: [] }),
+    communities: vi.fn().mockResolvedValue([]),
+    communitySlice: vi.fn().mockResolvedValue({ nodes: [], links: [] }),
+    deadCodeGraph: vi.fn().mockResolvedValue({ nodes: [], links: [] }),
+    hotFilesGraph: vi.fn().mockResolvedValue({ nodes: [], links: [] }),
+    executionFlows: vi.fn().mockResolvedValue({ total_entry_points: 0, flows: [] }),
+  };
+  const host = {
+    api: api as unknown as WebviewHost["api"],
     onInit: () => () => {},
     onRefresh: () => () => {},
     onUpdateDone: () => () => {},
@@ -101,40 +37,94 @@ function makeHost(overrides: Partial<WebviewHost["api"]> = {}): WebviewHost {
     openNativeSettings: vi.fn(),
     updateIndex: vi.fn(),
     setTheme: vi.fn(),
-  };
+  } satisfies WebviewHost;
+  return { host, api };
 }
 
-describe("architecture App", () => {
-  it("renders the header and canvas shell from an architectureView fixture", async () => {
-    const host = makeHost();
-    render(
-      <App
-        host={host}
-        repo={{ id: "r1", name: "acme/widgets", headCommit: null, defaultBranch: null }}
-        params={{}}
-        refreshToken={0}
-      />,
-    );
+const FILES: ArchitectureDataInput = {
+  viewMode: "full",
+  tree: false,
+  population: PRODUCTION_ONLY,
+  narrowingPopulation: undefined,
+  activeCommunity: null,
+  graphLimit: undefined,
+  flowsRequested: false,
+};
 
-    expect(await screen.findByText("acme/widgets")).toBeDefined();
-    expect(screen.getByTestId("architecture-shell")).toBeDefined();
-    expect(screen.getByTestId("architecture-canvas")).toBeDefined();
-    await waitFor(() => expect(host.api.architectureView).toHaveBeenCalledTimes(1));
+describe("useArchitectureData", () => {
+  it("requests only the capped file graph and community labels on the Files scope", async () => {
+    const { host, api } = mockHost();
+    const { result } = renderHook(() => useArchitectureData(host, 0, FILES));
+
+    await waitFor(() => expect(result.current.fullGraph.isLoading).toBe(false));
+    expect(api.fullGraph).toHaveBeenCalledTimes(1);
+    expect(api.communities).toHaveBeenCalled();
+    expect(api.architectureCommunityGraph).not.toHaveBeenCalled();
+    expect(api.deadCodeGraph).not.toHaveBeenCalled();
+    expect(api.hotFilesGraph).not.toHaveBeenCalled();
+    expect(api.communitySlice).not.toHaveBeenCalled();
+    expect(api.executionFlows).not.toHaveBeenCalled();
   });
 
-  it("surfaces a styled error when the RPC rejects", async () => {
-    const host = makeHost({
-      architectureView: vi.fn().mockRejectedValue(new Error("index unavailable")),
-    });
-    render(
-      <App
-        host={host}
-        repo={{ id: "r1", name: "acme/widgets", headCommit: null, defaultBranch: null }}
-        params={{}}
-        refreshToken={0}
-      />,
+  it("fetches the constellation with the population on the Communities scope", async () => {
+    const { host, api } = mockHost();
+    const population = { tests: true, examples: false, docs: false };
+    renderHook(() =>
+      useArchitectureData(host, 0, { ...FILES, viewMode: "architecture", population }),
     );
 
-    expect(await screen.findByText("index unavailable")).toBeDefined();
+    await waitFor(() => expect(api.architectureCommunityGraph).toHaveBeenCalledWith(population));
+    expect(api.fullGraph).not.toHaveBeenCalled();
+  });
+
+  it("fetches an entered community's slice instead of the whole file graph", async () => {
+    const { host, api } = mockHost();
+    renderHook(() => useArchitectureData(host, 0, { ...FILES, activeCommunity: 3 }));
+
+    await waitFor(() => expect(api.communitySlice).toHaveBeenCalledWith(3, PRODUCTION_ONLY));
+  });
+
+  it("passes the stepped node cap through and refetches when it changes", async () => {
+    const { host, api } = mockHost();
+    const { rerender } = renderHook((input: ArchitectureDataInput) =>
+      useArchitectureData(host, 0, input), { initialProps: FILES });
+    await waitFor(() => expect(api.fullGraph).toHaveBeenCalledWith(undefined));
+
+    rerender({ ...FILES, graphLimit: 3000 });
+    await waitFor(() => expect(api.fullGraph).toHaveBeenCalledWith(3000));
+  });
+
+  it("the outline reads only the file graph", async () => {
+    const { host, api } = mockHost();
+    renderHook(() => useArchitectureData(host, 0, { ...FILES, tree: true }));
+
+    await waitFor(() => expect(api.fullGraph).toHaveBeenCalledTimes(1));
+    expect(api.communities).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed slice as a presentable error", async () => {
+    const { host, api } = mockHost();
+    api.fullGraph!.mockRejectedValueOnce(new Error("server down"));
+    const { result } = renderHook(() => useArchitectureData(host, 0, FILES));
+
+    await waitFor(() => expect(result.current.error).toBe("server down"));
+  });
+});
+
+describe("useHostQuery", () => {
+  it("does nothing for a null key and refetches when the index moves", async () => {
+    const fetcher = vi.fn().mockResolvedValue(1);
+    const { result, rerender } = renderHook(
+      ({ k, token }: { k: string | null; token: number }) => useHostQuery(k, fetcher, token),
+      { initialProps: { k: null as string | null, token: 0 } },
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.current.isLoading).toBe(false);
+
+    rerender({ k: "a", token: 0 });
+    await waitFor(() => expect(result.current.data).toBe(1));
+
+    rerender({ k: "a", token: 1 });
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
   });
 });

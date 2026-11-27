@@ -6,8 +6,7 @@ import {
   getHealthMap,
   listHealthFiles,
 } from "@repowise-dev/api-client/code-health";
-import { getArchitectureView } from "@repowise-dev/api-client/c4";
-import { getFileContent, getFileDetail } from "@repowise-dev/api-client/files";
+import { getFileDetail } from "@repowise-dev/api-client/files";
 import {
   getArchitectureCommunityGraph,
   getCommunities,
@@ -18,9 +17,10 @@ import {
   getGraph,
   getGraphPath,
   getHotFilesGraph,
-  getModuleGraph,
+  getZoomMap,
   searchNodes,
 } from "@repowise-dev/api-client/graph";
+import type { GraphPopulation } from "@repowise-dev/types/graph";
 import {
   getRefactoringOpportunities,
   getRefactoringOpportunity,
@@ -44,6 +44,18 @@ import type { RepowiseContext } from "./context";
 import { analyzeChange } from "./changeAnalysis";
 import { commitsMatch, getCurrentBranchName, resolveLiveHead } from "./gitApi";
 import { opportunityPrompt, planPrompt } from "./planPrompt";
+
+/** The graph population flags as a cache-key fragment, as the web hooks key them. */
+function populationKey(p?: GraphPopulation): string {
+  return p ? `${+p.tests}${+p.examples}${+p.docs}` : "000";
+}
+
+/** The population flags as the graph endpoints' query params. */
+function populationParams(p?: GraphPopulation) {
+  return p
+    ? { include_tests: p.tests, include_examples: p.examples, include_docs: p.docs }
+    : undefined;
+}
 
 /** Thrown by the dispatcher when a request arrives while disconnected. */
 class NotReadyError extends Error {
@@ -270,20 +282,23 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       cached(`health:churn:${limit ?? ""}`, (id) => getChurnComplexity(id, limit != null ? { limit } : undefined)),
 
     // Architecture map
-    architectureView: () => cached("arch:view", (id) => getArchitectureView(id)),
-    // Working-tree content, not index content: never cached under head_commit.
-    fileContent: (filePath) => getFileContent(repoId(), filePath),
-
-    // Knowledge graph
-    moduleGraph: () => cached("graph:modules", (id) => getModuleGraph(id)),
     fullGraph: (limit) => cached(`graph:full:${limit ?? ""}`, (id) => getGraph(id, limit)),
-    architectureCommunityGraph: () =>
-      cached("graph:architecture", (id) => getArchitectureCommunityGraph(id)),
-    communities: () => cached("graph:communities", (id) => getCommunities(id)),
-    communitySlice: (communityId) =>
-      cached(`graph:slice:${communityId}`, (id) => getCommunitySlice(id, communityId)),
-    communityDetail: (communityId) =>
-      cached(`graph:community:${communityId}`, (id) => getCommunityDetail(id, communityId)),
+    architectureCommunityGraph: (population) =>
+      cached(`graph:architecture:${populationKey(population)}`, (id) =>
+        getArchitectureCommunityGraph(id, 2, populationParams(population)),
+      ),
+    communities: (population) =>
+      cached(`graph:communities:${populationKey(population)}`, (id) =>
+        getCommunities(id, populationParams(population)),
+      ),
+    communitySlice: (communityId, population) =>
+      cached(`graph:slice:${communityId}:${populationKey(population)}`, (id) =>
+        getCommunitySlice(id, communityId, populationParams(population)),
+      ),
+    communityDetail: (communityId, population) =>
+      cached(`graph:community:${communityId}:${populationKey(population)}`, (id) =>
+        getCommunityDetail(id, communityId, populationParams(population)),
+      ),
     graphPath: (from, to) =>
       cached(`graph:path:${from}|${to}`, (id) => getGraphPath(id, from, to)),
     // Autocomplete over an unbounded query space: live, never cached.
@@ -291,6 +306,9 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     deadCodeGraph: () => cached("graph:dead", (id) => getDeadCodeGraph(id)),
     hotFilesGraph: () => cached("graph:hot", (id) => getHotFilesGraph(id)),
     executionFlows: () => cached("graph:flows", (id) => getExecutionFlows(id)),
+
+    // Knowledge graph
+    zoomMap: () => cached("graph:zoom", (id) => getZoomMap(id)),
 
     // Refactoring
     refactoringOpportunities: (filePath) =>

@@ -1,268 +1,380 @@
 /**
- * Architecture map webview.
+ * Architecture webview: the web Architecture page's Map, composed from the
+ * same shared pieces (packages/web app/repos/[id]/architecture and
+ * components/architecture/graph-view.tsx). The dependency graph at community
+ * or file scope, or as the outline, steered by the one `GraphScopeSwitcher`;
+ * the narrowing select and truncation banner beside it; the shared
+ * `GraphFlow` shell with its toolbar, legend, inspector, community panel and
+ * path finder.
  *
- * Reimplements the web Knowledge Graph orchestration (packages/web
- * c4-view.tsx) natively in the editor: the shared c4 canvas, store, layout
- * hook, legend, controls, minimap, and detail panels, driven by one
- * architectureView() RPC instead of a fetch. The web version syncs its
- * navigation to URL query params via nuqs; a webview has no URL, so the same
- * state lives in the shared Zustand store and the only external seam is the
- * optional `selectPath` open-parameter, applied once after the data lands.
+ * The web page keeps scope, signal, module, community and population in the
+ * URL; a webview has no URL, so the same axes are plain state here and reset
+ * the same way the web handlers reset their params. The Coupling, Packages
+ * and Symbols tabs are separate datasets with their own pages on the web and
+ * are not part of this panel. Every "open this file" action opens it in an
+ * editor column through the host.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useMemo, useState, type ComponentProps, type ReactNode } from "react";
+import { GraphFlow, type GraphFlowProps } from "@repowise-dev/ui/graph/graph-flow";
+import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-banner";
 import {
-  ReactFlowProvider,
-  useReactFlow,
-  type Node,
-} from "@xyflow/react";
+  GraphNarrowingSelect,
+  GraphScopeSwitcher,
+  type GraphScope,
+} from "@repowise-dev/ui/graph/graph-scope-controls";
+import { CodeGraphTree } from "@repowise-dev/ui/graph/code-graph-tree";
+import { GraphCommunityPanel } from "@repowise-dev/ui/graph/graph-community-panel";
+import { PathFinderPanel } from "@repowise-dev/ui/graph/path-finder-panel";
+import type { ModuleGroup } from "@repowise-dev/ui/graph/use-module-filter";
+import { ApiError } from "@repowise-dev/ui/shared";
 import {
-  ArchBreadcrumb,
-  ArchCanvas,
-  ArchTourButton,
-  CodeViewer,
-  FilterPanel,
-  NodeTypeCategoryFilters,
-  PathFinderModal,
-  PersonaSelector,
-  SearchBar,
-  Sidebar,
-  useArchitectureLayout,
-  useArchitectureNavigation,
-  useArchitectureStore,
-  type ArchitectureView,
-} from "@repowise-dev/ui/c4";
-import type { ViewProps } from "../../runtime/mount";
+  PRODUCTION_ONLY,
+  type CommunityDetail,
+  type GraphPath,
+  type GraphPopulation,
+  type NodeSearchResult,
+} from "@repowise-dev/types/graph";
 import type { WebviewHost } from "../../runtime/rpc";
+import type { ViewProps } from "../../runtime/mount";
+import {
+  useArchitectureData,
+  useHostQuery,
+  type ArchitectureData,
+  type ViewMode,
+} from "./use-architecture-data";
 
-// Double-click drills into structural nodes; the same event on a file-backed
-// node opens it in an editor column instead. Single click always selects.
-const DRILL_CLUSTER = "layerCluster";
-const DRILL_SUBGROUP = "subGroupCluster";
-const DRILL_CONTAINER = "archContainer";
-const FILE_NODE = "archFile";
-// Portals and the scope frame are wayfinding stubs, not selectable entities.
-const SYNTHETIC_NODE_TYPES = new Set(["portal", "scopeFrame"]);
+type Scope = "communities" | "files";
+type Signal = "dead" | "hot" | null;
 
-export function App(props: ViewProps<"architecture">) {
-  return (
-    <ReactFlowProvider>
-      <ArchitectureMap {...props} />
-    </ReactFlowProvider>
-  );
+/** Same copy the web page shows under each scope. */
+const DESCRIPTION: Record<Scope, string> = {
+  communities:
+    "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on.",
+  files:
+    "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it.",
+};
+
+/** Scope + signal -> the canvas's internal ViewMode, as the web maps them. */
+function toViewMode(scope: Scope, signal: Signal): ViewMode {
+  if (scope === "communities") return "architecture";
+  if (signal === "dead") return "dead";
+  if (signal === "hot") return "hotfiles";
+  return "full";
 }
 
-function ArchitectureMap({ host, repo, params, refreshToken }: ViewProps<"architecture">) {
-  const { view, error, loading } = useArchitectureData(host, refreshToken);
+/** Hub (`__community__N`) and repo-core ids are synthetic, not files. */
+function isFileBackedNodeId(nodeId: string): boolean {
+  return !nodeId.startsWith("__");
+}
 
-  const setView = useArchitectureStore((s) => s.setView);
-  const selectNode = useArchitectureStore((s) => s.selectNode);
-  const drillIntoLayer = useArchitectureStore((s) => s.drillIntoLayer);
-  const navigationLevel = useArchitectureStore((s) => s.navigationLevel);
-  const activeLayerId = useArchitectureStore((s) => s.activeLayerId);
-  const selectedNodeId = useArchitectureStore((s) => s.selectedNodeId);
-  const setReactFlowInstance = useArchitectureStore((s) => s.setReactFlowInstance);
-  const pathFinderOpen = useArchitectureStore((s) => s.pathFinderOpen);
-  const nodesById = useArchitectureStore((s) => s.nodesById);
+function populationKey(p: GraphPopulation): string {
+  return `${+p.tests}${+p.examples}${+p.docs}`;
+}
 
-  useArchitectureNavigation();
-  const { nodes, edges, loading: layoutLoading, hiddenEdgeCount } = useArchitectureLayout();
-  const { fitView } = useReactFlow();
+export function App({ host, params, repo, refreshToken }: ViewProps<"architecture">) {
+  // The web page lands on Files. A preselected file pins the file scope, the
+  // way a `?node=` link does there.
+  const initialNode = params.selectPath ?? null;
+  const [graphScope, setGraphScope] = useState<GraphScope>("files");
+  const [signal, setSignal] = useState<Signal>(null);
+  const [activeModule, setActiveModule] = useState<string | null>(null);
+  const [activeCommunity, setActiveCommunity] = useState<number | null>(null);
+  const [population, setPopulation] = useState<GraphPopulation>(PRODUCTION_ONLY);
+  const [showExternal, setShowExternal] = useState(false);
+  const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
+  const [moduleGroups, setModuleGroups] = useState<ModuleGroup[]>([]);
+  const [flowsRequested, setFlowsRequested] = useState(false);
 
-  // Feed the store from the RPC payload; setView resets navigation to the
-  // overview, which is the right landing tier after a (re)fetch.
-  useEffect(() => {
-    if (view) setView(view);
-  }, [view, setView]);
+  const tree = graphScope === "tree";
+  const scope: Scope = graphScope === "communities" ? "communities" : "files";
+  const viewMode = toViewMode(scope, signal);
+  const isCommunities = scope === "communities";
 
-  // `selectPath` reveals a file's node once the data is in the store. Applied
-  // a single time per data load so a later manual selection is never yanked
-  // back. Missing paths degrade to the plain overview.
-  const preselectAppliedRef = useRef(false);
-  useEffect(() => {
-    preselectAppliedRef.current = false;
-  }, [view]);
-  useEffect(() => {
-    if (!view || preselectAppliedRef.current) return;
-    preselectAppliedRef.current = true;
-    const target = params.selectPath;
-    if (!target) return;
-    const match = view.nodes.find((n) => n.file_path === target);
-    if (match) selectNode(match.id);
-  }, [view, params.selectPath, selectNode]);
+  const data = useArchitectureData(host, refreshToken, {
+    viewMode,
+    tree,
+    population,
+    narrowingPopulation: isCommunities || activeCommunity !== null ? population : undefined,
+    activeCommunity,
+    graphLimit,
+    flowsRequested,
+  });
 
-  // Frame the tier after a level change (drill in/out), matching the web
-  // camera behaviour so the new scope lands centered.
-  const pendingFitRef = useRef(false);
-  const prevNavRef = useRef({ navigationLevel, activeLayerId });
-  useEffect(() => {
-    if (
-      prevNavRef.current.navigationLevel !== navigationLevel ||
-      prevNavRef.current.activeLayerId !== activeLayerId
-    ) {
-      pendingFitRef.current = true;
-      prevNavRef.current = { navigationLevel, activeLayerId };
+  const handleScopeChange = useCallback((next: GraphScope) => {
+    // Narrowing is a file-scope concept and does not survive a scope change.
+    setActiveModule(null);
+    setActiveCommunity(null);
+    setGraphScope(next);
+  }, []);
+
+  // Entering a community implies the file scope; leaving returns to the
+  // constellation it came from.
+  const handleActiveCommunityChange = useCallback((next: number | null) => {
+    setActiveCommunity(next);
+    if (next !== null) {
+      setActiveModule(null);
+      // A slice was never filtered to dead or hot files.
+      setSignal(null);
+      setGraphScope("files");
+    } else {
+      setGraphScope("communities");
     }
-  }, [navigationLevel, activeLayerId]);
-  useEffect(() => {
-    if (!pendingFitRef.current || nodes.length === 0) return;
-    pendingFitRef.current = false;
-    const raf = requestAnimationFrame(() => fitView({ duration: 400, padding: 0.2 }));
-    return () => cancelAnimationFrame(raf);
-  }, [nodes, fitView]);
+  }, []);
 
-  // Ease onto a freshly selected node once, without re-centering after the
-  // user pans away (dimming refreshes must not steal the camera).
-  const lastEasedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!selectedNodeId) {
-      lastEasedRef.current = null;
-      return;
-    }
-    if (lastEasedRef.current === selectedNodeId) return;
-    if (!nodes.some((n) => n.id === selectedNodeId)) return;
-    lastEasedRef.current = selectedNodeId;
-    const raf = requestAnimationFrame(() =>
-      fitView({ nodes: [{ id: selectedNodeId }], duration: 250, padding: 0.4, maxZoom: 1.15 }),
-    );
-    return () => cancelAnimationFrame(raf);
-  }, [selectedNodeId, nodes, fitView]);
-
-  const handleNodeClick = useCallback(
-    (_: React.MouseEvent, node: Node) => {
-      if (SYNTHETIC_NODE_TYPES.has(node.type ?? "")) return;
-      selectNode(node.id);
-    },
-    [selectNode],
-  );
-
-  const handleNodeDoubleClick = useCallback(
-    (_: React.MouseEvent, node: Node) => {
-      const store = useArchitectureStore.getState();
-      if (node.type === DRILL_CLUSTER) {
-        drillIntoLayer(node.id);
-      } else if (node.type === DRILL_SUBGROUP) {
-        store.drillIntoSubGroup(node.id);
-      } else if (node.type === DRILL_CONTAINER) {
-        store.toggleContainer(node.id);
-      } else if (node.type === FILE_NODE) {
-        const archNode = nodesById.get(node.id);
-        if (archNode?.file_path) {
-          host.openFile(archNode.file_path, archNode.line_range?.[0]);
-        }
+  const handleNarrowingChange = useCallback(
+    ({ module, community }: { module: string | null; community: number | null }) => {
+      if (community !== null) {
+        handleActiveCommunityChange(community);
+        return;
       }
+      setActiveCommunity(null);
+      setActiveModule(module);
     },
-    [drillIntoLayer, nodesById, host],
+    [handleActiveCommunityChange],
   );
 
-  const handlePaneClick = useCallback(() => selectNode(null), [selectNode]);
+  const handleViewModeChange = useCallback((mode: ViewMode) => {
+    setSignal(mode === "dead" ? "dead" : mode === "hotfiles" ? "hot" : null);
+  }, []);
 
-  // The in-panel code viewer reads bytes over the same RPC seam the web build
-  // reads from the file-content endpoint.
-  const fetchContent = useCallback(
-    (filePath: string) => host.api.fileContent(filePath),
+  const handleFlowsVisibilityChange = useCallback((visible: boolean) => {
+    if (visible) setFlowsRequested(true);
+  }, []);
+
+  const openIfFile = useCallback(
+    (nodeId: string) => {
+      if (isFileBackedNodeId(nodeId)) host.openFile(nodeId);
+    },
     [host],
   );
 
-  const anyLoading = loading || layoutLoading;
-  const levelLabel =
-    navigationLevel === "layer-detail"
-      ? "Detail"
-      : navigationLevel === "layer-groups"
-        ? "Groups"
-        : "Overview";
+  const handleNodeClick = useCallback<NonNullable<GraphFlowProps["onNodeClick"]>>(
+    (nodeId, nodeType) => {
+      if (nodeType === "file") host.openFile(nodeId);
+    },
+    [host],
+  );
+
+  // Only the unfiltered file scope (and the outline) draws the capped
+  // payload, so only they carry its truncation banner.
+  const usesFullGraph = tree || (scope === "files" && !signal && activeCommunity === null);
+  const graph = data.fullGraph.data;
+  const truncation =
+    usesFullGraph && graph?.truncated && graph.total_node_count != null ? (
+      <GraphTruncationBanner
+        shown={graph.nodes.length}
+        total={graph.total_node_count}
+        limit={graphLimit ?? graph.nodes.length}
+        onLoadMore={(next) => setGraphLimit(next)}
+        {...(tree ? {} : { onSwitchToArchitecture: () => handleScopeChange("communities") })}
+      />
+    ) : undefined;
+
+  const headerControls = useMemo(
+    () => (
+      <div className="flex flex-wrap items-center gap-2">
+        {!isCommunities && (
+          <GraphNarrowingSelect
+            modules={moduleGroups}
+            communities={data.narrowingCommunities.data}
+            activeModule={activeModule}
+            activeCommunity={activeCommunity}
+            onChange={handleNarrowingChange}
+          />
+        )}
+        <GraphScopeSwitcher scope={scope} onScopeChange={handleScopeChange} />
+      </div>
+    ),
+    [
+      isCommunities,
+      moduleGroups,
+      data.narrowingCommunities.data,
+      activeModule,
+      activeCommunity,
+      handleNarrowingChange,
+      scope,
+      handleScopeChange,
+    ],
+  );
+
+  if (tree) {
+    return (
+      <TreeScope
+        host={host}
+        graph={data.fullGraph}
+        banner={truncation}
+        onScopeChange={handleScopeChange}
+      />
+    );
+  }
 
   return (
-    <div
-      data-testid="architecture-shell"
-      className="flex h-full flex-col bg-[var(--color-bg-root)] text-[var(--color-text-primary)]"
-    >
-      <header className="shrink-0 border-b border-[var(--color-border-default)] px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-[15px] font-semibold text-[var(--color-text-primary)]">
-                {repo.name}
-              </h1>
-              <span className="rounded-full border border-[var(--color-border-default)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">
-                {levelLabel}
-              </span>
-            </div>
-            <p className="mt-0.5 truncate text-xs text-[var(--color-text-secondary)]">
-              {view?.project_description || "Curated layered view of the system."}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-3">
-            <ArchTourButton />
-            <PersonaSelector />
-            <NodeTypeCategoryFilters />
-          </div>
+    <div className="flex h-full flex-col">
+      {data.error ? (
+        <div className="flex h-full items-center justify-center p-6">
+          <ApiError title="Could not load the architecture map." message={data.error} />
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-4">
-          <SearchBar />
-          <ArchBreadcrumb />
-        </div>
-      </header>
-
-      <div data-testid="architecture-canvas" className="relative min-h-0 flex-1">
-        <ArchCanvas
-          nodes={nodes}
-          edges={edges}
-          loading={anyLoading}
-          error={error ? { message: error.message } : null}
-          hiddenEdgeCount={hiddenEdgeCount}
-          onInit={setReactFlowInstance}
+      ) : (
+        <GraphFlow
+          description={DESCRIPTION[scope]}
+          headerActions={headerControls}
+          banner={truncation}
+          fullGraph={graph}
+          isLoadingFullGraph={data.fullGraph.isLoading}
+          constellationGraph={data.constellationGraph.data}
+          isLoadingConstellationGraph={data.constellationGraph.isLoading}
+          communitySlice={data.communitySlice.data}
+          isLoadingCommunitySlice={data.communitySlice.isLoading}
+          activeCommunity={activeCommunity}
+          onActiveCommunityChange={handleActiveCommunityChange}
+          population={population}
+          onPopulationChange={setPopulation}
+          showExternal={showExternal}
+          onShowExternalChange={setShowExternal}
+          repoName={repo.name}
+          deadCodeGraph={data.deadCodeGraph.data}
+          isLoadingDeadCodeGraph={data.deadCodeGraph.isLoading}
+          hotFilesGraph={data.hotFilesGraph.data}
+          isLoadingHotFilesGraph={data.hotFilesGraph.isLoading}
+          communities={data.communities.data}
+          executionFlows={data.executionFlows.data}
+          onFlowsVisibilityChange={handleFlowsVisibilityChange}
+          viewMode={viewMode}
+          activeModule={activeModule}
+          onModuleGroupsChange={setModuleGroups}
+          colorMode="community"
+          initialSelectedNode={initialNode}
+          onViewModeChange={handleViewModeChange}
           onNodeClick={handleNodeClick}
-          onNodeDoubleClick={handleNodeDoubleClick}
-          onPaneClick={handlePaneClick}
-          errorTitle="Couldn't load the architecture map"
-          loadingLabel="Loading architecture…"
-        >
-          <Sidebar />
-          <FilterPanel />
-          <CodeViewer fetchContent={fetchContent} />
-          {pathFinderOpen && <PathFinderModal />}
-        </ArchCanvas>
+          onNodeViewDocs={openIfFile}
+          renderPathFinder={(p) => (
+            <PathFinderPanel
+              searchNodes={(q, l) => host.api.searchNodes(q, l) as Promise<NodeSearchResult[]>}
+              findPath={(from, to) => host.api.graphPath(from, to) as Promise<GraphPath>}
+              onPathFound={p.onPathFound}
+              onClear={p.onClear}
+              onClose={p.onClose}
+              initialFrom={p.initialFrom}
+              initialTo={p.initialTo}
+            />
+          )}
+          renderCommunityPanel={(p) => (
+            <CommunityPanel
+              host={host}
+              refreshToken={refreshToken}
+              communityId={p.communityId}
+              population={population}
+              onClose={p.onClose}
+              onEnterCommunity={p.onEnterCommunity}
+              onNeighborSelect={p.onNeighborSelect}
+            />
+          )}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The outline scope: the same capped file graph as an expandable tree, with
+ * the scope switcher carrying the way back to the canvas. File rows open the
+ * file in an editor column.
+ */
+function TreeScope({
+  host,
+  graph,
+  banner,
+  onScopeChange,
+}: {
+  host: WebviewHost;
+  graph: ArchitectureData["fullGraph"];
+  banner: ReactNode;
+  onScopeChange: (scope: GraphScope) => void;
+}) {
+  const OpenFileLink = useMemo(
+    () =>
+      function OpenFileLink({ href, onClick, ...rest }: ComponentProps<"a">) {
+        return (
+          <a
+            {...rest}
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              onClick?.(e);
+              if (href) host.openFile(href);
+            }}
+          />
+        );
+      },
+    [host],
+  );
+
+  return (
+    <div className="h-full overflow-auto">
+      <div className="max-w-[1600px] space-y-5 p-4 sm:p-6">
+        <div className="flex flex-col gap-3 border-b border-[var(--color-border-default)] pb-4 sm:flex-row sm:items-start sm:justify-between">
+          <p className="max-w-3xl text-sm text-[var(--color-text-secondary)]">
+            The same files and dependencies the Map draws, as a tree you can open. Expand a
+            directory to walk it, then a file to see the types it imports and which file each one
+            comes from.
+          </p>
+          <div className="shrink-0">
+            <GraphScopeSwitcher scope="tree" onScopeChange={onScopeChange} />
+          </div>
+        </div>
+        {graph.error ? (
+          <ApiError title="Couldn't load the code graph" message={graph.error} />
+        ) : (
+          <>
+            {banner}
+            <CodeGraphTree
+              graph={graph.data}
+              isLoading={graph.isLoading}
+              fileHref={(path) => path}
+              LinkComponent={OpenFileLink}
+            />
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-interface ArchitectureData {
-  view: ArchitectureView | null;
-  error: Error | null;
-  loading: boolean;
-}
-
-/** One architectureView() call, refetched when the index moves. */
-function useArchitectureData(host: WebviewHost, refreshToken: number): ArchitectureData {
-  const [state, setState] = useState<ArchitectureData>({
-    view: null,
-    error: null,
-    loading: true,
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    setState((s) => ({ ...s, loading: true, error: null }));
-    host.api.architectureView().then(
-      (view) => {
-        if (!cancelled) setState({ view, error: null, loading: false });
-      },
-      (err: unknown) => {
-        if (!cancelled) {
-          setState({
-            view: null,
-            error: err instanceof Error ? err : new Error(String(err)),
-            loading: false,
-          });
-        }
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [host, refreshToken]);
-
-  return state;
+/**
+ * Fetches one community's detail on open and feeds the shared panel shell,
+ * mirroring the web app's SWR wrapper.
+ */
+function CommunityPanel({
+  host,
+  refreshToken,
+  communityId,
+  population,
+  onClose,
+  onEnterCommunity,
+  onNeighborSelect,
+}: {
+  host: WebviewHost;
+  refreshToken: number;
+  communityId: number;
+  population: GraphPopulation;
+  onClose: () => void;
+  onEnterCommunity: () => void;
+  onNeighborSelect: (communityId: number) => void;
+}) {
+  const { data, isLoading } = useHostQuery(
+    `community:${communityId}:${populationKey(population)}`,
+    () => host.api.communityDetail(communityId, population) as Promise<CommunityDetail>,
+    refreshToken,
+  );
+  return (
+    <GraphCommunityPanel
+      communityId={communityId}
+      community={data ?? null}
+      isLoading={isLoading}
+      onClose={onClose}
+      onEnterCommunity={onEnterCommunity}
+      onNeighborSelect={onNeighborSelect}
+    />
+  );
 }
