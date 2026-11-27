@@ -300,10 +300,10 @@ def test_conditioned_opt_out_does_not_override_test_package_for_runner(tmp_path:
     }
 
 
-def test_package_reference_update_and_package_version_recognized_by_runner(
+def test_package_reference_update_recognized_by_runner(
     tmp_path: Path,
 ) -> None:
-    """PackageReference Update and PackageVersion are recognized by the runner."""
+    """PackageReference Update is recognized by the runner."""
     project = tmp_path / "src/Sample/Sample.csproj"
     project.parent.mkdir(parents=True, exist_ok=True)
     project.write_text(
@@ -323,6 +323,15 @@ def test_shared_package_reference_update_does_not_declare_tests(tmp_path: Path) 
     """An Update in Directory.Build.props adds no reference, so it makes no project a test project."""
     _build_props(tmp_path, "src", '<ItemGroup><PackageReference Update="xunit.v3" /></ItemGroup>')
     _project(tmp_path, "src/Shop/Shop.csproj")
+    assert _targets(tmp_path, ["src/Shop/Cart.cs"]) == {"src/Shop/Cart.cs": None}
+
+
+def test_shared_package_version_does_not_declare_tests(tmp_path: Path) -> None:
+    """A PackageVersion in Directory.Build.props pins a version only, so projects below stay non-test."""
+    _build_props(tmp_path, "src", '<ItemGroup><PackageVersion Include="xunit" /></ItemGroup>')
+    _project(
+        tmp_path, "src/Shop/Shop.csproj", body='<PackageReference Include="Newtonsoft.Json" />'
+    )
     assert _targets(tmp_path, ["src/Shop/Cart.cs"]) == {"src/Shop/Cart.cs": None}
 
 

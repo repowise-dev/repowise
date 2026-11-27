@@ -226,7 +226,7 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
             _add_project_reference(project, elem)
         elif tag == "Compile":
             project.compile_includes.extend(_compile_items(elem.get("Include")))
-        elif tag in ("PackageReference", "PackageVersion"):
+        elif tag == "PackageReference":
             _add_package_reference(project, elem, id(elem) in conditioned)
         elif tag in ("Using", "Import"):
             # <Using Include="X"/> is the C# form, <Import Include="X"/> the VB
