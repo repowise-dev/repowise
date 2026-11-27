@@ -11,6 +11,7 @@ arguments, router navigation and i18n keys, are not mistaken for service calls.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from collections.abc import Iterator
 from dataclasses import replace
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..calls import FileStrings, receiver_name
-from ..langs import JS_TS
+from ..langs import JS_EXTENSION_RE, JS_TS
 from ..strings import (
     JS_SYNTAX,
     call_arguments,
@@ -30,10 +31,23 @@ from ..strings import (
     string_constants,
 )
 from .angular import environment_mounts
-from .client_calls import ClientCallMatch, consumer_contracts, join_base, method_from_options
+from .client_calls import (
+    ClientCallMatch,
+    consumer_contracts,
+    is_rooted_url,
+    join_base,
+    method_from_options,
+)
 from .commonjs import exports_mounts
 from .js_factories import factory_bases, factory_mounts
-from .node_clients import FieldScope, client_calls, client_mounts
+from .node_clients import (
+    _EXPORT_DEFAULT_RE,
+    FieldScope,
+    _imports,
+    _is_package,
+    client_calls,
+    client_mounts,
+)
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
@@ -47,10 +61,8 @@ _FETCH_RE = re.compile(
 )
 
 # Wrapper call: IDENT("<url>" | `<url>`, ...) where the URL literal is concrete,
-# i.e. starts with `/`, a `${...}` base placeholder, or a scheme. The scan is
-# led by the `(` and reads the identifier back from it: led by the identifier,
-# the regex was tried at every word of every file.
-_WRAPPER_ARG_RE = re.compile(r"""\(\s*['"`]((?:/|\$\{|https?:)[^'"`]*)['"`]""")
+# or relative when the callee has prefix evidence.
+_WRAPPER_ARG_RE = re.compile(r"""\(\s*['"`]([^'"`\n]+)['"`]""")
 # The callee may carry TypeScript type arguments, nested up to three levels
 # (`apiGet<Paginated<Array<Commit>>>(`). Each inner level starts at a `<`, so
 # the pattern cannot backtrack across levels. The `<` must follow the name
@@ -145,8 +157,14 @@ _DEF_HEAD = (
     r"{n3}\s*{g})\("
 )
 # After the parameter list: an optional return type with no brace in it, then
-# the body's `{`, or an arrow straight into a template.
-_BODY_START_RE = re.compile(r"\s*(?::[^{;=`]*?)?\s*(?:=>\s*)?(?P<open>[{`])")
+# the body's `{`, an arrow into a template, or an arrow expression.
+_BODY_START_RE = re.compile(
+    r"\s*(?::[^{;=`]*?)?\s*(?:=>\s*)?(?P<open>[{`])|\s*(?::[^{;=`]*?)?\s*=>\s*(?P<arrow_expr>[^{`\s])"
+)
+_WRAPPER_MOUNT_KEY = "wrapper-prefix:"
+_EXPORT_NAMES_RE = re.compile(
+    r"""export(?<![\w$]export)\s+(?P<default>default\s+)?(?:async\s+)?(?:function\s*\*?\s*(?P<fn>[A-Za-z_$][\w$]*)|(?:const|let|var)\s+(?P<var>[A-Za-z_$][\w$]*))"""
+)
 _TEMPLATE_RE = re.compile(r"`[^`]*`")
 _FIRST_PARAM_RE = re.compile(r"\s*(?:\.\.\.)?([A-Za-z_$][\w$]*)")
 # One leading base placeholder (`${API_BASE_URL}/api/x`).
@@ -158,6 +176,38 @@ _ENV_RE = re.compile(r"(?:process\.env|import\.meta\.env)\b")
 _NOT_A_REQUEST_RE = re.compile(
     r"=>|\bfunction\b|\bconsole\.|\bthrow\b|Error\s*\(|\b(?:log|logger)\s*[.(]|\bwarn\s*\("
 )
+
+
+def _module_path(rel_path: str) -> str:
+    path = JS_EXTENSION_RE.sub("", rel_path)
+    return path.removesuffix("/index") if path.endswith("/index") else path
+
+
+def _mounted_wrapper_prefixes(
+    ctx: ScanContext,
+    callees: set[str],
+    prefixes: dict[str, str | None],
+) -> None:
+    content = ctx.content
+    if not any(c not in prefixes for c in callees) or ("import" not in content and "require" not in content):
+        return
+    imports = _imports(content)
+    imported_map = {
+        local: (imported, spec) for local, imported, spec in imports if not _is_package(spec)
+    }
+    for callee in callees:
+        if callee in prefixes or callee not in imported_map:
+            continue
+        imported_name, spec = imported_map[callee]
+        target = (
+            posixpath.normpath(posixpath.join(posixpath.dirname(ctx.rel_path), spec))
+            if spec.startswith(".")
+            else spec
+        )
+        module = _module_path(target)
+        mounted = ctx.mounts.get(f"{_WRAPPER_MOUNT_KEY}{module}:{imported_name}")
+        if mounted is not None:
+            prefixes[callee] = mounted
 
 
 def with_bases(ctx: ScanContext, matches: list[ClientCallMatch]) -> list[ClientCallMatch]:
@@ -177,6 +227,7 @@ def with_bases(ctx: ScanContext, matches: list[ClientCallMatch]) -> list[ClientC
     strings = FileStrings(content, JS_SYNTAX)
     fields = FieldScope(strings)
     prefixes = wrapper_prefixes(content, callees, strings, fields)
+    _mounted_wrapper_prefixes(ctx, callees, prefixes)
     out: list[ClientCallMatch] = []
     for m in matches:
         settled: dict[str, str] = {}
@@ -193,6 +244,9 @@ def with_bases(ctx: ScanContext, matches: list[ClientCallMatch]) -> list[ClientC
             prefix = prefixes.get(m.callee, "")
         if prefix is None:
             ctx.note_unresolved(m.offset)
+            continue
+        unquoted = m.url[1:-1] if len(m.url) >= 2 and m.url[0] in "'\"`" else m.url
+        if not is_rooted_url(unquoted) and not prefix:
             continue
         if settled or prefix:
             m = replace(m, compose=partial(_compose, settled, prefix))
@@ -214,12 +268,12 @@ def based_url(url: str | None, prefix: str | None, fields: FieldScope) -> str | 
     """*url* with a wrapper's *prefix* put on; None when either base cannot be read."""
     if url is None or prefix is None or unsettled_field(url, fields):
         return None
-    return join_base(prefix, url) if prefix and url.startswith("/") else url
+    return join_base(prefix, url) if prefix else url
 
 
 def _compose(settled: dict[str, str], prefix: str, url: str) -> str:
     url = inline_names(url, settled) if settled else url
-    return join_base(prefix, url) if prefix and url.startswith("/") else url
+    return join_base(prefix, url) if prefix else url
 
 
 def wrapper_prefixes(
@@ -287,10 +341,20 @@ def _definition_body(content: str, paren: int) -> tuple[str, int, int, bool] | s
     param = _FIRST_PARAM_RE.match(params)
     if param is None:
         return None  # destructured: what the URL is cannot be read
-    start = body.start("open")
-    arrow_template = body.group("open") == "`"
-    end = start + 1 if arrow_template else match_paren(content, start, closer="}")
-    return (param.group(1), start, end, arrow_template) if end > 0 else ""
+    if body.group("open"):
+        start = body.start("open")
+        arrow_template = body.group("open") == "`"
+        end = start + 1 if arrow_template else match_paren(content, start, closer="}")
+        return (param.group(1), start, end, arrow_template) if end > 0 else ""
+    start = body.start("arrow_expr")
+    line_end = content.find("\n", start)
+    semi = content.find(";", start)
+    end = len(content)
+    if line_end != -1:
+        end = min(end, line_end)
+    if semi != -1:
+        end = min(end, semi)
+    return (param.group(1), start, end, False)
 
 
 def _url_templates(
@@ -344,6 +408,32 @@ def _template_prefix(
     return ""
 
 
+def wrapper_mounts(ctx: ScanContext) -> dict[str, str]:
+    """Prefixes for exported wrappers defined in *ctx*."""
+    content = ctx.content
+    if "export" not in content or not _HTTP_NAME_RE.search(content):
+        return {}
+    strings = FileStrings(content, JS_SYNTAX)
+    fields = FieldScope(strings)
+    names = {m.group("fn") or m.group("var") for m in _EXPORT_NAMES_RE.finditer(content)}
+    http_names = {n for n in names if n and _HTTP_NAME_RE.search(n)}
+    if not http_names:
+        return {}
+    prefixes = wrapper_prefixes(content, http_names, strings, fields)
+    module = _module_path(ctx.rel_path)
+    mounts = {f"{_WRAPPER_MOUNT_KEY}{module}:{name}": prefix for name, prefix in prefixes.items() if prefix}
+    for m in _EXPORT_NAMES_RE.finditer(content):
+        if m.group("default"):
+            name = m.group("fn") or m.group("var")
+            if prefixes.get(name):
+                mounts[f"{_WRAPPER_MOUNT_KEY}{module}:default"] = prefixes[name]
+    for m in _EXPORT_DEFAULT_RE.finditer(content):
+        name = m.group("name")
+        if prefixes.get(name):
+            mounts[f"{_WRAPPER_MOUNT_KEY}{module}:default"] = prefixes[name]
+    return mounts
+
+
 class JsClientsDialect:
     name = "js-clients"
     extensions = JS_TS
@@ -354,7 +444,13 @@ class JsClientsDialect:
     requires = ("fetch", "'/", '"/', "`/", "${", "http", "axios", "import", "require", "export")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
-        return client_mounts(ctx) | environment_mounts(ctx) | exports_mounts(ctx) | factory_mounts(ctx)
+        return (
+            client_mounts(ctx)
+            | environment_mounts(ctx)
+            | exports_mounts(ctx)
+            | factory_mounts(ctx)
+            | wrapper_mounts(ctx)
+        )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

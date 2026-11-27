@@ -47,7 +47,7 @@ from ..strings import (
 from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
 from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument, method_from_options
 from .commonjs import imported_exports
-from .dialect import build_consumer_contract
+from .dialect import build_consumer_contract, js_first_parameter_scope
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
@@ -149,6 +149,56 @@ _FACTORY_BIND_RE = re.compile(
     r"|(?:(?:private|public|protected|readonly|static)\s+)+(?P<member>[A-Za-z_$][\w$]*))"
     r"(?:\s*:[^=\n]+)?\s*=?\s*(?:await\s+)?$"
 )
+_RETURN_RE = re.compile(r"(?:return|=>)\s*(?:await\s+)?$")
+_FUNC_DECL_RE = re.compile(
+    r"(?P<export>export\s+)?(?P<default>default\s+)?(?:async\s+)?function(?:\s*\*?)?(?:\s+(?P<name>[A-Za-z_$][\w$]*))?\s*\((?P<params>[^)]*)\)"
+)
+_ARROW_DECL_RE = re.compile(
+    r"(?P<export>export\s+)?(?P<default>default\s+)?(?:(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^\n=]+)?\s*=\s*)?(?:async\s+)?\((?P<params>[^)]*)\)\s*(?::[^\n=]+)?\s*=>"
+)
+
+
+def _is_zero_arg(params: str) -> bool:
+    return not params.strip()
+
+
+def _decl_encloses(content: str, brace: int, pos: int) -> bool:
+    depth = 1
+    for i in range(brace + 1, pos):
+        ch = content[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth <= 0:
+                return False
+    return depth > 0
+
+
+def _factory_return_func(content: str, pos: int) -> tuple[str, bool, bool] | None:
+    """``(name, is_export, is_default)`` for a zero-argument function returning the factory call."""
+    line_start = content.rfind("\n", 0, pos) + 1
+    if not _RETURN_RE.search(content, line_start, pos):
+        return None
+    offset = max(0, pos - 400)
+    window = content[offset:pos]
+    decls: list[tuple[int, int, re.Match[str], bool]] = [
+        (m.start() + offset, m.end() + offset, m, True) for m in _ARROW_DECL_RE.finditer(window)
+    ]
+    decls.extend((m.start() + offset, m.end() + offset, m, False) for m in _FUNC_DECL_RE.finditer(window))
+    if not decls:
+        return None
+    _, end, m, is_arrow = max(decls, key=lambda d: d[0])
+    if not _is_zero_arg(m.group("params")):
+        return None
+    if is_arrow and content[end:pos].strip() in ("", "await"):
+        name = m.group("name") or ("default" if m.group("default") else "")
+        return name, bool(m.group("export") or m.group("default")), bool(m.group("default"))
+    brace = content.find("{", end, pos)
+    if brace == -1 or not _decl_encloses(content, brace, pos):
+        return None
+    name = m.group("name") or ("default" if m.group("default") else "")
+    return name, bool(m.group("export") or m.group("default")), bool(m.group("default"))
 # `export { api, v2 as client }` and `export default api`.
 _EXPORT_LIST_RE = re.compile(r"export(?<![\w$]export)\s*\{(?P<names>[^{}]*)\}")
 _EXPORT_DEFAULT_RE = re.compile(
@@ -232,7 +282,7 @@ def _calls_for(names: tuple[str, ...]) -> tuple[Call, ...]:
     """``x.get(url)``, ``x.request(config)`` and ``x(url)`` on *names*."""
     verbs = "|".join(sorted(VERBS | {"request"}))
     head = re.compile(
-        rf"(?P<recv>{_alternation(names)})\s*(?:\.\s*(?P<verb>{verbs})\s*)?{GENERIC_ARGS}\("
+        rf"(?P<recv>{_alternation(names)})\s*(?:\(\s*\)\s*)?(?:\.\s*(?P<verb>{verbs})\s*)?{GENERIC_ARGS}\("
     )
     return (Call(head, JS_TS),)
 
@@ -290,17 +340,28 @@ def _file_clients(
         if args is None or strings is None:
             continue
         bound = _FACTORY_BIND_RE.search(content, content.rfind("\n", 0, m.start()) + 1, m.start())
-        if bound is None:
-            continue
-        base = _base(args, parent.library, strings)
-        client = _Client(parent.library, parent.base if base is None else base)
-        name = bound.group("name") or bound.group("field") or bound.group("member")
-        if bound.group("default"):
-            exported["default"] = client
-        elif name:
-            locals_[name] = client
-            if bound.group("export"):
-                exported[name] = client
+        if bound is not None:
+            base = _base(args, parent.library, strings)
+            client = _Client(parent.library, parent.base if base is None else base)
+            name = bound.group("name") or bound.group("field") or bound.group("member")
+            if bound.group("default"):
+                exported["default"] = client
+            elif name:
+                locals_[name] = client
+                if bound.group("export"):
+                    exported[name] = client
+        else:
+            fn_info = _factory_return_func(content, m.start())
+            if fn_info is not None:
+                name, is_export, is_default = fn_info
+                base = _base(args, parent.library, strings)
+                client = _Client(parent.library, parent.base if base is None else base)
+                if is_default:
+                    exported["default"] = client
+                if name and name != "default":
+                    locals_[name] = client
+                    if is_export:
+                        exported[name] = client
     if locals_:
         for m in _EXPORT_LIST_RE.finditer(content):
             for name, alias in _named(m.group("names")):
@@ -458,6 +519,9 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
         method, url = request
         if not is_rooted_url(url):
             continue  # relative to a base this cannot see
+        glued = re.search(r"\+\s*([A-Za-z_$][\w$]*)\s*$", args[0])
+        if glued and js_first_parameter_scope(content, glued.group(1), m.start()):
+            continue
         c = build_consumer_contract(
             ctx,
             method=method,

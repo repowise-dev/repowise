@@ -141,6 +141,22 @@ class TestInstances:
         text = "import axios from 'axios';\nconst apiClient = axios.create({ baseURL: '/api' });\napiClient('/users');\n"
         assert _calls(_write(tmp_path, {"a.ts": text})) == {("axios", "GET", "/api/users", "")}
 
+    def test_exported_function_returning_axios_instance(self, tmp_path: Path) -> None:
+        api_mod = (
+            "import axios from 'axios';\n"
+            "export default function api() { return axios.create({ baseURL: '/' }); }\n"
+        )
+        caller = (
+            "import api from './api';\n"
+            "api().get('/api/v1/accounts');\n"
+            "api().post('/api/v1/posts', body);\n"
+        )
+        repo = _write(tmp_path, {"src/api.ts": api_mod, "src/caller.ts": caller})
+        assert _calls(repo) == {
+            ("axios", "GET", "/api/v1/accounts", ""),
+            ("axios", "POST", "/api/v1/posts", ""),
+        }
+
     def test_two_instances_exported_under_one_name_are_neither(self, tmp_path: Path) -> None:
         make = "import axios from 'axios';\nexport const api = axios.create({{ baseURL: '{}' }});\n"
         repo = _write(
@@ -395,3 +411,36 @@ def test_only_a_placeholder_host_after_a_scheme_placeholder_is_stripped() -> Non
     path, _ = strip_leading_base_expr("${s}//${tenant}.example.com/api/users")
     assert path.startswith("//${tenant}")
     assert strip_leading_base_expr("${a}//${b}") == ("/", "b")
+
+
+def test_factory_return_func_rejects_parameterized_intervening_declaration(tmp_path: Path) -> None:
+    text = (
+        "import axios from 'axios';\n"
+        "export function ping() { return 1; }\n"
+        "export function getApi(baseUrl: string) {\n"
+        "  return axios.create({ baseURL: baseUrl });\n"
+        "}\n"
+        "export const test = () => ping().get('/test');\n"
+    )
+    (tmp_path / "index.ts").write_text(text, encoding="utf-8")
+    paths = {
+        (c.meta.get("client"), c.meta.get("path"))
+        for c in HttpExtractor().extract(tmp_path, "web")
+        if c.role == "consumer"
+    }
+    assert not any(p == "/test" for _client, p in paths)
+
+
+def test_factory_return_func_rejects_defaulted_parameter(tmp_path: Path) -> None:
+    text = (
+        "import axios from 'axios';\n"
+        "export const getApi = (prefix = '/v1') => axios.create({ baseURL: prefix });\n"
+        "export const test = () => getApi().get('/users');\n"
+    )
+    (tmp_path / "index.ts").write_text(text, encoding="utf-8")
+    paths = {
+        (c.meta.get("client"), c.meta.get("path"))
+        for c in HttpExtractor().extract(tmp_path, "web")
+        if c.role == "consumer"
+    }
+    assert not any(p == "/users" for _client, p in paths)
