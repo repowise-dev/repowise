@@ -79,7 +79,7 @@ describe("Home sidebar", () => {
     fireEvent.click(await screen.findByText("Code Health"));
     expect(openView).toHaveBeenCalledWith("health");
 
-    fireEvent.click(screen.getByText("Change Risk"));
+    fireEvent.click(screen.getByText("Review"));
     expect(openView).toHaveBeenCalledWith("risk");
   });
 

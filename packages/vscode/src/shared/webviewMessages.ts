@@ -118,7 +118,6 @@ export const SETTING_KEYS = [
   "server.autoStart",
   "server.port",
   "cliPath",
-  "risk.baseBranch",
   "changeIntel.cochangeNudge",
   "changeIntel.cochangeMinScore",
   "agentHandoff.enabled",
@@ -279,12 +278,8 @@ export interface ChangeImpactReport {
   /** How many of the changed paths are staged / unstaged (working tree). */
   stagedCount: number;
   workingCount: number;
-  /**
-   * "branch" includes committed-but-unpushed changes (base..HEAD); "working"
-   * is the uncommitted tree only. The panel asks for branch scope; the nudge
-   * asks for working scope so it speaks to the file being edited right now.
-   */
-  scope: "branch" | "working";
+  /** The uncommitted tree only, so the nudge speaks to the file being edited. */
+  scope: "working";
   /** Blast analysis, or null when git is unavailable or nothing changed. */
   blast: BlastRadiusResponse | null;
   /** Reviewer suggestions for the changed set (names + reasons). */

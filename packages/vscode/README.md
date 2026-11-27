@@ -14,7 +14,7 @@ Everything runs on your machine. Everything is free.
 
 ## Know before you push
 
-Click **Analyze Change Risk** in the Source Control view and get the full picture of your uncommitted work in seconds:
+Click **Review Change** in the Source Control view and get the full picture of your uncommitted work in seconds:
 
 - A benchmarked repo-relative review priority, with the supporting diff-shape score and exact factors that move it.
 - **The riskiest files in your change**, ranked, so you know where to focus your own review first.
@@ -25,7 +25,7 @@ Click **Analyze Change Risk** in the Source Control view and get the full pictur
 While you edit, a quiet status-bar hint appears if you are missing a file that usually travels with your change. It never pops up, never interrupts, and is one click to dismiss or turn off.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/change-risk-panel.png" alt="The Change Risk panel: an 8.8/10 score, downstream and missing-test chips, and the riskiest files in the change ranked by hotspot" width="90%" />
+  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/change-risk-panel.png" alt="The Review panel: an 8.8/10 score, downstream and missing-test chips, and the riskiest files in the change ranked by hotspot" width="90%" />
 </p>
 
 ## See health as you work
@@ -82,7 +82,7 @@ Nothing polls, nothing scans in the background, and nothing interrupts you. Data
 | Command | What it does |
 |---|---|
 | Repowise: Set Up This Repository | Build the index for this workspace |
-| Repowise: Analyze Change Risk | Score your change and see what it touches, what is missing, and who should review |
+| Repowise: Review Change | Score your change and see what it touches, what is missing, and who should review |
 | Repowise: Open Code Health | Open the health overview |
 | Repowise: Open Architecture | Open the dependency graph |
 | Repowise: Open Knowledge Graph | Open the zoomable system map |
@@ -103,7 +103,6 @@ The quickest way to tune Repowise is **Repowise: Open Settings**, a friendly pan
 |---|---|---|
 | `repowise.server.autoStart` | `ask` | Start the local server automatically, ask first, or never |
 | `repowise.server.idleStopMinutes` | `0` | Stop a server the extension started after this many idle minutes; `0` keeps it running |
-| `repowise.risk.baseBranch` | default branch | Base branch change risk is scored against |
 | `repowise.hover.symbolDetail` | `true` | Callers, ownership, and decisions on symbol hover |
 | `repowise.changeIntel.cochangeNudge` | `true` | The quiet "usually change together" status-bar hint |
 | `repowise.changeIntel.cochangeMinScore` | `4` | How strong the history has to be before a related file is suggested |
