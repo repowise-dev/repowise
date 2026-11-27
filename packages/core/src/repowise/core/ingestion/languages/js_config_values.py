@@ -12,6 +12,7 @@ configs through this module.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from functools import lru_cache
 
@@ -44,6 +45,31 @@ def value_spans(text: bytes, keys: tuple[str, ...]) -> list[bytes]:
     """The value expression of every occurrence of *keys* in a config's *text*."""
     text = strip_comments(text)
     return [text[m.end() : _value_end(text, m.end())] for m in _key_re(keys).finditer(text)]
+
+
+def root_dir_literal(text: bytes) -> str | None:
+    """The directory a config's literal ``rootDir`` names, relative to the config; else ``None``.
+
+    Jest resolves ``<rootDir>/...`` against it. Only one plain string literal
+    counts (``rootDir: "src"``): a computed value (``path.resolve(...)``), a
+    template with a hole, an absolute path, or two keys that disagree is not
+    read. The result is normalised (``"./src/"`` is ``"src"``) and ``""`` is
+    the config's own directory.
+    """
+    found: set[str] = set()
+    for span in value_spans(text, ("rootDir",)):
+        span = span.strip()
+        literals = string_literals(span)
+        if len(literals) != 1 or span[:1] not in _QUOTES or _string_end(span, 0) != len(span) - 1:
+            return None
+        found.add(literals[0])
+    if len(found) != 1:
+        return None
+    root = found.pop().strip()
+    if not root or root.startswith("/") or "\\" in root:
+        return None
+    normalised = posixpath.normpath(root)
+    return "" if normalised == "." else normalised
 
 
 def split_top_level(span: bytes) -> list[bytes]:

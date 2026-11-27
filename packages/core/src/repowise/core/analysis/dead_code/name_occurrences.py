@@ -57,7 +57,11 @@ from ...ingestion.extractors.visibility import (
     _TS_EXPORT_DEFAULT_NAME_RE,
     _TS_EXPORT_LIST_SOURCE_RE,
 )
-from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
+from ...ingestion.languages.js_config_values import (
+    plugin_path_arguments,
+    root_dir_literal,
+    value_spans,
+)
 from ...ingestion.languages.registry import REGISTRY
 from ...ingestion.source_mask import can_mask, mask_source
 from ...ingestion.ts_declarations import declaration_stem
@@ -181,9 +185,7 @@ def _uses_in_own_file(
       site, and excluding the body would drop that use and leave a live symbol
       claiming the top tier.
     """
-    spanned = [
-        f for f in findings if f.start_line is not None and f.end_line is not None
-    ]
+    spanned = [f for f in findings if f.start_line is not None and f.end_line is not None]
     out: dict[int, _Verdict] = {
         id(f): (_ABSENT if f in spanned else _SPAN_UNKNOWN) for f in findings
     }
@@ -565,9 +567,7 @@ def drop_internals_used_in_own_file(
 #: Whether a run names a candidate is decided by the lookup. The lookbehind and
 #: possessive run only skip starts inside a word, which can never be leftmost:
 #: same matches, without rescanning each word from every one of its letters.
-_PATH_TOKEN_RE = re.compile(
-    rb"(?<![A-Za-z0-9_@~+\-])[A-Za-z0-9_@~+\-]*+[./][A-Za-z0-9_.@~+\-/]*"
-)
+_PATH_TOKEN_RE = re.compile(rb"(?<![A-Za-z0-9_@~+\-])[A-Za-z0-9_@~+\-]*+[./][A-Za-z0-9_.@~+\-/]*")
 
 
 def _path_keys(path: str) -> list[str]:
@@ -689,6 +689,26 @@ def _targets_named_by(
 _PATH_LOADED_KINDS = frozenset({DeadCodeKind.UNREACHABLE_FILE, DeadCodeKind.UNUSED_EXPORT})
 
 
+def _with_root_dir_spelled(source_map: dict[str, bytes]) -> dict[str, bytes]:
+    """*source_map* with each tool config's ``<rootDir>/`` spelled as its literal ``rootDir``.
+
+    Jest resolves ``<rootDir>/setup.ts`` against the config's ``rootDir``
+    (``"src"`` makes it ``src/setup.ts``), so only the spelled-out path names
+    the file the config loads. A config with no literal ``rootDir`` is left as
+    written; so is every other file. The input is never modified.
+    """
+    spelled: dict[str, bytes] = {}
+    for path, blob in source_map.items():
+        if b"<rootDir>/" not in blob or not is_tool_config(path):
+            continue
+        root_dir = root_dir_literal(blob)
+        if root_dir is not None:
+            spelled[path] = blob.replace(
+                b"<rootDir>/", f"{root_dir}/".encode() if root_dir else b"./"
+            )
+    return {**source_map, **spelled} if spelled else source_map
+
+
 def clamp_path_mentions(
     findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
 ) -> list[DeadCodeFindingData]:
@@ -716,6 +736,7 @@ def clamp_path_mentions(
     if not source_map or not in_scope:
         return findings
 
+    source_map = _with_root_dir_spelled(source_map)
     named_in = _files_naming({f.file_path for f in in_scope}, source_map)
     loads = _ConfigLoads(source_map)
     run = {id(f) for f in in_scope if _loaded(f, named_in.get(f.file_path, ()), loads)}
@@ -776,6 +797,8 @@ def _cap_named_by_path(finding: DeadCodeFindingData, namers: list[str] | None) -
     finding.confidence = RISK_CAP_CONFIDENCE
     finding.safe_to_delete = False
     finding.evidence.append(f"Named by path in {namers[0]}, which may load it without an import")
+
+
 def _is_reference_assembly(path: str) -> bool:
     """A .NET reference-assembly source: ``src/libraries/X/ref/X.cs``."""
     return path.endswith(".cs") and "/ref/" in f"/{path}"

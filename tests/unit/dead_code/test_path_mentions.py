@@ -143,6 +143,30 @@ def test_a_relative_path_resolves_against_the_naming_files_directory():
     assert _dropped("src/vitest.setup.ts", {"src/vitest.config.ts": config})
 
 
+def test_a_setup_file_under_the_configs_root_dir_is_loaded():
+    config = 'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };\n'
+    source = {"jest.config.js": config, "src/setup.ts": "beforeAll(() => {})\nexport const x = 1\n"}
+    assert _dropped("src/setup.ts", source)
+    finding = _export("src/setup.ts", "x")
+    assert clamp_path_mentions([finding], {p: s.encode() for p, s in source.items()}) == [finding]
+
+
+def test_a_root_dir_config_does_not_load_a_same_named_file_elsewhere():
+    config = 'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };\n'
+    finding = _clamp("lib/setup.ts", {"jest.config.js": config})
+    assert finding.confidence == 1.0
+
+
+def test_a_config_without_root_dir_loads_the_file_its_root_dir_path_names():
+    config = 'module.exports = { setupFilesAfterEnv: ["<rootDir>/test/setup.ts"] };\n'
+    assert _dropped("test/setup.ts", {"jest.config.js": config})
+
+
+def test_a_dot_root_dir_is_the_configs_own_directory():
+    config = 'module.exports = { rootDir: ".", setupFiles: ["<rootDir>/setup.ts"] };\n'
+    assert _dropped("web/setup.ts", {"web/jest.config.js": config})
+
+
 def test_a_relative_path_from_a_doc_is_capped_not_dropped():
     finding = _clamp("pkg/run.py", {"pkg/README.md": "Run `./run.py` by hand.\n"})
     assert finding.confidence == RISK_CAP_CONFIDENCE

@@ -20,6 +20,7 @@ from repowise.core.ingestion.framework_edges.test_runner_setup import (
     resolve_setup_spec,
     setup_specs,
 )
+from repowise.core.ingestion.languages.js_config_values import root_dir_literal
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.test_paths import is_test_related_path
 
@@ -101,6 +102,82 @@ def test_a_setup_path_resolves_against_the_config_or_any_directory_above() -> No
         "web/jest.setup.js"
     )
     assert resolve_setup_spec("@testing-library/jest-dom", "web/config/jest.config.js", ctx) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (b'module.exports = { rootDir: "src" }', "src"),
+        (b"module.exports = { rootDir: './src/' }", "src"),
+        (b'{ "jest": { "rootDir": "packages/app" } }', "packages/app"),
+        (b'module.exports = { rootDir: "." }', ""),
+        (b'module.exports = { rootDir: ".." }', ".."),
+        (b"module.exports = { testMatch: ['**/*.test.ts'] }", None),
+        (b'module.exports = { rootDir: path.resolve(__dirname, "src") }', None),
+        (b"module.exports = { rootDir: `${base}/src` }", None),
+        (b'module.exports = { rootDir: "/abs/src" }', None),
+        (b'// rootDir: "src"\nmodule.exports = {}', None),
+        (b'a = { rootDir: "src" }, b = { rootDir: "lib" }', None),
+        (b'setupFilesAfterEnv: ["<rootDir>/setup.ts"]', None),
+    ],
+)
+def test_root_dir_literal_reads_only_a_plain_string_value(
+    text: bytes, expected: str | None
+) -> None:
+    assert root_dir_literal(text) == expected
+
+
+def test_root_dir_in_a_setup_path_is_the_configs_literal_root_dir() -> None:
+    _, _, ctx = _ctx(
+        {
+            "package.json": "{}",
+            "jest.config.js": "",
+            "setup.ts": "",
+            "src/setup.ts": "",
+            "web/package.json": "{}",
+            "web/jest.config.js": "",
+            "web/app/setup.ts": "",
+        }
+    )
+    # Without a literal ``rootDir`` it is still the package directory.
+    assert resolve_setup_spec("<rootDir>/setup.ts", "jest.config.js", ctx) == "setup.ts"
+    assert resolve_setup_spec("<rootDir>/setup.ts", "jest.config.js", ctx, "src") == "src/setup.ts"
+    assert resolve_setup_spec("<rootDir>/setup.ts", "jest.config.js", ctx, "") == "setup.ts"
+    # Resolved against the config's own directory.
+    assert (
+        resolve_setup_spec("<rootDir>/setup.ts", "web/jest.config.js", ctx, "app")
+        == "web/app/setup.ts"
+    )
+    # A root that climbs out of the repository finds nothing.
+    assert resolve_setup_spec("<rootDir>/setup.ts", "jest.config.js", ctx, "..") is None
+
+
+def test_a_setup_file_under_a_non_root_root_dir_gets_an_edge_from_the_tests() -> None:
+    graph, parsed, ctx = _ctx(
+        {
+            "package.json": "{}",
+            "jest.config.js": (
+                'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };'
+            ),
+            "src/setup.ts": "",
+            "src/add.test.ts": "",
+        }
+    )
+    assert _add_setup_edges(graph, parsed, ctx, ctx.path_set) == 1
+    assert graph["src/add.test.ts"]["src/setup.ts"]["hint_source"] == SETUP_FILE_HINT
+
+
+def test_a_config_without_root_dir_still_resolves_against_the_package() -> None:
+    graph, parsed, ctx = _ctx(
+        {
+            "package.json": "{}",
+            "jest.config.js": 'module.exports = { setupFilesAfterEnv: ["<rootDir>/test/setup.ts"] };',
+            "test/setup.ts": "",
+            "src/add.test.ts": "",
+        }
+    )
+    assert _add_setup_edges(graph, parsed, ctx, ctx.path_set) == 1
+    assert graph.has_edge("src/add.test.ts", "test/setup.ts")
 
 
 def test_tests_a_config_runs_get_an_edge_to_its_setup_files() -> None:
@@ -194,12 +271,11 @@ ts_file = repo_root / "packages" / "types" / "src" / "dead-code.ts"
     )
     assert _add_path_string_edges(graph, parsed, ctx, ctx.path_set) == 1
     assert (
-        graph["tests/unit/dead_code/test_confidence_parity.py"][
-            "packages/types/src/dead-code.ts"
-        ]["hint_source"]
+        graph["tests/unit/dead_code/test_confidence_parity.py"]["packages/types/src/dead-code.ts"][
+            "hint_source"
+        ]
         == PATH_STRING_HINT
     )
-
 
 
 def test_ancestor_and_repo_root_paths_are_linked() -> None:
@@ -247,9 +323,9 @@ PLUGIN_ROOT = ROOT / "plugins" / "claude-code"
 def test_plugin():
     bundle = PLUGIN_ROOT / "scripts" / "bundle.js"
 """
-    assert path_string_targets(
-        "tests/unit/cli/test_claude_plugin.py", src_plugin, path_set
-    ) == ["plugins/claude-code/scripts/bundle.js"]
+    assert path_string_targets("tests/unit/cli/test_claude_plugin.py", src_plugin, path_set) == [
+        "plugins/claude-code/scripts/bundle.js"
+    ]
 
     # 5. .parent.parent.parent.parent chain
     src_parent_chain = b"""
@@ -274,36 +350,42 @@ target = root / "packages/types/src/dead-code.ts"
 root = Path(__file__).parents[3]
 target = root / "packages" / var / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_var, path_set
-    ) == []
+    assert (
+        path_string_targets("tests/unit/dead_code/test_confidence_parity.py", src_var, path_set)
+        == []
+    )
 
     # 8. Negative: n climbing past repo root yields nothing
     src_past_root = b"""
 root = Path(__file__).parents[4]
 target = root / "packages" / "types" / "src" / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_past_root, path_set
-    ) == []
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_past_root, path_set
+        )
+        == []
+    )
 
     # 9. Negative: missing file yields nothing
     src_missing = b"""
 root = Path(__file__).parents[3]
 target = root / "packages" / "types" / "src" / "missing-file.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_missing, path_set
-    ) == []
+    assert (
+        path_string_targets("tests/unit/dead_code/test_confidence_parity.py", src_missing, path_set)
+        == []
+    )
 
     # 10. Negative: data file (.json) yields nothing
     src_data = b"""
 root = Path(__file__).parents[3]
 target = root / "packages" / "data" / "sample.json"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_data, path_set
-    ) == []
+    assert (
+        path_string_targets("tests/unit/dead_code/test_confidence_parity.py", src_data, path_set)
+        == []
+    )
 
     # 11. Negative: reassignment to dynamic expression invalidates tracked binding
     src_reassigned = b"""
@@ -311,9 +393,12 @@ root = Path(__file__).parents[3]
 root = get_root()
 target = root / "packages" / "types" / "src" / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_reassigned, path_set
-    ) == []
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_reassigned, path_set
+        )
+        == []
+    )
 
     # 12. Negative: annotated reassignment to dynamic expression invalidates tracked binding
     src_ann_reassigned = b"""
@@ -321,9 +406,12 @@ root = Path(__file__).parents[3]
 root: Path = get_root()
 target = root / "packages" / "types" / "src" / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_ann_reassigned, path_set
-    ) == []
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_ann_reassigned, path_set
+        )
+        == []
+    )
 
     # 13. Negative: bare type annotation without assignment invalidates tracked binding
     src_ann_bare = b"""
@@ -331,9 +419,12 @@ root = Path(__file__).parents[3]
 root: Path
 target = root / "packages" / "types" / "src" / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_ann_bare, path_set
-    ) == []
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_ann_bare, path_set
+        )
+        == []
+    )
 
     # 14. Negative: loop variable rebounds and invalidates tracked binding
     src_loop_rebound = b"""
@@ -342,9 +433,12 @@ for root in get_roots():
     pass
 target = root / "packages" / "types" / "src" / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_loop_rebound, path_set
-    ) == []
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_loop_rebound, path_set
+        )
+        == []
+    )
 
     # 15. Negative: function parameter shadows module-level ancestor binding
     src_param_shadowed = b"""
@@ -352,9 +446,12 @@ ROOT = Path(__file__).parents[3]
 def f(ROOT):
     target = ROOT / "packages" / "types" / "src" / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_param_shadowed, path_set
-    ) == []
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_param_shadowed, path_set
+        )
+        == []
+    )
 
     # 16. Local function reassignment invalidates inside function but preserves outer binding
     src_local_preserve = b"""
@@ -375,18 +472,24 @@ def test_fn():
 ROOT = Path(__file__).parents[3]
 targets = [ROOT / "packages" / "types" / "src" / "dead-code.ts" for ROOT in get_roots()]
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_comp_shadowed, path_set
-    ) == []
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_comp_shadowed, path_set
+        )
+        == []
+    )
 
     # 18. Negative: lambda parameter shadows module-level ancestor binding
     src_lambda_shadowed = b"""
 ROOT = Path(__file__).parents[3]
 fn = lambda ROOT: ROOT / "packages" / "types" / "src" / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_lambda_shadowed, path_set
-    ) == []
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_lambda_shadowed, path_set
+        )
+        == []
+    )
 
     # 19. Negative: context manager target invalidates tracked binding
     src_with_invalidated = b"""
@@ -394,9 +497,9 @@ ROOT = Path(__file__).parents[3]
 with open("some_file") as ROOT:
     target = ROOT / "packages" / "types" / "src" / "dead-code.ts"
 """
-    assert path_string_targets(
-        "tests/unit/dead_code/test_confidence_parity.py", src_with_invalidated, path_set
-    ) == []
-
-
-
+    assert (
+        path_string_targets(
+            "tests/unit/dead_code/test_confidence_parity.py", src_with_invalidated, path_set
+        )
+        == []
+    )
