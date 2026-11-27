@@ -14,6 +14,7 @@ import {
 } from "@repowise-dev/ui/present";
 import type { ViewParams } from "../../../../src/shared/webviewMessages";
 import type { WebviewHost } from "../../runtime/rpc";
+import { getVsCodeApi } from "../../runtime/vscodeApi";
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -42,8 +43,32 @@ function usePageList(host: WebviewHost, refreshToken: number) {
 }
 
 /**
+ * The reader's page survives a tab switch: the panel's script re-runs when it
+ * is shown again, and VS Code keeps this per-panel state across that. Wrapped
+ * because there is no webview API outside the editor (tests, a harness).
+ */
+function savedPageId(): string | null {
+  try {
+    const state = getVsCodeApi().getState() as { docsPageId?: unknown } | undefined;
+    return typeof state?.docsPageId === "string" ? state.docsPageId : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePageId(pageId: string): void {
+  try {
+    const api = getVsCodeApi();
+    const state = api.getState();
+    api.setState({ ...(state && typeof state === "object" ? state : {}), docsPageId: pageId });
+  } catch {
+    // No webview API: nothing to keep the page in.
+  }
+}
+
+/**
  * The page to open on, resolved once per mount so a refresh never moves the
- * reader. An asked-for page id opens straight away, beside the list; a file
+ * reader. The last page read wins on a plain open; an asked-for page id opens straight away, beside the list; a file
  * path resolves through the list, then the file's own page link.
  */
 function useInitialPage(
@@ -55,6 +80,13 @@ function useInitialPage(
   const resolved = useRef(false);
   useEffect(() => {
     if (resolved.current) return;
+    // A plain open (no page or file asked for) returns to the page last read.
+    const saved = params.pageId || params.filePath ? null : savedPageId();
+    if (saved) {
+      resolved.current = true;
+      setSelectedPageId(() => saved);
+      return;
+    }
     if (params.pageId) {
       resolved.current = true;
       setSelectedPageId(() => params.pageId ?? null);
@@ -105,6 +137,9 @@ export function useDocsData(host: WebviewHost, params: ViewParams["docs"], refre
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
   useInitialPage(host, params, list.pages, setSelectedPageId);
   const selected = useSelectedPage(host, selectedPageId, refreshToken);
+  useEffect(() => {
+    if (selectedPageId) savePageId(selectedPageId);
+  }, [selectedPageId]);
   return {
     pages: list.pages,
     listError: list.error,
