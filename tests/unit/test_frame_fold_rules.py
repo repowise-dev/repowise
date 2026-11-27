@@ -350,3 +350,15 @@ def test_rust_derive_output_and_drop_glue_are_never_put_on_a_function_or_the_fil
     assert _lib(1, "<cart::Cart as core::clone::Clone>::clone").skipped == {"no_span": 1}
     glue = "core::ptr::drop_glue::<<cart::Cart>::total::{closure#0}>"
     assert _lib(8, glue).skipped == {"second_signal_mismatch": 1}
+
+
+def test_rust_reference_and_dyn_self_types_name_the_type() -> None:
+    assert _hit(_lib(27, "<&cart::Cart as core::fmt::Display>::fmt")) == (LIB[3], False)
+    assert _hit(_lib(27, "<dyn cart::Cart>::fmt")) == (LIB[3], False)
+
+
+def test_rust_attribute_on_an_item_that_is_not_the_function_does_not_reach_it() -> None:
+    source = ["#[derive(Clone)]", "struct W(", "    u32,", ")", "", "fn W() {", "}"]
+    symbols = [_sym("w.rs", "w.W", 6, 7)]
+    res = _run(_rs(1, "w::W", "w.rs"), symbols, source)
+    assert res.skipped == {"no_span": 1}

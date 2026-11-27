@@ -505,7 +505,9 @@ def _rust_drop_generics(text: str) -> str:
 
 
 def _rust_last(path: str) -> str:
-    return _rust_drop_generics(path).rsplit("::", 1)[-1].strip()
+    """The type a self type or trait path names: ``&mut dyn a::Tr<T>`` -> ``Tr``."""
+    name = _rust_drop_generics(path).strip().lstrip("&").removeprefix("mut ").removeprefix("dyn ")
+    return name.rsplit("::", 1)[-1].strip()
 
 
 def _rust_agrees(symbol: IndexedSymbol, segments: list[str], owners: list[str]) -> bool:
@@ -514,7 +516,8 @@ def _rust_agrees(symbol: IndexedSymbol, segments: list[str], owners: list[str]) 
         return False
     if symbol.kind != "method" or len(segments) == 1:
         return True
-    return symbol.qualified_name.rsplit(".", 2)[-2] in owners
+    parts = symbol.qualified_name.split(".")
+    return len(parts) >= 2 and parts[-2] in owners
 
 
 def _rust_attributed(
@@ -538,13 +541,15 @@ def _rust_attributed(
     if nearest is None or nearest.start_line > len(text) + 1:
         return None
     between = (t.strip() for t in text[line : nearest.start_line - 1])
-    if any(t and not t.startswith(("#[", "//", ")", "]")) and not _RUST_ATTR_ARGS_RE.match(t) for t in between):
+    if any(_RUST_ITEM_RE.match(t) or (t and not t.startswith(("#[", "//", ")", "]")) and not _RUST_ATTR_ARGS_RE.match(t)) for t in between):
         return None
     return nearest
 
 
 # A continuation line of a multi-line attribute's arguments: no item or block.
 _RUST_ATTR_ARGS_RE = re.compile(r"^[^{};]*$")
+# A line that opens an item: never part of an attribute.
+_RUST_ITEM_RE = re.compile(r"^(?:pub\b|fn\b|struct\b|enum\b|impl\b|trait\b|mod\b|use\b|const\b|static\b|type\b|unsafe\b|async\b|extern\b|macro_rules!)")
 _RUST_FN_RE = r"\bfn\s+{}\b"
 
 
