@@ -78,9 +78,15 @@
   --color-bg-selected-hover: color-mix(in srgb, var(--native-ink) 12%, transparent);
   --color-border-default: var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
   --color-text-primary: var(--native-ink);
-  --color-text-secondary: var(--vscode-descriptionForeground, var(--native-ink));
-  /* Same source as secondary; faded so the three tiers stay distinct. */
-  --color-text-tertiary: color-mix(in srgb, var(--vscode-descriptionForeground, var(--native-ink)) 70%, transparent);
+  /* The quietest tier is the theme's own description colour, which theme
+     authors already keep readable: measured against the surface plane it is
+     5.7:1 in Dark Modern, 10.6:1 in Light Modern, 4.9:1 on the 2026 Dark
+     sidebar (the lowest) and 13.8:1 or more in high contrast. Fading it, as
+     this did, dropped small labels to about 3.2:1. Secondary sits halfway
+     between it and the foreground, so the three tiers stay distinct without
+     the bottom one going below 4.5:1. */
+  --color-text-secondary: color-mix(in srgb, var(--native-ink) 50%, var(--vscode-descriptionForeground, var(--native-ink)));
+  --color-text-tertiary: var(--vscode-descriptionForeground, var(--native-ink));
 }
 
 /* A light ground needs only a touch of black to read as a well. */
