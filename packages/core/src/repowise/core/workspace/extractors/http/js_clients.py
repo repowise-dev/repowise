@@ -50,22 +50,25 @@ _URL_PROP_RE = re.compile(r"""\burl\s*(?::\s*([^,\n}]+)|(?=[,}\n]|$))""")
 _METHOD_PROP_RE = re.compile(r"""\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]""")
 
 
+def _clean_resource_url(url: str | None) -> str | None:
+    if url and (url.startswith("this.") or (url.isidentifier() and not url.startswith(("'", '"', "`")))):
+        return f"`${{{url}}}`"
+    return url
+
+
 def _http_resource_url(arg_text: str) -> str | None:
     if m_url := _URL_PROP_RE.search(arg_text):
         val = m_url.group(1)
-        url = val.strip() if val else "`${url}`"
-    elif "=>" in arg_text:
+        return _clean_resource_url(val.strip() if val else "`${url}`")
+    if "=>" in arg_text:
         rhs = arg_text.split("=>", 1)[1].strip()
         if rhs.startswith("(") and rhs.endswith(")"):
             rhs = rhs[1:-1].strip()
         url = None if rhs.startswith("{") and rhs.endswith("}") else rhs
-    elif not (arg_text.startswith("{") and arg_text.endswith("}")):
-        url = arg_text
-    else:
-        url = None
-    if url and (url.startswith("this.") or (url.isidentifier() and not url.startswith(("'", '"', "`")))):
-        return f"`${{{url}}}`"
-    return url
+        return _clean_resource_url(url)
+    if not (arg_text.startswith("{") and arg_text.endswith("}")):
+        return _clean_resource_url(arg_text)
+    return None
 
 
 def http_resource_calls(content: str) -> Iterator[ClientCallMatch]:
