@@ -115,20 +115,10 @@ def heavy_loaded(modules: set[str], forbidden: list[str]) -> list[str]:
     ]
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--budget", type=Path, default=BUDGET)
-    args = parser.parse_args()
-    budget = json.loads(args.budget.read_text(encoding="utf-8"))
-    try:
-        budget_file = args.budget.resolve().relative_to(ROOT).as_posix()
-    except ValueError:
-        budget_file = str(args.budget)
-    failures: list[str] = []
-    notices: list[str] = []
-    rows: list[str] = []
-
-    install = budget["install"]
+def check_install(
+    install: dict, budget_file: str, rows: list[str], failures: list[str], notices: list[str]
+) -> list[tuple[float, str]]:
+    """Compare install size and distribution count with their budgets; the largest ten."""
     size_mb, dists, largest = measure_install()
     size_cap = install["size_mb"] * (1 + install["size_tolerance_pct"] / 100)
     dist_cap = install["distributions"] + install["distributions_tolerance"]
@@ -150,9 +140,13 @@ def main() -> int:
                 f"{label} is {shown}, well under the budget of {base}{unit}: lower it in "
                 f"{budget_file} so later growth is caught."
             )
+    return largest
 
+
+def check_startup_paths(paths: list[dict], rows: list[str], failures: list[str]) -> None:
+    """Start each path in a fresh interpreter and flag the forbidden modules it loads."""
     with tempfile.TemporaryDirectory() as tmp:
-        for index, path in enumerate(budget["startup_paths"]):
+        for index, path in enumerate(paths):
             workdir = Path(tmp) / str(index)
             workdir.mkdir()
             modules, seconds = loaded_modules(path, workdir)
@@ -169,6 +163,22 @@ def main() -> int:
                     f'`python -X importtime -c "import {path["module"]}"` shows which '
                     f"import pulls it in."
                 )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--budget", type=Path, default=BUDGET)
+    args = parser.parse_args()
+    budget = json.loads(args.budget.read_text(encoding="utf-8"))
+    try:
+        budget_file = args.budget.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        budget_file = str(args.budget)
+    failures: list[str] = []
+    notices: list[str] = []
+    rows: list[str] = []
+    largest = check_install(budget["install"], budget_file, rows, failures, notices)
+    check_startup_paths(budget["startup_paths"], rows, failures)
 
     report = "\n".join(
         [
