@@ -264,13 +264,20 @@ def test_claim_emission_never_lists_the_system_temp_dir(
         listed.append(Path(os.fspath(path)))
         return real_scandir(path)
 
-    def no_listing(self: Path, *args: object, **kwargs: object) -> object:
-        raise AssertionError(f"listed {self}")
+    # Spies record rather than raise: _claim_emission fails open on any
+    # exception, which would swallow an assertion raised inside it.
+    def spy_listdir(path: object = ".") -> list[str]:
+        listed.append(Path(os.fspath(path)))
+        return []
+
+    def spy_path_listing(self: Path, *args: object, **kwargs: object) -> object:
+        listed.append(self)
+        return iter(())
 
     monkeypatch.setattr(os, "scandir", spy_scandir)
-    monkeypatch.setattr(os, "listdir", lambda *a, **k: no_listing(tmp_path))
-    monkeypatch.setattr(Path, "glob", no_listing)
-    monkeypatch.setattr(Path, "iterdir", no_listing)
+    monkeypatch.setattr(os, "listdir", spy_listdir)
+    monkeypatch.setattr(Path, "glob", spy_path_listing)
+    monkeypatch.setattr(Path, "iterdir", spy_path_listing)
     unrelated = tmp_path / "someone-elses-file"
     unrelated.write_text("x", encoding="utf-8")
     _age(unrelated, 20)
