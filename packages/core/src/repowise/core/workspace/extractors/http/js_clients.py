@@ -45,8 +45,8 @@ if TYPE_CHECKING:
 _FETCH_RE = re.compile(
     r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""",
 )
-_HTTP_RESOURCE_RE = re.compile(r"\bhttpResource\s*\(")
-_URL_PROP_RE = re.compile(r"""\burl\s*(?::\s*([^,\n}]+)|(?=[,}\n]|$))""")
+_HTTP_RESOURCE_RE = re.compile(r"\bhttpResource\s*(?:<[^()\n]*>)?\s*\(")
+_URL_PROP_RE = re.compile(r"""(?<![\w$.])url\s*(?::\s*([^,\n}]+)|(?=[,}\n]|$))""")
 _METHOD_PROP_RE = re.compile(r"""\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]""")
 
 
@@ -113,7 +113,7 @@ _CALLEE_WINDOW = 200
 _HTTP_NAME_RE = re.compile(r"(?i)fetch|request|http|api|ajax|rest|rpc")
 
 # Callees already handled elsewhere (`ofetch(` is a fetch call), or never an HTTP wrapper.
-_WRAPPER_SKIP = frozenset({"fetch", "ofetch", "if", "for", "while", "switch", "catch", "return"})
+_WRAPPER_SKIP = frozenset({"fetch", "ofetch", "httpResource", "if", "for", "while", "switch", "catch", "return"})
 
 
 def fetch_calls(content: str) -> Iterator[ClientCallMatch]:

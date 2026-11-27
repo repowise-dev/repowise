@@ -392,7 +392,7 @@ class FieldScope:
     def __init__(self, strings: FileStrings) -> None:
         self._strings = strings
         self._classes: list[ClassFields] | None = None
-        self._cache: dict[tuple[str, bool], dict[str, str]] = {}
+        self._cache: dict[tuple[int, bool], dict[str, str]] = {}
         self._current: dict[str, str] | None = None
 
     def raw(self, name: str) -> str | None:
@@ -426,7 +426,7 @@ class FieldScope:
             fields = None
         else:
             is_static = any(a <= pos < b for a, b in found.static_spans)
-            key = (found.name, is_static)
+            key = (found.start, is_static)
             if key not in self._cache:
                 self._cache[key] = self._resolve_fields(found, is_static)
             fields = self._cache[key]

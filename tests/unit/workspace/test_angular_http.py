@@ -304,6 +304,21 @@ class TestHttpResource:
             ("angular", "GET", "/api/shorthand", ""),
         ]
 
+    def test_generic_and_member_named_url(self, tmp_path: Path) -> None:
+        text = (
+            "export class Service {\n"
+            "  url = '/api/from-member';\n"
+            "  res1 = httpResource<User[]>('/api/generic');\n"
+            "  res2 = httpResource(this.url);\n"
+            "  res3 = httpResource(() => this.url);\n"
+            "}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/generic.ts": text})) == [
+            ("angular", "GET", "/api/from-member", ""),
+            ("angular", "GET", "/api/from-member", ""),
+            ("angular", "GET", "/api/generic", ""),
+        ]
+
     def test_literal_and_field_forms(self, tmp_path: Path) -> None:
         text = (
             "class Base { protected resourceUrl = '/api/items'; }\n"
