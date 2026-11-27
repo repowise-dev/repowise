@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { Commands, EXTENSION_ID, Views } from "../constants";
 import type { RepowiseContext } from "./context";
 import { createHostApi } from "./webviewApi";
+import { reinitOnReveal } from "./panelParams";
 import type {
   HostApi,
   HostToWebviewMessage,
@@ -183,13 +184,20 @@ class WebviewManager {
   }
 
   open(view: PanelViewId, params: unknown): void {
-    this.params.set(view, params);
     const existing = this.panels.get(view);
     if (existing) {
       existing.reveal(undefined, false);
+      // A plain open (nav tab, command palette) of a panel that was itself
+      // opened plainly only brings it forward: the init would be the same one,
+      // and re-sending it remounts the view, ships its data again and drops
+      // whatever the reader had navigated to. A panel opened on a target (a
+      // file, a plan) still resets, so a plain open clears that filter.
+      if (!reinitOnReveal(params, this.params.get(view))) return;
+      this.params.set(view, params);
       this.postInit(view, existing.webview);
       return;
     }
+    this.params.set(view, params);
 
     const meta = VIEW_META[view];
     const panel = vscode.window.createWebviewPanel(

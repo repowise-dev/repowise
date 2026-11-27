@@ -31,6 +31,7 @@ import type {
   HotFilesGraphResponse,
   NodeSearchResult,
   PageResponse,
+  PageSummary,
 } from "@repowise-dev/api-client/types";
 import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
 import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
@@ -166,7 +167,13 @@ export interface HostApi {
   // Decisions
   decisionsList(): Promise<DecisionRecordResponse[]>;
   // Docs
+  /**
+   * Every page with its body: tens of megabytes on a large wiki. A tree wants
+   * pageTree() and fetches the page it shows with pageById().
+   */
   pagesList(): Promise<PageResponse[]>;
+  /** Every page without its body, the rows a docs tree draws. */
+  pageTree(): Promise<PageSummary[]>;
   pageById(pageId: string): Promise<PageResponse>;
   fileDetail(relPath: string): Promise<FileDetailResponse>;
   // Change risk

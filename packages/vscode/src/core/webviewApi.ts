@@ -27,7 +27,7 @@ import {
   getRefactoringPlan,
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
-import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
+import { getPageById, listAllPages, listPageTree } from "@repowise-dev/api-client/pages";
 import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
 import { CONFIG_SECTION } from "../constants";
 import {
@@ -350,6 +350,7 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
 
     // Docs
     pagesList: () => cached("docs:pages", (id) => listAllPages(id)),
+    pageTree: () => cached("docs:tree", (id) => listPageTree(id)),
     pageById: (pageId) =>
       cached(`docs:page:${pageId}`, (id) => getPageById(pageId, id)),
     fileDetail: (relPath) => cached(`docs:file:${relPath}`, (id) => getFileDetail(id, relPath)),
