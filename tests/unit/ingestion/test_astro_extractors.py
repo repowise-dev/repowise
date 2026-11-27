@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from datetime import datetime
 
@@ -244,13 +245,16 @@ def test_is_raw_in_an_attribute_value_keeps_the_body_markup() -> None:
     assert scan("astro", src).component_tags == (("Card", 2), ("Other", 4))
 
 
-def _scans_in_linear_time(page: Callable[[int], bytes], n: int, factor: int = 4) -> None:
+def _scans_in_linear_time(
+    page: Callable[[int], bytes], n: int, factor: int = 4, rounds: int = 5
+) -> None:
     # The scan is memoised per source; clear it so every run scans.
     assert_linear_growth(
         lambda src: prepare_source("astro", src),
         page(n),
         page(factor * n),
         reset=_cached_scan.cache_clear,
+        rounds=rounds,
         factor=factor,
     )
 
@@ -266,7 +270,21 @@ def test_one_start_tag_page_scans_in_linear_time(page: Callable[[int], bytes], n
     # The whole page is one start tag, so the regex engine's backtrack stack holds
     # a frame per byte (about 140 bytes each) and outgrows the CPU cache between
     # sizes. Over a 16x input that 2-3x step stays far below quadratic growth.
-    _scans_in_linear_time(page, n, factor=16)
+    # The small page scans in about 1 ms, so one scheduler stall on a loaded
+    # runner can land in every one of 5 rounds; best of 15 rides it out. A
+    # larger n is not the fix: the large side then misses the cache more (the
+    # idle ratio rises from about 17 to 44 at 4x n) and peaks at 260+ MB.
+    _scans_in_linear_time(page, n, factor=16, rounds=15)
+
+
+def test_the_start_tag_guard_still_fails_a_quadratic_scan() -> None:
+    # Same factor and rounds as above: a scan whose cost grows with the square of
+    # the page (about 256x over 16x) must not pass. A sleep stands in for the scan.
+    def quadratic(src: bytes) -> None:
+        time.sleep(len(src) ** 2 * 1e-10)
+
+    with pytest.raises(AssertionError, match="16x input took"):
+        assert_linear_growth(quadratic, b"x" * 1_000, b"x" * 16_000, rounds=15, factor=16)
 
 
 @pytest.mark.parametrize(
