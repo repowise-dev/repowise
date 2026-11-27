@@ -1268,3 +1268,52 @@ def test_a_pinned_mocha_unit_runs_mocha_from_node_modules_under_c8():
     (stack,) = detect_stacks(["package.json"], files)
     # c8 is fetched as for every Mocha unit; mocha itself is never fetched.
     assert stack.test == "npx --yes c8 --reporter=lcov mocha test/"
+
+
+def test_dotnet_writes_junit_through_junitxml_test_logger():
+    files = {
+        "tests/App.Tests/App.Tests.csproj": (
+            '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>'
+            '<PackageReference Include="coverlet.collector" />'
+            "</ItemGroup></Project>"
+        ),
+    }
+    (stack,) = detect_stacks(list(files), files)
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", '--logger "junit;LogFilePath=junit.xml"')
+    assert any("JunitXml.TestLogger" in n for n in stack.notes)
+    assert stack.with_junit(stack.test) == (
+        'dotnet test tests/App.Tests/App.Tests.csproj --collect:"XPlat Code Coverage" '
+        '--results-directory coverage --logger "junit;LogFilePath=junit.xml"'
+    )
+
+    # When JunitXml.TestLogger is referenced, the package note is omitted.
+    files["tests/App.Tests/App.Tests.csproj"] = (
+        '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>'
+        '<PackageReference Include="coverlet.collector" />'
+        '<PackageReference Include="JunitXml.TestLogger" Version="5.0.0" />'
+        "</ItemGroup></Project>"
+    )
+    (stack_with_pkg,) = detect_stacks(list(files), files)
+    assert (stack_with_pkg.junit_report, stack_with_pkg.junit_flag) == (
+        "junit.xml",
+        '--logger "junit;LogFilePath=junit.xml"',
+    )
+    assert not any("JunitXml.TestLogger" in n for n in stack_with_pkg.notes)
+
+
+def test_dotnet_without_target_has_no_junit_report():
+    (stack,) = detect_stacks(["App/App.csproj", "App/Program.cs"], {})
+    assert stack.junit_report == "" and stack.junit_flag == ""
+    assert stack.with_junit("dotnet test") is None
+
+
+def test_dotnet_solution_target_without_test_in_path_emits_junit_logger_note():
+    files = {
+        "App.sln": "Microsoft Visual Studio Solution File",
+        "nested/deep/spec/Specs.csproj": '<Project Sdk="Microsoft.NET.Sdk"></Project>',
+    }
+    (stack,) = detect_stacks(list(files), files)
+    assert stack.junit_flag == '--logger "junit;LogFilePath=junit.xml"'
+    assert any("JunitXml.TestLogger" in n for n in stack.notes)
+
+

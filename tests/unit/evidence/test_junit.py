@@ -69,12 +69,22 @@ JEST_SETUP = b"""<?xml version="1.0" encoding="UTF-8"?>
 </testsuite></testsuites>
 """
 
+# JunitXml.TestLogger (.NET) writes one testsuite per class or namespace
+DOTNET_JUNIT = b"""<?xml version="1.0" encoding="utf-8"?>
+<testsuites name="App.Tests.dll" tests="2" failures="0" errors="0" skipped="0" time="0.100">
+  <testsuite name="App.Tests.CalculatorTests" tests="2" time="0.100">
+    <testcase name="Add" classname="App.Tests.CalculatorTests" time="0.050" />
+    <testcase name="Subtract" classname="App.Tests.CalculatorTests" time="0.050" />
+  </testsuite>
+</testsuites>
+"""
+
 
 def _doc(data: bytes):
     return parse_evidence(json.dumps(junit.to_v1(data)))
 
 
-@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST])
+@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST, DOTNET_JUNIT])
 def test_every_runner_shape_is_detected_as_junit(data: bytes) -> None:
     assert detect_profile_format(data) == "junit"
 
@@ -148,6 +158,17 @@ def test_placing_joins_dotted_names_to_indexed_files() -> None:
             "CartTest::Totals::totals",
         ),
     ]
+
+
+def test_dotnet_junit_report_places_classnames_on_test_files() -> None:
+    doc = place_test_entries(_doc(DOTNET_JUNIT), {"App/Tests/CalculatorTests.cs"})
+
+    assert [e["test_id"] for e in doc.entries] == [
+        "App/Tests/CalculatorTests.cs::CalculatorTests::Add",
+        "App/Tests/CalculatorTests.cs::CalculatorTests::Subtract",
+    ]
+    assert doc.entries[0]["location"]["function"] == "CalculatorTests::Add"
+    assert doc.entries[0]["test_file"] == "App/Tests/CalculatorTests.cs"
 
 
 def test_a_name_two_files_end_with_is_not_guessed() -> None:
