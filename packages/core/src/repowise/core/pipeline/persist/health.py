@@ -105,6 +105,14 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
         logger.warning("health_snapshot_skipped", error=str(exc))
 
 
+def _metric_file_path(metric: Any) -> str | None:
+    if hasattr(metric, "file_path"):
+        return metric.file_path
+    if isinstance(metric, dict):
+        return metric.get("file_path")
+    return None
+
+
 def _read_skipped_head(repo_path: Any, rel_path: str) -> bytes | None:
     abs_p = (Path(repo_path) / rel_path) if repo_path is not None else None
     if abs_p is not None and abs_p.is_file():
@@ -265,8 +273,9 @@ async def save_full_health_report(
     skipped_paths = _collect_skipped_generated_paths(
         skipped_generated_files, traversal_stats, repo_path
     )
+    existing_paths = {p for m in metrics if (p := _metric_file_path(m)) is not None}
     gen_metrics = _build_skipped_generated_metrics(
-        skipped_paths, {m.file_path for m in metrics}, repo_path
+        skipped_paths, existing_paths, repo_path
     )
     if not metrics and not findings:
         # A pass that scored nothing is a broken pass, not a clean repository.
