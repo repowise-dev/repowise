@@ -203,7 +203,7 @@ def test_production_routes_say_their_window_requests_and_what_is_on_no_handler()
     from repowise.core.evidence.action_row import action_row, route_facts
     from repowise.core.evidence.measured_fold import RouteCost
 
-    cost = RouteCost("src/app.py::serve", "q1", 1, 0.6, 600.0, 40, None, 30.0, ("GET /x",))
+    cost = RouteCost("src/app.py::serve", "q1", 1, 0.6, 600.0, 40, 15.0, None, 30.0, ("GET /x",))
     row = action_row(
         cost, workload_name="api", workload_class="production", routes=route_facts(cost)
     ).as_dict()

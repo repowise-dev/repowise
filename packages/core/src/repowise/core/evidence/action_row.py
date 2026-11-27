@@ -328,11 +328,10 @@ def route_facts(cost: Any) -> dict[str, Any]:
     ``evidence.measured_fold.RouteCost``: ``requests``, ``total_ms``, the
     ``mean_ms`` per request, the slowest route's ``p95_ms``, ``errors`` and
     its ``routes`` (``METHOD template``, costliest first)."""
-    requests = int(cost.requests)
     return {
-        "requests": requests,
+        "requests": int(cost.requests),
         "total_ms": cost.total_ms,
-        "mean_ms": cost.total_ms / requests if requests else None,
+        "mean_ms": cost.mean_ms,
         "p95_ms": cost.p95_ms,
         "errors": cost.errors,
         "routes": list(cost.routes),

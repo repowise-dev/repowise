@@ -622,7 +622,9 @@ def test_a_route_row_reads_as_requests_in_every_form() -> None:
     from repowise.core.evidence.measured_fold import RouteCost
     from repowise.server.schemas.runtime_evidence import RouteRow
 
-    cost = RouteCost("src/app.py::serve", "q1", 1, 0.25, 500.0, 1000, 4, 12.5, ("GET /x/{id}",))
+    cost = RouteCost(
+        "src/app.py::serve", "q1", 1, 0.25, 500.0, 1000, 0.5, 4, 12.5, ("GET /x/{id}",)
+    )
     row = action_row(
         cost, workload_name="api", workload_class="production", routes=route_facts(cost)
     ).as_dict()

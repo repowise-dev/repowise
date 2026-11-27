@@ -11,9 +11,10 @@ Both sides are read into one form first (:func:`route_template`): every
 parameter is ``{param}`` whatever its syntax (``{repo_id}``, ``:id``,
 ``<int:id>``, ``[id]``, a whole-segment ``*``), case and a trailing slash
 dropped, as the contract matcher compares paths. The join then needs the
-same method (a stored ``*`` route serves any method, read only when no route
-names the method) and the same template, never a pattern match of one
-against the other, so it is never a wrong function before recall:
+same method (a stored route that serves every method, ``*`` or Spring's
+``ALL``, matches any method and counts beside the ones that name it) and the
+same template, never a pattern match of one against the other, so it is
+never a wrong function before recall:
 
 * the matching routes name one handler: the row names it;
 * they name more than one (or one the index could not resolve beside one it
@@ -21,18 +22,25 @@ against the other, so it is never a wrong function before recall:
 * they name none (an inline handler): ``no_handler``;
 * no stored route matches (a prefix the index could not see, a route from
   another service): ``unknown_route``.
+
+Ceiling: the stored routes are already case-folded and lose a trailing
+slash (the contract matcher's form), so two routes of one service that differ
+only by case or a trailing slash read as one; upgrade path: store the raw
+template beside the normalized one.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from typing import Any, NamedTuple
 
-#: A Werkzeug or Django converter parameter: ``<int:id>``, ``<path:p>``, ``<id>``.
-_ANGLE_PARAM_RE = re.compile(r"<(?:[^<>:/]+:)?[^<>:/]+>")
-#: A stored route that serves every method (a Django view, ``app.all``).
-ANY_METHOD = "*"
+#: A Werkzeug or Django converter parameter: ``<int:id>``, ``<path:p>``,
+#: ``<id>``, ``<any(a, b):kind>``; the name is an identifier.
+_ANGLE_PARAM_RE = re.compile(r"<(?:[A-Za-z_]\w*(?:\([^<>]*\))?:)?[A-Za-z_]\w*>")
+#: Stored methods of a route that serves every method (a Django view,
+#: ``app.all``, a Spring ``@RequestMapping`` naming none).
+ANY_METHODS = ("*", "ALL")
 
 
 class RouteMatch(NamedTuple):
@@ -72,9 +80,12 @@ def route_index(routes: Iterable[Any]) -> dict[tuple[str, str], tuple[Any, ...]]
 def match_route(method: str, route: str, index: RouteIndex) -> RouteMatch:
     """Join one ``route_latency`` entry to the stored routes (never a guess)."""
     template = route_template(route)
-    found: Sequence[Any] = index.get((method.upper(), template), ())
-    if not found:
-        found = index.get((ANY_METHOD, template), ())
+    # Every route that could have served it: one naming the method and one
+    # serving every method may be different handlers (two services), and
+    # then the join names none.
+    found: list[Any] = [
+        r for m in (method.upper(), *ANY_METHODS) for r in index.get((m, template), ())
+    ]
     if not found:
         return RouteMatch(None, "unknown_route")
     handlers = {r.handler_symbol_id for r in found}
@@ -84,4 +95,11 @@ def match_route(method: str, route: str, index: RouteIndex) -> RouteMatch:
     return RouteMatch(handler, None if handler else "no_handler")
 
 
-__all__ = ["ANY_METHOD", "RouteIndex", "RouteMatch", "match_route", "route_index", "route_template"]
+__all__ = [
+    "ANY_METHODS",
+    "RouteIndex",
+    "RouteMatch",
+    "match_route",
+    "route_index",
+    "route_template",
+]

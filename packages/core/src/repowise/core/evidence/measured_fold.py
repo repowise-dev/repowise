@@ -280,6 +280,9 @@ class RouteCost(NamedTuple):
     self_share: float | None
     total_ms: float
     requests: int
+    #: Mean time per request over the routes whose source gave a total; None
+    #: when none did (an untimed route is never read as 0 ms).
+    mean_ms: float | None
     #: Failed requests across its routes; None when the source did not say.
     errors: int | None
     #: The slowest 95th percentile among its routes; None when none said.
@@ -329,7 +332,7 @@ def fold_routes(runs: Iterable[Any], points: Iterable[RoutePoint]) -> list[Route
     keep = set(query_runs_to_read(runs))
     if not keep:
         return []
-    by_fn: dict[str, dict[str, list[tuple[float, str, int, float | None, int | None]]]] = {
+    by_fn: dict[str, dict[str, list[tuple[float, str, int, float | None, int | None, bool]]]] = {
         rid: {} for rid in keep
     }
     totals: dict[str, list[float]] = {rid: [0.0, 0, 0] for rid in keep}
@@ -343,7 +346,7 @@ def fold_routes(runs: Iterable[Any], points: Iterable[RoutePoint]) -> list[Route
         totals[run_id][2] += 1
         if symbol_id:
             by_fn[run_id].setdefault(symbol_id, []).append(
-                (ms, f"{method} {route}", count or 0, p95_ms, errors)
+                (ms, f"{method} {route}", count or 0, p95_ms, errors, total_ms is not None)
             )
         else:
             other[run_id][0] += ms
@@ -361,11 +364,13 @@ def fold_routes(runs: Iterable[Any], points: Iterable[RoutePoint]) -> list[Route
             ms = sum(h[0] for h in held)
             p95s = [h[3] for h in held if h[3] is not None]
             errs = [h[4] for h in held if h[4] is not None]
+            timed = sum(h[2] for h in held if h[5])
             costs.append(
                 (
                     sid,
                     ms,
                     sum(h[2] for h in held),
+                    ms / timed if timed else None,
                     max(p95s) if p95s else None,
                     sum(errs) if errs else None,
                     tuple(h[1] for h in held),
@@ -373,8 +378,8 @@ def fold_routes(runs: Iterable[Any], points: Iterable[RoutePoint]) -> list[Route
             )
         costs.sort(key=lambda c: (-c[1], -c[2], c[0]))
         rows = [
-            RouteCost(sid, run.id, rank, share(ms, whole), ms, n, errs, p95, names)
-            for rank, (sid, ms, n, p95, errs, names) in enumerate(costs, start=1)
+            RouteCost(sid, run.id, rank, share(ms, whole), ms, n, mean, errs, p95, names)
+            for rank, (sid, ms, n, mean, p95, errs, names) in enumerate(costs, start=1)
         ]
         ms, n = other[run.id]
         unattributed = (

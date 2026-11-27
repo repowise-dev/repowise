@@ -29,6 +29,10 @@ STORED = [
     _route("POST", "/hooks", "app/a.py::hook"),
     _route("POST", "/hooks", "app/b.py::hook"),
     _route("*", "/legacy/{param}", "app/r.py::legacy"),
+    _route("ALL", "/spring/{param}", "app/r.py::spring"),
+    # Two services: one names the method, one serves every method.
+    _route("GET", "/status", "svc_a/app.py::status"),
+    _route("*", "/status", "svc_b/views.py::status"),
 ]
 
 
@@ -66,6 +70,12 @@ def test_every_parameter_syntax_reads_as_one_template(route) -> None:
         ("PUT", "/repos/{id}", (None, "unknown_route")),
         # A route serving every method, read when no route names the method.
         ("PATCH", "/legacy/:id", ("app/r.py::legacy", None)),
+        ("GET", "/spring/{id}", ("app/r.py::spring", None)),
+        # Either service could have served it: never a guess.
+        ("GET", "/status", (None, "ambiguous_route")),
+        # A converter with arguments is one parameter; a non-name in angles is not.
+        ("GET", "/repos/<any(a, b):kind>", ("app/r.py::get_repo", None)),
+        ("GET", "/repos/<-x>", (None, "unknown_route")),
     ],
 )
 def test_the_join_names_one_handler_or_says_why_not(method, route, expected) -> None:
@@ -110,19 +120,24 @@ def test_the_fold_sums_each_handler_over_its_routes_and_keeps_the_newest_window(
         ("new", "app/r.py::get_repo", "GET", "/repos/:id", 10, 300.0, 80.0, 1),
         ("new", "app/r.py::get_repo", "HEAD", "/repos/:id", 5, 100.0, 120.0, None),
         ("new", "app/r.py::my_repos", "GET", "/repos/me", 40, 500.0, None, 2),
+        # An untimed route counts its requests, never a 0 ms mean.
+        ("new", "app/r.py::my_repos", "POST", "/repos/me", 60, None, None, None),
         ("new", None, "GET", "/nowhere", 3, 100.0, 50.0, 0),
     ]
     (found,) = fold_routes(runs, points)
-    assert (found.run.id, found.total_ms, found.requests, found.routes) == ("new", 1000.0, 58, 4)
+    assert (found.run.id, found.total_ms, found.requests, found.routes) == ("new", 1000.0, 118, 5)
     mine, repo = found.rows
     assert (mine.symbol_id, mine.rank, mine.self_share, mine.requests) == (
         "app/r.py::my_repos",
         1,
         0.5,
-        40,
+        100,
     )
-    assert (mine.p95_ms, mine.errors) == (None, 2)
+    # The mean is over the 40 timed requests only.
+    assert (mine.mean_ms, mine.p95_ms, mine.errors) == (12.5, None, 2)
+    assert mine.routes == ("GET /repos/me", "POST /repos/me")
     assert (repo.rank, repo.self_share, repo.total_ms, repo.requests) == (2, 0.4, 400.0, 15)
+    assert repo.mean_ms == 400.0 / 15
     # The slowest p95 among its routes; errors as far as the source said.
     assert (repo.p95_ms, repo.errors) == (120.0, 1)
     assert repo.routes == ("GET /repos/:id", "HEAD /repos/:id")
