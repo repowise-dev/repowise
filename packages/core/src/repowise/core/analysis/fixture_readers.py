@@ -146,10 +146,13 @@ def helper_readers(
         return {}
     out: dict[str, list[str]] = {h: [] for h in names}
     pairs = _ReaderIndex(names)
-    for p in sorted(test_files):  # file by file, so its per-text reads are cached once
-        for h in pairs.helpers_for(p, texts.get(p)):
-            if p != h and _reads(p, h, names[h], texts):
-                out[h].append(p)
+    try:
+        for p in sorted(test_files):  # file by file, so its per-text reads are cached once
+            for h in pairs.helpers_for(p, texts.get(p)):
+                if p != h and _reads(p, h, names[h], texts):
+                    out[h].append(p)
+    finally:
+        _run_starts.cache_clear()  # a text's index is several times its size
     return out
 
 
@@ -175,11 +178,13 @@ class _ReaderIndex:
         self.parent: dict[str, list[str]] = {}
         self.by_run: dict[str, list[tuple[frozenset[str], str]]] = {}
         self.always: list[str] = []
-        for h, (words, dirs) in names.items():
+        for h, (_, dirs) in names.items():
             parent, near = _helper_dirs(h)
             self.near.setdefault(str(near), []).append(h)
             self.parent.setdefault(str(parent), []).append(h)
-            for name in {n.lower() for n in (*words, *dirs)}:
+            # The words as _names_helper and _writes_dir spell them: ``ΟΣ.py`` lowercased
+            # whole is ``οσ.py``, its stem alone ``ος``.
+            for name in {*_named_by(h)[2], *(d.lower() for d in dirs)}:
                 runs = _RUN.findall(name)
                 if runs:
                     self.by_run.setdefault(runs[0], []).append((frozenset(runs), h))
@@ -318,11 +323,9 @@ def _names_helper(
     test file *reader*; in a config (*reader* ``None``, in directory *at*) only a bare
     file name does, and a relative path counts when it resolves to the helper from *at*.
     """
-    path = PurePosixPath(helper.lower())
-    stem = path.name.split(".")[0]
+    path, stem, words = _named_by(helper)
     module = (*path.parts[:-1], stem)
-    words = (path.name,) if stem in _ENTRY_STEMS else (path.name, stem)
-    for word in dict.fromkeys(w for w in words if w):
+    for word in words:
         target = path.parts if word == path.name else module
         for start in _word_starts(text, word):
             before = text[max(0, start - _WINDOW) : start]
@@ -368,13 +371,24 @@ def _alone(text: str, word: str) -> list[int] | None:
     ]
 
 
-@functools.lru_cache(maxsize=8)  # the file-by-file loop asks one text at a time
+@functools.lru_cache(maxsize=1)  # the file-by-file loop asks about one text at a time
 def _run_starts(text: str) -> dict[str, list[int]]:
     """``{[\\w-] run: where it starts}`` for every maximal run in *text*."""
     out: dict[str, list[int]] = {}
     for m in _RUN.finditer(text):
         out.setdefault(m.group(), []).append(m.start())
     return out
+
+
+def _named_by(helper: str) -> tuple[PurePosixPath, str, tuple[str, ...]]:
+    """*helper*'s lowercased path, stem, and the words :func:`_names_helper` looks for.
+
+    The whole path is lowercased before it is split, as a name in a text is.
+    """
+    path = PurePosixPath(helper.lower())
+    stem = path.name.split(".")[0]
+    words = (path.name,) if stem in _ENTRY_STEMS else (path.name, stem)
+    return path, stem, tuple(dict.fromkeys(w for w in words if w))
 
 
 #: How far back a path or module path written before a name is read.

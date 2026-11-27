@@ -490,7 +490,7 @@ def test_an_unreadable_test_file_keeps_every_helper_unknown() -> None:
 # Helper reads over many test files and helpers: what is skipped must not change an answer.
 _NAMES = (
     "client", "client.py", "models", "a.a", ".hidden.js", "my-tool", "naïve", "_x",
-    "tests", "cases", "e2e", "tools", "main.go", "sub",
+    "tests", "cases", "e2e", "tools", "main.go", "sub", "οσ", "ος.py",
 )  # fmt: skip
 _EDGES = (" ", ".", "/", "\\", '"', "'", "-", "(", "\n", "_", "a", "", "glob(", " as ")
 
@@ -526,7 +526,9 @@ def test_helper_readers_matches_checking_every_test_file_against_every_helper() 
     from repowise.core.analysis import fixture_readers as fr
 
     dirs = ("tests", "tests/e2e", "tests/e2e/tools", "suite/cases/sub", "web/my-tool", "pkg")
-    leaves = ("client.py", "models.py", "main.go", "a.a.py", "test_x.py", "case.json", "_x.ts")
+    leaves = (
+        "client.py", "models.py", "main.go", "a.a.py", "test_x.py", "case.json", "_x.ts", "ΟΣ.py",
+    )  # fmt: skip
     files = [f"{d}/{leaf}" for d in dirs for leaf in leaves]
     sources = dict(zip(files, _corpus(11, len(files)), strict=True))
     helpers = [f for f in files if PurePosixPath(f).name != "test_x.py"]
