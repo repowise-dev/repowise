@@ -491,6 +491,11 @@ def _rewrite_hook_command() -> str:
     return hook_shell_command(_REWRITE)
 
 
+def _stop_hook_command() -> str:
+    """:data:`_STOP_HOOK_COMMAND`, pinned to the running install when it can be."""
+    return hook_shell_command(_AUGMENT, "exec {} --decision-stop")
+
+
 #: The gate releases before :data:`_CAPTURE_GATE` wrote: ``git commit`` alone.
 _COMMIT_ONLY_GATE = 'input=$(cat); case "$input" in *"git commit"*) '
 
@@ -516,8 +521,8 @@ _BARE_COMMANDS = ("repowise augment", _AUGMENT, _REWRITE)
 def _current_command(cmd: str) -> str | None:
     """The command this release writes in place of *cmd*, or None if *cmd* is not ours.
 
-    Only the plain augment, capture and rewrite commands qualify: the coverage
-    and health-gate commands carry a flag and are written elsewhere.
+    Only the plain augment, capture, rewrite and Stop commands qualify: the
+    coverage and health-gate commands carry a flag and are written elsewhere.
     """
     if cmd in ("repowise augment", _AUGMENT) or cmd.endswith(f"exec {_AUGMENT}; fi"):
         return None if " --" in cmd else _augment_hook_command()
@@ -525,6 +530,8 @@ def _current_command(cmd: str) -> str | None:
         return _rewrite_hook_command()
     if cmd.endswith(f"| {_AUGMENT}; fi;; esac"):
         return _capture_hook_command()
+    if cmd.endswith(f"exec {_AUGMENT} --decision-stop; fi"):
+        return _stop_hook_command()
     return None
 
 
@@ -815,7 +822,7 @@ def _backfill_event(hooks: dict, event: str, entry_factory) -> bool:
 
 
 def _stop_entry() -> dict:
-    return {"hooks": [{"type": "command", "command": _STOP_HOOK_COMMAND, "timeout": 10}]}
+    return {"hooks": [{"type": "command", "command": _stop_hook_command(), "timeout": 10}]}
 
 
 def _plugin_ships_stop_hook() -> bool:

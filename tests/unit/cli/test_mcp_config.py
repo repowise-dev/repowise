@@ -1057,8 +1057,20 @@ def test_migrate_backfills_the_stop_hook_beside_a_user_stop_hook(
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert saved["hooks"]["Stop"][0] == mine
-    assert _repowise_entries(saved, "Stop") == [(None, claude_config._STOP_HOOK_COMMAND)]
+    assert _repowise_entries(saved, "Stop") == [(None, claude_config._stop_hook_command())]
+    # Listed like every other user-settings hook, so doctor and `agents refresh` see it.
+    assert (
+        claude_config.CLAUDE_SETTINGS_LABEL,
+        claude_config._stop_hook_command(),
+    ) in claude_config.claude_code_hook_commands()
     assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_the_stop_command_is_recognised_pinned_or_bare() -> None:
+    """Both forms map to the pinned one, so refresh repins it and doctor resolves it."""
+    want = claude_config._stop_hook_command()
+    assert claude_config._current_command(claude_config._STOP_HOOK_COMMAND) == want
+    assert claude_config._current_command(want) == want
 
 
 def test_migrate_preserves_a_user_failure_hook(
