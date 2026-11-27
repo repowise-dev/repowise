@@ -9,6 +9,7 @@ the contract side reads, so only axum overlaps.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -112,6 +113,58 @@ def _add_rust_router_edges(
     return count
 
 
+_RUST_INCLUDE_RE = re.compile(
+    r'\b(?:core::|std::)?include(?:_str|_bytes)?!\s*[\(\[\{]\s*(?:r(#*)"(.*?)"\1|"((?:[^"\\]|\\.)*)")\s*[\)\]\}]'
+)
+
+
+def _add_rust_include_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    ctx: ResolverContext,
+    path_set: set[str],
+) -> int:
+    all_paths = (ctx.path_set if ctx and ctx.path_set else set()) | path_set
+    count = 0
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language != "rust":
+            continue
+        text = read_text(parsed)
+        if not text or "include" not in text:
+            continue
+        base = posixpath.dirname(path)
+        for m in _RUST_INCLUDE_RE.finditer(text):
+            spec = m.group(2) if m.group(2) is not None else m.group(3)
+            if not spec or spec.startswith("/") or "\n" in spec:
+                continue
+            spec = spec.replace("\\\\", "/").replace("\\", "/")
+            resolved = posixpath.normpath(posixpath.join(base, spec))
+            if (
+                not resolved.startswith("..")
+                and resolved != path
+                and resolved in all_paths
+                and _add_edge_if_new(graph, path, resolved)
+            ):
+                count += 1
+    return count
+
+
+class _RustIncludeHandler:
+    """``include_str!``, ``include_bytes!`` and ``include!`` embed a file by path."""
+
+    def detect(self, dctx: DetectionContext) -> bool:
+        return any(p.endswith(".rs") for p in dctx.path_set)
+
+    def add_edges(
+        self,
+        graph: nx.DiGraph,
+        parsed_files: dict[str, Any],
+        ctx: ResolverContext,
+        path_set: set[str],
+    ) -> int:
+        return _add_rust_include_edges(graph, parsed_files, ctx, path_set)
+
+
 class _RustRouterHandler:
     def detect(self, dctx: DetectionContext) -> bool:
         return _has_rust_router_imports(dctx.parsed_files)
@@ -126,4 +179,4 @@ class _RustRouterHandler:
         return _add_rust_router_edges(graph, parsed_files, path_set)
 
 
-HANDLERS: list[FrameworkHandler] = [_RustRouterHandler()]
+HANDLERS: list[FrameworkHandler] = [_RustRouterHandler(), _RustIncludeHandler()]

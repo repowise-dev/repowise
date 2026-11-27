@@ -197,3 +197,37 @@ class TestRustGate:
         ctx = _ctx(tmp_path, parsed)
         count = add_framework_edges(graph, parsed, ctx, tech_stack=[])
         assert count == 0
+
+
+class TestRustIncludeMacros:
+    def test_included_file_gains_an_edge(self, tmp_path: Path) -> None:
+        (tmp_path / "src").mkdir(parents=True)
+        (tmp_path / "src/lib").mkdir(parents=True)
+        (tmp_path / "src-tauri/src").mkdir(parents=True)
+
+        (tmp_path / "src/lib/inject.ts").write_text("export const inject = 1;\n")
+        (tmp_path / "src/asset.bin").write_bytes(b"\x00\x01\x02")
+        (tmp_path / "src-tauri/src/helper.rs").write_text("fn helper() {}\n")
+        (tmp_path / "src-tauri/src/main.rs").write_text(
+            'const INIT: &str = include_str!("../../src/lib/inject.ts");\n'
+            'const DATA: &[u8] = include_bytes!("../../src/asset.bin");\n'
+            'include!("helper.rs");\n'
+            '// A missing file adds no edge:\n'
+            'const MISSING: &str = include_str!("missing.txt");\n'
+            '// A path leaving repo adds no edge:\n'
+            'const ESCAPE: &str = include_str!("../../../outside.txt");\n'
+        )
+
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in ("src-tauri/src/main.rs", "src-tauri/src/helper.rs", "src/lib/inject.ts", "src/asset.bin"):
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        ctx.path_set.update({"src/lib/inject.ts", "src/asset.bin"})
+
+        count = add_framework_edges(graph, parsed, ctx, tech_stack=[])
+        assert count == 3
+        assert graph.has_edge("src-tauri/src/main.rs", "src/lib/inject.ts")
+        assert graph.has_edge("src-tauri/src/main.rs", "src/asset.bin")
+        assert graph.has_edge("src-tauri/src/main.rs", "src-tauri/src/helper.rs")
+        assert not graph.has_edge("src-tauri/src/main.rs", "src-tauri/src/missing.txt")
