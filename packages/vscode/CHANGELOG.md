@@ -40,6 +40,12 @@ release history.
   `REPOWISE_CLIENT=vscode_ext`, so the CLI's usage telemetry labels them as the
   extension rather than a plain VS Code terminal.
 
+### Panels
+
+- The Change Risk panel and its tab read **Review**, the name of the web page
+  the panel shows, and the command reads **Review Change**. The command id is
+  unchanged.
+
 ### Color
 
 - The gutter and overview ruler mark findings in red and amber, as the web UI
@@ -54,6 +60,8 @@ release history.
 - The six Copilot Chat language model tools and the `repowise.agentTools.enabled`
   setting. The MCP server the extension registers carries the same lookups and
   more, and does not need the local server running.
+- The `repowise.risk.baseBranch` setting. The Review panel compares against the
+  base the change list gives.
 
 ## 0.16.0
 

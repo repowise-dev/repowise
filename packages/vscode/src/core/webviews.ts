@@ -38,7 +38,7 @@ const VIEW_META: Record<PanelViewId, ViewMeta> = {
   refactoring: { title: "Repowise Refactoring", retainContextWhenHidden: false },
   decisions: { title: "Repowise Decisions", retainContextWhenHidden: false },
   docs: { title: "Repowise Docs", retainContextWhenHidden: false },
-  risk: { title: "Repowise Change Risk", retainContextWhenHidden: false },
+  risk: { title: "Repowise Review", retainContextWhenHidden: false },
   settings: { title: "Repowise Settings", retainContextWhenHidden: false },
 };
 

@@ -105,7 +105,7 @@ const DESTINATIONS: Destination[] = [
         : null,
   },
   { view: "docs", title: "Docs", icon: BookOpen },
-  { view: "risk", title: "Change Risk", icon: GitBranch },
+  { view: "risk", title: "Review", icon: GitBranch },
 ];
 
 export function App({ host, repo, refreshToken }: ViewProps<"home">) {
@@ -404,8 +404,8 @@ function NextSteps({
   defaultBranch: string | null;
   onOpen: (view: PanelViewId) => void;
 }) {
-  // The risk panel resolves its own comparison base (a configured
-  // risk.baseBranch wins over the repo default), so this row names none.
+  // The Review panel takes its comparison base from the change list, so this
+  // row names none.
   const branch = summary?.freshness.branch ?? null;
   const onDefault = branch == null || branch === (defaultBranch ?? "main");
   const findings = summary?.health?.openFindings ?? 0;

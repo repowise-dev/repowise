@@ -1,5 +1,5 @@
 /**
- * Change Risk panel: the web Review page. The shared impact view opens the
+ * Review panel: the web Review page. The shared impact view opens the
  * most relevant change (work in progress, else the checked-out branch) and
  * reads it the way the web does: findings and what to check first, the
  * change-risk rank demoted to one line beside its review priority, then where

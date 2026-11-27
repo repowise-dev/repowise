@@ -34,7 +34,7 @@ const NAV: NavItem[] = [
   { view: "refactoring", title: "Refactoring", icon: Wrench },
   { view: "decisions", title: "Decisions", icon: Scale },
   { view: "docs", title: "Docs", icon: BookOpen },
-  { view: "risk", title: "Change Risk", icon: GitBranch },
+  { view: "risk", title: "Review", icon: GitBranch },
 ];
 
 /**

@@ -221,20 +221,6 @@ const GROUPS: Group[] = [
       },
     ],
   },
-  {
-    title: "Branch risk",
-    blurb: "Defaults for branch risk scoring.",
-    rows: [
-      {
-        key: "risk.baseBranch",
-        label: "Base branch",
-        description:
-          "Base branch for branch risk scoring. Leave empty to use the repository's default branch.",
-        kind: "text",
-        placeholder: "main",
-      },
-    ],
-  },
 ];
 
 export function App({ host, refreshToken }: ViewProps<"settings">) {
