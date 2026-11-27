@@ -94,7 +94,7 @@ command), `mcp_tool_call` (once per MCP tool call) and `view_opened` (once per
 local web UI view). Each carries an anonymous envelope (`anon_id`,
 `session_id`, `cli_version`, `os`, `arch`, `python_version` at major.minor
 only, `is_ci`) and a `client` label naming the host that ran Repowise
-(`claude_code`, `codex`, `cursor`, `vscode`, `ci`, `terminal`, or for an MCP
+(`vscode_ext`, `claude_code`, `codex`, `cursor`, `vscode`, `ci`, `terminal`, or for an MCP
 call the supported agent its announced name maps to, else `unknown`). `command_run` adds the
 command name, a known subcommand name, flag **names** only, a status enum, an
 exception **class name**, a duration, and command-specific fixed labels,

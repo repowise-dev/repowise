@@ -161,19 +161,35 @@ _HOST_ENV_VARS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("vscode", ("VSCODE_PID", "VSCODE_IPC_HOOK_CLI")),
 )
 
+#: A launcher that knows what it is names itself here (the VS Code extension
+#: sets ``vscode_ext`` on every process it starts). Only these values count.
+CLIENT_ENV = "REPOWISE_CLIENT"
+_DECLARED_CLIENTS = frozenset({"vscode_ext"})
+#: Editor labels a declared launcher outranks; agents still outrank it.
+_EDITOR_LABELS = frozenset({"cursor", "vscode"})
+
 #: Every value :func:`detect_client` can return.
-CLIENT_LABELS = frozenset({label for label, _ in _HOST_ENV_VARS} | {"ci", "terminal"})
+CLIENT_LABELS = frozenset(
+    {label for label, _ in _HOST_ENV_VARS} | {"ci", "terminal"} | _DECLARED_CLIENTS
+)
 
 
 def detect_client() -> str:
     """Name the host that launched this process, from its environment alone.
 
-    One fixed label, never an env value: ``claude_code``, ``codex``,
-    ``cursor``, ``vscode``, ``ci``, else ``terminal``.
+    One fixed label, never an env value: ``claude_code`` or ``codex``, then a
+    known ``REPOWISE_CLIENT`` (``vscode_ext``), then ``cursor``, ``vscode``,
+    ``ci``, else ``terminal``. An agent wins over the declared launcher because
+    an agent run in the extension's terminal inherits its variable.
     """
+    declared = os.environ.get(CLIENT_ENV, "").strip().lower()
     for label, names in _HOST_ENV_VARS:
+        if label in _EDITOR_LABELS and declared in _DECLARED_CLIENTS:
+            return declared
         if any(os.environ.get(name) for name in names):
             return label
+    if declared in _DECLARED_CLIENTS:
+        return declared
     if os.environ.get("TERM_PROGRAM", "").lower() == "vscode":
         return "vscode"
     return "ci" if _is_ci() else "terminal"

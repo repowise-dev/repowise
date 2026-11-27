@@ -65,7 +65,7 @@ Full dashboards open right in an editor tab, no browser needed:
 
 ## One install, two brains
 
-VS Code agent mode sees the Repowise tools automatically after install: no config, no copy-pasting JSON. For other editors and MCP clients, one command writes the config for your workspace. The signal you see in the gutter and the context your agent reasons with come from the same index, so you are never debugging two different opinions about your code.
+VS Code agent mode sees the Repowise MCP tools automatically after install: no config, no copy-pasting JSON. For other editors and MCP clients, one command writes the config for your workspace. The MCP server runs straight from the CLI, so your agent's tools work whether or not the local server is running. The signal you see in the gutter and the context your agent reasons with come from the same index, so you are never debugging two different opinions about your code.
 
 ## Quiet by design
 
@@ -75,7 +75,7 @@ Nothing polls, nothing scans in the background, and nothing interrupts you. Data
 
 1. Install the CLI: `uv tool install repowise` (or `pip install repowise`).
 2. Open your repository and run **Repowise: Set Up This Repository**, or follow the Get Started walkthrough.
-3. That's it. The extension finds your local server automatically, or offers to start one when you first need it.
+3. That's it. The extension finds your local server automatically, or asks once whether to start one. Click the status bar item to stop or restart it whenever you want its memory back; a server the extension started stops when you close the window.
 
 ## Commands
 
@@ -90,7 +90,7 @@ Nothing polls, nothing scans in the background, and nothing interrupts you. Data
 | Repowise: Open Docs for This File | Open the generated docs for the active file |
 | Repowise: Update Index | Sync the index with your latest commits |
 | Repowise: Configure MCP for this Workspace | Write `.vscode/mcp.json` for MCP clients |
-| Repowise: Start Server / Stop Server | Manage the local server |
+| Repowise: Start Server / Stop Server / Restart Server | Manage the local server (also from the status bar item) |
 | Repowise: Open Settings | Tune every surface from one panel |
 | Repowise: Check Setup | Diagnose install, keys, and index state |
 | Repowise: Show Log | Open the extension log |
@@ -102,6 +102,7 @@ The quickest way to tune Repowise is **Repowise: Open Settings**, a friendly pan
 | Setting | Default | Purpose |
 |---|---|---|
 | `repowise.server.autoStart` | `ask` | Start the local server automatically, ask first, or never |
+| `repowise.server.idleStopMinutes` | `0` | Stop a server the extension started after this many idle minutes; `0` keeps it running |
 | `repowise.risk.baseBranch` | default branch | Base branch change risk is scored against |
 | `repowise.hover.symbolDetail` | `true` | Callers, ownership, and decisions on symbol hover |
 | `repowise.changeIntel.cochangeNudge` | `true` | The quiet "usually change together" status-bar hint |
