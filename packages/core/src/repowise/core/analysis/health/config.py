@@ -272,8 +272,9 @@ class HealthConfig:
     # this one provably cannot move a score.
     assert_extra_names: list[str] = field(default_factory=list)
     # ``health.duplication.enabled`` in config.yaml. Off disables the
-    # ``dry_violation`` biomarker, the one consumer of clone detection, so the
-    # duplication pass and its caches are skipped wherever that biomarker is.
+    # ``dry_violation`` biomarker, which gates clone detection, so the pass and
+    # its caches are skipped wherever that biomarker is; the duplicated
+    # assertion block marker and Extract Helper then see no clones either.
     duplication_enabled: bool = True
 
     @classmethod

@@ -31,8 +31,9 @@ SETTINGS: tuple[Setting, ...] = (
         "health.duplication.enabled",
         "bool",
         True,
-        "Find duplicated code (the DRY violation finding). Off skips it in init and "
-        "update and deletes its cache files under .repowise/.",
+        "Find duplicated code, which DRY violation findings, copied test assertion blocks "
+        "and Extract Helper plans are built from. Off skips it in init and update and "
+        "deletes its cache files under .repowise/.",
     ),
     _s(
         "performance.warm_caches",

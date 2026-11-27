@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -39,7 +41,8 @@ def test_a_mostly_free_store_gets_the_command_and_is_left_alone(tmp_path):
     assert row is not None
     assert row.id == "wiki-db-free-space"
     assert row.level == "warn" and row.ok
-    assert "VACUUM" in row.fix and db.resolve().as_posix() in row.fix
+    assert "VACUUM" in row.fix and db.resolve().as_uri() in row.fix
+    assert row.fix in row.detail
     assert row.data["free_bytes"] > row.data["file_bytes"] // 4
     assert db.stat().st_size == size
 
@@ -51,3 +54,16 @@ def test_a_store_mostly_in_use_shows_no_row(tmp_path):
 
 def test_no_store_shows_no_row(tmp_path):
     assert core._wiki_db_free_row(CheckContext(tmp_path, tmp_path / ".repowise")) is None
+
+
+def test_the_printed_command_runs_on_a_path_shells_would_mangle(tmp_path):
+    repo = tmp_path / "O'Brien $HOME 100%"
+    db = _store(repo, keep=10)
+    before = db.stat().st_size
+    row = core._wiki_db_free_row(CheckContext(repo, repo / ".repowise"))
+    assert row is not None
+
+    command = row.fix.replace("python", f'"{sys.executable}"', 1)
+    subprocess.run(command, shell=True, check=True)
+
+    assert db.stat().st_size < before

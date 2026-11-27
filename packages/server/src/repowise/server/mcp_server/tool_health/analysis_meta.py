@@ -121,11 +121,11 @@ def _attach_duplication_off(meta: dict[str, Any], repo_path: Any) -> None:
     if repo_path is None or "health_analysis" not in meta:
         return
     from repowise.core.analysis.health.config import duplication_enabled
-    from repowise.core.repo_config import load_repo_config
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
 
     try:
         config = load_repo_config(repo_path)
-    except Exception:  # a broken config.yaml is doctor's to report, not get_health's
+    except (RepoConfigError, OSError):  # a broken config.yaml is doctor's to report
         return
     if not duplication_enabled(config):
         meta["health_analysis"]["duplication"] = "off: health.duplication.enabled is false"

@@ -1017,7 +1017,7 @@ Performance group, together with `wiki.page_versions_keep` and
 <!-- BEGIN GENERATED settings:health (python scripts/gen_config_docs.py) -->
 | Key | Default | What it does |
 |-----|---------|--------------|
-| `duplication.enabled` | `true` | Find duplicated code (the DRY violation finding). Off skips it in init and update and deletes its cache files under .repowise/. |
+| `duplication.enabled` | `true` | Find duplicated code, which DRY violation findings, copied test assertion blocks and Extract Helper plans are built from. Off skips it in init and update and deletes its cache files under .repowise/. |
 <!-- END GENERATED settings:health -->
 
 <!-- BEGIN GENERATED settings:performance (python scripts/gen_config_docs.py) -->
@@ -1027,8 +1027,9 @@ Performance group, together with `wiki.page_versions_keep` and
 <!-- END GENERATED settings:performance -->
 
 - `health.duplication.enabled: false` skips clone detection in `init` and
-  `update`, so the DRY violation finding and the per-file duplication share go,
-  and the next update deletes `duplication_cache.pkl`,
+  `update`, so what is built from clones goes with it: DRY violation and
+  duplicated assertion block findings, Extract Helper plans and the per-file
+  duplication share. The next update deletes `duplication_cache.pkl`,
   `duplication_cache_delta.pkl` and `duplication_pairs.pkl` from `.repowise/`
   (on a fresh index they are 14 to 24% of its size). The next `update` after
   the change re-scores health without them; `get_health` says

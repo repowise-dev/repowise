@@ -664,7 +664,7 @@ Opt-in blocks, computed only when named: `outline` (page tree, two levels), `tou
 
 - `unresolved` reasons: `not_indexed`, `no_such_path` (with `removed_by_commit` and `moved_to` when git explains it), `excluded`, `not_measured`, `no_such_module` (with `known_modules`).
 - `mode`, `_meta`, `unresolved`, `known_modules` and every kept list's `*_total` survive `only`. `scope` and `counts` are echoed.
-- `_meta.health_analysis`: stored analysis, not recomputed; `status` `available`, `provenance_unknown` (no row recorded the commit) or `unavailable`, with `reason` and `refresh` when not `available`, `analyzer_version`, and `duplication` (`off: ...`) only while `health.duplication.enabled` is false, so no DRY violation finding means duplication was not looked for. `_meta.health_analyzed_at` / `_commit` date the pass, which can lag indexing; `_meta.health_analyzed_commits_distinct` when rows span passes.
+- `_meta.health_analysis`: stored analysis, not recomputed; `status` `available`, `provenance_unknown` (no row recorded the commit) or `unavailable`, with `reason` and `refresh` when not `available`, `analyzer_version`, and `duplication` (`off: ...`) only while `health.duplication.enabled` is false, so a missing DRY violation finding means duplication was not looked for. `_meta.health_analyzed_at` / `_commit` date the pass, which can lag indexing; `_meta.health_analyzed_commits_distinct` when rows span passes.
 
 ### fix_first
 

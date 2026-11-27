@@ -657,9 +657,10 @@ class HealthAnalyzer:
     def _duplication_off(self, run: _RunConfig) -> bool:
         """Whether the pass skips clone detection; when it does, the caches go.
 
-        ``dry_violation`` is the one reader of clone pairs, so with it disabled
-        (``health.duplication.enabled: false`` disables it) the token, delta
-        and pair caches under ``.repowise`` are dead weight. They are deleted
+        Clone detection runs only for ``dry_violation`` (the duplicated
+        assertion block marker and Extract Helper reuse its pairs), so with it
+        disabled (``health.duplication.enabled: false`` disables it) the token,
+        delta and pair caches under ``.repowise`` are dead weight. They are deleted
         here so turning duplication off frees the disk on the next pass, and
         turning it back on rebuilds them from scratch on the pass after.
         """
