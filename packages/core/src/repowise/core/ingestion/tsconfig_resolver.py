@@ -39,7 +39,7 @@ import structlog
 from repowise.core.fs_walk import _is_reparse_point
 
 from .models import TS_JS_LANGUAGES
-from .vite_aliases import VITE_CONFIG_GLOBS, is_vite_config, vite_aliases
+from .vite_aliases import VITE_CONFIG_GLOBS, config_load_order, is_vite_config, vite_aliases
 
 log = structlog.get_logger(__name__)
 
@@ -291,16 +291,24 @@ class TsconfigResolver:
                 if projects:
                     self._config_projects[resolved.config_path] = projects
 
-        # ``vite.config.*`` before ``vitest.config.*`` in one directory; the
-        # first entry for an alias wins, as it does inside one config. Ceiling:
-        # Vitest alone loads ``vitest.config.*`` and Vite alone ``vite.config.*``,
-        # but the graph keeps one resolution per import, so a test-only alias
-        # that maps a ``find`` elsewhere than the app's is not followed.
-        for config_file in sorted(vite_configs, key=lambda p: (str(p.parent), p.name)):
+        # Per directory, the one ``vite.config.*`` Vite loads and the one
+        # ``vitest.config.*`` Vitest loads, Vite's first; the first entry for an
+        # alias wins, as it does inside one config. Ceiling: Vitest alone loads
+        # ``vitest.config.*``, but the graph keeps one resolution per import, so
+        # a test-only alias that maps a ``find`` elsewhere than the app's is not
+        # followed.
+        loaded: set[tuple[Path, str]] = set()
+        for config_file in sorted(
+            vite_configs, key=lambda p: (str(p.parent), config_load_order(p.name))
+        ):
+            directory = config_file.parent.resolve()
+            tool = config_load_order(config_file.name)[0]
+            if (directory, tool) in loaded:
+                continue
+            loaded.add((directory, tool))
             # Recorded even when empty: the nearest Vite config answers for the
             # files under it, and an ancestor's aliases never apply there.
             entries = self._vite_alias_entries(config_file.resolve())
-            directory = config_file.parent.resolve()
             merged = self._dir_to_vite_entries.setdefault(directory, [])
             seen = {pattern for pattern, _ in merged}
             merged.extend(e for e in entries if e[0] not in seen)

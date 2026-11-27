@@ -235,6 +235,20 @@ class TestResolveThroughVite:
         assert resolver.resolve("@/lib/x", str(tmp_path / "src/main.ts")) == "src/lib/x.ts"
         assert resolver.resolve("@/lib/x", str(tmp_path / "packages/web/src/main.ts")) is None
 
+    def test_only_the_config_vite_loads_is_read(self, tmp_path: Path) -> None:
+        # Vite tries ``.js`` before ``.cjs``, though ``.cjs`` sorts first.
+        resolver = _resolver(
+            tmp_path,
+            {
+                "vite.config.js": _VITE % "'/src'",
+                "vite.config.cjs": "module.exports = { resolve: { alias: { '~': '/lib' } } }",
+            },
+            {"src/a.ts", "lib/b.ts"},
+        )
+        importer = str(tmp_path / "main.ts")
+        assert resolver.resolve("@/a", importer) == "src/a.ts"
+        assert resolver.resolve("~/b", importer) is None
+
     def test_dynamic_alias_adds_nothing(self, tmp_path: Path) -> None:
         resolver = _resolver(
             tmp_path,

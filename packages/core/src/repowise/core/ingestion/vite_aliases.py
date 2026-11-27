@@ -41,13 +41,14 @@ from urllib.parse import unquote
 
 from .languages.js_config_values import split_top_level, value_spans
 
-# The names Vite and Vitest look for by default; a ``vite.config.backup.ts``
-# is only loaded through ``--config``.
-_CONFIG_NAMES = frozenset(
-    f"{stem}.config.{ext}"
+# The names Vite and Vitest look for by default, in the order each tries them
+# (the first that exists is the one loaded); a ``vite.config.backup.ts`` is only
+# loaded through ``--config``.
+_CONFIG_RANK = {
+    f"{stem}.config.{ext}": rank
     for stem in ("vite", "vitest")
-    for ext in ("js", "mjs", "ts", "cjs", "mts", "cts")
-)
+    for rank, ext in enumerate(("js", "mjs", "ts", "cjs", "mts", "cts"))
+}
 
 #: Globs that find the configs :func:`is_vite_config` accepts.
 VITE_CONFIG_GLOBS = ("vite.config.*", "vitest.config.*")
@@ -71,7 +72,12 @@ _IDENT_RE = re.compile(r"^[A-Za-z_$][\w$]*")
 
 def is_vite_config(name: str) -> bool:
     """Whether the file *name* is one Vite or Vitest loads by default."""
-    return name in _CONFIG_NAMES
+    return name in _CONFIG_RANK
+
+
+def config_load_order(name: str) -> tuple[str, int]:
+    """Sort key of a default-named config: Vite before Vitest, then the order each tries names."""
+    return name.split(".", 1)[0], _CONFIG_RANK[name]
 
 
 def vite_aliases(text: bytes, config_dir: Path) -> list[tuple[str, Path | None]]:
