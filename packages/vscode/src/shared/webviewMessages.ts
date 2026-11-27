@@ -33,17 +33,26 @@ import type {
   PageResponse,
   PageSummary,
 } from "@repowise-dev/api-client/types";
-import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
-import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
-import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import type {
+  AffectedSignal,
+  BlastRadiusRequest,
+  BlastRadiusResponse,
+  ChangeBlastRadiusRequest,
+  ChangeBlastRadiusResponse,
+  ChangeCandidatesResponse,
+  ChangeHealthCheckResponse,
+} from "@repowise-dev/types/blast-radius";
+import type { HotspotResponse } from "@repowise-dev/api-client/types";
 import type { GraphPopulation } from "@repowise-dev/types/graph";
 import type { ZoomMap } from "@repowise-dev/ui/zoom";
 import type {
+  OpportunityStatus,
   RefactoringOpportunityDetail,
   RefactoringOpportunityPage,
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
+import type { RefactoringOpportunityParams } from "@repowise-dev/api-client/refactoring";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 
 /** Every editor-tab webview panel the extension can open. */
@@ -153,10 +162,14 @@ export interface HostApi {
   executionFlows(): Promise<ExecutionFlowsResponse>;
   // Knowledge graph (the web Knowledge Graph page's continuous-zoom map)
   zoomMap(): Promise<ZoomMap>;
-  // Refactoring
-  /** The composed unit the web board and the agent contract both speak. */
-  refactoringOpportunities(filePath?: string): Promise<RefactoringOpportunityPage>;
+  // Refactoring (the web Refactoring page's board and drawers)
+  /** One page of the board, under the filters the board sets. */
+  refactoringOpportunities(query: RefactoringOpportunityParams): Promise<RefactoringOpportunityPage>;
   refactoringOpportunity(opportunityId: string): Promise<RefactoringOpportunityDetail>;
+  /** A file's text at the indexed commit, for a step's inline excerpt. */
+  fileContent(filePath: string): Promise<string>;
+  /** Triage one opportunity; the board refetches after it. */
+  setRefactoringOpportunityStatus(opportunityId: string, status: OpportunityStatus): Promise<void>;
   refactoringOpportunityPrompt(
     opportunityId: string,
     flavor: AiPromptFlavor,
@@ -176,10 +189,13 @@ export interface HostApi {
   pageTree(): Promise<PageSummary[]>;
   pageById(pageId: string): Promise<PageResponse>;
   fileDetail(relPath: string): Promise<FileDetailResponse>;
-  // Change risk
-  riskRange(): Promise<RiskRangeReport>;
-  /** Impact of the current change set (uncommitted + unpushed). */
-  changeImpact(): Promise<ChangeImpactReport>;
+  // Change risk (the web Review page's impact view)
+  hotspots(limit: number): Promise<HotspotResponse[]>;
+  blastRadius(body: BlastRadiusRequest): Promise<BlastRadiusResponse & { affected_signals?: AffectedSignal[] }>;
+  /** Work in progress, branches and recent commits to pick from. */
+  reviewChanges(): Promise<ChangeCandidatesResponse>;
+  changeBlastRadius(body: ChangeBlastRadiusRequest): Promise<ChangeBlastRadiusResponse>;
+  changeHealthCheck(changeId: string): Promise<ChangeHealthCheckResponse>;
   // Sidebar home
   homeSummary(): Promise<HomeSummary>;
   // Settings panel
@@ -223,23 +239,9 @@ export interface HomeSummary {
   };
 }
 
-/** Branch risk payload: the endpoint response plus the refs it compared. */
-export interface RiskRangeReport {
-  base: string;
-  branch: string | null;
-  result: RiskRangeResponse;
-  /**
-   * Patch coverage of the same base...HEAD range. Null when no coverage was
-   * ingested, or when the fetch failed (an older server has no endpoint): the
-   * panel then shows nothing rather than an error.
-   */
-  patchCoverage: PatchCoverageResponse | null;
-}
-
 /**
  * Impact of the working change set, assembled host-side from the blast-radius
- * and reviewer-suggestion endpoints. Shared verbatim by the Change Risk panel
- * and the ambient co-change nudge so there is one analysis, not two.
+ * and reviewer-suggestion endpoints, for the ambient co-change nudge.
  */
 export interface ChangeImpactReport {
   /** Repo-relative paths analyzed, sorted (the change-set signature source). */
