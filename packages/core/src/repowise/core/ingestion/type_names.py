@@ -157,6 +157,14 @@ def type_qualifier(raw: str) -> str:
     return head.rstrip("".join(_QUALIFIER_SEPARATORS))
 
 
+def scoped_type_segments(raw: str) -> list[str]:
+    """``::Billing::Invoice`` -> ``["Billing", "Invoice"]``: a ``::`` path, segment by segment.
+
+    A leading ``::`` (Ruby's top-level scope, C++'s global namespace) is dropped.
+    """
+    return [s.strip() for s in strip_type_arguments(raw.strip()).removeprefix("::").split("::")]
+
+
 def dotted_type_segments(raw: str) -> list[str]:
     """``ns.Outer.Inner<T>`` -> ``["ns", "Outer", "Inner"]``: a dotted type path, segment by segment."""
     return [segment.strip() for segment in strip_type_arguments(raw.strip()).split(".")]
