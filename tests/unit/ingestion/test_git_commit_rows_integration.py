@@ -137,9 +137,14 @@ async def test_capture_new_commit_rows_retains_same_second_commits(tmp_path) -> 
     import git as gitpython
 
     repo = gitpython.Repo.init(tmp_path)
+    _configure_author(repo, "Test Author", "author@example.com")
     env = os.environ.copy()
     env["GIT_AUTHOR_DATE"] = "1700000000 +0000"
     env["GIT_COMMITTER_DATE"] = "1700000000 +0000"
+    env["GIT_AUTHOR_NAME"] = "Test Author"
+    env["GIT_AUTHOR_EMAIL"] = "author@example.com"
+    env["GIT_COMMITTER_NAME"] = "Test Author"
+    env["GIT_COMMITTER_EMAIL"] = "author@example.com"
 
     f = tmp_path / "a.py"
     f.write_text("x = 1\n")
@@ -158,6 +163,10 @@ async def test_capture_new_commit_rows_retains_same_second_commits(tmp_path) -> 
     new_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas={c1_sha})
     assert len(new_rows) == 1
     assert new_rows[0]["sha"] == c2_sha
+
+    # When both c1_sha and c2_sha are in known_shas, idle update skips walk and captures 0 rows
+    idle_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas={c1_sha, c2_sha})
+    assert len(idle_rows) == 0
 
 
 def _configure_author(repo, name: str, email: str) -> None:

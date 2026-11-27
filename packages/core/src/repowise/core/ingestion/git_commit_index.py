@@ -385,29 +385,56 @@ def _report(stats_sink: dict[str, int | bool] | None, *, succeeded: bool, commit
 
 
 def _depth_newer_than(
-    repo: object, commit_limit: int, since_ts: int, *, allow_equal: bool = False
+    repo: object,
+    commit_limit: int,
+    since_ts: int,
+    *,
+    known_shas: frozenset[str] | set[str] | None = None,
 ) -> int | None:
     """How deep in the window the commits newer than *since_ts* reach.
 
-    ``None`` when git fails. A ``%ct``-only pass is cheap next to the numstat
+    ``None`` when git fails. A ``%H %ct``-only pass is cheap next to the numstat
     walk, and both traverse the same revisions in the same order, so every
     commit past this depth is one the walk's ``ts <= since_ts`` check drops.
     """
+    fmt = "%H %ct" if known_shas else "%ct"
     try:
-        stamps = repo.git.log(  # type: ignore[attr-defined]
-            f"-{commit_limit}", "--no-merges", "--format=%ct"
-        ).split()
+        lines = repo.git.log(  # type: ignore[attr-defined]
+            f"-{commit_limit}", "--no-merges", f"--format={fmt}"
+        ).splitlines()
     except Exception as exc:
         logger.warning("repo_commit_index_failed", error=str(exc))
         return None
     return max(
         (
             position + 1
-            for position, stamp in enumerate(stamps)
-            if _stamp_after(stamp, since_ts, allow_equal=allow_equal)
+            for position, line in enumerate(lines)
+            if _entry_needed(line, since_ts, known_shas)
         ),
         default=0,
     )
+
+
+def _entry_needed(
+    entry: str,
+    since_ts: int,
+    known_shas: frozenset[str] | set[str] | None,
+) -> bool:
+    parts = entry.split()
+    if not parts:
+        return False
+    if len(parts) == 1:
+        return _stamp_after(parts[0], since_ts, allow_equal=bool(known_shas))
+    sha, stamp = parts[0], parts[1]
+    try:
+        val = int(stamp)
+    except ValueError:
+        return True
+    if val > since_ts:
+        return True
+    if val == since_ts:
+        return sha not in (known_shas or ())
+    return False
 
 
 def _stamp_after(stamp: str, since_ts: int, *, allow_equal: bool = False) -> bool:
@@ -675,7 +702,7 @@ def load_commit_index(
     depth = commit_limit
     if since_ts is not None:
         newer = _depth_newer_than(
-            repo, commit_limit, since_ts, allow_equal=bool(known_shas)
+            repo, commit_limit, since_ts, known_shas=known_shas
         )
         if newer is None:
             return {}
