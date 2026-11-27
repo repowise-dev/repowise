@@ -209,6 +209,8 @@ async def reconcile_full_index_scope(
     repo_id: str,
     current_graph_paths: set[str],
     current_git_paths: set[str],
+    *,
+    current_health_paths: set[str] | None = None,
 ) -> list[str]:
     """Reconcile every source-backed store against one successful traversal."""
     tombstoned = await tombstone_file_pages_outside_scope(session, repo_id, current_graph_paths)
@@ -217,6 +219,7 @@ async def reconcile_full_index_scope(
         repo_id,
         current_graph_paths,
         current_git_paths,
+        current_health_file_paths=current_health_paths,
         authoritative_empty=True,
     )
     from repowise.core.persistence.crud.decisions import (

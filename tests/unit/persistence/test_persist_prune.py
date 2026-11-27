@@ -204,3 +204,39 @@ async def test_prune_keeps_git_indexed_unparsed_file(async_session):
         KEPT,
         f"{KEPT}::main",
     }
+
+
+async def test_prune_retains_health_metric_for_generated_file_while_pruning_graph_rows(
+    async_session,
+):
+    repo = await insert_repo(async_session)
+    await _seed(async_session, repo.id)
+
+    # STALE file is in current_health_file_paths, but absent from current_graph_file_paths.
+    await _prune_stale_file_rows(
+        async_session,
+        repo.id,
+        {KEPT},
+        {KEPT},
+        current_health_file_paths={KEPT, STALE},
+    )
+    await async_session.commit()
+
+    # GraphNode, WikiSymbol, SecurityFinding, DeadCodeFinding for STALE are pruned.
+    assert await _paths(async_session, GraphNode, GraphNode.node_id, repo.id) == {
+        KEPT,
+        f"{KEPT}::main",
+    }
+    assert await _paths(async_session, WikiSymbol, WikiSymbol.file_path, repo.id) == {KEPT}
+    assert await _paths(async_session, SecurityFinding, SecurityFinding.file_path, repo.id) == {
+        KEPT
+    }
+    assert await _paths(async_session, DeadCodeFinding, DeadCodeFinding.file_path, repo.id) == {
+        KEPT
+    }
+
+    # But HealthFileMetric for STALE survives because it is in current_health_file_paths.
+    assert await _paths(async_session, HealthFileMetric, HealthFileMetric.file_path, repo.id) == {
+        KEPT,
+        STALE,
+    }

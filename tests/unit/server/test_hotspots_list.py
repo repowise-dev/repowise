@@ -329,3 +329,50 @@ async def test_banner_generated_hotspot_is_held_out(
     assert _paths(page) == ["app/models/order.rb"]
     assert "db/schema.rb" not in _paths(page)
 
+
+@pytest.mark.asyncio
+async def test_empty_health_report_still_persists_skipped_generated_placeholders(
+    app, tmp_path: Path
+) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    schema = repo_dir / "db" / "schema.rb"
+    schema.parent.mkdir()
+    schema.write_text("# This file is auto-generated from the current state of the database.\n")
+
+    repo_id = "test-empty-hr"
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_repository(
+            session, repo_id=repo_id, name="repo", local_path=str(repo_dir)
+        )
+        hr = HealthReport(
+            repo_id=repo_id,
+            analyzed_at=datetime.now(UTC),
+            metrics=[],
+            findings=[],
+        )
+        await save_full_health_report(
+            session,
+            repo_id,
+            hr,
+            analyzed_commit="abc",
+            repo_path=repo_dir,
+            traversal_stats=TraversalStats(generated_files=["db/schema.rb"]),
+        )
+        from sqlalchemy import select
+        from repowise.core.persistence.models import HealthFileMetric
+
+        rows = (
+            (
+                await session.execute(
+                    select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].file_path == "db/schema.rb"
+        assert rows[0].code_origin == "generated"
+        assert rows[0].score is None
+

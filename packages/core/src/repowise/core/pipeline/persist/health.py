@@ -105,6 +105,76 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
         logger.warning("health_snapshot_skipped", error=str(exc))
 
 
+def _read_skipped_head(repo_path: Any, rel_path: str) -> bytes | None:
+    abs_p = (Path(repo_path) / rel_path) if repo_path is not None else None
+    if abs_p is not None and abs_p.is_file():
+        try:
+            with abs_p.open("rb") as fh:
+                return fh.read(4096)
+        except OSError:
+            return None
+    return None
+
+
+def _collect_skipped_generated_paths(
+    skipped_generated_files: list[str] | None,
+    traversal_stats: Any,
+    repo_path: Any,
+) -> list[str]:
+    skipped_paths: list[str] = list(skipped_generated_files or ())
+    if traversal_stats is not None:
+        skipped_paths.extend(getattr(traversal_stats, "generated_files", ()) or ())
+    if repo_path is not None:
+        skipped_file = Path(repo_path) / ".repowise" / "skipped_files.txt"
+        if skipped_file.is_file():
+            try:
+                for line in skipped_file.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("#"):
+                        continue
+                    parts = line.split("\t")
+                    if len(parts) >= 3 and parts[2].strip() == "generated":
+                        skipped_paths.append(parts[0].strip())
+            except OSError:
+                pass
+    return skipped_paths
+
+
+def _build_skipped_generated_metrics(
+    skipped_paths: list[str],
+    existing_paths: set[str],
+    repo_path: Any,
+) -> list[Any]:
+    if not skipped_paths:
+        return []
+    from repowise.core.analysis.health.models import HealthFileMetricData
+    from repowise.core.code_origin import code_origin
+
+    gen_metrics = []
+    for rel_path in sorted(set(skipped_paths)):
+        if rel_path in existing_paths:
+            continue
+        head = _read_skipped_head(repo_path, rel_path)
+        origin = (
+            code_origin(rel_path, head, repo_root=repo_path)
+            if head is not None
+            else "generated"
+        )
+        if origin == "generated":
+            gen_metrics.append(
+                HealthFileMetricData(
+                    file_path=rel_path,
+                    score=None,
+                    max_ccn=None,
+                    max_nesting=None,
+                    nloc=0,
+                    has_test_file=False,
+                    is_test=False,
+                    code_origin="generated",
+                )
+            )
+    return gen_metrics
+
+
 async def save_full_health_report(
     session: Any,
     repo_id: str,
@@ -148,7 +218,18 @@ async def save_full_health_report(
     hr = health_report
     metrics = list(getattr(hr, "metrics", None) or [])
     findings = list(getattr(hr, "findings", None) or [])
+    # Store origin for skipped generated files so origin_clause holds them out (#6303).
+    skipped_paths = _collect_skipped_generated_paths(
+        skipped_generated_files, traversal_stats, repo_path
+    )
+    gen_metrics = _build_skipped_generated_metrics(
+        skipped_paths, {m.file_path for m in metrics}, repo_path
+    )
     if not metrics and not findings:
+        if gen_metrics:
+            await save_health_metrics(
+                session, repo_id, gen_metrics, analyzed_commit=analyzed_commit
+            )
         # A pass that scored nothing is a broken pass, not a clean repository.
         # Every write below replaces the repository's rows wholesale, so
         # honouring an empty report would delete every metric, resolve every
@@ -156,57 +237,8 @@ async def save_full_health_report(
         # of a parse failure or an exclude pattern that matched everything.
         return
 
-    # Store origin for skipped generated files so origin_clause holds them out (#6303).
-    skipped_paths: list[str] = list(skipped_generated_files or ())
-    if traversal_stats is not None:
-        skipped_paths.extend(getattr(traversal_stats, "generated_files", ()) or ())
-    if repo_path is not None:
-        skipped_file = Path(repo_path) / ".repowise" / "skipped_files.txt"
-        if skipped_file.is_file():
-            try:
-                for line in skipped_file.read_text(encoding="utf-8").splitlines():
-                    if line.startswith("#"):
-                        continue
-                    parts = line.split("\t")
-                    if len(parts) >= 3 and parts[2].strip() == "generated":
-                        skipped_paths.append(parts[0].strip())
-            except OSError:
-                pass
-
-    if skipped_paths:
-        from repowise.core.analysis.health.models import HealthFileMetricData
-        from repowise.core.code_origin import code_origin
-
-        existing = {m.file_path for m in metrics}
-        for rel_path in sorted(set(skipped_paths)):
-            if rel_path in existing:
-                continue
-            abs_p = (Path(repo_path) / rel_path) if repo_path is not None else None
-            head = None
-            if abs_p is not None and abs_p.is_file():
-                try:
-                    with abs_p.open("rb") as fh:
-                        head = fh.read(4096)
-                except OSError:
-                    head = None
-            origin = (
-                code_origin(rel_path, head, repo_root=repo_path)
-                if head is not None
-                else "generated"
-            )
-            if origin == "generated":
-                metrics.append(
-                    HealthFileMetricData(
-                        file_path=rel_path,
-                        score=None,
-                        max_ccn=None,
-                        max_nesting=None,
-                        nloc=0,
-                        has_test_file=False,
-                        is_test=False,
-                        code_origin="generated",
-                    )
-                )
+    if gen_metrics:
+        metrics.extend(gen_metrics)
 
     await save_health_metrics(session, repo_id, metrics, analyzed_commit=analyzed_commit)
     # One savepoint over the findings and everything derived from them, so a

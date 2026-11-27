@@ -187,15 +187,21 @@ async def persist_pipeline_result(
     # read/parse failures. Using parsed_files here would misclassify a locked
     # or temporarily unparsable file as excluded and erase its prior rows.
     current_graph_file_paths = {file_info.path for file_info in result.file_infos}
-    if getattr(result, "traversal_stats", None):
-        current_graph_file_paths.update(getattr(result.traversal_stats, "generated_files", ()) or ())
+    generated_files = set(
+        getattr(getattr(result, "traversal_stats", None), "generated_files", ()) or ()
+    )
+    current_health_file_paths = current_graph_file_paths | generated_files
     current_git_file_paths = {
         (gm if isinstance(gm, dict) else dataclasses.asdict(gm)).get("file_path", "")
         for gm in result.git_metadata_list
     }
     current_git_file_paths.discard("")
     swept_page_ids = await reconcile_full_index_scope(
-        session, repo_id, current_graph_file_paths, current_git_file_paths
+        session,
+        repo_id,
+        current_graph_file_paths,
+        current_git_file_paths,
+        current_health_paths=current_health_file_paths,
     )
 
     symbol_count = await persist_ingestion(result, session, repo_id)
