@@ -151,7 +151,7 @@ def _handler_symbol(
         # or a handler the repo names once); its line fallback lands elsewhere.
         if bound is not None and _names(bound, expr):
             return bound.symbol_id
-        found = _resolve_named(index, c.file_path, expr, framework)
+        found = _resolve_named(index, c.file_path, expr, framework, go_walk)
         return found.symbol_id if found is not None else None
     if bound is None:
         return None
@@ -178,14 +178,18 @@ def _symbol_by_id(index: RepoIndex, symbol_id: str) -> IndexedSymbol | None:
 
 
 def _resolve_named(
-    index: RepoIndex, file_path: str, expr: str, framework: str
+    index: RepoIndex,
+    file_path: str,
+    expr: str,
+    framework: str,
+    go_walk: _GoIndexWalk | None = None,
 ) -> IndexedSymbol | None:
     """The one symbol *expr* names from *file_path*, nearest scope first.
 
     The registering file, then for JavaScript the relative module the name or
-    its qualifier is imported from, for Go the file's package (its directory),
-    and elsewhere the repo when the name is unique there. More than one
-    candidate at a level is no answer.
+    its qualifier is imported from, for Go the file's package (its directory)
+    or an imported package directory, and elsewhere the repo when the name is
+    unique there. More than one candidate at a level is no answer.
     """
     parts = _QUALIFIER_RE.split(expr)
     name = parts[-1]
@@ -208,15 +212,16 @@ def _resolve_named(
             )
         return _named_in(index.symbols_for_file(target), name) if exported == "default" else None
     if framework == "go":
-        # A bare name is the file's package (its directory); ``pkg.Fn`` is the
-        # package directory named ``pkg``.
+        # A bare name is the file's package (its directory); ``pkg.Fn`` must
+        # come from the directory *file_path* imports as ``pkg``.
         if len(parts) == 1:
             package = posixpath.dirname(file_path)
             return _named_in(_in_directories(index, lambda d: d == package), name)
         if len(parts) == 2:
-            return _named_in(
-                _in_directories(index, lambda d: posixpath.basename(d) == parts[0]), name
-            )
+            package = go_walk.imported_dir(file_path, parts[0]) if go_walk is not None else None
+            if package is None:
+                return None
+            return _named_in(_in_directories(index, lambda d: d == package), name)
         return None
     found = index.symbol_named(expr)
     # ``symbol_named`` returns a lone candidate whatever its qualifier says.
@@ -245,7 +250,7 @@ class _GoIndexWalk:
                 if f.endswith(".go"):
                     self._dirs.setdefault(posixpath.dirname(f), []).append(f)
             self._types = GoSelectorTypes(
-                self._package_files, self._text, self._imported_dir, self._method_of
+                self._package_files, self._text, self.imported_dir, self._method_of
             )
         return self._types
 
@@ -259,7 +264,7 @@ class _GoIndexWalk:
     def _text(self, rel_path: str) -> str:
         return _read(self._index.repo_path / rel_path) or ""
 
-    def _imported_dir(self, file_path: str, local: str) -> str | None:
+    def imported_dir(self, file_path: str, local: str) -> str | None:
         imported = self._walk().facts(file_path).imports.get(local)
         if imported is None:
             return None
