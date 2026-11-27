@@ -49,7 +49,7 @@ def _nuxt_globs(
     plugins = glob.escape(dirs.get("plugins", "plugins")) if dirs else "plugins"
 
     app_dirs = (f"{pages}/*", f"{layouts}/*", f"{middleware}/*", f"{plugins}/*")
-    layer_dirs = tuple(dict.fromkeys((*app_dirs, "pages/*", "layouts/*", "middleware/*", "plugins/*")))
+    layer_dirs = ("pages/*", "layouts/*", "middleware/*", "plugins/*")
 
     all_srcs = tuple(dict.fromkeys((*srcs, *layers)))
     app_servers = ("",) if srcs == _NUXT_SRC else tuple(dict.fromkeys(("", *srcs)))

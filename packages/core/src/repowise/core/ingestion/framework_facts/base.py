@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import glob
 import posixpath
 import re
 from collections.abc import Iterable
@@ -17,9 +18,10 @@ if TYPE_CHECKING:
 
 def _parent_globs(globs: tuple[str, ...], root: str) -> tuple[str, ...]:
     out: list[str] = []
+    esc_root = glob.escape(root)
     for g in globs:
         if g.startswith("../"):
-            norm = posixpath.normpath(posixpath.join(root, g))
+            norm = posixpath.normpath(posixpath.join(esc_root, g))
             if not norm.startswith(("../", "/")) and norm != "..":
                 out.append(norm)
     return tuple(out)
@@ -78,8 +80,9 @@ class FrameworkFacts:
         if not self.entry_globs:
             return []
         prefix = f"{root}/" if root else ""
-        local_globs = tuple(g for g in self.entry_globs if not g.startswith("../"))
-        parent_globs = _parent_globs(self.entry_globs, root)
+        norm_globs = tuple(posixpath.normpath(g) for g in self.entry_globs)
+        local_globs = tuple(g for g in norm_globs if not g.startswith("../"))
+        parent_globs = _parent_globs(norm_globs, root)
         local_pat = _compiled(local_globs) if local_globs else None
         parent_pat = _compiled(parent_globs) if parent_globs else None
         return sorted(p for p in paths if _matches_entry(p, prefix, local_pat, parent_pat))
@@ -100,7 +103,7 @@ def _js(*stems: str, exts: tuple[str, ...] = _JS_EXTS) -> tuple[str, ...]:
 
 
 def _under(prefixes: tuple[str, ...], *globs: str) -> tuple[str, ...]:
-    return tuple(f"{prefix}{glob}" for prefix in prefixes for glob in globs)
+    return tuple(posixpath.normpath(f"{prefix}{glob}") for prefix in prefixes for glob in globs)
 
 
 def _inside(path: str) -> str | None:

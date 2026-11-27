@@ -435,3 +435,61 @@ def test_nuxt_layer_server_routes_with_custom_server_dir(tmp_path: Path) -> None
     assert builder.graph().has_edge("framework:nuxt", "base/server/api/layer.ts")
     assert not builder.graph().has_edge("framework:nuxt", "base/custom-server/api/wrong.ts")
 
+
+def test_parent_relative_dir_override(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "package.json": '{"devDependencies": {"nuxt": "^4.0.0"}}',
+            "nuxt.config.ts": "export default defineNuxtConfig({ dir: { pages: '../shared/pages' } });\n",
+            "app/app.vue": "<template><h1>App</h1></template>\n",
+            "shared/pages/index.vue": "<template><h1>Shared</h1></template>\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "shared/pages/index.vue")
+    reasons = convention_load_reasons(tmp_path, ["shared/pages/index.vue"])
+    assert "shared/pages/index.vue" in reasons
+
+
+def test_parent_globs_escapes_bracket_root(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "ext[old]/app/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "ext[old]/app/nuxt.config.ts": "export default defineNuxtConfig({ extends: ['../../base'] });\n",
+            "ext[old]/app/pages/index.vue": "<template><h1>App</h1></template>\n",
+            "base/pages/layer.vue": "<template><h1>Layer</h1></template>\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "base/pages/layer.vue")
+    reasons = convention_load_reasons(
+        tmp_path,
+        ["ext[old]/app/pages/index.vue", "base/pages/layer.vue"],
+    )
+    assert "base/pages/layer.vue" in reasons
+
+
+def test_app_dir_override_not_applied_to_layers(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "app/package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "app/nuxt.config.ts": (
+                "export default defineNuxtConfig({ dir: { pages: 'routes' }, extends: ['../base'] });\n"
+            ),
+            "app/routes/index.vue": "<template><h1>App Route</h1></template>\n",
+            "base/pages/layer.vue": "<template><h1>Base Page</h1></template>\n",
+            "base/routes/ignored.vue": "<template><h1>Base Route Ignored</h1></template>\n",
+        },
+    )
+    builder, _graph, _ = _build(tmp_path)
+    builder.add_framework_edges([])
+    assert builder.graph().has_edge("framework:nuxt", "app/routes/index.vue")
+    assert builder.graph().has_edge("framework:nuxt", "base/pages/layer.vue")
+    assert not builder.graph().has_edge("framework:nuxt", "base/routes/ignored.vue")
+
+
