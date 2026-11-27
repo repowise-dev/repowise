@@ -146,6 +146,8 @@ def test_sweep_removes_old_orphans_and_keeps_fresh_and_unrelated(tmp_path):
         _aged(index / "parse_cache.pkl", old=True),
         _aged(index / "notes.tmp", old=True),
         _aged(index / "state.json.tmp", old=True),
+        _aged(index / "manual.pkltmp", old=True),
+        _aged(index / "notes.pkl.backup.tmp", old=True),
     ]
     deep = index / "lancedb" / "pages.lance"
     deep.mkdir(parents=True)
@@ -155,6 +157,26 @@ def test_sweep_removes_old_orphans_and_keeps_fresh_and_unrelated(tmp_path):
 
     assert not any(p.exists() for p in old)
     assert all(p.exists() for p in kept)
+
+
+def test_sweep_never_follows_a_link_out_of_the_directory(tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    victim = _aged(outside / "parse_cache.pkl0123456789abcdef.pkltmp", old=True)
+    index = tmp_path / ".repowise"
+    index.mkdir()
+    link = index / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            pytest.skip("cannot create a directory link here")
+        import _winapi
+
+        _winapi.CreateJunction(str(outside), str(link))
+
+    assert sweep_orphan_temps(index) == 0
+    assert victim.exists()
 
 
 def test_sweep_skips_a_file_it_cannot_delete(tmp_path, monkeypatch):

@@ -39,6 +39,7 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_head_commit,
+    get_repowise_dir,
     load_config,
     load_state,
     resolve_explicit_provider_or_prompt,
@@ -71,6 +72,7 @@ from repowise.cli.ui import (
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mode_names import pages
 from repowise.core.analysis.decisions import mining_state
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
@@ -383,6 +385,8 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         f"  [{BRAND}][{idx}/{total}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name}){glyph('ellipsis')}"
     )
     ensure_repowise_dir(repo.path)
+    if not ctx.dry_run:
+        sweep_orphan_temps(get_repowise_dir(repo.path))
 
     # The index phase mines decisions with a model too, so it needs the provider,
     # bound to this repo: a provider that shells out runs in the repo's directory.

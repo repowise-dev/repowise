@@ -2641,7 +2641,8 @@ def run_update(
     if deferred is not None:
         return deferred
     # Temp files killed cache writes left; the age guard spares one in flight.
-    sweep_orphan_temps(get_repowise_dir(run.repo_path))
+    if not opts.dry_run:
+        sweep_orphan_temps(get_repowise_dir(run.repo_path))
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")

@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import os
 import pickle
+import re
 import secrets
 import time
 from functools import lru_cache
@@ -47,6 +48,12 @@ _STREAM_CHUNK = 1024 * 1024
 _TEMP_SUFFIX = ".pkltmp"
 #: A temp file untouched this long is an orphan of a killed write, never one in flight.
 ORPHAN_TEMP_SECONDS = 3600
+# ``<cache name><token>.pkltmp``, the token from make_temp_file (16 hex) or, in
+# releases before it, mkstemp (8 chars). ``<name>.pkl<token>.tmp`` is what the
+# second temp was called before it took the same suffix, so those orphans go too.
+_ORPHAN_TEMP_NAME = re.compile(
+    r".+(?:[0-9a-f]{16}|[a-z0-9_]{8})\.pkltmp|.+\.pkl(?:[0-9a-f]{16}|[a-z0-9_]{8})\.tmp"
+)
 
 
 def _key_path() -> Path:
@@ -256,9 +263,7 @@ def dump_sealed_pickle(path: Path, obj: Any, *, domain: str) -> None:
 
 
 def _is_orphan_temp_name(name: str) -> bool:
-    # ``<cache>.pkl<token>.tmp`` is what the second temp was called before it
-    # took the ``.pkltmp`` suffix too, so orphans from earlier releases go as well.
-    return name.endswith(_TEMP_SUFFIX) or (".pkl" in name and name.endswith(".tmp"))
+    return _ORPHAN_TEMP_NAME.fullmatch(name) is not None
 
 
 def sweep_orphan_temps(directory: Path, *, max_age: float = ORPHAN_TEMP_SECONDS) -> int:
@@ -266,26 +271,22 @@ def sweep_orphan_temps(directory: Path, *, max_age: float = ORPHAN_TEMP_SECONDS)
 
     Looks in *directory* and its direct subdirectories, where every sealed
     cache lives (``.repowise/`` and its cache folders), so it never walks a
-    deep store such as the vector index. Only names this module writes, and
-    only files older than *max_age*: a write in flight keeps touching its temp
-    file, so it is never that old. A file another process holds open (Windows
-    refuses the delete) or one already gone is skipped.
+    deep store such as the vector index, and never follows a link out of it.
+    Only names this module writes, and only files older than *max_age*: a
+    write in flight touches its temp file within seconds, so it is never that
+    old. A file another process holds open (Windows refuses the delete) or one
+    already gone is skipped.
     """
     cutoff = time.time() - max_age
     removed = 0
-    try:
-        with os.scandir(directory) as it:
-            entries = list(it)
-    except OSError:
-        return 0
-    folders = [directory, *(Path(e.path) for e in entries if _is_dir(e))]
+    folders = [directory, *_real_subdirectories(directory)]
     for folder in folders:
         try:
             with os.scandir(folder) as it:
-                names = [e for e in it if _is_orphan_temp_name(e.name)]
+                temps = [e for e in it if _is_orphan_temp_name(e.name)]
         except OSError:
             continue
-        for entry in names:
+        for entry in temps:
             with contextlib.suppress(OSError):
                 if entry.is_file(follow_symlinks=False) and entry.stat().st_mtime < cutoff:
                     os.unlink(entry.path)
@@ -293,8 +294,20 @@ def sweep_orphan_temps(directory: Path, *, max_age: float = ORPHAN_TEMP_SECONDS)
     return removed
 
 
-def _is_dir(entry: os.DirEntry[str]) -> bool:
-    try:
-        return entry.is_dir(follow_symlinks=False)
-    except OSError:
-        return False
+def _real_subdirectories(directory: Path) -> list[Path]:
+    """Subdirectories of *directory* that resolve inside it.
+
+    Comparing resolved parents leaves out symlinks and Windows junctions on
+    every supported Python (``DirEntry.is_junction`` is 3.12+).
+    """
+    out: list[Path] = []
+    with contextlib.suppress(OSError):
+        root = Path(directory).resolve()
+        with os.scandir(directory) as it:
+            for entry in it:
+                with contextlib.suppress(OSError):
+                    if entry.is_dir(follow_symlinks=False):
+                        sub = Path(entry.path)
+                        if sub.resolve().parent == root:
+                            out.append(sub)
+    return out

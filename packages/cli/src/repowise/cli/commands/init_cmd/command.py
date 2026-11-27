@@ -603,7 +603,8 @@ def _run_init(opts: InitOptions) -> None:
                 "Run `repowise init` again when it finishes."
             )
         try:
-            sweep_orphan_temps(get_repowise_dir(repo_path))
+            if not opts.dry_run:
+                sweep_orphan_temps(get_repowise_dir(repo_path))
             _run_single_repo(opts, repo_path, start)
         finally:
             release_update_lock(repo_path)
