@@ -7,6 +7,8 @@ import type {
   EvidenceRunSummary,
   MeasuredRow,
   MeasuredRun,
+  StatementRow,
+  StatementRun,
 } from "@repowise-dev/types/runtime-evidence";
 
 import { formatNumber, formatPercent, formatRelativeTimeOrNull } from "../../lib/format";
@@ -134,7 +136,13 @@ function stripStats(run: MeasuredRun, runs: EvidenceRunSummary[] | undefined): R
 }
 
 /** The meter: the share against one scale for the whole list, with its interval. */
-function ShareMeter({ row, scale }: { row: MeasuredRow; scale: number }) {
+function ShareMeter({
+  row,
+  scale,
+}: {
+  row: Pick<MeasuredRow, "share" | "share_low" | "share_high">;
+  scale: number;
+}) {
   if (row.share == null || scale <= 0) return null;
   const pct = (v: number) => `${Math.max(0, Math.min(100, (v / scale) * 100))}%`;
   return (
@@ -545,6 +553,160 @@ function BenchmarksGroup({ view, adapter }: { view: RuntimeEvidenceView; adapter
   );
 }
 
+/** A production window's claim, "in production over 2026-10-30 to 2026-11-26, deployed ee257d145f19". */
+function WindowClaim({ claim, className = "" }: { claim: string; className?: string }) {
+  return (
+    <p
+      className={`font-mono text-[11px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere] ${className}`}
+    >
+      {claim}
+    </p>
+  );
+}
+
+/** 102.44 reads "102.4 ms", 1234.5 reads "1,235 ms", 2,400,000 reads "2,400 s". */
+function msText(ms: number): string {
+  if (Math.abs(ms) >= 100_000) return secondsText(ms / 1000);
+  return `${formatNumber(Math.abs(ms) >= 100 ? Math.round(ms) : Math.round(ms * 10) / 10)} ms`;
+}
+
+/** "23.0% ambiguous · 6.0% unjoined": the window's statements no single function issued. */
+function unattributedText(run: StatementRun): string | null {
+  const parts = Object.entries(run.unattributed ?? {})
+    .filter(([, u]) => u.statements > 0)
+    .sort(([, a], [, b]) => b.total_ms - a.total_ms)
+    .map(([label, u]) => {
+      const name = humanizeToken(label).toLowerCase();
+      return u.share != null
+        ? `${shareText(u.share)} ${name}`
+        : `${plural(u.statements, "statement")} ${name}`;
+    });
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** One function's statements in the window: its share, calls and mean time, and how to check a fix. */
+function StatementRowItem({ row, scale, href }: { row: StatementRow; scale: number; href: string }) {
+  const name = symbolSubject(row.symbol_id);
+  const { calls, mean_ms } = row.statements;
+  const figures = [plural(calls, "call"), mean_ms != null ? `mean ${msText(mean_ms)}` : null]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <li className="grid grid-cols-[28px_minmax(0,1fr)] gap-x-3 gap-y-2 px-1 py-3.5 hover:bg-[var(--color-bg-elevated)] lg:grid-cols-[28px_minmax(0,1fr)_210px] lg:items-start">
+      <span className="pt-0.5 text-right font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
+        {formatNumber(row.rank)}
+      </span>
+      <div className="min-w-0">
+        <p className="font-mono text-[13px] font-medium text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
+          {name}
+        </p>
+        <a href={href} className={`mt-0.5 flex min-w-0 font-mono text-xs ${QUIET_LINK_CLS}`}>
+          <FilePath path={rowLocation(row)} fold className="text-xs" />
+        </a>
+        {row.verify ? (
+          <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">Check a fix: {row.verify}</p>
+        ) : null}
+      </div>
+      <div className="col-start-2 min-w-0 lg:col-start-auto">
+        {row.share != null ? (
+          <span className="font-mono text-[13px] font-medium tabular-nums text-[var(--color-text-primary)]">
+            {shareText(row.share)}
+          </span>
+        ) : null}{" "}
+        <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+          {figures}
+        </span>
+        <ShareMeter row={row} scale={scale} />
+      </div>
+    </li>
+  );
+}
+
+/** One statement window's functions under its workload and window claim, with a "Show all" past the preview. */
+function StatementRunRows({ adapter, run }: { adapter: PerformanceViewAdapter; run: StatementRun }) {
+  const [all, setAll] = useState(false);
+  const { data, error, isLoading } = useMeasuredRows(
+    adapter,
+    run.run_id,
+    all ? MEASURED_MAX : MEASURED_PREVIEW,
+  );
+  const rows = data?.statements?.rows ?? [];
+  const total = data?.statements?.total ?? 0;
+  const pending = Boolean(error) || (!data && isLoading);
+  if (!pending && rows.length === 0) return null;
+  const scale = Math.max(0, ...rows.map((r) => r.share ?? 0));
+  const elsewhere = unattributedText(run);
+  const caption = [
+    total > rows.length ? `Showing ${formatNumber(rows.length)} of ${plural(total, "function")}.` : null,
+    elsewhere ? `On no single function: ${elsewhere}.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <div>
+      <p className="font-mono text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
+        {[run.workload_name, plural(run.statements, "statement"), `${msText(run.total_ms)} stored`].join(
+          " · ",
+        )}
+      </p>
+      <WindowClaim claim={run.window.claim} className="mb-1.5 mt-0.5" />
+      {pending ? (
+        <RowsPending loading={isLoading} what="the functions that issued these statements" />
+      ) : (
+        <>
+          <ul
+            aria-label={`Statements in ${run.workload_name}`}
+            className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]"
+          >
+            {rows.map((row) => (
+              <StatementRowItem
+                key={`${row.run_id}:${row.symbol_id}`}
+                row={row}
+                scale={scale}
+                href={adapter.symbolHref?.(row.symbol_id) ?? adapter.fileHref(row.file_path)}
+              />
+            ))}
+          </ul>
+          {caption ? (
+            <RowsFooter
+              caption={caption}
+              showAll={
+                total > rows.length && !all
+                  ? { count: Math.min(total, MEASURED_MAX), onClick: () => setAll(true) }
+                  : null
+              }
+            />
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Each production statement workload's newest window: the functions that
+ * issued its statements, by statement time. Listed apart: no rule reads a
+ * statement's cost yet, so these rows never lead or reorder the queue.
+ */
+function StatementsGroup({ view, adapter }: { view: RuntimeEvidenceView; adapter: PerformanceViewAdapter }) {
+  if (view.statementRuns.length === 0) return null;
+  return (
+    <div>
+      <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">Production statements</h3>
+      <p className="mb-3 mt-1 max-w-[70ch] text-xs text-[var(--color-text-secondary)]">
+        The functions that issued the database statements a production window recorded, ranked by
+        statement time. A share is of the window&apos;s stored statement time. These rows do not
+        reorder the queue.
+      </p>
+      <div className="space-y-6">
+        {view.statementRuns.map((run) => (
+          <StatementRunRows key={run.run_id} adapter={adapter} run={run} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function runResult(run: EvidenceRunSummary): string {
   const value =
     run.total_value != null
@@ -642,6 +804,7 @@ function RunsTable({ runs, reference }: { runs: EvidenceRunSummary[]; reference:
               <tr key={run.run_id}>
                 <td className={`${TD} font-mono text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}>
                   {run.workload}
+                  {run.window ? <WindowClaim claim={run.window.claim} className="mt-0.5" /> : null}
                 </td>
                 <td className={TD}>{humanizeToken(run.kind).toLowerCase()}</td>
                 <td className={TD}>{workloadClassLabel(run.class)}</td>
@@ -742,6 +905,7 @@ function LeadRun({
           ) : null}
         </div>
         <StatRibbon stats={stripStats(run, runs)} />
+        {run.window ? <WindowClaim claim={run.window.claim} className="mt-2" /> : null}
         {summary && runs ? (
           <div className="mt-4">
             <RunOverview
@@ -831,7 +995,8 @@ function RunsGroup({
 /**
  * The runtime evidence block between the lede and the queue: why stored runs
  * rank nothing when they do not, the strip with the workload lens and the
- * run's header, the measured table, each benchmark's results, then the unit-test run, the test time and
+ * run's header, the measured table, each production statement window's functions, each
+ * benchmark's results, then the unit-test run, the test time and
  * every stored run, closed. With no ranked workload the newest profile's
  * header still shows: its total, its split, and whether it carries enough
  * signal to rank. Renders nothing when there is nothing to say.
@@ -865,6 +1030,7 @@ export function RuntimeEvidenceSection({
     !view.testRun &&
     !view.tests &&
     view.benchmarkRuns.length === 0 &&
+    view.statementRuns.length === 0 &&
     notices.length === 0
   )
     return null;
@@ -883,6 +1049,7 @@ export function RuntimeEvidenceSection({
         />
       ) : null}
       <LeadRun {...rows} lowSignalPrompt={lowSignalPrompt} />
+      <StatementsGroup view={view} adapter={adapter} />
       <BenchmarksGroup view={view} adapter={adapter} />
       <div className="border-b border-[var(--color-border-default)]">
         <TestRunGroup {...rows} />
