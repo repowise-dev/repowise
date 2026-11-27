@@ -1114,6 +1114,33 @@ def _go(paths: list[str], files: dict[str, str]) -> Stack | None:
 
 _CARGO = re.compile(r"(?<![\w-])cargo\s+(\+\S+\s+)?(test|nextest\s+run)(?![\w-])")
 _LLVM_COV = ("- uses: taiki-e/install-action@cargo-llvm-cov",)
+_NEXTEST_CONFIG = ".config/nextest.toml"
+_NEXTEST_NOTE = (
+    "cargo-nextest writes test timings through a JUnit report. Add to `.config/nextest.toml`:\n\n"
+    "  [profile.ci]\n"
+    "  [profile.ci.junit]\n"
+    "  path = \"junit.xml\""
+)
+
+
+def _nextest_junit(text: str) -> tuple[str, str] | None:
+    """The (profile, junit_path) configured in nextest.toml, or None."""
+    data = parse_toml_or_none(text)
+    if not isinstance(data, dict):
+        return None
+    profiles = data.get("profile")
+    if not isinstance(profiles, dict):
+        return None
+    order = ["ci"] + [p for p in sorted(profiles) if p != "ci"]
+    for name in order:
+        prof = profiles.get(name)
+        if isinstance(prof, dict):
+            junit = prof.get("junit")
+            if isinstance(junit, dict) and (path := junit.get("path")):
+                stripped = str(path).strip()
+                if stripped:
+                    return name, stripped
+    return None
 
 
 def _edit_cargo(line: str, m: re.Match) -> CommandEdit:
@@ -1129,10 +1156,25 @@ def _rust(root: set[str], files: dict[str, str]) -> Stack:
     setup = () if root & {"rust-toolchain", "rust-toolchain.toml"} else (
         "- uses: dtolnay/rust-toolchain@stable", "  with:", "    components: llvm-tools-preview")
     workspace = " --workspace" if "[workspace]" in files.get("Cargo.toml", "") else ""
+    nextest = _nextest_junit(files.get(_NEXTEST_CONFIG, ""))
+    if nextest is not None:
+        profile, path = nextest
+        test = f"cargo llvm-cov nextest --profile {profile}{workspace} --lcov --output-path lcov.info"
+        junit_report = f"target/nextest/{profile}/{path}"
+        prepare = (*_LLVM_COV, "- uses: taiki-e/install-action@cargo-nextest")
+        requires = ("cargo install cargo-llvm-cov", "cargo install cargo-nextest")
+        notes = ()
+    else:
+        test = f"cargo llvm-cov{workspace} --lcov --output-path lcov.info"
+        junit_report = ""
+        prepare = _LLVM_COV
+        requires = ("cargo install cargo-llvm-cov",)
+        notes = (_NEXTEST_NOTE,)
     return Stack(
         "rust", "cargo test", "cargo", "lcov.info", setup=setup,
-        test=f"cargo llvm-cov{workspace} --lcov --output-path lcov.info", prepare=_LLVM_COV,
-        requires=("cargo install cargo-llvm-cov",), pattern=_CARGO, editor=_edit_cargo,
+        test=test, prepare=prepare, notes=notes,
+        requires=requires, pattern=_CARGO, editor=_edit_cargo,
+        junit_report=junit_report,
     )
 
 
@@ -1437,7 +1479,7 @@ def _manifest_stacks(name: str) -> frozenset[str]:
 @cache
 def _read_names() -> frozenset[str]:
     """Every manifest and runner config detection reads at a unit root."""
-    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME, _DOTNET_SDK_PIN}
+    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME, _DOTNET_SDK_PIN, _NEXTEST_CONFIG}
     for tag in _LANGUAGE_STACKS:
         spec = REGISTRY.get(tag)
         if spec is not None:
@@ -1617,6 +1659,13 @@ def _sdk_pin(root: str, present: set[str]) -> str | None:
     )
 
 
+def _nextest_config(root: str, present: set[str]) -> str | None:
+    """The ``.config/nextest.toml`` cargo-nextest uses at *root*: the nearest one at or above it."""
+    return next(
+        (p for d in (root, *reversed(_ancestors(root))) if (p := _join(d, _NEXTEST_CONFIG)) in present), None
+    )
+
+
 def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set[str]]) -> list[str]:
     """*paths* below *root*, rebased; a .NET root leaves out nested .NET roots' files."""
     rel = [r for p in paths if (r := _under(root, p)) is not None]
@@ -1693,6 +1742,8 @@ def detect_stacks(
                     texts = {**texts, _YARN_LOCK: files[lock]}
                 if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
                     texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
+                if stack == "rust" and (cfg := _nextest_config(root, present)) in files:
+                    texts = {**texts, _NEXTEST_CONFIG: files[cfg]}
                 built = build(names, rel, texts)
                 if built is not None:
                     here.append(replace(built, root=root))
@@ -1730,6 +1781,8 @@ def files_to_read(
                 wanted.append(pin)
         if "node" in stacks and (lock := _governing_yarn_lock(root, present)) is not None:
             wanted.append(lock)
+        if "rust" in stacks and (cfg := _nextest_config(root, present)) is not None:
+            wanted.append(cfg)
     return list(dict.fromkeys(wanted))
 
 
