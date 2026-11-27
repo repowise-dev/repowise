@@ -66,8 +66,7 @@ nightly run ignore it and run everything.
   `packages/api-client/`. Python tests read docs, the web and ui TypeScript
   contracts, plugins and `.github` files, so those count as Python-relevant.
 - **Web**: `packages/web`, `packages/ui`, `packages/types`,
-  `packages/api-client`, `packages/claude-mod`, `plugins/claude-code` and
-  `scripts/check-shared-imports.mjs`.
+  `packages/api-client` and `scripts/check-shared-imports.mjs`.
 - **VS Code**: `packages/vscode`, `packages/ui`, `packages/types` and
   `packages/api-client`.
 - **Shared**: `.github/workflows/ci.yml`, `package.json`, `package-lock.json`

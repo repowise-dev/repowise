@@ -126,8 +126,7 @@ repowise/
 │   ├── ui/            # shared React components used by the web UI
 │   ├── api-client/    # TypeScript client for the REST API
 │   ├── types/         # shared TypeScript types
-│   ├── vscode/        # VS Code extension
-│   └── claude-mod/    # Repowise Lens, the Claude Code mod (built into plugins/claude-code/hooks/lens/)
+│   └── vscode/        # VS Code extension
 ├── plugins/           # agent plugins: claude-code, codex, cursor, shared
 ├── ci/                # CI templates: github, gitlab
 ├── docker/            # Dockerfile, Dockerfile.mcp, docker-compose.yml

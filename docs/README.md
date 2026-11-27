@@ -42,7 +42,6 @@ For a map of every layer and how they feed each other, read
 | [agent/HOOKS.md](agent/HOOKS.md) | Context and warnings that reach the agent without it asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
 | [agent/CLAUDE_CODE_COMMANDS.md](agent/CLAUDE_CODE_COMMANDS.md) | The 18 `/repowise:*` slash commands in the Claude Code plugin |
-| [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: spinner, change review, Flow and the `/lens` map |
 | [agent/CLAUDE_CODE_PROVIDER.md](agent/CLAUDE_CODE_PROVIDER.md) | Claude Code as the model that writes your docs |
 | [agent/CODEX.md](agent/CODEX.md) | Codex: MCP and hooks setup, the `codex_cli` provider, the plugin |
 | [agent/OPENCODE.md](agent/OPENCODE.md) | OpenCode as an MCP host and as a provider |

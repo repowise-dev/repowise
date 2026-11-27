@@ -76,8 +76,6 @@ jobs:
               - 'packages/ui/**'
               - 'packages/types/**'
               - 'packages/api-client/**'
-              - 'packages/claude-mod/**'
-              - 'plugins/claude-code/**'
               - 'scripts/check-shared-imports.mjs'
             vscode:
               - *shared
@@ -1175,15 +1173,6 @@ jobs:
       - name: Report catalog key gaps (warn only)
         run: npm run i18n:check --workspace packages/web
         continue-on-error: true
-
-      - name: Type check claude-mod
-        run: npm run type-check --workspace @repowise-dev/claude-mod
-
-      - name: Test claude-mod
-        run: npm run test --workspace @repowise-dev/claude-mod
-
-      - name: Check the committed Lens bundle is current
-        run: npm run build:mod --workspace @repowise-dev/claude-mod -- --check
 
   # ---------------------------------------------------------------------------
   # VS Code extension — type check, bundle-size gate, and Electron smoke test
