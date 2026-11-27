@@ -6,7 +6,7 @@ import {
   getHealthMap,
   listHealthFiles,
 } from "@repowise-dev/api-client/code-health";
-import { getFileDetail } from "@repowise-dev/api-client/files";
+import { getFileContent, getFileDetail } from "@repowise-dev/api-client/files";
 import {
   getArchitectureCommunityGraph,
   getCommunities,
@@ -25,22 +25,27 @@ import {
   getRefactoringOpportunities,
   getRefactoringOpportunity,
   getRefactoringPlan,
+  updateRefactoringOpportunityStatus,
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getPageById, listAllPages, listPageTree } from "@repowise-dev/api-client/pages";
-import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
+import {
+  analyzeBlastRadius,
+  analyzeChangeBlastRadius,
+  checkChangeHealth,
+  listBlastRadiusChanges,
+} from "@repowise-dev/api-client/blast-radius";
+import { getHotspots } from "@repowise-dev/api-client/git";
 import { CONFIG_SECTION } from "../constants";
 import {
   SETTING_KEYS,
   type HomeSummary,
   type HostApi,
-  type RiskRangeReport,
   type SettingKey,
   type SettingsValues,
   type SettingValue,
 } from "../shared/webviewMessages";
 import type { RepowiseContext } from "./context";
-import { analyzeChange } from "./changeAnalysis";
 import { commitsMatch, getCurrentBranchName, resolveLiveHead } from "./gitApi";
 import { opportunityPrompt, planPrompt } from "./planPrompt";
 
@@ -174,6 +179,12 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     if (!id || ctx.getExtensionState() !== "ready") throw new NotReadyError();
     return id;
   }
+
+  // The head commit (and base) each listed change was at, so its analysis can
+  // be cached on that commit and recomputed once the change moves. Ceiling: a
+  // branch's base is keyed by name, so a fetch that moves the base branch is
+  // seen at the next index refresh (which clears the cache), not at once.
+  const changeHeads = new Map<string, string | null>();
 
   // Concurrent callers of the same key share one request instead of racing
   // (two panels opening together, or one view fanning out related slices).
@@ -311,25 +322,21 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     // Knowledge graph
     zoomMap: () => cached("graph:zoom", (id) => getZoomMap(id)),
 
-    // Refactoring
-    refactoringOpportunities: (filePath) =>
-      cached(`refactor:opps:${filePath ?? ""}`, (id) =>
-        getRefactoringOpportunities(id, {
-          ...(filePath ? { filePath } : {}),
-          // The row renders counts, not steps; the detail call carries those.
-          stepPreview: 0,
-          limit: 100,
-        }),
-      ),
+    // Refactoring. The board and the open opportunity are read live: a triage
+    // write changes them without moving the head commit the cache is tagged by.
+    refactoringOpportunities: (query) => getRefactoringOpportunities(repoId(), query),
     refactoringOpportunity: (opportunityId) =>
-      cached(`refactor:opp:${opportunityId}`, (id) =>
-        getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
-      ),
+      getRefactoringOpportunity(repoId(), opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
+    fileContent: (filePath) => getFileContent(repoId(), filePath),
+    setRefactoringOpportunityStatus: async (opportunityId, status) => {
+      await updateRefactoringOpportunityStatus(repoId(), opportunityId, status);
+    },
     refactoringOpportunityPrompt: (opportunityId, flavor) =>
       opportunityPrompt(ctx, opportunityId, flavor, async () => {
-        const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
-          getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
-        );
+        const detail = await getRefactoringOpportunity(repoId(), opportunityId, {
+          stepLimit: 50,
+          evidenceLimit: 20,
+        });
         if (!detail.found) {
           throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
         }
@@ -355,27 +362,28 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       cached(`docs:page:${pageId}`, (id) => getPageById(pageId, id)),
     fileDetail: (relPath) => cached(`docs:file:${relPath}`, (id) => getFileDetail(id, relPath)),
 
-    // Branch risk
-    riskRange: async (): Promise<RiskRangeReport> => {
-      const id = repoId();
-      const configured = vscode.workspace
-        .getConfiguration(CONFIG_SECTION)
-        .get<string>("risk.baseBranch", "")
-        .trim();
-      const base = configured || ctx.repo?.default_branch || "main";
-      const range = { base, head: "HEAD" };
-      const [result, patchCoverage] = await Promise.all([
-        getRiskRange(id, range),
-        getPatchCoverage(id, range).catch(() => null),
-      ]);
-      const branch = await getCurrentBranchName(ctx.workspace.repoRoot ?? "");
-      return { base, branch, result, patchCoverage };
+    // Change risk: the web Review page's reads. The change list and the
+    // health check read the checkout, so they are always live; a listed
+    // change's analysis is cached on the commit it was listed at.
+    hotspots: (limit) => cached(`review:hotspots:${limit}`, (id) => getHotspots(id, limit)),
+    blastRadius: (body) => analyzeBlastRadius(repoId(), body),
+    reviewChanges: async () => {
+      const list = await listBlastRadiusChanges(repoId());
+      for (const change of list.changes) {
+        const base = change.base_sha ?? change.base ?? "";
+        changeHeads.set(change.id, change.head_sha ? `${change.head_sha}:${base}` : null);
+      }
+      return list;
     },
-
-    // Change impact: reads the working tree, so it tracks the live change set
-    // rather than the indexed commit. analyzeChange owns caching by change-set
-    // signature, so this never re-fetches for an unchanged file set.
-    changeImpact: () => analyzeChange(ctx, "branch"),
+    changeBlastRadius: (body) => {
+      const head = changeHeads.get(body.change_id);
+      // Work in progress has no commit to key on: it changes with every save.
+      if (!head) return analyzeChangeBlastRadius(repoId(), body);
+      return cached(`review:change:${head}:${JSON.stringify(body)}`, (id) =>
+        analyzeChangeBlastRadius(id, body),
+      );
+    },
+    changeHealthCheck: (changeId) => checkChangeHealth(repoId(), changeId),
 
     // Sidebar home
     homeSummary,
