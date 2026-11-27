@@ -183,11 +183,9 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
   const inFlight = new Map<string, Promise<unknown>>();
 
   /** Serves from the tagged cache; concurrent misses share one request. */
-  const currentTag = (): string => `${ctx.repo?.head_commit ?? ""}#${epoch()}`;
-
   function cached<T>(key: string, load: (id: string) => Promise<T>): Promise<T> {
     const id = repoId();
-    const tag = currentTag();
+    const tag = `${ctx.repo?.head_commit ?? ""}#${epoch()}`;
     const hit = ctx.cache.get<T>(id, `wv:${key}`, tag);
     if (hit !== undefined) return Promise.resolve(hit);
     const flightKey = `${id}|${key}|${tag}`;
@@ -195,9 +193,7 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     if (pending) return pending as Promise<T>;
     const request = load(id)
       .then((value) => {
-        // The cache keeps one tag per key, so a request that outlived an index
-        // update must not replace the fresher entry stored meanwhile.
-        if (tag === currentTag()) ctx.cache.set(id, `wv:${key}`, tag, value);
+        ctx.cache.set(id, `wv:${key}`, tag, value);
         return value;
       })
       .finally(() => {

@@ -33,14 +33,23 @@ describe("createCache", () => {
     expect(cache.get("r", "k", "t")).toBe("new");
   });
 
-  it("keeps one tag per key, so a new freshness stamp replaces the old entry", () => {
+  it("keeps the two newest tags per key and drops older ones", () => {
     const cache = createCache();
-    cache.set("r", "k", "head-1", "old");
-    cache.set("r", "k", "head-2", "new");
-    expect(cache.get("r", "k", "head-2")).toBe("new");
-    // The superseded payload is gone, not just unread: memory stays one copy
-    // per key however many index updates a session sees.
+    cache.set("r", "k", "head-1", "one");
+    cache.set("r", "k", "head-2", "two");
+    cache.set("r", "k", "head-3", "three");
+    expect(cache.get("r", "k", "head-3")).toBe("three");
+    expect(cache.get("r", "k", "head-2")).toBe("two");
+    // Bounded: a session's superseded payloads do not pile up.
     expect(cache.get("r", "k", "head-1")).toBeUndefined();
+  });
+
+  it("keeps the fresh entry when an older request writes last", () => {
+    const cache = createCache();
+    cache.set("r", "k", "head-2", "fresh");
+    // A request started under head-1 resolves after the head-2 one.
+    cache.set("r", "k", "head-1", "late");
+    expect(cache.get("r", "k", "head-2")).toBe("fresh");
   });
 
   it("drops everything on invalidateAll", () => {
