@@ -464,7 +464,7 @@ def _depth_newer_than(repo: object, commit_limit: int, since_ts: int) -> int | N
 
 def _stamp_after(stamp: str, since_ts: int) -> bool:
     try:
-        return int(stamp) > since_ts
+        return int(stamp) >= since_ts
     except ValueError:  # unparseable stamp: keep it in the window
         return True
 
@@ -784,7 +784,7 @@ def load_commit_index(
 
 
 def _commits_after(records: list[str], since_ts: int | None) -> Iterator[tuple[dict, list[str]]]:
-    """``(header, numstat_lines)`` of each parseable record newer than *since_ts*.
+    """``(header, numstat_lines)`` of each parseable record at or newer than *since_ts*.
 
     Skips rather than stops at an older commit: the walk is newest first, but
     commit times can be slightly out of order.
@@ -793,7 +793,7 @@ def _commits_after(records: list[str], since_ts: int | None) -> Iterator[tuple[d
 
     for record in records:
         parsed = _parse_commit_record(record)
-        if parsed is not None and (since_ts is None or parsed[0]["ts"] > since_ts):
+        if parsed is not None and (since_ts is None or parsed[0]["ts"] >= since_ts):
             yield parsed
 
 

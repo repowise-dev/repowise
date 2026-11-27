@@ -117,7 +117,7 @@ def _mock_repo(commits: list[dict]):
 
 
 def test_commit_sink_since_ts_drops_old_commits() -> None:
-    """``since_ts`` filters the sink to commits strictly newer than the bound —
+    """``since_ts`` filters the sink to commits at or newer than the bound —
     the incremental capture path's freshness guarantee."""
     commits = [
         {"sha": "new", "an": "A", "ae": "a@x", "ct": 3000, "subj": "new",
@@ -130,12 +130,12 @@ def test_commit_sink_since_ts_drops_old_commits() -> None:
     repo = _mock_repo(commits)
     sink: list[dict] = []
     load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=1500)
-    # Only commits with ts > 1500 survive (3000, 2000).
+    # Only commits with ts >= 1500 survive (3000, 2000).
     assert sorted(c["sha"] for c in sink) == ["mid", "new"]
 
     repo2 = _mock_repo(commits)
     sink2: list[dict] = []
-    load_commit_index(repo2, 100, {"src/a.py"}, commit_sink=sink2, since_ts=3000)
+    load_commit_index(repo2, 100, {"src/a.py"}, commit_sink=sink2, since_ts=3001)
     assert sink2 == []
 
 
@@ -153,13 +153,27 @@ def test_since_ts_bounds_the_numstat_walk_to_the_surviving_prefix() -> None:
     ]
     repo = _mock_repo(commits)
     sink: list[dict] = []
-    # ts > 4800 keeps c0..c1 (5000, 4900); c2 is exactly 4800 and is excluded.
-    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=4800)
+    # ts >= 4801 keeps c0..c1 (5000, 4900); c2 is 4800 and is excluded.
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=4801)
 
     assert sorted(c["sha"] for c in sink) == ["c0", "c1"]
     numstat_calls = [c for c in repo._log_calls if "--numstat" in c]
     assert len(numstat_calls) == 1
     assert numstat_calls[0][0] == "-2"
+
+
+def test_since_ts_captures_same_second_commits() -> None:
+    """Commits created in the same second as since_ts are captured (>= since_ts)
+    so same-second commits are not permanently omitted."""
+    commits = [
+        {"sha": "c1", "an": "A", "ae": "a@x", "ct": 2000, "subj": "c1", "files": [(1, 0, "src/a.py")]},
+        {"sha": "c2", "an": "A", "ae": "a@x", "ct": 2000, "subj": "c2", "files": [(1, 0, "src/a.py")]},
+        {"sha": "c3", "an": "A", "ae": "a@x", "ct": 1999, "subj": "c3", "files": [(1, 0, "src/a.py")]},
+    ]
+    repo = _mock_repo(commits)
+    sink: list[dict] = []
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=2000)
+    assert sorted(c["sha"] for c in sink) == ["c1", "c2"]
 
 
 def test_since_ts_newer_than_every_commit_skips_the_numstat_walk() -> None:
