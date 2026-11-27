@@ -19,6 +19,9 @@ Silence is the default. No step when:
   no loop repeats: each request needs its own, and "batch" would be wrong;
 - the function is a thin wrapper named like its dominant callee (the cost
   belongs to its drivers);
+- the dominant time is a regular expression run by a function whose job is
+  matching its input (a lexer, tokenizer, parser or router, by its name or its
+  file's): the regex is the work;
 - the row is a module body's import time (``<path>::<module>``): whether the
   run needed what the file imports is not in the row (ceiling; upgrade path:
   mark a library the run imported but never called, then say "import it
@@ -49,8 +52,10 @@ from repowise.core.analysis.health.perf.dialects.python_lexicon import (
     PY_DB_UNAMBIGUOUS,
     PY_SUBPROC_METHODS,
 )
+from repowise.core.analysis.health.perf.loop_lexicon import words
+from repowise.core.frame_resolver import parse_jvm_frame
 from repowise.core.ingestion.external_systems.io_kind import classify_io_kind
-from repowise.core.ingestion.symbol_identity import file_of_symbol
+from repowise.core.ingestion.symbol_identity import base_symbol_id, file_of_symbol
 
 from .format_v1 import is_import_row
 
@@ -198,6 +203,68 @@ _CHILD_WAITS = PY_SUBPROC_METHODS | {"communicate", "wait", "_wait", "_communica
 _IMPORT_PY = frozenset({"_find_and_load", "_gcd_import", "import_module", "__import__"})
 _REGEX_COMPILE = frozenset({"regexp.MustCompile", "regexp.Compile", "Pattern.compile"})
 _PY_RE_MISS_LEAVES = frozenset({"parse", "_parse", "_parse_sub", "_code", "compile"})
+# A regular expression run in the call: the matcher's own frames, by owner. V8
+# names the compiled pattern ``RegExp: <source>`` whichever call ran it (test,
+# exec, match, replace); Python's are the compiled pattern's C methods as
+# pyinstrument (``Pattern.match``) and cProfile name them. Methods that return a
+# lazy sequence (``Matcher.results``, Kotlin's ``findAll``) match nothing in the
+# call and stay out. Ceiling: py-spy names ``re.match`` bare (``match``), which
+# other libraries spell too, so a module-level ``re`` call is not read. Upgrade
+# path: key it on the frame's file (``re/__init__.py``) once ``inside`` carries it.
+_JVM_REGEX_RUNS = {
+    "java.util.regex.Matcher": frozenset(
+        {"matches", "find", "lookingAt", "replaceAll", "replaceFirst"}
+    ),
+    "kotlin.text.Regex": frozenset(
+        {"matches", "matchEntire", "containsMatchIn", "find", "replace", "split"}
+    ),
+}
+_GO_REGEX_RUNS = re.compile(r"regexp\.\(\*Regexp\)\.(?:Match\w*|Find\w*|ReplaceAll\w*|Split)")
+_PY_PATTERN_VERBS = frozenset({"match", "search", "fullmatch", "sub", "subn"})
+_PY_CPROFILE_PATTERN = re.compile(r"<method '(\w+)' of 're\.Pattern' objects>")
+# Calls that compile their pattern each time they run them.
+_JVM_REGEX_PER_CALL = {
+    "java.lang.String": frozenset({"matches", "replaceAll", "replaceFirst"}),
+    "java.util.regex.Pattern": frozenset({"matches"}),
+}
+_GO_REGEX_PER_CALL = frozenset({"regexp.MatchString", "regexp.Match", "regexp.MatchReader"})
+# Words of a function, class or file name whose job is matching its input: the
+# regex is the work.
+_MATCHING_JOB_WORDS = frozenset(
+    {
+        "lex",
+        "lexer",
+        "lexing",
+        "token",
+        "tokens",
+        "tokenize",
+        "tokenizer",
+        "tokenise",
+        "tokeniser",
+        "scan",
+        "scanner",
+        "parse",
+        "parser",
+        "parsing",
+        "grammar",
+        "match",
+        "matcher",
+        "matches",
+        "matching",
+        "regex",
+        "regexp",
+        "pattern",
+        "patterns",
+        "glob",
+        "route",
+        "router",
+        "routes",
+        "routing",
+        "highlight",
+        "highlighter",
+        "syntax",
+    }
+)
 _PARSE = frozenset(
     {
         "loads",
@@ -366,7 +433,7 @@ _AGREES = {
     "db": frozenset({"db_read", "db_write_loop"}),
 }
 
-_SILENT = frozenset({"wait", "spine", "response_write", "db_write", "unknown_native"})
+_SILENT = frozenset({"wait", "spine", "response_write", "db_write", "unknown_native", "regex_work"})
 
 
 @dataclass(frozen=True)
@@ -506,7 +573,9 @@ def _dominant(
     family, share = max(families.items(), key=lambda kv: (kv[1], kv[0]))
     if share < DOMINANT or family == "own" or family.startswith("other:"):
         return None
-    if _last(symbol.rsplit("::", 1)[-1]) == _last(str(_lead(members[family]).get("name"))):
+    lead = str(_lead(members[family]).get("name"))
+    # A V8 pattern's source is no call name (``RegExp: ^\/api\/end`` under ``end``).
+    if not lead.startswith("RegExp: ") and _last(symbol.rsplit("::", 1)[-1]) == _last(lead):
         return None  # a thin wrapper: the cost belongs to whoever calls it
     return family, share, members[family]
 
@@ -520,7 +589,11 @@ def _refine(
     workload_class: Any,
 ) -> tuple[str, str | None]:
     """A database family split into read and write, with the loop that repeats it:
-    a write a loop repeats in one entry point run is ``db_write_loop``."""
+    a write a loop repeats in one entry point run is ``db_write_loop``; a regex run
+    by a function whose job is matching its input (a lexer, a parser, a router) is
+    the work (``regex_work``)."""
+    if family == "regex_match":
+        return ("regex_work" if _matching_is_the_job(symbol) else family), None
     if family != "database":
         return family, None
     family = _database_family(group, symbol)
@@ -625,6 +698,61 @@ def _regex_callee(c: _Callee) -> bool:
     )
 
 
+def _jvm_owner(name: str) -> tuple[str, str] | None:
+    """A JVM frame's class with its package and its method, in any spelling
+    (``java/util/regex/Matcher.matches()Z_[j]`` -> ``java.util.regex.Matcher``, ``matches``)."""
+    parsed = parse_jvm_frame(name)
+    return (".".join((*parsed.package, parsed.cls)), parsed.method) if parsed else None
+
+
+def _regex_run(name: str, kind: Any, lang: str) -> str | None:
+    """``per_call`` for a call that compiles its pattern each time, ``match`` for a
+    matcher run on a built pattern, ``None`` for anything else."""
+    if lang == "javascript":
+        return "match" if name.startswith("RegExp: ") else None
+    if lang == "go":
+        bare = name.split(" (inline)")[0]
+        if bare in _GO_REGEX_PER_CALL:
+            return "per_call"
+        return "match" if _GO_REGEX_RUNS.fullmatch(bare) else None
+    if lang == "jvm":
+        owner = _jvm_owner(name)
+        if owner is None:
+            return None
+        if owner[1] in _JVM_REGEX_PER_CALL.get(owner[0], ()):
+            return "per_call"
+        return "match" if owner[1] in _JVM_REGEX_RUNS.get(owner[0], ()) else None
+    if lang == "python":
+        found = _PY_CPROFILE_PATTERN.fullmatch(name)
+        # pyinstrument's short spelling only for the built-in: a class of one's own
+        # named ``Pattern`` has a file, so it is no native frame.
+        short = kind == "native" and _receiver(name) == "Pattern"
+        verb = found.group(1) if found else (_last(name) if short else "")
+        return "match" if verb in _PY_PATTERN_VERBS else None
+    return None
+
+
+def _regex_machinery(leaf: str, lang: str) -> bool:
+    """Whether a leaf is the regex engine itself, not a callback it ran."""
+    if lang == "go":
+        return leaf.startswith(("regexp.", "regexp/syntax."))
+    if lang == "jvm":
+        owner = _jvm_owner(leaf)
+        return owner is not None and owner[0].startswith(("java.util.regex.", "kotlin.text."))
+    if lang == "python":
+        # Only the compiled pattern's own C methods: a bare ``_parse`` may be a callback's.
+        return _regex_run(leaf, "native", lang) is not None
+    return lang == "javascript" and leaf.startswith("RegExp: ")
+
+
+def _regex_match_callee(c: _Callee) -> bool:
+    """A regular expression run in the callee's own frames; a callee whose time
+    ends in something else (a replacement callback's file read) is not one."""
+    if _regex_run(c.name, c.kind, c.lang) is None:
+        return False
+    return not c.leaf_leads or _regex_machinery(c.leaf, c.lang)
+
+
 def _reflection_callee(c: _Callee) -> bool:
     if c.lang == "go":
         return c.name.startswith("reflect.")
@@ -651,6 +779,8 @@ _RULES: tuple[tuple[str, Callable[[_Callee], bool]], ...] = (
     # A child-process wait, when a static finding says the function spawns one.
     ("subprocess", lambda c: c.kind == "wait" and c.spawns and _last(c.name) in _CHILD_WAITS),
     ("wait", lambda c: c.kind == "wait"),
+    # Before the name sets: a V8 pattern's source can end in any word (``\/end``).
+    ("regex_match", _regex_match_callee),
     ("spine", lambda c: bool(c.names & _SPINE)),
     ("response_write", lambda c: bool(c.names & _RESPONSE_WRITE)),
     ("database", lambda c: _database(c.name, c.lang)),
@@ -726,6 +856,14 @@ def _database_family(callees: Sequence[Mapping[str, Any]], symbol: str) -> str:
     if _TRANSACTION_NAME.fullmatch(_last(symbol.rsplit("::", 1)[-1])):
         return "db_write"
     return "db_read"
+
+
+def _matching_is_the_job(symbol: str) -> bool:
+    """Whether the function's, a class's or its file's name says it matches its
+    input (a lexer, a tokenizer, a parser, a router): the regex is the work."""
+    path, _, rest = base_symbol_id(symbol).partition("::")
+    stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return any(w in _MATCHING_JOB_WORDS for name in (stem, *rest.split("::")) for w in words(name))
 
 
 def _on(finding: Mapping[str, Any], symbol: str) -> bool:
@@ -972,6 +1110,57 @@ def _subprocess_words(ctx: _Ctx) -> tuple[str, str]:
     )
 
 
+def _regex_label(name: str, lang: str) -> str:
+    """A regex callee as a row says it: V8's pattern source cut short, a JVM
+    frame by class and method, else the call."""
+    if name.startswith("RegExp: "):
+        source = name[len("RegExp: ") :]
+        return f"RegExp /{source[:40]}.../" if len(source) > 40 else f"RegExp /{source}/"
+    owner = _jvm_owner(name) if lang == "jvm" else None
+    return f"{owner[0]}.{owner[1]}" if owner else _short(name)
+
+
+def _regex_match(ctx: _Ctx) -> tuple[str, str]:
+    ranked = sorted(ctx.callees, key=lambda c: -(c.get("share") or 0.0))
+    split = ", ".join(
+        f"{_pct(c.get('share') or 0.0)} {_regex_label(str(c.get('name')), ctx.lang)}"
+        for c in ranked
+    )
+    per_call = [
+        c for c in ranked if _regex_run(str(c.get("name")), c.get("kind"), ctx.lang) == "per_call"
+    ]
+    # The compile-per-call step only when those calls hold most of the regex time.
+    if sum(c.get("share") or 0.0 for c in per_call) * 2 >= ctx.share:
+        build = {
+            "jvm": "a static final Pattern whose matcher each call uses",
+            "go": "a package-level regexp.MustCompile for a literal pattern",
+        }.get(ctx.lang, "a pattern compiled once")
+        return (
+            f"{ctx.pct} of it is a regular expression whose pattern is compiled on each call ({split})",
+            f"{_regex_label(str(per_call[0].get('name')), ctx.lang)} compiles the pattern each time: "
+            f"when the pattern is a constant, compile it once ({build}) and reuse it",
+        )
+    methods = {
+        "javascript": "startsWith or includes",
+        "jvm": "startsWith or indexOf",
+        "python": "str.startswith or in",
+        "go": "strings.HasPrefix or strings.Contains",
+    }.get(ctx.lang, "a prefix or substring test")
+    state = (
+        "; leave a global or sticky pattern's calls unguarded, since lastIndex carries between them"
+        if ctx.lang == "javascript"
+        else ""
+    )
+    return (
+        f"{ctx.pct} of it is regular expression matching ({split})",
+        "settle the common inputs without the regex: a cheap check first (the length, a character "
+        f"at a known position, or {methods}) that rejects what the pattern can never match or "
+        "accepts the common simple case, and the regex only for the rest; for a small fixed "
+        "grammar, a hand-written scan that accepts exactly the same strings can replace it"
+        f"{state}",
+    )
+
+
 def _simple(why: str, step: str):
     def words(ctx: _Ctx) -> tuple[str, str]:
         return why.format(pct=ctx.pct, split=ctx.split, callee=ctx.callee), step
@@ -989,6 +1178,7 @@ _WORDS = {
     "db_read": _db_read,
     "db_write_loop": _db_write_loop,
     "subprocess": _subprocess_words,
+    "regex_match": _regex_match,
     "sleep": _simple(
         "{pct} of it sleeps ({callee})",
         "wait on the condition itself (an event, or a poll with backoff) instead of a fixed sleep, or shorten it",
