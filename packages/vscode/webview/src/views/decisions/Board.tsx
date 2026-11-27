@@ -39,6 +39,7 @@ import type {
   DecisionLaneCounts,
   DecisionRecord,
 } from "@repowise-dev/types/decisions";
+import type { DecisionListQuery } from "../../../../src/shared/webviewMessages";
 import type { WebviewHost } from "../../runtime/rpc";
 import { ADD, AGENT, BOARD, HERO, REVIEW, VIEW } from "./copy";
 import { useRead } from "./useRead";
@@ -369,9 +370,64 @@ function DecisionsBoard({
 }
 
 /**
- * The lanes with their per-lane fetch, paging and source filter. The lane is
- * a server query parameter, not a filter over a loaded window.
+ * One lane's window: the page, the source filter and the fetch. The lane is a
+ * server query parameter, not a filter over a loaded window, and either
+ * control starts the window over at its first page.
  */
+function useLaneWindow(
+  ctx: BoardContext,
+  serverLane: NonNullable<DecisionListQuery["lane"]>,
+  background: boolean,
+) {
+  const [page, setPage] = React.useState(0);
+  const [source, setSource] = React.useState("all");
+  // The last page known to hold rows, once a step past it came back empty.
+  // Without a measured total (under a source filter) a full window is the only
+  // hint of more, so a filter matching exactly one window would otherwise
+  // offer Next forever.
+  const [lastPage, setLastPage] = React.useState<number | null>(null);
+  // Reset while rendering, so the old offset is never fetched for a new lane.
+  const [pagedLane, setPagedLane] = React.useState(serverLane);
+  if (pagedLane !== serverLane) {
+    setPagedLane(serverLane);
+    setPage(0);
+    setLastPage(null);
+  }
+  const offset = pagedLane === serverLane ? page * PAGE_SIZE : 0;
+
+  const read = useRead(
+    `lane:${serverLane}:${source}:${offset}`,
+    () =>
+      ctx.host.api.listDecisions({
+        lane: serverLane,
+        ...(source !== "all" ? { source } : {}),
+        include_proposed: true,
+        limit: PAGE_SIZE,
+        offset,
+        ...(background ? { sort: "review" as const } : {}),
+      }),
+    ctx.epoch,
+  );
+  const data = read.data;
+
+  const changeSource = React.useCallback((next: string) => {
+    setSource(next);
+    setPage(0);
+    setLastPage(null);
+  }, []);
+
+  // Reviewing the last row of a later page leaves that page empty: step back.
+  React.useEffect(() => {
+    if (page > 0 && data !== undefined && data.length === 0) {
+      setLastPage(page - 1);
+      setPage((p) => Math.max(0, p - 1));
+    }
+  }, [page, data]);
+
+  return { read, page, setPage, lastPage, source, changeSource };
+}
+
+/** The lanes with their window, paging and the wiring of the writes. */
 function DecisionReviewWrapper({
   ctx,
   lane,
@@ -391,66 +447,12 @@ function DecisionReviewWrapper({
   writes: ReturnType<typeof useReviewWrites>;
   loadRecordPrompt: (d: DecisionRecord, kind: DecisionRecordPromptKind) => Promise<string>;
 }) {
-  const { host, epoch, repoId, LinkComponent } = ctx;
-  const [page, setPage] = React.useState(0);
-  const [source, setSource] = React.useState("all");
-  // The last page known to hold rows, once a step past it came back empty.
-  // Without a measured total (under a source filter) a full window is the only
-  // hint of more, so a filter matching exactly one window would otherwise
-  // offer Next forever.
-  const [lastPage, setLastPage] = React.useState<number | null>(null);
-
   const background = lane === "candidates";
-  const serverLane = movedOnly ? "needs_review" : lane;
-  // A new lane starts at its first page. Reset while rendering, so the old
-  // offset is never fetched for the new lane.
-  const [pagedLane, setPagedLane] = React.useState(serverLane);
-  if (pagedLane !== serverLane) {
-    setPagedLane(serverLane);
-    setPage(0);
-    setLastPage(null);
-  }
-  const offset = pagedLane === serverLane ? page * PAGE_SIZE : 0;
-
-  const rowsRead = useRead(
-    `lane:${serverLane}:${source}:${offset}`,
-    () =>
-      host.api.listDecisions({
-        lane: serverLane,
-        ...(source !== "all" ? { source } : {}),
-        include_proposed: true,
-        limit: PAGE_SIZE,
-        offset,
-        ...(background ? { sort: "review" as const } : {}),
-      }),
-    epoch,
-  );
-  const data = rowsRead.data;
-  const rows = data ?? [];
-
-  const changeSource = React.useCallback((next: string) => {
-    setSource(next);
-    setPage(0);
-    setLastPage(null);
-  }, []);
-
-  // Reviewing the last row of a later page leaves that page empty: step back.
-  React.useEffect(() => {
-    if (page > 0 && data !== undefined && data.length === 0) {
-      setLastPage(page - 1);
-      setPage((p) => Math.max(0, p - 1));
-    }
-  }, [page, data]);
-
+  const win = useLaneWindow(ctx, movedOnly ? "needs_review" : lane, background);
+  const { read, source } = win;
+  const rows = read.data ?? [];
   const badges = counts ? sectionCounts(counts) : undefined;
   const laneTotal = movedOnly ? counts?.needs_review : badges?.[lane];
-  const total = source === "all" ? laneTotal : undefined;
-  const first = page * PAGE_SIZE + 1;
-  const last = page * PAGE_SIZE + rows.length;
-  const hasNext =
-    total !== undefined
-      ? last < total
-      : rows.length === PAGE_SIZE && (lastPage === null || page < lastPage);
   const { pending, review, dismissMany } = writes;
 
   return (
@@ -459,10 +461,10 @@ function DecisionReviewWrapper({
         lane={lane}
         onLaneChange={onLaneChange}
         {...(background ? { order: "review" as const } : {})}
-        decisions={data}
+        decisions={read.data}
         {...(badges ? { counts: badges } : {})}
         source={source}
-        onSourceChange={changeSource}
+        onSourceChange={win.changeSource}
         onAccept={(d, options) => void review(d, "accept", options?.reason)}
         onDismiss={(d) => void review(d, "dismiss")}
         onReaffirm={(d) => void review(d, "reaffirm")}
@@ -473,42 +475,79 @@ function DecisionReviewWrapper({
         {...(movedOnly
           ? {
               filterNote: (
-                <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <span>{BOARD.movedOnly(counts?.needs_review ?? rows.length)}</span>
-                  <button type="button" onClick={onClearMoved} className={FOOT_LINK}>
-                    {BOARD.showAll}
-                  </button>
-                </p>
+                <MovedNote count={counts?.needs_review ?? rows.length} onClear={onClearMoved} />
               ),
             }
           : {})}
         pendingIds={pending}
-        repoId={repoId}
-        LinkComponent={LinkComponent}
-        error={rowsRead.error}
-        isLoading={rowsRead.isLoading}
-        onRetry={rowsRead.reload}
+        repoId={ctx.repoId}
+        LinkComponent={ctx.LinkComponent}
+        error={read.error}
+        isLoading={read.isLoading}
+        onRetry={read.reload}
       />
+      <Pager
+        page={win.page}
+        setPage={win.setPage}
+        lastPage={win.lastPage}
+        rowCount={rows.length}
+        // The lane's own measured count, only when the rows count the same
+        // set: under a source filter it is the wrong denominator.
+        total={source === "all" ? laneTotal : undefined}
+        busy={read.isLoading}
+      />
+    </div>
+  );
+}
 
-      {(page > 0 || hasNext) && (
-        <div className="flex items-center justify-between gap-4 border-t border-[var(--color-border-default)] pt-3">
-          <p className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
-            {rows.length > 0 ? `${first}–${last}` : "0"}
-            {total !== undefined ? ` of ${formatNumber(total)}` : ""}
-          </p>
-          <div className="flex items-center gap-2">
-            <PageButton
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-              disabled={page === 0 || rowsRead.isLoading}
-            >
-              {REVIEW.previous}
-            </PageButton>
-            <PageButton onClick={() => setPage((p) => p + 1)} disabled={!hasNext || rowsRead.isLoading}>
-              {REVIEW.next}
-            </PageButton>
-          </div>
-        </div>
-      )}
+function MovedNote({ count, onClear }: { count: number; onClear: () => void }) {
+  return (
+    <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <span>{BOARD.movedOnly(count)}</span>
+      <button type="button" onClick={onClear} className={FOOT_LINK}>
+        {BOARD.showAll}
+      </button>
+    </p>
+  );
+}
+
+/** The window's range and its Previous / Next, shown once there is more than one page. */
+function Pager({
+  page,
+  setPage,
+  lastPage,
+  rowCount,
+  total,
+  busy,
+}: {
+  page: number;
+  setPage: React.Dispatch<React.SetStateAction<number>>;
+  lastPage: number | null;
+  rowCount: number;
+  total: number | undefined;
+  busy: boolean;
+}) {
+  const first = page * PAGE_SIZE + 1;
+  const last = page * PAGE_SIZE + rowCount;
+  const hasNext =
+    total !== undefined
+      ? last < total
+      : rowCount === PAGE_SIZE && (lastPage === null || page < lastPage);
+  if (page === 0 && !hasNext) return null;
+  return (
+    <div className="flex items-center justify-between gap-4 border-t border-[var(--color-border-default)] pt-3">
+      <p className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+        {rowCount > 0 ? `${first}–${last}` : "0"}
+        {total !== undefined ? ` of ${formatNumber(total)}` : ""}
+      </p>
+      <div className="flex items-center gap-2">
+        <PageButton onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0 || busy}>
+          {REVIEW.previous}
+        </PageButton>
+        <PageButton onClick={() => setPage((p) => p + 1)} disabled={!hasNext || busy}>
+          {REVIEW.next}
+        </PageButton>
+      </div>
     </div>
   );
 }
