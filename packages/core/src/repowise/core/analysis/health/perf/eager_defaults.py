@@ -59,15 +59,17 @@ def eager_defaults(
         stack.extend(node.children)
         if node.type != "call":
             continue
-        owner = _owner(node, functions)
-        if owner is None:
-            continue
         name = _callee(node)
         if name is not None:
-            key = (owner, _last(name))
-            calls[key] = calls.get(key, 0) + 1
+            # Counted in every function around the call, nested definitions'
+            # parameter defaults and decorators included: a count too high
+            # only drops a fact.
+            for around in _functions_around(node, functions):
+                key = (around, _last(name))
+                calls[key] = calls.get(key, 0) + 1
         eager = _eager_default(node)
-        if eager is not None:
+        owner = _owner(node, functions) if eager is not None else None
+        if eager is not None and owner is not None:
             found.setdefault(owner, []).append(eager)
     out: dict[int, tuple[EagerDefault, ...]] = {}
     for owner, defaults in found.items():
@@ -88,7 +90,17 @@ def _callee(call: Node) -> str | None:
 
 
 def _last(name: str) -> str:
-    return name.rsplit(".", 1)[-1].strip()
+    return name.replace("(", "").replace(")", "").rsplit(".", 1)[-1].strip()
+
+
+def _functions_around(node: Node, functions: Mapping[int, object]) -> list[int]:
+    out: list[int] = []
+    parent = node.parent
+    while parent is not None:
+        if parent.id in functions:
+            out.append(parent.id)
+        parent = parent.parent
+    return out
 
 
 def _eager_default(call: Node) -> EagerDefault | None:
@@ -106,8 +118,11 @@ def _eager_default(call: Node) -> EagerDefault | None:
     if len(named) != 2 or any(a.type in _SKIP_ARGS for a in named):
         return None
     built = named[1]
-    while built.type == "parenthesized_expression" and len(built.named_children) == 1:
-        built = built.named_children[0]
+    while built.type == "parenthesized_expression":
+        inner = [c for c in built.named_children if c.type != "comment"]
+        if len(inner) != 1:
+            return None
+        built = inner[0]
     if built.type != "call":
         return None
     name = _callee(built)

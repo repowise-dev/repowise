@@ -854,8 +854,9 @@ def test_a_dominant_build_as_a_setdefault_default_says_build_only_when_missing()
     assert step.why.startswith("73% of it builds ValueTracker() (")
     assert "on every call, even when the key is already there" in step.why
     assert step.next.startswith(
-        "at sqlite_utils/utils.py:445, build the default only when the key is missing: "
-        "d[key] if key in d else d.setdefault(key, ValueTracker(...))"
+        "at sqlite_utils/utils.py:445, build the default only when the key is missing: with the "
+        "mapping and the key evaluated once, d[key] if key in d else "
+        "d.setdefault(key, ValueTracker(...))"
     )
     assert step.callee == "sqlite_utils.utils.ValueTracker.__init__" and step.share == 0.7311
 
@@ -938,6 +939,17 @@ def test_the_constructor_row_stays_silent_on_a_minor_or_unrelated_driver() -> No
     assert next_step(hot, "python", [fact]) is None
     same = eager_default_fact(_WRAP, '[["utils.ValueTracker", 445]]')
     assert next_step(hot, "python", [same]).rule == "eager_default"
+    # A package's __init__.py is the package: pkg.Tracker() builds pkg/__init__.py's class.
+    pkg = _row(
+        "pkg/__init__.py::Tracker::__init__",
+        inside,
+        [{"name": "w", "share": 1.0, "symbol": _WRAP}],
+        "i",
+        "entry_point",
+    )
+    assert next_step(pkg, "python", [eager_default_fact(_WRAP, '[["pkg.Tracker", 5]]')])
+    other_pkg = eager_default_fact(_WRAP, '[["other.pkg.Tracker", 5]]')
+    assert next_step(pkg, "python", [other_pkg]) is None
     # A unit test run never gets a step.
     tests = _row(
         init, inside, [{"name": "w", "share": 1.0, "symbol": _WRAP}], "pytest", "unit_test"

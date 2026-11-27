@@ -50,6 +50,18 @@ def twice(d, rows):
 
 def defined(d, k, arg=cache.setdefault(1, Once())):
     return arg
+
+
+def hidden(d, k):
+    def g(x=Seed()):
+        return x
+
+    (Pair)()
+    d.setdefault(k, Seed())
+    d.setdefault(k, Pair())
+    return d.setdefault(k, (  # a comment
+        Note()
+    ))
 """
 
 
@@ -70,6 +82,9 @@ def test_a_call_as_the_setdefault_default_is_read_per_function() -> None:
     # expression's default runs later, a parameter default once.
     assert eager["twice"] == (("Box", 34),)
     assert eager["defined"] == ()
+    # A nested definition's parameter default runs here too, and so does a call
+    # through grouping parentheses: both count. A comment inside them is read through.
+    assert eager["hidden"] == (("Note", 50),)
 
 
 def test_other_languages_and_files_without_setdefault_read_nothing() -> None:

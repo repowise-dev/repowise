@@ -665,19 +665,19 @@ def _builds(callee: str, call: str) -> bool:
     if segs[-1] in _CONSTRUCTORS:
         segs = segs[:-1]
     want = call.split(".")
-    if not segs or segs[-1] != want[-1]:
-        return False
-    if len(want) < 2 or want[-2] in ("self", "cls"):
-        return True
-    return len(segs) >= 2 and segs[-2] == want[-2]
+    if want[0] in ("self", "cls"):
+        want = want[-1:]
+    return len(segs) >= len(want) and segs[-len(want) :] == want
 
 
 def _frame_of(symbol: str) -> str:
     """A symbol id as a profile frame names it: ``pkg/hot.py::Tracker::__init__``
-    -> ``hot.Tracker.__init__`` (the module's stem and the qualified name)."""
+    -> ``pkg.hot.Tracker.__init__`` (a package's ``__init__.py`` is the package)."""
     path, _, rest = base_symbol_id(symbol).partition("::")
-    stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-    return ".".join([stem, *rest.split("::")])
+    module = path.rsplit(".", 1)[0].split("/")
+    if module[-1] == "__init__":
+        module = module[:-1]
+    return ".".join([*module, *rest.split("::")])
 
 
 def _built_class(symbol: str) -> str:
@@ -689,9 +689,10 @@ def _built_class(symbol: str) -> str:
 def _eager_next(file_path: str, line: int, call: str, where: str | None) -> str:
     at = f"at {file_path}:{line}" + (f" in {where}" if where else "")
     return (
-        f"{at}, build the default only when the key is missing: d[key] if key in d else "
-        f"d.setdefault(key, {call}(...)) keeps the value it stores and returns; leave it eager "
-        f"only if building a {call} has a side effect every call needs"
+        f"{at}, build the default only when the key is missing: with the mapping and the key "
+        f"evaluated once, d[key] if key in d else d.setdefault(key, {call}(...)) keeps the value "
+        f"a plain dict stores and returns; leave it eager only if building a {call} has a side "
+        "effect every call needs"
     )
 
 
