@@ -47,6 +47,7 @@ from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
 from ...ingestion.barrels import BARREL_FILENAMES
 from ...ingestion.cohesion import records_no_use
+from ...ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from ...ingestion.models import NON_CODE_EDGE_TYPES
 from .constants import never_flag_path
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
@@ -291,7 +292,9 @@ def is_file_reachable(
     # routes, migration scripts. Reached from outside the import graph the same
     # way an entry point is, so this belongs to the question, not to the
     # analyzer that used to own the matcher.
-    if never_flag_path(path):
+    # Package managers read manifests by filename, too. This is a file-level
+    # exemption: unused declarations inside a manifest must still be checked.
+    if never_flag_path(path) or _LANG_REGISTRY.is_package_manifest(path):
         return True
     if path in rescues.whitelist:
         return True

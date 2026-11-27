@@ -3,9 +3,9 @@
 Three lists used to answer it and disagree: the traverser's hardcoded four, the
 registry's every-manifest union, and health's own six. The registry is now the
 single source, and package roots are scanned from the filesystem rather than
-inferred from the indexed file list — because the traverser drops 18 manifest
+inferred from the indexed file list — because the traverser drops manifest
 names it cannot language-detect, which silently cost Go, Maven, Groovy-Gradle,
-Ruby, Scala, Clojure and Erlang monorepos any package attribution at all.
+Scala, Clojure and Erlang monorepos any package attribution at all.
 
 .NET's package file is the ``.csproj`` glob, which an exact-filename list
 cannot express: the scan matches it in the same walk and records each project's
@@ -29,7 +29,7 @@ from repowise.core.ingestion.traverser import FileTraverser
 
 # Names the traverser drops as files but which unambiguously declare a package.
 # Measured by running FileTraverser over a directory holding one of each.
-DROPPED_BUT_REAL = ("go.mod", "pom.xml", "build.gradle", "Gemfile", "build.sbt")
+DROPPED_BUT_REAL = ("go.mod", "pom.xml", "build.gradle", "build.sbt")
 
 
 def _write(root: Path, rel: str, body: str = "x = 1\n") -> None:
@@ -142,17 +142,21 @@ def test_registry_manifest_queries_follow_one_matching_rule():
 # ---------------------------------------------------------------------------
 
 
-def test_the_scan_finds_manifests_the_traverser_drops_as_files(tmp_path):
-    """The whole point. These never reach ``parsed_files``, but they are roots."""
+def test_the_scan_finds_parsed_and_unparsed_manifests(tmp_path):
+    """Package roots do not depend on whether a manifest can be parsed."""
     for i, name in enumerate(DROPPED_BUT_REAL):
         _write(tmp_path, f"pkg{i}/{name}", "<x/>\n")
         _write(tmp_path, f"pkg{i}/code.py", "y = 1\n")
+    _write(tmp_path, "ruby/Gemfile", "gem 'rack'\n")
 
     emitted = {fi.path.replace("\\", "/") for fi in FileTraverser(tmp_path).traverse()}
     for i, name in enumerate(DROPPED_BUT_REAL):
         assert f"pkg{i}/{name}" not in emitted, name
+    assert "ruby/Gemfile" in emitted
 
-    assert scan_package_roots(tmp_path) == {f"pkg{i}" for i in range(len(DROPPED_BUT_REAL))}
+    assert scan_package_roots(tmp_path) == {
+        f"pkg{i}" for i in range(len(DROPPED_BUT_REAL))
+    } | {"ruby"}
 
 
 def test_a_repo_root_manifest_is_not_a_package_root(tmp_path):

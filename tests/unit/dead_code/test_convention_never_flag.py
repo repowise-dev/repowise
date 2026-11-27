@@ -122,10 +122,44 @@ def test_vendored_and_generated_files_are_never_flagged(path):
         "src/pkg/external/client.py",
         "x-pack/plugin/inference/src/main/java/org/x/external/Sender.java",
         "src/libraries/System.Runtime/src/System/DateTime.cs",
+        "Gemfile.rb",
+        "lib/Gemfile.rb",
     ],
 )
 def test_origin_near_misses_stay_flaggable(path):
     assert not never_flag_path(path)
+
+
+@pytest.mark.parametrize("path", ["Gemfile", "apps/api/Gemfile"])
+def test_package_manifests_are_not_unreachable(path):
+    assert not never_flag_path(path)
+    assert not _unreachable(path)
+
+
+def test_reachable_gemfile_still_reports_unused_symbols(tmp_path):
+    from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    source = b"def unused_helper\n  1\nend\n"
+    (tmp_path / "Gemfile").write_bytes(source)
+    file_info = next(FileTraverser(tmp_path).traverse())
+    parsed = ASTParser().parse_file(file_info, source)
+    builder = GraphBuilder(repo_path=tmp_path)
+    builder.add_file(parsed)
+    builder.set_source_map({"Gemfile": source})
+    report = DeadCodeAnalyzer(
+        builder.build(),
+        {},
+        parsed_files={"Gemfile": parsed},
+        source_map={"Gemfile": source},
+        repo_root=tmp_path,
+    ).analyze({"min_confidence": 0.0})
+
+    assert not any(f.kind is DeadCodeKind.UNREACHABLE_FILE for f in report.findings)
+    assert any(
+        f.kind is DeadCodeKind.UNUSED_EXPORT and f.symbol_name == "unused_helper"
+        for f in report.findings
+    )
 
 
 @pytest.mark.parametrize(
