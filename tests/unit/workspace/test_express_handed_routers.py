@@ -508,3 +508,24 @@ def test_a_barrel_importing_the_router_by_its_own_name_reaches_it(tmp_path: Path
             """,
         },
     ) == {("/api/user/plugins", "server/routes/user.ts")}
+
+
+def test_an_export_from_list_names_the_other_module_not_a_local(tmp_path: Path) -> None:
+    # The barrel's own `user` import is unrelated: `user` is re-exported from ./account.
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.ts": """
+                import user from './user';
+                export { default as user } from './account';
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+            "server/routes/account.js": """
+                const express = require('express');
+                const router = express.Router();
+                router.get('/settings', show);
+                module.exports = router;
+            """,
+        },
+    ) == {("/plugins", "server/routes/user.js"), ("/api/user/settings", "server/routes/account.js")}

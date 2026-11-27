@@ -236,8 +236,11 @@ _NAMED_EXPORTS_RE = re.compile(
     r"|\b(?:module\.exports\s*=|export)\s*\{([^}]*)"
 )
 _IDENT_RE = re.compile(r"[\w$]+")
-# One export list, ``module.exports = { ... }`` or ``export { ... }``.
-_EXPORT_LIST_RE = re.compile(r"\b(?:module\.exports\s*=|export)\s*\{([^}]*)\}")
+# One export list, ``module.exports = { ... }`` or ``export { ... }``, with the
+# module an ``export { ... } from '<module>'`` re-exports from.
+_EXPORT_LIST_RE = re.compile(
+    r"""\b(?:module\.exports\s*=|export)\s*\{([^}]*)\}(?:\s*from\s*['"]([^'"]+)['"])?"""
+)
 # One entry of it: ``user``, ``user: admin`` (object key) or ``admin as user``.
 _EXPORT_PAIR_RE = re.compile(
     r"(?P<key>[\w$]+)\s*:\s*(?P<value>[\w$]+)"
@@ -366,8 +369,9 @@ def _reexports(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
     that router serves wherever the barrel member is mounted. Kept apart from
     the mount keys: a router also mounted directly keeps that mount.
     """
-    for exported, local in _exported_locals(f.content).items():
-        bound = f.imports.get(local)
+    for exported, (local, spec) in _exported_locals(f.content).items():
+        # ``export { router as user } from './user'`` names ./user's export directly.
+        bound = (spec, local) if spec is not None else f.imports.get(local)
         if bound is None:
             continue  # a router the barrel defines itself keeps its own key
         module = resolve_module(ctx.rel_path, bound[0])
@@ -376,26 +380,30 @@ def _reexports(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
         add_mounts(out, declare_mount(_REEXPORT + _key(module, bound[1]), _key(f.module, exported)))
 
 
-def _exported_locals(content: str) -> dict[str, str]:
-    """``exported name -> local name`` for the names the file exports by name.
+def _exported_locals(content: str) -> dict[str, tuple[str, str | None]]:
+    """``exported name -> (local name, module spec)`` for the names the file exports by name.
 
     ``module.exports = { user }`` and ``export { user }`` export ``user`` as
     itself, ``module.exports = { user: admin }`` and ``export { admin as user }``
     export the local ``admin`` as ``user``, and ``exports.user = admin`` the same.
-    An entry whose value is not a bare name (``{ user: makeRouter() }``) is left out.
+    The spec is None for those; ``export { router as user } from './user'`` names
+    ``router`` of ``./user``, not a local, so its spec is ``./user``. An entry
+    whose value is not a bare name (``{ user: makeRouter() }``) is left out.
     """
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, str | None]] = {}
     for m in _EXPORT_LIST_RE.finditer(content):
+        spec = m.group(2)
         for part in m.group(1).split(","):
             pair = _EXPORT_PAIR_RE.fullmatch(part.strip())
             if pair is None:
                 continue
             if pair.group("key") is not None:
-                out[pair.group("key")] = pair.group("value")
+                if spec is None:  # ``key: value`` is an object literal, never a from-list
+                    out[pair.group("key")] = (pair.group("value"), None)
             else:
-                out[pair.group("alias") or pair.group("name")] = pair.group("name")
+                out[pair.group("alias") or pair.group("name")] = (pair.group("name"), spec)
     for m in _EXPORTS_ASSIGN_RE.finditer(content):
-        out[m.group(1)] = m.group(2)
+        out[m.group(1)] = (m.group(2), None)
     return out
 
 
