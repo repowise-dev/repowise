@@ -540,16 +540,6 @@ def test_django_queryset_evaluation_is_database_work() -> None:
         assert next_step(_row("a.py::f", [_c(name, "library", 0.9)]), "python").rule == "db_read"
 
 
-def test_django_cursor_wrappers_read_and_write_like_any_driver() -> None:
-    for name in ("CursorWrapper.execute", "CursorDebugWrapper.fetchall"):
-        assert next_step(_row("a.py::f", [_c(name, "library", 0.9)]), "python").rule == "db_read"
-    # A batch write per request needs its own: silent.
-    assert (
-        next_step(_row("a.py::f", [_c("CursorWrapper.executemany", "library", 0.9)]), "python")
-        is None
-    )
-
-
 @pytest.mark.parametrize(
     "inside",
     [
@@ -560,9 +550,19 @@ def test_django_cursor_wrappers_read_and_write_like_any_driver() -> None:
         [_c("QuerySet.filter", "library", 0.6), _c("QuerySet.all", "library", 0.3)],
         # A paginator counting rows, with the cursor only as its leaf.
         [_c("Paginator.page", "library", 0.889, ("SQLiteCursorWrapper.execute", "library", 0.556))],
+        # Raw SQL through Django can be a write: nothing in the row says which.
+        [_c("RawQuerySet.__iter__", "library", 0.9)],
+        [
+            _c(
+                "CursorWrapper.execute",
+                "library",
+                0.9,
+                ("SQLiteCursorWrapper.execute", "library", 0.8),
+            )
+        ],
     ],
 )
-def test_django_single_row_lookups_builders_and_cursor_leaves_stay_silent(
+def test_django_single_row_lookups_builders_and_raw_sql_stay_silent(
     inside: list[dict[str, Any]],
 ) -> None:
     row = _row("app/views.py::page", inside, [{"name": "InclusionNode.render", "share": 1.0}])

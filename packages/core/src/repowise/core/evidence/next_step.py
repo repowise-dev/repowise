@@ -317,19 +317,16 @@ _PY_DB_RECEIVERS = frozenset(
         "Query",
         "Result",
         "Engine",
-        # Django's cursor wrappers (``connection.cursor()``).
-        "CursorWrapper",
-        "CursorDebugWrapper",
-        "SQLiteCursorWrapper",
     }
 )
 _PY_DB_VERBS = PY_DB_UNAMBIGUOUS | PY_DB_NEEDS_EVIDENCE | {"all", "first", "one", "one_or_none"}
-# Django: evaluating a queryset runs its query; ``filter`` or ``all`` only build one.
-# Single-row lookups (``first``, ``get``, ``count``) stay out: one per request is the
-# request's own work, and nothing in the row says a loop repeats it (ceiling; upgrade
-# path: count them once the static loop analysis reads Django ORM calls).
-_DJANGO_QUERYSETS = frozenset({"QuerySet", "RawQuerySet"})
-_DJANGO_EVALUATE = frozenset({"__iter__", "__len__", "__bool__", "_fetch_all", "iterator"})
+# Django: iterating a queryset (or ``len``, ``bool``, ``iterator()``) runs its query;
+# ``filter`` or ``all`` only build one. Left out: single-row lookups (``first``,
+# ``get``, ``count``), whose one call per request is the request's own work, and
+# raw SQL (``RawQuerySet``, cursor ``execute``), which can be a write: nothing in the
+# row says which (ceiling; upgrade path: read them once the static loop analysis
+# sees Django ORM calls and the statement kind).
+_DJANGO_EVALUATE = frozenset({"__iter__", "__len__", "__bool__", "iterator"})
 _JS_DB_READS = frozenset(
     {
         "findOne",
@@ -696,7 +693,7 @@ def _database(name: str, lang: str) -> bool:
         return last in _GO_DB_EXEC and _db_package(name)
     if lang == "python":
         receiver = _receiver(name)
-        if receiver in _DJANGO_QUERYSETS:
+        if receiver == "QuerySet":
             return last in _DJANGO_EVALUATE
         return receiver in _PY_DB_RECEIVERS and (last in _PY_DB_VERBS or last in _DB_WRITE_VERBS)
     if lang == "javascript":
