@@ -134,13 +134,9 @@ def _stated_embedder(run: InitRun) -> str:
             name, reason = keyless, "keyless run"
     if name == "mock":
         return f"mock ({reason}, semantic search off)"
-    if name == "ollama":
-        from repowise.cli.providers.embedders import resolve_embedding_model
-        from repowise.core.providers.embedding.ollama import _DEFAULT_MODEL
+    from repowise.cli.providers.embedders import embedder_label
 
-        model = resolve_embedding_model(name, repo_path=run.repo_path) or _DEFAULT_MODEL
-        return f"ollama/{model} ({reason})"
-    return f"{name} ({reason})"
+    return f"{embedder_label(name, run.repo_path)} ({reason})"
 
 
 def _verify_provider(provider: Any, reasoning: str) -> None:

@@ -1528,3 +1528,17 @@ def test_an_ollama_upgrade_replaces_the_mock_with_ollama(
     )
     # A real pin is the user's earlier choice and stays.
     assert providers.model_run_embedder("openai", provider="ollama")[0] == "openai"
+
+
+def test_the_run_header_names_the_ollama_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model has to be pulled, so the header says which one."""
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.delenv("OLLAMA_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+
+    assert providers.embedder_label("ollama", tmp_path) == "ollama/embeddinggemma"
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+    assert providers.embedder_label("ollama", tmp_path) == "ollama/nomic-embed-text"
+    assert providers.embedder_label("openai", tmp_path) == "openai"

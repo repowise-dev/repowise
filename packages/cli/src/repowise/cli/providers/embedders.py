@@ -57,10 +57,11 @@ def resolve_embedder_choice(
 ) -> tuple[str, str]:
     """:func:`resolve_embedder` plus why it was picked, for the run to state.
 
-    *provider* is the LLM provider writing the pages. A run on ``ollama``
-    chose to stay local, so a cloud embedder only inferred from a key that
-    happens to be exported gives way to ``ollama``. Anything the user named
-    (flag, ``REPOWISE_EMBEDDER``, the global config) still wins.
+    *provider* is the LLM provider writing the pages. When its spec names a
+    ``local_embedder`` (ollama), an embedder only inferred from a key that
+    happens to be exported gives way to it, so a local run stays local.
+    Anything the user named (flag, ``REPOWISE_EMBEDDER``, the global config)
+    still wins.
     """
     from repowise.core.providers.embedding.resolve import embedder_reason, resolve_embedder_name
     from repowise.core.providers.llm.resolve import repo_getenv
@@ -74,9 +75,27 @@ def resolve_embedder_choice(
     name, source = resolve_embedder_name(
         embedder_flag, repo_path=repo_path, getenv=getenv, use_pin=False
     )
-    if provider == "ollama" and source == "autodetect" and name != "ollama":
-        return "ollama", "follows the ollama provider"
+    local = _local_embedder(provider)
+    if local and source == "autodetect" and name != local:
+        return local, f"follows the {provider} provider"
     return name, embedder_reason(name, source, repo_path=repo_path, getenv=getenv)
+
+
+def _local_embedder(provider: str | None) -> str:
+    """The embedder *provider*'s spec keeps a run on, or ``""``."""
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider or "")
+    return spec.local_embedder if spec is not None else ""
+
+
+def embedder_label(name: str, repo_path: Any = None) -> str:
+    """*name* for a run header; ollama adds its model, which has to be pulled."""
+    if name != "ollama":
+        return name
+    from repowise.core.providers.embedding.ollama import _DEFAULT_MODEL
+
+    return f"ollama/{resolve_embedding_model(name, repo_path=repo_path) or _DEFAULT_MODEL}"
 
 
 def model_run_embedder(
