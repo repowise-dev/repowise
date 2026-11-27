@@ -112,37 +112,58 @@ you choose.
 
 ## Proactive context (hooks)
 
-The plugin registers two hooks that run `repowise-augment`:
+`hooks/hooks.json` registers five command hooks. Each runs a console script
+of the `repowise` you installed (`repowise-augment` or `repowise-rewrite`)
+when it is on PATH, and does nothing when it is not. The plugin installs no
+package for them. Claude Code hands each hook the call it fired on as JSON on
+stdin; this is what each one does with it:
 
-- **`SessionStart`** (`startup|resume|clear`) — emits live index-freshness /
-  trust context at session start.
-- **`PostToolUse`** after
-  `Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*` —
-  stays silent unless it has something asymmetric to add (rescuing a
-  zero-result grep with the closest indexed symbol, ranking a flood of
-  matches by graph centrality, flagging a stale read, or recording
-  read-after-served MCP traffic).
+| Event and matcher | Runs | What it does with the call it sees |
+|---|---|---|
+| `SessionStart` (`startup`, `resume`, `clear`) | `repowise-augment` | Reads the session's working directory and the local index, and adds a short block for Claude: how fresh the index is and how to use the tools. |
+| `PostToolUse` after `Grep`, `Glob`, `Read`, `Edit`, `Write` and repowise MCP calls | `repowise-augment` | Reads the tool name, its arguments (a pattern or a path) and the size and shape of its result, and looks them up in the local index. Silent unless it has something to add: the closest indexed symbol for a search that found nothing, a ranking for a flood of matches, a stale-file or governing-decision note for a read or an edit. |
+| `PostToolUse` after `Bash` and `PowerShell` | `repowise-augment`, only past a shell filter | The shell reads the payload and starts nothing unless it names `git commit`, `git pull`, `git merge`, `git rebase` or `git cherry-pick`. For those it hands the payload over, and repowise checks whether the index is now behind `HEAD` and, after a commit, whether a decision is worth recording. |
+| `PostToolUseFailure` after `Read`, `Edit`, `Write`, `Grep`, `Glob`, `NotebookEdit` | `repowise-augment` | Reads the failed call's path or pattern and suggests the indexed path it most likely meant. |
+| `PreToolUse` on `Bash` and `PowerShell` | `repowise-rewrite` | Reads the command about to run. A recognized noisy command (tests, builds, git, searches) is wrapped in `repowise distill`, so Claude sees errors first and a short summary; any other command passes unchanged. A repo turns it off with `distill.commands.enabled: false` in `.repowise/config.yaml`. |
 
-A `PreToolUse` hook on `Bash|PowerShell` runs `repowise-rewrite`, which wraps a
-recognized noisy command (tests, builds, git, searches) in `repowise distill`
-so the agent sees errors first and a short summary. A repo turns it off with
-`repowise hook rewrite uninstall` or `distill.commands.enabled: false` in
-`.repowise/config.yaml`.
-
-No LLM, no network. (`repowise init` installs the same hooks in
-`~/.claude/settings.json`; running both is safe — duplicate enrichment is
-de-duplicated.)
+The hooks make no model calls. They read your repo, its `.repowise/` index and
+Claude Code's `settings.json` (to tell whether the rewrite hook is installed),
+write what they add to stdout for Claude, and count each run in a ledger in
+the repo's `.repowise/` folder. They send nothing beyond
+the CLI's anonymous usage telemetry described under
+[What this plugin runs and sends](#what-this-plugin-runs-and-sends).
+(`repowise init` installs the same hooks in `~/.claude/settings.json`; running
+both is safe, since duplicate enrichment is de-duplicated.)
 
 ## Requirements
 
 - Python 3.11+
 - Git (for the git-intelligence layer)
 - The `repowise` CLI on PATH (`/repowise:init` installs it)
+- [uv](https://docs.astral.sh/uv/), which starts the plugin's MCP server
+
+## API keys
+
+Most of Repowise needs no key. In the MCP server, semantic search uses a
+Gemini or OpenAI key, and `get_answer` writes its answer with the provider your
+repo configures (Gemini, OpenAI or Anthropic) when it has that provider's key.
+Save a key in the plugin's settings (`/plugin`, then Repowise, then
+Configure): the field is masked and the key is kept in your system keychain.
+`server.py` hands it to the MCP server under its usual name; Claude Code also
+exports plugin options to this plugin's hook processes as
+`CLAUDE_PLUGIN_OPTION_*`, which the hooks do not read. A field left empty
+changes nothing. For `repowise init` and `repowise generate`, which run in your
+terminal, let `repowise init` ask for the key and save it in `.repowise/.env`
+(it also adds the gitignore rule), or write that file yourself, for example
+`GEMINI_API_KEY=YOUR_API_KEY`, and keep it out of git. Never paste a key into
+the chat.
 
 ## Troubleshooting
 
-**MCP tools not connecting:** run `/repowise:init` — the plugin auto-registers the
-MCP server, but the `repowise` binary must be installed and on PATH.
+**MCP tools not connecting:** run `/repowise:init`. The plugin registers the
+MCP server, but it needs `uv` and the `repowise` binary installed and on PATH.
+`/mcp` shows the server's error, for example `repowise is not installed or not
+on PATH`.
 
 **`pip install` fails on Windows:** try `python -m pip install repowise`.
 
@@ -154,14 +175,23 @@ to upgrade pages with a model.
 
 ## What this plugin runs and sends
 
-The plugin itself is Markdown (commands and skills), a `hooks.json` and an
-`.mcp.json`. Everything it runs comes from the `repowise` CLI you install with
-pip:
+The plugin itself is Markdown (commands and skills), a `hooks.json`, an
+`.mcp.json`, and a small `server.py` with its uv project
+files. Everything else it runs comes from the `repowise` CLI you install
+(`uv tool install repowise`, pipx or pip):
 
-- **MCP server:** `.mcp.json` starts `repowise mcp`, which reads the index in
-  your repo's `.repowise/` folder.
-- **Hooks:** the three hooks run `repowise-augment` when it is on PATH and do
-  nothing otherwise. They read the local index only.
+- **MCP server:** `.mcp.json` runs `uv run --project ${CLAUDE_PLUGIN_ROOT}
+  --frozen --isolated --no-dev --no-build --no-config --no-python-downloads
+  ${CLAUDE_PLUGIN_ROOT}/server.py`. The plugin root is a uv project whose
+  committed `uv.lock` pins no packages, so this installs nothing and reads no
+  package index. `server.py` uses only the Python standard library: it starts
+  `repowise mcp` from your install on the same stdin and stdout, and hands it
+  the keys you saved in the plugin's settings (see [API keys](#api-keys)). The
+  server reads the index in your repo's `.repowise/` folder.
+- **Hooks:** the five hook entries run `repowise-augment` or
+  `repowise-rewrite` when they are on PATH and do nothing otherwise. They read
+  the local index only; [the hooks table](#proactive-context-hooks) says what
+  each does with the calls it sees.
 
 Network traffic from the `repowise` CLI and MCP server:
 

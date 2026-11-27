@@ -1,8 +1,24 @@
 {
   "mcpServers": {
     "repowise": {
-      "command": "repowise",
-      "args": ["mcp"]
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "--frozen",
+        "--isolated",
+        "--no-dev",
+        "--no-build",
+        "--no-config",
+        "--no-python-downloads",
+        "${CLAUDE_PLUGIN_ROOT}/server.py"
+      ],
+      "env": {
+        "REPOWISE_PLUGIN_GEMINI_API_KEY": "${user_config.gemini_api_key}",
+        "REPOWISE_PLUGIN_OPENAI_API_KEY": "${user_config.openai_api_key}",
+        "REPOWISE_PLUGIN_ANTHROPIC_API_KEY": "${user_config.anthropic_api_key}"
+      }
     }
   }
 }

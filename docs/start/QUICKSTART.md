@@ -123,6 +123,9 @@ Code, the plugin adds slash commands and skills:
 /plugin install repowise@repowise
 ```
 
+The plugin starts its MCP server through [uv](https://docs.astral.sh/uv/), so
+it needs `uv` on PATH beside `repowise`.
+
 Then restart the host, or run `/mcp` in Claude Code. Most agents read MCP
 config only at startup.
 

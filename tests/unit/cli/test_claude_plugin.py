@@ -69,11 +69,70 @@ def test_claude_plugin_manifest_paths() -> None:
     assert "[TODO" not in manifest_path.read_text(encoding="utf-8")
 
 
-def test_claude_plugin_mcp_uses_repowise() -> None:
-    config = _load_json(PLUGIN_ROOT / ".mcp.json")
+def _plugin_server():
+    import importlib.util
 
-    assert config["mcpServers"]["repowise"]["command"] == "repowise"
-    assert config["mcpServers"]["repowise"]["args"] == ["mcp"]
+    spec = importlib.util.spec_from_file_location("plugin_server", PLUGIN_ROOT / "server.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_claude_plugin_mcp_runs_the_bundled_server_from_its_locked_project() -> None:
+    """The directory's shape for a Python server: the plugin root as a locked uv project."""
+    import tomllib
+
+    server = _load_json(PLUGIN_ROOT / ".mcp.json")["mcpServers"]["repowise"]
+    root = "${CLAUDE_PLUGIN_ROOT}"
+
+    assert server["command"] == "uv"
+    assert server["args"] == [
+        "run", "--project", root, "--frozen", "--isolated", "--no-dev", "--no-build",
+        "--no-config", "--no-python-downloads", f"{root}/server.py",
+    ]
+    project = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["dependencies"] == []
+    lock = tomllib.loads((PLUGIN_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    assert [(p["name"], p["version"]) for p in lock["package"]] == [(project["name"], project["version"])]
+
+
+def test_claude_plugin_keys_are_masked_options_handed_to_the_server() -> None:
+    config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
+    env = _load_json(PLUGIN_ROOT / ".mcp.json")["mcpServers"]["repowise"]["env"]
+    keys = set(config)
+
+    assert keys == {"gemini_api_key", "openai_api_key", "anthropic_api_key"}
+    for key in keys:
+        assert config[key]["sensitive"] is True
+        assert config[key]["type"] == "string"
+        assert "required" not in config[key]
+    assert set(env.values()) == {f"${{user_config.{k}}}" for k in keys}
+    assert set(env) == set(_plugin_server().PLUGIN_KEYS)
+
+
+def test_plugin_server_hands_a_saved_key_over_and_leaves_an_empty_one_alone() -> None:
+    server_env = _plugin_server().server_env
+
+    env = server_env(
+        {
+            "PATH": "/bin",
+            "GEMINI_API_KEY": "from-shell",
+            "OPENAI_API_KEY": "from-shell",
+            "REPOWISE_PLUGIN_GEMINI_API_KEY": "",
+            "REPOWISE_PLUGIN_OPENAI_API_KEY": "saved",
+            "REPOWISE_PLUGIN_ANTHROPIC_API_KEY": "${user_config.anthropic_api_key}",
+        }
+    )
+
+    assert env == {"PATH": "/bin", "GEMINI_API_KEY": "from-shell", "OPENAI_API_KEY": "saved"}
+
+
+def test_plugin_server_says_so_when_the_cli_is_missing(monkeypatch, capsys) -> None:
+    server = _plugin_server()
+    monkeypatch.setattr(server.shutil, "which", lambda _name: None)
+
+    assert server.main() == 1
+    assert "uv tool install repowise" in capsys.readouterr().err
 
 
 def test_claude_plugin_hooks_match_installer() -> None:
