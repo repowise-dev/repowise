@@ -1130,6 +1130,18 @@ _FRAMEWORK_INNER_CLASS_NAMES: dict[str, frozenset[str]] = {
     "python": frozenset({"Meta", "Config"}),
 }
 
+# Inner class names a framework reads only in a module that imports it, so the
+# name alone is not enough: Graphene's ``Mutation`` metaclass reads ``class
+# Arguments`` as the field's arguments, but ``Arguments`` is a common class
+# name elsewhere. Keyed by language, then inner name to the top-level packages
+# one of which the declaring file must import. Ceiling: a mutation module that
+# reaches Graphene only through a local base class, with no ``graphene``
+# import of its own, stays reported; reading the outer class's bases would
+# lift that.
+_IMPORT_GATED_INNER_CLASS_NAMES: dict[str, dict[str, frozenset[str]]] = {
+    "python": {"Arguments": frozenset({"graphene"})},
+}
+
 
 # Default dynamic patterns (plugins, handlers, etc.)
 _DEFAULT_DYNAMIC_PATTERNS: tuple[str, ...] = (

@@ -105,7 +105,8 @@ decorators and their suffixes (`_FRAMEWORK_DECORATORS`,
 `_DEFAULT_DYNAMIC_PATTERNS` (`*Plugin`, `*Handler`, `*Adapter`, `*Middleware`,
 `*Mixin`, `*Command`, `register_*`, `on_*`, `*_view`, `*_endpoint`,
 `*_route`, `*_callback`, `*_signal`, `*_task`), framework inner classes
-(Python `Meta`), same-file TS/JS type uses, and Python local references.
+(Python `Meta` and `Config`, and Graphene's `Arguments` in a file that imports
+`graphene`), same-file TS/JS type uses, and Python local references.
 
 Base confidence (`_unused_export_confidence`):
 
