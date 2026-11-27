@@ -200,7 +200,8 @@ export interface HomeSummary {
     history: number[];
   } | null;
   counts: {
-    refactoringPlans: number | null;
+    /** Opportunities the Refactoring panel lists (the page total). */
+    refactoringOpportunities: number | null;
     decisions: number | null;
   };
   freshness: {

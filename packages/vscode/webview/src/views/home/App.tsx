@@ -91,8 +91,8 @@ const DESTINATIONS: Destination[] = [
     title: "Refactoring",
     icon: Wrench,
     count: (s) =>
-      s?.counts.refactoringPlans != null
-        ? `${s.counts.refactoringPlans.toLocaleString()} ranked plans`
+      s?.counts.refactoringOpportunities != null
+        ? `${s.counts.refactoringOpportunities.toLocaleString()} opportunit${s.counts.refactoringOpportunities === 1 ? "y" : "ies"}`
         : null,
   },
   {

@@ -14,7 +14,7 @@ const SUMMARY: HomeSummary = {
     hotspotDelta: 0.3,
     history: [4.8, 4.9, 5.0, 5.1],
   },
-  counts: { refactoringPlans: 12, decisions: 48 },
+  counts: { refactoringOpportunities: 12, decisions: 48 },
   freshness: {
     indexedCommit: "abc1234deadbeef",
     liveCommit: "abc1234deadbeef",
@@ -67,7 +67,7 @@ describe("Home sidebar", () => {
     expect(screen.getByText("5.1")).toBeTruthy();
     expect(screen.getByText("demo-repo")).toBeTruthy();
     expect(screen.getByText("Index up to date")).toBeTruthy();
-    expect(screen.getByText("12 ranked plans")).toBeTruthy();
+    expect(screen.getByText("12 opportunities")).toBeTruthy();
     expect(screen.getByText("48 decision records")).toBeTruthy();
     expect(screen.getByText(/42 open findings/)).toBeTruthy();
   });
