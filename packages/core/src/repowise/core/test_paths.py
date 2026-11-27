@@ -477,6 +477,7 @@ def _has_test_segment(
         or _is_support_name(filename)
         or any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
     )
+    is_rust = filename.lower().endswith(".rs")
     return any(
         _is_test_segment(
             seg,
@@ -486,6 +487,7 @@ def _has_test_segment(
             package_root=package_root,
             dir_parts=original[: i + 1],
             filename=filename if i == len(segments) - 1 else "",
+            rust_crate_src=is_rust and segments[i + 1 : i + 2] == ["src"],
         )
         for i, (seg, orig) in enumerate(zip(segments, original, strict=True))
     )
@@ -502,6 +504,19 @@ def _is_tests_prefix_dir(seg: str) -> bool:
     return bool(words) and len(words) >= 2 and words[0] == "tests"
 
 
+def _is_tests_harness_dir(
+    seg: str,
+    orig: str,
+    dir_parts: list[str] | None,
+    filename: str,
+    rust_crate_src: bool,
+    package_root: PackageRootProbe | None,
+) -> bool:
+    if not (rust_crate_src and _is_tests_prefix_dir(seg)):
+        return False
+    return not _is_package_root(dir_parts or [orig], filename, package_root)
+
+
 def _is_test_segment(
     seg: str,
     orig: str,
@@ -510,12 +525,11 @@ def _is_test_segment(
     package_root: PackageRootProbe | None = None,
     dir_parts: list[str] | None = None,
     filename: str = "",
+    rust_crate_src: bool = False,
 ) -> bool:
     if _is_named_test_dir(seg):
         return True
-    if _is_tests_prefix_dir(seg) and not _is_package_root(
-        dir_parts or [orig], filename, package_root
-    ):
+    if _is_tests_harness_dir(seg, orig, dir_parts, filename, rust_crate_src, package_root):
         return True
     words = _words(seg)
     head = words[-1] if words else ""
@@ -792,7 +806,7 @@ def in_test_tree(path: str, language: str | None = None) -> bool:
     if not segments or _REPO_METADATA_DIR in segments:
         return False
     return any(_is_support_anywhere_dir(seg) for seg in segments) or _is_test_dir(
-        *_tree_segments(segments, original[:-1], original[-1]), "", language
+        *_tree_segments(segments, original[:-1], original[-1]), original[-1], language
     )
 
 

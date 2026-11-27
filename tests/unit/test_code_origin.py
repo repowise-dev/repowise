@@ -50,6 +50,10 @@ _OWN_HEADER = (
         ("tests-build/src/lib.rs", "test"),
         ("tests-integration/src/lib.rs", "test"),
         ("tests-integration/tests/macros.rs", "test"),
+        ("app/tests_results/service.py", "production"),
+        ("lab/tests_catalog/models.py", "production"),
+        ("src/tests-ui/app.ts", "production"),
+        ("internal/tests_api/handler.go", "production"),
         (
             "packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx",
             "test",
