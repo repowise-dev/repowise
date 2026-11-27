@@ -79,6 +79,8 @@ def block_reason(payload: dict) -> str | None:
             return None
         return _ask(cwd, session_id, payload.get("transcript_path"))
     except Exception:
+        # A hook never fails the agent: an unreadable config, index or ledger
+        # lets the stop through, the cheaper error.
         return None
 
 
@@ -193,23 +195,31 @@ def session_started(transcript_path: object) -> str | None:
     """
     if not isinstance(transcript_path, str) or not transcript_path:
         return None
-    from datetime import UTC, datetime
-
     try:
         with open(transcript_path, encoding="utf-8", errors="replace") as handle:
-            for _, line in zip(range(_HEAD_LINES), handle, strict=False):
-                try:
-                    stamp = json.loads(line).get("timestamp")
-                except (ValueError, AttributeError):
-                    continue
-                if isinstance(stamp, str) and stamp:
-                    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-                    if moment.tzinfo is None:
-                        moment = moment.replace(tzinfo=UTC)
-                    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+            stamps = (
+                _line_stamp(line) for _, line in zip(range(_HEAD_LINES), handle, strict=False)
+            )
+            stamp = next((s for s in stamps if s), None)
+        return _as_utc(stamp) if stamp else None
     except (OSError, ValueError):
         return None
-    return None
+
+
+def _line_stamp(line: str) -> str | None:
+    try:
+        stamp = json.loads(line).get("timestamp")
+    except (ValueError, AttributeError):
+        return None
+    return stamp if isinstance(stamp, str) else None
+
+
+def _as_utc(stamp: str) -> str:
+    from datetime import UTC, datetime
+
+    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    moment = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def recorded_since(repo_path: Path, started: str) -> bool:
