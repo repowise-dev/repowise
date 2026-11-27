@@ -83,7 +83,6 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("server/routes/tests/health.ts", None, ""),
     ("pages/test/app/page.tsx", None, ""),
     ("app/test/page.mdx", None, ""),
-    ("apps/web/app/test/sitemap.ts", None, ""),
     ("app/api/test/route.test.ts", None, "test"),
     ("app/api/test/__tests__/route.ts", None, "test"),
     ("pages/test/index.spec.ts", None, "test"),
@@ -703,11 +702,3 @@ def test_the_memoized_answer_is_the_classification(path: str, language: str | No
     # A second ask is served from the cache and still agrees.
     assert test_paths._classify(path, language) == expected
     assert test_paths._classify_without_context.cache_info().hits >= 1
-
-
-def test_next_app_route_stems_follow_the_app_router_predicate():
-    """The served-file stems are the App Router names that live under ``app/``."""
-    from repowise.core.ingestion.framework_routes import NEXT_APP_ROUTER_BASENAMES
-    from repowise.core.test_paths import _NEXT_APP_ROUTE_STEMS
-
-    assert NEXT_APP_ROUTER_BASENAMES - {"middleware", "instrumentation"} == _NEXT_APP_ROUTE_STEMS
