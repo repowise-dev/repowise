@@ -263,9 +263,7 @@ def _scans_in_linear_time(page: Callable[[int], bytes], n: int, factor: int = 4)
     ],
 )
 def test_one_start_tag_page_scans_in_linear_time(page: Callable[[int], bytes], n: int) -> None:
-    # The whole page is one start tag, so the regex engine's backtrack stack holds
-    # a frame per byte (about 140 bytes each) and outgrows the CPU cache between
-    # sizes. Over a 16x input that 2-3x step stays far below quadratic growth.
+    # Measure one long start tag, including recovery at the end of the input.
     _scans_in_linear_time(page, n, factor=16)
 
 
