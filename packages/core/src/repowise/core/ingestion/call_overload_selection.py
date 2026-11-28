@@ -1458,6 +1458,7 @@ class OverloadSelectionMixin:
         The owner is a typed name or a repository type; its one method of that
         name is the group. Ceiling: an inherited method is not read.
         """
+        # An expression (value and member), not a type name: no type helper applies.
         owner, dot, member = name.partition(".")
         if not dot:
             return self._argument_type(file_path, caller_id, name)

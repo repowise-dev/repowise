@@ -863,6 +863,9 @@ _BARE_TYPE_KNOWN: dict[str, int] = {
     _PREFIX + "framework_edges/micronaut.py": 2,
     _PREFIX + "framework_edges/spring.py": 4,
     _PREFIX + "parser_helpers.py": 1,
+    # Splits a C# member-access argument (`strategy.GetKey`) into the value and
+    # the member it names, to type a method group: an expression, not a type.
+    _PREFIX + "call_overload_selection.py": 1,
 }
 
 
