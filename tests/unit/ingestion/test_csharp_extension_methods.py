@@ -78,6 +78,11 @@ class TestExtensionReceiver:
             ("Tail(this Acme.Domain.Order o) -> string", "Order"),
             # A generic type keeps its arity, as receiver lookups key it.
             ("First(this IEnumerable<T> src) -> T", "IEnumerable`1"),
+            # Nested arguments count once, at the top level.
+            ("Get(this Expression<Func<T, TProperty>> e) -> object", "Expression`1"),
+            ("Each(this IRule<T, IEnumerable<List<E>>> r) -> object", "IRule`2"),
+            # Deeper than the reader follows: no extension, not the bare ``Box``.
+            ("Deep(this Box<List<List<List<int>>>> b) -> object", None),
             ("Use(this scoped ref readonly Order o) -> int", "Order"),
             ("Maybe(this Order? o) -> string", "Order"),
             # Not an extension method at all.
@@ -199,6 +204,7 @@ class TestRefusals:
         assert "Pick" not in _resolve(tmp_path, files, "src/Consumer.cs")
 
     def test_refuses_a_bcl_receiver(self, tmp_path: Path) -> None:
+        """A builtin receiver is not typed for this lookup, so its extensions stay out."""
         files = {
             "src/Ext.cs": (
                 "namespace Acme;\npublic static class Ext {\n"
@@ -210,6 +216,21 @@ class TestRefusals:
             ),
         }
         assert "Slug" not in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_refuses_a_method_type_parameter_spelled_as_a_type(self, tmp_path: Path) -> None:
+        """``this TBuilder b`` extends the method's own parameter, not a library ``TBuilder``."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static TBuilder Use<TBuilder>(this TBuilder b) where TBuilder : class"
+                " { return b; }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(TBuilder b) { var z = b.Use(); }\n}\n"
+            ),
+        }
+        assert "Use" not in _resolve(tmp_path, files, "src/Consumer.cs")
 
     def test_an_inherited_instance_method_outranks_an_extension(self, tmp_path: Path) -> None:
         """C# prefers an inherited instance method, so the base's member answers."""
@@ -396,3 +417,176 @@ class TestRefusals:
         }
         found = _resolve(tmp_path, files, "src/Consumer.cs")
         assert found["Net#1"] == ("receiver_extension_global", 0.75)
+
+
+class TestLibraryReceivers:
+    """A repo extension on a library type binds when one repo extension can be meant."""
+
+    CONSUMER = (
+        "namespace Acme;\nusing System.Linq.Expressions;\npublic class Consumer {\n"
+        "  public void Run(Expression<Func<int, string>> expression) {"
+        " var m = expression.GetMember(); }\n}\n"
+    )
+
+    def test_binds_the_one_extension_on_a_library_type(self, tmp_path: Path) -> None:
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static MemberInfo GetMember<T, TProperty>("
+                "this Expression<Func<T, TProperty>> expression) { return null; }\n}\n"
+            ),
+            "src/Consumer.cs": self.CONSUMER,
+        }
+        assert _resolve(tmp_path, files, "src/Consumer.cs")["GetMember"] == (
+            "receiver_extension_global",
+            0.75,
+        )
+
+    def test_abstains_when_two_extensions_take_the_name_and_arity(self, tmp_path: Path) -> None:
+        """Another library type of the name may be the receiver's base: abstain."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static MemberInfo GetMember<T, TProperty>("
+                "this Expression<Func<T, TProperty>> expression) { return null; }\n}\n"
+            ),
+            "src/Other.cs": (
+                "namespace Acme;\npublic static class Other {\n"
+                "  public static MemberInfo GetMember(this LambdaExpression e) { return null; }\n}\n"
+            ),
+            "src/Consumer.cs": self.CONSUMER,
+        }
+        assert "GetMember" not in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_an_extension_of_another_arity_does_not_compete(self, tmp_path: Path) -> None:
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static MemberInfo GetMember<T, TProperty>("
+                "this Expression<Func<T, TProperty>> expression) { return null; }\n}\n"
+            ),
+            "src/Other.cs": (
+                "namespace Acme;\npublic static class Other {\n"
+                "  public static MemberInfo GetMember(this LambdaExpression e, bool deep)"
+                " { return null; }\n}\n"
+            ),
+            "src/Consumer.cs": self.CONSUMER,
+        }
+        assert "GetMember" in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_refuses_when_the_one_taker_is_on_another_type(self, tmp_path: Path) -> None:
+        """The key's extension cannot take the arity; the one that can extends another type."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static MemberInfo GetMember<T, TProperty>("
+                "this Expression<Func<T, TProperty>> expression, bool deep) { return null; }\n}\n"
+            ),
+            "src/Other.cs": (
+                "namespace Acme;\npublic static class Other {\n"
+                "  public static MemberInfo GetMember(this LambdaExpression e) { return null; }\n}\n"
+            ),
+            "src/Consumer.cs": self.CONSUMER,
+        }
+        assert "GetMember" not in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_overloads_bind_when_the_arguments_pick_one(self, tmp_path: Path) -> None:
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this IServiceCollection s, int n) { }\n"
+                "  public static void Tag(this IServiceCollection s, bool b) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(IServiceCollection s) { s.Tag(true); }\n}\n"
+            ),
+        }
+        found = _resolve(tmp_path, files, "src/Consumer.cs")
+        assert list(found) == ["Tag#2(IServiceCollection,bool)"]
+
+    def test_overloads_abstain_when_the_arguments_tie(self, tmp_path: Path) -> None:
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this IServiceCollection s, int n) { }\n"
+                "  public static void Tag(this IServiceCollection s, bool b) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(IServiceCollection s, object o) { s.Tag(o); }\n}\n"
+            ),
+        }
+        found = _resolve(tmp_path, files, "src/Consumer.cs")
+        assert not any(name.startswith("Tag") for name in found)
+
+    def test_refuses_a_same_class_taker_on_another_type(self, tmp_path: Path) -> None:
+        """One holder, two library types: the overload that takes the call extends the other one."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this IFoo f) { }\n"
+                "  public static void Tag(this IBar b, int n) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(IFoo f) { f.Tag(1); }\n}\n"
+            ),
+        }
+        found = _resolve(tmp_path, files, "src/Consumer.cs")
+        assert not any(name.startswith("Tag") for name in found)
+
+    def test_an_array_extension_competes(self, tmp_path: Path) -> None:
+        """``this Foo[]`` has no key, but its name and arity still make the call ambiguous."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this IFoo f) { }\n}\n"
+            ),
+            "src/Arr.cs": (
+                "namespace Acme;\npublic static class Arr {\n"
+                "  public static void Tag(this byte[] b) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(IFoo f) { f.Tag(); }\n}\n"
+            ),
+        }
+        assert "Tag" not in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_abstains_when_narrowing_would_pick_a_member_that_cannot_take_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Only the ``params`` overload takes ``f.Tag()``; the edge must not land elsewhere."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this IFoo f, int x) { }\n"
+                "  public static void Tag(this IFoo f, params int[] xs) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(IFoo f) { f.Tag(); }\n}\n"
+            ),
+        }
+        found = _resolve(tmp_path, files, "src/Consumer.cs")
+        assert set(found) <= {"Tag#2(IFoo,int[])"}
+
+    def test_a_repo_type_of_another_arity_does_not_skip_the_guard(self, tmp_path: Path) -> None:
+        """A repo ``List`` is not ``List<T>``: the library rule still judges ``List`1``."""
+        files = {
+            "src/List.cs": "namespace Other;\npublic class List { }\n",
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this List<int> l) { }\n}\n"
+            ),
+            "src/Two.cs": (
+                "namespace Acme;\npublic static class Two {\n"
+                "  public static void Tag(this IList<int> l) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(List<int> l) { l.Tag(); }\n}\n"
+            ),
+        }
+        assert "Tag" not in _resolve(tmp_path, files, "src/Consumer.cs")

@@ -58,6 +58,7 @@ from ..symbol_identity import base_symbol_id, id_segment_name, symbols_by_id
 from ..type_names import (
     POINTER_LIKE_MEMBERS,
     bare_type_name,
+    csharp_extension_receiver,
     is_resolvable_type_name,
     type_qualifier,
 )
@@ -218,6 +219,16 @@ def _admits(symbol: Symbol, argument_count: int | None) -> bool:
         return True
     fewest, most = admitted
     return fewest <= argument_count and (most is None or argument_count <= most)
+
+
+def _takes_on_receiver(extension: Symbol, argument_count: int | None) -> bool:
+    """Could C# *extension* take *argument_count* arguments after its receiver fills ``this``?"""
+    # The range already reads ``this`` as optional; here it is always filled.
+    admitted = signature_parameter_range(extension.signature or "", "csharp")
+    if argument_count is None or admitted is None:
+        return True
+    fewest, most = admitted
+    return fewest <= argument_count and (most is None or argument_count < most)
 
 
 def _enclosing_id(symbol_id: str) -> str:
@@ -1419,7 +1430,42 @@ class ReceiverTypingMixin(
         extension = self._extension_target(file_path, key, call.argument_count)
         if extension is None or self._symbols_by_id[extension[0]].language != language:
             return None
+        library = language == "csharp" and spelled not in self._csharp_type_keys
+        if library and not self._takes_library_extension(extension[0], spelled, call):
+            return None
         return self._extension_typed_call(caller_id, *extension, call.line)
+
+    def _takes_library_extension(self, sym_id: str, extended: str, call: CallSite) -> bool:
+        """May a call on a library-typed receiver bind the repo extension *sym_id*?
+
+        The library type's own members and bases are out of sight, so the key
+        alone is weak evidence. It binds only when one repo extension of the
+        name takes the call's arity (the receiver fills ``this``), or when every
+        one that does extends *extended* in *sym_id*'s overload set and the
+        arguments pick a single member of it. Anything else abstains.
+
+        Ceiling: a library type's own member of the name and arity, which C#
+        prefers, is not seen; a repo extension sharing a BCL member's name and
+        arity takes that call.
+        """
+        takers = {
+            s.id: s
+            for s in self._csharp_extensions_named(call.target_name)
+            if _takes_on_receiver(s, call.argument_count)
+        }
+        rep = self._overload_rep.get(sym_id, sym_id)
+        if not takers or any(
+            self._overload_rep.get(taker, taker) != rep
+            or csharp_extension_receiver(s.signature or "") != extended
+            for taker, s in takers.items()
+        ):
+            return False
+        if rep not in self._overload_members:
+            return len(takers) == 1
+        # The member the edge will be narrowed to must be one that takes the call.
+        filled = self._csharp_receiver_filled(rep, call)
+        picked = self._deciding_overloads(rep, filled.argument_count, filled.argument_types)
+        return len(picked) == 1 and picked[0] in takers
 
     def _means_the_wrapper(
         self,

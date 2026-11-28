@@ -276,10 +276,12 @@ def builtin_type_spelling(name: str, language: str) -> str | None:
 # parser keeps no modifiers, so this is the only surviving evidence a method is
 # one. Matched against the parameter list alone, because a default value may
 # hold a parenthesised string. An array receiver is captured so it can be
-# refused: ``this Order[]`` extends the array, not the element.
+# refused: ``this Order[]`` extends the array, not the element. Type arguments
+# nest three deep (``Expression<Func<T, List<X>>>``), so the arity is counted
+# on the whole list; a deeper list matches nothing, never the bare name.
 _CSHARP_EXTENSION_RECEIVER = re.compile(
     r"\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
-    r"(?P<type>[\w.]+(?:<[^>]*>)?(?:\s*\[[,\s]*\])*\??)"
+    r"(?P<type>[\w.]+(?:<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?(?![\w.]|\s*<)(?:\s*\[[,\s]*\])*\??)"
 )
 
 
@@ -309,6 +311,12 @@ def kotlin_extension_receiver(header: str, name: str) -> tuple[str, str | None] 
     declared = {p.split(":")[0].split()[-1] for p in params if p.strip()}
     nullable = "?" if written.endswith("?") else ""
     return bare + nullable, None if bare in declared else bare
+
+
+def is_csharp_extension(signature: str | None) -> bool:
+    """Is the first parameter in *signature* a C# ``this`` one? An array receiver counts."""
+    _, opened, params = (signature or "").partition("(")
+    return bool(opened) and re.match(r"\s*this\s", params) is not None
 
 
 def csharp_extension_receiver(signature: str) -> str | None:

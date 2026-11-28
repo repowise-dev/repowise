@@ -129,6 +129,7 @@ from .type_names import (
     bare_type_name,
     builtin_type_spelling,
     csharp_extension_receiver,
+    is_csharp_extension,
     is_resolvable_type_name,
     strip_type_arguments,
 )
@@ -173,6 +174,9 @@ _PASCAL_HELPER = re.compile(
     r"([A-Za-z_][\w.]*)",
     re.IGNORECASE,
 )
+
+# ``Name<T, TProperty>(``: a C# generic method's own type-parameter list.
+_CSHARP_METHOD_TYPE_PARAMETERS = r"\b{name}\s*<(?P<params>[^<>()]*)>\s*\("
 
 # VB.NET's own-instance receivers, lowercased: the language is case-insensitive.
 _VBNET_SELF_RECEIVERS = frozenset({"me", "myclass"})
@@ -443,6 +447,8 @@ class CallResolver(
         # that read ``_global_methods``, and would let an extension answer a
         # site the instance method the language dispatches to should own.
         self._extension_methods: dict[tuple[str, str], tuple[str, str]] = {}
+        # {name: every C# extension method of that name}, built once on demand.
+        self._csharp_extensions_by_name: dict[str, list[Symbol]] | None = None
         # {path: {folded helper name: extended type}} for Pascal helpers.
         self._pascal_helpers: dict[str, dict[str, str]] = {}
         self._file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
@@ -490,6 +496,14 @@ class CallResolver(
         # would admit an extension on the BCL type it shadows.
         self._csharp_type_names = frozenset(
             symbol.name
+            for symbol in self._symbols_by_id.values()
+            if symbol.kind in _TYPE_KINDS and symbol.language == "csharp"
+        )
+        # The same, spelled as extension keys are (``Box`1``).
+        self._csharp_type_keys = frozenset(
+            f"{symbol.name}`{symbol.type_parameter_count}"
+            if symbol.type_parameter_count
+            else symbol.name
             for symbol in self._symbols_by_id.values()
             if symbol.kind in _TYPE_KINDS and symbol.language == "csharp"
         )
@@ -671,7 +685,7 @@ class CallResolver(
             if sym.language == "pascal":
                 extended = self._pascal_extended_type(path, sym)
             elif sym.parent_name:
-                extended = self._csharp_extended_type(sym)
+                extended = self._csharp_extended_type(sym, path)
             else:
                 extended = self._kotlin_extended_type(sym)
             if extended is not None:
@@ -700,15 +714,32 @@ class CallResolver(
         self._file_top_level[path] = top_level
         self._file_methods[path] = file_methods
 
-    def _csharp_extended_type(self, sym: Symbol) -> str | None:
-        """The repository C# type *sym* extends, when it is an extension method."""
+    def _csharp_extended_type(self, sym: Symbol, path: str | None) -> str | None:
+        """The C# type *sym* extends, when it is an extension method; a library type included.
+
+        A library key binds only under ``_takes_library_extension``. The method's
+        own type parameter (``this TBuilder b``) is no type, so it is left out.
+        """
         if sym.language != "csharp":
             return None
         extended = csharp_extension_receiver(sym.signature)
         bare = extended.partition("`")[0] if extended else None
         if bare is None or not is_resolvable_type_name(bare, "csharp"):
             return None
-        return extended if bare in self._csharp_type_names else None
+        if bare in self._csharp_type_names:
+            return extended
+        if path is None or bare in self._csharp_method_type_parameters(sym, path):
+            return None
+        return extended
+
+    def _csharp_method_type_parameters(self, sym: Symbol, path: str) -> set[str]:
+        """The names in *sym*'s own ``<..>`` list, read off its declaration."""
+        lines = self._lines_of(path)[sym.start_line - 1 : max(sym.end_line, sym.start_line)]
+        pattern = _CSHARP_METHOD_TYPE_PARAMETERS.format(name=re.escape(sym.name))
+        match = re.search(pattern, "\n".join(lines))
+        if match is None:
+            return set()
+        return {param.split()[-1] for param in match.group("params").split(",") if param.strip()}
 
     def _pascal_extended_type(self, path: str, sym: Symbol) -> str | None:
         """The type a Pascal ``class``/``record helper for T`` method extends.
@@ -1548,8 +1579,8 @@ class CallResolver(
     def _unindexed_extension_names(self) -> frozenset[str]:
         """Names of C# extension methods the extension index leaves out; built once.
 
-        Those extend a type parameter or an external type, so no typed lookup
-        can reach them and only the bare name still can.
+        Those extend a type parameter, so no typed lookup can reach them and
+        only the bare name still can.
         """
         if self._unindexed_extensions is None:
             self._unindexed_extensions = frozenset(
@@ -1557,9 +1588,20 @@ class CallResolver(
                 for sym in self._symbols_by_id.values()
                 if sym.language == "csharp"
                 and csharp_extension_receiver(sym.signature)
-                and self._csharp_extended_type(sym) is None
+                and self._csharp_extended_type(sym, self._symbol_paths_by_id.get(sym.id)) is None
             )
         return self._unindexed_extensions
+
+    def _csharp_extensions_named(self, name: str) -> list[Symbol]:
+        """Every C# extension method called *name*, whatever it extends."""
+        if self._csharp_extensions_by_name is None:
+            by_name: dict[str, list[Symbol]] = defaultdict(list)
+            for sym in self._symbols_by_id.values():
+                # An array extension (``this Foo[] xs``) has no key but still competes.
+                if sym.language == "csharp" and is_csharp_extension(sym.signature):
+                    by_name[sym.name].append(sym)
+            self._csharp_extensions_by_name = by_name
+        return self._csharp_extensions_by_name.get(name, [])
 
     def _external_chain_return_type(
         self,
