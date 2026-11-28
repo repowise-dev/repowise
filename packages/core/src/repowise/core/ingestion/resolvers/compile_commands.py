@@ -2,10 +2,12 @@
 
 Both compiler families that write these databases are read:
 
-- GCC and Clang: ``-I``, ``-isystem``, ``-iquote``, joined or separate.
-- MSVC ``cl`` and ``clang-cl``: also ``/I``, ``/external:I``, ``-external:I``
-  and ``-imsvc``. Slash options are read only for an MSVC-style command, since
-  on a Unix command line ``/Include/x.cpp`` is a path, not ``/I``.
+- GCC and Clang: ``-I``, ``-isystem``, ``-iquote``, ``-idirafter``, joined or
+  separate.
+- MSVC ``cl`` and ``clang-cl``: also ``/I``, ``/external:I``, ``-external:I``,
+  ``-imsvc``, and ``clang-cl`` ``/clang:`` pass-through options. Slash options
+  are read only for an MSVC-style command, since on a Unix command line
+  ``/Include/x.cpp`` is a path, not ``/I``.
 
 A ``command`` string is split the way its own platform splits it: POSIX
 ``shlex`` for a Unix command line, the Windows argv rules
@@ -28,7 +30,7 @@ _MSVC_DRIVERS = frozenset({"cl", "clang-cl"})
 _DRIVE_PATH = re.compile(r'(?:^|\s)"?(?:[-/][A-Za-z:]*"?)?[A-Za-z]:\\')
 # Longest prefix first: ``-isystem`` must not be read as ``-I`` + ``system``.
 _MSVC_INCLUDE_OPTS = ("/external:I", "/imsvc", "/I")
-_INCLUDE_OPTS = ("-external:I", "-isystem", "-iquote", "-imsvc", "-I")
+_INCLUDE_OPTS = ("-external:I", "-idirafter", "-isystem", "-iquote", "-imsvc", "-I")
 # Nested response files deeper than this are a cycle or a broken build.
 _MAX_RSP_DEPTH = 8
 
@@ -148,15 +150,21 @@ def expand_response_files(
 
 def include_dirs_from_tokens(tokens: list[str]) -> list[str]:
     """Include directories named by *tokens*, as written (possibly relative)."""
-    opts = (_MSVC_INCLUDE_OPTS + _INCLUDE_OPTS) if is_msvc_style(tokens) else _INCLUDE_OPTS
+    msvc = is_msvc_style(tokens)
+    opts = (_MSVC_INCLUDE_OPTS + _INCLUDE_OPTS) if msvc else _INCLUDE_OPTS
     dirs: list[str] = []
     i = 0
     while i < len(tokens):
         tok = tokens[i]
+        if msvc and tok.startswith("/clang:"):
+            tok = tok[len("/clang:") :]
         for opt in opts:
             if tok == opt:
                 if i + 1 < len(tokens):
-                    dirs.append(tokens[i + 1])
+                    nxt = tokens[i + 1]
+                    if msvc and nxt.startswith("/clang:"):
+                        nxt = nxt[len("/clang:") :]
+                    dirs.append(nxt)
                     i += 1
                 break
             if tok.startswith(opt):
