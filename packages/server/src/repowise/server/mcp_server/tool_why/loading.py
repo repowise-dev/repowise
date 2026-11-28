@@ -19,6 +19,7 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     is_excluded,
 )
+from repowise.server.mcp_server._why_evidence import _decision_commits
 from repowise.server.mcp_server._query_shape import _WORD_CHAIN_RE, _identifier_shaped, path_tokens
 from repowise.server.mcp_server.tool_why.caps import _DECISION_CORPUS_LIMIT
 
@@ -191,6 +192,25 @@ async def _attach_decision_evidence(session: Any, records: list) -> None:
         by_decision.setdefault(row.decision_id, []).append(row)
     for record in records:
         record._why_evidence_rows = by_decision.get(record.id, [])
+    await _attach_linked_issues(session, records)
+
+
+async def _attach_linked_issues(session: Any, records: list) -> None:
+    """Give each record the tracker issues its evidence commits link to.
+
+    Display only: read by the evidence annotation, never by ranking,
+    authority or staleness.
+    """
+    from repowise.core.persistence.crud.issue_links import decision_issues
+
+    by_repo: dict[str, dict[str, list]] = {}
+    for record in records:
+        by_repo.setdefault(record.repository_id, {})[record.id] = _decision_commits(record)
+    found: dict[str, list] = {}
+    for repository_id, commits in by_repo.items():
+        found.update(await decision_issues(session, repository_id, commits))
+    for record in records:
+        record._why_linked_issues = found.get(record.id, [])
 
 
 async def _attach_response_decision_evidence(

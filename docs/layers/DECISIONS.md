@@ -320,7 +320,11 @@ only that decisions are off. Full parameters:
 [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_why).
 
 `repowise decision list` and `show` report how often each decision reached an
-agent and when last. Code health reports `ungoverned_hotspot`,
+agent and when last. When an [issue source](../reference/PLUGINS.md#writing-an-issue-source)
+has linked one of a decision's evidence commits to a tracker issue, `get_why`,
+`repowise decision show` and the decision page list that issue with its type,
+status, title and link. It is context for the reader: the issue never changes
+whether a decision is in force or how it ranks. Code health reports `ungoverned_hotspot`,
 `stale_governance` and `contradictory_decision` findings
 ([CODE_HEALTH.md](CODE_HEALTH.md)).
 

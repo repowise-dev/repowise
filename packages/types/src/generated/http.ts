@@ -1871,6 +1871,15 @@ export interface DecisionLineageResponse {
   lineage?: DecisionLineageEntry[];
 }
 
+/** A tracker issue one of the decision's evidence commits links to. */
+export interface DecisionLinkedIssue {
+  key: string;
+  type: string;
+  status?: string;
+  title?: string;
+  url?: string;
+}
+
 /** POST body for /decisions/{id}/pin and /unpin. Both fields optional. */
 export interface DecisionPinUpdate {
   reason?: string | null;
@@ -1925,6 +1934,7 @@ export interface DecisionRecordResponse {
   decision_text_missing?: boolean;
   delivered_count?: number | null;
   last_delivered_at?: string | null;
+  linked_issues?: DecisionLinkedIssue[] | null;
 }
 
 /** The resolved decision capture policy for one repository. */

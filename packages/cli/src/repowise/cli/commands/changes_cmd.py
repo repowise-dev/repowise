@@ -69,6 +69,7 @@ async def _show(root: Path, ref: str, *, evidence: bool, refresh: bool) -> dict 
     from repowise.core.changes.collect import change_evidence
     from repowise.core.changes.record import change_record
     from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.crud.issue_links import record_linked_issues
 
     async with repo_index_session(root) as opened:
         if opened is None:
@@ -78,6 +79,7 @@ async def _show(root: Path, ref: str, *, evidence: bool, refresh: bool) -> dict 
         if row is None:
             return None
         record = change_record(row, attribution=attribution_enabled(root))
+        record["metadata"]["linked_issues"] = await record_linked_issues(session, repo_id, record)
         if evidence:
             got = await change_evidence(session, repo_id, root, row, refresh=refresh)
             record["evidence"] = got.to_dict()

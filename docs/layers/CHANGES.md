@@ -117,6 +117,12 @@ Reviewers, approvals, labels and linked issues come through the
 holds: the `Approved-by:` trailers GitLab writes on merge commits, and the issues a
 message closes (`Fixes #12`). A field it cannot read is `null`, which means unknown.
 
+When an [issue source](../reference/PLUGINS.md#writing-an-issue-source) has
+stored links, the change card in `get_context`, `repowise changes show` and the
+change page print each linked issue with what the tracker says, for example
+`#12 (bug, Closed): Login loops after logout`, and add issues stored on the
+change's commits, such as `ENG-42`. A key with nothing stored stays as it is.
+
 ### The record and its in-toto export
 
 Every surface serves one versioned JSON shape (`schema_version: 1`): id, identity,
