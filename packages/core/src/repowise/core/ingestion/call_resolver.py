@@ -1794,8 +1794,8 @@ class CallResolver(
                 continue
             if self._symbols_by_id[sym_id].kind in _TYPE_KINDS:
                 return methods.get((name, name), sym_id)
-            if call.is_construction:
-                return None
+            if call.is_construction and not self._is_constructible(sym_id):
+                continue
             return sym_id
         return None
 
