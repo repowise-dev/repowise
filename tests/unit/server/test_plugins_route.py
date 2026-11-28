@@ -267,3 +267,56 @@ async def test_raw_cli_output_never_becomes_the_sync_error(
     assert first.json()["sync_error"] == plugins._SYNC_STOPPED
     # Reported once: a later listing no longer carries it.
     assert (await client.get(f"/api/repos/{repo['id']}/plugins")).json()["sync_error"] is None
+
+
+def _listings(cli: FakeCli) -> int:
+    return sum(call[:1] == ["plugins"] for call in cli.calls)
+
+
+@pytest.mark.anyio
+async def test_the_listing_is_kept_until_a_sync_ends_or_a_setting_changes(
+    app, client: AsyncClient, repo: dict, cli: FakeCli
+) -> None:
+    url = f"/api/repos/{repo['id']}/plugins"
+    await client.get(url)
+    await client.get(url)
+    assert _listings(cli) == 1
+
+    await client.post(f"{url}/sync", json={"source": "pgstat"})
+    cli.release.set()
+    await _drain(app)
+    # Read again before the sync reports done, so the next listing shows it.
+    assert _listings(cli) == 2
+    await client.get(url)
+    assert _listings(cli) == 2
+
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}/settings", json={"key": "plugins.forge.bug_labels",
+                                                   "value": "bug"}
+    )
+    assert resp.status_code == 200, resp.text
+    await client.get(url)
+    assert _listings(cli) == 3
+
+
+@pytest.mark.anyio
+async def test_the_listing_is_read_again_after_its_time(
+    client: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = f"/api/repos/{repo['id']}/plugins"
+    await client.get(url)
+    monkeypatch.setattr(plugins, "REPORT_TTL_SECONDS", 0.0)
+    await client.get(url)
+    assert _listings(cli) == 2
+
+
+@pytest.mark.anyio
+async def test_sync_refuses_an_unknown_source_up_front(
+    client: AsyncClient, repo: dict, cli: FakeCli
+) -> None:
+    resp = await client.post(f"/api/repos/{repo['id']}/plugins/sync", json={"source": "nope"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "No source named nope is registered. Sources here: pgstat."
+    assert not any(call[:1] == ["sources"] for call in cli.calls)
+    listing = (await client.get(f"/api/repos/{repo['id']}/plugins")).json()
+    assert listing["syncing"] == []

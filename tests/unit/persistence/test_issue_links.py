@@ -47,7 +47,7 @@ async def test_a_complete_fetch_replaces_its_own_links_on_the_commits_it_covered
         # Another source's link on a covered commit stays.
         (C, "OPS-9", "bug", "other"),
     }
-    assert result == {"stored": 1, "removed": 1, "defect_changed": [A, B]}
+    assert result == {"stored": 1, "defect_links": 0, "removed": 1, "defect_changed": [A, B]}
 
 
 @pytest.mark.asyncio
@@ -59,6 +59,7 @@ async def test_a_partial_fetch_only_adds(async_session):
 
     assert {k for _, k, _, _ in await _stored(async_session)} == {"ENG-1", "ENG-2"}
     assert result["removed"] == 0
+    assert (result["stored"], result["defect_links"]) == (1, 1)
     assert await load_tracker_fixes(async_session, repo.id) == {A: {"ENG-1"}, B: {"ENG-2"}}
 
 

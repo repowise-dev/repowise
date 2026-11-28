@@ -160,7 +160,7 @@ def test_with_no_source_installed_sync_says_so(no_plugins, root) -> None:
 def test_text_output_ends_with_the_next_command(installed, root, monkeypatch) -> None:
     _configure(root, monkeypatch)
     out = CliRunner().invoke(cli, ["sources", "sync", "--path", str(root)])
-    assert "stored 2 batches. Next: repowise evidence status" in " ".join(out.output.split())
+    assert "stored 2 runs. Next: repowise evidence status" in " ".join(out.output.split())
 
 
 def test_update_with_no_configured_source_reads_and_writes_nothing(
@@ -180,7 +180,7 @@ def test_update_with_no_configured_source_reads_and_writes_nothing(
 def test_update_syncs_a_configured_source(installed, root, monkeypatch, capsys) -> None:
     _configure(root, monkeypatch)
     sources_cmd.sync_after_update(root)
-    assert "Sources: evidence-source synctest: stored 2 batches" in " ".join(
+    assert "Sources: evidence-source synctest: stored 2 runs" in " ".join(
         capsys.readouterr().out.split()
     )
 
@@ -331,3 +331,69 @@ def test_a_changed_setting_starts_from_no_cursor(installed, root, monkeypatch) -
     _code, out = _sync(root)
     assert installed.requests[-1].cursor is None
     assert out["sources"][0]["batches"] == 2
+
+
+def _result(**over: object) -> dict:
+    return {
+        "source": "forge",
+        "seam": "issue-source",
+        "state": "stored",
+        "batches": 1,
+        "counts": {},
+        "message": None,
+        "next_command": "repowise update",
+        **over,
+    }
+
+
+def test_a_message_ending_in_a_period_gets_one_period_before_next() -> None:
+    line = sources_cmd._line(
+        _result(
+            state="refused",
+            message="GitHub rejected the token (401): it is expired or revoked.",
+            next_command="repowise config list --area plugins",
+        )
+    )
+    assert "revoked[/red]. Next: [cyan]repowise config list" in line
+    assert ".." not in line
+
+
+def test_an_issue_sync_says_how_many_links_it_stored() -> None:
+    counts = {"links": 3, "bug_links": 1}
+    line = sources_cmd._line(_result(counts=counts))
+    assert "stored 3 issue links (1 to a bug or incident)" in line
+    assert line.endswith("Next: [cyan]repowise update[/cyan]")
+    assert "stored 1 issue link[" in sources_cmd._line(_result(counts={"links": 1, "bug_links": 0}))
+    # Inside the update, the update is the next command already.
+    assert sources_cmd._line(_result(counts=counts), in_update=True).endswith(
+        "(1 to a bug or incident)[/green]."
+    )
+    # Another seam's next command stays.
+    evidence = _result(seam="evidence-source", next_command="repowise evidence status")
+    assert "Next:" in sources_cmd._line(evidence, in_update=True)
+
+
+def test_forge_on_a_repo_with_no_remote_is_quiet_unless_named(root, monkeypatch, capsys) -> None:
+    from repowise.core.settings.areas.plugins import FORGE_TOKEN
+
+    monkeypatch.setenv(FORGE_TOKEN.key, "ghp_sources-sentinel")
+    code, out = _sync(root)
+    (forge,) = [r for r in out["sources"] if r["source"] == "forge"]
+    assert code == 0
+    assert (forge["state"], forge["next_command"]) == (
+        "not_configured",
+        "git remote add origin <url>",
+    )
+    assert "no origin or upstream remote" in forge["message"]
+    # Named, it runs, and its own refusal says why.
+    code, out = _sync(root, "--source", "forge")
+    (forge,) = out["sources"]
+    assert (code, forge["state"], forge["next_command"]) == (
+        1,
+        "refused",
+        "git remote add origin <url>",
+    )
+    assert "no origin or upstream remote" in forge["message"]
+    capsys.readouterr()
+    sources_cmd.sync_after_update(root, before=True)
+    assert capsys.readouterr().out == ""

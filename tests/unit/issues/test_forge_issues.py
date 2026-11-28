@@ -443,3 +443,34 @@ def test_the_forge_source_meets_the_issue_source_contract() -> None:
     from repowise.core.plugin_testing import check_implementation
 
     assert check_implementation("issue-source", issue_sources.get("forge")) == []
+
+
+@pytest.mark.parametrize(
+    ("remote", "next_command"),
+    [
+        (None, "git remote add origin <url>"),
+        ("https://bitbucket.org/team/app.git", "repowise plugins new issue-source"),
+        ("https://git.corp.com/group/app.git", "export REPOWISE_FORGE_HOSTS=git.corp.com=<forge>"),
+        ("https://github.com/team/app.git", None),
+    ],
+)
+def test_the_source_applies_only_to_a_github_or_gitlab_remote(
+    tmp_path: Path, remote: str | None, next_command: str | None
+) -> None:
+    import subprocess
+
+    from repowise.core.source_sync import not_configured, plan_sources
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    if remote:
+        subprocess.run(["git", "remote", "add", "origin", remote], cwd=tmp_path, check=True)
+    environ = {FORGE_TOKEN.key: TOKEN}
+    (forge,) = [p for p in plan_sources({}, environ=environ, root=tmp_path) if p.name == "forge"]
+    assert forge.settings_ready
+    assert forge.configured is (next_command is None)
+    if next_command is not None:
+        assert not_configured(forge)["next_command"] == next_command
+    # With no token either, the missing remote is what it reports.
+    (bare,) = [p for p in plan_sources({}, environ={}, root=tmp_path) if p.name == "forge"]
+    if next_command is not None:
+        assert not_configured(bare)["next_command"] == next_command
