@@ -439,10 +439,10 @@ async def find_changes(
     with that forge ref (``#12``, ``!7``, as listings print it), else up to
     *limit* whose id starts with *ref* (a listed id, cut at
     :data:`LISTED_ID_CHARS`), else up to *limit* that landed a commit starting
-    with *ref* (7+ hex). Bare digits name a Perforce changelist first
+    with *ref* (7+ hex). Bare digits also match a Perforce changelist's id
     (``cl-<n>``). More than one means a short ref is ambiguous.
     """
-    wanted = f"cl-{int(ref)}" if ref.isascii() and ref.isdigit() else ref
+    wanted = f"cl-{int(ref)}" if ref.isascii() and ref.isdigit() and len(ref) <= 10 else ref
     row = (
         await session.execute(
             select(Change).where(

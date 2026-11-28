@@ -165,6 +165,16 @@ def without_own_ref(title: str, number: str) -> str:
     return title
 
 
+def _shown_title(head: _Commit, kind: str, value: str) -> str:
+    """The change's title less the ref a surface prints beside it."""
+    title = change_title(head.subject, head.body, head.is_merge)
+    if kind == KIND_PR:
+        return without_own_ref(title, value)
+    if kind == KIND_CHANGELIST:
+        return without_changelist_number(title, value) or title
+    return title
+
+
 def change_identity(
     subject: str, body: str, sha: str, is_merge: bool, forge: ForgeKind | str
 ) -> tuple[str, str, str | None]:
@@ -437,11 +447,7 @@ class _Builder:
             shape = SHAPE_SQUASH
         else:
             shape = SHAPE_COMMIT
-        title = change_title(head.subject, head.body, head.is_merge)
-        if kind == KIND_PR:
-            title = without_own_ref(title, value)
-        elif kind == KIND_CHANGELIST:
-            title = without_changelist_number(title, value) or title
+        title = _shown_title(head, kind, value)
         self.out.append(
             ReconstructedChange(
                 change_id=change_id,

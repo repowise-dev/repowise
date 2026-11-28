@@ -36,10 +36,12 @@ __all__ = [
 ]
 
 _TRAILER_RE = re.compile(
-    r"(?:^|[ \t])[ \t]*\[(?:git-p4|p4-fusion): ([^\]\n]*)\][ \t]*$", re.MULTILINE
+    r"(?:^|[ \t])[ \t]*\[(?:git-p4|p4-fusion): (depot-paths? = [^\]\n]*)\][ \t\r]*$",
+    re.MULTILINE,
 )
-_CHANGE_RE = re.compile(r"(?:^|: )change = (\d+)(?=:|$)")
-_DIGITS_RE = re.compile(r"[0-9]+")
+#: A changelist is a positive 32-bit number in Perforce: ten digits at most.
+_CHANGE_RE = re.compile(r": change = ([0-9]{1,10})(?=:|$)")
+_CHANGELIST_RE = re.compile(r"[0-9]{1,10}")
 
 
 class RevisionError(ValueError):
@@ -64,47 +66,49 @@ def without_changelist_number(text: str, number: str | None = None) -> str:
 
 
 def commit_for_changelist(repo_path: str | Path, number: str) -> str | None:
-    """The newest commit whose mirror trailer names changelist *number*, or ``None``."""
+    """The newest commit whose mirror trailer names changelist *number*, or ``None``.
+
+    Git errors and timeouts propagate: a search that did not finish is not a miss.
+    """
     number = str(int(number))
-    pattern = rf"^[ \t]*\[(git-p4|p4-fusion): .*change = {number}(:|\])"
-    try:
-        proc = run_git(["log", "--all", "-1", "--format=%H", "-E", f"--grep={pattern}"], repo_path)
-    except (OSError, subprocess.SubprocessError):
-        return None
+    pattern = rf"^[[:blank:]]*\[(git-p4|p4-fusion): depot-paths? = .*: change = {number}(:|\])"
+    proc = run_git(["log", "--all", "-1", "--format=%H", "-E", f"--grep={pattern}"], repo_path)
     sha = proc.stdout.strip() if proc.returncode == 0 else ""
     return sha or None
 
 
 def resolve_revspec(repo_path: str | Path, revspec: str) -> str:
-    """*revspec* with each all-digit revision read as a changelist, else a commit.
+    """*revspec* with each changelist-shaped revision read as a changelist, else a commit.
 
     A changelist found in a mirror trailer becomes its commit's sha; digits no
     trailer names stay as given when git resolves them to a commit. Anything
     else is left for git to read. Raises :class:`RevisionError` for digits that
-    name neither.
+    name neither, or when the history search fails.
     """
     parts = split_revspec(revspec)
     if parts is None:
         return _resolve(repo_path, revspec)
     base, sep, head = parts
-    if not (_DIGITS_RE.fullmatch(base) or _DIGITS_RE.fullmatch(head)):
+    if not (_CHANGELIST_RE.fullmatch(base) or _CHANGELIST_RE.fullmatch(head)):
         return revspec
     return f"{_resolve(repo_path, base)}{sep}{_resolve(repo_path, head)}"
 
 
 def _resolve(repo_path: str | Path, rev: str) -> str:
-    if not _DIGITS_RE.fullmatch(rev):
+    if not _CHANGELIST_RE.fullmatch(rev):
         return rev
-    sha = commit_for_changelist(repo_path, rev)
-    if sha:
-        return sha
     try:
+        sha = commit_for_changelist(repo_path, rev)
+        if sha:
+            return sha
         proc = run_git(
             ["rev-parse", "--verify", "--quiet", "--end-of-options", f"{rev}^{{commit}}"],
             repo_path,
         )
-    except (OSError, subprocess.SubprocessError):
-        return rev
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RevisionError(
+            f"Could not search the history for Perforce changelist {rev}: {exc}"
+        ) from exc
     if proc.returncode == 0:
         return rev
     raise RevisionError(

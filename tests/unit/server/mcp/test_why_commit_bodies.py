@@ -236,3 +236,16 @@ async def test_a_mirror_commit_serves_its_changelist_and_not_the_trailer(tmp_pat
     assert "git-p4" not in row.get("body_excerpt", "")
     compact_unanswered(result, {"query": result["query"]})
     assert result["key_commits"][0]["changelist"] == "1234567"
+
+
+async def test_a_one_line_mirror_commit_still_serves_its_changelist(tmp_path: Path) -> None:
+    trailer = '[p4-fusion: depot-paths = "//depot/router/": change = 88]'
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("x")
+    _git(tmp_path, "add", "a.txt")
+    message = "88 - Throw during route registration" + chr(10) + trailer
+    _git(tmp_path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message)
+    sha = _git(tmp_path, "rev-parse", "HEAD")[:12]
+    result = {"mode": "search", "git_archaeology": {"git_log": [{"sha": sha, "message": "x"}]}}
+    await attach_body_excerpts(result, tmp_path, {}, "why")
+    assert result["git_archaeology"]["git_log"][0]["changelist"] == "88"

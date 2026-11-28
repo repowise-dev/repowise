@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from repowise.core import changelist
 from repowise.core.changelist import (
     RevisionError,
     changelist_number,
@@ -38,6 +39,8 @@ def test_no_trailer_or_one_quoted_mid_line_names_none() -> None:
     assert changelist_number(f"see {GIT_P4.format(n=12345)} for the import") is None
     assert changelist_number(f"see{GIT_P4.format(n=12345)}") is None
     assert changelist_number('[git-p4: depot-paths = "//depot/main/"]') is None
+    # Both mirrors lead with the depot paths; a bracket without them is someone's note.
+    assert changelist_number("[git-p4: change = 12345]") is None
 
 
 def test_the_trailer_and_the_p4_fusion_lead_are_stripped_for_display() -> None:
@@ -101,3 +104,21 @@ def test_digits_git_reads_as_a_commit_and_other_revisions_pass_through(mirror) -
     assert resolve_revspec(repo, "9999999") == "9999999"
     for rev in ("HEAD", "HEAD~1", "main..HEAD", shas["123456"][:7], "nosuchref"):
         assert resolve_revspec(repo, rev) == rev
+
+
+def test_more_than_ten_digits_is_no_changelist_and_is_left_to_git(mirror) -> None:
+    repo, _ = mirror
+    assert resolve_revspec(repo, "12345678901") == "12345678901"
+
+
+def test_a_search_that_did_not_finish_is_not_reported_as_a_miss(
+    mirror, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = mirror
+
+    def timeout(*_a, **_k):
+        raise subprocess.TimeoutExpired("git", 60)
+
+    monkeypatch.setattr(changelist, "run_git", timeout)
+    with pytest.raises(RevisionError, match="Could not search"):
+        resolve_revspec(repo, "1234567")

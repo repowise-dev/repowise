@@ -261,6 +261,8 @@ def _git_bodies(repo_root: str, shas: list[str]) -> dict[str, tuple[str, int | N
     out: dict[str, tuple[str, int | None]] = {}
     for name, message in messages.items():
         subject, _, body = message.partition("\n\n")
+        # A one-line description leaves a mirror's trailer in the subject paragraph.
+        body = body or (subject if changelist_number(subject) else "")
         if body.strip():
             subject = " ".join(subject.split())
             out[name[:8].lower()] = (body.strip(), change_number(subject, body, forge))
