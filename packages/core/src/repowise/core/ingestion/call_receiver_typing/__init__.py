@@ -1637,7 +1637,10 @@ class ReceiverTypingMixin(
 
         A Python or Rust name may be rebound (a Rust `let` shadows), so one the
         body also binds other than by a call assignment is skipped, and one
-        whose call assignments do not all yield a type is unanswerable.
+        whose call assignments do not all yield a type is unanswerable. So is
+        a C++ one: sibling blocks reuse a name, and the body is read as one
+        scope. A C++ free call that is no function call records a name (see
+        ``_cpp_call_assigned_type``).
         """
         assignments = self._call_assignments_for(file_path, language)
         sites = self._call_sites_for(file_path)
@@ -1659,7 +1662,7 @@ class ReceiverTypingMixin(
                 type_id = self._site_returned_type_id(file_path, site, assignment.awaited)
             if type_id is not None:
                 record_type(types, assignment.name, type_id)
-            elif language in ("python", "rust"):
+            elif language in ("cpp", "python", "rust"):
                 types[assignment.name] = None
 
     def _add_destructured_locals(
@@ -1807,12 +1810,12 @@ class ReceiverTypingMixin(
             raw = self._cpp_written_return(symbol, path, raw)
         written = _awaited_type(raw, symbol.language) if awaited else raw
         written = (written or "").rstrip("?")
-        if (
-            not written.isidentifier()
-            or self._csharp_type_parameter(symbol, path, written)
-            or (symbol.language == "cpp" and self._cpp_template_parameter(symbol, path, written))
-        ):
+        if not written.isidentifier() or self._csharp_type_parameter(symbol, path, written):
             return None
+        if symbol.language == "cpp":
+            written = self._cpp_returned_class_name(symbol, path, written) or ""
+            if not written:
+                return None
         found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
         return None if found is None else found.callee_id
 

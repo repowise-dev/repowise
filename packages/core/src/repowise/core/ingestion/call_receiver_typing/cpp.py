@@ -20,6 +20,8 @@ _TRAILING_RETURN = re.compile(
     r"(?:\s*(?:const|volatile|noexcept|override|final|&{1,2}))*\s*->\s*(?:const\s+)?"
     r"(?P<type>[A-Za-z_]\w*)\s*[*&]{0,2}\s*(?=[{;=]|$)"
 )
+# How far above a declaration its ``template <..>`` list is looked for.
+_TEMPLATE_HEADER_LINES = 16
 # A ``template <..>`` list, one nesting level, and the names it declares.
 _TEMPLATE_LIST = re.compile(r"\btemplate\s*<((?:[^<>]|<[^<>]*>)*)>")
 _TEMPLATE_PARAMETER = re.compile(r"\b(?:typename|class)\s*(?:\.\.\.\s*)?(\w+)")
@@ -242,20 +244,30 @@ class CppFieldOwners:
         trailing = _TRAILING_RETURN.match(header, index)
         return trailing.group("type") if trailing else written
 
-    def _cpp_template_parameter(self, symbol: Symbol, path: str, name: str) -> bool:
-        """Does a ``template <..>`` list over *symbol* or its class declare *name*?"""
+    def _cpp_returned_class_name(self, symbol: Symbol, path: str, name: str) -> str | None:
+        """*name* as a class *symbol*'s file can mean, or None when it names no class.
+
+        A template parameter of *symbol* or its class is none. A file-scope
+        alias is followed; one scoped to a class or namespace (a member
+        ``typedef``) is refused, since a same-named class elsewhere is not it.
+        """
         lines = self._lines_of(path)
         owner = self._symbols_by_id.get(symbol.id.rpartition("::")[0])
         for declared in (symbol, owner):
             if declared is None or declared.language != "cpp":
                 continue
-            header = " ".join(lines[max(declared.start_line - 4, 0) : declared.start_line])
+            # Ceiling: a parameter list opening more than this many lines up is unseen.
+            start = max(declared.start_line - _TEMPLATE_HEADER_LINES, 0)
+            header = " ".join(lines[start : declared.start_line])
             if any(
                 name in _TEMPLATE_PARAMETER.findall(listed)
                 for listed in _TEMPLATE_LIST.findall(header)
             ):
-                return True
-        return False
+                return None
+        aliases = self._cpp_type_facts(path).aliases
+        if any(alias.name == name and alias.scope is not None for alias in aliases):
+            return None
+        return self._cpp_aliased_type(path, name, 0)
 
     def _typed_callee(self, sym_id: str, caller_id: str) -> str | None:
         """The callee a typed receiver's method *sym_id* stands for, or None.

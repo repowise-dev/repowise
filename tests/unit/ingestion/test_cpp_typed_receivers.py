@@ -119,6 +119,8 @@ _FACTORIES = (
     "template <typename Stranger> Stranger Wrap(Stranger s) { return s; }\n"
     "inline auto Trailing(int n) -> Peer* { return nullptr; }\n"
     "inline auto Deduced(int n) { return Peer(); }\n"
+    "using PeerAlias = Peer;\n"
+    "inline auto Aliased(int n) -> PeerAlias* { return nullptr; }\n"
 )
 
 
@@ -160,6 +162,7 @@ class TestLocalDeclarationForms:
         [
             "  auto peer = MakePeer(1);\n  return peer->sendMessage(1);",
             "  auto* peer = Trailing(1);\n  return peer->sendMessage(1);",
+            "  auto peer = Aliased(1);\n  return peer->sendMessage(1);",
         ],
     )
     def test_an_auto_local_takes_the_return_type_the_callee_declares(
@@ -184,6 +187,34 @@ class TestLocalDeclarationForms:
         self, tmp_path: Path, body: str
     ) -> None:
         _factory_repo(tmp_path, body)
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+    def test_a_name_another_block_leaves_untyped_is_unanswerable(self, tmp_path: Path) -> None:
+        """The body is one scope: the second ``p`` is not the first block's ``Peer``."""
+        _factory_repo(
+            tmp_path,
+            "  { auto p = MakePeer(1); }\n  { auto p = Deduced(1); p->sendMessage(1); }\n"
+            "  return 0;",
+        )
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            # A member typedef is not the same-named class declared elsewhere.
+            "struct Other { struct Item { int sendMessage(int n) { return n; } }; };\n"
+            "struct Box { typedef Peer Item; Item get() { return Item(); } };\n",
+            # A template parameter list several lines long still names a parameter.
+            "struct Item { int sendMessage(int n) { return n; } };\n"
+            "template <typename Alloc,\n          typename Hash,\n          typename Eq,\n"
+            "          typename Item>\n"
+            "struct Box { Item get() { return Item(); } };\n",
+        ],
+    )
+    def test_a_return_type_that_names_no_class_binds_nothing(
+        self, tmp_path: Path, extra: str
+    ) -> None:
+        _repo(tmp_path, "  Box b;\n  auto s = b.get();\n  return s.sendMessage(1);", extra=extra)
         assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
 
 
