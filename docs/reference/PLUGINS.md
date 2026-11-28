@@ -204,10 +204,9 @@ service or credentials.
 }
 ```
 
-Each plugin row also carries `configured` and `missing`: every required
-[setting](#settings-for-a-plugin) it declares that has no value, with the one
-command that sets it, so a person or an agent can finish its setup from the
-listing alone.
+Each plugin row also says whether the plugin is `configured`. `missing` lists
+each required [setting](#settings-for-a-plugin) that has no value, with the
+command that sets it, so you or an agent can finish setup from the listing.
 
 ## Settings for a plugin
 
@@ -240,8 +239,9 @@ repowise config set plugins.linear.team ENG
 export REPOWISE_PLUGIN_LINEAR_TOKEN=lin_api_...
 ```
 
-A setting with no default (`None`) is required. A key or variable another
-setting already holds raises `ValueError` and marks the plugin `failed`. A
+A setting with no default (`None`) is required. If a key or variable is
+already in use, `register_settings` raises `ValueError` and the plugin is
+marked `failed`. A
 `plugins.<plugin>.*` key in `config.yaml` for a plugin that is not installed is
 an unknown key, reported by `config` and `doctor` like any other.
 
@@ -368,7 +368,7 @@ module in the last column and call `.register(name, impl)`, for example
 | `change-outcome` | `change_outcome_providers` | every | when a change record's outcomes are read | `OutcomeUnknownError` marks the outcome unknown; any other exception propagates, and in `repowise report` it marks the outcomes item unavailable | `packages/core/src/repowise/core/changes/outcomes.py` |
 | `change-metadata` | `change_metadata_sources` | one | when change records are stored, and by the `changes` report section | if a plugin source fails, repowise logs `change_metadata_failed` and stores the records with metadata from the built-in `git` source, marked `git`. If no implementation is registered under the configured name, it logs `changes_refresh_failed` and stores no new records. In the report, the `report-section` rule applies | `packages/core/src/repowise/core/changes/source.py` |
 | `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint, and any other exception (including from `sniff`) propagates; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages, not files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
-| `evidence-source` | `evidence_sources` | every; a source that declares `settings` runs once they are set, any other only when its host calls it | `repowise sources sync`, the end of `repowise update`, or a host calling `run_fetch` | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
+| `evidence-source` | `evidence_sources` | every; repowise syncs a source that declares `settings` once the required ones have values, and any other runs only when a host calls `run_fetch` | `repowise sources sync`, the end of `repowise update`, or a host calling `run_fetch` | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
 | `document-extractors` | `document_extractors` | every; later extension claim wins | During traversal and source reads for otherwise unsupported extensions | indexing propagates with plugin name and original path; optional previews omit unavailable content | `packages/core/src/repowise/core/ingestion/document_extractors.py` |

@@ -948,9 +948,9 @@ never as zero. How evidence is collected and joined:
 
 ## The `plugins:` block
 
-Settings that installed plugins declare, one block per plugin:
-`plugins.<plugin>.<name>`, each also read from `REPOWISE_PLUGIN_<PLUGIN>_<NAME>`
-when the file is unset. A plugin's credentials are read from their variable
+Settings that installed plugins declare, one block per plugin. When
+`plugins.<plugin>.<name>` has no value in the file, repowise reads
+`REPOWISE_PLUGIN_<PLUGIN>_<NAME>`. Credentials are read from that variable
 only. `repowise config list --area plugins` shows what the installed plugins
 declare, and `repowise plugins` shows which required ones still need a value.
 See [Settings for a plugin](PLUGINS.md#settings-for-a-plugin).

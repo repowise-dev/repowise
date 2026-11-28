@@ -271,8 +271,8 @@ repowise update --full                 # leave nothing stale (fast index: upgrad
 - Index-only runs reuse stored layer names and node summaries (no LLM call). Docs mode saves pages as they finish; reruns skip them by prompt hash.
 - Failed best-effort steps (git metadata, decisions, dead code, ...) still exit 0, listed in the completion panel and `done` event's `degraded` array (`--progress json`); the next update retries.
 - Unindexed linked worktrees seed from the base checkout first ([WORKTREES.md](../scale/WORKTREES.md)).
-- After its own work, a single-repo update runs [`repowise sources sync`](#repowise-sources-sync) for each configured
-  plugin source. A failing source prints one line; the update still exits 0.
+- After updating a single repo, `update` runs [`repowise sources sync`](#repowise-sources-sync) for its configured
+  plugin sources. It prints one line for each source that fails and still exits 0.
 
 **Flag notes**
 
@@ -1538,9 +1538,9 @@ writes nothing.
 
 ### `repowise sources sync`
 
-Fetch from every source a plugin registers (an `evidence-source`) and store what it returns, the way
-`evidence add` stores a file. A source is configured once every setting it declares with no default has a
-value; each prints what it stored, or why not, ending with the one command to run next.
+Fetch and store evidence from the sources plugins register (an `evidence-source`), the way `evidence add` stores a
+file. A source is configured when every setting it declares without a default has a value. For each source the
+command reports what it stored, or why it did not, then the next command to run.
 
 ```bash
 repowise sources sync                          # every configured source
@@ -1556,7 +1556,7 @@ repowise sources sync --source postgres-statements --format json
 - JSON: one row per source with `source`, `seam`, `state` (`stored`, `unavailable`, `refused`, `failed`,
   `not_configured`), `batches`, `message`, `next_command` and `missing` (each unset setting with the command that
   sets it).
-- Where each source stopped is kept in `.repowise/state.json` (`source_sync`); credentials never are.
+- Each source's cursor is saved under `source_sync` in `.repowise/state.json`. Credentials are never saved.
 - Exits non-zero only when `--source` names an unknown source or one that did not store.
 - `repowise update` runs the same sync for configured sources after its own work. A failing source prints one line
   and never fails the update; with none configured, update does exactly what it did before.
