@@ -1093,6 +1093,8 @@ class TestCppDeclarations:
             ("typedef Foo a, b;", {"a": "Foo"}),
             ("total = a * b, c;", {"b": "a"}),
             ("Foo a{1}, b;", {"a": "Foo"}),
+            ("Peer * factor, item;", {"factor": "Peer"}),
+            ("Peer* a = make<int, item == 0>(), *b;", {"a": "Peer"}),
         ],
     )
     def test_a_list_that_ends_no_declaration_adds_no_later_name(

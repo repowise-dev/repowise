@@ -345,6 +345,13 @@ class TestFieldDeclarationForms:
             _build(tmp_path), "lib/host.cc::Host::Run"
         )
 
+    def test_a_later_declarator_of_a_field_list_binds(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "  second_->sendMessage(1);")
+        _add_host_field(tmp_path, "Peer *first_, *second_;")
+        assert "lib/peer.cc::Peer::sendMessage" in _callees(
+            _build(tmp_path), "lib/host.cc::Host::Run"
+        )
+
     def test_a_later_declarator_of_a_local_list_binds(self, tmp_path: Path) -> None:
         _repo(tmp_path, "  Peer *first, *second;\n  return second->sendMessage(1);")
         targets = _call_targets(_build(tmp_path), "lib/caller.cc")
@@ -386,6 +393,14 @@ class TestClassReachedThroughIncludes:
 
     def test_two_classes_in_reach_refuse(self, tmp_path: Path) -> None:
         _port_repo(tmp_path, include_example=True)
+        callees = _callees(_build(tmp_path), "db/db.cc::Db::Run")
+        assert not any(t.endswith("::Acquire") for t in callees)
+
+    def test_a_qualifier_the_class_file_does_not_open_refuses(self, tmp_path: Path) -> None:
+        """``other::Lock`` is not the reached ``store::port::Lock``."""
+        _port_repo(tmp_path, include_example=False)
+        header = tmp_path / "db" / "db.h"
+        header.write_text(header.read_text().replace("port::Lock lock_;", "other::Lock lock_;"))
         callees = _callees(_build(tmp_path), "db/db.cc::Db::Run")
         assert not any(t.endswith("::Acquire") for t in callees)
 

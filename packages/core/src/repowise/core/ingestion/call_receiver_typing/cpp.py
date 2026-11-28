@@ -461,18 +461,37 @@ class CppFieldOwners:
         Two same-named classes (a platform port beside an example port) refuse
         the repository-wide tier, though only one is in reach. Reach is what
         either the file that typed the receiver or the calling file includes: a
-        header may only forward-declare the class its caller includes.
+        header may only forward-declare the class its caller includes. A
+        qualifier written on the receiver's type must be a namespace that
+        class's file opens, and the method must be one the class declares.
         """
         if bare in self._externally_bound_names(path):
             return None
         caller_path = self._symbol_paths_by_id.get(caller_id, path)
         reach = self._cpp_include_closure(path) | self._cpp_include_closure(caller_path)
-        classes = {identity for file, identity, _ in self._declared_types_named(bare) if file in reach}
-        if len(classes) != 1:
+        declared = [d for d in self._declared_types_named(bare) if d[0] in reach]
+        host = self._cpp_written_qualifier(path, call.receiver_name or "", bare)
+        if host == "" or not self._cpp_qualified_class(declared, host, reach):
             return None
+        own = f"{declared[0][1][0]}::"
         methods = self._global_methods.get((bare, call.target_name), ())
-        found = self._collapse_declarations([sym_id for file, sym_id in methods if file in reach])
+        found = self._collapse_declarations([s for _, s in methods if s.startswith(own)])
         return (found.pop(), "import") if len(found) == 1 else None
+
+    def _cpp_written_qualifier(self, path: str, receiver: str, bare: str) -> str | None:
+        """The last qualifier *path* writes on *bare* where it declares *receiver*.
+
+        None when every declaration writes the type bare (or none is found),
+        ``""`` when they disagree.
+        """
+        if not receiver.isidentifier():
+            return ""
+        declared = re.compile(
+            rf"(?:\b(\w+)\s*::\s*)?\b{re.escape(bare)}\b(?:\s*<[^;{{}}]*?>)?\s*[*&]*\s*"
+            rf"(?:const\s+)?\b{re.escape(receiver)}\b"
+        )
+        hosts = {m.group(1) for m in declared.finditer(self._text_of(path))}
+        return hosts.pop() if len(hosts) == 1 else (None if not hosts else "")
 
     def _typed_callee(self, sym_id: str, caller_id: str) -> str | None:
         """The callee a typed receiver's method *sym_id* stands for, or None.

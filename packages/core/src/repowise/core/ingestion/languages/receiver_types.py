@@ -1676,15 +1676,18 @@ def _initializer_end(cleaned: str, index: int) -> int:
                 return -1
         elif char in ",;" and not depth:
             return at
-        elif char in "\"'":
-            # Strings are not blanked here, so a quoted comma would split the list.
+        elif char in "\"'<":
+            # Strings are not blanked and template arguments not matched here,
+            # so a comma in either would split the list.
             return -1
     return -1
 
 
 # What may stand before the type of a declaration list: specifiers, or a
 # label. Anything else (``x = a * b, c;``, ``typedef``, ``friend``, a ``for``
-# head) leaves the list unread.
+# head), or a statement head further back than the window, leaves the list
+# unread.
+_STATEMENT_HEAD_WINDOW = 200
 _CPP_LIST_PREFIX = re.compile(
     r"\s*(?:(?:const|static|mutable|volatile|constexpr|inline|thread_local|extern|"
     r"class|struct)\s+)*"
@@ -1693,8 +1696,14 @@ _CPP_LIST_PREFIX = re.compile(
 
 def _cpp_starts_statement(cleaned: str, start: int) -> bool:
     """Is the type at *start* the head of its statement, past specifiers alone?"""
-    opened = max(cleaned.rfind(stop, 0, start) for stop in ";{}:") + 1
+    low = max(0, start - _STATEMENT_HEAD_WINDOW)
+    opened = max(cleaned.rfind(stop, low, start) for stop in ";{}:") + 1
+    if not opened and low:
+        return False
     return _CPP_LIST_PREFIX.fullmatch(cleaned, opened, start) is not None
+
+
+_CPP_SPACED_STAR = re.compile(r"\s[*&]{1,2}\s")
 
 
 def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int, str]]:
@@ -1703,9 +1712,13 @@ def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int
     Kept only when the list ends its statement at ``;``: anything else (a
     parameter list, a template argument) gives none.
     """
+    at, later = match.end(), []
+    # ``a * b, c;`` multiplies: a declarator's star binds to one side.
+    spaced = _CPP_SPACED_STAR.search(cleaned, match.end("type"), match.start("name"))
+    if not cleaned.startswith((",", "="), at) or cleaned.startswith("==", at) or spaced:
+        return []
     if not _cpp_starts_statement(cleaned, match.start()):
         return []
-    at, later = match.end(), []
     while True:
         if cleaned.startswith("=", at):
             at = _initializer_end(cleaned, at + 1)
@@ -1715,6 +1728,8 @@ def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int
             return later
         declarator = _CPP_LATER_DECLARATOR.match(cleaned, at)
         if declarator is None or not cleaned.startswith((",", ";", "="), declarator.end()):
+            return []
+        if cleaned.startswith("==", declarator.end()):
             return []
         later.append((declarator.start("name"), declarator.group("name")))
         at = declarator.end()
