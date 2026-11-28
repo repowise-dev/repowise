@@ -8,15 +8,13 @@ code block, so change the two together.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
 DOCS_URL = "https://github.com/repowise-dev/repowise/blob/main/docs/reference/PLUGINS.md"
-NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 
-_ISSUE_SOURCE = '''\
+_ISSUE_SOURCE = """\
 import json
 import urllib.error
 import urllib.request
@@ -67,9 +65,9 @@ class TrackerIssues:
 def register():
     register_settings(URL, TOKEN)
     issue_sources.register(TrackerIssues.name, TrackerIssues())
-'''
+"""
 
-_EVIDENCE_SOURCE = '''\
+_EVIDENCE_SOURCE = """\
 import json
 import urllib.error
 import urllib.parse
@@ -117,9 +115,9 @@ class StatementSource:
 def register():
     register_settings(URL, TOKEN)
     evidence_sources.register(StatementSource.name, StatementSource())
-'''
+"""
 
-_AUTHORIZER = '''\
+_AUTHORIZER = """\
 from repowise.server.auth import Action, authorizers
 
 
@@ -138,7 +136,7 @@ class RoleAuthorizer:
 
 def register():
     authorizers.register("${plugin}", RoleAuthorizer())
-'''
+"""
 
 _FETCH_FINISH = """\
 The source reads two settings: `${url_key}` (plain, kept in
@@ -182,7 +180,8 @@ SEAMS: dict[str, SeamTemplate] = {
    `SourceRefused` when it rejects the token. Never put the token in a link
    or an exception message.
 
-""" + _FETCH_FINISH,
+"""
+        + _FETCH_FINISH,
         fetches=True,
     ),
     "evidence-source": SeamTemplate(
@@ -201,12 +200,13 @@ SEAMS: dict[str, SeamTemplate] = {
    `SourceRefused` when it rejects the token. Never put the token in a batch
    or an exception message.
 
-""" + _FETCH_FINISH,
+"""
+        + _FETCH_FINISH,
         fetches=True,
     ),
     "authorizer": SeamTemplate(
         default_name="roles",
-        summary="Decides which repositories and tools each caller of repowise serve may use",
+        summary="Decides which repositories and tools each caller of `repowise serve` may use",
         module=_AUTHORIZER,
         anchor="authenticator-and-authorizer",
         finish="""\
@@ -262,13 +262,13 @@ _MODULE_TAIL = """
 MIN_PLUGIN_API_VERSION = ${api}
 """
 
-_TEST = '''\
+_TEST = """\
 from repowise.core.plugin_testing import assert_plugin_passes
 
 
 def test_plugin_meets_every_contract():
     assert_plugin_passes("${package}:register")
-'''
+"""
 
 _README = """\
 # ${dist}
@@ -290,6 +290,8 @@ The contract this plugin follows is in
 
 _README_CONFIGURE_FETCH = """\
 ## Configure
+
+In a repository repowise has indexed:
 
 ```bash
 ${set_url}
@@ -363,6 +365,17 @@ same sync, so once it is configured nothing else is needed.
 """
 
 _AGENTS_DONE_FETCH = "- `repowise sources sync --source ${plugin}` reports `stored`.\n"
+
+
+def valid_name(name: str) -> bool:
+    """Whether *name* is a plugin name, by the rule ``plugin_setting`` applies."""
+    from repowise.core.settings.plugins import plugin_setting
+
+    try:
+        plugin_setting(name, "url", "str", None, "")
+    except ValueError:
+        return False
+    return True
 
 
 def package_name(name: str) -> str:

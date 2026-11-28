@@ -360,7 +360,6 @@ def check_command(fmt: str) -> None:
     "--dir",
     "dest",
     default=None,
-    type=click.Path(file_okay=False),
     help="Directory to write into (default: ./repowise-<name>). Must be empty or absent.",
 )
 @format_option()
@@ -378,7 +377,7 @@ def new_command(seam: str, name: str | None, dest: str | None, fmt: str) -> None
 
     from repowise.cli.helpers import console
     from repowise.cli.output import emit_refusal
-    from repowise.cli.plugin_scaffold import NAME_PATTERN, SEAMS, dist_name, next_commands, scaffold
+    from repowise.cli.plugin_scaffold import SEAMS, dist_name, next_commands, scaffold, valid_name
 
     supported = ", ".join(sorted(SEAMS))
     if seam not in SEAMS:
@@ -390,7 +389,9 @@ def new_command(seam: str, name: str | None, dest: str | None, fmt: str) -> None
             supported=sorted(SEAMS),
         )
     name = name or SEAMS[seam].default_name
-    if not NAME_PATTERN.fullmatch(name):
+    if name.startswith(("repowise-", "repowise_")):
+        name = name[len("repowise-") :]
+    if not valid_name(name):
         emit_refusal(
             "bad_name",
             f"{name!r} is not a plugin name: use lowercase letters, digits, - and _.",
@@ -404,11 +405,17 @@ def new_command(seam: str, name: str | None, dest: str | None, fmt: str) -> None
     except FileExistsError:
         emit_refusal(
             "dir_not_empty",
-            f"{shown} already exists and is not empty.",
+            f"{shown} already exists and is not an empty directory.",
             fmt,
             remedy="Pass --dir with a new directory, or remove that one.",
         )
-        return
+    except OSError as exc:
+        emit_refusal(
+            "write_failed",
+            f"Could not write to {shown}: {exc.strerror or exc}.",
+            fmt,
+            remedy="Pass --dir with a directory you can write to.",
+        )
     if " " in shown:
         shown = f'"{shown}"'
     commands = next_commands(seam, name, shown)
@@ -424,7 +431,9 @@ def new_command(seam: str, name: str | None, dest: str | None, fmt: str) -> None
             }
         )
         return
-    console.print(f"Wrote the {escape(seam)} plugin [bold]{escape(name)}[/bold] to {escape(str(target))}:")
+    console.print(
+        f"Wrote the {escape(seam)} plugin [bold]{escape(name)}[/bold] to {escape(str(target))}:"
+    )
     for f in files:
         console.print(f"  {escape(f)}")
     console.print("AGENTS.md says how to finish the stub. Next:")

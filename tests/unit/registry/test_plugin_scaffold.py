@@ -88,9 +88,11 @@ def test_a_scaffolded_issue_source_loads_and_passes_plugins_check(tmp_path, monk
 
 
 @pytest.mark.parametrize("seam", sorted(SEAMS))
-def test_every_template_passes_the_contract_checks_and_its_own_test(seam, tmp_path, monkeypatch, isolated):
+def test_every_template_passes_the_contract_checks_and_its_own_test(
+    seam, tmp_path, monkeypatch, isolated
+):
     dest = tmp_path / "pkg"
-    code, out = _new(seam, "--dir", str(dest))
+    code, _out = _new(seam, "--dir", str(dest))
     assert code == 0
     name = SEAMS[seam].default_name
     monkeypatch.syspath_prepend(str(dest / "src"))
@@ -145,6 +147,9 @@ def test_a_bad_name_or_a_used_directory_writes_nothing(tmp_path):
     code, out = _new("issue-source", "--name", "Linear", "--dir", str(tmp_path / "a"))
     assert (code, out["error"]) == (1, "bad_name")
     assert not (tmp_path / "a").exists()
+
+    code, out = _new("issue-source", "--name", "repowise-linear", "--dir", str(tmp_path / "c"))
+    assert (code, out["name"]) == (0, "linear")
 
     used = tmp_path / "b"
     used.mkdir()
