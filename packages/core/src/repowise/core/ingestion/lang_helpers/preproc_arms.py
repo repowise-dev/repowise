@@ -1,4 +1,4 @@
-"""Pick one arm of C/C++ ``#if`` groups whose arms do not balance their braces.
+"""Pick one arm of C/C++/C# ``#if`` groups whose arms do not balance their braces.
 
 tree-sitter reads every arm of ``#if``/``#else``/``#endif`` as live code and
 needs each arm to close the braces it opens::
@@ -24,6 +24,19 @@ net to zero is touched. A lone ``#ifdef __cplusplus`` / ``extern "C" {`` /
 ``#endif`` is unbalanced by design, is closed by a later lone group, and parses
 as it always did. A group whose arms each balance parses as it always did too,
 and so does a ``#if 0`` block that balances.
+
+C# differs in two ways. Its grammar reads ``#if``/``#elif``/``#else``/``#endif``
+as a structural node allowed only between whole statements, members and
+declarations, so one inside a ``switch`` block, before an ``else``, or between a
+property and its initializer is an ``ERROR`` even when every arm balances. A C#
+directive is always a whole line and never continues onto the next one, so
+:func:`blank_csharp_preproc_arms` blanks every conditional directive line,
+drops every ``#if false`` arm (once exposed, its code would read as live), and
+still keeps one arm only of a group whose arms do not balance. ``#region``,
+``#pragma``, ``#nullable`` and the other directives are extras the grammar
+accepts anywhere, and stay. C# also has verbatim (``@"..."``) and raw
+(three or more quotes) strings that span lines, and a ``//`` comment that a
+trailing backslash does not continue, so it scans with its own token pattern.
 """
 
 from __future__ import annotations
@@ -59,10 +72,33 @@ _TOKEN_RE = re.compile(
     re.MULTILINE,
 )
 
+# A C# line starts at a line break or after the byte-order mark editors write.
+_CSHARP_LINE_START = rb"(?:^|(?<=\A\xef\xbb\xbf))[ \t]*#"
+_CSHARP_IF_RE = re.compile(_CSHARP_LINE_START + rb"[ \t]*if\b", re.MULTILINE)
+
+# The C# tokens: a directive is its whole line, verbatim and raw strings may
+# span lines, and ``//`` ends at the line break whatever comes before it.
+_CSHARP_TOKEN_RE = re.compile(
+    rb"(?P<dir>" + _CSHARP_LINE_START + rb"[^\r\n]*)"
+    rb"|(?P<skip>//[^\r\n]*"
+    rb"|/\*(?s:.*?)(?:\*/|\Z)"
+    rb"|(?P<quotes>\"{3,})(?s:.*?)(?:(?P=quotes)|\Z)"
+    rb"|\$*@\$*\"(?:[^\"]|\"\")*\"?"
+    rb"|\"(?:[^\"\\\r\n]|\\.)*\"?"
+    rb"|'(?:[^'\\\r\n]|\\.)*'?)"
+    rb"|(?P<brace>[{}])",
+    re.MULTILINE,
+)
+
 _DIRECTIVE_NAME_RE = re.compile(rb"[ \t]*#[ \t]*([A-Za-z_]*)")
 # ``#if 0`` and ``#elif 0``: an arm that is dead by construction, never kept
 # while a live one is on offer.
 _DEAD_ARM_RE = re.compile(rb"[ \t]*#[ \t]*(?:el)?if[ \t]*\(?[ \t]*0[ \t]*\)?[ \t]*\Z")
+# C#'s ``#if false`` never compiles, so its arm goes even without a rival.
+_CSHARP_DEAD_ARM_RE = re.compile(
+    rb"[ \t]*#[ \t]*(?:el)?if[ \t]*\(?[ \t]*false[ \t]*\)?[ \t]*(?://[^\r\n]*)?\Z"
+)
+_CONDITIONALS = frozenset({b"if", b"elif", b"else", b"endif"})
 _OPENERS = frozenset({b"if", b"ifdef", b"ifndef"})
 _SWITCHERS = frozenset({b"else", b"elif", b"elifdef", b"elifndef"})
 _NOT_NEWLINE_RE = re.compile(rb"[^\r\n]")
@@ -89,7 +125,8 @@ class _GroupScan:
     balance already counts only the arm its nested groups keep.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, csharp: bool = False) -> None:
+        self.csharp = csharp
         self.stack: list[_Group] = []
         self.dir_starts: list[int] = []
         self.dir_ends: list[int] = []
@@ -103,6 +140,8 @@ class _GroupScan:
         self.dir_starts.append(start)
         self.dir_ends.append(end)
         name = _DIRECTIVE_NAME_RE.match(text).group(1)  # type: ignore[union-attr]
+        if self.csharp and name in _CONDITIONALS:
+            self.blank.append((start, end))
         if name in _OPENERS:
             self.stack.append(_Group([_Arm(text, end)], [(start, end)]))
         elif name in _SWITCHERS and self.stack:
@@ -117,15 +156,24 @@ class _GroupScan:
             self._settle(group)
 
     def _settle(self, group: _Group) -> None:
-        arms = group.arms
+        arms = self._drop_csharp_dead_arms(group.arms) if self.csharp else group.arms
         if len(arms) > 1 and any(arm.delta for arm in arms):
             keep = next((arm for arm in arms if not _DEAD_ARM_RE.match(arm.head)), arms[0])
             self._drop_all_but(group, keep)
             contribution = keep.delta
         else:
-            contribution = arms[0].delta
+            contribution = arms[0].delta if arms else 0
         if self.stack:
             self.stack[-1].arms[-1].delta += contribution
+
+    def _drop_csharp_dead_arms(self, arms: list[_Arm]) -> list[_Arm]:
+        live = []
+        for arm in arms:
+            if _CSHARP_DEAD_ARM_RE.match(arm.head):
+                self._blank_body(arm.body_start, arm.body_end)
+            else:
+                live.append(arm)
+        return live
 
     def _drop_all_but(self, group: _Group, keep: _Arm) -> None:
         self.blank.extend(group.directives)
@@ -159,8 +207,20 @@ def blank_unbalanced_preproc_arms(source: bytes) -> bytes:
     """
     if not _ARM_SWITCH_RE.search(source):
         return source
-    scan = _GroupScan()
-    for match in _TOKEN_RE.finditer(source):
+    return _blank_arms(source, _TOKEN_RE, _GroupScan())
+
+
+def blank_csharp_preproc_arms(source: bytes) -> bytes:
+    """Blank every C# ``#if``/``#elif``/``#else``/``#endif`` line, every
+    ``#if false`` arm, and the losing arms of each brace-unbalanced group, under
+    the same offset contract."""
+    if not _CSHARP_IF_RE.search(source):
+        return source
+    return _blank_arms(source, _CSHARP_TOKEN_RE, _GroupScan(csharp=True))
+
+
+def _blank_arms(source: bytes, token_re: re.Pattern[bytes], scan: _GroupScan) -> bytes:
+    for match in token_re.finditer(source):
         brace = match["brace"]
         if brace is not None:
             scan.brace(1 if brace == b"{" else -1)
