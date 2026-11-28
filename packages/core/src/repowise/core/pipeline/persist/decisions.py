@@ -132,13 +132,15 @@ async def store_decisions(
     vector_store: Any = None,
     git_metadata: Iterable[Any] | None = None,
     provider: Any = None,
+    repo_path: Any = None,
 ) -> list[str]:
     """Upsert ``decisions``, then detect supersession and rescore staleness.
 
     Returns the ids the upsert touched. A failing upsert propagates; the two
     passes after it are best-effort. ``git_metadata`` holds per-file git rows
     (dicts or dataclasses) for the staleness rescore; ``provider`` enables
-    the LLM tiebreaker in supersession detection.
+    the LLM tiebreaker in supersession detection; ``repo_path`` lets the
+    rescore start from when each record's evidence commits landed.
     """
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
@@ -186,7 +188,9 @@ async def store_decisions(
                 if fp:
                     git_meta_map[fp] = gm_dict
             if git_meta_map:
-                updated = await recompute_decision_staleness(session, repo_id, git_meta_map)
+                updated = await recompute_decision_staleness(
+                    session, repo_id, git_meta_map, repo_path
+                )
                 if updated:
                     logger.info("decision_staleness_recomputed", updated=updated)
         except Exception as _stale_err:
@@ -201,7 +205,8 @@ async def apply_decision_lifecycle(
     *,
     skip: Callable[[str, Exception], None] | None = None,
 ) -> None:
-    """Retire decisions whose commits were reverted or whose HEAD artifacts are gone.
+    """Retire decisions whose commits were reverted or whose HEAD artifacts are gone,
+    and put in force an agent's decisions whose commits landed on the default branch.
 
     Every run, whether or not it stored decisions. Each pass is best-effort: a
     failure goes to ``skip(step, exc)`` when given, else to the debug log.
@@ -226,3 +231,13 @@ async def apply_decision_lifecycle(
             skip("Decision HEAD artifact check", _artifact_err)
         else:
             logger.debug("head_artifact_check_skipped", error=str(_artifact_err))
+    # After the revert pass, so a reverted record is retired rather than accepted.
+    try:
+        from repowise.core.analysis.decisions.merge_accept import accept_landed_decisions
+
+        await accept_landed_decisions(session, repo_id, repo_path)
+    except Exception as _landing_err:
+        if skip is not None:
+            skip("Decision landing check", _landing_err)
+        else:
+            logger.debug("decision_landing_check_skipped", error=str(_landing_err))

@@ -7,7 +7,8 @@ from pathlib import Path
 
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {".git", "node_modules", "out", "build", "Packages"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"out", "build", "Packages"}
 
 # game:GetService("ReplicatedStorage")
 _GET_SERVICE_RE = re.compile(r"game\s*:\s*GetService\s*\(\s*[\"']([A-Za-z_]\w*)[\"']")

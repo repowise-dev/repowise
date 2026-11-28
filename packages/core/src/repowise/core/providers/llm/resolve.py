@@ -336,6 +336,7 @@ def _context(
     override: _Layer,
     known: Collection[str] | None,
     repo_layer: Mapping[str, Any] | None,
+    ignore_repo_choice: bool = False,
 ) -> _Context:
     getenv = repo_getenv(repo_path)
     if repo_layer is not None and repo_path is None:
@@ -343,9 +344,10 @@ def _context(
     else:
         cfg, repo_source = read_repo_config(repo_path), "config.yaml"
     glob = read_global_config()
+    own = {} if ignore_repo_choice else cfg
     return _Context(
         override=override,
-        repo=_Layer(repo_source, _clean(cfg.get("provider")), _clean(cfg.get("model"))),
+        repo=_Layer(repo_source, _clean(own.get("provider")), _clean(own.get("model"))),
         glob=_Layer(
             "global",
             _clean(glob.get("active_provider")),
@@ -376,6 +378,7 @@ def resolve_llm(
     known: Collection[str] | None = None,
     autodetect: bool = True,
     repo_layer: Mapping[str, Any] | None = None,
+    ignore_repo_choice: bool = False,
 ) -> LLMSelection:
     """Resolve the provider, model and base URL for *repo_path*.
 
@@ -387,9 +390,11 @@ def resolve_llm(
     ``autodetect=False`` stops at the configured layers. ``repo_layer`` stands
     in for ``config.yaml`` for a repo with no checkout to hold one (the
     server's stored choice for it), labelled ``provider_config.json``.
+    ``ignore_repo_choice`` skips the repo's own ``provider`` / ``model``: what
+    the repo would use if it named none.
     """
     override = _Layer(override_source, _clean(provider), _clean(model), _clean(base_url))
-    ctx = _context(repo_path, override, known, repo_layer)
+    ctx = _context(repo_path, override, known, repo_layer, ignore_repo_choice)
     chosen, chosen_source = first_found(_provider_steps(ctx, autodetect))
     if chosen is None:
         return LLMSelection()
@@ -450,15 +455,28 @@ def _base_url_steps(ctx: _Context, chosen: str) -> list[Step]:
     return steps
 
 
-def _autodetect(ctx: _Context) -> str | None:
+def _credentialed(ctx: _Context) -> Iterable[str]:
     keys = ctx.global_config.get("keys")
     stored = keys if isinstance(keys, Mapping) else {}
     for name in PROVIDER_AUTODETECT_ORDER:
         if not ctx.counts(name):
             continue
         if provider_credentials_present(name, ctx.getenv) or _clean(stored.get(name)):
-            return name
-    return None
+            yield name
+
+
+def _autodetect(ctx: _Context) -> str | None:
+    return next(iter(_credentialed(ctx)), None)
+
+
+def credentialed_providers(repo_path: Path | str | None = None) -> tuple[str, ...]:
+    """Every provider auto-detection could pick for *repo_path*, in its order.
+
+    The same keys and order :func:`resolve_llm` reads (process env, the repo's
+    ``.env``, stored keys), so a picker that defaults to the first of these
+    agrees with what ``--yes`` would run.
+    """
+    return tuple(_credentialed(_context(repo_path, _Layer("flag", None, None), None, None)))
 
 
 def resolve_api_key(
@@ -623,6 +641,38 @@ def apply_llm_selection(
     return config
 
 
+def inherits_default(repo_path: Path | str | None, provider: str, model: str | None) -> bool:
+    """Whether *provider* / *model* are what *repo_path* uses with no choice of its own.
+
+    The default is the configured one every repo shares: ``provider_config.json``
+    or ``REPOWISE_PROVIDER``. Auto-detection is not one: it follows whichever
+    keys are present, so a provider it picked is not something to keep following.
+    """
+    shared = resolve_llm(repo_path, autodetect=False, ignore_repo_choice=True)
+    return shared.provider is not None and (shared.provider, shared.model) == (
+        _clean(provider),
+        _clean(model),
+    )
+
+
+def record_index_selection(
+    config: dict[str, Any], repo_path: Path | str, provider: str, model: str | None
+) -> dict[str, Any]:
+    """Record in *config* the provider/model an index run used, if the repo chose them.
+
+    A run that used the shared default records nothing, so the repo keeps
+    following that default when it changes (#5709). A choice *config* already
+    names is kept when the run used it, and removed when the run used the
+    default instead: only a flag naming the default gets a run past it.
+    """
+    if not inherits_default(repo_path, provider, model):
+        return apply_llm_selection(config, provider, model)
+    if config.get("provider") != provider or config.get("model") not in (None, model):
+        config.pop("provider", None)
+        config.pop("model", None)
+    return config
+
+
 def save_repo_llm_selection(
     repo_path: Path | str,
     provider: str,
@@ -640,6 +690,29 @@ def save_repo_llm_selection(
     save_repo_config(repo_path, apply_llm_selection(config, provider, model, base_url))
 
 
+def write_provider_setting(repo_path: Path | str, key: str, value: str | None) -> None:
+    """Write ``provider``; ``None`` removes it. The settings-registry writer.
+
+    A model id belongs to one provider, so a new provider drops a model saved
+    for the old one and the new provider's default applies; picking the same
+    provider again keeps it.
+    """
+    from repowise.core.providers.llm.registry import list_providers
+    from repowise.core.repo_config import load_repo_config, save_repo_config
+
+    config = load_repo_config(repo_path)
+    if value is None:
+        config.pop("provider", None)
+        config.pop("model", None)
+    else:
+        known = list_providers()
+        if value not in known:
+            raise ValueError(f"provider: unknown {value!r}; known: {', '.join(known)}")
+        keep = config.get("model") if config.get("provider") == value else None
+        apply_llm_selection(config, value, keep)
+    save_repo_config(repo_path, config)
+
+
 __all__ = [
     "UNSET",
     "LLMSelection",
@@ -648,15 +721,18 @@ __all__ = [
     "base_url_trusted",
     "cached_read",
     "clear_cache",
+    "credentialed_providers",
     "first_found",
     "forget_cached",
     "found",
     "global_config_path",
+    "inherits_default",
     "llm_provider_kwargs",
     "provider_ready",
     "read_global_config",
     "read_repo_config",
     "read_repo_env",
+    "record_index_selection",
     "repo_getenv",
     "resolve_api_key",
     "resolve_llm",
@@ -665,4 +741,5 @@ __all__ = [
     "update_global_config",
     "validate_base_url",
     "without_credentials",
+    "write_provider_setting",
 ]

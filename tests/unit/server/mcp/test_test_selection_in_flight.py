@@ -27,7 +27,7 @@ def gated(monkeypatch):
     gate = asyncio.Event()
     runs: list = []
 
-    async def _select(_repo, _factory, change, _config, cancel):
+    async def _select(_repo, _factory, change, _config, cancel, _named=None):
         runs.append((change, cancel))
         await gate.wait()
         return {"for": change.label}, None, None
@@ -52,6 +52,38 @@ async def test_two_calls_for_one_change_share_the_running_selection(tmp_path, ga
     first, second = _call(tmp_path, _change("a.py")), _call(tmp_path, _change("a.py"))
     await _settle()
     gate.set()
+
+    assert (await first)[0] == (await second)[0] == {"for": "a.py"}
+    assert len(runs) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_finished_selection_is_shared_until_its_cache_key_is_rechecked(
+    tmp_path, gated, monkeypatch
+) -> None:
+    from collections import OrderedDict
+
+    gate, runs = gated
+    publishing = asyncio.Event()
+    publish = asyncio.Event()
+    checks = 0
+
+    async def _done_key(*_args):
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            publishing.set()
+            await publish.wait()
+        return ("same-change",)
+
+    monkeypatch.setattr(_test_selection, "_done_key", _done_key)
+    monkeypatch.setattr(_test_selection, "_DONE", OrderedDict())
+    gate.set()
+    first = _call(tmp_path, _change("a.py"))
+    await asyncio.wait_for(publishing.wait(), timeout=1)
+    second = _call(tmp_path, _change("a.py"))
+    await _settle()
+    publish.set()
 
     assert (await first)[0] == (await second)[0] == {"for": "a.py"}
     assert len(runs) == 1
@@ -94,7 +126,9 @@ async def test_one_caller_timing_out_leaves_the_selection_to_the_other(
     tmp_path, gated, monkeypatch
 ) -> None:
     gate, runs = gated
-    monkeypatch.setattr(_test_selection, "SELECTION_TIMEOUT_SECONDS", 0.01)
+    # Above the event loop's clock resolution (about 16 ms on Windows), so the
+    # first caller cannot time out before the second one joins.
+    monkeypatch.setattr(_test_selection, "SELECTION_TIMEOUT_SECONDS", 0.2)
     first = _call(tmp_path, _change("a.py"))
     await _settle()
     monkeypatch.setattr(_test_selection, "SELECTION_TIMEOUT_SECONDS", 30.0)

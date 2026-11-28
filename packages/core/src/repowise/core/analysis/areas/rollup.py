@@ -22,6 +22,7 @@ from repowise.core.analysis.health.aggregation import group_rollup, severity_bre
 from repowise.core.analysis.health.grading import BAND_ORDER, band_for, distribution
 from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.health.rows import scored_rows
+from repowise.core.analysis.held_origins import HOTSPOT_HELD_ORIGINS, counts_as_hotspot
 
 from .owners import FileOwner, owner_breakdown, primary_owner
 from .paths import ancestors, area_depth, area_name, area_parent
@@ -31,12 +32,21 @@ __all__ = [
     "build_area_index",
     "coverage_rollup",
     "finding_row",
+    "is_counted_hotspot",
     "severity_by_file",
 ]
 
 #: The fields an area reads of each row; the index is kept in memory per index
 #: state, so the rest of a row (an ORM entity is a few KB) is not kept.
-_METRIC_FIELDS = ("file_path", "score", "nloc", "is_test", "line_coverage_pct", "has_test_file")
+_METRIC_FIELDS = (
+    "file_path",
+    "score",
+    "nloc",
+    "is_test",
+    "code_origin",
+    "line_coverage_pct",
+    "has_test_file",
+)
 _GIT_FIELDS = ("is_hotspot", "bus_factor")
 
 
@@ -59,6 +69,20 @@ class AreaIndex:
     deductions: Mapping[str, float] = field(default_factory=dict)
     #: Open findings as :func:`finding_row` dicts, in the finding lists' priority order.
     findings: Sequence[dict[str, Any]] = ()
+    #: Stored origins the reader's hotspot list holds out.
+    held_origins: frozenset[str] = HOTSPOT_HELD_ORIGINS
+
+
+def is_counted_hotspot(index: AreaIndex, row: Any) -> bool:
+    """Whether the scored file *row* is a hotspot the hotspot list shows: flagged
+    in git, and its stored origin not one the reader holds out."""
+    git = index.git_by_path.get(row_field(row, "file_path"), {})
+    return counts_as_hotspot(
+        git.get("is_hotspot"),
+        row_field(row, "code_origin"),
+        row_field(row, "is_test"),
+        index.held_origins,
+    )
 
 
 def finding_row(row: Any) -> dict[str, Any]:
@@ -137,7 +161,7 @@ def _node(
             "path": rollup["worst_performer_path"],
             "score": rollup["worst_performer_score"],
         },
-        "hotspot_count": sum(1 for g in git if row_field(g, "is_hotspot")),
+        "hotspot_count": sum(1 for r in group if is_counted_hotspot(index, r)),
         "bus_factor_1_count": sum(1 for g in git if row_field(g, "bus_factor") == 1),
         "primary_owner": primary_owner(owner_breakdown(paths, index.owners, len(paths))),
         "line_coverage_pct": coverage,
@@ -155,6 +179,7 @@ def build_area_index(
     owners: Mapping[str, FileOwner] | None = None,
     findings: Iterable[Any] = (),
     deductions: Mapping[str, float] | None = None,
+    held_origins: frozenset[str] = HOTSPOT_HELD_ORIGINS,
 ) -> AreaIndex:
     """Fold every scored file into each directory above it, then roll each one up.
 
@@ -181,6 +206,7 @@ def build_area_index(
         },
         owners=owners or {},
         deductions=deductions or {},
+        held_origins=held_origins,
     )
     index.findings = [finding_row(f) for f in findings]
     severities = severity_by_file(index.findings)

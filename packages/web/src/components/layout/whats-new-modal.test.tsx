@@ -9,7 +9,7 @@ const ENTRIES: ChangelogEntry[] = [
   {
     version: "0.57.0",
     label: "2026-10-20",
-    summary: "Chat draws charts (#3860).",
+    summary: "Chat draws charts (#3860) with `get_symbol` in reach.\n\nA second paragraph.",
     highlights: [
       { id: "charts-in-chat", title: "Charts in chat", blurb: "Any chart.", href: "/repos/:id/chat" },
       { id: "settings", title: "Models from Settings", blurb: "Live lists.", href: "/settings" },
@@ -29,7 +29,10 @@ const ENTRIES: ChangelogEntry[] = [
       test_files_new: 144,
       issues_closed: 25,
     },
-    sections: [{ name: "Fixed", items: ["A fix (#12)."] }],
+    sections: [
+      { name: "Fixed", items: ["A fix (#12).", "Fix 2.", "Fix 3.", "Fix 4.", "Fix 5.", "Fix 6."] },
+      { name: "Upgrading", items: ["**Nothing to re-index.** Run `repowise update`."] },
+    ],
   },
   {
     version: "0.56.0",
@@ -41,12 +44,25 @@ const ENTRIES: ChangelogEntry[] = [
   },
 ];
 
+const changelogCalls = vi.hoisted(() => [] as unknown[][]);
 vi.mock("@/lib/hooks/use-meta-version", () => ({
-  useChangelog: () => ({ entries: ENTRIES, error: null, isLoading: false }),
+  useChangelog: (...args: unknown[]) => {
+    changelogCalls.push(args);
+    return { entries: ENTRIES, error: null, isLoading: false };
+  },
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/repos/r1/overview" }));
 
 describe("WhatsNewModal", () => {
+  it("asks for newer releases only when told to", () => {
+    changelogCalls.length = 0;
+    const { unmount } = render(<WhatsNewModal open onOpenChange={() => {}} />);
+    expect(changelogCalls.at(-1)?.[2]).toBe(false);
+    unmount();
+    render(<WhatsNewModal open onOpenChange={() => {}} version="0.57.0" includeNewer />);
+    expect(changelogCalls.at(-1)?.[2]).toBe(true);
+  });
+
   it("leads with the release, its numbers and highlights", () => {
     render(<WhatsNewModal open onOpenChange={() => {}} version="0.57.0" fresh />);
     const dialog = screen.getByRole("dialog");
@@ -72,12 +88,39 @@ describe("WhatsNewModal", () => {
     expect(within(dialog).getAllByText("New")).toHaveLength(3);
   });
 
-  it("keeps every change collapsed until opened", () => {
+  it("leads with the highlights, then the summary, the numbers and every change", () => {
+    render(<WhatsNewModal open onOpenChange={() => {}} version="0.57.0" />);
+    const dialog = screen.getByRole("dialog");
+    const text = dialog.textContent ?? "";
+    const at = (s: string) => text.indexOf(s);
+    expect(at("Charts in chat")).toBeGreaterThan(-1);
+    expect(at("Charts in chat")).toBeLessThan(at("Chat draws charts"));
+    expect(at("A second paragraph.")).toBeLessThan(at("By the numbers"));
+    expect(at("By the numbers")).toBeLessThan(at("Everything in this release"));
+    // Two summary paragraphs, not one block.
+    expect(within(dialog).getByText("A second paragraph.").tagName).toBe("P");
+  });
+
+  it("never breaks inline code inside an identifier", () => {
+    render(<WhatsNewModal open onOpenChange={() => {}} version="0.57.0" />);
+    const code = within(screen.getByRole("dialog")).getByText("get_symbol");
+    expect(code.tagName).toBe("CODE");
+    expect(code.className).not.toContain("break-all");
+    expect(code.className).not.toContain("overflow-wrap:anywhere");
+  });
+
+  it("opens a short section and keeps a long one collapsed until opened", () => {
     render(<WhatsNewModal open onOpenChange={() => {}} version="0.57.0" />);
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).queryByText("New")).toBeNull();
+    // Upgrading (one change) is open, its bold lead-in kept.
+    const upgrading = within(dialog).getByText("Upgrading").closest("details")!;
+    expect(upgrading.open).toBe(true);
+    expect(within(upgrading).getByText("Nothing to re-index.").tagName).toBe("STRONG");
+    // Fixed (six changes) waits for a click.
     expect(within(dialog).queryByText(/A fix/)).toBeNull();
     const details = within(dialog).getByText("Fixed").closest("details")!;
+    expect(details.open).toBe(false);
     details.open = true;
     fireEvent(details, new Event("toggle"));
     expect(within(dialog).getByText(/A fix/)).toBeTruthy();

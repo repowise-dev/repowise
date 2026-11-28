@@ -111,16 +111,18 @@ def test_scale_counts_code_languages_and_skips_external_nodes() -> None:
         {"node_id": "b.ts", "language": "typescript", "symbol_count": 2},
         {"node_id": "c.json", "language": "json", "symbol_count": 0},
         {"node_id": "external:requests", "language": "external", "symbol_count": 0},
+        {"node_id": "src/generated", "language": "unknown", "symbol_count": 0},
     ]
     metrics = [
         {"nloc": 100, "module": "a", "is_test": False},
         {"nloc": 40, "module": "tests", "is_test": True},
     ]
-    scale = build_scale(nodes, metrics)
+    scale = build_scale(nodes, metrics, symbol_count=4)
     assert scale["file_count"] == 3
-    assert scale["symbol_count"] == 5
+    assert scale["symbol_count"] == 4  # passed in, not the per-file sum
     assert scale["language_count"] == 2
     assert {lang["language"] for lang in scale["languages"]} == {"python", "typescript"}
+    assert [lang["language"] for lang in scale["docs_config_languages"]] == ["json"]
     assert scale["total_nloc"] == 140
     assert scale["test_nloc"] == 40
 
@@ -141,6 +143,27 @@ def test_day_one_files_replace_an_arbitrary_oldest_file() -> None:
     assert out["day_one_files"] == {"count": 2, "of": 3}
     assert out["most_changed_file"] == {"path": "b.py", "commit_count": 9}
     assert "oldest_file" not in out
+
+
+def test_file_records_rank_production_code_only() -> None:
+    metrics = [
+        {"file_path": "src/app.py", "nloc": 400, "max_ccn": 12, "code_origin": "production"},
+        # The stored origin read the file's head: a generated parser by content.
+        {"file_path": "src/parser.py", "nloc": 9000, "max_ccn": 90, "code_origin": "generated"},
+        # No stored origin, as on an index written before the column: the path decides.
+        {"file_path": "tests/test_app.py", "nloc": 3000, "max_ccn": 40, "code_origin": None},
+        {"file_path": "src/small.py", "nloc": 50, "max_ccn": 2},
+    ]
+    meta = [
+        {"file_path": "tests/test_app.py", "commit_count_total": 80},
+        {"file_path": "src/app.py", "commit_count_total": 30},
+        # Unscored by health, still judged by origin.
+        {"file_path": "vendor/lib/big.py", "commit_count_total": 99},
+    ]
+    out = build_file_records(metrics, meta, None)
+    assert out["largest_file"] == {"path": "src/app.py", "nloc": 400}
+    assert out["gnarliest_file"] == {"path": "src/app.py", "max_ccn": 12}
+    assert out["most_changed_file"] == {"path": "src/app.py", "commit_count": 30}
 
 
 def test_function_records_leave_test_code_out() -> None:

@@ -14,6 +14,7 @@ import {
   type PerformanceFilterState,
   type PerformanceSort,
 } from "./query";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The filter surface. Every option and every count comes from the server's
@@ -37,6 +38,7 @@ const NARROWING: NarrowingSpec[] = [
   { key: "boundary", facet: "boundary", anyLabel: "Any" },
   { key: "confidence", facet: "confidence", anyLabel: "Any" },
   { key: "proof", facet: "proof", anyLabel: "Any" },
+  { key: "static_cost", facet: "static_cost", anyLabel: "Any" },
   { key: "role", facet: "role", anyLabel: "Any" },
 ];
 
@@ -79,7 +81,7 @@ function NarrowingControl({
         { value: "", label: anyLabel },
         ...counts.map((entry) => ({
           value: entry.value,
-          label: `${facetValueLabel(facet, entry.value)} (${entry.total.toLocaleString()})`,
+          label: `${facetValueLabel(facet, entry.value)} (${formatNumber(entry.total)})`,
         })),
       ]}
     />

@@ -17,10 +17,8 @@ import logging
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import LlmCost, Repository
 from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.server.mcp_server.tool_answer.synthesis import synthesize
@@ -45,13 +43,7 @@ class _Provider:
 
 
 @pytest.fixture
-async def factory():
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    await init_db(engine)
+async def factory(engine):
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with sessionmaker() as session:
         session.add(
@@ -65,8 +57,7 @@ async def factory():
             )
         )
         await session.commit()
-    yield sessionmaker
-    await engine.dispose()
+    return sessionmaker
 
 
 async def _ledger_rows(factory) -> list[LlmCost]:
@@ -80,7 +71,7 @@ async def test_a_completed_synthesis_writes_one_cost_row(factory):
         GeneratedResponse(content="the answer", input_tokens=61_741, output_tokens=402)
     )
 
-    text, note = await synthesize(
+    text, note, _ = await synthesize(
         provider, "system", "user", session_factory=factory, repo_id="repo1"
     )
 
@@ -99,7 +90,7 @@ async def test_a_response_with_no_usage_warns_instead_of_writing_zeros(factory, 
     provider = _Provider(GeneratedResponse(content="the answer", input_tokens=0, output_tokens=0))
 
     with caplog.at_level(logging.WARNING, logger="repowise.mcp.answer"):
-        text, note = await synthesize(
+        text, note, _ = await synthesize(
             provider, "system", "user", session_factory=factory, repo_id="repo1"
         )
 
@@ -119,7 +110,7 @@ async def test_the_cost_row_is_logged_even_with_nowhere_to_persist_it(factory, c
     )
 
     with caplog.at_level(logging.INFO, logger="repowise.mcp.answer"):
-        text, _ = await synthesize(provider, "system", "user")
+        text, _, _ = await synthesize(provider, "system", "user")
 
     assert text == "the answer"
     assert await _ledger_rows(factory) == []
@@ -135,7 +126,7 @@ async def test_a_failed_synthesis_writes_no_cost_row(factory):
 
     provider = _Failing(GeneratedResponse(content="", input_tokens=0, output_tokens=0))
 
-    text, note = await synthesize(
+    text, note, _ = await synthesize(
         provider, "system", "user", session_factory=factory, repo_id="repo1"
     )
 

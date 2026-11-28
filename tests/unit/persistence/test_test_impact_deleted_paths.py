@@ -104,3 +104,19 @@ async def test_a_deletion_alongside_a_real_gap_separates_the_two(async_session):
 
     assert impact["deleted_files"] == ["app/gone.py"]
     assert impact["files_without_measured_tests"] == ["app/kept.py"]
+
+
+async def test_a_truncated_map_withholds_coverage_gaps(async_session, monkeypatch):
+    # Whole tests were cut at the row cap, so a file without measured tests
+    # may have had them: the coverage block degrades instead of reporting gaps.
+    from repowise.core.persistence.crud.analysis import coverage_map
+
+    fixture = _fixture()
+    repo = await insert_repo(async_session, name="truncated", head_commit="fixture-head")
+    await _seed(async_session, repo.id, fixture)
+    monkeypatch.setattr(coverage_map, "MAX_TEST_COVERAGE_ROWS", 1)
+
+    impact = await _impact(async_session, repo.id, ["app/removed_module.py"])
+
+    assert impact["coverage"]["status"] == "degraded"
+    assert impact["coverage"]["reason"] == "per_test_coverage_map_truncated"

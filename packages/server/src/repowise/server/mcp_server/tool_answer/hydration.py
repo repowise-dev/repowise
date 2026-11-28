@@ -18,9 +18,11 @@ from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES, hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms, split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
+    _CONTAINER_KINDS,
     _DEFINES_MAX_FILES,
     _DEFINES_PER_CANDIDATE,
     _ENRICH_TOP_N_HITS,
+    _MATCHED_SYMBOL_SOURCE_LINES,
     _MAX_SYMBOLS_PER_HIT,
     _MAX_SYMBOLS_TOP_HIT,
     _RELEVANCE_DOC_CHARS,
@@ -97,6 +99,12 @@ def _question_names_symbol(row, qids_lower: set[str]) -> bool:
             if len(q) >= 5  # avoid spurious substring matches on short tokens
         )
     )
+
+
+def _is_file_container(kind: str | None, start: int | None, end: int | None) -> bool:
+    """A namespace/module/package longer than a matched body is read at."""
+    span = (end or 0) - (start or 0) + 1
+    return kind in _CONTAINER_KINDS and span > _MATCHED_SYMBOL_SOURCE_LINES
 
 
 def _symbol_relevance(entry: dict, terms: set[str]) -> int:
@@ -342,10 +350,15 @@ async def _symbol_entry(
         "end_line": end_line,
         "_matched": matched,
         "_verified": verified,
+        "_parent": row.parent_name,
+        "_language": row.language,
     }
     # Scored once here, not per sort comparison.
     entry["_relevance"] = _symbol_relevance(entry, term_stems)
-    if matched and verified:
+    # A namespace or module spanning a file is not a body: it would be the
+    # file's head, crowding out the code asked about ("Envoy's ..." matched
+    # `namespace Envoy` and spent 120 lines of an unrelated header).
+    if matched and verified and not _is_file_container(row.kind, start_line, end_line):
         src = _read_symbol_source(
             repo_root, row.file_path, start_line, end_line, text=text
         )
@@ -385,6 +398,8 @@ def _attach_relevant_excerpts(
         if bodied >= _RELEVANT_EXCERPT_MAX_SYMBOLS:
             break
         if s.get("source_excerpt") or not s["_relevance"] or not s["_verified"]:
+            continue
+        if _is_file_container(s.get("kind"), s["start_line"], s.get("end_line")):
             continue
         src = _read_symbol_source(
             repo_root,

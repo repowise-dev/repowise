@@ -45,7 +45,7 @@ LOCK_IO_KIND = "blocking_io_under_lock"
 # hand. A blocking call there is how the job is done, so it never becomes a
 # ``hot_path_sync_io`` finding however many callers it has. A CLI is product
 # code (``code_origin`` calls it production) and still fires.
-_NON_SERVING_ORIGINS = frozenset({"test", "tooling", "docs_example", "generated", "vendored"})
+_NON_SERVING_ORIGINS = frozenset({"test", "tooling", "docs_example", "generated", "vendored", "data"})
 
 
 def _may_serve_requests(path: str, origins: Mapping[str, str] | None) -> bool:
@@ -85,8 +85,8 @@ def collect_centrality_gated(
 
     Keyed by file path. For every function carrying the corresponding fact, a hit
     is produced ONLY when ``ranker.is_hot(path, func_start)``, so a quadratic
-    loop or a blocking sync sink ships only in one of the repo's most-called
-    functions. Pure when no graph is available (nothing is hot, so no hits),
+    loop or a blocking sync sink ships only in a function with at least as many
+    callers as 80% of the repo's called functions. Pure when no graph is available (nothing is hot, so no hits),
     which is the precision-first default. A fact whose function
     sits inside Rust inline test code (``_in_rust_test_range``) is skipped
     before the hotness check even runs — test code doing blocking I/O is

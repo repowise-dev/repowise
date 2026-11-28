@@ -27,6 +27,12 @@ _GEMFILE_GEM_RE = re.compile(r"^\s*gem\s+[\"']([A-Za-z0-9_.-]+)[\"']", re.MULTIL
 _GEMSPEC_DEP_RE = re.compile(
     r"\.add_(?:runtime_|development_)?dependency\s*\(?\s*[\"']([A-Za-z0-9_.-]+)[\"']"
 )
+# gemspec name:  spec.name = 'mygem' / s.name = "mygem" / spec.name = %q{mygem}, or the
+# first argument of ``Gem::Specification.new 'mygem', '1.0' do |s|``.
+_GEMSPEC_NAME_RE = re.compile(
+    r"^\s*\w+\.name\s*=\s*(?:%q[{(]|[\"'])([A-Za-z0-9_.-]+)", re.MULTILINE
+)
+_GEMSPEC_NEW_NAME_RE = re.compile(r"Specification\.new\s*\(?\s*[\"']([A-Za-z0-9_.-]+)[\"']")
 
 # Ruby standard library require names (default + bundled gems shipping with
 # the interpreter). Requires of these produce no node at all — same policy
@@ -53,8 +59,15 @@ def is_ruby_stdlib(module_path: str) -> bool:
     return head in _RUBY_STDLIB
 
 
-def _scan_gem_metadata(ctx: ResolverContext) -> tuple[frozenset[str], tuple[str, ...]]:
-    """Scan every Gemfile + *.gemspec once: dependency names + lib roots.
+def _scan_gem_metadata(
+    ctx: ResolverContext,
+) -> tuple[frozenset[str], tuple[str, ...], tuple[tuple[str, str], ...]]:
+    """Scan every Gemfile + *.gemspec once: dependency names, lib roots, gems.
+
+    The third element is ``(spec.name, lib root)`` per gemspec, which is what
+    names a gem's entry file (:func:`gem_entry_files`). A gemspec whose name is
+    not a literal (``spec.name = Mygem::NAME``) is named by its file, as
+    RubyGems expects it to be.
 
     Monorepos (sinatra: rack-protection/, sinatra-contrib/) declare each
     sub-gem's dependencies in its own gemspec — the walk covers them all.
@@ -66,6 +79,7 @@ def _scan_gem_metadata(ctx: ResolverContext) -> tuple[frozenset[str], tuple[str,
         return cached
     names: set[str] = set()
     lib_roots: set[str] = set()
+    gems: set[tuple[str, str]] = set()
     if ctx.repo_path is not None:
         from repowise.core.fs_walk import glob_via
 
@@ -104,14 +118,35 @@ def _scan_gem_metadata(ctx: ResolverContext) -> tuple[frozenset[str], tuple[str,
                     rel_dir = f.parent.resolve().relative_to(repo).as_posix()
                 except (OSError, ValueError):
                     continue
-                lib_roots.add("lib" if rel_dir == "." else f"{rel_dir}/lib")
-    result = (frozenset(names), tuple(sorted(lib_roots)))
+                lib_root = "lib" if rel_dir == "." else f"{rel_dir}/lib"
+                lib_roots.add(lib_root)
+                declared = _GEMSPEC_NAME_RE.search(text) or _GEMSPEC_NEW_NAME_RE.search(text)
+                gems.add((declared.group(1) if declared else f.name[: -len(".gemspec")], lib_root))
+    result = (frozenset(names), tuple(sorted(lib_roots)), tuple(sorted(gems)))
     ctx._ruby_gem_meta = result  # type: ignore[attr-defined]
     return result
 
 
 def _get_or_build_gem_names(ctx: ResolverContext) -> frozenset[str]:
     return _scan_gem_metadata(ctx)[0]
+
+
+def gem_entry_files(ctx: ResolverContext) -> dict[str, str]:
+    """``{entry file: the lib root it sits in}`` for every gem the repo ships.
+
+    A gem's front door is ``lib/<name>.rb`` beside its gemspec; with the file
+    absent, dashes in the name are path separators (``rack-protection`` ships
+    ``lib/rack/protection.rb``). A gemspec whose entry file is not in the repo
+    contributes nothing, and a repo with no gemspec has no gem.
+    """
+    entries: dict[str, str] = {}
+    for name, lib_root in _scan_gem_metadata(ctx)[2]:
+        for stem in dict.fromkeys((name, name.replace("-", "/"))):
+            candidate = f"{lib_root}/{stem}.rb"
+            if candidate in ctx.path_set:
+                entries.setdefault(candidate, lib_root)
+                break
+    return entries
 
 
 def _is_declared_gem(module_path: str, ctx: ResolverContext) -> bool:
@@ -145,7 +180,7 @@ def resolve_ruby_import(module_path: str, importer_path: str, ctx: ResolverConte
     # joins are exact.
     if not module_path.startswith("."):
         # Repo-root lib/ + every sub-gem's lib/ (gemspec dirs) + root join.
-        _gems, lib_roots = _scan_gem_metadata(ctx)
+        _gems, lib_roots, _specs = _scan_gem_metadata(ctx)
         bases = dict.fromkeys(("lib", *lib_roots, ""))
         for base in bases:
             candidate = f"{base}/{module_path}.rb" if base else f"{module_path}.rb"

@@ -16,7 +16,7 @@ const badgeVariants = cva(
         outdated:
           "border-[color-mix(in_srgb,var(--color-confidence-outdated)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-confidence-outdated)_12%,transparent)] text-[var(--color-confidence-outdated)]",
         accent:
-          "border-[var(--color-accent-muted)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]",
+          "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]",
         outline:
           "border-[var(--color-border-default)] bg-transparent text-[var(--color-text-secondary)]",
       },

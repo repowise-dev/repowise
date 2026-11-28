@@ -31,7 +31,7 @@ import {
 } from "../shared/responsive-table";
 import { EmptyState } from "../shared/empty-state";
 import { FilePath } from "../shared/file-path";
-import { AiPromptButton } from "../health/ai-prompt-button";
+import { RowPromptAction } from "../health/row-prompt-action";
 import { groupByDocument } from "./group-by-document";
 
 export interface DriftFindingsTableProps {
@@ -152,7 +152,7 @@ export function DriftFindingsTable({
       // The button stops its own propagation, so it is safe inside a row that
       // also opens the panel.
       render: (f) => (
-        <AiPromptButton
+        <RowPromptAction
           variant="icon"
           onClick={() => onPrompt(f)}
           label={`Fix ${f.file_path}:${f.line_number} with an agent`}

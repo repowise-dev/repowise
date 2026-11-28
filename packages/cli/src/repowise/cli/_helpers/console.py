@@ -11,12 +11,32 @@ import click
 from rich.console import Console
 
 from repowise.cli.output import resolve_console_width
+from repowise.cli.ui.brand import THEME
+from repowise.cli.ui.glyphs import ascii_only
+
+
+class _CliConsole(Console):
+    """The CLI console: the brand theme, and ASCII where the terminal needs it.
+
+    Stdout is reconfigured to UTF-8 at import, so Rich would always see UTF-8
+    and draw Unicode boxes, bars and rules. Reporting the terminal's own
+    encoding instead lets Rich pick its ASCII forms exactly when the glyph
+    module does. A console pointed at another file keeps that file's encoding.
+    Both streams follow stdout's encoding: one choice per run keeps them consistent.
+    """
+
+    @property
+    def encoding(self) -> str:
+        if self._file is None and ascii_only():
+            return "ascii"
+        return super().encoding
+
 
 # Width is pinned only when the stream is not a terminal — see
 # `output.resolve_console_width`. Without it rich renders a pipe at 80 columns
 # and ellipsises the very paths an agent needs to act on.
-console = Console(width=resolve_console_width(sys.stdout))
-err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
+console = _CliConsole(theme=THEME, width=resolve_console_width(sys.stdout))
+err_console = _CliConsole(theme=THEME, stderr=True, width=resolve_console_width(sys.stderr))
 
 
 def warn(text: str) -> None:

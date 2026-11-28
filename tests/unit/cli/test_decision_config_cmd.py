@@ -10,6 +10,7 @@ import yaml
 from click.testing import CliRunner
 
 from repowise.cli.main import cli
+from repowise.core.analysis.decisions.policy_store import load_policy
 
 
 @pytest.fixture
@@ -56,6 +57,7 @@ def test_show_json_lists_every_source(repo: Path):
         "session_discovery",
         "conventions",
         "cli",
+        "agent",
     ]
     assert payload["policy"]["preset"] == "default"
 
@@ -148,8 +150,9 @@ def test_source_set_toggles_one_source(repo: Path):
     result = _run("decision", "source", "set", "pr", "--off", str(repo))
 
     assert result.exit_code == 0, result.output
-    assert _config(repo)["decisions"]["sources"]["pr"] is False
-    assert _config(repo)["decisions"]["sources"]["adr"] is True
+    # Only the source that moved is written; the rest keep their defaults.
+    assert _config(repo)["decisions"] == {"sources": {"pr": False}, "update_mining": False}
+    assert load_policy(repo).policy.source_enabled("adr")
 
 
 def test_source_set_can_disable_only_the_model_stage(repo: Path):
@@ -324,3 +327,161 @@ def test_switching_discovery_on_is_an_ordinary_source_toggle(repo: Path):
 
     assert result.exit_code == 0, result.output
     assert _config(repo)["decisions"]["sources"]["session_discovery"] is True
+
+
+def test_show_points_to_init_when_claude_settings_file_is_missing(
+    repo: Path, tmp_path: Path, monkeypatch
+):
+    from repowise.cli.editor_integrations import claude_config
+
+    settings_path = tmp_path / ".claude" / "settings.json"
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings_path)
+    monkeypatch.setattr(claude_config, "_plugin_ships_capture_hook", lambda: False)
+    _write(repo, "decisions:\n  enabled: true\n  capture_prompt: true\n")
+
+    result = _run("decision", "config", "show", str(repo))
+
+    assert result.exit_code == 0, result.output
+    assert "Run `repowise init`" in result.output
+    assert "Re-run `repowise decision config capture-prompt --on`." not in result.output
+
+
+def test_show_recommends_capture_prompt_when_settings_file_lacks_hook(
+    repo: Path, tmp_path: Path, monkeypatch
+):
+    from repowise.cli.editor_integrations import claude_config
+
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings_path)
+    monkeypatch.setattr(claude_config, "_plugin_ships_capture_hook", lambda: False)
+    _write(repo, "decisions:\n  enabled: true\n  capture_prompt: true\n")
+
+    result = _run("decision", "config", "show", str(repo))
+
+    assert result.exit_code == 0, result.output
+    assert "Re-run `repowise decision config capture-prompt --on`." in result.output
+    assert "Run `repowise init`" not in result.output
+
+
+def test_update_mining_writes_and_a_later_preset_keeps_it(repo: Path):
+    result = _run("decision", "config", "update-mining", "--on", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["update_mining"] is True
+
+    result = _run("decision", "config", "preset", "full", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["update_mining"] is True
+
+    result = _run("decision", "config", "update-mining", "--off", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["update_mining"] is False
+    shown = _run("decision", "config", "show", str(repo), "--format", "json")
+    assert json.loads(shown.output)["policy"]["update_mining"] is False
+
+
+def test_session_start_writes_and_a_later_preset_keeps_it(repo: Path):
+    shown = _run("decision", "config", "show", str(repo), "--format", "json")
+    assert json.loads(shown.output)["policy"]["session_start"] is False
+
+    result = _run("decision", "config", "session-start", "--on", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["session_start"] is True
+    assert "Session start: on" in result.output
+
+    result = _run("decision", "config", "preset", "full", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["session_start"] is True
+
+    result = _run("decision", "config", "session-start", "--off", str(repo))
+    assert result.exit_code == 0, result.output
+    assert "session_start" not in _config(repo)["decisions"]
+
+
+
+def test_upkeep_prompt_writes_and_installs_its_shell_entry(repo: Path, monkeypatch, tmp_path):
+    from repowise.cli.editor_integrations import claude_config
+
+    calls = []
+    monkeypatch.setattr(claude_config, "set_claude_code_capture_hook", calls.append)
+
+    result = _run("decision", "config", "upkeep-prompt", "--on", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["upkeep_prompt"] is True
+    assert calls == [True]
+
+    result = _run("decision", "config", "upkeep-prompt", "--off", str(repo))
+    assert result.exit_code == 0, result.output
+    assert "decisions" not in _config(repo)  # off is the default, so nothing is written
+    assert calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("name", "stored"), [("off", "off"), ("read-only", "read_only")])
+def test_mode_writes_one_key(repo: Path, name: str, stored: str):
+    result = _run("decision", "config", "mode", name, str(repo), "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    block = _config(repo)["decisions"]
+    assert block["mode"] == stored
+    assert "capture_prompt" not in block and "agent_acceptance" not in block
+    assert json.loads(result.output)["policy"]["mode"] == stored
+
+
+def test_mode_full_leaves_no_mode_key_and_resets_switches(repo: Path):
+    _write(repo, "decisions:\n  mode: read_only\n  upkeep_prompt: true\n")
+
+    result = _run("decision", "config", "mode", "full", str(repo))
+
+    assert result.exit_code == 0, result.output
+    block = _config(repo).get("decisions") or {}
+    assert "mode" not in block
+    assert "upkeep_prompt" not in block
+
+
+def test_a_preset_keeps_the_mode(repo: Path):
+    _write(repo, "decisions:\n  mode: read_only\n")
+
+    result = _run("decision", "config", "preset", "balanced", str(repo))
+
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["mode"] == "read_only"
+
+
+def test_mode_dry_run_names_the_change(repo: Path):
+    result = _run("decision", "config", "mode", "off", str(repo), "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "mode: full -> off" in result.output
+    assert not (repo / ".repowise" / "config.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    ("block", "line"),
+    [
+        ("  mode: read_only\n  sync: true\n", "Sync: pull only"),
+        ("  sync: true\n", "Sync: on"),
+        ("  enabled: false\n  mode: read_only\n  sync: true\n", None),
+        ("  enabled: false\n  sync: true\n", None),
+    ],
+)
+def test_sync_line_matches_what_sync_will_run(repo: Path, block: str, line: str | None):
+    """The sync line names a pull only when ``decision pull`` would run one."""
+    from repowise.core.analysis.decisions.policy_store import load_policy
+
+    _write(repo, "decisions:\n" + block)
+
+    result = _run("decision", "config", "show", str(repo))
+
+    assert result.exit_code == 0, result.output
+    if line is None:
+        assert "Sync:" not in result.output
+        assert not load_policy(repo).policy.pulls
+    else:
+        assert line in result.output
+        assert load_policy(repo).policy.pulls

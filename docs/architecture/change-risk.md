@@ -127,14 +127,18 @@ the full `risk_scales` dictionary) never varies, so MCP returns it only for
 ## Baseline sample
 
 `repowise risk` samples recent commits live; the web UI reads the indexed
-commit history. One walk is reused for every change scored against the same
-anchor and filters in a process, so a long-running MCP server pays for it once.
+commit history. The sample runs back from the change's parent (a range's
+merge-base, uncommitted work's `HEAD`), the same ref its fix history is read at.
+One walk is reused for every change scored against the same anchor and filters
+in a process, so a long-running MCP server pays for it once per anchor.
 
 ## Independent changes grouping
 
 A changed file is grouped only when it has a file node in the index, is not a
 test file, and is in a language whose resolver can emit an import edge. Docs,
-config, data and test files are never grouped and never bridge two groups.
+config, data and test files neither join nor bridge groups;
+`documents` edges are also dropped from the edge query, so a doc linking two
+files never joins them.
 
 ## Branch overlap scan
 

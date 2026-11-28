@@ -151,7 +151,7 @@ def test_history_orders_within_a_tier_but_never_lifts_a_small_function() -> None
     ranked = {f.factor: f.value for f in tidy.why_ranked}
     assert "value" not in ranked and "value within later" in ranked
     assert ranked["problem size"] == "0"
-    assert ("severity", "high by the detector; lower priority by shape") in [
+    assert ("severity", "high; lower priority by shape") in [
         (f.label, f.value) for f in tidy.facts
     ]
 
@@ -273,6 +273,30 @@ def test_only_an_unmeasured_loop_is_unproven(marker, facets, proof) -> None:
     assert perf_queue_verdict(row).reason == ("unmeasured_cost" if proof == "unproven" else None)
 
 
+@pytest.mark.parametrize(
+    ("marker", "facets", "static"),
+    [
+        ("io_in_loop", {"loop_magnitude": "unknown"}, "size_unknown"),
+        ("io_in_loop", {}, "size_unknown"),
+        ("io_in_loop", {"loop_magnitude": "bounded"}, "bounded"),
+        ("io_in_loop", {"loop_magnitude": "grows_with_data"}, "grows_with_data"),
+        ("sql_cartesian_join", {"loop_magnitude": "bounded"}, "grows_by_shape"),
+        ("hot_path_sync_io", {"exposure": "entry_reachable"}, "per_call_reached"),
+        ("hot_path_sync_io", {"exposure": "not_entry_reachable"}, "per_call_unreached"),
+        ("some_new_marker", {"loop_magnitude": "n/a"}, "per_call_unreached"),
+    ],
+)
+def test_static_cost_reads_the_code_alone(marker, facets, static) -> None:
+    from repowise.core.analysis.health.worth import cost_proof, static_cost
+
+    assert static_cost(marker, facets) == static
+    # A run that measured the loop owner proves the cost; the static part stays.
+    measured = {**facets, "confirmed": "measured"}
+    assert static_cost(marker, measured) == static
+    row = {"biomarker_type": marker, "details": {"facets": measured}}
+    assert cost_proof(row) == "proven"
+
+
 def test_an_unknown_loop_ranks_no_higher_than_a_bounded_one() -> None:
     from repowise.core.analysis.health.perf.opportunity_rank import MAGNITUDE_POINTS
 
@@ -294,3 +318,19 @@ def test_the_default_queue_counts_an_unproven_cause_and_still_adds_up() -> None:
     assert counts["total"] == 1
     assert counts["excluded"]["unmeasured_cost"] == 1 and counts["excluded"]["test"] == 1
     assert counts["total"] + sum(counts["excluded"].values()) == len(rows)
+
+
+def test_a_critical_code_shape_marker_ranks_as_high() -> None:
+    """A detector-critical long method is not a reason to lift its value band;
+    a brain method still is a size claim, and coverage keeps its severity."""
+    from repowise.core.analysis.health.scoring import ranked_severity
+    from repowise.core.analysis.health.worth import measure
+
+    assert ranked_severity("complex_method", "critical") == "high"
+    assert ranked_severity("large_method", "high") == "high"
+    assert ranked_severity("coverage_gap", "critical") == "critical"
+    assert ranked_severity("change_entropy", "critical") == "critical"
+    assert ranked_severity("io_in_loop", "critical") == "critical"
+    row = {"biomarker_type": "complex_method", "severity": "critical", "details": {"ccn": 12}}
+    assert "severe" not in measure([row])
+    assert measure([row, {**row, "biomarker_type": "brain_method"}])["severe"] == 1

@@ -210,6 +210,25 @@ describe("ChatDock", () => {
     });
   });
 
+  it("renders no pill when the host hides it, but still opens on command", async () => {
+    const onCommandHandled = vi.fn();
+    const { rerender } = render(<ChatDock {...props({ hidePill: true })} />);
+    expect(screen.queryByRole("button", { name: "Open repository chat" })).toBeNull();
+    expect(screen.queryByText("Ask Repowise")).toBeNull();
+
+    rerender(
+      <ChatDock
+        {...props({ hidePill: true, command: { id: 1, type: "toggle" }, onCommandHandled })}
+      />,
+    );
+    expect(await screen.findByRole("complementary", { name: "Repository chat" })).toBeInTheDocument();
+    expect(onCommandHandled).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "Minimize repository chat" }));
+    expect(screen.queryByRole("complementary", { name: "Repository chat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open repository chat" })).toBeNull();
+  });
+
   it("subtracts a desktop collision inset from expanded height", async () => {
     vi.stubGlobal(
       "matchMedia",

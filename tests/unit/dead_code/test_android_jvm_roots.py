@@ -144,3 +144,67 @@ def test_zombie_packages(tmp_path: Path):
     zombies = _of(_report(tmp_path), DeadCodeKind.ZOMBIE_PACKAGE)
     assert zombies.isdisjoint({"catalog", "legacy", "benchmarks", "jwt-auth-tests"})
     assert "orphan" in zombies
+
+
+def test_android_layout_and_proguard_roots_rescued(tmp_path: Path) -> None:
+    # Issue 3819: classes named only by layout XML or ProGuard exact keep rules are not dead code
+    manifest = """<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.app">
+        <application android:backupAgent=".MyBackupAgent">
+            <activity android:name=".MainActivity" />
+        </application>
+    </manifest>"""
+    (tmp_path / "AndroidManifest.xml").write_text(manifest)
+
+    layout_dir = tmp_path / "res" / "layout"
+    layout_dir.mkdir(parents=True, exist_ok=True)
+    layout = """<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android">
+        <com.example.app.CustomView android:layout_width="match_parent" android:layout_height="match_parent" />
+        <fragment android:name="com.example.app.MyFragment" />
+        <fragment android:name=".RelativeFragment" />
+    </LinearLayout>"""
+    (layout_dir / "main_activity.xml").write_text(layout)
+
+    # Unrelated XML outside res/ must not be scanned
+    docs_dir = tmp_path / "docs" / "layout"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "example.xml").write_text('<fragment android:name="com.example.app.DocsFragment" />')
+
+    proguard = """
+    -keep class com.example.app.KeepModel { *; }
+    -keep class com.example.wildcard.** { *; }
+    """
+    (tmp_path / "proguard-rules.pro").write_text(proguard)
+
+    from repowise.core.ingestion.framework_edges.android_manifest import (
+        _resource_and_proguard_class_names,
+    )
+    from repowise.core.ingestion.resolvers import ResolverContext
+
+    ctx = ResolverContext(path_set=set(), stem_map={}, graph=None, repo_path=tmp_path)
+    discovered = set(_resource_and_proguard_class_names(tmp_path, ctx))
+    assert "com.example.app.CustomView" in discovered
+    assert "com.example.app.MyFragment" in discovered
+    assert "com.example.app.RelativeFragment" in discovered
+    assert "com.example.app.DocsFragment" not in discovered
+    assert "com.example.app.KeepModel" in discovered
+    assert "com.example.wildcard.**" not in discovered
+
+
+def test_manifest_application_attributes_rescued(tmp_path: Path) -> None:
+    manifest = """<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="de.danoeh.antennapod">
+        <application
+            android:backupAgent=".storage.importexport.OpmlBackupAgent"
+            android:manageSpaceActivity="de.danoeh.antennapod.activity.PreferenceActivity"
+            android:appComponentFactory=".core.AppComponentFactory" />
+    </manifest>"""
+    (tmp_path / "AndroidManifest.xml").write_text(manifest)
+
+    from repowise.core.ingestion.framework_edges.android_manifest import _registered_class_names
+    from repowise.core.ingestion.resolvers import ResolverContext
+
+    ctx = ResolverContext(path_set=set(), stem_map={}, graph=None, repo_path=tmp_path)
+    registered = set(_registered_class_names(tmp_path, ctx))
+    assert "de.danoeh.antennapod.storage.importexport.OpmlBackupAgent" in registered
+    assert "de.danoeh.antennapod.activity.PreferenceActivity" in registered
+    assert "de.danoeh.antennapod.core.AppComponentFactory" in registered
+

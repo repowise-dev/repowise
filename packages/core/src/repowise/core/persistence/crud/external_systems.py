@@ -8,13 +8,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...analysis.external_systems.links import (
     EXTERNAL_NODE_PREFIX,
+    IMPORT_TARGET_LANGUAGES,
     declaration_name_candidates,
 )
+from ...ingestion.symbol_identity import id_holders
 from ..models import (
     ExternalSystem,
     GraphNode,
@@ -244,18 +246,62 @@ async def batch_upsert_symbols(
 
     Accepts ingestion.models.Symbol dataclass instances (duck-typed).
     """
-    # One row per id and the last duplicate wins: an overload set's
-    # implementation goes last so its body, not a stub, is the stored range.
+    # One row per id, for the symbol that holds the id's graph node: an overload
+    # set's implementation, not a stub, and a method, not a field of its name.
     await _batch_upsert_keyed(
         session,
         WikiSymbol,
-        sorted(symbols, key=lambda sym: not getattr(sym, "is_declaration", False)),
+        id_holders(symbols),
         prefilter=(WikiSymbol.repository_id == repository_id,),
         item_key_fn=_symbol_id,
         row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_wiki_symbol,
         insert_fn=lambda sym: _wiki_symbol_values(repository_id, sym),
     )
+
+
+async def count_symbols_by_repo(session: AsyncSession) -> dict[str, int]:
+    """Indexed symbols per repository: the figure every surface calls "symbols".
+
+    One ``wiki_symbols`` row per symbol id, so an overload set counts once, and
+    the graph's per-file ``__module__`` node is not a symbol.
+    """
+    rows = await session.execute(
+        select(WikiSymbol.repository_id, func.count(WikiSymbol.id)).group_by(
+            WikiSymbol.repository_id
+        )
+    )
+    return {repo_id: int(n) for repo_id, n in rows.all()}
+
+
+async def count_symbols(session: AsyncSession, repository_id: str) -> int:
+    """:func:`count_symbols_by_repo` for one repository."""
+    n = await session.scalar(
+        select(func.count(WikiSymbol.id)).where(WikiSymbol.repository_id == repository_id)
+    )
+    return int(n or 0)
+
+
+def indexed_file() -> ColumnElement[bool]:
+    """Graph rows for files the index read, the population every "files" count uses.
+
+    ``node_type == "file"`` alone also holds import targets: third-party
+    packages and paths an edge names that traversal never parsed.
+    """
+    return and_(
+        GraphNode.node_type == "file",
+        GraphNode.language.notin_(IMPORT_TARGET_LANGUAGES),
+    )
+
+
+async def count_files(session: AsyncSession, repository_id: str) -> int:
+    """Indexed files in one repository: the figure every surface calls "files"."""
+    n = await session.scalar(
+        select(func.count(GraphNode.id)).where(
+            GraphNode.repository_id == repository_id, indexed_file()
+        )
+    )
+    return int(n or 0)
 
 
 # Chunk size for the scoped existence SELECT — stays under SQLite's
@@ -307,9 +353,8 @@ async def reconcile_symbols_for_files(
     by_id: dict[str, WikiSymbol] = {row.symbol_id: row for row in existing_rows}
 
     fresh_ids: set[str] = set()
-    for sym in symbols:
+    for sym in id_holders(symbols):
         sid = _symbol_id(sym)
-        # Within-batch duplicate ids: first inserts, later ones update it.
         fresh_ids.add(sid)
         existing = by_id.get(sid)
         if existing is not None:

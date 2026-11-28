@@ -282,21 +282,22 @@ def _find_object_member(
 
 
 def _container_indent(text: str, obj_start: int, obj_end: int) -> str:
-    """Return the whitespace prefix indenting the object's members.
+    """Return the indent of the object's closing brace; members sit two spaces deeper.
 
-    Derived from the whitespace preceding the matching closing brace, so a
-    member inserted into the object is indented to sit with its siblings no
-    matter the file's formatting. Falls back to ``"  "`` for one-line objects.
+    Read from the line the closing brace is on, so the root object of a file
+    with or without a trailing newline yields the same ``""``. When the brace
+    does not start its own line (``{}``, one-line objects) it falls back to
+    ``""`` for the root and ``"  "`` for a nested object.
     """
-    i = obj_end - 1
-    j = i
-    while j > obj_start and text[j] in " \t\r\n":
-        j -= 1
-    if j != i:
-        _, after_newline = text[j:obj_end].rsplit("\n", 1)
-        if after_newline.strip() == "":
-            return after_newline
-    return "  "
+    close = obj_end - 1
+    while close > obj_start and text[close] in " \t\r\n":
+        close -= 1
+    start = close
+    while start > obj_start and text[start - 1] in " \t":
+        start -= 1
+    if start > obj_start and text[start - 1] in "\r\n":
+        return text[start:close]
+    return "" if not text[:obj_start].strip() else "  "
 
 
 def _render_indented(value_text: str, base_indent: str) -> str:
@@ -407,7 +408,7 @@ def _insert_member(text: str, obj_start: int, obj_end: int, member_snippet: str)
 
 def merge_json_object_member(
     config_path: Path,
-    container_key: str,
+    container_key: str | tuple[str, ...],
     member: str,
     new_value: dict,
 ) -> FileAction:
@@ -421,14 +422,24 @@ def merge_json_object_member(
     a user configured, and the file's own formatting, are left byte-for-byte
     identical (issue #1603).
 
+    *container_key* may be a path of keys (``("projects", "/repo",
+    "mcpServers")``) for a container nested below the root. The walk follows
+    the path as far as the file already has it and inserts the rest as one
+    nested member at the deepest object it reached, so a nested write is the
+    same minimal edit as a top-level one.
+
     Returns the :class:`FileAction` performed. Raises ``click.ClickException``
     (via :func:`load_json_object`) when the file exists but is not strict
-    JSON, so JSONC/JSON5 files are left untouched. When ``container_key`` is
-    absent it is created holding just the new member; when the file itself is
-    absent it is created with only ``container_key``.
+    JSON, so JSONC/JSON5 files are left untouched. ``KEPT`` when a key on the
+    path holds something other than an object. When the file itself is absent
+    it is created with only the path and the member.
     """
+    path = (container_key,) if isinstance(container_key, str) else tuple(container_key)
     if not config_path.exists():
-        return write_json_config(config_path, {container_key: {member: new_value}})
+        value: dict = {member: new_value}
+        for key in reversed(path):
+            value = {key: value}
+        return write_json_config(config_path, value)
 
     original = config_path.read_text(encoding="utf-8")
     load_json_object(config_path)  # validate; raises on non-strict JSON
@@ -437,15 +448,35 @@ def merge_json_object_member(
     if root_start >= len(original) or original[root_start] != "{":
         return FileAction.KEPT
 
-    span = _find_object_member(original, root_start, len(original), container_key)
-
-    if span is not None:
-        _, _, cval_start, cval_end = span
-        if original[cval_start] != "{":
-            # container_key is present but not an object; leave the file alone
-            # rather than guessing what a rewrite would mean.
+    # Walk the container path. ``obj`` is the span of the deepest object found.
+    obj_start, obj_end = root_start, len(original)
+    missing: tuple[str, ...] = ()
+    for depth, key in enumerate(path):
+        span = _find_object_member(original, obj_start, obj_end, key)
+        if span is None:
+            missing = path[depth:]
+            break
+        _, _, val_start, val_end = span
+        if original[val_start] != "{":
+            # A key on the path is present but not an object; leave the file
+            # alone rather than guessing what a rewrite would mean.
             return FileAction.KEPT
-        inner = _find_object_member(original, cval_start, cval_end, member)
+        obj_start, obj_end = val_start, val_end
+
+    member_indent = _container_indent(original, obj_start, obj_end) + "  "
+    if missing:
+        # Create the rest of the path holding just our member, one level below
+        # the deepest object that exists, matching the document's layout.
+        value = {member: new_value}
+        for key in reversed(missing[1:]):
+            value = {key: value}
+        rendered = _render_member(missing[0], value, member_indent)
+        inserted = _insert_member(original, obj_start, obj_end, rendered)
+        if inserted is None:
+            return FileAction.KEPT
+        edited = inserted
+    else:
+        inner = _find_object_member(original, obj_start, obj_end, member)
         if inner is not None:
             _, _, vstart, vend = inner
             # Preserve user-added keys on the existing entry (e.g. an ``env``
@@ -457,35 +488,68 @@ def merge_json_object_member(
             existing_entry = json.loads(original[vstart:vend])
             merged_entry = dict(existing_entry)
             merged_entry.update(new_value)
-            member_indent = _container_indent(original, cval_start, cval_end) + "  "
             rendered = _render_member(member, merged_entry, member_indent)
             _, value_with_indent = rendered.split(": ", 1)
             edited = original[:vstart] + value_with_indent + original[vend:]
         else:
-            member_indent = _container_indent(original, cval_start, cval_end) + "  "
             rendered_member = _render_member(member, new_value, member_indent)
-            inserted = _insert_member(original, cval_start, cval_end, rendered_member)
+            inserted = _insert_member(original, obj_start, obj_end, rendered_member)
             if inserted is None:
                 return FileAction.KEPT
             edited = inserted
-    else:
-        # container_key is absent: create it holding just our member. The
-        # container's closing brace sits at the root member indent, and its
-        # (single) member at one level deeper, matching the document's layout.
-        member_indent = _container_indent(original, root_start, len(original)) + "  "
-        rendered_container = (
-            f"{member_indent}{json.dumps(container_key)}: "
-            f"{_render_value_block({member: new_value}, member_indent)}"
-        )
-        inserted = _insert_member(original, root_start, len(original), rendered_container)
-        if inserted is None:
-            return FileAction.KEPT
-        edited = inserted
 
     if edited == original:
         return FileAction.UNCHANGED
-    atomic_write_text(config_path, edited)
+    atomic_write_text(config_path, edited, newline=_file_newline(config_path))
     return FileAction.UPDATED
+
+
+def _file_newline(config_path: Path) -> str | None:
+    """The line ending the file already uses: CRLF if it has any, else LF.
+
+    A minimal edit read with universal newlines would otherwise write it back
+    in the platform's ending (an LF file as CRLF on Windows, a CRLF file as
+    LF elsewhere), touching every line of it.
+    """
+    try:
+        return "\r\n" if b"\r\n" in config_path.read_bytes() else "\n"
+    except OSError:
+        return None
+
+
+def remove_json_object_member(config_path: Path, container_key: str, member: str) -> FileAction:
+    """Surgically drop ``container_key.member``; the counterpart of :func:`merge_json_object_member`.
+
+    Every byte outside the member and one separator stays as it was. Returns
+    ``NOT_FOUND`` when the member is absent and ``REMOVED`` otherwise; raises
+    like :func:`load_json_object` on a file that is not strict JSON.
+    """
+    if not config_path.exists():
+        return FileAction.NOT_FOUND
+    original = config_path.read_text(encoding="utf-8")
+    load_json_object(config_path)  # validate; raises on non-strict JSON
+    root_start = _skip_ws(original, 0, len(original))
+    span = _find_object_member(original, root_start, len(original), container_key)
+    if span is None or original[span[2]] != "{":
+        return FileAction.NOT_FOUND
+    cstart, cend = span[2], span[3]
+    inner = _find_object_member(original, cstart, cend, member)
+    if inner is None:
+        return FileAction.NOT_FOUND
+    kstart, _, _, vend = inner
+    after = _skip_ws(original, vend, cend)
+    if original[after] == ",":
+        # Not the last member: drop it through the comma up to the next key.
+        edited = original[:kstart] + original[_skip_ws(original, after + 1, cend) :]
+    else:
+        before = kstart - 1
+        while before > cstart and original[before] in " \t\r\n":
+            before -= 1
+        # The last member drops its leading comma; the only member leaves ``{}``.
+        cut = before if original[before] == "," else cstart + 1
+        edited = original[:cut] + original[vend if cut == before else after :]
+    atomic_write_text(config_path, edited, newline=_file_newline(config_path))
+    return FileAction.REMOVED
 
 
 def merge_server_entries(servers: dict, new_entry: dict) -> dict:

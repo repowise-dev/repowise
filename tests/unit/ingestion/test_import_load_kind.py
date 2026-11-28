@@ -23,7 +23,7 @@ from repowise.core.ingestion.parser import ASTParser
 
 
 def _info(path: str) -> FileInfo:
-    language = "python" if path.endswith(".py") else "typescript"
+    language = {"py": "python", "astro": "astro"}.get(path.rsplit(".", 1)[-1], "typescript")
     return FileInfo(
         path=path,
         abs_path=f"/repo/{path}",
@@ -140,6 +140,26 @@ def test_ts_import_load_kind(module: str, expected: tuple[bool, bool]) -> None:
     assert _kinds("src/a.ts", TS_SOURCE)[module] == expected
 
 
+ASTRO_SOURCE = """\
+---
+import type { Props } from "./props";
+const load = () => import("./lazy.js");
+---
+<p>hi</p>
+"""
+
+
+@pytest.mark.parametrize(
+    ("module", "expected"),
+    [
+        ("./props", (True, False)),  # import type, as in a .ts file
+        ("./lazy.js", (False, True)),  # lazy loader in the frontmatter
+    ],
+)
+def test_astro_frontmatter_import_load_kind(module: str, expected: tuple[bool, bool]) -> None:
+    assert _kinds("src/pages/index.astro", ASTRO_SOURCE)[module] == expected
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -158,29 +178,39 @@ def test_a_repeated_statement_is_one_import_with_the_earliest_kind(
     assert (same[0].type_only, same[0].deferred) == expected
 
 
-R, T, D = (False, False), (True, False), (False, True)
+R, T, D, G = (False, False, False), (True, False, False), (False, True, False), (False, False, True)
 
 
 @pytest.mark.parametrize(
     ("first", "second", "expected"),
-    [(T, T, T), (T, D, D), (D, T, D), (D, D, D), (D, R, R), (R, D, R), (T, R, R), (R, T, R)],
-)
+    [
+        (T, T, T), (T, D, D), (D, T, D), (D, D, D), (D, R, R), (R, D, R), (T, R, R), (R, T, R),
+        (G, T, G), (D, G, G), (G, G, G), (G, R, R), (R, G, R),
+    ],
+)  # fmt: skip
 def test_combine_load_kinds(first, second, expected) -> None:
     assert combine_load_kinds(first, second) == expected
 
 
 @pytest.mark.parametrize(
     ("first", "second", "expected"),
-    [(T, T, T), (T, D, D), (D, T, D), (D, R, R), (R, D, R)],
+    [(T, T, T), (T, D, D), (D, T, D), (D, R, R), (R, D, R), (G, D, G), (D, G, G), (G, R, R)],
 )
 def test_an_edge_folds_its_imports_load_kinds(first, second, expected) -> None:
     from repowise.core.ingestion.graph.builder import _merge_load_kind
 
-    data: dict = {"type_only": first[0], **({"deferred": True} if first[1] else {})}
-    imp = Import("x", "b", [], True, None, type_only=second[0], deferred=second[1])
+    data: dict = {
+        "type_only": first[0],
+        **({"deferred": True} if first[1] else {}),
+        **({"guarded": True} if first[2] else {}),
+    }
+    imp = Import(
+        "x", "b", [], True, None, type_only=second[0], deferred=second[1], guarded=second[2]
+    )
     _merge_load_kind(data, imp)
-    assert (data["type_only"], bool(data.get("deferred"))) == expected
+    assert (data["type_only"], bool(data.get("deferred")), bool(data.get("guarded"))) == expected
     assert data.get("deferred", True) is True  # stored only when true
+    assert data.get("guarded", True) is True
 
 
 def test_type_checking_and_lazy_import_pair_is_no_cycle() -> None:
@@ -230,3 +260,141 @@ def test_one_load_time_import_makes_the_edge_runtime() -> None:
     assert not graph["pkg/a.py"]["pkg/b.py"].get("deferred")
     assert graph["pkg/b.py"]["pkg/a.py"]["deferred"] is True
     assert build_file_scc_index(graph) == {}
+
+
+GUARDED_SOURCE = """\
+try:
+    from .plain import P
+except ImportError:
+    P = None
+try:
+    from .tupled import T
+except (ImportError, OSError) as exc:
+    T = None
+try:
+    from .unparen_guarded import UG
+except OSError, ImportError:
+    UG = None
+try:
+    from .unparen_other import UO
+except OSError, ValueError:
+    UO = None
+try:
+    import pkg.missing
+except builtins.ModuleNotFoundError:
+    pass
+try:
+    from .broad import B
+except Exception:
+    B = None
+try:
+    from .bare import X
+except:
+    X = None
+try:
+    from .base import BE
+except BaseException:
+    BE = None
+try:
+    import json
+except ImportError:
+    from .handler import H
+else:
+    from .else_branch import E
+finally:
+    from .finally_branch import F
+try:
+    from .reraised import RR
+except ImportError as exc:
+    raise ImportError("install the extra") from exc
+try:
+    from .exited import EX
+except ImportError:
+    print("missing")
+    sys.exit(1)
+try:
+    from .maybe_raised import MR
+except ImportError:
+    if STRICT:
+        raise
+try:
+    from .split import SP
+except ModuleNotFoundError:
+    SP = None
+except ImportError:
+    raise
+def f():
+    try:
+        from .lazy import L
+    except ImportError:
+        pass
+"""
+
+
+@pytest.mark.parametrize(
+    ("module", "expected"),
+    [
+        (".plain", (False, False, True)),
+        (".tupled", (False, False, True)),  # in a tuple, with `as`
+        (".unparen_guarded", (False, False, True)),  # unparenthesized multi-exception
+        (".unparen_other", (False, False, False)),  # unparenthesized without ImportError
+        ("pkg.missing", (False, False, True)),  # builtins.ModuleNotFoundError
+        (".broad", (False, False, False)),  # except Exception guards more than the import
+        (".bare", (False, False, False)),
+        (".base", (False, False, False)),
+        (".handler", (False, False, False)),  # the fallback itself runs unguarded
+        (".else_branch", (False, False, False)),
+        (".finally_branch", (False, False, False)),
+        (".reraised", (False, False, False)),  # the module does not survive
+        (".exited", (False, False, False)),
+        (".maybe_raised", (False, False, True)),  # survives unless STRICT
+        # A cycle's `cannot import name` is an ImportError: the fatal handler runs.
+        (".split", (False, False, False)),
+        (".lazy", (False, True, False)),  # deferred wins
+    ],
+)
+def test_python_import_guarded_by_except_import_error(
+    module: str, expected: tuple[bool, bool, bool]
+) -> None:
+    parsed = ASTParser().parse_file(_info("pkg/a.py"), GUARDED_SOURCE.encode("utf-8"))
+    kinds = {imp.module_path: (imp.type_only, imp.deferred, imp.guarded) for imp in parsed.imports}
+    assert kinds[module] == expected
+
+
+_B_IMPORTS_A = "from .a import A\nclass B: ...\n"
+
+
+@pytest.mark.parametrize(
+    "handler", ["ImportError", "ModuleNotFoundError", "(ImportError, OSError)", "ImportError as e"]
+)
+def test_an_import_guarded_by_except_import_error_closes_no_cycle(handler: str) -> None:
+    builder = _builder(
+        {
+            "pkg/a.py": f"try:\n    from .b import B\nexcept {handler}:\n    B = None\nclass A: ...\n",
+            "pkg/b.py": _B_IMPORTS_A,
+        }
+    )
+    graph = builder.graph()
+    assert graph["pkg/a.py"]["pkg/b.py"]["guarded"] is True  # kept for reachability
+    assert not builder.cycle_subgraph().has_edge("pkg/a.py", "pkg/b.py")
+    assert build_file_scc_index(graph) == {}
+    assert _cycles(builder) == []
+
+
+@pytest.mark.parametrize(
+    "a_source",
+    [
+        "try:\n    from .b import B\nexcept Exception:\n    B = None\nclass A: ...\n",
+        "try:\n    from .b import B\nexcept:\n    B = None\nclass A: ...\n",
+        # One unguarded load-time import of the same target makes the edge runtime.
+        "try:\n    from .b import B\nexcept ImportError:\n    B = None\n"
+        "from .b import B2\nclass A: ...\n",
+        "from .b import B\nclass A: ...\n",
+    ],
+)
+def test_an_unguarded_import_still_closes_the_cycle(a_source: str) -> None:
+    builder = _builder({"pkg/a.py": a_source, "pkg/b.py": _B_IMPORTS_A})
+    assert not builder.graph()["pkg/a.py"]["pkg/b.py"].get("guarded")
+    plans = _cycles(builder)
+    assert len(plans) == 1
+    assert set(plans[0].plan["cycle"]) == {"pkg/a.py", "pkg/b.py"}

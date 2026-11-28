@@ -103,6 +103,42 @@ class TestCsharpShapes:
         body = "public void Go() { if (thing is Placeholder p) { p.Name(); } }"
         assert declared_types(body, "csharp")["p"] == "Placeholder"
 
+    def test_pascal_case_properties_and_fields_are_class_scope(self) -> None:
+        source = (
+            "class V {\n"
+            "    public TrackingCollection<Rule> Rules { get; } = new();\n"
+            "    protected Box? Current { private set; get; }\n"
+            "    public Box Shown => _box;\n"
+            "    internal readonly ICircuitController<int> BreakerController;\n"
+            "    void Run() { }\n"
+            "}"
+        )
+        assert fields(source, "csharp", [(6, 6)]) == {
+            "Rules": "TrackingCollection`1",
+            "Current": "Box",
+            "Shown": "Box",
+            "BreakerController": "ICircuitController`1",
+        }
+
+    def test_a_type_or_method_header_declares_no_member(self) -> None:
+        source = (
+            "class V : Base {\n"
+            "    public Box Make(int n) => new Box();\n"
+            "    public Result Check { get { return Ok; } }\n"
+            "    bool Same(Box a) => a == Other;\n"
+            "}"
+        )
+        assert fields(source, "csharp", []) == {"Check": "Result"}
+
+    def test_title_case_words_mid_line_declare_no_member(self) -> None:
+        source = (
+            "class V {\n"
+            '    private const string Label = "Order Items;";\n'
+            "    int Area(Shape s) => s switch { Circle C => 1, _ => 0 };\n"
+            "}"
+        )
+        assert fields(source, "csharp", []) == {}
+
 
 class TestPythonShapes:
     """Python annotates after the name and constructs without a keyword.
@@ -347,7 +383,6 @@ class TestKotlinRefusals:
         source = "class C {\n    fun f() {\n        val local: Logger = make()\n    }\n}"
         assert "local" not in fields(source, "kotlin", [(2, 4)])
 
-
     def test_a_chained_construction_types_nothing(self) -> None:
         """``val x = Builder().build()`` makes ``x`` whatever ``build()``
         returns, so typing it as a ``Builder`` is a wrong answer rather than a
@@ -431,7 +466,6 @@ class TestKotlinFieldScope:
     def test_an_uninitialised_property_is_a_field(self) -> None:
         source = "abstract class Repo {\n    abstract val api: Api\n}"
         assert fields(source, "kotlin", [])["api"] == "Api"
-
 
 
 class TestSwiftShapes:
@@ -681,9 +715,9 @@ class TestGoShapes:
 def go_fields(source: str) -> dict[str, str | None]:
     """The fields of one struct spanning the whole text; Go methods sit outside it."""
     lines = source.count("\n") + 1
-    return types_by_class(
-        scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go"
-    ).get("f.go::C", {})
+    return types_by_class(scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go").get(
+        "f.go::C", {}
+    )
 
 
 class TestGoFields:
@@ -786,6 +820,14 @@ class TestGoCallAssignments:
         body = "func f() {\n\td, err := New()\n}"
         assert scan_call_assignments(body, "go") == (CallAssignment(2, "d", None, "New"),)
 
+    def test_a_generic_call(self) -> None:
+        body = "func f() {\n\tx := New[T](cfg)\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "x", None, "New"),)
+
+    def test_a_generic_qualified_call_with_nested_type_args(self) -> None:
+        body = "func f() {\n\tx := pkg.New[Pair[int, string]](cfg)\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "x", "pkg", "New"),)
+
     def test_arguments_may_span_lines_and_quote_parens(self) -> None:
         body = 'func f() {\n\td := New(\n\t\t")", `(`,\n\t)\n\td.Run()\n}'
         assert [a.name for a in scan_call_assignments(body, "go")] == ["d"]
@@ -883,9 +925,7 @@ class TestKotlinSwiftDartCallAssignments:
             ("while let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
         ],
     )
-    def test_swift_optional_binding(
-        self, statement: str, expected: CallAssignment
-    ) -> None:
+    def test_swift_optional_binding(self, statement: str, expected: CallAssignment) -> None:
         body = f"f() {{\n  {statement}\n}}"
         assert scan_call_assignments(body, "swift") == (expected,)
 
@@ -923,6 +963,13 @@ class TestClassScope:
         source = "class C {\nprivate final CacheLoader loader;\n}"
         assert fields(source, "java", [])["loader"] == "CacheLoader"
 
+    def test_a_java_field_named_by_capitals(self) -> None:
+        source = (
+            "class C {\npublic static final ImmutableSet<Kind>\n"
+            "    KINDS = ImmutableSet.of(Kind.A);\n}"
+        )
+        assert fields(source, "java", [])["KINDS"] == "ImmutableSet"
+
     def test_a_local_inside_a_method_is_not_a_field(self) -> None:
         source = "class C {\nvoid run() {\nCacheLoader loader = a();\n}\n}"
         assert fields(source, "java", [(2, 4)]) == {}
@@ -939,7 +986,9 @@ class TestClassScope:
         assert fields(source, "java", [])["factory"] == "NodeFactory"
 
     def test_an_inner_class_field_answers_for_the_inner_class(self) -> None:
-        source = "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        source = (
+            "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        )
         by_class = types_by_class(
             scan_declarations(source, "java"),
             {"f.java::C": (1, 6), "f.java::C::D": (3, 5)},
@@ -963,12 +1012,14 @@ class TestClassScope:
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
     assert set(RECEIVER_TYPE_LANGUAGES) == {
+        "apex",
         "cpp",
         "csharp",
         "dart",
         "go",
         "java",
         "kotlin",
+        "pascal",
         "python",
         "rust",
         "swift",
@@ -1071,13 +1122,13 @@ class TestCppWrapperUnwrapping:
         assert declared_types("val c: Column<Thing> = x", "kotlin") == {"c": "Column"}
 
 
-def test_cpp_is_not_a_field_language() -> None:
-    """C++ declares its fields in a header, away from the call that reads them.
+def test_cpp_is_a_field_language() -> None:
+    """C++ names a field bare, and declares it in a header away from the call.
 
-    Registering it would promise a scope the scan cannot answer from, which is
-    the condition that disqualified python on the same constant.
+    An out-of-line body reads its fields from the class its includes declare
+    (``CppFieldOwners._field_owner``), so class scope answers for it too.
     """
-    assert "cpp" not in IMPLICIT_FIELD_LANGUAGES
+    assert "cpp" in IMPLICIT_FIELD_LANGUAGES
 
 
 def test_c_has_no_shapes_of_its_own() -> None:
@@ -1152,3 +1203,199 @@ class TestRustRefusals:
     def test_rust_is_not_a_field_language(self) -> None:
         """A field is read through ``self.``, a dotted receiver not walked yet."""
         assert "rust" not in IMPLICIT_FIELD_LANGUAGES
+
+
+class TestTypeScriptShapes:
+    def test_parameter(self) -> None:
+        body = "function run(service: UserService) { service.start(); }"
+        assert declared_types(body, "typescript")["service"] == "UserService"
+
+    def test_annotated_const(self) -> None:
+        body = "function run() { const client: Client = make(); client.connect(); }"
+        assert declared_types(body, "typescript")["client"] == "Client"
+
+    def test_annotated_let(self) -> None:
+        body = "function run() { let manager: TaskManager; }"
+        assert declared_types(body, "typescript")["manager"] == "TaskManager"
+
+    def test_class_field(self) -> None:
+        source = "class Store {\n    users: Users;\n    private client: Client;\n    run() {}\n}"
+        assert fields(source, "typescript", [(4, 4)]) == {
+            "users": "Users",
+            "client": "Client",
+        }
+
+
+class TestTypeScriptRefusals:
+    def test_interface_properties_are_not_declarations(self) -> None:
+        source = "interface ServiceConfig {\n    service: UserService;\n    timeout: number;\n}\n"
+        assert scan_declarations(source, "typescript") == ()
+        assert declared_types(source, "typescript") == {}
+
+    def test_type_alias_properties_are_not_declarations(self) -> None:
+        source = "type Options = {\n    client: HttpClient;\n    timeout: number;\n};\n"
+        assert scan_declarations(source, "typescript") == ()
+        assert declared_types(source, "typescript") == {}
+
+    def test_generic_interface_and_nested_types_are_not_declarations(self) -> None:
+        source = (
+            "interface Container<T> extends Base<T> {\n"
+            "    item: T;\n"
+            "    nested: {\n"
+            "        handler: EventHandler;\n"
+            "    };\n"
+            "}\n"
+        )
+        assert scan_declarations(source, "typescript") == ()
+
+    def test_interface_inside_function_does_not_declare_local_variable(self) -> None:
+        source = (
+            "function setup() {\n"
+            "    interface LocalConfig {\n"
+            "        service: UserService;\n"
+            "    }\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "service" not in types
+        assert types["realService"] == "RealService"
+
+    def test_inline_object_type_in_parameter_is_not_declaration(self) -> None:
+        source = (
+            "function run(options: { service: UserService, timeout: number }) {\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "service" not in types
+        assert types["realService"] == "RealService"
+
+    @pytest.mark.parametrize(
+        "prefix", ["", "service: UserService,\n    ", "other: { value: Other },\n    "]
+    )
+    @pytest.mark.parametrize("closing", ["})", "}\n)"])
+    def test_multiline_inline_object_parameter_properties_are_not_declarations(
+        self, prefix: str, closing: str
+    ) -> None:
+        source = (
+            f"function run(\n    {prefix}options: {{\n"
+            "        client: HttpClient;\n"
+            "        nested: { handler: EventHandler };\n"
+            f"    {closing} {{\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        expected = {"realService": "RealService"}
+        if prefix.startswith("service:"):
+            expected["service"] = "UserService"
+        assert {d.name: d.type_name for d in scan_declarations(source, "typescript")} == expected
+        assert declared_types(source, "typescript") == expected
+
+    def test_label_after_automatic_semicolon_insertion_keeps_runtime_declarations(self) -> None:
+        source = (
+            "function run() {\n"
+            "    const setup = make()\n"
+            "    outer: {\n"
+            "        const inner: Item = getItem();\n"
+            "    }\n"
+            "}\n"
+        )
+        assert declared_types(source, "typescript") == {"inner": "Item"}
+
+    @pytest.mark.parametrize("pattern", ["/'/g", "/['\"]/g"])
+    def test_quotes_in_regex_do_not_hide_type_bodies(self, pattern: str) -> None:
+        source = (
+            f"const apostrophe = {pattern};\n"
+            "interface Options {\n    client: HttpClient;\n}\n"
+            "const real: RealService = make();"
+        )
+        assert declared_types(source, "typescript") == {"real": "RealService"}
+
+    def test_parenthesis_in_string_does_not_turn_label_into_type(self) -> None:
+        source = (
+            'function run() {\n    const marker = "("\n'
+            "    outer: {\n        const inner: Item = getItem();\n    }\n}"
+        )
+        assert declared_types(source, "typescript") == {"inner": "Item"}
+
+    @pytest.mark.parametrize(
+        "prefix, suffix, expected",
+        [
+            (
+                "function run() {\n    const options = (enabled ?\n    fallback : {\n",
+                "    });\n}",
+                {"client": "HttpClient", "service": "UserService"},
+            ),
+            (
+                "switch (value) { case (enabled ? fallback : {\n",
+                "}): { const real: RealService = make(); } }",
+                {"client": "HttpClient", "service": "UserService"},
+            ),
+        ],
+    )
+    def test_parenthesized_conditional_object_is_not_a_type(
+        self, prefix: str, suffix: str, expected: dict[str, str]
+    ) -> None:
+        source = prefix + "        client: HttpClient,\n        service: UserService\n" + suffix
+        assert declared_types(source, "typescript") == expected
+
+    def test_runtime_object_literal_properties_are_still_scanned(self) -> None:
+        source = (
+            "const options = {\n    first: make(),\n"
+            "    nested: {\n        client: HttpClient,\n        service: UserService\n    }\n};"
+        )
+        assert declared_types(source, "typescript") == {
+            "client": "HttpClient",
+            "service": "UserService",
+        }
+
+    def test_inline_object_type_in_variable_is_not_declaration(self) -> None:
+        source = (
+            "function run() {\n"
+            "    const config: { client: HttpClient; timeout: number } = { client: make(), timeout: 1 };\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "client" not in types
+        assert types["realService"] == "RealService"
+
+    def test_switch_case_braced_blocks_and_labels_are_not_treated_as_types(self) -> None:
+        source = (
+            "function handle(action: string) {\n"
+            "    switch (action) {\n"
+            "        case 'connect': {\n"
+            "            const client: Client = makeClient();\n"
+            "            client.connect();\n"
+            "            break;\n"
+            "        }\n"
+            "        case 1: {\n"
+            "            const numClient: Client = makeClient();\n"
+            "            numClient.connect();\n"
+            "            break;\n"
+            "        }\n"
+            "        default: {\n"
+            "            const fallback: Client = makeClient();\n"
+            "            fallback.connect();\n"
+            "            break;\n"
+            "        }\n"
+            "    }\n"
+            "    outer: {\n"
+            "        const inner: Item = getItem();\n"
+            "    }\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["client", "numClient", "fallback", "inner"]
+        types = declared_types(source, "typescript")
+        assert types["client"] == "Client"
+        assert types["numClient"] == "Client"
+        assert types["fallback"] == "Client"
+        assert types["inner"] == "Item"

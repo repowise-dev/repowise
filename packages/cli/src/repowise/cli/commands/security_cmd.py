@@ -6,7 +6,8 @@ Subcommands:
       the same pattern registry the indexer uses, and persist any secrets or
       risky patterns into the shared ``security_findings`` table — tagged with
       the commit that introduced them. Re-runs are idempotent.
-  check [REVSPEC | --staged] [--fail-on high|med|low] [--baseline FILE] [--format ...]
+  check [REVSPEC | --staged] [--fail-on high|med|low] [--baseline FILE]
+        [--fail-on-baseline-growth] [--format ...]
       Gate a change on the findings it adds: its changed lines at the head,
       plus secrets committed and removed inside it. Git only, no index and no
       database; exit codes are the shared CI ones (:mod:`repowise.cli.ci`).
@@ -26,10 +27,14 @@ from repowise.cli.ci import (
     EXIT_GATE_FAILED,
     CannotEvaluateError,
     append_step_summary,
+    baseline_growth,
     cannot_evaluate,
     change_lines,
     ci_notices,
+    ci_revspec,
     repo_root,
+    report_baseline_growth,
+    write_gate_summary,
 )
 from repowise.cli.helpers import (
     console,
@@ -139,6 +144,7 @@ def security_scan(
         create_engine,
         create_session_factory,
         get_session,
+        init_db,
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
@@ -161,6 +167,9 @@ def security_scan(
 
     async def _do() -> dict:
         engine = create_engine(get_db_url_for_repo(repo_path))
+        # A repo that was never indexed has no tables yet; the scan stores its
+        # findings itself, so it creates them rather than requiring an init.
+        await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             row = await get_repository_by_path(session, str(repo_path))
@@ -238,6 +247,15 @@ def security_scan(
     "--baseline, and exit 0.",
 )
 @click.option(
+    "--fail-on-baseline-growth",
+    "fail_on_growth",
+    is_flag=True,
+    default=False,
+    help="Exit 1 when --baseline lists a finding the same file at the change's base "
+    "does not, so a re-saved baseline cannot hide new findings. A baseline the base "
+    "lacks is new and passes.",
+)
+@click.option(
     "--path",
     "repo",
     default=None,
@@ -261,6 +279,7 @@ def security_check(
     fail_on: str,
     baseline_path: Path | None,
     write_baseline_path: Path | None,
+    fail_on_growth: bool,
     repo: str | None,
     staged: bool,
     fmt: str,
@@ -292,11 +311,22 @@ def security_check(
     """
     if staged and revspec:
         raise click.UsageError("--staged checks the staged changes; drop REVSPEC.")
+    if fail_on_growth and (baseline_path is None or write_baseline_path is not None):
+        raise click.UsageError("--fail-on-baseline-growth needs --baseline, not --write-baseline.")
     if fmt != "table":
         silence_logs_for_machine_output_until_close()
     try:
         _check(
-            _CheckOptions(revspec, fail_on, baseline_path, write_baseline_path, repo, staged, fmt)
+            _CheckOptions(
+                revspec,
+                fail_on,
+                baseline_path,
+                write_baseline_path,
+                repo,
+                staged,
+                fmt,
+                fail_on_growth=fail_on_growth,
+            )
         )
     except (click.exceptions.Exit, click.ClickException, click.Abort):
         raise
@@ -316,6 +346,7 @@ class _CheckOptions:
     repo: str | None
     staged: bool
     fmt: str
+    fail_on_growth: bool = False
 
 
 @dataclass(frozen=True)
@@ -327,12 +358,15 @@ class _Verdict:
     label: str
     accepted: frozenset[str]
     patterns: tuple[CustomPattern, ...]
+    #: Baseline entries the base lacks, under ``--fail-on-baseline-growth``.
+    grown: list[dict] | None = None
 
 
 def _check(opts: _CheckOptions) -> None:
     from repowise.core.analysis.security_gate import evaluate
 
     fmt = opts.fmt
+    grown: list[dict] | None = None
     try:
         root = repo_root(opts.repo)
         patterns = _custom_patterns(root)
@@ -342,6 +376,8 @@ def _check(opts: _CheckOptions) -> None:
         if opts.write_baseline_path is not None:
             _record_baseline(opts.write_baseline_path, scan, fmt, also_keep=accepted or [])
             return
+        if opts.fail_on_growth:
+            grown = _growth(root, opts)
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
 
@@ -351,9 +387,19 @@ def _check(opts: _CheckOptions) -> None:
     gate = evaluate(
         scan.findings, fail_on=opts.fail_on, baseline=baseline, suppressed=scan.suppressed
     )
-    _EMITTERS.get(fmt, _print_check)(_Verdict(scan, gate, label, baseline or frozenset(), patterns))
-    if not gate.passed:
+    verdict = _Verdict(scan, gate, label, baseline or frozenset(), patterns, grown)
+    _EMITTERS.get(fmt, _print_check)(verdict)
+    report_baseline_growth(fmt, opts.baseline_path, grown)
+    if not gate.passed or grown:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
+
+
+def _growth(root: Path, opts: _CheckOptions) -> list[dict]:
+    """The entries ``--baseline`` adds over the change's base (``HEAD`` when staged)."""
+    if opts.baseline_path is None:  # the command refuses the flag without --baseline
+        return []
+    revspec = None if opts.staged else ci_revspec(str(root), opts.revspec)
+    return baseline_growth(root, opts.baseline_path, revspec)
 
 
 def _custom_patterns(root: Path) -> tuple[CustomPattern, ...]:
@@ -438,17 +484,18 @@ def _record_baseline(path: Path, scan: ChangeScan, fmt: str, *, also_keep: list[
 def _emit_json(v: _Verdict) -> None:
     from repowise.core.analysis.security_gate import DETECTION_BASIS
 
-    emit_json(
-        {
-            "revspec": v.label,
-            "files_scanned": v.scan.files_scanned,
-            "commits_scanned": v.scan.commits_scanned,
-            "long_lines_skipped": v.scan.long_lines_skipped,
-            "findings_basis": DETECTION_BASIS,
-            "findings": v.scan.findings,
-            "gate": v.gate.to_dict(),
-        }
-    )
+    doc = {
+        "revspec": v.label,
+        "files_scanned": v.scan.files_scanned,
+        "commits_scanned": v.scan.commits_scanned,
+        "long_lines_skipped": v.scan.long_lines_skipped,
+        "findings_basis": DETECTION_BASIS,
+        "findings": v.scan.findings,
+        "gate": v.gate.to_dict(),
+    }
+    if v.grown is not None:
+        doc["baseline_growth"] = v.grown
+    emit_json(doc)
 
 
 def _emit_sarif(v: _Verdict) -> None:
@@ -494,15 +541,19 @@ def _markdown(v: _Verdict) -> str:
 
 
 def _emit_markdown(v: _Verdict) -> None:
+    from repowise.core.analysis.security_gate import gate_summary
+
     click.echo(_markdown(v), nl=False)
+    write_gate_summary(gate_summary(v.scan.findings, v.gate))
 
 
 def _emit_github(v: _Verdict) -> None:
-    from repowise.core.analysis.security_gate import github_annotations
+    from repowise.core.analysis.security_gate import gate_summary, github_annotations
 
     for line in github_annotations(v.scan.findings, v.gate):
         click.echo(line)
     append_step_summary(_markdown(v))
+    write_gate_summary(gate_summary(v.scan.findings, v.gate))
 
 
 _SEVERITY_COLOUR = {"high": "red", "med": "yellow", "low": "dim"}
@@ -534,7 +585,7 @@ def _print_findings(v: _Verdict) -> None:
     if not rows:
         return
     table = Table(show_edge=False, pad_edge=False)
-    for column in ("Severity", "Kind", "Where", "Matched (secrets masked)"):
+    for column in ("Severity", "Kind", "Where", "Matched (secrets hidden)"):
         table.add_column(column)
     for f in rows:
         colour = _SEVERITY_COLOUR[f["severity"]]

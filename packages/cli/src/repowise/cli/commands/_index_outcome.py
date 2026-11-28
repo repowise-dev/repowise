@@ -1,7 +1,10 @@
 """Steps every outcome of ``repowise init`` and ``repowise update`` shares.
 
 The telemetry outcome both commands attach to ``command_run``, and the stored
-read views both refresh once every store is final.
+read views both refresh once every store is final. A workspace update is the
+exception for the views: a member whose fingerprint has not moved since its
+last refresh skips them until it moves or the UTC day changes
+(``update_cmd/member_refresh.py``).
 """
 
 from __future__ import annotations
@@ -53,35 +56,41 @@ def record_index_outcome(
         return
 
 
-def refresh_read_snapshots(repo_path: Any) -> None:
+def refresh_read_snapshots(repo_path: Any) -> bool:
     """Store the Fix first queue and the next-actions view for the next reader.
 
     A named step at every outcome of ``repowise update`` and at the end of
-    ``repowise init``, once every store is final, so ``repowise next``, the
+    ``repowise init`` (a workspace update skips unchanged members, see the
+    module docstring), once every store is final, so ``repowise next``, the
     overview and the dashboard read one row instead of rebuilding in each new
     process. A view no write has invalidated since is left as it is, so the
     "already up to date" path costs one primary-key read per view.
     Best-effort: without a snapshot a reader builds live, as before. A
     snapshot that is not written is named with its error, here rather than in
-    the core log, which an update keeps at ERROR.
+    the core log, which an update keeps at ERROR. Returns whether the views
+    were written: ``False`` on a failure and when the store could not be opened
+    or holds no repository row, so a caller that skips unchanged repos retries.
     """
     from repowise.cli.helpers import repo_index_session
     from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
 
-    async def _run() -> list[tuple[str, Exception]]:
+    async def _run() -> list[tuple[str, Exception]] | None:
         async with repo_index_session(Path(repo_path)) as opened:
-            return [] if opened is None else await write_read_snapshots(*opened)
+            return None if opened is None else await write_read_snapshots(*opened)
 
     try:
-        try:
-            failed = run_async(_run())
-        except Exception as exc:
-            failed = [("read snapshots", exc)]
+        failed = run_async(_run())
+    except Exception as exc:
+        failed = [("read snapshots", exc)]
+    if failed is None:  # no store to write to; silent, as before
+        return False
+    try:
         for name, exc in failed:
             log.debug("read_snapshot_not_written", snapshot=name, error=repr(exc))
             console.print(f"[yellow]Snapshot not written: {_short_error(name, exc)}[/yellow]")
     except Exception:  # reporting must never fail the update
         log.debug("read_snapshot_report_failed", exc_info=True)
+    return not failed
 
 
 def _short_error(name: str, exc: BaseException) -> str:
@@ -93,3 +102,144 @@ def _short_error(name: str, exc: BaseException) -> str:
     if len(first) > 160:
         first = first[:159] + "…"
     return escape(f"{name}: {type(exc).__name__}" + (f": {first}" if first else ""))
+
+
+def refresh_stale_routes(repo_path: Any) -> None:
+    """Fill the route table when the stored one was read by other extractors.
+
+    Every update outcome runs this, the "already up to date" one included, so
+    an index written before the table (or by an older repowise) gets its routes
+    without waiting for a commit that touches one. When the stamp matches it
+    costs one fingerprint and one primary-key read. Best-effort.
+    """
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.workspace.repo_routes import refresh_route_table
+
+    root = Path(repo_path)
+
+    async def _run() -> int | None:
+        async with repo_index_session(root) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            return await refresh_route_table(session, repo_id, root, changed_paths=())
+
+    try:
+        written = run_async(_run())
+    except Exception as exc:
+        log.debug("route_table_not_refreshed", error=repr(exc))
+        return
+    if written is not None:
+        log.info("route_table_refreshed", routes=written)
+
+
+def refresh_repo_contracts(repo_path: Any) -> None:
+    """Re-read the repo's own contracts into ``.repowise/contracts.json`` (opt-in).
+
+    Off unless ``contracts.in_repo`` is set, and then silent and side-effect
+    free, so an index without it is byte for byte what it was. Best-effort when
+    on: a failure is named and the previous file is left as it was; it never
+    fails the index.
+    """
+    import time
+
+    root = Path(repo_path)
+    if not _in_repo_contracts_on(root):
+        return
+    from repowise.core.workspace.repo_contracts import run_repo_contract_extraction
+
+    start = time.monotonic()
+    try:
+        result = run_async(run_repo_contract_extraction(root))
+    except Exception as exc:
+        log.warning("repo_contracts_failed", error=repr(exc))
+        try:
+            console.print(
+                f"[yellow]Contracts not refreshed: {_short_error('contracts', exc)}[/yellow]"
+            )
+        except Exception:  # reporting must never fail the index
+            log.debug("repo_contracts_report_failed", exc_info=True)
+        return
+    log.info(
+        "repo_contracts",
+        extracted=result.extracted,
+        contracts=result.contracts,
+        links=result.links,
+        service_links=result.service_links,
+        seconds=round(time.monotonic() - start, 3),
+    )
+    # Route links inside the repo (``contract_links``) and host-only links to
+    # another repo (``service_links``) are named apart, so a 0 in one is never
+    # read as the other.
+    counts = (
+        f"Contracts: {result.contracts} found, {result.links} linked in this repo, "
+        f"{result.service_links} to other repos"
+    )
+    if not result.extracted:
+        console.print(f"  [dim]{counts} (unchanged)[/dim]")
+        return
+    console.print(f"  [dim]{counts} ({time.monotonic() - start:.1f}s)[/dim]")
+    try:
+        _print_contract_change(result)
+    except Exception:  # the diff is a report; it never fails the index
+        log.warning("repo_contracts_diff_failed", exc_info=True)
+
+
+#: Breaking changes named under the change line; the rest are counted.
+_BREAKING_DETAIL_LINES = 3
+
+
+def _print_contract_change(result: Any) -> None:
+    """One line on how this run moved the repo's contracts, then each break.
+
+    Silent on a first run, on a reuse, and when no contract end moved. A break
+    names the provider's service and the other services that call it, the
+    single-repo form of ``update --workspace``'s breaking-change line.
+    """
+    if result.previous is None or result.current is None:
+        return
+    from repowise.core.workspace.repo_contracts import diff_repo_contracts
+
+    change = diff_repo_contracts(result.previous, result.current)
+    if not change.changed:
+        return
+    if not change.breaking:
+        console.print(
+            f"  [dim]{change.changed} contract change(s); none breaks another service.[/dim]"
+        )
+        return
+    console.print(
+        f"  [yellow]![/yellow] {change.changed} contract change(s); "
+        f"{len(change.breaking)} break another service:"
+    )
+    for brk in change.breaking[:_BREAKING_DETAIL_LINES]:
+        console.print(_breaking_line(brk))
+    if len(change.breaking) > _BREAKING_DETAIL_LINES:
+        console.print(f"    [dim]and {len(change.breaking) - _BREAKING_DETAIL_LINES} more[/dim]")
+
+
+def _in_repo_contracts_on(repo_path: Path) -> bool:
+    """``contracts.in_repo`` for *repo_path*, read before any workspace import.
+
+    False when the config does not parse: the commands that own it report that,
+    and an opt-in step stays off rather than adding a second warning.
+    """
+    try:
+        from repowise.core.settings.writers import current
+
+        return bool(current(repo_path, "contracts.in_repo").value)
+    except Exception:
+        return False
+
+
+def _breaking_line(brk: Any) -> str:
+    """``<contract> (<kind>)  <provider service> -> <calling services>``, escaped."""
+    from rich.markup import escape
+
+    from repowise.core.workspace.breaking_change import consumers_outside_service
+
+    callers = sorted({ic.service or ic.repo for ic in consumers_outside_service(brk)})
+    return (
+        f"    {escape(brk.contract_id)} [dim]({brk.kind.replace('_', ' ')})[/dim]  "
+        f"{escape(brk.provider_service or brk.provider_repo)} -> {escape(', '.join(callers))}"
+    )

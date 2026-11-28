@@ -30,7 +30,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from repowise.core.workspace.system_graph import SystemEdge, SystemGraph
+from repowise.core.workspace.graph_evidence import graph_evidence
+from repowise.core.workspace.system_graph import SystemGraph
 
 # ---------------------------------------------------------------------------
 # Constants (single source of truth)
@@ -106,6 +107,11 @@ class CrossRepoBlastRadius:
     max_distance: int  # deepest hop reached
     total_impacted: int  # true count before MAX_IMPACTED capping
     unresolved_targets: list[str] = field(default_factory=list)
+    #: Resolved targets no structural edge touches in either direction. An
+    #: empty impact set for one of these is "not seen", not "nothing depends".
+    undetermined_targets: list[str] = field(default_factory=list)
+    #: :func:`.graph_evidence.graph_evidence` of the graph walked, as a dict.
+    evidence: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +124,8 @@ class CrossRepoBlastRadius:
             "max_distance": self.max_distance,
             "total_impacted": self.total_impacted,
             "unresolved_targets": self.unresolved_targets,
+            "undetermined_targets": self.undetermined_targets,
+            "evidence": self.evidence,
         }
 
 
@@ -165,25 +173,6 @@ class _Accum:
     edge_kinds: set[str]
 
 
-def _build_impact_adjacency(
-    edges: list[SystemEdge],
-) -> dict[str, list[tuple[str, SystemEdge]]]:
-    """Adjacency in *impact* direction: changed-node id → (dependent id, edge).
-
-    Structural edge ``source → target`` (source depends on target): changing
-    ``target`` impacts ``source``, so we add ``target → source``. Behavioral
-    co-change edges are symmetric, so both endpoints impact each other.
-    """
-    adj: dict[str, list[tuple[str, SystemEdge]]] = defaultdict(list)
-    for e in edges:
-        if e.structural:
-            adj[e.target].append((e.source, e))
-        else:
-            adj[e.source].append((e.target, e))
-            adj[e.target].append((e.source, e))
-    return adj
-
-
 def cross_repo_blast_radius(
     graph: SystemGraph,
     targets: list[str],
@@ -200,6 +189,7 @@ def cross_repo_blast_radius(
     """
     depth = max(1, min(max_depth, MAX_DEPTH_LIMIT))
     resolved, unresolved = resolve_targets(graph, targets)
+    evidence = graph_evidence(graph).to_dict()
 
     nodes_by_id = {n.id: n for n in graph.nodes}
     target_set = set(resolved)
@@ -216,12 +206,15 @@ def cross_repo_blast_radius(
             max_distance=0,
             total_impacted=0,
             unresolved_targets=unresolved,
+            evidence=evidence,
         )
 
-    edges = graph.edges
-    if not include_behavioral:
-        edges = [e for e in edges if e.structural]
-    adj = _build_impact_adjacency(edges)
+    # Impact direction: a change to a node reaches whatever depends on it, and
+    # co-change edges are symmetric, so both endpoints reach each other.
+    adj = graph.adjacency(behavioral=include_behavioral, impact=True)
+    # Undetermined means the walk itself has no edge at the target, so this
+    # reads the same view: co-change counts exactly when the walk follows it.
+    touched = set(adj) | {node for neighbours in adj.values() for node in neighbours}
 
     best: dict[str, _Accum] = {}
     # Frontier value per node: (propagated score, path-is-all-structural).
@@ -230,7 +223,7 @@ def cross_repo_blast_radius(
     for hop in range(1, depth + 1):
         next_frontier: dict[str, tuple[float, bool]] = {}
         for src, (src_score, src_structural) in frontier.items():
-            for dst, edge in adj.get(src, []):
+            for dst, edge in ((d, e) for d, es in adj.get(src, {}).items() for e in es):
                 if dst in target_set:
                     continue  # never impact a changed node back onto itself
                 factor = 1.0 if edge.structural else BEHAVIORAL_EDGE_WEIGHT
@@ -295,4 +288,6 @@ def cross_repo_blast_radius(
         max_distance=max_distance,
         total_impacted=total,
         unresolved_targets=unresolved,
+        undetermined_targets=[t for t in resolved if t not in touched],
+        evidence=evidence,
     )

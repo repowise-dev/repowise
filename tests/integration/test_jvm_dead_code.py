@@ -187,3 +187,41 @@ class TestKotlinTopLevelFunctionImports:
 
         unreachable = _paths(report, DeadCodeKind.UNREACHABLE_FILE)
         assert not any(p.endswith("StringUtils.kt") for p in unreachable)
+
+
+class TestKotlinSamePackageCallAcrossModules:
+    """An extension function called from its package in another Gradle module is live."""
+
+    def _write(self, repo: Path) -> None:
+        files = {
+            "settings.gradle.kts": 'include(":common", ":feature")\n',
+            "common/build.gradle.kts": 'plugins { kotlin("jvm") }\n',
+            "feature/build.gradle.kts": (
+                'plugins { kotlin("jvm") }\n'
+                'dependencies { implementation(project(":common")) }\n'
+            ),
+            "common/src/main/kotlin/com/acme/lib/Store.kt": (
+                "package com.acme.lib\n\nclass Store {\n    fun size(): Int = 0\n}\n\n"
+                "fun <T> withStore(block: Store.() -> T): T = Store().block()\n"
+            ),
+            "common/src/main/kotlin/com/acme/browse/Queries.kt": (
+                "package com.acme.browse\n\nimport com.acme.lib.Store\n\n"
+                "fun Store.firstIds(ids: List<Long>): List<Long> = ids.map { it + size() }\n"
+            ),
+            "feature/src/main/kotlin/com/acme/browse/Rows.kt": (
+                "package com.acme.browse\n\nimport com.acme.lib.withStore\n\n"
+                "class Rows(private val ids: List<Long>) {\n"
+                "    fun first(): List<Long> = withStore { firstIds(ids) }\n}\n"
+            ),
+        }
+        for rel, text in files.items():
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+
+    def test_the_extension_file_is_not_unreachable(self, tmp_path: Path) -> None:
+        self._write(tmp_path)
+        _, report = _analyze_repo(tmp_path)
+
+        unreachable = _paths(report, DeadCodeKind.UNREACHABLE_FILE)
+        assert "common/src/main/kotlin/com/acme/browse/Queries.kt" not in unreachable

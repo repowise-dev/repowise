@@ -18,12 +18,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Security
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
+from repowise.core.extras import MissingExtraError
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.providers.llm.base import ChatProvider
 from repowise.core.providers.llm.resolve import UntrustedBaseUrlError
 from repowise.core.redaction import redact_secrets
-from repowise.server.auth import PER_CALL_TOOL_SCOPE, Principal, get_authorizer
+from repowise.server.auth import (
+    PER_CALL_TOOL_SCOPE,
+    Action,
+    Principal,
+    authorize_repo,
+    read_route,
+)
 from repowise.server.chat_artifacts import find_artifact, set_artifact_pinned
 from repowise.server.chat_datasets import cached_rows
 from repowise.server.chat_errors import (
@@ -59,6 +66,7 @@ from repowise.server.deps import (
     resolve_session_factory,
     verify_api_key,
 )
+from repowise.server.mcp_server import load_full_surface
 from repowise.server.provider_config import (
     NoProviderConfiguredError,
     UnknownProviderError,
@@ -162,6 +170,9 @@ def _chat_provider(
             # Names only the URL, already stripped of any credentials.
             raise HTTPException(400, str(exc)) from exc
         raise HTTPException(400, INVALID_PROVIDER_MESSAGE) from exc
+    except MissingExtraError as exc:
+        # Names a package and the install command, nothing from the config.
+        raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
         logger.warning(
             "chat_provider_start_failed: %s: %s", type(exc).__name__, redact_secrets(str(exc))
@@ -221,7 +232,8 @@ async def _session_sse(open_session: Any, run: Any) -> AsyncIterator[str]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/api/repos/{repo_id}/chat/messages")
+@router.post("/api/repos/{repo_id}/chat/messages", dependencies=[Depends(load_full_surface)])
+@read_route
 async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     """Stream an agentic chat response via SSE."""
     # In workspace mode each repo has its own ``wiki.db``, so every session
@@ -266,6 +278,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     # `toolHint` is absent, never null: the TypeScript contract declares it
     # optional, and a serialized null would be a value the clients do not type.
     response_model_exclude_none=True,
+    dependencies=[Depends(load_full_surface)],
 )
 async def chat_suggestions(
     repo_id: str,
@@ -360,9 +373,7 @@ def _requested_policy(requested: ChatSessionPolicyRequest | None) -> SessionPoli
 
 
 def _require_repo_access(principal: Principal | None, repo_id: str, repo_name: str) -> None:
-    if principal is not None and not get_authorizer().can_access_repo(
-        principal, (repo_id, repo_name)
-    ):
+    if principal is not None and not authorize_repo(principal, (repo_id, repo_name), Action.READ):
         raise HTTPException(403, "Repository is outside this credential's scope")
 
 
@@ -423,6 +434,7 @@ async def _session_scope(
 
 
 @router.post("/api/chat/sessions", response_model=ChatSessionResponse)
+@read_route
 async def open_chat_session(body: ChatSessionOpenRequest, request: Request):
     """Open a session, or resume the one ``(namespace, external_ref)`` names.
 
@@ -455,8 +467,8 @@ async def find_chat_sessions(request: Request, external_ref: str, namespace: str
             repo = await crud.get_repository(session, conv.repository_id)
         if repo is None:
             continue
-        if principal is not None and not get_authorizer().can_access_repo(
-            principal, (repo.id, repo.name)
+        if principal is not None and not authorize_repo(
+            principal, (repo.id, repo.name), Action.READ
         ):
             return []
         return [_session_response(conv)]
@@ -478,7 +490,9 @@ async def _find_session(request: Request, session_id: str) -> StoredConversation
         200: {"content": {"text/event-stream": {}}},
         409: {"description": "The idempotency key was already sent with another message"},
     },
+    dependencies=[Depends(load_full_surface)],
 )
+@read_route
 async def send_chat_session_message(
     session_id: str, body: ChatSessionMessageRequest, request: Request
 ):

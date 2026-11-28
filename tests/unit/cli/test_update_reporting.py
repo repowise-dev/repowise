@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from rich.console import Console
 
 from repowise.cli.commands.update_cmd import reporting
+from repowise.cli.ui.brand import THEME
 
 
 class _Buffer:
@@ -23,7 +24,7 @@ class _Buffer:
 
     def __init__(self) -> None:
         self._buf = io.StringIO()
-        self._console = Console(file=self._buf, width=200, force_terminal=False)
+        self._console = Console(file=self._buf, width=200, force_terminal=False, theme=THEME)
 
     def print(self, *args, **kwargs):
         self._console.print(*args, **kwargs)
@@ -199,7 +200,7 @@ class TestCompletionPanels:
             git_files=12,
             elapsed=8.3,
         )
-        assert any("index-only update complete" in line for line in printed.lines)
+        assert any("Index updated" in line for line in printed.lines)
 
     def test_workspace_completion_renders(self, monkeypatch):
         printed = _capture(monkeypatch)
@@ -298,6 +299,19 @@ class TestDeadCodeCountsAreScopedToTheUpdate:
 
     def test_no_scope_still_counts_everything(self):
         assert reporting._dead_code_counts(self._report(), None) == (2, 2)
+
+    def test_docs_and_examples_stay_out_of_the_unreachable_count(self):
+        from types import SimpleNamespace
+
+        from repowise.core.analysis.dead_code.models import DeadCodeKind
+
+        report = SimpleNamespace(
+            findings=[
+                SimpleNamespace(file_path="examples/demo/run.py", kind=DeadCodeKind.UNREACHABLE_FILE),
+                SimpleNamespace(file_path="src/old.py", kind=DeadCodeKind.UNREACHABLE_FILE),
+            ]
+        )
+        assert reporting._dead_code_counts(report, None) == (1, 0)
 
     def test_a_missing_report_counts_as_nothing(self):
         assert reporting._dead_code_counts(None, ["changed.py"]) == (0, 0)

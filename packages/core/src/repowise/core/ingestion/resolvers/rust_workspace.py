@@ -47,6 +47,23 @@ class CargoCrate:
     # repo-relative POSIX paths to [[test]]/[[bench]]/[[example]] entries that
     # name an explicit ``path`` — runner-loaded, not entry points (#2936).
     reachability_root_paths: tuple[str, ...] = ()
+    # ``[lib] name``, when set. Cargo then imports the library by this name
+    # rather than by the package name (``lev-core`` with ``name = "leviathan"``
+    # is ``use leviathan::...``).
+    lib_name: str | None = None
+
+    @property
+    def import_names(self) -> tuple[str, ...]:
+        """Identifiers a ``use`` path can name this crate by, ``-`` already as ``_``."""
+        names = [self.package_import_name]
+        if self.lib_name:
+            names.insert(0, self.lib_name.replace("-", "_"))
+        return tuple(dict.fromkeys(names))
+
+    @property
+    def package_import_name(self) -> str:
+        # Cargo replaces "-" with "_" for the Rust import identifier.
+        return self.name.replace("-", "_")
 
 
 @dataclass(frozen=True)
@@ -58,10 +75,8 @@ class CargoWorkspaceIndex:
 
     def lookup(self, import_prefix: str) -> str | None:
         """Find the src/ dir for a crate referenced as ``import_prefix::...``."""
-        # Cargo replaces "-" with "_" for the Rust import identifier.
         for crate in self.crates:
-            normalised = crate.name.replace("-", "_")
-            if normalised == import_prefix:
+            if import_prefix in crate.import_names:
                 return crate.src_dir
         return None
 
@@ -172,6 +187,15 @@ def _parse_target_table(
     return tuple(paths)
 
 
+def _lib_name(cargo_data: dict) -> str | None:
+    """The ``[lib] name`` a manifest sets, or ``None``."""
+    lib_section = cargo_data.get("lib")
+    if not isinstance(lib_section, dict):
+        return None
+    name = lib_section.get("name")
+    return name if isinstance(name, str) and name else None
+
+
 def _parse_entry_targets(
     cargo_data: dict, member_rel: str, repo: Path
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -227,6 +251,7 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
             name=str(root_pkg["name"]), src_dir="src",
             dependencies=root_deps, bin_paths=root_bins,
             reachability_root_paths=root_roots,
+            lib_name=_lib_name(root_data),
         ))
 
     # Parse workspace-level shared dependencies
@@ -295,6 +320,7 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
                 is_proc_macro=is_proc_macro,
                 bin_paths=bin_paths,
                 reachability_root_paths=root_paths,
+                lib_name=_lib_name(member_data),
             ))
 
     crates.extend(_discover_isolated_crates(ctx, repo, tuple(crates)))
@@ -316,12 +342,18 @@ def _discover_isolated_crates(
     opened. For every parsed ``.rs`` file no existing crate already owns, walk
     up to the nearest ``Cargo.toml`` and read its target tables.
 
-    Dependencies are not parsed here: nothing in this pass needs the crate
-    resolvable as a ``use``-able sibling, only whether its explicit-path
-    targets keep a file alive (#2936).
+    Only a manifest with explicit-path targets is kept, since only those keep
+    a file alive (#2936). Its dependency tables are parsed like a member's,
+    against its own directory and its own ``[workspace.dependencies]``, so
+    the crate's path dependencies are known too.
+
+    A file outside every crate's ``src/`` (a root binary at
+    ``crates/core/main.rs``) can walk up to a manifest an existing crate was
+    already read from; that manifest adds nothing and is skipped.
     """
     path_set = getattr(ctx, "path_set", None) or ()
     probe = CargoWorkspaceIndex(crates=existing)
+    read_dirs = {(repo / crate.src_dir).parent for crate in existing}
     manifest_dirs: set[Path] = set()
     for path in path_set:
         if not path.endswith(".rs") or probe.lookup_crate_for_file(path) is not None:
@@ -329,7 +361,8 @@ def _discover_isolated_crates(
         current = (repo / path).parent
         while True:
             if (current / "Cargo.toml").is_file():
-                manifest_dirs.add(current)
+                if current not in read_dirs:
+                    manifest_dirs.add(current)
                 break
             if current == repo or current.parent == current:
                 break
@@ -352,10 +385,21 @@ def _discover_isolated_crates(
         if not bin_paths and not root_paths:
             continue
         pkg_name = (data.get("package") or {}).get("name") or member_rel or "isolated"
+        own_workspace = data.get("workspace") or {}
+        deps = _parse_deps(
+            {**data.get("dependencies", {}),
+             **data.get("dev-dependencies", {}),
+             **data.get("build-dependencies", {})},
+            manifest_dir,
+            repo,
+            ws_deps=own_workspace.get("dependencies", {}),
+        )
         crates.append(CargoCrate(
             name=str(pkg_name),
             src_dir=f"{member_rel}/src" if member_rel else "src",
+            dependencies=deps,
             bin_paths=bin_paths,
             reachability_root_paths=root_paths,
+            lib_name=_lib_name(data),
         ))
     return crates

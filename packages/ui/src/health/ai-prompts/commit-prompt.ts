@@ -53,7 +53,7 @@ function commitFacts(c: CommitPromptInput, short: string): string {
     `Commit: \`${short}\` — ${c.subject || "(no subject)"}`,
     c.author_name ? `Author: ${c.author_name}` : null,
     c.is_fix ? "Tagged as a bug-fix commit." : null,
-    c.review_priority ? `Review priority (repo-relative): **${c.review_priority}**` : null,
+    c.review_priority ? `Size and spread (repo-relative, diff size, not a bug predictor): **${c.review_priority}**` : null,
     c.risk_percentile != null ? `Diff-shape percentile in this repo: ${Math.round(c.risk_percentile)}th` : null,
     c.change_risk_score != null ? `Supporting diff-size score: ${c.change_risk_score.toFixed(1)}/10 (calibrated per commit)` : null,
     c.files_changed != null ? `Files changed: ${c.files_changed}` : null,

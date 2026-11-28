@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .calibration import load_telemetry_averages
 from .heuristics import HEURISTIC_VARIANCE, heuristic_tokens
-from .pricing import lookup_cost
+from .pricing import lookup_cost, lookup_embedding_cost
 from .types import CostEstimate, CostRange, PageTypePlan
 
 # Page types rendered from structure. They make no provider call, so they cost
@@ -14,7 +14,7 @@ from .types import CostEstimate, CostRange, PageTypePlan
 # repo indexed before this change carries historical LLM averages for these
 # types that would otherwise price free pages as if a model still wrote them.
 STRUCTURAL_PAGE_TYPES = frozenset(
-    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page", "layer_page"}
+    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page"}
 )
 
 
@@ -42,13 +42,17 @@ def estimate_cost(
     model_name: str,
     *,
     repo_path: Path | str | None = None,
+    embedder: str | None = None,
+    embedding_model: str | None = None,
 ) -> CostEstimate:
     """Estimate token counts and USD cost from a generation plan.
 
     When ``repo_path`` points to a repo with prior generation telemetry
-    in ``.repowise/db.sqlite``, the estimate is calibrated against the
+    in ``.repowise/wiki.db``, the estimate is calibrated against the
     actual averages from that repo. Otherwise the static heuristics in
     :mod:`heuristics` are used and a wider variance bracket is reported.
+
+    With *embedder*, every planned page is also priced for embedding.
     """
     telemetry: dict[str, tuple[float, float]] = {}
     if repo_path is not None:
@@ -61,12 +65,15 @@ def estimate_cost(
 
     for plan in plans:
         inp, out = _tokens_per_page(plan.page_type, telemetry=telemetry)
-        total_input += inp * plan.count
-        total_output += out * plan.count
+        total_input += inp * plan.model_count
+        total_output += out * plan.model_count
 
     # An unpriced model is estimated as free; the CLI gate has always done so.
     input_rate, output_rate = lookup_cost(model_name) or (0.0, 0.0)
     median_cost = (total_input / 1000) * input_rate + (total_output / 1000) * output_rate
+
+    embed_tokens, embed_cost = _embedding_cost(total_pages, embedder, embedding_model)
+    median_cost += embed_cost
 
     # Tighter variance when telemetry calibrated us; wider for cold-start.
     variance = 0.10 if is_calibrated else HEURISTIC_VARIANCE
@@ -86,4 +93,37 @@ def estimate_cost(
         model_name=model_name,
         cost_range=cost_range,
         is_calibrated=is_calibrated,
+        embedder=embedder or "",
+        estimated_embedding_tokens=embed_tokens,
+        embedding_cost_usd=embed_cost,
     )
+
+
+#: The page type of the first-look report's one model call.
+FIRST_LOOK_CALL_TYPE = "first_look"
+
+
+def estimate_first_look_cost(provider_name: str, model_name: str) -> CostEstimate:
+    """What the first-look report's one model call costs on *model_name*.
+
+    One call of a fixed size: the report caps every section, so a bigger repo
+    sends the same amount.
+    """
+    plan = PageTypePlan(page_type=FIRST_LOOK_CALL_TYPE, count=1, level=0)
+    return estimate_cost([plan], provider_name, model_name)
+
+
+def _embedding_cost(pages: int, embedder: str | None, model: str | None) -> tuple[int, float]:
+    """``(tokens, usd)`` to embed *pages* pages, priced at the per-input cap.
+
+    Ceiling: every page is counted at the embed cap (about 4 characters per
+    token), so this over-estimates; pages run shorter. Upgrade path: average
+    the stored page lengths when a prior index exists.
+    """
+    if not embedder or not pages:
+        return 0, 0.0
+    from repowise.core.persistence.vector_store._base import EMBED_TEXT_MAX_CHARS
+
+    tokens = pages * (EMBED_TEXT_MAX_CHARS // 4)
+    rate = lookup_embedding_cost(embedder, model) or 0.0
+    return tokens, (tokens / 1000) * rate

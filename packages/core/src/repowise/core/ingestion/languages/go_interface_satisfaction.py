@@ -50,6 +50,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from ..heritage_resolver import heritage_ancestors
+from ..symbol_identity import make_symbol_id
+from ..type_names import bare_type_name, type_qualifier
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -126,7 +128,7 @@ def _interface_facts(iface_node: Node, src: bytes) -> tuple[set[str], list[str]]
             # method-bearing embeds.
             if "|" in text or "~" in text:
                 continue
-            bare = text.split(".")[-1].strip()
+            bare = bare_type_name(text)
             if bare and bare[0].isalpha():
                 embedded.append(bare)
     return methods, embedded
@@ -187,6 +189,45 @@ def _parse_go(src: bytes) -> Node | None:
     if lang is None:
         return None
     return Parser(lang).parse(src).root_node
+
+
+def go_embedded_interfaces(type_source: str) -> list[tuple[str | None, str]]:
+    """``(package qualifier, name)`` of each interface embedded in *type_source*.
+
+    *type_source* is the text of one ``type X interface { ... }`` declaration.
+    ``io.RuneReader`` yields ``("io", "RuneReader")`` and ``Base`` yields
+    ``(None, "Base")``. Type-set constraints (``~int | string``) are skipped, as
+    in ``_interface_facts``: they are generic bounds, not method-bearing embeds.
+    """
+    root = _parse_go(b"package p\n" + type_source.encode("utf-8"))
+    if root is None:
+        return []
+    src = b"package p\n" + type_source.encode("utf-8")
+    found: list[tuple[str | None, str]] = []
+
+    def first_interface(node: Node) -> Node | None:
+        if node.type == "interface_type":
+            return node
+        for child in node.children:
+            hit = first_interface(child)
+            if hit is not None:
+                return hit
+        return None
+
+    iface = first_interface(root)
+    if iface is None:
+        return found
+    for elem in iface.children:
+        if elem.type != "type_elem":
+            continue
+        text = src[elem.start_byte : elem.end_byte].decode("utf-8", "ignore").strip()
+        if "|" in text or "~" in text or "[" in text:
+            continue
+        qualifier = type_qualifier(text) or None
+        name = bare_type_name(text)
+        if name and name[0].isalpha():
+            found.append((qualifier, name))
+    return found
 
 
 def resolve_go_interface_satisfaction(
@@ -285,7 +326,7 @@ def resolve_go_interface_satisfaction(
         iface_file = type_def_file.get(ikey)
         if iface_file is None:
             continue
-        iface_id = f"{iface_file}::{ikey[1]}"
+        iface_id = make_symbol_id(iface_file, ikey[1])
         if not graph.has_node(iface_id):
             continue
         # Candidate concrete types = those declaring the interface's rarest
@@ -300,7 +341,7 @@ def resolve_go_interface_satisfaction(
             concrete_file = type_def_file.get(ckey)
             if concrete_file is None:
                 continue
-            concrete_id = f"{concrete_file}::{ckey[1]}"
+            concrete_id = make_symbol_id(concrete_file, ckey[1])
             if concrete_id == iface_id or not graph.has_node(concrete_id):
                 continue
             if graph.has_edge(concrete_id, iface_id):

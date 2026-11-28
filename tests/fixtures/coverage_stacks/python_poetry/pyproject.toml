@@ -1,0 +1,6 @@
+[tool.poetry]
+name = "lib"
+version = "0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"

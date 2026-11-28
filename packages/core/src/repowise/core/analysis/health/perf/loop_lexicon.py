@@ -117,9 +117,11 @@ def is_config_name(name: str, *, callee: bool = False) -> bool:
     return len(ws) >= 2 and ws[-1] in _CONFIG_LISTED and ws[-2] in singulars
 
 
-def is_config_model(name: str) -> bool:
-    """An ORM model (last dotted segment) that is a registry or configuration table."""
-    return name.rsplit(".", 1)[-1] in _CONFIG_MODELS
+def is_config_table(name: str) -> bool:
+    """An ORM model (last dotted segment) or SQL table named for a registry or
+    configuration table."""
+    last = name.rsplit(".", 1)[-1]
+    return last in _CONFIG_MODELS or last.lower() in _CONFIG_TABLES
 
 
 def sql_tables(sql: bytes) -> list[str]:
@@ -127,9 +129,16 @@ def sql_tables(sql: bytes) -> list[str]:
     return [m.group(1).decode().rsplit(".", 1)[-1].lower() for m in _SQL_FROM.finditer(sql)]
 
 
-def is_config_sql(sql: bytes) -> bool:
-    tables = sql_tables(sql)
-    return bool(tables) and all(t in _CONFIG_TABLES for t in tables)
+# ``FROM a, b`` / ``FROM a x, b`` and a subquery read tables :func:`sql_tables` misses.
+_SQL_HIDDEN_TABLES = re.compile(
+    rb"\bFROM\s+[\w.\"`\[\]]+(?:\s+(?:AS\s+)?\w+)?\s*,|\(\s*SELECT\b", re.IGNORECASE
+)
+
+
+def read_sql_tables(sql: bytes) -> list[str]:
+    """:func:`sql_tables`, or ``[]`` when the text reads tables its FROM / JOIN
+    list does not name one by one."""
+    return [] if _SQL_HIDDEN_TABLES.search(sql) else sql_tables(sql)
 
 
 def is_key_lookup(text: bytes) -> bool:
@@ -186,13 +195,13 @@ def names_repo_root(name: str) -> bool:
 
 __all__ = [
     "has_sql_limit",
-    "is_config_model",
     "is_config_name",
-    "is_config_sql",
+    "is_config_table",
     "is_key_lookup",
     "is_parent_key_filter",
     "is_rare_filter",
     "names_repo_root",
+    "read_sql_tables",
     "sql_tables",
     "words",
 ]

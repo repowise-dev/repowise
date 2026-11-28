@@ -64,6 +64,18 @@ _DEFINES_MAX_FILES = 20
 _SYNTH_FULL_SOURCE_LINES = _INLINE_BODY_MAX_LINES
 _SYNTH_FULL_BODY_MAX_SYMBOLS = 2
 
+# Kinds that wrap other definitions. Longer than _MATCHED_SYMBOL_SOURCE_LINES,
+# one is a file's worth of code, not a body: it gets none.
+_CONTAINER_KINDS = frozenset({"module", "namespace", "package"})
+
+# Implementation bodies behind the pages synthesis reads (tool_answer.grounding):
+# the symbol a flow page or spotlight is about, and the definition of a
+# declaration a header hit shows, the question-named definition of a file hit
+# the hydrator did not enrich. Prompt-only, read at _SYNTH_FULL_SOURCE_LINES;
+# the char budget holds the prompt's growth near 2k tokens.
+_GROUNDING_MAX_BODIES = 3
+_GROUNDING_CHAR_BUDGET = 8000
+
 # Answer-by-union: when a question names a symbol with N>=2 undisambiguated defs,
 # inline the union of their bodies rather than a pointer list that triggers a
 # drill-down. Bodies render greedily under this budget; the rest are listed
@@ -89,6 +101,8 @@ _SPECIFIC_TOKEN_MAX_FILES = 3
 # environment variable) are scanned for in live source, and the definitions
 # holding them anchored, up to the inline-body cap. Scans per question:
 _LITERAL_SCAN_MAX_TOKENS = 3
+# Lines served for such a word in files the index holds no symbol for.
+_UNINDEXED_LINES_MAX = 3
 # Definition kinds an exact question name may anchor.
 _ANCHOR_KINDS = ("function", "method", "class", "interface")
 
@@ -106,6 +120,18 @@ _DATA_SHAPE_ACCESS_WINDOW = 40  # lines below a binding to mine VAR key accesses
 _DATA_SHAPE_MIN_FIELDS = 2  # never answer from a single-field shape (too weak to trust)
 _DATA_SHAPE_MIN_IDENT_LEN = 6  # identifier must be specific, not a bare generic name
 _DATA_SHAPE_GREP_TIMEOUT_S = 6.0
+
+# The sentences a synthesis-less ``note`` is built from.
+_NO_SYNTHESIS_NOTE = "Synthesis is unavailable; local retrieval and source evidence remain usable."
+_RATIONALE_NOTE = (
+    " code_rationale carries rationale comments mined from the candidate "
+    "source — they may already answer the question."
+)
+_BODY_NOTE_TAIL = "answer from that rather than re-reading the file."
+_CUT_BODY_NOTE_TAIL = "answer from that, and Read a body's continuation where it was cut."
+_BODY_NOTE = (
+    " symbol_bodies carries the live body of the symbol(s) you named, so " + _BODY_NOTE_TAIL
+)
 
 # Classes first: "what does X do" / "which class inherits Y" resolve at class level.
 _KIND_PRIORITY = {"class": 0, "interface": 0, "function": 1, "method": 2}
@@ -139,6 +165,11 @@ _AGREEMENT_TOP_RANK_MAX = 1
 _SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail by at least this many ranks in at least one source.
 _AGREEMENT_RANK_GAP = 1
+# Agreement fires near a 1.0 ratio, so on its own it starts "high" only above
+# this top score. Correct agreement highs on the answer gate scored 4.2 and
+# above; a wrong one, whose excerpt stopped before the branch it described,
+# scored 3.27.
+_AGREEMENT_HIGH_SCORE_FLOOR = 4.0
 
 # A keyless answer whose lead file sits below this many files of the unreranked
 # hybrid retrieval grades "low". On 225 keyless questions over 11 repos, leads
@@ -147,8 +178,10 @@ _AGREEMENT_RANK_GAP = 1
 _LEAD_HYBRID_TOP_K = 4
 
 # Phrases that mean the LLM declined to answer despite dominant retrieval.
-# A match downgrades confidence to "low" and drops the retrieval payload, since
-# a consumer told to read the source gains nothing from it in the cache.
+# Before the answer names any code, a match downgrades confidence to "low" and
+# drops the retrieval payload, since a consumer told to read the source gains
+# nothing from it in the cache. After a grounded claim it is a caveat
+# (_GAP_MARKERS below).
 _HEDGE_MARKERS = (
     "do not contain",
     "does not contain",
@@ -200,10 +233,38 @@ _HEDGE_MARKERS = (
     "was not found in",
 )
 
+# Phrases that admit part of what was asked is outside the evidence. Like a
+# hedge, one before the answer names any code is a non-answer ("low"); after a
+# grounded claim it is a caveat, held at "medium": "high" tells the agent not to
+# re-read, which the answer itself disputes. The bare "is not included/shown"
+# form is matched in confidence.py, where a following "in the checksum" marks
+# it as a statement about the code instead; so is "truncated in the excerpts".
+_GAP_MARKERS = (
+    "not in the retrieved",
+    "not in the excerpts",
+    "not in the evidence",
+    "outside the retrieved",
+    "outside the excerpts",
+    "not present in the provided",
+    "not present in the retrieved",
+    "not defined in the provided",
+    "not defined in the retrieved",
+    "not directly included",
+    "not fully included",
+    "not fully visible",
+    "not fully shown",
+    "cannot be definitively",
+)
+
 # Page content chars attached per top hit, for synthesis and the pointer payload.
 # Enough for a page's opening section plus a code reference; much less stops
 # mid-context and agents fall back to native exploration.
 _GATED_EXCERPT_CHARS = 1500
+
+# Chars of that excerpt held for the page's agent digest, which opens with the
+# questions the page answers (median about 400 chars). Joined after a body that
+# is almost always longer than the whole excerpt, it was cut off every time.
+_DIGEST_SLOT_CHARS = 500
 
 # How many hits the low-confidence payload hands back to the agent.
 _GATED_RETURN_HITS = 3
@@ -310,7 +371,36 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     body grounds the answer only when it carries what else was asked;
 #     constructors fold into their class and a file the question rules out is
 #     dropped.
-_ANSWER_SCHEMA_VERSION = 23
+# 24: an admission after a grounded claim is a caveat (medium), not a hedge; a
+#     verified constant line the answer states earns high; a question name no
+#     code defines or writes grades low.
+# 25: a question name defined in several files holds a high answer at medium
+#     unless the answer tells them apart; a name written as an owner
+#     (``Client.get``) anchors its definition; candidate_files skips files only
+#     the graph walk added.
+# 26: a value set inside a function body anchors that function; each later
+#     clause of a compound question adds its best file to the served hits.
+# 27: hedge phrases match through markdown markup; agreement alone starts high
+#     only above its own score floor; a scoped question's name nothing under
+#     the scope writes grades low.
+# 28: a stated value line earns high under the score floor and at any rank;
+#     held-at-medium notes for the identifier gate and a weak dominant top.
+# 29: a reply stopped at the token cap is retried once with a larger cap; an
+#     answer whose text was cut off is held at medium.
+# 30: an answer saying the code it describes was cut from its excerpts
+#     ("not fully visible", "truncated in the retrieved") admits a gap.
+# 31: a clause saying only that the excerpts carry no line numbers admits no
+#     gap; a stated value line keeps high past an admitted gap, and past the
+#     identifier gate when a top hit serves it.
+# 32: the synthesis prompt asks for a gap only when it limits the answer to
+#     the question, and for no remarks on missing line numbers.
+# 33: each served body shows its line range, so answers cite lines; a prose
+#     line citation is not an asserted value.
+# 34: a scoped answer names no file outside its scope: hits, flow paths and
+#     union definitions are filtered after every retrieval stage.
+# 35: the generic "start from / verify against the top file" hints are no
+#     longer stored; the projection writes one verify line naming path:line.
+_ANSWER_SCHEMA_VERSION = 35
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
@@ -324,6 +414,12 @@ _CANDIDATE_FILES_MAX = 5
 # The raw list is longer than either cap, so paths the citations already name
 # can be removed without leaving the served list short.
 _CANDIDATE_FILES_POOL = 10
+# A path scoring under this share of the top hit is not served in
+# candidate_files. Swept on 53 labelled candidates from 13 questions over four
+# repositories: the lowest file worth opening scored 0.38 of the top, and three
+# unrelated files scored under 0.2. Set below that lowest real file, not at it,
+# since a dropped file costs the agent a search and a served one costs a path.
+_CANDIDATE_FILES_SCORE_FLOOR = 0.3
 
 # Backstop TTL for cache rows. Commit stamping is the primary freshness gate;
 # this covers rows without a stamp (older rows, repos without git metadata).
@@ -354,13 +450,12 @@ _STOPWORDS = STOPWORDS
 _MAX_RICH_SIG_LINES = 4
 
 # Synthesis sampling. Answers target 150-400 words, so for a non-reasoning model
-# the token cap is headroom. A reasoning model spends the budget on hidden
-# thinking first and can come back empty with a ``length`` finish_reason, so it
-# gets a larger default, and the env override sets both. Low temperature: the
-# answer must track the excerpts, not embellish.
+# the token cap is headroom. A thinking model spends hidden reasoning from the
+# same cap before the first answer token, so the cap leaves room for both.
+# Providers bill the tokens produced, not the cap. Low temperature: the answer
+# must track the excerpts, not embellish.
 _SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
-_SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
-_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT = 4096
+_SYNTHESIS_MAX_TOKENS_DEFAULT = 4096
 
 
 def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
@@ -383,21 +478,25 @@ def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
 
 
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
-_SYNTHESIS_REASONING_MAX_TOKENS = _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
 _SYNTHESIS_TEMPERATURE = 0.2
+# A reply stopped at the token cap is asked for once more with this many times
+# the cap. Kept small so the retry stays inside common model output limits.
+_SYNTHESIS_RETRY_TOKEN_FACTOR = 2
 
 _SYSTEM_PROMPT = (
     "You are a code-aware retrieval assistant. You are given a developer "
     "question plus excerpts from a project wiki — file summaries, symbol "
     "signatures with docstrings, and (for symbols whose name matches the "
-    "question) the actual source body. Answer thoroughly and concretely, "
+    "question) the actual source body, and under 'implementation' the code "
+    "a page or declaration describes. Answer thoroughly and concretely, "
     "citing source files by relative path inline like (path/to/file.py) "
     "and line numbers when you have them. Prefer a structured answer "
     "(headings / bullets / short code block citing the symbol) over a "
     "paragraph when the question asks about mechanism or architecture. "
     "Aim for 150–400 words — enough to cover the asked aspects without "
-    "padding. If a [question-match] symbol's source body is provided, "
-    "you have enough material to answer — ground in that body. Only "
+    "padding. If a [question-match] symbol's source body or an "
+    "implementation body is provided, you have enough material to answer "
+    "— ground in that body. Only "
     "hedge about having enough material (say 'inspect the source' / "
     "'the excerpts do not contain…') when there is genuinely no relevant "
     "signature, docstring, or source body in the excerpts. Never assert "
@@ -406,7 +505,11 @@ _SYSTEM_PROMPT = (
     "language ('entirely', 'the sole', 'the only place', 'depends only on') "
     "is not justified from a top-k slice — omit it unless the retrieved "
     "material itself (an assertion, a type constraint, or an explicit "
-    "comment) says so. Never invent file paths."
+    "comment) says so. Never invent file paths. Do not remark on what the "
+    "excerpts leave out unless it limits the answer to this question: say "
+    "nothing about missing line numbers or other excerpt metadata, and do "
+    "not list bodies, call sites or details the question did not ask about. "
+    "When a gap does limit the answer, name what is missing once."
 )
 
 _USER_TEMPLATE = """\
@@ -417,7 +520,9 @@ Project wiki excerpts (top {n} retrieval hits):
 {context}
 
 Answer thoroughly (150–400 words). Cite file paths inline and line
-numbers when the excerpt provides them. Prefer a structured layout
+numbers when the excerpt provides them; when it does not, say nothing
+about line numbers. Mention a gap in the excerpts only when it limits
+the answer to this question. Prefer a structured layout
 (headings, bullets, short code block from the source body) on
 mechanism / architecture questions. Only hedge about having enough
 material if no signature, docstring, or source body in the excerpts is

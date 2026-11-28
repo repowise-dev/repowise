@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { DocPage } from "@repowise-dev/types/docs";
 import type { WebviewHost } from "../../runtime/rpc";
 import { App } from "./App";
@@ -18,6 +18,16 @@ beforeAll(() => {
     }
   }
   (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = NoopObserver;
+  window.matchMedia ??= ((query: string) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
 });
 
 afterEach(cleanup);
@@ -65,12 +75,23 @@ const PAGES: DocPage[] = [
   }),
 ];
 
-function mockHost(pages: DocPage[]): WebviewHost {
-  return {
-    api: {
-      pagesList: vi.fn().mockResolvedValue(pages),
-      fileDetail: vi.fn(),
-    } as unknown as WebviewHost["api"],
+/** The listing the panel asks for: every page without its body. */
+function summaries(pages: DocPage[]) {
+  return pages.map(({ content: _content, metadata: _metadata, ...rest }) => rest);
+}
+
+function mockHost(pages: DocPage[]) {
+  const api = {
+    pageTree: vi.fn().mockResolvedValue(summaries(pages)),
+    pageById: vi.fn((id: string) => {
+      const page = pages.find((p) => p.id === id);
+      return page ? Promise.resolve(page) : Promise.reject(new Error("Not found"));
+    }),
+    fileDetail: vi.fn().mockRejectedValue(new Error("Not found")),
+    searchPages: vi.fn().mockResolvedValue([]),
+  };
+  const host: WebviewHost = {
+    api: api as unknown as WebviewHost["api"],
     onInit: () => () => {},
     onRefresh: () => () => {},
     onUpdateDone: () => () => {},
@@ -85,29 +106,63 @@ function mockHost(pages: DocPage[]): WebviewHost {
     updateIndex: vi.fn(),
     setTheme: vi.fn(),
   };
+  return { host, api };
 }
 
+const REPO = { id: "repo-1", name: "demo", headCommit: null, defaultBranch: null };
+
 describe("docs App", () => {
-  it("renders the page tree and the selected page's markdown", async () => {
-    const host = mockHost(PAGES);
-    render(
-      <App
-        host={host}
-        repo={{ id: "repo-1", name: "demo", headCommit: null, defaultBranch: null }}
-        params={{}}
-        refreshToken={0}
-      />,
-    );
+  it("lists summaries and fetches only the page it shows", async () => {
+    const { host, api } = mockHost(PAGES);
+    render(<App host={host} repo={REPO} params={{}} refreshToken={0} />);
 
     // Domain view (the default) files every deterministic page into the
-    // collapsed "Auto-documented files" folder; the leaf is a deliberate
-    // drill-in, so on load the folder — not the basename — is what renders.
-    // (The expand-to-leaf behaviour is covered by the shared DocsTree test.)
-    expect(await screen.findByText("Auto-documented files (1)")).toBeTruthy();
+    // collapsed "Reference" folder, so the folder is what renders on load.
+    expect(await screen.findByText("Reference")).toBeTruthy();
 
     // With no params, the reader lands on the repo overview page.
     expect(
       await screen.findByText("Overview intro paragraph rendered by the reader."),
     ).toBeTruthy();
+    expect(api.pageTree).toHaveBeenCalledTimes(1);
+    expect(api.pageById).toHaveBeenCalledTimes(1);
+    expect(api.pageById).toHaveBeenCalledWith("ov");
+    // The web explorer's header bar: one tab and the search button.
+    expect(screen.getByText("Explorer")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Search" })).toBeTruthy();
+  });
+
+  it("opens the page for a file path and links the file into the editor", async () => {
+    const { host, api } = mockHost(PAGES);
+    render(<App host={host} repo={REPO} params={{ filePath: "src/app.ts" }} refreshToken={0} />);
+
+    expect(await screen.findByText("The application entry point.")).toBeTruthy();
+    expect(api.pageById).toHaveBeenCalledWith("fp");
+
+    // The reader's door to the source file opens it in an editor column.
+    const door = document.querySelector('a[href^="repowise-open:"]');
+    expect(door).toBeTruthy();
+    fireEvent.click(door!);
+    expect(host.openFile).toHaveBeenCalledWith("src/app.ts", undefined);
+  });
+
+  it("opens an asked-for page id without waiting for the list", async () => {
+    const { host, api } = mockHost(PAGES);
+    let release: (value: unknown) => void = () => {};
+    api.pageTree.mockReturnValue(new Promise((r) => (release = r)));
+    render(<App host={host} repo={REPO} params={{ pageId: "fp" }} refreshToken={0} />);
+
+    expect(await screen.findByText("The application entry point.")).toBeTruthy();
+    release(summaries(PAGES));
+    await waitFor(() => expect(screen.getByText("Reference")).toBeTruthy());
+  });
+
+  it("keeps an asked-for page when the listing fails", async () => {
+    const { host, api } = mockHost(PAGES);
+    api.pageTree.mockRejectedValue(new Error("listing timed out"));
+    render(<App host={host} repo={REPO} params={{ pageId: "fp" }} refreshToken={0} />);
+
+    expect(await screen.findByText("The application entry point.")).toBeTruthy();
+    expect(await screen.findByText("listing timed out")).toBeTruthy();
   });
 });

@@ -3,15 +3,36 @@
  * values keyed off a `.dark` root class, which the theme runtime toggles from
  * the editor's theme; the panels deliberately keep that brand palette instead
  * of remapping every token onto --vscode-* (a full remap flattens the data
- * visualizations into editor grays). Only the pieces that must match the
- * editor chrome are bridged here: typography, neutral grounds, text, borders
- * and the focus ring. Semantic (health/risk) and data colours stay Repowise.
+ * visualizations into editor grays). Only the neutral grounds, text and
+ * borders follow the editor, and only under "auto". Typography, the focus
+ * ring and semantic (health/risk) and data colours stay Repowise.
  */
 
-:root {
-  --font-sans: var(--vscode-font-family, ui-sans-serif, system-ui, sans-serif);
-  --font-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
+/*
+ * The shared stylesheet names Geist and Geist Mono in --font-sans/--font-mono
+ * but the web app loads the files through next/font, which a webview does not
+ * have. Bundle the two variable faces here (the CSP already allows fonts from
+ * the extension), so the panels read in the product's own type instead of
+ * falling back to the system face. Code and paths take Geist Mono through the
+ * shared --font-mono, as on the web.
+ */
+@font-face {
+  font-family: "Geist";
+  src: url("geist-fonts/geist-sans/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 
+@font-face {
+  font-family: "Geist Mono";
+  src: url("geist-fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
   /* The knowledge-graph card texture layers a ruled-paper photo served from
      the web app's public folder; that path 404s inside a packaged webview.
      Drop the photo layer and render solid node cards instead (no bundled
@@ -30,26 +51,51 @@
  * and high contrast alike, since the --vscode-* values already resolve per
  * theme). The sidebar Home view sits on the sidebar ground, panels on the
  * editor ground.
+ *
+ * The plane ladder is derived from that one ground rather than mapped onto
+ * editor widget colours: most themes paint the editor, its widgets and its
+ * inputs the same colour, which collapsed root, surface and elevated into one
+ * plane. Each step mixes a little more of the editor foreground into the
+ * ground, so it lifts toward the text in dark themes and settles toward it in
+ * light ones, and the inset well mixes toward black so it reads recessed in
+ * both. The ladder holds under any theme without a per-theme table.
  */
 .native {
-  --color-bg-root: var(--vscode-editor-background);
-  --color-bg-surface: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  --color-bg-elevated: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  --color-bg-inset: var(--vscode-input-background, var(--vscode-editor-background));
-  --color-bg-inset-on-overlay: var(--vscode-input-background, var(--vscode-editor-background));
-  --color-bg-wash-hover: var(--vscode-list-hoverBackground);
-  /* Selected rows and chips follow list selection; inactive when unfocused. */
-  --color-bg-selected: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-activeSelectionBackground));
-  --color-bg-selected-hover: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
+  --native-ground: var(--vscode-editor-background);
+  --native-ink: var(--vscode-foreground);
+  --color-bg-root: var(--native-ground);
+  --color-bg-surface: color-mix(in srgb, var(--native-ink) 3%, var(--native-ground));
+  --color-bg-elevated: color-mix(in srgb, var(--native-ink) 6%, var(--native-ground));
+  --color-bg-overlay: color-mix(in srgb, var(--native-ink) 9%, var(--native-ground));
+  --color-bg-inset: color-mix(in srgb, black 18%, var(--native-ground));
+  --color-bg-inset-on-overlay: color-mix(in srgb, var(--native-ink) 2%, var(--native-ground));
+  --color-field-bg: var(--color-bg-inset);
+  --color-bg-wash-hover: color-mix(in srgb, var(--native-ink) 5%, transparent);
+  /* Selected rows and chips: a neutral wash one step above hover, as on the
+     web. The editor's list selection is often its accent blue, which would
+     make the active item read as a second accent. */
+  --color-bg-selected: color-mix(in srgb, var(--native-ink) 9%, transparent);
+  --color-bg-selected-hover: color-mix(in srgb, var(--native-ink) 12%, transparent);
   --color-border-default: var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
-  --color-text-primary: var(--vscode-foreground);
-  --color-text-secondary: var(--vscode-descriptionForeground, var(--vscode-foreground));
-  /* Same source as secondary; faded so the three tiers stay distinct. */
-  --color-text-tertiary: color-mix(in srgb, var(--vscode-descriptionForeground, var(--vscode-foreground)) 70%, transparent);
+  --color-text-primary: var(--native-ink);
+  /* The quietest tier is the theme's own description colour, which theme
+     authors already keep readable: measured against the surface plane it is
+     5.7:1 in Dark Modern, 10.6:1 in Light Modern, 4.9:1 on the 2026 Dark
+     sidebar (the lowest) and 13.8:1 or more in high contrast. Fading it, as
+     this did, dropped small labels to about 3.2:1. Secondary sits halfway
+     between it and the foreground, so the three tiers stay distinct without
+     the bottom one going below 4.5:1. */
+  --color-text-secondary: color-mix(in srgb, var(--native-ink) 50%, var(--vscode-descriptionForeground, var(--native-ink)));
+  --color-text-tertiary: var(--vscode-descriptionForeground, var(--native-ink));
+}
+
+/* A light ground needs only a touch of black to read as a well. */
+.native:not(.dark) {
+  --color-bg-inset: color-mix(in srgb, black 4%, var(--native-ground));
 }
 
 .native[data-view="home"] {
-  --color-bg-root: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --native-ground: var(--vscode-sideBar-background, var(--vscode-editor-background));
 }
 
 /*
@@ -74,19 +120,20 @@
 .hc {
   --color-border-default: var(--vscode-contrastBorder, currentColor);
   --color-border-hover: var(--vscode-contrastActiveBorder, var(--color-text-primary));
+  --color-field-border: var(--vscode-contrastBorder, var(--color-text-primary));
   --color-text-tertiary: var(--color-text-secondary);
-}
-
-/* One focus ring everywhere, in the editor's own focus colour. */
-:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder, currentColor);
-  outline-offset: 2px;
+  /* Everywhere else the ring is the shared one (2px --color-focus-ring from
+     the package stylesheet): the editor's focusBorder is an accent blue in
+     most themes and read as a second accent. High-contrast themes define it
+     for exactly this job, so it applies here. */
+  --color-focus-ring: var(--vscode-focusBorder, var(--color-text-primary));
 }
 
 /* HC themes mark the selected item with an outline, not a tint. */
 .hc [aria-current="page"],
 .hc [aria-selected="true"],
-.hc [aria-pressed="true"] {
+.hc [aria-pressed="true"],
+.hc [aria-checked="true"] {
   outline: 1px solid var(--vscode-contrastActiveBorder, currentColor);
   outline-offset: -1px;
 }
@@ -102,6 +149,18 @@ body {
   background: var(--color-bg-root);
   color: var(--color-text-primary);
   font-family: var(--font-sans);
+}
+
+/* VS Code injects an unlayered `code` rule naming the editor font, which
+   beats the layered utilities; machine text takes Geist Mono as on the web. */
+code {
+  font-family: var(--font-mono);
+}
+
+/* The panel nav scrolls on narrow widths and would clip an outset ring, so its
+   tabs draw the shared ring inside. Unlayered, like the rule it adjusts. */
+[data-panel-nav] button:focus-visible {
+  outline-offset: -2px;
 }
 
 #root {

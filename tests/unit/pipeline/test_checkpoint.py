@@ -83,6 +83,30 @@ async def test_checkpointer_records_phase_lifecycle() -> None:
     ]
 
 
+async def test_a_reannounced_phase_keeps_one_job() -> None:
+    """git announces itself before its commit walk and again with the file total."""
+    registry = PipelineHookRegistry()
+    store = FakeJobStore()
+    cp = PhaseCheckpointer(store, "repo-1", phases=("git",), registry=registry)
+    cb = HookProgressCallback(None, registry)
+
+    async with cp:
+        cb.on_phase_start("git", None)
+        cb.on_phase_start("git", 12)
+        cb.on_phase_done("git")
+        # A later run of the same phase opens a fresh job.
+        await _fire_phase(cb, "git")
+
+    assert store.events == [
+        ("create", "git"),
+        ("state", "git:running"),
+        ("state", "git:completed"),
+        ("create", "git"),
+        ("state", "git:running"),
+        ("state", "git:completed"),
+    ]
+
+
 async def test_checkpointer_ignores_untracked_phases() -> None:
     registry = PipelineHookRegistry()
     store = FakeJobStore()

@@ -21,7 +21,7 @@ def runner():
 
 def test_generate_state_preserves_sync_commit_when_head_is_unavailable():
     state = {"last_sync_commit": "known-good-commit"}
-    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0)
+    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0, generated_pages=[])
     provider = SimpleNamespace(provider_name="mock", model_name="mock")
 
     with (
@@ -157,9 +157,14 @@ class TestErrorCases:
         the test below covers.
         """
         self._clear_provider_env_impl(monkeypatch)
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "No model configured" in result.output
+        # Built from code: `generate` is the model step, not the fast-to-full one.
+        out = " ".join(result.output.split())
+        assert "run repowise generate to have a model write it" in out
+        assert "update --full" not in out
 
     def test_init_explicit_provider_still_errors(self, runner, tmp_path, monkeypatch):
         """A named --provider that cannot resolve is a real error, not a fallback.
@@ -179,6 +184,7 @@ class TestErrorCases:
         """
         self._clear_provider_env_impl(monkeypatch)
         monkeypatch.setenv("REPOWISE_PROVIDER", "")
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "Unknown provider" not in result.output
@@ -305,23 +311,23 @@ class TestInitYesFlag:
                 return_value=fake_scan,
             ),
             patch(
-                "repowise.cli.commands.init_cmd._questions.prompt_wiki_style",
+                "repowise.cli.ui.mode_selection.prompt_wiki_style",
                 side_effect=_fake_prompt_wiki_style,
             ),
             patch(
-                "repowise.cli.commands.init_cmd._prepare.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
             runner.invoke(cli, ["init", "-y", "--index-only", str(tmp_path)])
             assert not prompt_called, "-y should bypass the wiki-style interactive prompt"
 
-    def test_yes_skips_mode_select_on_tty(self, runner, tmp_path):
-        """With -y on a TTY, the interactive mode-selection menu is never shown.
+    def test_yes_skips_plan_screen_on_tty(self, runner, tmp_path):
+        """With -y on a TTY, the plan screen is never shown.
 
         Without the ``and not yes`` guard on ``is_interactive`` a scripted
-        ``init -y`` would still block on ``interactive_mode_select`` whenever
-        stdin happens to be a TTY.
+        ``init -y`` would still block on the plan screen whenever stdin
+        happens to be a TTY.
         """
         from unittest.mock import MagicMock, patch
 
@@ -339,18 +345,18 @@ class TestInitYesFlag:
             ),
             patch("sys.stdin.isatty", return_value=True),
             patch(
-                "repowise.cli.commands.init_cmd._questions.interactive_mode_select",
+                "repowise.cli.commands.init_cmd._plan.run_plan_screen",
                 side_effect=lambda *_a, **_kw: mode_select_called.append(True),
             ),
             # Stop before the real pipeline runs.
             patch(
-                "repowise.cli.commands.init_cmd._prepare.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
             runner.invoke(cli, ["init", "-y", str(tmp_path)])
             assert not mode_select_called, (
-                "-y must bypass the interactive mode-selection menu even on a TTY"
+                "-y must bypass the plan screen even on a TTY"
             )
 
 
@@ -437,6 +443,14 @@ class TestBuildRepoGraph:
             return real_parse(self, fi, source)
 
         monkeypatch.setattr(ASTParser, "parse_file", _maybe_raise)
+        # The patch above cannot reach a spawned parse worker, so run the
+        # pool's in-process fallback, where it applies.
+        from repowise.core.pipeline.phases import ingestion as ing
+
+        def _no_pool(*_args, **_kwargs):
+            raise OSError("no pool in this test")
+
+        monkeypatch.setattr(ing, "run_with_deadline", _no_pool)
 
         printed: list[str] = []
 
@@ -467,7 +481,7 @@ class TestBuildRepoGraph:
         (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
 
         monkeypatch.setattr(
-            "repowise.core.generation.editor_files.tech_stack.detect_tech_stack",
+            "repowise.core.ingestion.tech_stack.detect_tech_stack",
             lambda _p: [],
         )
 

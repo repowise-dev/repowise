@@ -14,6 +14,7 @@ import type {
   ExternalSystemRelationshipGraph,
   ExternalSystemSummaryEntry,
   ExternalSystemsSummary,
+  PackageAdvisoryRow,
 } from "@repowise-dev/types/external-systems";
 import { EmptyState } from "../shared/empty-state";
 import {
@@ -30,6 +31,8 @@ import {
 } from "../ui/select";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { PackageRelationshipGraph } from "./package-relationship-graph";
+import { FIELD_CLASS } from "../ui/input";
+import { cn } from "../lib/cn";
 
 export type ExternalDependencyRole = "all" | "runtime" | "dev-only" | "mixed";
 export type ExternalDependencyUsage =
@@ -72,6 +75,8 @@ export interface ExternalDependenciesTableProps {
   state: ExternalDependencyTableState;
   onStateChange: (state: ExternalDependencyTableState) => void;
   selected: ExternalSystemSummaryEntry | null;
+  /** The selected package's stored advisories; omitted or empty shows nothing. */
+  advisories?: PackageAdvisoryRow[] | undefined;
   onSelectedChange: (entry: ExternalSystemSummaryEntry | null) => void;
   relationshipsOpen?: boolean | undefined;
   relationships?: ExternalSystemRelationshipGraph | undefined;
@@ -177,8 +182,54 @@ function Versions({ entry }: { entry: ExternalSystemSummaryEntry }) {
   );
 }
 
+const TIER_LABEL: Record<PackageAdvisoryRow["tier"], string> = {
+  package_called: "A production function calls into this package",
+  imported: "Imported by shipping code; no call is claimed",
+  unknown: "Unknown: no shipping import found, and it may still come through another dependency",
+};
+
+function AdvisoryList({
+  advisories,
+  renderFileLink,
+}: {
+  advisories: PackageAdvisoryRow[];
+  renderFileLink?: ExternalDependenciesTableProps["renderFileLink"];
+}) {
+  return (
+    <section>
+      <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Advisories</h3>
+      <ul className="mt-2 space-y-3">
+        {advisories.map((advisory) => {
+          const site = advisory.sites[0];
+          const where = site ? (site.line ? `${site.path}:${site.line}` : site.path) : null;
+          return (
+            <li key={`${advisory.ecosystem ?? ""}:${advisory.package}:${advisory.id}`} className="text-xs">
+              <p className="font-mono text-[var(--color-text-primary)]">
+                {advisory.id}
+                {advisory.severity ? (
+                  <span className="ml-2 text-[var(--color-text-secondary)]">{advisory.severity}</span>
+                ) : null}
+                {advisory.fix ? (
+                  <span className="ml-2 text-[var(--color-text-tertiary)]">fixed in {advisory.fix}</span>
+                ) : null}
+              </p>
+              <p className="mt-0.5 text-[var(--color-text-secondary)]">{TIER_LABEL[advisory.tier]}</p>
+              {site && where ? (
+                <p className="mt-0.5 font-mono text-[var(--color-text-tertiary)]">
+                  {renderFileLink ? renderFileLink(site.path, where) : where}
+                </p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function PackageInspector({
   entry,
+  advisories,
   relationshipsOpen,
   relationships,
   relationshipsLoading,
@@ -197,6 +248,7 @@ function PackageInspector({
   onClose,
 }: {
   entry: ExternalSystemSummaryEntry | null;
+  advisories?: PackageAdvisoryRow[] | undefined;
   relationshipsOpen?: boolean | undefined;
   relationships?: ExternalSystemRelationshipGraph | undefined;
   relationshipsLoading?: boolean | undefined;
@@ -264,6 +316,9 @@ function PackageInspector({
                 ) : null
               ) : (
                 <>
+              {advisories && advisories.length > 0 ? (
+                <AdvisoryList advisories={advisories} renderFileLink={renderFileLink} />
+              ) : null}
               <section>
                 <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Declarations</h3>
                 <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
@@ -312,6 +367,7 @@ export function ExternalDependenciesTable({
   state,
   onStateChange,
   selected,
+  advisories,
   onSelectedChange,
   relationshipsOpen,
   relationships,
@@ -503,7 +559,7 @@ export function ExternalDependenciesTable({
               value={state.query}
               onChange={(event) => onStateChange(updateState(state, { query: event.target.value }))}
               placeholder="Search packages or versions"
-              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-9 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:ring-1 focus:ring-[var(--color-accent-primary)]"
+              className={cn(FIELD_CLASS, "h-9 w-full pl-9 pr-3 text-sm")}
             />
           </label>
           <Select value={state.ecosystem} onValueChange={(ecosystem) => onStateChange(updateState(state, { ecosystem }))}>
@@ -609,6 +665,7 @@ export function ExternalDependenciesTable({
 
       <PackageInspector
         entry={selected}
+        advisories={advisories}
         relationshipsOpen={relationshipsOpen}
         relationships={relationships}
         relationshipsLoading={relationshipsLoading}

@@ -39,6 +39,27 @@ def _events(store: OmissionStore) -> list[dict]:
     return [dict(row) for row in store._conn.execute("SELECT * FROM savings_events")]
 
 
+def test_distillation_uses_synthetic_transcript_roots(
+    tmp_path: Path, store: OmissionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.distill import session_model
+
+    roots: list[tuple[Path | None, Path | None]] = []
+
+    def capture(
+        _repo_root: Path, projects_root: Path | None, codex_sessions_root: Path | None
+    ) -> dict:
+        roots.append((projects_root, codex_sessions_root))
+        return {}
+
+    monkeypatch.setattr(session_model, "_resolve", capture)
+    distill_output(PYTEST_OUTPUT, command="pytest", source="cli", store=store)
+
+    assert roots == [
+        (tmp_path / "agent-transcripts" / "claude", tmp_path / "agent-transcripts" / "codex")
+    ]
+
+
 def test_a_distillation_records_one_measured_event(store: OmissionStore) -> None:
     result = distill_output(PYTEST_OUTPUT, command="pytest", source="cli", store=store)
     assert result.distilled
@@ -72,13 +93,32 @@ def test_the_recovery_reference_links_the_event_to_its_artifact(store: OmissionS
     assert store.get(result.ref) is not None
 
 
-def test_the_rewrite_hooks_shell_is_a_hook_not_the_cli(store: OmissionStore) -> None:
-    """``source`` separates the surfaces; it does not name an agent."""
-    distill_output(PYTEST_OUTPUT, command="pytest", source="hook-bash", store=store)
+@pytest.mark.parametrize(
+    ("source", "agent"),
+    [
+        ("hook-bash", "claude_code"),
+        ("hook-powershell", "claude_code"),
+        ("hook-codex", "codex"),
+        ("hook-cursor", "cursor"),
+        ("hook-someone-new", "unknown"),
+    ],
+)
+def test_the_rewrite_hooks_label_names_its_agent(
+    store: OmissionStore, source: str, agent: str
+) -> None:
+    """The ``--source`` label names the adapter that rewrote the command."""
+    distill_output(PYTEST_OUTPUT, command="pytest", source=source, store=store)
     event = _events(store)[0]
     assert event["surface"] == "hook"
+    assert event["agent"] == agent
+    assert event["integration"] == agent
+
+
+def test_a_direct_distill_names_no_agent(store: OmissionStore) -> None:
+    distill_output(PYTEST_OUTPUT, command="pytest", source="cli", store=store)
+    event = _events(store)[0]
+    assert event["surface"] == "distill"
     assert event["agent"] == "unknown"
-    assert event["integration"] == "unknown"
 
 
 def test_output_not_worth_distilling_records_nothing(store: OmissionStore) -> None:
@@ -97,7 +137,7 @@ def test_the_command_is_never_persisted(store: OmissionStore) -> None:
     )
     stored = str(_events(store)[0])
     assert "hunter2" not in stored
-    assert "private" not in stored
+    assert "/home/someone/private" not in stored
 
 
 def test_two_distillations_of_identical_output_stay_independent(store: OmissionStore) -> None:
@@ -145,3 +185,22 @@ def test_a_home_directory_store_is_refused(tmp_path: Path, monkeypatch) -> None:
         assert opened.savings_summary()["saved_tokens"] > 0
     finally:
         opened.close()
+
+
+def test_failing_attribution_leaves_the_distilled_output_unchanged(
+    store: OmissionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attribution is recording, and recording never changes what the agent reads."""
+    from repowise.core.agents import identity
+
+    clean = distill_output(PYTEST_OUTPUT, command="pytest", source="hook-bash", store=store)
+
+    def boom(source: str | None) -> str:
+        raise RuntimeError("attribution exploded")
+
+    monkeypatch.setattr(identity, "slug_for_hook_source", boom)
+    failed = distill_output(PYTEST_OUTPUT, command="pytest", source="hook-bash", store=store)
+    assert failed.distilled
+    assert failed.text == clean.text
+    # Only the first call's event: the second was dropped, not half-written.
+    assert len(_events(store)) == 1

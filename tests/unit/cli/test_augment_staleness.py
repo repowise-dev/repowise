@@ -278,6 +278,48 @@ class TestPerHeadDedupe:
         assert msg is not None
 
 
+class TestHeadMovingGitCommands:
+    """Every operation the Claude Code shell gate admits reaches the notice.
+
+    Each case gets its own repo, so one case's per-HEAD marker cannot
+    silence the next.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git commit -m 'x'",
+            "git pull",
+            "git merge feature",
+            "git rebase main",
+            "git cherry-pick abc123",
+        ],
+    )
+    def test_a_successful_git_operation_that_moves_head_warns(self, repo, command):
+        from repowise.cli.commands.augment_cmd import _handle_post_tool_use
+
+        repo_path, head = repo
+        _state(repo_path, last_sync_commit=head, docs_enabled=True)
+        new_head = _commit(repo_path)
+
+        msg = _handle_post_tool_use(
+            "Bash", {"command": command}, {"exit_code": 0}, str(repo_path), session_id="s"
+        )
+
+        assert msg.context is not None
+        assert "Wiki is stale" in msg.context
+        assert new_head[:8] in msg.context
+
+    def test_a_shell_call_that_moves_no_head_is_silent(self, repo):
+        repo_path, head = repo
+        _state(repo_path, last_sync_commit=head, docs_enabled=True)
+        _commit(repo_path)
+
+        assert (
+            _handle_bash_post({"command": "git status"}, {"exit_code": 0}, str(repo_path)) is None
+        )
+
+
 class TestPowerShellDispatch:
     """The PowerShell tool surfaces the same stdout/stderr response shape as
     Bash (captured from real PostToolUse payloads) and must take the same

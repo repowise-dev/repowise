@@ -76,7 +76,7 @@ export function ToolCallGroup({ toolCalls, onViewArtifact }: ToolCallGroupProps)
     <div data-activity-trail="true" className="text-xs">
       <button
         type="button"
-        className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-md text-left text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-md text-left text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={expanded}
       >

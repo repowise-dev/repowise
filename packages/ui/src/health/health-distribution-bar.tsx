@@ -7,6 +7,7 @@ import {
 
 import { ProportionBar } from "../shared/proportion-bar";
 import { HEALTH_BAND_SEGMENT } from "./tokens";
+import { formatNumber } from "../lib/format";
 
 export interface HealthDistributionBarProps {
   distribution: HealthDistribution;
@@ -50,7 +51,7 @@ export function HealthDistributionBar({
         key: b,
         label: HEALTH_BAND_LABEL[b],
         value: share(b),
-        detail: `${share(b)}% · ${files(b).toLocaleString()} ${files(b) === 1 ? "file" : "files"}`,
+        detail: `${share(b)}% · ${formatNumber(files(b))} ${files(b) === 1 ? "file" : "files"}`,
         color: HEALTH_BAND_SEGMENT[b],
       }))}
     />

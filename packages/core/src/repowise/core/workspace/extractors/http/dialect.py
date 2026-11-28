@@ -9,18 +9,25 @@ in one place.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..dialect import build_contract
+from ..langs import JS_TS
+from ..strings import js_first_parameter_scope
 from .paths import (
     absolute_host,
     consumer_meta,
     extract_path_from_url,
     flatten_interpolations,
     is_unusable_consumer_path,
+    names_a_target,
     normalize_http_path,
     strip_leading_base_expr,
     strip_trailing_query_expr,
+    trailing_glued_name,
 )
 
 if TYPE_CHECKING:
@@ -77,23 +84,24 @@ def build_provider_contract(
     path_raw: str,
     framework: str,
     line: int | None = None,
-    confidence: float = 0.85,
+    origin: ContractOrigin = ContractOrigin.ROUTE_REGISTRATION,
     handler: str | None = None,
 ) -> Contract | None:
     """Build a provider contract, or ``None`` if the path is unusable.
 
-    A match whose path normalizes to bare ``/`` only counts when the raw text
-    actually carried a path — a template-variable-only or empty route is
-    dropped, matching the legacy extractor's skip rule.
+    An empty path is dropped: with no prefix to stitch onto, nothing was
+    declared. A root route spelled ``/`` is kept; a service whose whole API is
+    ``POST /`` serves it there, and a base path applied later (a Spring
+    context-path) turns it into ``/accounts``.
 
     *handler* is the expression the registration names, for frameworks that
     declare a route away from its handler (an ASP.NET minimal API). It is what
     lets :func:`.contracts.bind_symbol_ids` reach the handler rather than the
     registration site; without it the line lookup binds to ``Program.cs``.
     """
-    norm_path = normalize_http_path(path_raw)
-    if (not norm_path or norm_path == "/") and not path_raw.strip("/"):
+    if not path_raw.strip():
         return None
+    norm_path = normalize_http_path(path_raw)
 
     return build_contract(
         ctx,
@@ -101,7 +109,7 @@ def build_provider_contract(
         contract_type="http",
         role="provider",
         symbol_name=f"{framework}:{method} {path_raw}",
-        confidence=confidence,
+        origin=origin,
         line=line,
         meta={
             "method": method,
@@ -119,22 +127,43 @@ def build_consumer_contract(
     url: str,
     client: str,
     line: int | None = None,
-    confidence: float = 0.75,
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL,
+    bound_bases: Collection[str] = (),
+    offset: int | None = None,
 ) -> Contract | None:
     """Build a consumer contract from a raw client-call URL.
 
     Returns ``None`` for URLs that can never be a meaningful match key — a
     truncated template literal or a path with no concrete segment (see
     :func:`is_unusable_consumer_path`).
+
+    The one exception is the service root: ``POST /`` is a real route, and a
+    call to it is kept when its host, or a base placeholder one of
+    *bound_bases* names, places it on a target (:func:`names_a_target`), so the
+    matcher can resolve it. A root call with neither is still dropped, as the
+    path alone would match any service.
+
+    A JS call at *offset* whose URL ends in the first parameter of the
+    function holding it (`` baseFetch(`/api/v1${endpoint}`) `` inside
+    ``apiFetch(endpoint)``) is that wrapper's own request: the path is its
+    caller's, read at each call site, so the bare prefix is no route. Ceiling:
+    a function whose first parameter is a query string glued on the same way
+    (``list(qs)`` requesting `` `/items${qs}` ``) reads as a wrapper too.
     """
     host = absolute_host(url)
     path = extract_path_from_url(url)
     path, base_token = strip_leading_base_expr(path)
     if "${" in path:
         path = flatten_interpolations(path)
+    if offset is not None and ctx.suffix in JS_TS:
+        tail = trailing_glued_name(path)
+        if tail and js_first_parameter_scope(ctx.content, tail, offset):
+            return None
     path = strip_trailing_query_expr(path)
     norm_path = normalize_http_path(path)
-    if is_unusable_consumer_path(norm_path):
+    if is_unusable_consumer_path(norm_path) and not (
+        norm_path == "/" and names_a_target(host, base_token, bound_bases)
+    ):
         return None
     return build_contract(
         ctx,
@@ -142,7 +171,7 @@ def build_consumer_contract(
         contract_type="http",
         role="consumer",
         symbol_name=f"{client}:{method} {url}",
-        confidence=confidence,
+        origin=origin,
         line=line,
         meta=consumer_meta(method, norm_path, client, base_token, host),
     )

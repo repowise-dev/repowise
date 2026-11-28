@@ -32,10 +32,9 @@ SPEC = LanguageSpec(
     grammar_package="tree_sitter_pascal",
     scm_file="pascal.scm",
     heritage_node_types=frozenset({"declType"}),
-    # No dedicated resolver shipped in this first cut (see PR description) --
-    # imports still resolve via the generic stem-map fallback, which should
-    # cover the near-universal `unit name == file stem` Delphi/FPC convention.
-    import_support="none",
+    # resolvers/pascal.py: whole-stem unit names, .dpr ``in`` paths, and the
+    # .dproj/.lpi search paths and unit scope names, per compiling project.
+    import_support="full",
     # Delphi project (.dpr) / package (.dpk) files and FPC/Lazarus project
     # (.lpr) are the closest equivalent to a language "main" -- each contains
     # exactly one top-level `program`/`library`/`package` block.

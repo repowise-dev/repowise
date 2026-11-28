@@ -24,12 +24,13 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     decisions/governance are idempotent. Intended to run once the analysis
     phase has fully completed.
     """
+    from repowise.core.analysis.health.coverage import measurement_commit
     from repowise.core.persistence.crud import (
         replace_doc_drift_guarded,
+        replace_git_function_blame_for_files,
         save_coverage_files,
         save_dead_code_findings,
         set_repo_function_mod_p80,
-        upsert_git_function_blame_bulk,
     )
 
     # ---- Dead code findings --------------------------------------------------
@@ -69,18 +70,27 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)
         if coverage_files:
+            prov = getattr(hr, "coverage_provenance", None)
+            # A report found on disk measures the tree as of its own write
+            # time, not of HEAD (#3901); HEAD is right only for a report
+            # written since the last commit, which measurement_commit also
+            # answers. ``ingested_at`` stays the ingest time.
             await save_coverage_files(
                 session,
                 repo_id,
                 coverage_files,
                 source_format=getattr(hr, "coverage_format", None) or "lcov",
-                ingested_commit_sha=head_sha,
-                provenance=getattr(hr, "coverage_provenance", None),
+                ingested_commit_sha=measurement_commit(
+                    await _persist._analyzed_repo_path(session, repo_id),
+                    getattr(prov, "measured_at", None),
+                    head_sha,
+                ),
+                provenance=prov,
             )
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)
         if fn_blame_rows:
-            await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+            await replace_git_function_blame_for_files(session, repo_id, fn_blame_rows)
         # The hotspot gate an incremental update will score against. Written
         # only by a run that walked the whole repo (the analyzer leaves it None
         # otherwise), so an incremental run cannot publish its changed-files
@@ -111,6 +121,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             decision_dicts,
             vector_store=vector_store,
             git_metadata=result.git_metadata_list,
+            repo_path=getattr(result, "repo_path", None),
         )
     await apply_decision_lifecycle(session, repo_id, getattr(result, "repo_path", None))
 

@@ -103,7 +103,7 @@ export function LanguageSwitcher({ compact, className }: LanguageSwitcherProps) 
           type="button"
           aria-label={`${t("label")}: ${LOCALE_LABELS[active]}`}
           className={cn(
-            "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-md px-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+            "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-md px-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
             className,
           )}
         >
@@ -122,7 +122,7 @@ export function LanguageSwitcher({ compact, className }: LanguageSwitcherProps) 
                   aria-current={selected ? "true" : undefined}
                   lang={locale}
                   onClick={() => select(locale)}
-                  className="flex min-h-8 w-full items-center justify-between gap-2 rounded px-2 text-left text-sm text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="flex min-h-8 w-full items-center justify-between gap-2 rounded px-2 text-left text-sm text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   {LOCALE_LABELS[locale]}
                   {selected && <Check className="h-3.5 w-3.5" aria-hidden />}

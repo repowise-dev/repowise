@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from pathlib import Path
 
-from sqlalchemy import select
+import structlog
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..decision_graph import sync_links_from_record
-from ..models import DecisionRecord, GitMetadata, _now_utc
+from ..models import DecisionAcceptance, DecisionEvidence, DecisionRecord, GitMetadata, _now_utc
+
+logger = structlog.get_logger(__name__)
 
 
 async def _fill_git_meta_gaps(
@@ -57,8 +62,14 @@ async def recompute_decision_staleness(
     session: AsyncSession,
     repository_id: str,
     git_meta_map: dict[str, dict],
+    repo_path: Path | str | None = None,
 ) -> int:
     """Recompute staleness_score for all active decisions. Returns update count.
+
+    With *repo_path*, each record is scored from when its own evidence commits
+    landed, when that is after its birth; without it, from its birth alone.
+    A later reviewed grant (see :func:`latest_grant_times`) moves the anchor
+    to it either way.
 
     Also fills ``last_code_change`` from the same per-file dates the score is
     counted from, and re-derives ``affected_modules_json`` from the files each
@@ -103,6 +114,9 @@ async def recompute_decision_staleness(
         {fp for paths in affected_by_id.values() for fp in paths},
     )
 
+    landings = _evidence_landings(repo_path, decisions, affected_by_id)
+    grants = await latest_grant_times(session, repository_id)
+    rule_files = await _rule_scopes(session, repository_id, affected_by_id)
     now = _now_utc()
     updated = 0
     dated = 0
@@ -122,10 +136,17 @@ async def recompute_decision_staleness(
         if dec.source == "conventions":
             continue
 
-        if _rescore_staleness(dec, affected, git_meta_map, now):
+        if _rescore_staleness(
+            dec, rule_files[dec.id], git_meta_map, now, landings, grants.get(dec.id)
+        ):
             updated += 1
 
-    if updated or modules_updated or dated:
+    checked = 0
+    if repo_path is not None:
+        checked = await _recheck_rules(
+            session, decisions, rule_files, landings, grants, Path(repo_path), now
+        )
+    if updated or modules_updated or dated or checked:
         await session.flush()
     # Deliberately the staleness count alone. The callers print this as
     # "N decisions rescored"; folding the module repair or the date fill into
@@ -152,16 +173,180 @@ def _refresh_last_code_change(
     return True
 
 
+def _evidence_landings(
+    repo_path: Path | str | None,
+    decisions: list[DecisionRecord],
+    affected_by_id: dict[str, list[str]],
+) -> dict:
+    """Landings of every scoped record's evidence commits, in one git read."""
+    if repo_path is None:
+        return {}
+    from repowise.core.analysis.decisions.landing import evidence_landings
+
+    return evidence_landings(
+        repo_path,
+        (
+            sha
+            for dec in decisions
+            if dec.id in affected_by_id
+            for sha in json.loads(dec.evidence_commits_json or "[]")
+        ),
+    )
+
+
+#: Origins whose files never carry a decision's rule: a test edit or a docs
+#: rewrite is not the governed code moving.
+_NOT_RULE_ORIGINS = frozenset({"test", "docs_example", "data"})
+
+
+async def _rule_scopes(
+    session: AsyncSession, repository_id: str, affected_by_id: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """Each record's files less its test and docs files, by id.
+
+    Churn and the rule check both read this list. The origin is the stored
+    ``code_origin``, and ``path_origin`` only for a file the store has not scored.
+    """
+    from repowise.core.analysis.test_reach.db import stored_origins
+    from repowise.core.code_origin import path_origin
+
+    paths = sorted({p for ps in affected_by_id.values() for p in ps})
+    stored = await stored_origins(session, repository_id, paths)
+    keep = {p for p in paths if (stored.get(p) or path_origin(p)) not in _NOT_RULE_ORIGINS}
+    return {rid: [p for p in ps if p in keep] for rid, ps in affected_by_id.items()}
+
+
+def _moved_in_force(
+    decisions: list[DecisionRecord], rule_files: dict[str, list[str]]
+) -> tuple[list[DecisionRecord], list[DecisionRecord]]:
+    """In-force records whose rule files moved since their anchor, and the rest with a verdict.
+
+    A verdict on a record that no longer qualifies (its files back to unmoved
+    after a grant, or a scope left with only test files) no longer describes it.
+    """
+    moved, settled = [], []
+    for d in decisions:
+        if d.status != "active" or d.source == "conventions":
+            continue
+        if rule_files.get(d.id) and (d.staleness_score or 0.0) > 0.0:
+            moved.append(d)
+        elif d.rule_check is not None:
+            settled.append(d)
+    return moved, settled
+
+
+def _due(moved: list[DecisionRecord], repo_path: Path) -> list[DecisionRecord]:
+    """The records changed since their last verdict: never checked, or a named file
+    committed after the commit that verdict was read at."""
+    from repowise.core.analysis.decisions.extractor import _as_aware_utc
+    from repowise.core.analysis.decisions.rule_check import commit_times
+
+    checked_at = commit_times(repo_path, {d.rule_checked_commit for d in moved} - {None})
+    return [
+        d
+        for d in moved
+        if d.rule_check is None
+        or d.rule_checked_commit not in checked_at
+        or (
+            d.last_code_change is not None
+            and _as_aware_utc(d.last_code_change) > checked_at[d.rule_checked_commit]
+        )
+    ]
+
+
+async def _code_quotes(session: AsyncSession, ids: list[str]) -> dict[str, list[tuple[str, str]]]:
+    """``(file, quote)`` of each record's evidence written in a code file, by id."""
+    from repowise.core.analysis.decisions.rule_check import CODE_QUOTE_SOURCES
+
+    quotes: dict[str, list[tuple[str, str]]] = {}
+    ev = DecisionEvidence
+    for start in range(0, len(ids), 500):  # one read per 500 ids, under the bind ceiling
+        rows = await session.execute(
+            select(ev.decision_id, ev.evidence_file, ev.source_quote).where(
+                ev.decision_id.in_(ids[start : start + 500]),
+                ev.source.in_(sorted(CODE_QUOTE_SOURCES)),
+            )
+        )
+        for did, path, quote in rows.all():
+            if path and quote:
+                quotes.setdefault(did, []).append((path, quote))
+    return quotes
+
+
+async def _recheck_rules(
+    session: AsyncSession,
+    decisions: list[DecisionRecord],
+    rule_files: dict[str, list[str]],
+    landings: dict,
+    grants: dict[str, datetime],
+    repo_path: Path,
+    now: datetime,
+) -> int:
+    """Re-read whether each in-force record's rule still holds; the count of rows written.
+
+    Best-effort: a git failure or timeout leaves every verdict as it was and
+    the churn pass that ran before it stands.
+    """
+    from repowise.core.analysis.decisions.landing import record_landing
+    from repowise.core.analysis.decisions.rule_check import RuleClaim, check_rules
+    from repowise.core.analysis.decisions.staleness import _anchor
+
+    moved, settled = _moved_in_force(decisions, rule_files)
+    for dec in settled:
+        dec.rule_check = dec.rule_check_basis = dec.rule_checked_commit = None
+    try:
+        due = _due(moved, repo_path) if moved else []
+        if not due:
+            return len(settled)
+        quotes = await _code_quotes(session, [d.id for d in due])
+        claims = {}
+        for dec in due:
+            evidence = json.loads(dec.evidence_commits_json or "[]")
+            landing = record_landing(evidence, landings, dec.created_at)
+            anchor = _anchor(dec.created_at, landing.at if landing else None, grants.get(dec.id))
+            # No birth to anchor at: before any history, so the check reads it
+            # as unread and stamps it rather than leaving it due every run.
+            claims[dec.id] = RuleClaim(
+                texts=(dec.title or "", dec.decision or ""),
+                quotes=tuple(quotes.get(dec.id, ())),
+                scope=tuple(rule_files[dec.id]),
+                anchor=anchor or datetime.fromtimestamp(0, UTC),
+            )
+        verdicts = check_rules(repo_path, claims)
+    except Exception as exc:  # git missing, a timeout: the churn verdict stands
+        logger.warning("decision_rule_check_skipped", error=str(exc))
+        return len(settled)
+    for dec in due:
+        if (found := verdicts.get(dec.id)) is None:
+            continue
+        if (dec.rule_check, dec.rule_check_basis) != (found.verdict, found.basis):
+            dec.rule_check, dec.rule_check_basis = found.verdict, found.basis
+            dec.updated_at = now
+        dec.rule_checked_commit = found.commit
+    return len(settled) + len(verdicts)
+
+
 def _rescore_staleness(
-    dec: DecisionRecord, affected: list[str], git_meta_map: dict[str, dict], now: datetime
+    dec: DecisionRecord,
+    affected: list[str],
+    git_meta_map: dict[str, dict],
+    now: datetime,
+    landings: dict,
+    accepted_at: datetime | None = None,
 ) -> bool:
     """Recompute the git-diff staleness score; True when it moved by more than 0.01."""
     from repowise.core.analysis.decisions.extractor import DecisionExtractor
+    from repowise.core.analysis.decisions.landing import record_landing
 
+    landing = record_landing(
+        json.loads(dec.evidence_commits_json or "[]"), landings, dec.created_at
+    )
     new_score = DecisionExtractor.compute_staleness(
         dec.created_at,
         affected,
         git_meta_map,
+        landed_at=landing.at if landing else None,
+        accepted_at=accepted_at,
     )
     if abs(new_score - dec.staleness_score) > 0.01:
         dec.staleness_score = round(new_score, 3)
@@ -197,17 +382,94 @@ def _backfill_module_nodes(
     return moved
 
 
+#: Signers whose grant means someone read the code as it stood. An ``import``
+#: row is stamped when a manifest, migration or tracked ADR is applied on this
+#: machine, which says nothing about when the code was last reviewed.
+_REVIEWING_KINDS = ("person", "agent")
+
+
+async def latest_grant_times(
+    session: AsyncSession,
+    repository_id: str,
+    decision_ids: Iterable[str] | None = None,
+) -> dict[str, datetime]:
+    """When each decision was last accepted, reaffirmed or merged into, by id.
+
+    Reviewed grants only (see :data:`_REVIEWING_KINDS`). Staleness counts
+    from here when it is later than the record's birth and landing.
+    """
+    from repowise.core.analysis.decisions.lifecycle import GRANTING_ACTIONS
+
+    q = (
+        select(DecisionAcceptance.decision_id, func.max(DecisionAcceptance.created_at))
+        .where(
+            DecisionAcceptance.repository_id == repository_id,
+            DecisionAcceptance.action.in_(sorted(GRANTING_ACTIONS)),
+            DecisionAcceptance.accepter_kind.in_(_REVIEWING_KINDS),
+        )
+        .group_by(DecisionAcceptance.decision_id)
+    )
+    if decision_ids is not None:
+        q = q.where(DecisionAcceptance.decision_id.in_(sorted(set(decision_ids))))
+    return dict((await session.execute(q)).all())
+
+
+async def rescore_decision_staleness(session: AsyncSession, record: DecisionRecord) -> None:
+    """Rescore one record from persisted git metadata, anchored at its latest grant.
+
+    Called right after a grant so ``needs_review`` clears without waiting for
+    the next index. No evidence landing is read, since a grant just written is
+    later than any landing, so a record with no reviewed grant is left to
+    :func:`recompute_decision_staleness`, which reads landings.
+    """
+    affected = json.loads(record.affected_files_json or "[]")
+    # Conventions write their own conformance share; see the batch path.
+    if not affected or record.source == "conventions":
+        return
+    grants = await latest_grant_times(session, record.repository_id, [record.id])
+    if record.id not in grants:
+        return
+    from repowise.core.analysis.decisions.staleness import compute_staleness
+
+    scope = (await _rule_scopes(session, record.repository_id, {record.id: affected}))[record.id]
+    git_meta = await _fill_git_meta_gaps(session, record.repository_id, {}, set(scope))
+    score = compute_staleness(record.created_at, scope, git_meta, accepted_at=grants[record.id])
+    # A later anchor only lowers the score. A rise means a file this store has
+    # no metadata for yet, such as one added since the last index, which the
+    # next index scores with the full picture.
+    if score < (record.staleness_score or 0.0):
+        record.staleness_score = score
+        record.updated_at = _now_utc()
+    # The grant is a reading of the rule against the code as it stands, so an
+    # earlier verdict no longer applies. Cleared rather than set to ``holds``:
+    # the re-anchored score above already reads ``active``, and a ``holds``
+    # would outlive a later move of the files on an index with no checkout to
+    # check against. The next index with one checks it from the grant onward.
+    record.rule_check = record.rule_check_basis = record.rule_checked_commit = None
+
+
+def is_stale(currency: str | None) -> bool:
+    """The one meaning of a stale decision: accepted, at effective ``needs_review``.
+
+    *currency* is from ``decision_currencies``, where a candidate is ``None``.
+    A candidate's staleness score is a fact about its files, not a decision
+    going stale, so it never counts.
+    """
+    return currency == "needs_review"
+
+
 async def get_stale_decisions(
     session: AsyncSession,
     repository_id: str,
-    threshold: float = 0.5,
+    records: Iterable[DecisionRecord] | None = None,
 ) -> list[DecisionRecord]:
-    """Return active decisions with staleness_score >= threshold."""
-    result = await session.execute(
-        select(DecisionRecord).where(
-            DecisionRecord.repository_id == repository_id,
-            DecisionRecord.status.in_(["active"]),
-            DecisionRecord.staleness_score >= threshold,
+    """The decisions in *records* (default: the repository's) that :func:`is_stale`."""
+    from .authority import decision_currencies
+
+    if records is None:
+        records = await session.scalars(
+            select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
         )
-    )
-    return list(result.scalars().all())
+    records = list(records)
+    currencies = await decision_currencies(session, repository_id, records)
+    return [r for r in records if is_stale(currencies.get(r.id))]

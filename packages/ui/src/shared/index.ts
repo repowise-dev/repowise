@@ -26,6 +26,7 @@ export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
 export * from "./clean-state";
+export * from "./illustration";
 export { Callout, type CalloutProps, type CalloutTone } from "./callout";
 export {
   RouteError,
@@ -99,3 +100,4 @@ export {
 export { SERIES, SERIES_TAIL, seriesColor, commitCategoryColor } from "./series";
 export { MoreFilters, ActiveFilterChips, type ActiveFilterChip } from "./more-filters";
 export { FilePath, SlashBreaks, type FilePathMode, type FilePathProps } from "./file-path";
+export { RelativeTime, type RelativeTimeProps } from "./relative-time";

@@ -9,6 +9,7 @@ table, writes it back to the index.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,20 +37,29 @@ from repowise.core.analysis.health.counts import (
     project as project_counts,
 )
 from repowise.core.analysis.health.models import split_by_origin
-from repowise.core.analysis.health.ranking import deduction_by_path
+from repowise.core.analysis.health.ranking import deduction_by_path, scope_reason
 from repowise.core.analysis.health.rows import detail_map, split_unscored
-from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
-from repowise.core.analysis.health.scoring import compute_kpis
+from repowise.core.analysis.health.scope import (
+    DEFAULT_SCOPE,
+    SCOPES,
+    parse_scope,
+    rows_in_scope,
+)
+from repowise.core.analysis.health.scoring import ADVISORY_DIMENSION, compute_kpis
 from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
 from .persist import (
+    _load_evidence_freshness,
     _load_fix_first,
+    _load_measured_costs,
+    _load_perf_causes,
     _load_persisted_coverage_map,
     _load_queue_counts,
     _load_recommendations,
     _load_short_history,
+    _load_stored_analyzer_version,
     _load_stored_report,
     _persist_health,
 )
@@ -60,9 +70,11 @@ from .refactoring_targets import (
 )
 from .summary import (
     _render_badge,
+    _render_connect_line,
     _render_defect_accuracy_line,
     _render_distribution_line,
     _render_fix_first,
+    _render_measured_costs,
     _render_performance_section,
     _render_split_line,
 )
@@ -71,8 +83,33 @@ from .trends import _render_trend
 #: Items the report leads with; the full queue is one REST or MCP call away.
 FIX_FIRST_ROWS = 3
 
+_SUBCOMMAND = "repowise.health.subcommand"
 
-@click.command("health")
+
+class _HealthGroup(click.Group):
+    """``repowise health [PATH]``, whose first argument may instead name a subcommand.
+
+    A first argument naming a subcommand (``check``) runs it; anything else is
+    the report's own optional PATH. A directory named like a subcommand is
+    reached as ``./check``.
+    """
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        subcommand = bool(args) and args[0] in self.commands
+        ctx.meta[_SUBCOMMAND] = subcommand
+        # The report keeps taking options after PATH, as a plain command does.
+        ctx.allow_interspersed_args = not subcommand
+        return super().parse_args(ctx, args)
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        params = super().get_params(ctx)
+        if ctx.meta.get(_SUBCOMMAND):
+            # Leaves the subcommand name for dispatch instead of reading it as PATH.
+            return [p for p in params if not isinstance(p, click.Argument)]
+        return params
+
+
+@click.group("health", cls=_HealthGroup, invoke_without_command=True)
 @click.argument("path", required=False, type=click.Path(exists=True))
 @click.option(
     "--file",
@@ -151,8 +188,9 @@ FIX_FIRST_ROWS = 3
     default=DEFAULT_SCOPE,
     type=click.Choice(list(SCOPES)),
     help=(
-        "Which files to report on. Tests score higher than production code, "
-        "so 'production' lowers every figure without a defect being found."
+        "Which files to report on. 'production' leaves out tests, tooling, "
+        "build, vendored, generated and docs example files, which tend to "
+        "score higher, so it lowers every figure without a defect being found."
     ),
 )
 @click.option(
@@ -198,8 +236,9 @@ FIX_FIRST_ROWS = 3
     default=False,
     help="Show debug logs from the pipeline.",
 )
+@click.pass_context
 def health_command(
-    path: str | None,
+    ctx: click.Context,
     file_filter: str | None,
     fmt: str,
     repo_alias: str | None,
@@ -216,12 +255,16 @@ def health_command(
     score_paths: tuple[str, ...],
     against: str | None,
     verbose: bool,
+    path: str | None = None,
 ) -> None:
     """Code-health scores from markers (CCN, nesting, brain-method).
 
     Reads the analysis the index stored; no LLM, no network, no writes.
     ``--recompute`` re-runs it in-process over the working tree.
+    ``repowise health check`` gates a change on the findings it introduces.
     """
+    if ctx.invoked_subcommand is not None:
+        return
     configure_cli_logging(verbose=verbose)
     opts = _Options(
         fmt=fmt,
@@ -243,7 +286,7 @@ def health_command(
     status = err_console if fmt != "table" else console
 
     repo_path = _resolve_repo_path(path, no_workspace, repo_alias, status)
-    status.print(f"[bold]repowise health[/bold] — {repo_path}")
+    status.print(f"[bold]repowise health[/bold]: {repo_path}")
     if score_paths:
         _render_score_view(repo_path, score_paths, against, opts, badge_view)
         return
@@ -315,6 +358,11 @@ class _Options:
     trend_view: bool
 
     @property
+    def live(self) -> bool:
+        """The report is analysed in-process rather than read from the index."""
+        return self.recompute or self.generate_code is not None
+
+    @property
     def controls_set(self) -> bool:
         """``--scope`` or ``--counts`` asks for other than the stored reading."""
         return (
@@ -349,19 +397,7 @@ def _resolve_repo_path(
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(status, command="health")
-    if not target.is_workspace:
-        assert target.repo_path is not None
-        return target.repo_path
-    if target.repo_filter is not None:
-        picked = target.resolve_repo_alias(target.repo_filter)
-        if picked is None:
-            raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-        return picked
-    primary = target.primary_path()
-    if primary is None:
-        raise click.ClickException("Workspace has no primary repo configured.")
-    return primary
+    return target.narrow(status, command="health")
 
 
 def _render_stored_view(repo_path: Path, status: Any, opts: _Options) -> bool:
@@ -403,7 +439,7 @@ def _render_stored_view(repo_path: Path, status: Any, opts: _Options) -> bool:
 
 def _load_report(repo_path: Path, opts: _Options) -> tuple[Any, set[str], dict[str, str]]:
     """``(report, hotspot paths, language by path)``, recomputed or as stored."""
-    if opts.recompute or opts.generate_code is not None:
+    if opts.live:
         # Written back only for a whole-repo table: json/md are read by scripts
         # and CI, and a file or module run is an inspection, not repo state.
         return _recompute_report(
@@ -430,7 +466,7 @@ def _scope_report(
     metrics = [m for m in report.metrics if opts.keeps(m.file_path)]
     narrowed = parse_scope(opts.scope) == "production"
     if narrowed:
-        metrics = [m for m in metrics if not m.is_test]
+        metrics = rows_in_scope(opts.scope, metrics)
     # Taken before the projection, so a row the projection cannot read still
     # keeps its findings rather than reading as a file that left the repo.
     scoped_paths = {m.file_path for m in metrics}
@@ -478,17 +514,31 @@ def _scoped_suggestions(report: Any, opts: _Options) -> list[Any]:
 def _render_json(
     repo_path: Path, report: Any, metrics_sorted: list[Any], findings: list[Any], opts: _Options
 ) -> None:
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
     excluded = excluded_types()
     short_history = _load_short_history(repo_path)
+    # Repository-wide, so a narrowed run leaves it out, as the table does.
+    narrowed = bool(opts.file_filter or opts.module_filter)
+    measured = None if narrowed else _load_measured_costs(repo_path)
     click.echo(
         json.dumps(
             {
                 "kpis": report.kpis,
+                # Which scoring produced these numbers: a score that moves
+                # across a version change may not mean the code changed.
+                "analyzer_version": (
+                    HEALTH_ANALYZER_VERSION
+                    if opts.live
+                    else _load_stored_analyzer_version(repo_path)
+                ),
                 "scope": parse_scope(opts.scope),
                 "counts": parse_counts(opts.counts),
                 # Findings, causes, plans and Fix first items, as every
                 # surface counts them; ``shown`` is 0, nothing is listed.
                 "queue_counts": _load_queue_counts(repo_path),
+                # Only with ranked runtime evidence (``crud.measured_costs``).
+                **({"measured_costs": measured} if measured else {}),
                 "metrics": [_json_metric(m, short_history) for m in metrics_sorted],
                 "findings": [
                     {
@@ -547,6 +597,7 @@ def _render_table(
 ) -> None:
     """The terminal report. *metrics* is ``(as scoped, sorted by score)``."""
     from repowise.core.analysis.health.grading import distribution as health_distribution
+    from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 
     scoped, metrics_sorted = metrics
     # Lead with what to fix; a narrowed run is an inspection, not the worklist.
@@ -556,11 +607,22 @@ def _render_table(
     _render_split_line(report.kpis)
     _render_distribution_line(health_distribution(scoped))
     _render_defect_accuracy_line(report)
-    # Lead with the finding count, density and coverage, not the bounded /10
-    # average. Metrics carry no language, so it comes with the report.
-    _render_performance_section(report, findings, languages)
-    _render_files_table(metrics_sorted, _load_short_history(repo_path))
+    # Lead with the causes worth fixing now and coverage, not the bounded /10
+    # average. Metrics carry no language, so it comes with the report. The
+    # counts are the repository's, so a narrowed run leaves them out.
+    coverage = coverage_for_metrics(report.metrics, languages)
+    narrowed = bool(opts.file_filter or opts.module_filter)
+    causes = None if narrowed else _load_perf_causes(repo_path, coverage.covered_nloc)
+    _render_performance_section(report, coverage, causes)
+    measured = None if narrowed else _load_measured_costs(repo_path)
+    _render_measured_costs(measured)
+    listed, left_out = _ranked_rows(metrics_sorted, narrowed)
+    _render_files_table(listed, _load_short_history(repo_path), left_out)
     _render_findings_table(findings)
+    # Last, so it is the line a reader leaves with. A ranked view means runs
+    # are stored; only without one is the store asked.
+    if not narrowed and measured is None:
+        _render_connect_line(_load_evidence_freshness(repo_path))
 
 
 def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) -> None:
@@ -568,35 +630,83 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
         BAND_LABEL,
         BAND_TERMINAL_COLOR,
         analysed_note,
+        band_for,
         headline_band,
+        headline_scope,
     )
 
+    share = kpis.get("analysed_share")
+    analysed = kpis.get("file_count") or 0
+    unanalysed_count = kpis.get("unanalysed_file_count") or 0
+    # A minority-analysed score never prints bare: its coverage rides beside it.
+    scope = headline_scope(analysed, unanalysed_count)
+
+    def banded(label: str, score: Any, band: str | None) -> str:
+        # Every score printed carries its band, so a Fair figure never sits
+        # unlabelled beside a Good one.
+        tag = ""
+        if band is not None:
+            color = BAND_TERMINAL_COLOR[band]
+            tag = f" [[{color}]{BAND_LABEL[band]}[/{color}]]"
+        return f"{label}: [bold]{score if score is not None else '?'}[/bold]/10{tag}"
+
     avg = kpis.get("average_health")
-    band_str = ""
-    band = headline_band(avg, kpis.get("analysed_share"))
-    if band is not None:
-        band_color = BAND_TERMINAL_COLOR[band]
-        band_str = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
-    console.print(
-        f"\nCode health: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
-        f"Hotspot: [bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
-        f"Worst: [bold]{kpis.get('worst_performer_score') or '?'}[/bold]/10 "
-        f"({kpis.get('worst_performer_path') or 'n/a'})"
+    avg_band = headline_band(avg, share)
+    parts = [banded("Code health", avg, avg_band) + (f" {scope}" if scope else "")]
+    # Production code beside the all-files figure, while tests, tooling or
+    # other non-shipping code are in it.
+    production = kpis.get("production_average")
+    narrowed = (kpis.get("production_file_count") or 0) < (kpis.get("file_count") or 0)
+    if production is not None and narrowed:
+        parts.append(banded("Production code", production, headline_band(production, share)))
+    # A repo with no recent churn has no hotspots, so no hotspot figure.
+    hotspot = kpis.get("hotspot_health")
+    if hotspot is not None:
+        parts.append(banded("Hotspot", hotspot, headline_band(hotspot, share)))
+    # One file's score takes the file's band, withheld with the headline's.
+    worst = kpis.get("worst_performer_score")
+    parts.append(
+        banded("Worst", worst, band_for(worst) if worst is not None and avg_band else None)
+        + f" ({kpis.get('worst_performer_path') or 'n/a'})"
     )
+    console.print("\n" + " · ".join(parts))
     if code_shape:
-        console.print("[dim]Counting code shape only — change history is left out.[/dim]")
+        console.print("[dim]Counting code shape only. Change history is left out.[/dim]")
     if unanalysed:
         console.print(
             f"[dim]{unanalysed} file(s) not analysed: health does not support "
             "their language yet.[/dim]"
         )
     # The share behind the headline, from the same counts as its band.
-    note = analysed_note(kpis.get("file_count") or 0, kpis.get("unanalysed_file_count") or 0)
-    if note:
+    note = analysed_note(analysed, unanalysed_count)
+    if note and not scope:
         console.print(f"[dim]Code health {note}.[/dim]")
 
 
-def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> None:
+def _ranked_rows(rows: list[Any], narrowed: bool) -> tuple[list[Any], Counter[str]]:
+    """``(rows the table ranks, count of the rest by reason)``, order kept.
+
+    Every row when the reader named files (``--file``/``--module``). Otherwise
+    the rows in Fix first's scope, the rule behind MCP's ``worst_files`` and the
+    "Worst" headline: tests, tooling, build, vendored, generated and docs
+    example files are left out by stored origin.
+    """
+    if narrowed:
+        return list(rows), Counter()
+    kept: list[Any] = []
+    left_out: Counter[str] = Counter()
+    for row in rows:
+        reason = scope_reason(row)
+        if reason is None:
+            kept.append(row)
+        else:
+            left_out[reason] += 1
+    return kept, left_out
+
+
+def _render_files_table(
+    metrics_sorted: list[Any], short_history: set[str], left_out: Counter[str] | None = None
+) -> None:
     from repowise.core.analysis.health.grading import BAND_TERMINAL_COLOR, band_for
 
     table = Table(title=f"Lowest-scoring files ({min(len(metrics_sorted), 20)})")
@@ -610,7 +720,7 @@ def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> N
         score_color = BAND_TERMINAL_COLOR[band_for(m.score)]
         table.add_row(
             m.file_path,
-            f"[{score_color}]{m.score:.1f}[/{score_color}]"
+            f"[{score_color}]{m.score:.2f}[/{score_color}]"
             + ("*" if m.file_path in short_history else ""),
             str(m.max_ccn),
             str(m.max_nesting),
@@ -623,29 +733,43 @@ def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> N
             f"[dim]* Short history (under {HISTORY_MIN_COMMITS} commits): most history "
             "markers need more, so the score is mostly code shape.[/dim]"
         )
+    if left_out:
+        counts = ", ".join(f"{n} {r.replace('_', ' ')}" for r, n in sorted(left_out.items()))
+        console.print(f"[dim]Not ranked here: {counts}. --file or --module lists them.[/dim]")
+
+
+def _is_advisory(finding: Any) -> bool:
+    return getattr(finding, "dimension", None) == ADVISORY_DIMENSION
 
 
 def _render_findings_table(findings: list[Any]) -> None:
     if not findings:
         return
-    # The total get_overview prints; advisory rows are listed, not counted.
-    console.print(f"\n[bold]{open_finding_count(findings)}[/bold] open findings:")
+    # The total get_overview prints. Advisory rows deduct nothing, so they are
+    # listed after the counted ones and marked, never counted.
+    counted = open_finding_count(findings)
+    advisory = len(findings) - counted
+    header = f"\n[bold]{counted}[/bold] open findings"
+    if advisory:
+        header += f" [dim](+{advisory} advisory, not scored)[/dim]"
+    console.print(header + ":")
+    listed = sorted(findings, key=_is_advisory)[:30]
     f_table = Table()
     f_table.add_column("Severity", style="magenta")
     f_table.add_column("Marker", style="cyan")
     f_table.add_column("File")
     f_table.add_column("Function")
     f_table.add_column("Impact", justify="right")
-    for f in findings[:30]:
+    for f in listed:
         f_table.add_row(
             str(f.severity),
             f.biomarker_type,
             f.file_path,
             f.function_name or "-",
-            f"-{f.health_impact:.2f}",
+            "[dim]advisory[/dim]" if _is_advisory(f) else f"-{f.health_impact:.2f}",
         )
     console.print(f_table)
-    for line in preview_lines("health", findings[:30], kind="biomarker_type"):
+    for line in preview_lines("health", listed, kind="biomarker_type"):
         console.print(f"[dim]{line}[/dim]")
 
 

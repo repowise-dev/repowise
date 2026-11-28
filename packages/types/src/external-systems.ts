@@ -158,3 +158,39 @@ export interface ExternalSystemImportingFiles {
   truncated: boolean;
   scope: ExternalSystemsSummaryScope;
 }
+
+/**
+ * How close production code comes to a package advisory, strongest first.
+ * `unknown` ranks with `imported`, never below it.
+ */
+export type PackageAdvisoryTier = "package_called" | "imported" | "unknown";
+
+export interface PackageAdvisorySite {
+  path: string;
+  line?: number | null;
+  symbol?: string | null;
+}
+
+/** One stored advisory on a package, from the last imported advisory document. */
+export interface PackageAdvisoryRow {
+  package: string;
+  ecosystem?: string | null;
+  id: string;
+  tier: PackageAdvisoryTier;
+  basis: string;
+  aliases: string[];
+  severity?: string | null;
+  score?: number | null;
+  version?: string | null;
+  fix?: string | null;
+  /** null when no exact version decided the advisory's range. */
+  affected?: boolean | null;
+  summary?: string | null;
+  sites: PackageAdvisorySite[];
+}
+
+/** `imported` false: no advisory document was imported, so nothing was checked. */
+export interface PackageAdvisories {
+  imported: boolean;
+  advisories: PackageAdvisoryRow[];
+}

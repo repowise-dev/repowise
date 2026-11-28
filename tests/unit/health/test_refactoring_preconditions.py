@@ -63,6 +63,25 @@ def test_a_proved_local_extraction_is_mechanical() -> None:
     assert applicability.reasons == ("dataflow_proved_local_extraction",)
 
 
+def test_a_java_extraction_with_an_unresolved_parameter_is_a_judgment_call():
+    applicability = classify_step(
+        step(
+            "extract_method",
+            file_path="svc/Orders.java",
+            blast_radius={"scope": "local"},
+            plan={
+                "new_symbol": {
+                    "params": [{"name": "value", "type": None}],
+                    "returns": [],
+                    "signature_text": "private static void helper(<type> value) {",
+                }
+            },
+        )
+    )
+    assert applicability.classification == "judgment"
+    assert applicability.reasons == ("type_unresolved",)
+
+
 def test_an_unsure_detector_keeps_its_own_extraction_a_judgment_call() -> None:
     applicability = classify_step(
         step("extract_method", blast_radius={"scope": "local"}, confidence="medium")

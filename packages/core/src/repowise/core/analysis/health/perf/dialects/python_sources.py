@@ -43,6 +43,8 @@ if TYPE_CHECKING:
 class PythonLoopSources:
     """Loop sources and magnitudes. Mixed into :class:`~.python.PythonPerfDialect`."""
 
+    read_call_kinds = frozenset({"call"})
+
     def loop_source(self, loop: Node, probe: SinkProbe) -> LoopSource | None:
         if loop.type != "for_statement":
             return None
@@ -51,7 +53,7 @@ class PythonLoopSources:
         iterates, claim = self._source(right, loop, probe, hop=True)
         if iterates == "unknown" and baseline == "unknown":
             return None
-        return LoopSource(iterates, claim or baseline)
+        return self.with_read_tables(LoopSource(iterates, claim or baseline), right, loop, probe)
 
     def _source(self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
         """What *expr* walks, and the magnitude that settles when it differs from
@@ -161,39 +163,21 @@ class PythonLoopSources:
                 return self._source(inner[0], loop, probe, hop=hop)
         return "unknown", None
 
-    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
-        """Every SQL text and selected model names a registry or configuration table."""
+    def read_tables(self, call: Node, nodes: list[Node]) -> tuple[str, ...]:
+        """The tables its SQL texts read and every model-like name in the statement
+        (``select(Repository)``, ``File.repository_id`` in a filter); ``()`` when a
+        SQL text names no table or more than its FROM / JOIN list shows."""
         walked = [n for part in nodes for n in self._walk(part)]
         sql = [
             n.text or b""
             for n in walked
             if n.type == "string" and _PY_SQL_LITERAL_RE.match(_text(n))
         ]
-        models = self._query_models(walked)
-        return bool(sql or models) and (
-            all(lex.is_config_sql(text) for text in sql)
-            and all(lex.is_config_model(model) for model in models)
-        )
-
-    def _query_models(self, walked: list[Node]) -> list[str]:
-        return [
-            model
-            for n in walked
-            if n.type == "call" and self.callee_method_name(n) in ("select", "query")
-            for model in self._selected_models(n)
-        ]
-
-    def _selected_models(self, select: Node) -> list[str]:
-        """``select(Repository)`` / ``query(Repository.id, Repository.path)`` -> the model
-        names; ``func.count()`` and other expressions name none."""
-        args = select.child_by_field_name("arguments")
-        models: list[str] = []
-        for arg in (c for c in args.children if c.is_named) if args is not None else ():
-            path = self._dotted_path(arg) or ""
-            head = next((seg for seg in path.split(".") if _PY_MODEL_NAME_RE.match(seg)), None)
-            if head is not None:
-                models.append(head)
-        return models
+        tables = [lex.read_sql_tables(text) for text in sql]
+        if not all(tables):
+            return ()
+        models = [_text(n) for n in walked if n.type == "identifier" and _PY_MODEL_NAME_RE.match(_text(n))]
+        return tuple(dict.fromkeys([*(t for found in tables for t in found), *models]))
 
     def _literal_constant(self, expr: Node, name: bytes) -> bool:
         """``self._TABLES`` where the file binds ``_TABLES`` once, to a literal collection."""

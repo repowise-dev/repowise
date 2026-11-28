@@ -98,9 +98,8 @@ class CommandTarget:
 
         ``--repo <alias>`` resolves to ``mode="workspace"`` with ``repo_path``
         left ``None``, so a command that reads ``repo_path`` directly refuses
-        every ``--repo`` call it advertises. Three commands already hand-roll
-        this narrowing (``dead-code``, ``health``, ``costs``); this is where it
-        belongs, beside :meth:`primary_path` and :meth:`resolve_repo_alias`.
+        every ``--repo`` call it advertises. A command that also prints its
+        scope calls :meth:`narrow` instead.
 
         Raises ``click.ClickException`` when the alias is unknown or the
         workspace declares no primary.
@@ -117,6 +116,40 @@ class CommandTarget:
         if primary is None:
             raise click.ClickException("Workspace has no primary repo configured.")
         return primary
+
+    def narrow(self, console_obj: Console, *, command: str, repo_option: bool = True) -> Path:
+        """:meth:`single_repo_path`, after one line saying which repo the command reads.
+
+        For commands that read one repo even from a workspace root, where
+        :meth:`notice` would claim the whole workspace. *repo_option* says
+        whether the command takes ``--repo <alias>``, so the hint names a way
+        to pick another repo that the command offers.
+        """
+        from rich.markup import escape
+
+        repo = self.single_repo_path()
+        if self.is_workspace:
+            assert self.ws_root is not None and self.ws_config is not None
+            role, hint = "", ""
+            alias = self.repo_filter
+            if alias is None:
+                alias, role = self.ws_config.get_primary().alias, " (primary)"
+                hint = (
+                    "; pass --repo <alias> for another"
+                    if repo_option
+                    else "; run it inside another member repo for that one"
+                )
+            console_obj.print(
+                f"[dim]\\[workspace][/dim] {command} reads one repo: "
+                f"[cyan]{escape(alias)}[/cyan]{role} of {len(self.ws_config.repos)} "
+                f"in [cyan]{escape(self.ws_root.name)}[/cyan]{hint}"
+            )
+        elif self.auto_detected and self.ws_root is not None:
+            console_obj.print(
+                f"[dim]\\[single-repo][/dim] {command} reads [cyan]{escape(repo.name)}[/cyan], "
+                f"a repo inside workspace [cyan]{escape(self.ws_root.name)}[/cyan]"
+            )
+        return repo
 
     # ------------------------------------------------------------------
     # Notice rendering — every command should call this so users always
@@ -153,7 +186,7 @@ class CommandTarget:
         if self.auto_detected and self.ws_root is not None:
             # A workspace exists upstream but we chose single-repo anyway.
             console_obj.print(
-                f"[dim][single-repo][/dim] targeting "
+                f"[dim]\\[single-repo][/dim] targeting "
                 f"[cyan]{self.repo_path}[/cyan] "
                 f"(workspace also detected at [cyan]{self.ws_root}[/cyan]; "
                 f"pass --workspace to run across all repos)"
@@ -191,7 +224,9 @@ def resolve_command_target(
          that has been indexed before) → single-repo mode, even if a
          workspace exists upstream. cd-into-the-repo is the strongest
          signal of user intent.
-       - If a workspace exists upstream of cwd → workspace mode.
+       - If a workspace exists upstream of cwd → workspace mode. A git
+         repo that is not a member of that workspace is never routed to
+         it (see ``find_workspace_root``).
        - Otherwise → single-repo mode (cwd, even if not indexed).
 
     The returned :class:`CommandTarget` carries a ``reason`` string and an
@@ -232,7 +267,8 @@ def resolve_command_target(
 
     # ----- Rule 2: --workspace or --repo -----
     if workspace_flag or repo_alias is not None:
-        ws_root = find_workspace_root(base_path)
+        # Asked for by name: any repo under the workspace may reach it.
+        ws_root = find_workspace_root(base_path, any_repo=True)
         if ws_root is None:
             raise WorkspaceNotFound(
                 "No .repowise-workspace.yaml found at or above "
@@ -298,7 +334,9 @@ def resolve_command_target(
     # 4b: cwd is an indexed repo — respect that even if a workspace exists upstream
     cwd_state = get_repowise_dir(base_path) / STATE_FILENAME
     if cwd_state.exists():
-        upstream = find_workspace_root(base_path.parent if base_path.parent != base_path else None)
+        upstream = find_workspace_root(base_path)
+        if upstream == base_path:
+            upstream = None  # a workspace root whose config 4a could not load
         return CommandTarget(
             mode="single",
             repo_path=base_path,
@@ -327,3 +365,25 @@ def resolve_command_target(
         reason="no workspace nearby",
         auto_detected=False,
     )
+
+
+def cross_repo_cut_inputs(repo_path: Path, ws_root: Path | None) -> dict[str, Any]:
+    """``lookup`` and ``alias`` for the dead-code cross-repo cut (``serve_findings``)
+    on *repo_path*, a member of the workspace at *ws_root*; both ``None`` when
+    there is no workspace or the repo is not one of its members."""
+    none: dict[str, Any] = {"lookup": None, "alias": None}
+    if ws_root is None:
+        return none
+    import yaml
+
+    from repowise.core.workspace.config import WorkspaceConfig
+
+    try:
+        alias = WorkspaceConfig.load(ws_root).alias_for_path(ws_root, repo_path)
+    except (OSError, ValueError, yaml.YAMLError):  # an unreadable config cuts nothing
+        return none
+    if alias is None:
+        return none
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    return {"lookup": CrossRepoEnricher.for_workspace(ws_root), "alias": alias}

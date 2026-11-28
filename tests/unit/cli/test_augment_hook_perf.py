@@ -77,6 +77,23 @@ def test_hook_entry_point_imports_nothing_heavy() -> None:
     assert heavy == "", f"the augment hook entry point pulled in:\n{heavy}"
 
 
+def test_the_dispatcher_imports_no_console_or_event_loop() -> None:
+    """The entry point imports the dispatcher on every call; it must stay light.
+
+    ``rich`` and ``asyncio`` are not on the heavy list because the CLI uses
+    them everywhere, but here they cost ~100ms per fire. They came in once
+    through the ``repowise.cli.helpers`` facade for a one-line git helper.
+    The ORM paths import asyncio inside the function that runs them.
+    """
+    probe = (
+        "import sys; import repowise.cli.commands.augment_cmd; "
+        "print('\\n'.join(sorted(m for m in sys.modules "
+        " if m.split('.')[0] in ('rich', 'asyncio', 'sqlalchemy'))))"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "", f"the augment dispatcher pulled in:\n{out.stdout}"
+
+
 def test_the_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
     """``migrate_claude_code_hooks`` runs after *every* hook invocation.
 

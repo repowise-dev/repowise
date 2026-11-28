@@ -26,6 +26,10 @@ _MAX_PATH_DECISIONS = 8
 #: this lane signals that a review queue exists, it is not the queue.
 _MAX_PATH_CANDIDATES = 3
 
+#: Mined records a default path answer serves after its rules: enough to say
+#: what history suggests, few enough that the rules stay the answer.
+_MAX_BACKGROUND = 2
+
 #: Paths kept per record. A head plus a total shows how wide a decision is.
 _MAX_AFFECTED_FILES = 10
 
@@ -323,24 +327,35 @@ def _shed_tail_decisions(result_data: dict, collector: OmissionCollector) -> Non
 
 
 def _cap_target_context(
-    target_context: dict[str, Any], collector: OmissionCollector
+    target_context: dict[str, Any],
+    collector: OmissionCollector,
+    *,
+    candidate_cap: int = _MAX_PATH_DECISIONS,
 ) -> None:
     """Cap evidence-enriched per-target decision lanes independently."""
     for target, entry in target_context.items():
-        for lane in ("governing_decisions", "candidate_decisions"):
+        for lane, cap in (
+            ("governing_decisions", _MAX_PATH_DECISIONS),
+            ("candidate_decisions", candidate_cap),
+        ):
             decisions = entry.get(lane)
             if isinstance(decisions, list):
                 cap_collection(
                     entry,
                     lane,
                     decisions,
-                    _MAX_PATH_DECISIONS,
+                    cap,
                     collector,
-                    label=f"{target} :: {lane} beyond cap={_MAX_PATH_DECISIONS}",
+                    label=f"{target} :: {lane} beyond cap={cap}",
                 )
 
 
-def _cap_path_decision_lanes(result_data: dict[str, Any], collector: OmissionCollector) -> None:
+def _cap_path_decision_lanes(
+    result_data: dict[str, Any],
+    collector: OmissionCollector,
+    *,
+    side_cap: int = _MAX_PATH_CANDIDATES,
+) -> None:
     """Cap path mode's rules lane and the two lanes beside it."""
     cap_collection(
         result_data,
@@ -356,7 +371,7 @@ def _cap_path_decision_lanes(result_data: dict[str, Any], collector: OmissionCol
                 result_data,
                 lane_key,
                 result_data[lane_key],
-                _MAX_PATH_CANDIDATES,
+                side_cap,
                 collector,
-                label=f"path {lane_key} beyond cap={_MAX_PATH_CANDIDATES}",
+                label=f"path {lane_key} beyond cap={side_cap}",
             )

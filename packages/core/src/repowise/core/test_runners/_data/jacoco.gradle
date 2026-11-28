@@ -1,0 +1,6 @@
+allprojects {
+  plugins.withId('java') {
+    apply plugin: 'jacoco'
+    tasks.named('jacocoTestReport') { reports { xml.required = true } }
+  }
+}

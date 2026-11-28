@@ -24,14 +24,14 @@ export function Slider({
       {...props}
     >
       <SliderPrimitive.Track className="relative h-1.5 w-full grow overflow-hidden rounded-full bg-[var(--color-bg-elevated)]">
-        <SliderPrimitive.Range className="absolute h-full bg-[var(--color-accent-primary)]" />
+        <SliderPrimitive.Range className="absolute h-full bg-[var(--color-control-selected)]" />
       </SliderPrimitive.Track>
       <SliderPrimitive.Thumb
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
         className={cn(
           "block h-4 w-4 rounded-full border border-[var(--color-accent-primary)] bg-[var(--color-bg-surface)] shadow",
-          "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+          "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
           "disabled:pointer-events-none disabled:opacity-50",
         )}
       />

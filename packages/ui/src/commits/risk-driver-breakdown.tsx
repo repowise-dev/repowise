@@ -1,5 +1,5 @@
 import { cn } from "../lib/cn";
-import { formatLOC } from "../lib/format";
+import { formatLOC, formatNumber } from "../lib/format";
 import type { RiskDriver } from "@repowise-dev/types/git";
 
 export interface RiskDriverBreakdownProps {
@@ -31,11 +31,11 @@ export function describeDriver(driver: RiskDriver): string {
     case "ld":
       return n === 0 ? "nothing deleted" : `${formatLOC(n)} lines deleted`;
     case "nf":
-      return `${n.toLocaleString()} ${n === 1 ? "file" : "files"} touched`;
+      return `${formatNumber(n)} ${n === 1 ? "file" : "files"} touched`;
     case "nd":
-      return `${n.toLocaleString()} ${n === 1 ? "directory" : "directories"} touched`;
+      return `${formatNumber(n)} ${n === 1 ? "directory" : "directories"} touched`;
     case "ns":
-      return `${n.toLocaleString()} ${n === 1 ? "subsystem" : "subsystems"} touched`;
+      return `${formatNumber(n)} ${n === 1 ? "subsystem" : "subsystems"} touched`;
     case "entropy":
       // Shannon entropy of the per-file churn, in bits and not normalised:
       // k equally-changed files score log2(k), so every bit is a doubling of
@@ -44,7 +44,7 @@ export function describeDriver(driver: RiskDriver): string {
     case "exp":
       return n === 0
         ? "author's first commit here"
-        : `author had ${n.toLocaleString()} prior ${n === 1 ? "commit" : "commits"}`;
+        : `author had ${formatNumber(n)} prior ${n === 1 ? "commit" : "commits"}`;
     default:
       return driver.label;
   }

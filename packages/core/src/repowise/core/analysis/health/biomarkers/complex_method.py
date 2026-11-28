@@ -7,7 +7,7 @@ value is judged on the CCN outside it (``complexity/dispatch.py``).
 
 from __future__ import annotations
 
-from ..complexity.dispatch import judged_ccn
+from ..complexity.dispatch import judged_ccn, judged_leaves_out
 from ..models import Severity
 from .base import BiomarkerResult, FileContext, shape_details
 
@@ -33,10 +33,12 @@ class ComplexMethodDetector:
             if severity is None:
                 continue
             details = {"ccn": fn.ccn, "cognitive": fn.cognitive, "nloc": fn.nloc}
-            reason = f"{fn.name} has cyclomatic complexity {judged}"
+            # Say what is measured, not a verdict: many paths often carry defect
+            # risk, but a flat guard run or a dispatch is not always worth a split.
+            reason = f"{fn.name} has {judged} independent paths (cyclomatic complexity)"
             if judged != fn.ccn:
                 details["judged_ccn"] = judged
-                reason += f" ({fn.ccn} counting every arm of its dispatch)"
+                reason += f", {fn.ccn} counting {judged_leaves_out(fn)}"
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,

@@ -179,6 +179,35 @@ def test_exclude_removes_a_matched_component():
     assert result.outcome == "not_applicable"
 
 
+OUTSIDE = {"outside": True, "source": "declared", "files": [".github/ci.yml", "README.md"]}
+
+
+def test_a_change_outside_every_component_is_not_applicable_to_a_match():
+    # Resolution ran and no component holds the files: known, so the match answers.
+    outside = _item("components_touched", [OUTSIDE], value=[], basis="declared")
+    (result,) = evaluate(parse_policy(PCI_RULE), _evidence(outside, _provenance("agent")))
+    assert result.outcome == "not_applicable"
+    exclude_only = parse_policy(
+        "rules: [{name: x, exclude: {components: {names: [docs]}}, when: {attribution: agent}, action: warn}]"
+    )
+    (result,) = evaluate(exclude_only, _evidence(outside, _provenance("agent")))
+    assert result.outcome == "not_applicable"
+
+
+def test_unresolved_components_keep_a_match_unknown():
+    unresolved = _item(
+        "components_touched", [{"reason": "not gathered"}], status="unknown", basis="unresolved"
+    )
+    (result,) = evaluate(parse_policy(PCI_RULE), _evidence(unresolved, _provenance("agent")))
+    assert result.outcome == "unknown"
+
+
+def test_the_outside_row_is_no_component_to_a_rule_over_the_whole_change():
+    policy = parse_policy("rules: [{name: b, when: {bus_factor_below: 2}, action: warn}]")
+    (result,) = evaluate(policy, _evidence(_components(PAYMENTS, OUTSIDE)))
+    assert result.outcome == "triggered" and result.components == ["payments"]
+
+
 def test_unknown_evidence_never_fires():
     policy = parse_policy(PCI_RULE)
     no_tests = _evidence(

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="windows-1251" standalone="no"?>
+<report>
+  <stats>
+    <packages value="1"/>
+    <classes value="1"/>
+    <methods value="3"/>
+    <srcfiles value="1"/>
+    <srclines value="8"/>
+    <totallines value="8"/>
+    <coveredlines value="4"/>
+    <coveredpercent value="50"/>
+  </stats>
+  <data>
+    <all name="all classes">
+      <coverage type="class, %" value="100%   (1/1)"/>
+      <coverage type="method, %" value="67%   (2/3)"/>
+      <coverage type="block, %" value="50%   (4/8)"/>
+      <coverage type="line, %" value="50%   (4/8)"/>
+      <package name="uCalc">
+        <coverage type="class, %" value="100%   (1/1)"/>
+        <coverage type="method, %" value="67%   (2/3)"/>
+        <coverage type="block, %" value="50%   (4/8)"/>
+        <coverage type="line, %" value="50%   (4/8)"/>
+        <srcfile name="uCalc.pas">
+          <coverage type="class, %" value="100%   (1/1)"/>
+          <coverage type="method, %" value="67%   (2/3)"/>
+          <coverage type="block, %" value="50%   (4/8)"/>
+          <coverage type="line, %" value="50%   (4/8)"/>
+          <class name="TCalc">
+            <coverage type="class, %" value="100%   (1/1)"/>
+            <coverage type="method, %" value="67%   (2/3)"/>
+            <coverage type="block, %" value="50%   (4/8)"/>
+            <coverage type="line, %" value="50%   (4/8)"/>
+            <method name="Add">
+              <coverage type="method, %" value="100%   (1/1)"/>
+              <coverage type="block, %" value="100%   (2/2)"/>
+              <coverage type="line, %" value="100%   (2/2)"/>
+            </method>
+            <method name="Sign">
+              <coverage type="method, %" value="100%   (1/1)"/>
+              <coverage type="block, %" value="50%   (2/4)"/>
+              <coverage type="line, %" value="50%   (2/4)"/>
+            </method>
+            <method name="Unused">
+              <coverage type="method, %" value="0%   (0/1)"/>
+              <coverage type="block, %" value="0%   (0/2)"/>
+              <coverage type="line, %" value="0%   (0/2)"/>
+            </method>
+          </class>
+        </srcfile>
+      </package>
+    </all>
+    <linehits>
+      <file name="uCalc.pas">19=1;20=1;24=1;25=1;27=0;28=0;32=0;33=0</file>
+    </linehits>
+  </data>
+</report>

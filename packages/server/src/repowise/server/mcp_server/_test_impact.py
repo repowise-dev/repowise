@@ -111,7 +111,8 @@ async def cross_repo_tests_for(
     ``None`` only outside workspace mode or without contract data, so a caller
     can omit its block entirely. Every other empty answer names its reason in
     ``summary``: ``no_matching_links`` when the contract map knows no consumer
-    of those files, ``lookup_failed`` when the join itself broke. Never raises.
+    of those files, ``no_contract_links`` when it links no consumer anywhere (so
+    it cannot tell), ``lookup_failed`` when the join itself broke. Never raises.
     """
     if _state._registry is None:
         return None
@@ -140,7 +141,12 @@ async def cross_repo_tests_for(
             {lk.consumer_repo for lk in links if lk.consumer_repo != lk.provider_repo}
         )
         if not changed or not consumers:
-            return _empty_result("no_matching_links")
+            # Only a map that links something can say these files have no consumer.
+            linked = any(
+                raw.get("consumer_repo") != raw.get("provider_repo")
+                for raw in enricher.contract_links
+            )
+            return _empty_result("no_matching_links" if linked else "no_contract_links")
 
         async with _lock():
             opened = {}

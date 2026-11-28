@@ -611,3 +611,12 @@ async def test_stream_chat_asks_the_hosted_api_for_a_usage_chunk(monkeypatch):
     assert captured[0]["stream_options"] == {"include_usage": True}
     # A compatible server may reject the field, so it is not asked.
     assert "stream_options" not in captured[1]
+
+
+def test_context_window_is_small_only_for_a_local_server():
+    from repowise.core.providers.llm.base import LOCAL_CONTEXT_WINDOW
+
+    hosted = OpenAIProvider(api_key="sk-test", model="gpt-5.6")
+    local = OpenAIProvider(model="qwen", base_url="http://127.0.0.1:1234/v1")
+    assert hosted.context_window() is None
+    assert local.context_window() == LOCAL_CONTEXT_WINDOW
