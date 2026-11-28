@@ -98,8 +98,10 @@ _GENERATED_BUILD_DIR = "generated"
 _BUILD_OUTPUT_PARENTS = frozenset({"main", "build", "target"})
 # Adjacent directories a generator owns where neither name does alone:
 # CocoaPods writes ``Pods/Target Support Files/``; a bare ``pods/`` is as often
-# a first-party package (Kubernetes pods).
-_GENERATED_DIR_PAIRS = frozenset({("pods", "target support files")})
+# a first-party package (Kubernetes pods). Unreal's build writes its Header
+# Tool output under ``Intermediate/Build/``; a bare ``intermediate/`` can be a
+# compiler's own IR module.
+_GENERATED_DIR_PAIRS = frozenset({("pods", "target support files"), ("intermediate", "build")})
 # Beyond the first two lines, only an explicit sentence in a comment counts:
 # Java generators put "This class is generated." in the class Javadoc, after
 # the license and the imports. The looser markers ("DO NOT EDIT") stay
@@ -159,6 +161,16 @@ _GRAMMAR_LINE_LINES = 10
 _LLPARSE_BLOB_RE = re.compile(
     r"^static\s+const\s+unsigned\s+char\s+(?:ALIGN\(\d+\)\s+)?llparse_blob\d+\s*\["
 )
+# Unreal Header Tool and Qt's moc, uic and rcc open their C++ output with the
+# tool's own line inside a decorated block comment, so the comment-prefix banner
+# rules above never read it.
+_NATIVE_CODEGEN_BANNER_RE = re.compile(
+    r"^(?:\*\*\s*)?(?:Generated code exported from UnrealHeaderTool"
+    r"|Meta object code from reading C\+\+ file"
+    r"|Form generated from reading UI file"
+    r"|Resource object code\s*$)"
+)
+_NATIVE_CODEGEN_LINES = 3
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
 
@@ -259,6 +271,14 @@ def _from_llparse(name: str, header: str) -> bool:
     return any(_LLPARSE_BLOB_RE.match(line.strip()) for line in header.splitlines())
 
 
+def _from_native_codegen(name: str, header: str) -> bool:
+    """A C or C++ file opened by Unreal Header Tool's or a Qt tool's banner."""
+    if not name.lower().endswith(_deps_suffixes()):
+        return False
+    lines = header.splitlines()[:_NATIVE_CODEGEN_LINES]
+    return any(_NATIVE_CODEGEN_BANNER_RE.match(line.strip()) for line in lines)
+
+
 def _above_import(lines: list[str], i: int) -> bool:
     """A comment right above an import is about that import ("this file is
     generated at build time" over the import of a build artifact)."""
@@ -317,6 +337,12 @@ _BUNDLE_SUFFIXES = (".bundle.js", ".bundle.mjs", ".bundle.cjs")
 # must stay in the graph. ``.config.dart`` is not here: injectable writes one,
 # but the name is as often a hand-written config.
 _CODEGEN_SUFFIXES = (".g.dart", ".freezed.dart", ".gr.dart", ".mocks.dart", ".gen.dart")
+# Unreal Header Tool (``.gen.cpp``; its ``.generated.h`` matches below) and Qt's
+# moc and rcc, by name, kept in the graph for the same reason: hand-written code
+# includes them. uic's ``ui_<form>.h`` counts only by its banner, since games
+# keep hand-written ``ui_*.h`` modules.
+_NATIVE_CODEGEN_SUFFIXES = (".gen.cpp", ".moc")
+_NATIVE_CODEGEN_PREFIXES = ("moc_", "qrc_")
 
 
 def _is_generated_name(name: str) -> bool:
@@ -326,6 +352,8 @@ def _is_generated_name(name: str) -> bool:
         or lowered.endswith(_generated_suffixes())
         or lowered.endswith(_BUNDLE_SUFFIXES)
         or lowered.endswith(_CODEGEN_SUFFIXES)
+        or lowered.endswith(_NATIVE_CODEGEN_SUFFIXES)
+        or (lowered.startswith(_NATIVE_CODEGEN_PREFIXES) and lowered.endswith(_deps_suffixes()))
     )
 
 
@@ -431,6 +459,40 @@ def _in_static_release_dir(dirs: list[str]) -> bool:
         if d in _STATIC_RESOURCE_DIRS:
             return any(_RELEASE_DIR_RE.match(s) for s in dirs[i + 1 :])
     return False
+
+
+# Engine trees shelve copied C and C++ libraries in ``external/``, ``extern/``
+# or ``contrib/`` at any depth (``plugins/<name>/External/<lib>/``), but the same
+# names hold a monorepo's own libraries (``libs/external/<lib>/``) or modules
+# about external services. The path cannot tell them apart; the copy's own
+# license file can, in a directory between the shelf and the file. That needs
+# the checkout, so path-only callers keep the path rules' answer. A source file
+# named like a license (``license_check.cpp``) is not one, and the search starts
+# below the innermost shelf. Ceiling: a copy that ships only a README or a
+# ``licenses/`` folder stays production.
+_LIBRARY_SHELF_TOKENS = frozenset({"external", "externals", "extern", "contrib"})
+_LICENSE_FILE_RE = re.compile(r"^(?:licen[cs]e|copying|unlicense)(?:[-_.].*)?$")
+
+
+def _in_licensed_library(
+    normalized: str, name: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
+) -> bool:
+    if repo_root is None or not name.lower().endswith(_deps_suffixes()):
+        return False
+    parts = normalized.split("/")
+    root = os.fspath(repo_root)
+    shelves = [i for i, d in enumerate(dirs) if d in _LIBRARY_SHELF_TOKENS]
+    return bool(shelves) and any(
+        _has_license_file(os.path.join(root, *parts[: j + 1]))
+        for j in range(shelves[-1] + 1, len(dirs))
+    )
+
+
+# Memoised per folder for the process, with ``_is_docs_site``'s ceiling.
+@lru_cache(maxsize=4096)
+def _has_license_file(folder: str) -> bool:
+    code = _code_suffixes()
+    return any(_LICENSE_FILE_RE.match(n) and not n.endswith(code) for n in _entry_names(folder)[0])
 
 
 # A copied library is recognisable by its header only in the directories a
@@ -1139,8 +1201,10 @@ def code_origin(
     taken for someone else's.
 
     *repo_root* lets a docs-named folder other than ``docs`` count as docs
-    when it holds a docs-site generator's config. ``None`` skips that check,
-    so such a folder stays production and only the path rules apply.
+    when it holds a docs-site generator's config, and a C or C++ library under
+    an ``external/``, ``extern/`` or ``contrib/`` shelf count as vendored when
+    it carries its own license file. ``None`` skips those checks, so such
+    files stay production and only the path rules apply.
     """
     split = _split(path)
     if split is None:
@@ -1150,7 +1214,11 @@ def code_origin(
 
     if _is_generated_path(name, dirs) or (header and _is_generated_content(name, dirs, header)):
         return "generated"
-    if _is_vendored_path(name.lower(), dirs) or _copied_library(name, dirs, header, project):
+    if (
+        _is_vendored_path(name.lower(), dirs)
+        or _copied_library(name, dirs, header, project)
+        or _in_licensed_library(normalized, name, dirs, repo_root)
+    ):
         return "vendored"
     return _maintained_origin(normalized, name, dirs, is_test, repo_root, header)
 
@@ -1173,6 +1241,7 @@ def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:
         or _is_bundler_output(header)
         or _from_grammar(name, header)
         or _from_llparse(name, header)
+        or _from_native_codegen(name, header)
     )
 
 
