@@ -159,19 +159,19 @@ def test_path_qualified_include_takes_the_header_whose_path_ends_with_it(tmp_pat
 
 def test_path_qualified_include_tie_goes_to_the_header_nearest_the_importer(tmp_path):
     paths = [
-        "drivers/gl/storage/texture.h",
-        "servers/render/storage/texture.h",
-        "servers/render/backend/device.cpp",
-        "drivers/gl/rasterizer.cpp",
+        "render/gl/storage/texture.h",
+        "render/vk/storage/texture.h",
+        "render/vk/backend/device.cpp",
+        "render/gl/rasterizer.cpp",
     ]
     ctx = _stem_ctx(tmp_path, paths)
     assert (
-        resolve_cpp_import("storage/texture.h", "servers/render/backend/device.cpp", ctx)
-        == "servers/render/storage/texture.h"
+        resolve_cpp_import("storage/texture.h", "render/vk/backend/device.cpp", ctx)
+        == "render/vk/storage/texture.h"
     )
     assert (
-        resolve_cpp_import("storage/texture.h", "drivers/gl/rasterizer.cpp", ctx)
-        == "drivers/gl/storage/texture.h"
+        resolve_cpp_import("storage/texture.h", "render/gl/rasterizer.cpp", ctx)
+        == "render/gl/storage/texture.h"
     )
 
 
