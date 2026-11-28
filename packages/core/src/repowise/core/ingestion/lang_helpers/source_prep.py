@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from ..extractors.synthetic_symbols.cpp_macros import _FAST_REJECT_TOKENS as _SYNTHESIZED_MACROS
-from .preproc_arms import blank_unbalanced_preproc_arms
+from .preproc_arms import _TOKEN_RE, blank_unbalanced_preproc_arms
 
 _PASCAL_USES_IN_CLAUSE_RE = re.compile(rb"\bin\b[ \t]*'(?:[^'\r\n]|'')*'")
 
@@ -28,20 +28,22 @@ def _blank_matches(source: bytes, pattern: re.Pattern[bytes]) -> bytes:
 
     The shared half of every byte-preserving source sanitizer: a construct the
     grammar has no rule for is replaced in place, never removed, so line
-    numbers and byte offsets for everything else in the file survive. Spaces
-    and never a newline, so no pattern can consume a line break it did not
-    match.
+    numbers and byte offsets for everything else in the file survive.
     """
     return _blank_spans(source, [match.span() for match in pattern.finditer(source)])
 
 
+_NOT_LINE_BREAK_RE = re.compile(rb"[^\r\n]")
+
+
 def _blank_spans(source: bytes, spans: list[tuple[int, int]]) -> bytes:
-    """Overwrite each ``(start, end)`` span with spaces, keeping the length."""
+    """Overwrite each ``(start, end)`` span with spaces, keeping the length
+    and every line break inside it, so a span that crosses lines moves none."""
     if not spans:
         return source
     out = bytearray(source)
     for start, end in spans:
-        out[start:end] = b" " * (end - start)
+        out[start:end] = _NOT_LINE_BREAK_RE.sub(b" ", out[start:end])
     return bytes(out)
 
 
@@ -143,9 +145,54 @@ def prepare_apex_source(source: bytes) -> bytes:
 # declaration, which already parses, never match. Call-shaped forms like
 # ``CAPABILITY("mutex")`` qualify too. The body brace must follow whitespace,
 # so a brace-initialized variable (``struct TM tm{0};``) keeps its type.
+# ``[[attr]]`` and ``alignas(..)`` join the run: the grammar takes one of them,
+# not two (``class [[nodiscard]] alignas(16) Vec3`` loses the whole class).
+# The run may span lines and line comments, as a head split by ``#if`` lines
+# does once those go.
+_CPP_CLASS_HEAD_SPECIFIER = (
+    rb"(?:\[\[[^\[\]\r\n]*\]\]"
+    rb"|alignas[ \t]*\((?:[^()\r\n]|\([^()\r\n]*\))*\)"
+    rb"|[A-Z][A-Z0-9_]*(?:\([^()\r\n]*\))?)"
+)
+# Possessive: a comment that could end anywhere would let a specifier start
+# inside any word of it, and the scan of a commented header goes exponential.
+_CPP_HEAD_GAP = rb"(?:\s|//[^\r\n]*+)++"
 _CPP_CLASS_HEAD_MACRO_RE = re.compile(
-    rb"\b(?:class|struct)[ \t]+((?:[A-Z][A-Z0-9_]*(?:\([^()\r\n]*\))?[ \t]+)+)"
+    rb"\b(?:class|struct)("
+    + _CPP_HEAD_GAP
+    + rb"(?:"
+    + _CPP_CLASS_HEAD_SPECIFIER
+    + _CPP_HEAD_GAP
+    + rb")+)"
     rb"(?!final\b)[A-Za-z_]\w*(?:<[^;{}]*>)?(?:[ \t]+final)?(?=\s+\{|\s*:(?!:))"
+)
+_CPP_MACRO_NAME_RE = re.compile(rb"[A-Z][A-Z0-9_]*")
+_CPP_CLASS_HEAD_SPECIFIER_RE = re.compile(_CPP_CLASS_HEAD_SPECIFIER)
+
+
+def _class_head_spans(source: bytes) -> list[tuple[int, int]]:
+    """Class-head runs with a macro or two specifiers; one alone already parses."""
+    spans = []
+    for m in _CPP_CLASS_HEAD_MACRO_RE.finditer(source):
+        run = _CPP_CLASS_HEAD_SPECIFIER_RE.findall(m.group(1))
+        if len(run) > 1 or run[0][:1].isupper():
+            spans.append(m.span(1))
+    return spans
+
+
+# A call-shaped macro alone on the first member line of a class body, at any
+# indent (``DECLARE_SERIALIZABLE(EXPORT, Settings)``, ``GENERATED_BODY()``):
+# with no ``;`` the grammar reads it as the type of the next member and can
+# lose the class. Only a class body's first member qualifies (an access label
+# and comments may come first): there a call is never a statement. A head with
+# a paren (a function returning ``struct T``) never matches, nor does a
+# constructor whose initializer list or body starts on the next line. Group 2
+# is the name.
+_CPP_FIRST_MEMBER_MACRO_RE = re.compile(
+    rb"(?<!enum )\b(?:class|struct)\b[^;{}()]{0,512}\{"
+    rb"(?:[ \t]*+(?:\r?\n|//[^\r\n]*+|(?:public|protected|private)[ \t]*:))*+"
+    rb"[ \t]*+(([A-Z][A-Z0-9_]+)\((?:[^()\r\n]|\([^()\r\n]*\))*\))[ \t]*(?=//|\r?\n)"
+    rb"(?![ \t]*(?://[^\r\n]*)?\r?\n\s*[:{])"
 )
 
 # Clang thread-safety annotations written after a declarator
@@ -206,6 +253,37 @@ _CPP_MACRO_LINE_RE = re.compile(
     rb"(?!" + _CPP_TYPELESS_HEAD + rb")",
     re.MULTILINE,
 )
+# A call-shaped macro at the head of a statement or member with more code
+# after it on the line (``IF_ASSERTS(bool ok =) Insert(k);``, ``ALIGN(16) float
+# v;``). No call is followed by a name, so the macro is a prefix whose argument
+# may not even be an expression, and the grammar can lose the enclosing class
+# over it. Group 2 is the name. A declarator's own trailing words
+# (``JSON(int a) noexcept;``) are no code after a prefix.
+_CPP_PREFIX_MACRO_RE = re.compile(
+    rb"(?:^[ \t]*|[{;}][ \t]*)"
+    rb"(([A-Z][A-Z0-9_]+)\((?:[^()\r\n]|\([^()\r\n]*\))*\))(?=[ \t]+[A-Za-z_])"
+    rb"(?![ \t]+(?:noexcept|const|volatile|override|final|throw|try|requires|mutable|and|or|xor|bitand|bitor|not_eq|and_eq|or_eq|xor_eq)\b)",
+    re.MULTILINE,
+)
+# A call-shaped macro statement in a class body whose arguments hold a string
+# or a parenthesized group (``RTTI(Widget, "{guid}", Base);``,
+# ``RTTI((Box, "{guid}", T), Base)``): the grammar reads it as a member
+# declaration whose parameters cannot parse and loses the whole class. The
+# arguments may span lines. Group 2 is the name.
+_CPP_ARG_STRING = rb'"(?:[^"\\\r\n]|\\.)*"'
+_CPP_MEMBER_MACRO_RE = re.compile(
+    rb"^[ \t]*(([A-Z][A-Z0-9_]+)\((?:"
+    + _CPP_ARG_STRING
+    + rb"|[^()\";{}]|\((?:"
+    + _CPP_ARG_STRING
+    + rb"|[^()\";{}])*\))*\)[ \t]*;?)[ \t]*(?=//|\r?$)",
+    re.MULTILINE,
+)
+# What precedes a class body's ``{``: no parens or ``=`` once head runs are gone.
+_CPP_CLASS_OPENER_RE = re.compile(rb"(?<!enum )\b(?:class|struct|union)\b[^()=;{}]*\Z")
+# Every name a ``class``/``struct``/``union`` keyword introduces: an all-caps
+# class (``struct RGB``) has constructors shaped like a call-shaped macro.
+_CPP_TYPE_NAME_RE = re.compile(rb"\b(?:class|struct|union)\s+(?:[A-Z][A-Z0-9_]*\s+)*(\w+)")
 _CPP_FUNCTION_MACRO_DEFINE_RE = re.compile(rb"^[ \t]*#[ \t]*define[ \t]+(\w+)\(", re.MULTILINE)
 # The same macros written ahead of a template on its line (``FMT_EXPORT template <...>``).
 _CPP_TEMPLATE_PREFIX_MACRO_RE = re.compile(
@@ -283,6 +361,80 @@ def _macro_line_spans(source: bytes) -> list[tuple[int, int]]:
     return [m.span(1) if m.group(1) else m.span(2) for m in matches if m.group(3) not in local]
 
 
+def _first_member_macro_spans(source: bytes) -> list[tuple[int, int]]:
+    """First-member macro lines, less a constructor of a class the file names."""
+    matches = list(_CPP_FIRST_MEMBER_MACRO_RE.finditer(source))
+    if not matches:
+        return []
+    types = set(_CPP_TYPE_NAME_RE.findall(source))
+    return [m.span(1) for m in matches if m.group(2) not in types]
+
+
+def _member_macro_spans(source: bytes) -> list[tuple[int, int]]:
+    """Member-macro statements whose innermost enclosing brace is a class body."""
+    candidates = [
+        m
+        for m in _CPP_MEMBER_MACRO_RE.finditer(source)
+        if any(c in m.group(1)[len(m.group(2)) + 1 :] for c in b'"(')
+    ]
+    if not candidates:
+        return []
+    types = set(_CPP_TYPE_NAME_RE.findall(source))
+    in_class = _in_class_body(source, [m.start(1) for m in candidates])
+    return [
+        m.span(1)
+        for m, inside in zip(candidates, in_class, strict=True)
+        if inside and m.group(2) not in types
+    ]
+
+
+def _in_class_body(source: bytes, positions: list[int]) -> list[bool]:
+    """For each sorted position, is its innermost enclosing ``{`` a class body?"""
+    result: list[bool] = []
+    i = 0
+    for at, in_class in _scope_changes(source):
+        while i < len(positions) and positions[i] < at:
+            result.append(in_class)
+            i += 1
+    return result + [False] * (len(positions) - i)
+
+
+def _scope_changes(source: bytes):
+    """Yield ``(offset, in class body)`` at each brace, then once at the end."""
+    stack: list[bool] = []
+    head_start = 0
+    for match in _TOKEN_RE.finditer(source):
+        brace = match["brace"]
+        if brace is not None:
+            yield match.start(), bool(stack) and stack[-1]
+            if brace == b"{":
+                opener = _CPP_CLASS_OPENER_RE.search(source, head_start, match.start())
+                stack.append(opener is not None)
+            elif stack:
+                stack.pop()
+        if brace is not None or match["dir"] is not None:
+            head_start = match.end()
+    yield len(source) + 1, bool(stack) and stack[-1]
+
+
+def _prefix_macro_spans(source: bytes) -> list[tuple[int, int]]:
+    """Statement-head prefix macros, outside ``#define`` bodies and less local ones."""
+    spans = []
+    local: set[bytes] | None = None
+    for m in _CPP_PREFIX_MACRO_RE.finditer(source):
+        line_start = source.rfind(b"\n", 0, m.start(1)) + 1
+        line_end = source.find(b"\n", m.end(1))
+        line = source[line_start : len(source) if line_end < 0 else line_end].rstrip()
+        if line.lstrip().startswith(b"#") or line.endswith(b"\\"):
+            continue
+        if local is None:
+            local = set(_CPP_FUNCTION_MACRO_DEFINE_RE.findall(source))
+            local |= set(_CPP_TYPE_NAME_RE.findall(source))
+        if m.group(2) not in local:
+            spans.append(m.span(1))
+    return spans
+
+
 def _ends_declarator(source: bytes, end: int) -> bool:
     """True when the text before *end* is a declarator, not a statement head.
 
@@ -308,6 +460,7 @@ def _ends_declarator(source: bytes, end: int) -> bool:
 
 
 _CALL_ARGS_RE = re.compile(rb"\([^()]*\)")
+_LINE_COMMENT_RE = re.compile(rb"//[^\r\n]*")
 
 
 def cpp_class_head_macros(source: bytes) -> frozenset[str]:
@@ -316,16 +469,18 @@ def cpp_class_head_macros(source: bytes) -> frozenset[str]:
     The parser reads the blanked bytes, so it takes these from the original
     source to keep hiding each macro's own ``#define`` like other export macros.
     """
+    source = blank_unbalanced_preproc_arms(source, split_constructs=True)
     return frozenset(
         name.decode("ascii")
-        for m in _CPP_CLASS_HEAD_MACRO_RE.finditer(source)
-        for name in _CALL_ARGS_RE.sub(b" ", m.group(1)).split()
+        for start, end in _class_head_spans(source)
+        for name in _CALL_ARGS_RE.sub(b" ", _LINE_COMMENT_RE.sub(b" ", source[start:end])).split()
+        if _CPP_MACRO_NAME_RE.fullmatch(name)
     )
 
 
 def prepare_cpp_source(source: bytes) -> bytes:
-    """Blank class-head export macros, constructor attribute macros,
-    macro-only lines and trailing thread-safety annotations.
+    """Blank class-head specifier runs, constructor attribute macros,
+    macro-only and prefix macros and trailing thread-safety annotations.
 
     All are macros the grammar cannot see expanded, and all make it build the
     wrong tree: a missing class and a lost first method, a class left open
@@ -333,14 +488,20 @@ def prepare_cpp_source(source: bytes) -> bytes:
     it, or a hidden field and a method named after the annotation. Spans are
     blanked in place, so offsets and line numbers outside them are unchanged.
 
-    First, the losing arms of ``#if`` groups whose arms do not balance their
-    braces go (see :mod:`.preproc_arms`), so the macro scans below read the
-    one arm the parser will.
+    First, the losing arms and directive lines of ``#if`` groups whose arms do
+    not balance their braces, or that split one construct, go (see
+    :mod:`.preproc_arms`), so the macro scans below read the one arm the
+    parser will.
     """
-    source = blank_unbalanced_preproc_arms(source)
-    spans = [m.span(1) for m in _CPP_CLASS_HEAD_MACRO_RE.finditer(source)]
+    source = blank_unbalanced_preproc_arms(source, split_constructs=True)
+    spans = _class_head_spans(source)
+    # Read with the head runs gone, so a head's ``alignas(..)`` is no paren.
+    headless = _blank_spans(source, spans)
+    spans += _first_member_macro_spans(headless)
+    spans += _member_macro_spans(headless)
     spans += _ctor_macro_spans(source)
     spans += _macro_line_spans(source)
+    spans += _prefix_macro_spans(source)
     spans += [m.span(1) for m in _CPP_TEMPLATE_PREFIX_MACRO_RE.finditer(source)]
     spans += [
         m.span()

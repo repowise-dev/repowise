@@ -238,7 +238,7 @@ class TestLeftAlone:
         [
             pytest.param(b"int a;\n", id="no-directives"),
             pytest.param(
-                b"#ifndef H\n#define H\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
+                b'#ifndef H\n#define H\n#ifdef __cplusplus\nextern "C" {\n#endif\n'
                 b"int f(void);\n#ifdef __cplusplus\n}\n#endif\n#endif\n",
                 id="lone-extern-c-wrapper",
             ),
@@ -292,4 +292,52 @@ class TestLeftAlone:
 
     def test_unterminated_group_is_returned_untouched(self) -> None:
         source = b"void f() {\n#ifdef A\n  if (a) {\n#else\n  if (b) {\n  }\n"
+        assert blank_unbalanced_preproc_arms(source) is source
+
+
+class TestSplitConstructs:
+    def test_one_arm_group_inside_an_initializer_list_loses_only_its_directives(self) -> None:
+        source = b"C::C(int a) :\n#ifdef DBG\n  mA(a),\n#endif\n  mB(a) {}\n"
+        out = blank_unbalanced_preproc_arms(source, split_constructs=True)
+        assert b"#" not in out
+        assert b"  mA(a)," in out
+        assert out.count(b"\n") == source.count(b"\n") and len(out) == len(source)
+
+    def test_attribute_arm_before_a_declaration_keeps_the_attribute(self) -> None:
+        source = b'template <class T>\n#if HAS_SANITIZER\n__attribute__((no_sanitize("x"))) // why\n#endif\nT f();\n'
+        out = blank_unbalanced_preproc_arms(source, split_constructs=True)
+        lines = out.split(b"\n")
+        assert lines[1].strip() == b"" and lines[3].strip() == b""
+        assert lines[2].startswith(b"__attribute__")
+
+    def test_split_group_with_a_rival_arm_is_untouched(self) -> None:
+        # The live arm may be the second one: keeping the first would drop ``live``.
+        source = (
+            b"#if FEATURE\nREGISTER(\n    true\n)\n#else\nvoid live() {}\n#endif\n"
+            b"void f() { live(); }\n"
+        )
+        assert blank_unbalanced_preproc_arms(source, split_constructs=True) is source
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param(b"#ifndef G_H\n#define G_H\nint f();\n#endif\n", id="include-guard"),
+            pytest.param(
+                b"#ifndef G_H\n#define G_H\nNS_BEGIN\nint f();\nNS_END\n#endif\n",
+                id="guard-ending-on-macro",
+            ),
+            pytest.param(
+                b"class A {\n#ifdef X\npublic:\n#endif\n  void f();\n};\n", id="access-label"
+            ),
+            pytest.param(
+                b'const char* f() {\n  return "a "\n#ifdef X\n    "b "\n#endif\n    "c";\n}\n',
+                id="string-concatenation",
+            ),
+        ],
+    )
+    def test_whole_constructs_are_untouched(self, source: bytes) -> None:
+        assert blank_unbalanced_preproc_arms(source, split_constructs=True) is source
+
+    def test_c_and_the_default_scan_ignore_split_groups(self) -> None:
+        source = b"C::C(int a) :\n#ifdef DBG\n  mA(a),\n#endif\n  mB(a) {}\n"
         assert blank_unbalanced_preproc_arms(source) is source

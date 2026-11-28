@@ -120,3 +120,23 @@ def test_alias_chains_and_inline_struct_typedefs(tmp_path: Path) -> None:
     assert _callees_of(graph, "use.cc::Inline") == {"types.h::point"}
     assert _callees_of(graph, "use.cc::Pointer") == set()
     assert _callees_of(graph, "use.cc::Member") == set()
+
+
+def test_construction_that_picks_no_constructor_draws_no_edge(tmp_path: Path) -> None:
+    # The out-of-line definition makes the repo-wide tier see several
+    # constructor ids, so it used to answer with the class itself.
+    (tmp_path / "vec.h").write_text(
+        "#pragma once\nclass Vec {\n public:\n  Vec() = default;\n"
+        "  Vec(const Vec& o) = default;\n  Vec(float x, float y, float z);\n};\n"
+        "struct Pair { int a; int b; };\n"
+    )
+    (tmp_path / "vec.inl").write_text("Vec::Vec(float x, float y, float z) {}\n")
+    (tmp_path / "use.cc").write_text(
+        "Vec Make(float a) { return Vec(a, a, a); }\n"
+        "Vec Zero() { return Vec(); }\n"
+        "Pair Two() { return Pair(1, 2); }\n"
+    )
+    graph = _build(tmp_path)
+    assert _callees_of(graph, "use.cc::Make") == set()
+    assert _callees_of(graph, "use.cc::Zero") == {"vec.h::Vec"}
+    assert _callees_of(graph, "use.cc::Two") == {"vec.h::Pair"}
