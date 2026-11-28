@@ -201,6 +201,190 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
     return found
 
 
+
+def _java_script_engine_eval_offsets(source: str, masked: str) -> list[int]:
+    """Find Java ScriptEngine.eval calls using syntactic variable scopes."""
+    from repowise.core.analysis.health.dataflow.parsing import parse_source
+
+    source_bytes = source.encode("utf-8")
+    parsed = parse_source("Source.java", "java", source_bytes)
+    if parsed is None:
+        return []
+
+    root, _ = parsed
+    offsets = []
+
+    def text(node):
+        return source_bytes[node.start_byte:node.end_byte].decode("utf-8")
+
+    def char_offset(byte_offset):
+        return len(source_bytes[:byte_offset].decode("utf-8"))
+
+    has_script_engine_import = any(
+        child.type == "import_declaration"
+        and text(child).strip() in {
+            "import javax.script.ScriptEngine;",
+            "import javax.script.*;",
+        }
+        for child in root.named_children
+    )
+
+    def is_engine_type(node):
+        if node is None:
+            return False
+        type_name = text(node)
+        return (
+            type_name == "javax.script.ScriptEngine"
+            or (type_name == "ScriptEngine" and has_script_engine_import)
+        )
+
+    def is_var_engine(declarator):
+        """Check whether a var initializer creates a ScriptEngine."""
+        value = declarator.child_by_field_name("value")
+        if value is None or value.type != "method_invocation":
+            return False
+
+        method = value.child_by_field_name("name")
+        receiver = value.child_by_field_name("object")
+
+        if method is None or receiver is None:
+            return False
+        if text(method) != "getEngineByName":
+            return False
+        if receiver.type != "object_creation_expression":
+            return False
+
+        return any(
+            child.type == "type_identifier"
+            and text(child) == "ScriptEngineManager"
+            for child in receiver.named_children
+        )
+
+    def register(node, bindings):
+        """Register explicitly typed Java variables."""
+        typ = node.child_by_field_name("type")
+        if typ is None:
+            return
+
+        if node.type in {
+            "formal_parameter",
+            "enhanced_for_statement",
+            "resource",
+        }:
+            name = node.child_by_field_name("name")
+            if name is not None:
+                bindings[text(name)] = is_engine_type(typ)
+            return
+
+        if node.type not in {
+            "local_variable_declaration",
+            "field_declaration",
+            "constant_declaration",
+        }:
+            return
+
+        engine_type = is_engine_type(typ)
+        inferred_type = text(typ) == "var"
+
+        for declarator in node.named_children:
+            if declarator.type != "variable_declarator":
+                continue
+
+            name = declarator.child_by_field_name("name")
+            if name is None:
+                continue
+
+            bindings[text(name)] = engine_type or (
+                inferred_type and is_var_engine(declarator)
+            )
+
+    def visit(node, bindings, class_fields):
+        if node.type in {
+            "class_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "interface_declaration",
+        }:
+            class_bindings = {}
+            body = node.child_by_field_name("body")
+
+            if body is not None:
+                for child in body.named_children:
+                    if child.type in {"field_declaration", "constant_declaration"}:
+                        register(child, class_bindings)
+                    elif child.type == "enum_body_declarations":
+                        for member in child.named_children:
+                            if member.type == "field_declaration":
+                                register(member, class_bindings)
+
+            if node.type == "record_declaration":
+                parameters = node.child_by_field_name("parameters")
+                if parameters is not None:
+                    for parameter in parameters.named_children:
+                        register(parameter, class_bindings)
+
+            bindings = {**bindings, **class_bindings}
+            class_fields = class_bindings
+
+        if node.type in {"method_declaration", "constructor_declaration"}:
+            bindings = bindings.copy()
+            parameters = node.child_by_field_name("parameters")
+
+            if parameters is not None:
+                for parameter in parameters.named_children:
+                    register(parameter, bindings)
+
+        if node.type == "block":
+            bindings = bindings.copy()
+
+        if node.type == "local_variable_declaration":
+            register(node, bindings)
+
+        if node.type == "enhanced_for_statement":
+            bindings = bindings.copy()
+            register(node, bindings)
+
+        if node.type == "try_with_resources_statement":
+            bindings = bindings.copy()
+            resources = node.child_by_field_name("resources")
+            if resources is not None:
+                for resource in resources.named_children:
+                    if resource.type == "resource":
+                        register(resource, bindings)
+
+        if node.type == "method_invocation":
+            name = node.child_by_field_name("name")
+            obj = node.child_by_field_name("object")
+
+            if (
+                name is not None
+                and obj is not None
+                and text(name) == "eval"
+                and (
+                    (
+                        obj.type == "identifier"
+                        and bindings.get(text(obj), False)
+                    )
+                    or (
+                        obj.type == "field_access"
+                        and text(obj.child_by_field_name("object")) == "this"
+                        and class_fields.get(
+                            text(obj.child_by_field_name("field")), False
+                        )
+                    )
+                )
+            ):
+                offset = char_offset(name.start_byte)
+                if masked[offset:offset + 4] == "eval":
+                    offsets.append(char_offset(obj.start_byte))
+
+        for child in node.named_children:
+            visit(child, bindings, class_fields)
+
+    visit(root, {}, {})
+    return sorted(set(offsets))
+
+
 def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:
     """Find executable eval/exec calls with AST or bounded lexical fallback.
 
@@ -258,10 +442,16 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
         findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
 
     for pattern, kind, severity in _CALL_PATTERNS:
+        if kind == "eval_call" and file_path.lower().endswith((".java", ".kt", ".kts")):
+            continue  # eval is not a general Java/Kotlin code execution primitive
         if kind == "exec_call" and not is_python:
             continue  # handled below, gated on child_process
         for match in pattern.finditer(masked_source):
             add(kind, severity, match.start())
+
+    if file_path.lower().endswith(".java"):
+        for offset in _java_script_engine_eval_offsets(source, masked_source):
+            add("eval_call", "high", offset)
 
     if not is_python:
         for offset in _child_process_exec_calls(source, masked_source):
