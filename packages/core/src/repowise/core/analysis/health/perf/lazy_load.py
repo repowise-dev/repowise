@@ -17,7 +17,7 @@ import structlog
 from ..complexity.ast_utils import _collect_function_nodes, _find_function_entry_name, _node_text
 from ..complexity.models import PerfHit
 from .dialects import PERF_DIALECTS
-from .io_boundaries import collect_io_names
+from .io_boundaries import collect_io_names, walked_io_names
 from .loop_facts import LoopFacts
 from .orm_models import (
     ModelIndex,
@@ -97,16 +97,19 @@ def collect_lazy_loads(
     walked: Iterable[tuple[Any, FileComplexity]],
     parsed_files: Iterable[Any],
     read_source: SourceReader | None = None,
+    index: ModelIndex | None = None,
 ) -> None:
     """Append hits to each walked file's ``perf_hits``; one file failing skips only it.
-    The Java repository/mapper pass rides this ORM entry point."""
+    The Java repository/mapper pass rides this ORM entry point. *index* is the
+    repo's model index when the caller already built it."""
     # Both passes read both inputs, so a one-shot iterable is materialized once.
     walked, parsed_files = list(walked), list(parsed_files)
     reader = read_source or _disk_read
-    index = build_model_index(parsed_files, reader)
+    if index is None:
+        index = build_model_index(parsed_files, reader)
     for pf, fcx in walked:
         try:
-            fcx.perf_hits.extend(_file_hits(pf, reader, index))
+            fcx.perf_hits.extend(_file_hits(pf, reader, index, walked_io_names(fcx)))
         except Exception as exc:
             log.debug("lazy_load_failed", path=pf.file_info.abs_path, error=str(exc))
     collect_repository_loops(walked, parsed_files, reader)
@@ -119,7 +122,9 @@ def _disk_read(abs_path: str) -> bytes | None:
         return None
 
 
-def _file_hits(pf: Any, read_source: SourceReader, index: ModelIndex) -> list[PerfHit]:
+def _file_hits(
+    pf: Any, read_source: SourceReader, index: ModelIndex, io_names: dict[str, str] | None = None
+) -> list[PerfHit]:
     info = pf.file_info
     if info.language != "python":
         return []
@@ -135,7 +140,8 @@ def _file_hits(pf: Any, read_source: SourceReader, index: ModelIndex) -> list[Pe
     dialect = PERF_DIALECTS.get("python")
     if dialect is None:
         return []
-    io_names = collect_io_names(root, "python")
+    if io_names is None:
+        io_names = collect_io_names(root, "python")
     scan = _FileScan(
         dialect=dialect,
         io_names=io_names,

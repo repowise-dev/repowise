@@ -132,7 +132,7 @@ async def test_join_by_name_reports_usage_and_unfound_advisories(session, tmp_pa
     assert {s["path"] for s in row["sites"]} >= {"src/app/util.py"}
     assert result["not_found"] == 1
     assert [r["name"] for r in result["not_found_with_advisories"]] == ["jinja2"]
-    assert "not evaluated" in result["method"]
+    assert "exact version" in result["method"]
 
 
 async def test_join_passes_declared_packages_to_a_plugged_source(session, tmp_path):  # noqa: F811

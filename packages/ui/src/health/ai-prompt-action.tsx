@@ -5,6 +5,7 @@ import type { ChatContext } from "@repowise-dev/types/chat";
 
 import type { AiPromptFlavor } from "./ai-prompt-builder";
 import type { PromptSource } from "./ai-prompt-modal";
+import { formatNumber } from "../lib/format";
 
 /**
  * The one "prompt for your agent" action: a surface describes the prompt it
@@ -18,11 +19,11 @@ const AiPromptModal = lazy(() =>
 );
 
 /** The label every actionable row's primary button carries. */
-export const AGENT_PROMPT_LABEL = "Copy prompt for your agent";
+export const AGENT_PROMPT_LABEL = "Copy prompt";
 
 /** The same verb for a group: "Copy prompt for these 4", or "this one" for one. */
 export function bulkAgentPromptLabel(count: number): string {
-  return count === 1 ? "Copy prompt for this one" : `Copy prompt for these ${count.toLocaleString()}`;
+  return count === 1 ? "Copy prompt for this one" : `Copy prompt for these ${formatNumber(count)}`;
 }
 
 export interface AiPromptRequest {

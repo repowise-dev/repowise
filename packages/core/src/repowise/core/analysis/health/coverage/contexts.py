@@ -5,17 +5,18 @@ test into one hit-wins aggregate per file - they know a file is covered,
 never by *which* test. These readers keep the test dimension instead,
 emitting one :class:`TestCoverage` per ``(test, file)`` pair.
 
-Two sources carry per-test data today:
+Three sources carry per-test data today:
 
-- **coverage.py ``.coverage`` sqlite** written with
-  ``coverage run --contexts=test`` (static) or ``dynamic_context =
-  test_function`` (dynamic). The ``context`` table names each test; the
+- **coverage.py ``.coverage`` sqlite** with per-test contexts (static or
+  dynamic). The ``context`` table names each test; the
   ``line_bits`` / ``arc`` rows are keyed by ``(file_id, context_id)``.
 - **lcov ``TN:`` records** - the test-name line, blank in most merged lcov
   but populated by per-test lcov output.
+- **Salesforce Apex JSON** (``sf apex run test --code-coverage``): its
+  ``ApexCodeCoverage`` records, one per test method and class (:mod:`.apex`).
 
 Both degrade loudly: a report produced *without* contexts (a plain lcov, or
-``coverage run`` with no ``--contexts``) yields ``records=[]`` and
+a ``.coverage`` without contexts) yields ``records=[]`` and
 ``has_contexts=False`` so callers report "aggregate only, per-test features
 unavailable" rather than silently emitting nothing.
 
@@ -26,14 +27,55 @@ index, and any downstream feature live above this layer.
 
 from __future__ import annotations
 
+import codecs
 import sqlite3
 from pathlib import Path
 
+from repowise.core.test_paths import nodeid_test_file, nodeid_without_phase
+
+from .apex import parse_apex_contexts
+from .detector import detect_format
 from .lcov import _normalize_path
 from .model import ContextCoverageReport, TestCoverage
 
+#: The command the CLI recommends for a ``.coverage`` with per-test contexts.
+#: Needs pytest-cov; ``--cov-context=test`` names each context after its test.
+PER_TEST_COVERAGE_COMMAND = "pytest --cov --cov-context=test"
+
 # coverage.py sqlite files start with the standard SQLite magic header.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
+
+#: Why a ``.coverage`` gives no per-file coverage: its schema stores the lines
+#: that ran, never the executable set, so no percentage can be taken from it.
+COVERAGE_DATA_FILE_NOTE = (
+    "a coverage.py data file records the lines that ran but not which lines are "
+    "executable, so it gives no per-file coverage; export it with `coverage lcov` "
+    "or `coverage xml` and add that report"
+)
+
+
+def is_coverage_data_file(path: str | Path) -> bool:
+    """True when *path* is a coverage.py ``.coverage`` sqlite (binary magic)."""
+    try:
+        with Path(path).open("rb") as fh:
+            return fh.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+    except OSError:
+        return False
+
+
+def read_report_text(path: str | Path) -> str:
+    """A text report's contents: UTF-8, or UTF-16 when it opens with a UTF-16 BOM.
+
+    Windows PowerShell 5.1 ``>`` redirection writes UTF-16. Raises like ``read_text``.
+    """
+    return decode_report(Path(path).read_bytes())
+
+
+def decode_report(data: bytes, errors: str = "strict") -> str:
+    """Report bytes as text: UTF-16 when they open with a UTF-16 BOM, else UTF-8."""
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16", errors)
+    return data.decode("utf-8", errors)
 
 
 def parse_lcov_contexts(text: str) -> ContextCoverageReport:
@@ -123,8 +165,12 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
 
     Reads the ``file`` / ``context`` / ``line_bits`` tables (falling back to
     ``arc`` endpoints when the db was written in branch/arc mode). Only
-    non-empty contexts become records; a db written without ``--contexts``
+    non-empty contexts become records; a db without contexts
     has a single empty context and comes back ``has_contexts=False``.
+
+    pytest-cov writes one context per phase (``<nodeid>|setup``, ``|run``,
+    ``|teardown``); they merge into one test named by its nodeid, whose
+    ``test_file`` is the path the nodeid names.
     """
     path = Path(db_path)
     try:
@@ -135,22 +181,23 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
 
     try:
         contexts = {cid: ctx for cid, ctx in conn.execute("SELECT id, context FROM context")}
-        named = {cid: ctx for cid, ctx in contexts.items() if ctx}
+        stripped = {cid: nodeid_without_phase(ctx) for cid, ctx in contexts.items() if ctx}
+        named = {cid: test_id for cid, test_id in stripped.items() if test_id}
         if not named:
-            # Ran without --contexts: one empty context, aggregate only.
+            # A .coverage without contexts: one empty context, aggregate only.
             return ContextCoverageReport(source_format="coverage.py", has_contexts=False)
 
         files = {fid: _normalize_path(p) for fid, p in conn.execute("SELECT id, path FROM file")}
 
-        # (file_id, context_id) -> covered line set. line_bits is the common
+        # (file_id, test) -> covered line set. line_bits is the common
         # (line-mode) source; arc rows fill in for branch-mode dbs.
-        covered: dict[tuple[int, int], set[int]] = {}
+        covered: dict[tuple[int, str], set[int]] = {}
         for file_id, ctx_id, numbits in conn.execute(
             "SELECT file_id, context_id, numbits FROM line_bits"
         ):
             if ctx_id not in named or file_id not in files:
                 continue
-            covered.setdefault((file_id, ctx_id), set()).update(_numbits_to_lines(numbits))
+            covered.setdefault((file_id, named[ctx_id]), set()).update(_numbits_to_lines(numbits))
 
         if not covered and _has_table(conn, "arc"):
             for file_id, ctx_id, fromno, tono in conn.execute(
@@ -158,7 +205,7 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
             ):
                 if ctx_id not in named or file_id not in files:
                     continue
-                lines = covered.setdefault((file_id, ctx_id), set())
+                lines = covered.setdefault((file_id, named[ctx_id]), set())
                 # Arc endpoints are line numbers; <= 0 are synthetic
                 # (module entry/exit), not real lines.
                 if fromno and fromno > 0:
@@ -172,12 +219,13 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
 
     records = [
         TestCoverage(
-            test_id=named[ctx_id],
+            test_id=test_id,
             file_path=files[file_id],
             covered_lines=sorted(line_set),
             source_format="coverage.py",
+            test_file=nodeid_test_file(test_id),
         )
-        for (file_id, ctx_id), line_set in covered.items()
+        for (file_id, test_id), line_set in covered.items()
         if line_set
     ]
     return ContextCoverageReport(
@@ -193,22 +241,20 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def parse_contexts_file(path: str | Path) -> ContextCoverageReport:
-    """Parse a per-test report, sniffing coverage.py sqlite vs lcov text.
+    """Parse a per-test report: coverage.py sqlite, Salesforce Apex JSON, or lcov text.
 
-    coverage.py ``.coverage`` files are sqlite (binary magic header);
-    everything else is read as lcov text. Unreadable files degrade to an
-    empty aggregate-only report rather than raising.
+    coverage.py ``.coverage`` files are sqlite (binary magic header); text the
+    format sniffer calls Apex JSON is read for its per-test records; everything
+    else is read as lcov text. Unreadable files degrade to an empty
+    aggregate-only report rather than raising.
     """
     p = Path(path)
-    try:
-        with p.open("rb") as fh:
-            head = fh.read(len(_SQLITE_MAGIC))
-    except OSError:
-        return ContextCoverageReport(source_format="unknown", has_contexts=False)
-
-    if head == _SQLITE_MAGIC:
+    if is_coverage_data_file(p):
         return parse_coverage_sqlite(p)
     try:
-        return parse_lcov_contexts(p.read_text(encoding="utf-8"))
-    except OSError:
+        text = read_report_text(p)
+    except (OSError, UnicodeDecodeError):
         return ContextCoverageReport(source_format="unknown", has_contexts=False)
+    if detect_format(text) == "apex":
+        return parse_apex_contexts(text)
+    return parse_lcov_contexts(text)

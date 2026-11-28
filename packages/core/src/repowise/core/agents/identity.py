@@ -44,6 +44,8 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 
+from repowise.core.platform.telemetry import network_disabled
+
 #: The attribution used when evidence is absent or unrecognised. Reserved: no
 #: identity may claim it, because "we could not tell" and "this agent" have to
 #: stay distinguishable.
@@ -51,7 +53,7 @@ UNKNOWN_AGENT = "unknown"
 
 #: Version of the announced-name mapping, recorded on events that used it so a
 #: later change to the alias rules is legible in stored data.
-CLIENT_IDENTITY_MAPPING_VERSION = "mcp_client_info_v1"
+CLIENT_IDENTITY_MAPPING_VERSION = "mcp_client_info_v2"
 
 #: Storage rule for an agent slug. Syntactic on purpose — see the module
 #: docstring. Bounded so a column value cannot be a payload.
@@ -154,13 +156,20 @@ class AgentIdentity:
     def is_installed(self) -> bool:
         return self.which() is not None
 
-    def is_logged_in(self) -> bool:
-        """Installed and, where the CLI can say so cheaply, signed in."""
+    def is_logged_in(self) -> bool | None:
+        """Whether the agent's CLI is signed in: ``True``, ``False`` or ``None``.
+
+        ``False``: not installed, or its login query says no (or broke).
+        ``None``: installed, but unknown. The CLI has no cheap login query, or
+        ``network_disabled()`` forbids running one (``REPOWISE_OFFLINE``,
+        ``DO_NOT_TRACK``), so nothing is spawned. Callers that need a yes
+        must treat ``None`` as not signed in.
+        """
         command = self.which()
         if command is None:
             return False
-        if not self.login_check:
-            return True
+        if not self.login_check or network_disabled():
+            return None
         try:
             # DEVNULL: an inherited Windows console stdin can block until the timeout.
             result = subprocess.run(
@@ -193,6 +202,8 @@ CLAUDE_CODE = AgentIdentity(
 CODEX = AgentIdentity(
     slug="codex",
     display_name="Codex CLI",
+    #: Codex announces its MCP client (`codex-mcp-client`), not the product.
+    announced_as=frozenset({"codexmcpclient"}),
     hook_adapter="codex",
     session_adapter="codex",
     capture_adapter="codex",
@@ -202,10 +213,16 @@ CODEX = AgentIdentity(
     login_hint="codex login",
     indexing_provider="codex_cli",
 )
-VSCODE = AgentIdentity(slug="vscode", display_name="VS Code", executable="code")
+VSCODE = AgentIdentity(
+    slug="vscode",
+    display_name="VS Code",
+    announced_as=frozenset({"visualstudiocode", "visualstudiocodeinsiders"}),
+    executable="code",
+)
 CURSOR = AgentIdentity(
     slug="cursor",
     display_name="Cursor",
+    announced_as=frozenset({"cursorvscode"}),
     hook_adapter="cursor",
     capture_adapter="cursor",
     executable="cursor",
@@ -225,10 +242,12 @@ COPILOT = AgentIdentity(
     executable="copilot",
     install_hint="npm install -g @github/copilot",
     login_hint="copilot login",
+    indexing_provider="copilot_cli",
 )
 KIRO = AgentIdentity(
     slug="kiro", display_name="Kiro", executable="kiro-cli", login_hint="kiro-cli login"
 )
+WINDSURF = AgentIdentity(slug="windsurf", display_name="Windsurf", executable="windsurf")
 
 #: Registered identities, by slug. Order is not load-bearing here — the order
 #: agents are *presented* in belongs to the target registry, which is where a
@@ -313,6 +332,29 @@ def slug_for_hook_adapter(name: str | None) -> str:
     return UNKNOWN_AGENT
 
 
+#: ``--source`` labels the rewrite hook derives from the shell dialect rather
+#: than from an adapter. Only the default adapter, Claude Code's, leaves its
+#: label to the dialect (``cli.agent_adapters.base.hook_source_for``); every
+#: other adapter writes ``hook-<adapter name>``. A test walks the adapter
+#: registry to keep the two in step.
+_DIALECT_HOOK_SOURCES = frozenset({"hook-bash", "hook-powershell"})
+_DIALECT_HOOK_ADAPTER = "claude-code"
+
+
+def slug_for_hook_source(source: str | None) -> str:
+    """The agent behind a rewrite hook's ``--source`` label, or :data:`UNKNOWN_AGENT`.
+
+    ``repowise distill`` runs as the agent's own shell command, so this label
+    is the only thing it hears from the hook that rewrote it. A label that is
+    not a hook's (``cli``, a typed ``repowise distill``) names no agent.
+    """
+    if not source or not source.startswith("hook-"):
+        return UNKNOWN_AGENT
+    if source in _DIALECT_HOOK_SOURCES:
+        return slug_for_hook_adapter(_DIALECT_HOOK_ADAPTER)
+    return slug_for_hook_adapter(source.removeprefix("hook-"))
+
+
 def identity_for_provider(name: str) -> AgentIdentity | None:
     """The agent whose CLI the LLM provider *name* drives, if any."""
     for identity in _REGISTERED.values():
@@ -361,6 +403,6 @@ def resolve_client_identity(client_name: str | None) -> str:
 
 #: The agents shipped with repowise, registered through the same seam a
 #: third-party package would use, so the alias-disjointness check covers them too.
-for _shipped in (CLAUDE_CODE, CODEX, VSCODE, CURSOR, OPENCODE, HERMES, COPILOT, KIRO):
+for _shipped in (CLAUDE_CODE, CODEX, VSCODE, CURSOR, OPENCODE, HERMES, COPILOT, KIRO, WINDSURF):
     register_identity(_shipped)
 del _shipped

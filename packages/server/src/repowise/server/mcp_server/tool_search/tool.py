@@ -10,7 +10,13 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 
 # Patchable names are read off the package at call time so patches reach them.
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server import tool_search as _pkg
+from repowise.server.mcp_server._answer_pipeline.leg_record import (
+    begin_leg_record,
+    degraded_legs,
+    retrieval_legs,
+)
 from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
     _get_repo,
@@ -21,12 +27,17 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
+from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import keyless_search_note_meta
+from repowise.server.mcp_server._origin_rank import file_origins
 from repowise.server.mcp_server._page_paths import file_candidates
 from repowise.server.mcp_server._query_shape import (
     _VALID_MODES,
     _fetch_limit_for,
     _resolve_mode,
+    declared_name,
+    query_pattern,
 )
 from repowise.server.mcp_server._retrieval_rank import (
     boost_named_paths,
@@ -39,6 +50,7 @@ from repowise.server.mcp_server.tool_search_symbols import (
     issue_files,
 )
 
+from .concept_lift import lift_named_rows
 from .ordering import _collapse_by_file
 from .ranking import (
     _VALID_KINDS,
@@ -46,6 +58,7 @@ from .ranking import (
     _downweight_decisions,
     _downweight_test_pages,
     _filter_by_kind,
+    _minor_spotlights,
     _rescue_all_decision_window,
     _reserve_symbol_tail,
     _sort_demoting_noise,
@@ -53,7 +66,6 @@ from .ranking import (
 from .retrieval import _federated_search, _fused_retrieve, _per_repo
 from .serve import (
     _apply_freshness_boost,
-    _assign_confidence,
     _attach_paths,
     _drop_internal_ranking_fields,
     _grep_hint_for,
@@ -78,6 +90,20 @@ def _query_from_pattern(query: str, pattern: str | None, ignored: list[dict[str,
             {"argument": "pattern", "values": [pattern], "valid": [], "superseded_by": "query"}
         )
     return query
+
+
+#: The most results one call returns. A larger ``limit`` is cut to it and
+#: reported: past it the rows are the long ranked tail, and the response
+#: budget would shed them anyway, at several times the bytes.
+MAX_LIMIT = 20
+
+
+def _clamp_limit(limit: int, ignored: list[dict[str, Any]]) -> int:
+    """*limit* capped at :data:`MAX_LIMIT`; a cut is reported in *ignored*."""
+    if limit <= MAX_LIMIT:
+        return limit
+    ignored.append({"argument": "limit", "values": [limit], "clamped_to": MAX_LIMIT})
+    return MAX_LIMIT
 
 
 def _resolve_kind_and_mode(
@@ -116,6 +142,8 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
     async with get_session(ctx.session_factory) as session:
         page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
         path_index = await file_path_index(session, repo_id)
+        minor = await _minor_spotlights(session, output, query, repo_id)
+        origins = await file_origins(session, repo_id, page_info.values())
     # Tombstoned pages document deleted/renamed files — never results.
     output = [item for item in output if item["page_id"] not in tombstoned]
     _attach_paths(output, page_info)
@@ -129,8 +157,9 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
     boost_named_paths(
         output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
     )
-    _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query)
+    lift_named_rows(output, score_key="relevance_score")
+    _downweight_test_pages(output, query, origins)
+    _sort_demoting_noise(output, query, minor, origins)
     return _dedup_decisions(output)
 
 
@@ -147,7 +176,6 @@ async def _concept_search(
     ctx = await _resolve_repo_context(repo)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-    await _pkg._wait_for_vector_store(ctx)
 
     # Over-fetch: post-filters trim hits, and decision down-weighting needs file
     # pages inside the window to promote.
@@ -169,7 +197,6 @@ async def _concept_search(
     ranked = list(output)
     output = output[:limit]
     await attach_hit_symbols(ctx, query, output)
-    _assign_confidence(output, "relevance_score", "confidence_score")
 
     response: dict = {
         "results": output,
@@ -178,8 +205,11 @@ async def _concept_search(
     if candidates := file_candidates(ranked, limit=limit):
         response["candidates"] = candidates
     _pkg._lead_candidates(response, issue, limit)
-    if grep_hint and not output:
-        response["grep_hint"] = grep_hint
+    if not output:
+        if grep_hint:
+            response["grep_hint"] = grep_hint
+        else:
+            response["hint"] = _NO_HITS_RECOVERY_HINT
     return response, ctx
 
 
@@ -206,53 +236,56 @@ async def search_codebase(
     symbol_kind: str | None = None,
     pattern: str | None = None,
 ) -> dict:
-    """Find code by concept, symbol, or path — hybrid codebase search.
+    """Find code by concept, symbol, or path: hybrid codebase search.
 
-    For questions (how/where/why), call get_answer instead: it runs this
-    retrieval internally and returns a cited answer. Use this for raw
-    ranked hits: enumerating matches, resolving an identifier to a symbol_id,
-    or scoping get_context.
-
-    mode="auto" routes by query shape: identifiers search symbols (symbol_id,
-    path, line bounds for get_symbol), paths resolve files (for get_context),
-    prose runs wiki-semantic search, and mixed queries run hybrid (symbol hits,
-    then file-backed pages only). Decision records rank below file pages
-    unless the query is why-shaped.
-
-    Rows naming a file carry `path`; concept pages add `symbols`
-    (name:line) the query matches; the top 3 add `matched_lines`
-    (line, text), sample lines sharing its words. `candidates` lists up to `limit`
-    distinct files to Read, best first. Identifier or literal queries also
-    return `lines` (path, line, kind, text; definitions first) read from live
-    files; when `complete` is true they are every match, so no grep is needed.
+    For a how/where/why question call get_answer. Use this to enumerate
+    matches, resolve an identifier to a symbol_id, or find files for
+    get_context. Identifier, literal, `a|b|c` or regex queries return
+    `lines` (path, line, kind, text; definitions first, one group per
+    alternative; `in` names the enclosing symbol until it changes) read
+    from live files; when `complete` is true they are every match, so no
+    grep is needed. `candidates` lists distinct files to Read, best first.
 
     Args:
-        query: identifier, path, or natural language.
-        limit: max results (default 5); distinct files outside mode="symbol"
-            (same-file symbols in `symbols`).
-        page_type: file_page (per-file docs) or module_page (subsystem
-            pages); any stored page type filters.
-        kind: implementation | test | config | doc (concept/symbol modes).
-        repo: alias, or "all" for workspace-wide.
-        mode: auto | concept | symbol | path | hybrid.
-        symbol_kind: filter symbol hits (function|class|method|...).
-        pattern: alias for query.
+        query: Identifier, `a|b` alternation, regex, path, or natural language.
+        limit: Max results, up to 20.
+        mode: auto | symbol | path | concept | hybrid.
+        kind: implementation | test | config | doc.
+        symbol_kind: function | class | method | ...
+        page_type: file_page | module_page.
+        repo: Alias, or "all" for workspace-wide.
+        pattern: Alias for query.
     """
     ignored: list[dict[str, Any]] = []
     query = _query_from_pattern(query, pattern, ignored)
     if not query.strip():
-        return {
-            "results": [],
-            "error": "search_codebase requires `query` (or its alias `pattern`).",
-            "_meta": _build_meta(),
-        }
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "invalid_args",
+            {
+                "results": [],
+                "error": "search_codebase requires `query` (or its alias `pattern`).",
+                "_meta": _build_meta(),
+            },
+        )
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
+    limit = _clamp_limit(limit, ignored)
+    if repo == "all" and _state._registry is None and _state.request_context() is None:
+        # One repository: "all" is that repository, so take the single-repo path.
+        # An embedder serving per request keeps its own fan-out.
+        repo = None
+    begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
     # skipped by the next and reported once.
     fed = Federation() if repo == "all" else None
     names = await _indexed_names(repo, fed, query)
-    grep_hint = _grep_hint_for(query, names)
+    if mode in ("auto", "symbol") and (declared := declared_name(query, names)):
+        # The keyword names no symbol; ranked with it, ``class Article`` found
+        # a docstring that says "class" and none of the classes.
+        query, mode = declared, "symbol"
     resolved_mode = _resolve_mode(query, mode, names)
+    grep_hint = _grep_hint_for(query, names, resolved_mode)
     issue = await _issue_files(repo, query, names)
 
     if resolved_mode in ("symbol", "path", "hybrid"):
@@ -260,18 +293,26 @@ async def search_codebase(
             query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names, fed
         )
         _pkg._lead_candidates(structured, issue, limit)
-        await attach_line_hits(structured, query, resolved_mode, names, repo)
+        await attach_line_hits(structured, query, resolved_mode, names, repo, fed)
         attach_ignored_arguments(structured, ignored)
-        return structured
+        if fed is None and resolved_mode == "symbol":
+            await _pkg.attach_directory_hit(structured, query, repo, limit)
+        _note_keyword_only(structured, query, resolved_mode)
+        return _flag_degraded_legs(_drop_echoed_candidates(structured))
 
     if fed is not None:
         # kind is filtered per repo before each repo's limit cut, so the fused
         # list is already kind-pure and full.
         federated = await _federated_search(query, limit, page_type, kind, fed)
-        if grep_hint and not federated.get("results"):
-            federated["grep_hint"] = grep_hint
+        if not federated.get("results"):
+            if grep_hint:
+                federated["grep_hint"] = grep_hint
+            else:
+                federated["hint"] = _NO_HITS_RECOVERY_HINT
+        await attach_line_hits(federated, query, resolved_mode, names, repo, fed)
         attach_ignored_arguments(federated, ignored)
-        return federated
+        _note_keyword_only(federated, query, resolved_mode)
+        return _flag_degraded_legs(_drop_echoed_candidates(federated))
 
     response, ctx = await _concept_search(query, limit, page_type, kind, repo, issue, grep_hint)
     await attach_line_hits(response, query, resolved_mode, names, repo)
@@ -279,4 +320,53 @@ async def search_codebase(
     # Last, so nothing above has to know the field is on its way out.
     _slim_served_rows(response["results"], {None: _page_language(ctx)})
     _serve_snippets(response["results"])
+    await _pkg.attach_directory_hit(response, query, repo, limit)
+    _note_keyword_only(response, query, resolved_mode)
+    return _flag_degraded_legs(_drop_echoed_candidates(response))
+
+
+def _drop_echoed_signatures(response: dict) -> None:
+    """Drop a symbol row's ``signature`` where ``lines`` holds its live
+    definition line with the whole parameter list on it."""
+    definitions = {
+        (item.get("repo"), item.get("path"), item.get("line")): item.get("text") or ""
+        for item in response.get("lines") or ()
+        if isinstance(item, dict) and item.get("kind") == "definition"
+    }
+    for row in response.get("results") or ():
+        if not isinstance(row, dict) or row.get("type") != "symbol":
+            continue
+        text = definitions.get((row.get("repo"), row.get("path"), row.get("start_line")))
+        if text and "(" in text and text.count(")") >= text.count("("):
+            row.pop("signature", None)
+
+
+def _drop_echoed_candidates(response: dict) -> dict:
+    """Drop ``candidates`` that only repeat the result paths in result order,
+    and signatures ``lines`` already shows."""
+    _drop_echoed_signatures(response)
+    candidates = response.get("candidates")
+    if not candidates or any(not isinstance(c, dict) or set(c) != {"path"} for c in candidates):
+        return response
+    rows = [r for r in response.get("results") or [] if isinstance(r, dict)]
+    paths = list(dict.fromkeys(r["path"] for r in rows if r.get("path")))
+    if [c["path"] for c in candidates] == paths:
+        del response["candidates"]
+    return response
+
+
+def _note_keyword_only(response: dict, query: str, mode: str) -> None:
+    """Say once that a natural-language search on a keyless index matched words only."""
+    if mode not in ("concept", "hybrid") or not response.get("results"):
+        return
+    if len(query.split()) < 2 or query_pattern(query):
+        return
+    if note := keyless_search_note_meta():
+        response.setdefault("_meta", {}).update(note)
+
+
+def _flag_degraded_legs(response: dict) -> dict:
+    """Name the retrieval legs this reply ran without, as get_answer does."""
+    if degraded := degraded_legs(retrieval_legs()):
+        response.setdefault("_meta", {})["retrieval_degraded"] = degraded
     return response

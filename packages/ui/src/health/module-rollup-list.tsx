@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { HealthBadge } from "./health-badge";
 import { formatScore } from "@repowise-dev/types/health";
+import { formatNumber } from "../lib/format";
 
 export interface ModuleRollupRow {
   module: string;
@@ -49,7 +50,7 @@ const COLUMNS: ResponsiveColumn<ModuleRollupRow>[] = [
     priority: 2,
     render: (m) => (
       <span className="tabular-nums text-[var(--color-text-secondary)]">
-        {m.nloc.toLocaleString()}
+        {formatNumber(m.nloc)}
       </span>
     ),
   },

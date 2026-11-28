@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from repowise.core.analysis.health.fix_first import build_fix_first, text
+from repowise.core.analysis.health.fix_first.model import FixTarget
 from repowise.core.analysis.health.worth import SIZE_MARKERS
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS
 
@@ -128,7 +131,7 @@ def test_an_unverified_clone_finding_rescues_nothing() -> None:
 
 
 def test_the_files_other_findings_still_compete() -> None:
-    handler = {**_COMPLEX, "biomarker_type": "error_handling", "function_name": "load",
+    handler = {**_COMPLEX, "biomarker_type": "complex_conditional", "function_name": "load",
                "public_id": "finding_eh", "line_start": 70, "line_end": 70,
                "health_impact": 0.5, "details": {}}
     queue = _queue([_finding(dispatch_share=0.9), handler])
@@ -212,7 +215,7 @@ def test_a_class_finding_without_a_plan_is_no_candidate() -> None:
 
 
 def test_a_line_finding_names_its_line() -> None:
-    handler = {**_finding(), "biomarker_type": "error_handling", "line_start": 77}
+    handler = {**_finding(), "biomarker_type": "complex_conditional", "line_start": 77}
     step = _queue([handler]).lead.action.steps[0]
     assert (step.line, step.file_path) == (77, "src/core.py")
 
@@ -294,58 +297,51 @@ def _perf_queue(*rows):
 
 def test_string_concat_needs_a_loop_that_grows() -> None:
     assert len(_perf_queue(_concat()).items) == 1
-    for magnitude in ("bounded", "unknown"):
+    for magnitude, reason in (("bounded", "unconfirmed_cost"), ("unknown", "unmeasured_cost")):
         queue = _perf_queue(_concat(loop_magnitude=magnitude))
-        assert queue.items == () and queue.totals.excluded["below_min_worth"] == 1
+        assert queue.items == () and queue.totals.excluded[reason] == 1
 
 
-def test_other_causes_keep_an_unknown_loop() -> None:
-    from tests.unit.health.fix_first_rows import _perf
+# --- F8: only a cause we are sure of is an item --------------------------------------
 
-    row = _perf("perf3_db", "src/db.py::fetch")
-    row["details"] = {**row["details"], "facets": {"loop_magnitude": "unknown"}}
-    assert len(_perf_queue(row).items) == 1
+_GROWS = {"loop_magnitude": "grows_with_data", "growth_source": "loop"}
 
 
-# --- F8: unknown loops no request, message or job runs ------------------------------
-
-
-def _value(role: str = "unknown", **facets) -> str:
+def _row(role: str, facets: dict) -> dict:
     from tests.unit.health.fix_first_rows import _perf
 
     row = _perf("perf3_v", "src/db.py::fetch", execution_role=role)
     row["details"] = {**row["details"], "facets": facets}
-    item = _perf_queue(row).lead
+    return row
+
+
+def _value(role: str = "unknown", **facets) -> str:
+    item = _perf_queue(_row(role, facets)).lead
     return next(f.value for f in item.why_ranked if f.factor in ("value", "value within later"))
 
 
+def _excluded(role: str = "unknown", **facets) -> dict:
+    queue = _perf_queue(_row(role, facets))
+    assert queue.items == ()
+    return {k: n for k, n in queue.totals.excluded.items() if n}
+
+
+def test_an_unmeasured_loop_is_never_an_item() -> None:
+    for role in ("request", "unknown"):
+        for reach in ("entry_reachable", "unknown"):
+            assert _excluded(role, loop_magnitude="unknown", exposure=reach) == {
+                "unmeasured_cost": 1
+            }
+
+
+def test_growth_only_a_registry_or_a_migration_shows_is_never_an_item() -> None:
+    for source in ("registry", "cold_path", None):
+        facets = {**_GROWS, "growth_source": source, "exposure": "entry_reachable"}
+        assert _excluded("request", **facets) == {"unconfirmed_cost": 1}
+
+
 def test_only_a_loop_known_to_grow_leads() -> None:
-    from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
-    from tests.unit.health.fix_first_rows import _perf
-
-    def lead(**facets):
-        row = _perf("perf3_t", "src/db.py::fetch")
-        row["details"] = {**row["details"], "facets": facets}
-        return _perf_queue(row).lead
-
-    unknown = lead(loop_magnitude="unknown", exposure="entry_reachable")
-    assert unknown.tier == "later"
-    assert ("tier", LOW_PRIORITY_LABEL["unmeasured_cost"]) in [
-        (f.factor, f.value) for f in unknown.why_ranked
-    ]
-    assert lead(loop_magnitude="grows_with_data").tier != "later"
-
-
-def test_an_unknown_loop_no_hot_role_runs_drops_a_step() -> None:
-    assert _value(loop_magnitude="unknown") == "0"
-    # A name-derived entry point no longer counts: only the role does.
-    assert _value(loop_magnitude="unknown", exposure="entry_reachable") == "0"
-
-
-def test_reach_keeps_an_unknown_loop_a_step_below_a_known_one() -> None:
-    # An unproven cost never earns the value a loop known to grow does.
-    assert _value("request", loop_magnitude="unknown") == "1"
-    assert _value(loop_magnitude="grows_with_data") == "2"
+    assert _perf_queue(_row("request", _GROWS)).lead.tier != "later"
 
 
 # --- lift: a duplicate inside the function ---------------------------------------
@@ -376,7 +372,7 @@ def test_an_unverified_clone_finding_does_not_lift() -> None:
 
 
 def test_a_duplicate_does_not_lift_a_line_finding() -> None:
-    handler = {**_finding(), "biomarker_type": "error_handling", "line_start": 30}
+    handler = {**_finding(), "biomarker_type": "complex_conditional", "line_start": 30}
     item = _queue([handler], plans=[_helper()]).lead
     assert _ranked(item, "duplicate inside") == "no"
 
@@ -501,13 +497,12 @@ def test_a_module_scope_cause_reads_module_scope_of_its_file() -> None:
 def test_a_production_reachable_growing_db_loop_is_in_the_top_band() -> None:
     from repowise.core.analysis.health.queue.value import VALUE_MAX
 
-    grows = {"loop_magnitude": "grows_with_data"}
-    # Request or message, then a scheduled job, then no role evidence; a cold
-    # role never leads.
-    assert _value("request", **grows) == _value("event_consumer", **grows) == str(VALUE_MAX)
-    assert _value("scheduled_job", **grows) == "3"
-    assert _value("unknown", **grows) == "2"
-    assert _value("cli", **grows) == "1"
+    # Request or message, then a scheduled job, then no role evidence but a
+    # reaching entry point; a cold role is never an item.
+    assert _value("request", **_GROWS) == _value("event_consumer", **_GROWS) == str(VALUE_MAX)
+    assert _value("scheduled_job", **_GROWS) == "3"
+    assert _value("unknown", **_GROWS, exposure="entry_reachable") == "2"
+    assert _excluded("cli", **_GROWS) == {"cold_role": 1}
 
 
 def test_it_outranks_a_large_function_that_needs_judgment_on_score() -> None:
@@ -522,8 +517,8 @@ def test_it_outranks_a_large_function_that_needs_judgment_on_score() -> None:
     assert {i.kind for i in queue.items[:2]} == {"finding", "perf_fix"}
 
 
-def test_without_reach_it_stays_below_the_top_band() -> None:
-    assert _value(loop_magnitude="grows_with_data", exposure="not_entry_reachable") == "2"
+def test_with_no_role_and_no_reach_it_is_no_item() -> None:
+    assert _excluded(**_GROWS, exposure="not_entry_reachable") == {"unconfirmed_cost": 1}
 
 
 # --- titles and steps name what they mean -----------------------------------------
@@ -558,10 +553,16 @@ def test_extract_class_and_move_method_plans_wait_for_their_audit() -> None:
     assert moved.totals.excluded["low_value_kind"] == 0
 
 
-def test_large_method_and_low_cohesion_findings_are_low_value() -> None:
-    for marker in ("large_method", "low_cohesion"):
-        queue = _queue([{**_finding(), "biomarker_type": marker}])
-        assert queue.items == () and queue.totals.excluded["low_value_kind"] == 1
+def test_large_method_findings_are_low_value() -> None:
+    queue = _queue([{**_finding(), "biomarker_type": "large_method"}])
+    assert queue.items == () and queue.totals.excluded["low_value_kind"] == 1
+
+
+@pytest.mark.parametrize("marker", ["low_cohesion", "error_handling", "dry_violation"])
+def test_an_advisory_finding_is_no_fix_first_item(marker) -> None:
+    """It costs the file nothing, so there is nothing to rank or count."""
+    queue = _queue([{**_finding(), "biomarker_type": marker, "dimension": "advisory"}])
+    assert queue.items == () and sum(queue.totals.excluded.values()) == 0
 
 
 def test_a_split_file_plan_and_a_complex_method_stay() -> None:
@@ -602,3 +603,98 @@ def test_a_span_that_awaits_is_extracted_into_an_awaited_async_helper() -> None:
     assert text.signature(None, ["db"], [], is_async=True) == (
         "async <name>(db), awaited at the call site; name it for what the lines do"
     )
+
+
+# --- a measured hotspot with a next step leads (founder D2) ---------------------
+
+
+def _hotspot(opp: str, fn: str, share: float, step: bool) -> dict:
+    from tests.unit.health.fix_first_rows import _perf
+
+    row = _perf(opp, "", biomarker_type="measured_hotspot", boundary_kind=None,
+                execution_role="unknown", fix_strategy="reduce_measured_self_time",
+                intervention_symbol=f"src/repo.py::{fn}", affected_call_sites_total=1,
+                affected_files_total=1)
+    row["details"] = {
+        **row["details"],
+        "facets": {"confirmed": "measured", "measured": "serve", "loop_magnitude": "unknown",
+                   "actionability_confidence": "high"},
+        "may_lead": step,
+        "plan": {"effort_bucket": "M", "steps": [
+            {"order": 1, "action": f"Find the work {fn} repeats", "symbol": f"src/repo.py::{fn}",
+             "file_path": "src/repo.py", "line": None, "applicability": "judgment"}]},
+        "measured_row": {
+            "symbol_id": f"src/repo.py::{fn}", "share": share, "tests": None,
+            "caller_shares": {"src/main.py::main": 0.9},
+            "next_step": {"rule": "filesystem", "why": "stat per entry", "next": "use scandir"}
+            if step else None,
+            "verify": "repowise perf measure -- serve",
+        },
+    }
+    return row
+
+
+def test_the_largest_measured_hotspot_with_a_step_leads_over_static_work() -> None:
+    big = _finding("src/core.py", ccn=40, nloc=300)
+    queue = build_fix_first(
+        metrics=[_metric(), _metric("src/repo.py")], findings=[big],
+        performance=[_hotspot("perf4_a", "small", 0.06, True),
+                     _hotspot("perf4_b", "large", 0.2, True),
+                     _hotspot("perf4_c", "nostep", 0.5, False)],
+    )
+    lead = queue.lead
+    assert lead.target == FixTarget("src/repo.py", "large", None)
+    assert lead.action.steps[0].text == "Use scandir"
+    assert lead.why == "stat per entry."
+    assert lead.verify.command == "repowise perf measure -- serve"
+    assert ("driven by", "main 90%") in [(f.label, f.value) for f in lead.facts]
+    # The rest keep their places by value: none moves ahead of the finding by D2.
+    assert [i.target.symbol for i in queue.items].index("nostep") > 0
+    assert queue.items[1].kind == "finding"
+
+
+def test_no_measured_hotspot_with_a_step_leaves_the_order_alone() -> None:
+    big = _finding("src/core.py", ccn=40, nloc=300)
+    queue = build_fix_first(
+        metrics=[_metric(), _metric("src/repo.py")], findings=[big],
+        performance=[_hotspot("perf4_c", "nostep", 0.5, False)],
+    )
+    assert queue.lead.kind == "finding"
+
+
+def test_measured_hotspots_without_a_step_are_listed_by_self_share() -> None:
+    # Ties in value and worth fall to the item id: whichever way the shares
+    # sit, the run's measurement orders the stepless items (F-NS-5).
+    names = ("get_tags", "search", "top_menu")
+    for shares in ((0.04, 0.09, 0.10), (0.10, 0.09, 0.04), (0.09, 0.04, 0.10)):
+        queue = build_fix_first(
+            metrics=[_metric("src/repo.py")],
+            performance=[
+                _hotspot(f"perf4_{n}", n, s, False) for n, s in zip(names, shares, strict=True)
+            ],
+        )
+        want = [n for _, n in sorted(zip(shares, names, strict=True), reverse=True)]
+        assert [i.target.symbol for i in queue.items] == want
+
+
+def test_a_measured_hotspot_with_a_step_still_leads_stepless_ones_by_share() -> None:
+    for low, high in (("b_fn", "c_fn"), ("c_fn", "b_fn")):
+        queue = build_fix_first(
+            metrics=[_metric("src/repo.py")],
+            performance=[
+                _hotspot("perf4_a", "stepped", 0.03, True),
+                _hotspot(f"perf4_{low}", low, 0.04, False),
+                _hotspot(f"perf4_{high}", high, 0.10, False),
+            ],
+        )
+        assert [i.target.symbol for i in queue.items] == ["stepped", high, low]
+
+
+def test_share_never_moves_a_stepless_item_across_tiers() -> None:
+    sure = _hotspot("perf4_sure", "sure", 0.04, False)
+    unsure = _hotspot("perf4_unsure", "unsure", 0.10, False)
+    unsure["details"]["facets"]["actionability_confidence"] = "low"
+    queue = build_fix_first(metrics=[_metric("src/repo.py")], performance=[sure, unsure])
+    tiers = {i.target.symbol: i.tier for i in queue.items}
+    assert tiers["sure"] != tiers["unsure"]
+    assert [i.target.symbol for i in queue.items] == ["sure", "unsure"]

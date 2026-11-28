@@ -28,7 +28,7 @@ export const CLOSED_STATUSES = new Set(["resolved", "false_positive"]);
 
 /** A link in ink, not accent: the accent belongs to the one primary action. */
 export const QUIET_LINK =
-  "inline-flex w-fit items-center gap-1.5 rounded-sm text-xs font-medium text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "inline-flex w-fit items-center gap-1.5 rounded-sm text-xs font-medium text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 export const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";

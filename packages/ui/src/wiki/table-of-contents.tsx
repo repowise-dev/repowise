@@ -57,7 +57,7 @@ export function TableOfContents({ content }: { content: string }) {
       <p className="text-xs font-semibold text-[var(--color-text-primary)] mb-2">
         On this page
       </p>
-      {/* Left rail: a hairline the active item's accent bar sits on. */}
+      {/* Left rail: a hairline the active item's bar sits on. */}
       <ul className="border-l border-[var(--color-border-default)]">
         {/* A page can repeat a heading (two "Examples" sections, or a
             duplicated section from generation), which slugifies to the same
@@ -70,7 +70,7 @@ export function TableOfContents({ content }: { content: string }) {
                 "block -ml-px border-l-2 py-1 text-[13px] leading-snug transition-colors hover:text-[var(--color-text-primary)]",
                 level === 1 ? "pl-3" : level === 2 ? "pl-3" : "pl-6",
                 activeId === id
-                  ? "border-[var(--color-accent-primary)] font-medium text-[var(--color-accent-primary)]"
+                  ? "border-[var(--color-tab-active)] font-medium text-[var(--color-text-primary)]"
                   : "border-transparent text-[var(--color-text-tertiary)]",
               )}
             >

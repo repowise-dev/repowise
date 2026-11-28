@@ -267,9 +267,9 @@ def test_a_self_call_the_caller_own_class_declares_keeps_its_own_origin(
 def test_a_recursive_self_call_does_not_fall_through_to_an_ancestor(
     tmp_path: Path,
 ) -> None:
-    """Strategy 3 refuses to point a call at its own symbol. Without this
-    guard that refusal reached the base's declaration of the same name, which
-    the call never runs."""
+    """Strategy 3 answers a call to its own symbol with a self edge, so the
+    call never reaches the base's declaration of the same name, which it
+    never runs."""
     graph = _build(
         tmp_path,
         {
@@ -284,6 +284,7 @@ def test_a_recursive_self_call_does_not_fall_through_to_an_ancestor(
         "python",
     )
     assert not _calls_by_origin(graph, "self_inherited")
+    assert ("impl.py::Child::run", "impl.py::Child::run") in _calls_by_origin(graph, "self_scope")
 
 
 def test_a_bare_call_reaches_an_inherited_method_in_an_implicit_receiver_language(

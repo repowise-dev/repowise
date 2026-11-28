@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { Commands, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
+import { runCliInTerminal } from "../core/cliTerminal";
 
 /** Grace period before the one deferred CLI-presence probe runs. */
 const PRESENCE_CHECK_DELAY_MS = 1000;
@@ -72,28 +73,19 @@ export function registerOnboarding(ctx: RepowiseContext): vscode.Disposable {
     if (!(await cliIsPresent())) {
       ctx.setExtensionState("not-installed");
       const choice = await vscode.window.showWarningMessage(
-        "The repowise CLI was not found. Install it with: pip install repowise",
-        "Copy command",
+        "The repowise CLI was not found. Install it with: uv tool install repowise (or pip install repowise)",
+        "Copy uv command",
+        "Copy pip command",
       );
-      if (choice === "Copy command") {
+      if (choice === "Copy uv command") {
+        await vscode.env.clipboard.writeText("uv tool install repowise");
+      } else if (choice === "Copy pip command") {
         await vscode.env.clipboard.writeText("pip install repowise");
       }
       return;
     }
 
-    // Reuse a Repowise terminal if one is open, else create it.
-    const terminal =
-      vscode.window.terminals.find((t) => t.name === "Repowise") ??
-      vscode.window.createTerminal("Repowise");
-    terminal.show();
-
-    const cliPath = ctx.config.cliPath();
-    const exe = cliPath
-      ? cliPath.includes(" ")
-        ? `"${cliPath}"`
-        : cliPath
-      : "repowise";
-    terminal.sendText(`${exe} init`);
+    runCliInTerminal(ctx.config.cliPath(), ["init"]);
 
     // The index directory appearing is the completion signal; we do not parse
     // terminal output. Watch under the open folder for `.repowise` to be born.

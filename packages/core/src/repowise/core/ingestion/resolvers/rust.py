@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import posixpath
+from collections.abc import Container
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -45,6 +47,12 @@ def resolve_rust_import(
     ``_reexport_depth`` caps ``pub use`` hop-following at one level —
     re-export cycles between crate roots must not recurse.
     """
+    # Literal include paths are relative to the source file, including
+    # inside inline modules. They may refer to a file in any language.
+    if module_path.startswith("./"):
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(importer_path), module_path))
+        return target if target in ctx.path_set else None
+
     # Strip `as <alias>` suffix from aliased imports (e.g. "typst_syntax as syntax")
     if " as " in module_path:
         module_path = module_path.split(" as ")[0].strip()
@@ -79,6 +87,9 @@ def resolve_rust_import(
             # pattern `pub use crate::module::Type`) — follow one hop
             # through the crate root's re-exports.
             resolved = _follow_crate_root_reexport(crate_root, parts[1:], ctx)
+        if resolved is None and len(parts) == 2:
+            # `use crate::Item`: an item the crate root file declares itself.
+            resolved = _crate_root_file(crate_root, frozen_path_set)
         return resolved
 
     # --- self:: / super:: — resolve from the module tree, not the directory ---
@@ -132,10 +143,13 @@ def resolve_rust_import(
             if resolved is not None:
                 return resolved
 
-    # Cargo workspace sibling crate: `use sibling_crate::...`
+    # Cargo workspace sibling crate: `use sibling_crate::...`. The importer's
+    # own crate counts too: a binary names its library by the crate's import
+    # name (`use leviathan::engine` in `src/main.rs`), and the probe above
+    # only tried the whole path, prefix included, as a module path.
     if ws_index is not None:
         sibling_src = ws_index.lookup(prefix)
-        if sibling_src is not None and sibling_src != crate_root:
+        if sibling_src is not None:
             resolved = _probe_rust_path(sibling_src, parts[1:], frozen_path_set)
             if resolved is None and _reexport_depth == 0:
                 # `use crate_x::ReexportedName`: the name is no module file —
@@ -145,15 +159,25 @@ def resolve_rust_import(
             if resolved is None:
                 # Probe the crate root itself (lib.rs / main.rs) when the
                 # import has no further path segments.
-                for root_file in ("lib.rs", "main.rs"):
-                    candidate = f"{sibling_src}/{root_file}"
-                    if candidate in ctx.path_set:
-                        return candidate
+                resolved = _crate_root_file(sibling_src, ctx.path_set)
             if resolved is not None:
                 return resolved
 
     # External crate
     return ctx.add_external_node(module_path)
+
+
+def _crate_root_file(crate_src_dir: str, files: Container[str]) -> str | None:
+    """The crate root file in *crate_src_dir* among *files*, a library's first.
+
+    Ceiling: beside a lib.rs, a binary's own modules still get lib.rs; telling
+    them apart needs the module tree rooted at main.rs.
+    """
+    for root_file in ("lib.rs", "main.rs"):
+        candidate = f"{crate_src_dir}/{root_file}" if crate_src_dir not in (".", "") else root_file
+        if candidate in files:
+            return candidate
+    return None
 
 
 def _follow_crate_root_reexport(
@@ -180,12 +204,7 @@ def _follow_crate_root_reexport(
     if not remaining_parts:
         return None
     parsed_files = ctx.parsed_files or {}
-    root_path = None
-    for root_file in ("lib.rs", "main.rs"):
-        candidate = f"{crate_src_dir}/{root_file}" if crate_src_dir not in (".", "") else root_file
-        if candidate in parsed_files:
-            root_path = candidate
-            break
+    root_path = _crate_root_file(crate_src_dir, parsed_files)
     if root_path is None:
         return None
 

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
+from datetime import date
 from pathlib import Path
+from typing import TypeVar
 
 import pathspec
 
@@ -93,6 +95,50 @@ def run_git(
     )
 
 
+#: Calendar days between writing and landing past which a date names both
+#: (one day absorbs a timezone apart).
+AUTHORED_GAP_DAYS = 1
+
+
+def landed_apart(landed: str, authored: str | None) -> bool:
+    """Whether *authored* (ISO) falls more than :data:`AUTHORED_GAP_DAYS` from *landed*."""
+    if not authored:
+        return False
+    gap = date.fromisoformat(landed[:10]) - date.fromisoformat(authored[:10])
+    return abs(gap.days) > AUTHORED_GAP_DAYS
+
+
+def landing_date(
+    repo_path: str, sha: str, committed: str, timeout: float, head: str = "HEAD"
+) -> str | None:
+    """When the change holding *sha* reached *head*'s branch, as git's ISO
+    committer date; ``None`` when git cannot tell.
+
+    That is the committer date of the oldest first-parent commit descending
+    from *sha*: the merge that brought its branch in, or *sha* itself (its
+    committer date *committed*) when it is *head* or sits on the first-parent
+    line (a squash, rebase or direct commit, whose committer date is when it
+    was applied). Ceiling: a fast-forward of an unrebased branch leaves no
+    record of when it happened in the history, so it keeps the commit's own
+    committer date; only the reflog of the machine that ran it knows more.
+    """
+    try:
+        proc = run_git(
+            ["log", "--first-parent", "--ancestry-path", "--format=%H %P%x09%cI", f"{sha}..{head}"],
+            repo_path,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = [ln for ln in proc.stdout.splitlines() if "\t" in ln]
+    if not lines:
+        return committed  # *sha* is *head*
+    ids, when = lines[-1].split("\t", 1)
+    return committed if ids.split()[1:2] == [sha] else when.strip()
+
+
 def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
     # check=True so a bad revspec raises instead of yielding empty stdout,
     # which used to score as a zero-feature "low risk" change.
@@ -104,7 +150,31 @@ def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
     return proc.stdout
 
 
-def untracked_paths(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> list[str]:
+_V = TypeVar("_V")
+
+
+def checkout_relative(repo_path: str, by_path: Mapping[str, _V]) -> dict[str, _V]:
+    """*by_path*, keyed by git's top-level paths, re-keyed relative to *repo_path*.
+
+    The index names files from the checkout it was built in, which can sit
+    below the git top level. A path outside that checkout keeps a ``../`` form
+    no index path has, so a reader that must not miss a change still sees one
+    it cannot place. Raises as :func:`_git` does when *repo_path* is not in a
+    repository.
+    """
+    prefix = _git(["rev-parse", "--show-prefix"], repo_path).strip()
+    if not prefix:
+        return dict(by_path)
+    up = "../" * prefix.count("/")
+    return {p[len(prefix) :] if p.startswith(prefix) else up + p: v for p, v in by_path.items()}
+
+
+def untracked_paths(
+    repo_path: str,
+    exclude_patterns: tuple[str, ...] = (),
+    *,
+    pathspecs: Sequence[str] = (":/",),
+) -> list[str]:
     """Untracked, not-ignored files, root-relative like ``git diff``'s paths.
 
     The one source of untracked files for every working-tree reader (the score,
@@ -112,9 +182,10 @@ def untracked_paths(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> l
     repowise writes whole are left out here, before anything reads them: an
     unignored index directory holds thousands of files. *exclude_patterns*
     (gitignore-style) drops a caller's excluded paths at the same point.
+    *pathspecs* narrows the listing (the whole repo by default).
     """
     listing = _git(
-        ["ls-files", "--others", "--exclude-standard", "-z", "--full-name", "--", ":/"],
+        ["ls-files", "--others", "--exclude-standard", "-z", "--full-name", "--", *pathspecs],
         repo_path,
         check=False,
     )

@@ -13,6 +13,7 @@ import time
 import pytest
 
 from repowise.core.ingestion import FileTraverser
+from repowise.core.pipeline import parse_pool
 from repowise.core.pipeline.phases import ingestion as ing
 
 _FILES = 6
@@ -47,13 +48,13 @@ def walk_order(monkeypatch, repo):
 
 @pytest.fixture
 def single_worker_pool(monkeypatch):
-    real = ing.ProcessPoolExecutor
+    real = parse_pool.ProcessPoolExecutor
 
     def one(*args, **kwargs):
         kwargs["max_workers"] = 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(ing, "ProcessPoolExecutor", one)
+    monkeypatch.setattr(parse_pool, "ProcessPoolExecutor", one)
 
 
 async def test_full_ingestion_keeps_walk_order(repo, walk_order, single_worker_pool):

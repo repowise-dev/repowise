@@ -644,11 +644,34 @@ class TestScanFile:
             ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
             # Python source quoted inside a string, as a test fixture holds it.
             ("src = 'q = f\"SELECT * FROM t WHERE id = {uid}\"'\n", False),
+            # An earlier f-string on the same line must not swallow the SQL f-string.
+            ('q = f"{prefix}" + f"SELECT * FROM users WHERE id = {user_id}"\n', True),
+            ('q = f"{prefix}" + f"SELECT * FROM users"\n', False),
         ],
     )
     def test_fstring_sql_needs_a_value_written_into_a_query(self, source: str, expected: bool) -> None:
         findings = scan_source("db.py", source)
         assert bool([f for f in findings if f["kind"] == "fstring_sql"]) is expected
+
+    def test_match_fstring_sql_helper_branches(self) -> None:
+        from repowise.core.analysis.security.patterns import _PATTERNS
+        from repowise.core.analysis.security.scanner import _match_fstring_sql
+
+        pattern = next(p for p, k, _ in _PATTERNS if k == "fstring_sql")
+        # Case 1: Match starts in masked code (e.g. comment) -> returns None
+        line = '# f"SELECT * FROM users WHERE id = {user_id}"'
+        masked = " " * len(line)
+        assert _match_fstring_sql(pattern, line, masked, [line], 1) is None
+
+        # Case 2: No match in line -> returns None
+        line_no_match = "x = 42"
+        assert _match_fstring_sql(pattern, line_no_match, line_no_match, [line_no_match], 1) is None
+
+        # Case 3: Match valid in unmasked code -> returns Match
+        line_valid = 'q = f"{p}" + f"SELECT * FROM users WHERE id = {uid}"'
+        match = _match_fstring_sql(pattern, line_valid, line_valid, [line_valid], 1)
+        assert match is not None
+        assert "SELECT" in match.group()
 
     @pytest.mark.parametrize(
         ("line", "kind"),
@@ -691,6 +714,26 @@ class TestScanFile:
             ("a.py", 'key = hashlib.sha1(f"({a})".encode(), usedforsecurity=False)\n', False),
             ("a.py", 'key = hashlib.sha1(b"usedforsecurity=False")\n', True),
             ("a.py", "key = hashlib.sha1(\n    text.encode()\n)\nok = sha256(b, usedforsecurity=False)\n", True),
+            # Cut to a few characters where it is computed, or kept as a key: an id.
+            ("a.py", "short = hashlib.md5(name.encode()).hexdigest()[:8]\n", False),
+            ("a.py", "short = hashlib.sha1(name.encode()).hexdigest()[0:12]\n", False),
+            ("a.js", 'const id = crypto.createHash("md5").update(s).digest("hex").slice(0, 8);\n', False),
+            ("a.py", "etag = hashlib.md5(body).hexdigest()\n", False),
+            ("a.py", "cache_key = hashlib.sha1(url.encode()).hexdigest()\n", False),
+            ("a.ts", 'const cacheKey = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'slug = title + "-" + md5(title.encode()).hexdigest()\n', False),
+            # A credential stays a finding, truncated or named as a key.
+            ("a.py", "pw = hashlib.md5(password.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "cache_key = hashlib.md5(token).hexdigest()\n", True),
+            ("a.py", "digest = hashlib.md5(data).hexdigest()[8:]\n", True),
+            ("a.py", "full = hashlib.md5(data).digest()\n", True),
+            ("a.py", "pw = hashlib.md5(p.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "whole = hashlib.md5(data).hexdigest()[:32]\n", True),
+            ("a.py", "mac = hmac.new(k, m, hashlib.md5).hexdigest()[:8]\n", True),
+            ("a.py", "if cache_key in seen: h = hashlib.md5(data).hexdigest()\n", True),
+            ("a.ts", 'const cacheKey: string = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'row = {"etag": hashlib.md5(body).hexdigest()}\n', False),
+            ("a.py", "author_slug = hashlib.md5(name.encode()).hexdigest()\n", False),
         ],
     )
     def test_weak_hash_is_an_algorithm_in_use(self, path: str, source: str, expected: bool) -> None:
@@ -959,9 +1002,9 @@ class TestScanSource:
     @pytest.mark.parametrize(
         ("source", "raw"),
         [
-            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),  # pragma: allowlist secret
+            ("NEXT_PUBLIC_API_KEY=my_dummy_key\n", "my_dummy_key"),
             ('  "VITE_API_KEY": "abcdef0123456789",\n', "abcdef0123456789"),
-            ("export const NEXT_PUBLIC_AUTH_TOKEN = 'tok_9876543210';\n", "tok_9876543210"),
+            ("VITE_API_TOKEN=abc123\n", "abc123"),
         ],
     )
     def test_public_env_secret_value_is_redacted(self, source: str, raw: str) -> None:
@@ -974,6 +1017,32 @@ class TestScanSource:
         source = "const k = process.env.NEXT_PUBLIC_N8N_API_KEY;\n"
         (hit,) = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
         assert hit["snippet"] == source.strip()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "VITE_API_TOKEN=\n",
+            'NEXT_PUBLIC_API_SECRET=""\n',
+            "VITE_AUTH_TOKEN=''\n",
+            "VITE_API_TOKEN= # set in .env.local\n",
+        ],
+    )
+    def test_empty_public_env_secret_is_dropped(self, source: str) -> None:
+        assert [f for f in scan_source(".env", source) if f["kind"] == "public_env_secret"] == []
+
+    def test_public_env_secret_with_value_still_fires(self) -> None:
+        hits = [f for f in scan_source(".env", "VITE_API_TOKEN=abc123\n") if f["kind"] == "public_env_secret"]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "VITE_API_TOKEN=abc1****"
+
+    def test_public_env_secret_code_read_still_fires(self) -> None:
+        hits = [
+            f
+            for f in scan_source("app.ts", "const t = import.meta.env.VITE_API_TOKEN;\n")
+            if f["kind"] == "public_env_secret"
+        ]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "const t = import.meta.env.VITE_API_TOKEN;"
 
     def test_secret_kinds_and_history_gate_are_unchanged(self) -> None:
         from repowise.core.analysis.history_scan import HistorySecurityScanner
@@ -1172,6 +1241,40 @@ class TestVendorShapeEdges:
         assert "hardcoded_secret" not in self._kinds(source)
 
     @pytest.mark.parametrize(
+        "line",
+        [
+            '  SECRETS$ADD_SECRET = "SECRETS$ADD_SECRET",\n',
+            '  SETTINGS$LLM_API_KEY = "SETTINGS$LLM_API_KEY",\n',
+            '  FEEDBACK$PASSWORD = "FEEDBACK$PASSWORD",\n',
+        ],
+    )
+    def test_an_enum_member_holding_its_own_dollar_joined_name_is_not_a_secret(
+        self, line: str
+    ) -> None:
+        # i18n key enums join a namespace to the key with ``$``.
+        source = "export enum I18nKey {\n" + line + "}\n"
+        kinds = set(self._kinds(source, "declaration.ts"))
+        assert not {"hardcoded_secret", "hardcoded_password"} & kinds
+
+    def test_a_dollar_name_holding_a_different_value_is_still_a_secret(self) -> None:
+        value = "Zq8" + "vR2mT9xLp4"
+        assert "hardcoded_secret" in self._kinds(f'const $api_key = "{value}";\n', "a.js")
+
+    @pytest.mark.parametrize(
+        ("source", "path"),
+        [('password = "pass$word"\n', "config.py"), ('$password = "pass$word";\n', "config.php")],
+    )
+    def test_a_dollar_inside_a_password_does_not_make_it_the_name(
+        self, source: str, path: str
+    ) -> None:
+        assert "hardcoded_password" in self._kinds(source, path)
+
+    @pytest.mark.parametrize("name", ["publicKeyToken", "$publicKeyToken", "ASSEMBLY$publicKeyToken"])
+    def test_an_excluded_key_name_stays_excluded_behind_a_dollar(self, name: str) -> None:
+        source = f'{name} = "b03f5f7f11d50a3a"\n'
+        assert "hardcoded_secret" not in self._kinds(source, "a.js")
+
+    @pytest.mark.parametrize(
         "value",
         ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
     )
@@ -1196,6 +1299,22 @@ class TestVendorShapeEdges:
     def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
         source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
         assert self._kinds(source) == ["github_token"]
+
+    def test_public_env_secret_deduped_with_credential_kinds(self) -> None:
+        stripe = "sk_" + "live_" + "4eC39HqLyjWDarjtT1zdp7dc"
+        ghp = "ghp_" + "Kq7mZ2xV9pL4rT8wN3bY6cH1jF5dS0gA2eUo"
+        assert self._kinds(f"NEXT_PUBLIC_STRIPE_SECRET={stripe}\n", "web/.env") == ["stripe_key"]
+        assert self._kinds(f"NEXT_PUBLIC_GITHUB_TOKEN={ghp}\n", "web/.env") == ["github_token"]
+        assert self._kinds('const NEXT_PUBLIC_API_SECRET = "Xk9mQ2vLp7zAbc123";\n', "web/env.ts") == [
+            "hardcoded_secret"
+        ]
+        assert self._kinds(f"NEXT_PUBLIC_STRIPE_SECRET={stripe}  # pragma: allowlist secret\n", "web/.env") == []
+        assert self._kinds("VITE_API_TOKEN=abc123\n", "web/.env") == ["public_env_secret"]
+        assert self._kinds("const k = process.env.NEXT_PUBLIC_API_KEY;\n", "web/app.ts") == [
+            "public_env_secret"
+        ]
+        multi = f'NEXT_PUBLIC_TOKEN="live"; STRIPE_KEY="{stripe}"\n'
+        assert sorted(self._kinds(multi, "web/.env")) == ["public_env_secret", "stripe_key"]
 
     def test_pem_key_with_escaped_newline_is_flagged(self) -> None:
         source = (
@@ -1417,6 +1536,14 @@ class TestSecretPrecision:
             ("src/app.py", 'API_KEY = "prefix-${VAR}-suffix"\n'),
             ("src/app.py", 'TOKEN = "prefix-{{var}}-suffix"\n'),
             ("src/app.py", 'TOKEN = "xxxxxxxxxxxx"\n'),
+            ("classes/RD2_NamingService.cls", "String token = '{!npe03__Donor_Name__c}';\n"),
+            ("pages/Pay.page", '<c:pay accessToken="{!$Credential.OAuthToken}"/>\n'),
+            ("aura/Pay/Pay.cmp", '<c:pay token="{#v.sessionToken}"/>\n'),
+            ("classes/Api.cls", "String token = 'Bearer {!$Credential.OAuthToken}';\n"),
+            ("classes/RegExps.cls", "static final String EXP_NUMBER_TOKEN = '(_D[0-9]+D_)';\n"),
+            ("src/tree.ts", "const TOKEN = '^(-?\\\\d{1,2}|null)$';\n"),
+            ("src/ids.py", 'SESSION_TOKEN = r"^tok_(\\w+|anon)_session$"\n'),
+            ("src/ids.py", 'API_KEY = "^(live|test)_key$"\n'),
         ],
     )
     def test_elided_or_templated_values_are_not_secrets(self, path: str, source: str) -> None:
@@ -1446,6 +1573,9 @@ class TestSecretPrecision:
             ("src/auth.ts", 'const token = "Basic ${btoa(user)}";\n'),
             ("README.md", '--spring.datasource.password="DB PASSWORD"\n'),
             ("README.md", 'DB_PASSWORD="YOUR DB PASSWORD"\n'),
+            ("a.ts", 'const REF_API_KEY = "@group:reference:api";\n'),
+            ("config.py", 'DB_PASSWORD = "secrets/db/password"\n'),
+            ("config.py", 'DB_PASSWORD = "/secrets/db/password"\n'),
         ],
     )
     def test_additional_placeholders_are_not_secrets(self, path: str, source: str) -> None:
@@ -1455,10 +1585,19 @@ class TestSecretPrecision:
         ("source", "kind"),
         [
             ('TOKEN = "xQzRmWpLkVnBtYcH"\n', "hardcoded_secret"),
+            ('TOKEN = "Zx9[a]+Qw8Rt5Yu3"\n', "hardcoded_secret"),
+            ('TOKEN = "^Zx9Qw8Rt5Yu3$"\n', "hardcoded_secret"),
+            ('password = "Zx9\\dQw8Rt5"\n', "hardcoded_password"),
+            ('password = "Zx9\\s+Qw8Rt5"\n', "hardcoded_password"),
+            ('password = "Zx9\\s+Qw8Rt5$"\n', "hardcoded_password"),
+            ('password = "^(Zx9Qw8Rt5)$"\n', "hardcoded_password"),
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
             ('password = "plain$password123"\n', "hardcoded_password"),
+            ('DB_PASSWORD = "admin:hunter@db"\n', "hardcoded_password"),
+            ('password = "correct.horse"\n', "hardcoded_password"),
+            ('DB_PASSWORD = "admin:hunter"\n', "hardcoded_password"),
         ],
     )
     def test_credential_like_values_still_fire(self, source: str, kind: str) -> None:
@@ -1476,6 +1615,15 @@ class TestSecretPrecision:
     )
     def test_credential_shaped_values_still_fire(self, source: str) -> None:
         assert self._kinds(source) == {"hardcoded_secret"}
+
+    def test_windows_manifest_public_key_token_is_not_a_secret(self) -> None:
+        source = (
+            '<dependency><dependentAssembly>'
+            '<assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" '
+            'version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>'
+            '</dependentAssembly></dependency>\n'
+        )
+        assert self._kinds(source) == set()
 
     def test_doctest_example_is_not_a_password(self) -> None:
         source = (
@@ -1553,6 +1701,12 @@ class TestNoAlarmOnCodeThatDoesNotShip:
     def test_declaration_file_holds_no_sink(self) -> None:
         assert self._found("types/react.d.ts", "type T = { __html: SafeHtml };\n") == []
 
+    def test_a_library_release_in_a_static_resource_holds_no_sink(self) -> None:
+        source = 'eval("console.log("+args.join(",")+")")\n'
+        resources = "force-app/main/default/staticresources/Libs"
+        assert self._found(f"{resources}/arbor-v0.92/src/etc.js", source) == []
+        assert self._found(f"{resources}/app/main.js", source) == [("eval_call", "high")]
+
     def test_inner_html_from_a_value_is_still_medium(self) -> None:
         source = "<div dangerouslySetInnerHTML={{__html: foo}} />\n"
         assert self._found("src/view.tsx", source) == [("unsafe_inner_html", "med")]
@@ -1565,6 +1719,24 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         source = 'import { execSync } from "child_process";\nexecSync(cmd);\n'
         assert self._found("scripts/release.ts", source) == [("exec_call", "low")]
         assert self._found("src/run.ts", source) == [("exec_call", "high")]
+
+    def test_a_sink_in_a_data_folders_code_is_low_once_the_root_is_known(self, tmp_path) -> None:
+        """A data folder is read off disk, so the origin needs the repository root."""
+        for i in range(4):
+            item = tmp_path / "backend" / "data" / "problems" / f"p{i}"
+            item.mkdir(parents=True)
+            for n in range(12):
+                (item / f"case{n}.json").write_text("{}")
+            for name in ("python.py", "Solution.java", "go.go"):
+                (item / name).write_text("")
+        path = "backend/data/problems/p0/python.py"
+        source = "import os\nos.system(cmd)\n"
+        assert self._found(path, source) == [("os_system", "high")]
+        info = SimpleNamespace(path=path, abs_path=str(tmp_path / path))
+        found, _ = scan_source_map(
+            [SimpleNamespace(file_info=info, symbols=[])], {path: source.encode()}
+        )
+        assert [(f["kind"], f["severity"]) for f in found[path]] == [("os_system", "low")]
 
     def test_a_secret_in_a_script_stays_high(self) -> None:
         source = f'import os\nos.system(cmd)\nAWS = "{self.KEY}"\n'
@@ -1600,6 +1772,27 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         assert self._found(path, source) == []
 
     @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("README.md", "key {key} pragma: allowlist secret\n"),
+            ("README.md", "key {key} <!-- nosec -->\n"),
+            ("README.md", "key {key} # pragma: allowlist secret\n"),
+            ("docs/guide.rst", "key {key} nosec\n"),
+            ("README.md", "pragma: allowlist nextline secret\nkey {key}\n"),
+        ],
+    )
+    def test_prose_allow_markers_need_no_comment_opener(self, path: str, source: str) -> None:
+        assert self._found(path, source.format(key=self.KEY)) == []
+
+    def test_a_word_containing_a_marker_does_not_silence_prose(self) -> None:
+        source = f"key {self.KEY} nosecurity\n"
+        assert self._found("README.md", source) == [("aws_access_key", "high")]
+
+    def test_a_bare_marker_outside_a_comment_still_fires_in_code(self) -> None:
+        source = f'key = "{self.KEY}"  nosec\n'
+        assert self._found("src/settings.py", source) == [("aws_access_key", "high")]
+
+    @pytest.mark.parametrize(
         "source",
         [
             'key = "{key}"  # noqa: E501\n',
@@ -1614,6 +1807,170 @@ class TestNoAlarmOnCodeThatDoesNotShip:
     def test_an_allow_marker_does_not_hide_a_call(self) -> None:
         source = "eval(payload)  # nosec\n"
         assert self._found("src/app.py", source) == [("eval_call", "high")]
+
+    _SIGNING = (
+        "android {{\n"
+        "    signingConfigs {{\n"
+        '        create("release") {{\n'
+        '            storeFile = file("{store}")\n'
+        '            storePassword = "Kx7#pQ2mZ9"\n'
+        '            keyAlias = "release"\n'
+        '            keyPassword = "Kx7#pQ2mZ9"\n'
+        "        }}\n"
+        "    }}\n"
+        "}}\n"
+    )
+
+    def _gradle(self, root: Path, store: str) -> list[tuple[str, str]]:
+        source = self._SIGNING.format(store=store)
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(root))
+        return [(f["kind"], f["severity"]) for f in found if f["kind"] == "hardcoded_password"]
+
+    def test_a_password_beside_a_committed_keystore_is_low(self, tmp_path: Path) -> None:
+        """The keystore ships in the repository, so its password guards nothing."""
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "fallback.jks").write_bytes(b"\xfe\xed")
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "debug.keystore").write_bytes(b"\xfe\xed")
+        low = [("hardcoded_password", "low")] * 2
+        assert self._gradle(tmp_path, "$rootDir/tools/fallback.jks") == low
+        assert self._gradle(tmp_path, "${rootDir}/tools/fallback.jks") == low
+        assert self._gradle(tmp_path, "debug.keystore") == low
+
+    @pytest.mark.parametrize(
+        "store",
+        [
+            "$rootDir/tools/release.jks",  # not in the repository
+            "/home/ci/release.jks",  # outside it
+            "../../outside.jks",  # escapes the root
+            "$keystoreDir/release.jks",  # read at build time
+        ],
+    )
+    def test_a_password_for_a_keystore_kept_elsewhere_stays_high(
+        self, tmp_path: Path, store: str
+    ) -> None:
+        root = tmp_path / "repo"
+        (root / "app").mkdir(parents=True)
+        (tmp_path / "outside.jks").write_bytes(b"\xfe\xed")
+        assert self._gradle(root, store) == [("hardcoded_password", "high")] * 2
+
+    def test_a_committed_keystore_does_not_lower_a_password_in_another_block(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "debug.keystore").write_bytes(b"\xfe\xed")
+        source = (
+            'debug { storeFile = file("debug.keystore") }\n'
+            "release {\n"
+            '    storePassword = "Kx7#pQ2mZ9"\n'
+            "}\n"
+        )
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
+
+    def test_a_one_line_signing_block_ends_on_its_own_line(self, tmp_path: Path) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "d.jks").write_bytes(b"\xfe\xed")
+        source = (
+            'signingConfigs.create("d") { storeFile = file("d.jks") }\n'
+            'val dbPassword = "Zq8!realProdPass"\n'
+        )
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
+
+    def test_a_block_closed_and_reopened_on_one_line_ends_the_committed_one(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "d.jks").write_bytes(b"\xfe\xed")
+        source = (
+            "if (ci) {\n"
+            '    storeFile = file("d.jks")\n'
+            "} else {\n"
+            '    storePassword = "Zq8!realProdPass"\n'
+            "}\n"
+        )
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
+
+    def test_a_password_on_the_store_file_line_is_low(self, tmp_path: Path) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "d.jks").write_bytes(b"\xfe\xed")
+        source = 'create("d") { storeFile = file("d.jks"); storePassword = "Kx7#pQ2mZ9" }\n'
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "low")]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            # The committed block closes and another opens on the password's line.
+            'create("d") {\n    storeFile = file("d.jks")\n} release { storePassword = "Zq8!realProd" }\n',
+            # A brace in a comment or a string does not keep the committed block open.
+            'create("d") {\n    storeFile = file("d.jks") // {\n    keyAlias = "{"\n}\n'
+            'release {\n    storePassword = "Zq8!realProd"\n}\n',
+        ],
+    )
+    def test_a_password_past_the_committed_block_stays_high(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "d.jks").write_bytes(b"\xfe\xed")
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
+
+    def test_root_dir_is_the_gradle_root_not_the_repository(self, tmp_path: Path) -> None:
+        """A build in a subfolder reads ``$rootDir`` from its own settings file."""
+        android = tmp_path / "android"
+        (android / "app").mkdir(parents=True)
+        (android / "settings.gradle.kts").write_text("")
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "fallback.jks").write_bytes(b"\xfe\xed")
+        source = self._SIGNING.format(store="$rootDir/tools/fallback.jks")
+        found = scan_source("android/app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert {f["severity"] for f in found} == {"high"}
+        (android / "tools").mkdir()
+        (android / "tools" / "fallback.jks").write_bytes(b"\xfe\xed")
+        found = scan_source("android/app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert {f["severity"] for f in found} == {"low"}
+
+    def test_a_longer_property_name_is_not_project_dir(self, tmp_path: Path) -> None:
+        (tmp_path / "app" / "Name").mkdir(parents=True)
+        (tmp_path / "app" / "Name" / "d.jks").write_bytes(b"\xfe\xed")
+        assert self._gradle(tmp_path, "$projectDirName/d.jks") == [
+            ("hardcoded_password", "high")
+        ] * 2
+
+    def test_a_gitignored_keystore_on_disk_is_not_committed(self, tmp_path: Path) -> None:
+        """A developer's own release key sits on disk but git leaves it out."""
+        (tmp_path / ".gitignore").write_text("*.jks\n")
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "fallback.jks").write_bytes(b"\xfe\xed")
+        (tmp_path / "app").mkdir()
+        found = self._gradle(tmp_path, "$rootDir/tools/fallback.jks")
+        assert found == [("hardcoded_password", "high")] * 2
+
+    def test_a_password_in_a_sample_is_low_but_a_vendor_key_there_stays_high(self) -> None:
+        """A sample's ``password = ...`` shows the reader how to log in; a real key still leaks."""
+        source = f'password = "Kx7#pQ2mZ9"\naws = "{self.KEY}"\n'
+        assert self._found("samples/demo/app.py", source) == [
+            ("hardcoded_password", "low"),
+            ("aws_access_key", "high"),
+        ]
+        assert self._found("src/app.py", source) == [
+            ("hardcoded_password", "high"),
+            ("aws_access_key", "high"),
+        ]
+
+    def test_an_api_secret_in_a_sample_stays_high(self) -> None:
+        source = 'client_secret = "Hj3nB6cX1vM5kS8dQz8vK2mW"\n'
+        assert self._found("samples/demo/app.py", source) == [("hardcoded_secret", "high")]
+
+    def test_a_password_in_a_test_class_by_content_is_low(self) -> None:
+        """An Apex ``@IsTest`` class is test code by origin, whatever its path says."""
+        source = '@IsTest\nprivate class LoginFlow {\n    String password = "Kx7#pQ2mZ9";\n}\n'
+        assert self._found("force-app/classes/LoginFlow.cls", source) == [
+            ("hardcoded_password", "low")
+        ]
 
     def test_a_secret_in_testdata_is_low(self) -> None:
         source = f'var k = "{self.KEY}"\n'
@@ -1644,3 +2001,121 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         from repowise.core.analysis.security_scan import mask_comments_and_strings
 
         assert mask_comments_and_strings("a /* b /* c */ d */ e", **options) == masked
+
+    def test_csharp_interpolated_string_quotes_inside_hole_are_masked(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("&ids=", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(       , ids)  ;\nvar x = 1;\n"
+        assert (
+            mask_comments_and_strings(
+                src, strings=False, hash_comments=False, **mask_dialect("a.cs")
+            )
+            == src
+        )
+
+    def test_csharp_interpolated_string_comment_inside_hole_does_not_mask_line(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("//x", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(     , ids)  ;\nvar x = 1;\n"
+
+    def test_csharp_interpolated_string_verbatim_and_escaped_braces(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $@"c:\\dir\\{sub}\""name""";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $@         sub          ;\nvar x = 1;\n"
+
+        src_braces = 'var u = $"escaped {{literal}} and {hole}";\n'
+        masked_braces = mask_comments_and_strings(
+            src_braces, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked_braces == "var u = $                          hole  ;\n"
+
+@pytest.mark.parametrize("prefix", ["$@", "@$"])
+@pytest.mark.parametrize("strings", [False, True])
+def test_verbatim_interpolation_trailing_backslash_preserves_following_code(prefix, strings):
+    from repowise.core.analysis.security.masking import mask_dialect
+    from repowise.core.analysis.security_scan import mask_comments_and_strings
+
+    literal = r'"c:\dir\"'
+    source = f"var p = {prefix}{literal}; DangerousCall(); // real comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("a.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var p = {prefix}{expected_literal}; DangerousCall(); "
+        + " " * len("// real comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)
+
+
+@pytest.mark.parametrize("strings", [False, True])
+def test_csharp_plain_verbatim_string_preserves_following_code(strings: bool) -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    literal = r'"C:\var\log\""quoted"""'
+    source = f"var logDir = @{literal}; DangerousCall(); // comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("App.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var logDir = @{expected_literal}; DangerousCall(); "
+        + " " * len("// comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)
+
+    secret_src = 'var logDir = @"C:\\var\\log\\";\nvar apiKey = "real_prod_key_123456";\n'
+    findings = scan_source("App.cs", secret_src)
+    assert any(f["kind"] == "hardcoded_secret" for f in findings)
+
+
+def test_objc_nsstring_literal_preserves_backslash_escape() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+    source = 'NSString *s = @"hello \\"world\\"";\nint x = 42;\n'
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("main.m")
+    )
+    assert "int x = 42;" in masked
+    assert masked == 'NSString *s = @                 ;\nint x = 42;\n'
+
+
+def test_rust_lifetimes_and_labels_do_not_swallow_subsequent_code() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    source = (
+        "fn process<'a>(input: &'static str, extra: &'a str) -> char {\n"
+        "    'outer: loop {\n"
+        "        let quote = '\\'';\n"
+        '        let password = "real_secret_value_1234";\n'
+        "        return 'x';\n"
+        "    }\n"
+        "}\n"
+    )
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("src/lib.rs")
+    )
+    assert "let password = " in masked
+    assert "real_secret_value_1234" not in masked
+    assert "return    ;" in masked
+    assert len(masked) == len(source)
+
+    findings = scan_source("src/lib.rs", source)
+    assert any(f["kind"] == "hardcoded_password" for f in findings)
+

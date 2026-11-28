@@ -357,3 +357,15 @@ async def test_index_pages_scans_the_index_once_per_id_chunk(async_engine, fts):
             await conn.execute(text("SELECT page_id, title, summary, target_path FROM page_fts"))
         ).fetchall()
     assert sorted(rows) == sorted((p.page_id, p.title, p.summary, p.target_path) for p in pages)
+
+
+async def test_a_term_on_every_page_still_scores_positive_and_in_order(fts):
+    """A term on most pages gets a near-zero BM25 idf, so its scores sit around
+    1e-6 and tie often. Ties and small gaps must not push a score to zero or below."""
+    for i in range(6):
+        await fts.index(f"p{i}", f"Page {i}", "A function that calls another function.")
+    results = await fts.search("function")
+    scores = [r.score for r in results]
+    assert len(scores) == 6
+    assert all(s > 0.0 for s in scores), scores
+    assert scores == sorted(scores, reverse=True)

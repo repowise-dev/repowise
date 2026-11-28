@@ -38,7 +38,7 @@ export function ChatContextIndicator({
           onClick={onRemove}
           aria-label="Remove current view from this message"
           title="Remove current view"
-          className="ml-auto inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="ml-auto inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <X className="h-3.5 w-3.5" />
         </button>

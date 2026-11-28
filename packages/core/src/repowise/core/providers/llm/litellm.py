@@ -27,6 +27,7 @@ import structlog
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
+    LOCAL_CONTEXT_WINDOW,
     BaseProvider,
     ChatStreamEvent,
     GeneratedResponse,
@@ -67,6 +68,22 @@ _NON_TEXT_MODEL_MODES = {
     "realtime",
     "vector_store",
 }
+
+
+def _import_litellm() -> Any:
+    """Import litellm, or raise naming the command that installs it here.
+
+    litellm ships as the ``repowise[litellm]`` extra, not in the default
+    install, and is imported only at call time because it is large.
+    """
+    try:
+        import litellm  # type: ignore[import-untyped]
+    except ImportError:
+        from repowise.core.extras import require
+
+        require("litellm", "The litellm provider")
+        raise  # installed but broken: the original error says why
+    return litellm
 
 
 def _litellm_reasoning_modes_from_metadata(metadata: object) -> tuple[ReasoningMode, ...]:
@@ -331,6 +348,16 @@ class LiteLLMProvider(BaseProvider):
     def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
         return ("auto", *_litellm_supported_reasoning_modes(self._model))
 
+    def context_window(self) -> int | None:
+        # A local backend behind LiteLLM does not report its window either.
+        from repowise.core.generation.cost_tracker import is_local_model
+        from repowise.core.providers.llm.openai import _is_loopback_url
+
+        local = is_local_model(self._model) or bool(
+            self._api_base and _is_loopback_url(self._api_base)
+        )
+        return LOCAL_CONTEXT_WINDOW if local else None
+
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _litellm_model_options(self._model)
 
@@ -384,8 +411,7 @@ class LiteLLMProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
-        # Import litellm lazily — it's a large package and only needed at call time
-        import litellm  # type: ignore[import-untyped]
+        litellm = _import_litellm()
 
         # Suppress LiteLLM's verbose feedback/debug output
         litellm.set_verbose = False
@@ -471,7 +497,7 @@ class LiteLLMProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        import litellm  # type: ignore[import-untyped]
+        litellm = _import_litellm()
 
         litellm.set_verbose = False
         litellm.suppress_debug_info = True

@@ -14,6 +14,7 @@ import type {
   WebviewViewId,
 } from "../../../src/shared/webviewMessages";
 import { createHost, type WebviewHost } from "./rpc";
+import { installClipboardBridge } from "./clipboard";
 import { ApiError, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
 import { PanelChrome } from "./chrome";
 import { initTheme, setThemePreference } from "./theme";
@@ -34,6 +35,7 @@ export function mountView<V extends WebviewViewId>(
   document.documentElement.dataset.view = view;
   initTheme();
   const host = createHost();
+  installClipboardBridge(host);
   // Registered before render so the persisted preference is applied by the
   // time the view component first mounts (init subscribers fire in order).
   host.onInit((msg) => setThemePreference(msg.theme ?? "auto"));

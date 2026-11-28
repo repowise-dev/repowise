@@ -10,7 +10,7 @@ from repowise.core.analysis.health.defect_accuracy import compute_defect_accurac
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
-from repowise.server.mcp_server.tool_health.paging import Pager
+from repowise.server.mcp_server.tool_health.paging import Pager, health_call
 from repowise.server.mcp_server.tool_health.request import FIX_FIRST_CAP, HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
 from repowise.server.mcp_server.tool_health.summary import _compute_kpis, _gap_analysis
@@ -76,13 +76,16 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
         # Files in a language health has no dialect for: no score, so in no
         # figure here. Only said when there are some.
         **({"unanalysed_file_count": len(pop.unanalysed_paths)} if pop.unanalysed_paths else {}),
+        # Stored import cycles; ``static_only`` ones are Python ``import b``
+        # loops unlikely to fail at import. Only said when there are some.
+        **({"import_cycles": data.import_cycles} if data.import_cycles else {}),
         # KPIs keep test files unless ``scope`` narrows them. Tests score better
         # than production code, so narrowing lowers the number with no new defect
         # found: a caller should ask for it knowingly.
         "kpis": lambda: _compute_kpis(
             all_metrics,
             hotspot_paths=data.hotspot_paths,
-            performance_findings=data.perf_findings_count,
+            performance_causes=data.perf_causes,
             coverage=data.perf_coverage,
             unanalysed=len(pop.unanalysed_paths),
             deductions=data.deductions,
@@ -123,6 +126,10 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
     }
 
 
+#: Why the items read out of ``gain`` order: the queue's sort key (``queue/order.py``).
+FIX_FIRST_ORDER = "value band (size, reach) > tier > worth x confidence / effort; not gain"
+
+
 def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict[str, Any]:
     """Core's queue in the compact projection, its counts, and the call for one full item.
 
@@ -153,6 +160,8 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
     block["cursor"] = req.fix_first_cursor
     if full.lead is not None:
         block["detail_call"] = f"get_health(fix_id={full.lead.id!r})"
+    # Items whose ``gain`` does not follow their order read as misranked.
+    block["order"] = FIX_FIRST_ORDER
     if req.pages_fix_first:
         pager.note_page(
             "fix_first",
@@ -220,7 +229,7 @@ def _defer_to_secondary_rankings(
     result["secondary_rankings"] = {
         block: {
             "total": total,
-            "call": f"get_health(repo={repo!r}, only=['{block}'], limit=50)",
+            "call": health_call(repo=repo, only=[block], limit=50),
         }
         for block, total in totals.items()
     }

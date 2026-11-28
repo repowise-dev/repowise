@@ -144,7 +144,7 @@ def _resolve_rails_relation(
 
 class _RailsHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        return "rails" in dctx.stack_lower or "config/application.rb" in dctx.path_set
+        return dctx.uses("Rails")
 
     def add_edges(
         self,

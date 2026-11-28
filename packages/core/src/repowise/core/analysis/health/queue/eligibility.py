@@ -21,9 +21,9 @@ from repowise.core.code_origin import path_origin
 from repowise.core.test_paths import in_test_tree
 
 from ...execution_roles import COLD_ROLES, EXECUTION_ROLES
-from ..perf.actionability import EXPECTED_REASONS
+from ..perf.actionability import EXPECTED_REASONS, NO_STRATEGY_FOR_MARKER
 from ..perf.causal import code_context
-from ..rows import detail_map, field
+from ..rows import detail_map, field, json_field
 from ..worth import (
     SIZE_MARKERS,
     LowPriority,
@@ -33,6 +33,7 @@ from ..worth import (
     execution_role,
     large_function,
     lead_reason,
+    measured,
     measured_nloc,
     perf_facets,
     terminal_shaped,
@@ -50,6 +51,7 @@ Reason = Literal[
     "history_only",
     "vendored",
     "docs_example",
+    "data",
     "deprecated",
     "gated_off",
     "cold_path",
@@ -62,6 +64,7 @@ Reason = Literal[
     "unmeasured_cost",
     "cold_role",
     "background_unproven",
+    "unconfirmed_cost",
     "terminal_flow",
     "moderate_quiet",
 ]
@@ -125,11 +128,13 @@ class Tally:
 # --- where the code lives ------------------------------------------------------
 
 #: Code origins that do not ship, by the reason each counts as. A build script
-#: is tooling to a reader choosing what to fix.
+#: is tooling to a reader choosing what to fix. ``data`` is code a data folder
+#: holds for the product to read by path, never a module anyone fixes.
 ORIGIN_EXCLUSION: dict[str, Reason] = {
     "test": "test",
     "vendored": "vendored",
     "docs_example": "docs_example",
+    "data": "data",
     "generated": "generated",
     "tooling": "tooling",
     "build": "tooling",
@@ -248,7 +253,13 @@ DEAD_CONFIDENCE = 0.8
 
 def dead_spans(rows: Iterable[Any]) -> dict[str, list[DeadSpan]]:
     """Sure, open dead-code findings by file: ``(symbol, start, end)``, the
-    symbol ``None`` for an unreachable file."""
+    symbol ``None`` for an unreachable file.
+
+    Ceiling: stored values, without the workspace's cross-repo cut. Fix first
+    and plan annotations are built per repository, before the workspace pass
+    that writes the cut's data. Upgrade path: pass ``serve_findings`` rows once
+    those builds run with the workspace's lookup.
+    """
     out: dict[str, list[DeadSpan]] = {}
     for row in rows:
         sure = float(field(row, "confidence") or 0.0) >= DEAD_CONFIDENCE or field(
@@ -404,7 +415,7 @@ DEFAULT_QUEUE_CONTEXTS = frozenset({"production"})
 DEFAULT_QUEUE_STATES = frozenset({"plan_ready", "advisory"})
 DEFAULT_QUEUE_PROOFS = frozenset({"proven"})
 """What the performance queue holds when a caller names no filter: production
-work with a strategy whose cost is measured.
+work with a strategy whose loop size is known.
 
 Test, tooling and unclassified code, ``expected`` repetition, causes with no
 supported strategy (``investigate``, whose plan state is always ``no_safe_plan``)
@@ -431,9 +442,21 @@ QUEUE_ROLES = frozenset(EXECUTION_ROLES) - COLD_ROLES
 """Execution roles the performance queue holds; a scheduled job also needs
 proven growth. ``unknown`` is no evidence either way, so it stays."""
 
-#: Causes whose cost is real only in shipped code over a loop that grows: a
-#: string built in a bounded loop, or in a script, costs nothing a user sees.
-GROWS_ONLY_MARKERS = frozenset({"string_concat_in_loop"})
+
+def observation(item: Any) -> bool:
+    """Whether a cause's marker has no fix strategy at all, so it is an
+    observation: kept in the performance inventory, never a unit of any queue.
+
+    Unlike a cause waiting on a proof (``no_strategy``), no fact about the code
+    would give it a strategy, so counting it as queue work left out says
+    something false. Reads an opportunity, an ORM row or a plain row.
+    """
+    if field(item, "actionability_state") != "investigate":
+        return False
+    prerequisites = json_field(item, "prerequisites", None)
+    if prerequisites is None:
+        prerequisites = detail_map(item).get("prerequisites") or ()
+    return NO_STRATEGY_FOR_MARKER in prerequisites
 
 
 def perf_strategy_verdict(
@@ -443,9 +466,7 @@ def perf_strategy_verdict(
 
     Reads an opportunity, an ORM row or a plain row. *contexts* widens it for a
     caller that asked for more (Fix first's ``scope="all"`` keeps test code);
-    the state rule never moves. Fix first reads this rather than
-    :func:`perf_queue_verdict` because it keeps an unproven cause, as a
-    ``later`` item.
+    the state rule never moves.
     """
     context = field(item, "execution_context")
     if context not in contexts:
@@ -462,12 +483,13 @@ def perf_strategy_verdict(
 def _role_reason(item: Any) -> Reason | None:
     """Why the role running *item*'s loop keeps it out, or ``None``.
 
-    A loop only startup, a CLI, tooling or tests run is paid once per process.
+    A loop only startup, a CLI, tooling or tests run is paid once per process,
+    unless a leading workload measured it: the role is a guess, the run is not.
     A scheduled job's loop matters only once it is shown to grow with the data.
     """
     role = execution_role(item)
     if role in COLD_ROLES:
-        return "cold_role"
+        return None if measured(perf_facets(item)) else "cold_role"
     if role == "scheduled_job" and perf_facets(item).get("loop_magnitude") != "grows_with_data":
         return "background_unproven"
     return None
@@ -489,23 +511,73 @@ def queue_proof(item: Any) -> QueueProof:
     return proof
 
 
-def perf_queue_verdict(item: Any) -> Verdict:
+def perf_queue_verdict(item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS) -> Verdict:
     """Whether the performance default queue holds *item*.
 
     One reason per cause, context first and role last, so the counts of every
     reason and the queue add up to the whole.
     """
-    verdict = perf_strategy_verdict(item)
+    verdict = perf_strategy_verdict(item, contexts)
     if verdict.eligible and cost_proof(item) not in DEFAULT_QUEUE_PROOFS:
         return Verdict("unmeasured_cost")
     return verdict if not verdict.eligible else _verdict(_role_reason(item))
 
 
+def _unconfirmed(item: Any) -> bool:
+    """Whether nothing but a name or a guess says a queued cause costs anything.
+
+    Its cost must be one that may lead (:func:`worth.lead_reason`); a loop's
+    growth must come from a loop outside a registry and a cold path
+    (``opportunity_rank.growth_source``, absent on rows stored before it); and
+    with no known role, an entry point or a leading workload's run must reach
+    it (a unit-test run reaches everything it imports). Only a ``plan_ready``
+    cause qualifies, and never one whose role or name is cold: a run that
+    merely ranks it keeps such a cause in the queue (:func:`_role_reason`,
+    ``actionability.expected_reason``), it does not make it the work to lead
+    with. A leading workload that measured its loop owner above the lead bar
+    (``confirmed`` ``measured``) does: the role and the name were guesses
+    that the run's cost answers. A unit-test run never does.
+    """
+    # Deliberate ceiling: advisory causes in the default queue labelled 0 TRUE
+    # of 14 on our index, dify-api and polar-server (2026-10-19). Admit
+    # advisory once a blind held-out sample of it clears 90%.
+    if field(item, "actionability_state") != "plan_ready":
+        return True
+    facets = perf_facets(item)
+    if lead_reason(field(item, "biomarker_type"), facets) is not None:
+        return True
+    if facets.get("loop_magnitude") == "grows_with_data" and facets.get("growth_source") != "loop":
+        return True
+    cold = execution_role(item) in COLD_ROLES or facets.get("measured_overrides")
+    if cold and facets.get("confirmed") != "measured":
+        return True
+    reached = facets.get("exposure") == "entry_reachable" or bool(facets.get("measured"))
+    return execution_role(item) == "unknown" and not reached
+
+
+def perf_confident_verdict(
+    item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS
+) -> Verdict:
+    """Whether *item* is a cause sure enough to be told to do: the only
+    performance work Fix first, Do next and the queue's lead name.
+
+    A default-queue cause (:func:`perf_queue_verdict`) that :func:`_unconfirmed`
+    clears; the rest stay listed in the performance queue.
+    """
+    verdict = perf_queue_verdict(item, contexts)
+    if verdict.eligible and _unconfirmed(item):
+        return Verdict("unconfirmed_cost")
+    return verdict
+
+
 def perf_queue_counts(items: Iterable[Any]) -> dict[str, Any]:
-    """The performance default queue's size and what it leaves out, by reason."""
+    """The performance default queue's size and what it leaves out, by reason.
+    An :func:`observation` is no unit of the queue, so it is not counted."""
     tally = Tally(DEFAULT_QUEUE_EXCLUSIONS)
     queued = 0
     for item in items:
+        if observation(item):
+            continue
         if not tally.add(perf_queue_verdict(item)):
             queued += 1
     return {"total": queued, "excluded": tally.excluded}
@@ -524,37 +596,32 @@ def _has_plan(row: Any) -> bool:
     return field(row, "plan_state") == "available" and bool(field(row, "fix_strategy"))
 
 
-def _perf_worth(row: Any) -> bool:
-    """Whether a planned cause is worth an item at all."""
-    return field(row, "biomarker_type") not in GROWS_ONLY_MARKERS or perf_low_priority(row) is None
-
-
 def perf_fix_verdict(
     rows: list[Any], contexts: frozenset[str], unreachable: Callable[[], bool]
 ) -> tuple[Verdict, list[Any]]:
     """Whether the causes one intervention groups make a Fix first item, and
     the rows worth one.
 
-    The performance queue's context and actionability rule decides which
-    causes are work; an unproven cost stays in, tiered later by
-    :func:`perf_low_priority`. An item needs a stored plan to quote.
-    ``unreachable()`` says whether dead code covers the intervention.
+    Only a confident cause (:func:`perf_confident_verdict`) is work here. An
+    item needs a stored plan to quote. ``unreachable()`` says whether dead
+    code covers the intervention.
     """
-    verdicts = [perf_strategy_verdict(r, contexts) for r in rows]
-    queued = [r for r, v in zip(rows, verdicts, strict=True) if v.eligible]
-    ready = [r for r in queued if _has_plan(r)]
+    # A row with no plan is judged on strategy alone: its facets are not loaded,
+    # and it is no item either way, so it counts as ``no_plan``.
+    verdicts = [
+        perf_confident_verdict(r, contexts) if _has_plan(r) else perf_strategy_verdict(r, contexts)
+        for r in rows
+    ]
+    ready = [r for r, v in zip(rows, verdicts, strict=True) if v.eligible and _has_plan(r)]
     if not ready:
-        if queued:
+        if any(v.eligible for v in verdicts):
             return Verdict("no_plan"), []
         # Dormant only when every row is: one live row speaks for the group.
         live = [v for v in verdicts if v.reason != "gated_off"]
         return (live[0] if live else Verdict("gated_off")), []
-    worth = [r for r in ready if _perf_worth(r)]
-    if not worth:
-        return Verdict("below_min_worth"), []
     if unreachable():
         return Verdict("unreachable"), []
-    return ELIGIBLE, worth
+    return ELIGIBLE, ready
 
 
 __all__ = [
@@ -564,7 +631,6 @@ __all__ = [
     "DEFAULT_QUEUE_PROOFS",
     "DEFAULT_QUEUE_STATES",
     "ELIGIBLE",
-    "GROWS_ONLY_MARKERS",
     "LOW_VALUE_DETAIL_KINDS",
     "LOW_VALUE_KINDS",
     "MIN_WORTH",
@@ -585,7 +651,9 @@ __all__ = [
     "dead_spans",
     "dead_target",
     "finding_verdict",
+    "observation",
     "path_verdict",
+    "perf_confident_verdict",
     "perf_fix_verdict",
     "perf_low_priority",
     "perf_queue_counts",

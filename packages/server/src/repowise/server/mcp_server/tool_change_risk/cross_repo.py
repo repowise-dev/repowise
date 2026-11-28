@@ -51,6 +51,7 @@ def _cross_repo_consumers(enricher: Any, alias: str, changed_files: list[str]) -
                     "contract_id": link.get("contract_id"),
                     "contract_type": link.get("contract_type"),
                     "match_type": link.get("match_type"),
+                    **enricher.link_provenance(link, "consumer"),
                     **_present("provider_symbol_id", link.get("provider_symbol_id")),
                     **_present("symbol_id", link.get("consumer_symbol_id")),
                 }
@@ -218,6 +219,9 @@ def _cross_repo_block(
             "breaking_changes_available": has_breaking_report,
             # Dates the breaking half only; contract links carry no stamp.
             "breaking_changes_as_of": report.get("generated_at") or None,
+            # How far to trust the estate's edge set, and this repo's unlinked calls.
+            **_present("graph_evidence", enricher.graph_evidence_brief()),
+            **_present("http_calls", enricher.http_call_split(alias)),
             "summary": summary,
         }
     except Exception:

@@ -54,6 +54,25 @@ def test_sync_times_falls_back_to_repo_updated_at_only_after_resync() -> None:
     assert sync_times([], _T0)["last_sync_at"] == _T0.isoformat()
 
 
+def test_sync_times_reports_the_later_of_the_sync_job_and_the_row_stamp() -> None:
+    # A CLI sync after the last server job: the stamp is the last sync, and the
+    # job's model does not describe it.
+    newer_cli = sync_times([_job("completed", "incremental", _T0, model_name="m1")], _T2)
+    assert newer_cli["last_sync_at"] == _T2.isoformat()
+    assert newer_cli["last_sync_model"] is None
+
+    # A server job after the stamp (a job stamps the row before it finishes).
+    newer_job = sync_times([_job("completed", "incremental", _T2, model_name="m1")], _T1)
+    assert newer_job["last_sync_at"] == _T2.isoformat()
+    assert newer_job["last_sync_model"] == "m1"
+
+
+def test_sync_times_compares_a_naive_row_stamp_as_utc() -> None:
+    naive_stamp = datetime(2026, 9, 3)
+    jobs = [_job("completed", "incremental", _T1)]
+    assert sync_times(jobs, naive_stamp)["last_sync_at"] == naive_stamp.isoformat()
+
+
 def test_defect_accuracy_survives_a_malformed_details_blob() -> None:
     metric = SimpleNamespace(file_path="a.py", score=3.0, nloc=10, has_test_file=False, module="a")
     bad = SimpleNamespace(
@@ -70,3 +89,44 @@ def test_snapshot_history_rounds_and_keeps_missing_hotspot_none() -> None:
     assert snapshot_history(snap) == [
         {"taken_at": None, "average_health": 7.46, "hotspot_health": None}
     ]
+
+
+def test_snapshot_history_draws_one_point_per_day() -> None:
+    """Two indexes on one day are one point of the sparkline: the later one."""
+
+    def at(day: int, hour: int, avg: float) -> SimpleNamespace:
+        return SimpleNamespace(
+            taken_at=datetime(2026, 11, day, hour, tzinfo=UTC),
+            average_health=avg,
+            hotspot_health=None,
+        )
+
+    snap = SimpleNamespace(recent=[at(22, 9, 8.0), at(23, 9, 8.8), at(23, 18, 8.6)])
+
+    assert [(p["taken_at"][:10], p["average_health"]) for p in snapshot_history(snap)] == [
+        ("2026-11-22", 8.0),
+        ("2026-11-23", 8.6),
+    ]
+
+
+def test_snapshot_history_counts_days_not_runs() -> None:
+    """Many runs on the newest day do not push older days off the sparkline."""
+    from repowise.server.services.overview_payload import HEALTH_HISTORY_POINTS
+
+    days = [
+        SimpleNamespace(
+            taken_at=datetime(2026, 10, d, tzinfo=UTC), average_health=7.0, hotspot_health=None
+        )
+        for d in range(1, HEALTH_HISTORY_POINTS + 2)
+    ]
+    reruns = [
+        SimpleNamespace(
+            taken_at=datetime(2026, 10, 31, h, tzinfo=UTC), average_health=8.0, hotspot_health=None
+        )
+        for h in range(20)
+    ]
+
+    history = snapshot_history(SimpleNamespace(recent=days + reruns))
+
+    assert len(history) == HEALTH_HISTORY_POINTS
+    assert history[-1]["taken_at"].startswith("2026-10-31T19")

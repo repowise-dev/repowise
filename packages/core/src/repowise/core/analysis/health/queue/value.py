@@ -122,7 +122,9 @@ _ROLE_VALUE = {"scheduled_job": 3, **dict.fromkeys(LEADING_ROLES, VALUE_MAX)}
 def perf_value(row: Any, facets: Mapping[str, Any]) -> int:
     """A performance cause's value, read off the role running its loop
     (``execution_roles``): request or message, then a scheduled job, then no
-    evidence; a cold role (startup, CLI, UI, tooling, tests) never leads."""
+    evidence; a cold role (startup, CLI, UI, tooling, tests) never leads,
+    unless a leading run measured its loop above the lead bar (``confirmed``
+    ``measured``), which answers the role (``eligibility._unconfirmed``)."""
     production = field(row, "execution_context") == "production"
     role = execution_role(row)
     if (
@@ -133,7 +135,8 @@ def perf_value(row: Any, facets: Mapping[str, Any]) -> int:
     ):
         return _ROLE_VALUE[role]
     reason = lead_reason(field(row, "biomarker_type"), facets)
-    value = 2 if production and reason is None and role not in COLD_ROLES else 1
+    cold = role in COLD_ROLES and facets.get("confirmed") != "measured"
+    value = 2 if production and reason is None and not cold else 1
     # No traffic data: a loop of unknown size that no request, message or job
     # runs is most often an admin or maintenance path, where an N+1 is cheap.
     if reason == "unmeasured_cost" and role not in _ROLE_VALUE:

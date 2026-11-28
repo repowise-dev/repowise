@@ -48,11 +48,54 @@ _FILES = {
         "    @Binds\n    fun bindsListener(x: Int): Int = x\n"
         "}\n"
     ),
+    # Metro: the generated graph constructs a contributed binding and loads a
+    # contributed binding container; consumers depend on the interface.
+    "data/src/main/kotlin/org/sample/data/CategoryRepository.kt": (
+        "package org.sample.data\n\n"
+        "interface CategoryRepository {\n    fun all(): List<String>\n}\n"
+    ),
+    "data/src/main/kotlin/org/sample/data/CategoryRepositoryImpl.kt": (
+        "package org.sample.data\n\n"
+        "import dev.zacsweers.metro.AppScope\n"
+        "import dev.zacsweers.metro.ContributesBinding\n"
+        "import dev.zacsweers.metro.Inject\n\n"
+        "@Inject\n@ContributesBinding(AppScope::class)\n"
+        "class CategoryRepositoryImpl(private val db: String) : CategoryRepository {\n"
+        "    override fun all(): List<String> = listOf(db)\n"
+        "}\n"
+    ),
+    "data/src/main/kotlin/org/sample/data/DatabaseBindings.kt": (
+        "package org.sample.data\n\n"
+        "import dev.zacsweers.metro.AppScope\n"
+        "import dev.zacsweers.metro.BindingContainer\n"
+        "import dev.zacsweers.metro.ContributesTo\n"
+        "import dev.zacsweers.metro.Provides\n\n"
+        "@ContributesTo(AppScope::class)\n@BindingContainer\n"
+        "object DatabaseBindings {\n"
+        '    @Provides\n    fun provideDb(): String = "db"\n'
+        "}\n"
+    ),
+    # A class-level ``@Inject`` alone only says how to construct the class;
+    # something still has to ask for it.
+    "data/src/main/kotlin/org/sample/data/GetCategoryByName.kt": (
+        "package org.sample.data\n\n"
+        "import dev.zacsweers.metro.Inject\n\n"
+        "@Inject\nclass GetCategoryByName(private val repo: CategoryRepository)\n"
+    ),
+    "app/src/main/kotlin/org/sample/app/Screen.kt": (
+        "package org.sample.app\n\n"
+        "import org.sample.data.CategoryRepository\n\n"
+        "class Screen(private val repo: CategoryRepository) {\n"
+        "    fun render(): Int = repo.all().size\n"
+        "}\n\n"
+        "fun main() {\n    println(Screen::class)\n}\n"
+    ),
 }
 
 
-def _report(root: Path):
-    source_map = {rel: text.encode() for rel, text in _FILES.items()}
+def _report(root: Path, files: dict[str, str] | None = None):
+    files = _FILES if files is None else files
+    source_map = {rel: text.encode() for rel, text in files.items()}
     for rel, source in source_map.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,3 +186,88 @@ def test_qualified_use_matches_by_fully_qualified_name():
         assert not _is_framework_registered(["@org.sample.other.ThemeShots"], visible), path
     # In the other class's package, the bare name means the non-preview one.
     assert not _is_framework_registered(["@ThemeShots"], meta.visible_in("app/OtherPackage.kt"))
+
+
+def test_metro_bindings_are_built_by_the_graph(tmp_path: Path):
+    report = _report(tmp_path)
+    unreachable = _of(report, DeadCodeKind.UNREACHABLE_FILE)
+    assert unreachable.isdisjoint({"CategoryRepositoryImpl.kt", "DatabaseBindings.kt"})
+    flagged = _of(report, DeadCodeKind.UNUSED_EXPORT) | _of(report, DeadCodeKind.UNUSED_INTERNAL)
+    assert flagged.isdisjoint({"CategoryRepositoryImpl", "DatabaseBindings", "provideDb"})
+    # ``@Inject`` alone is not a root: nothing asks for this class.
+    assert "GetCategoryByName" in flagged
+
+
+def test_metro_and_anvil_annotations_are_framework_registered():
+    for annotation in (
+        "@ContributesBinding(AppScope::class)",
+        "@ContributesTo(AppScope::class)",
+        "@ContributesIntoSet(AppScope::class)",
+        "@ContributesIntoMap(AppScope::class)",
+        "@ContributesMultibinding(AppScope::class)",
+        "@BindingContainer",
+    ):
+        assert _is_framework_registered([annotation]), annotation
+    assert not _is_framework_registered(["@Inject"])
+
+
+# Glide's annotation processor generates ``GeneratedAppGlideModule``, which
+# instantiates the annotated module class. Nothing in source names it, so both
+# the file and the class were reported dead (AntennaPod's ``ApGlideModule``).
+_GLIDE_ANNOTATED = "app/src/main/java/com/example/glide/annotated"
+_GLIDE_BARE = "app/src/main/java/com/example/glide/bare"
+
+_GLIDE_FILES = {
+    f"{_GLIDE_ANNOTATED}/ApGlideModule.java": (
+        "package com.example.glide.annotated;\n"
+
+        "\n"
+
+        "@GlideModule\n"
+
+        "public class ApGlideModule extends AppGlideModule {\n"
+
+        "    @Override\n"
+
+        "    public void applyOptions(Context context, GlideBuilder builder) {\n"
+
+        "        builder.setLogLevel(6);\n"
+
+        "    }\n"
+
+        "}\n"
+
+    ),
+    f"{_GLIDE_BARE}/BareGlideModule.java": (
+        "package com.example.glide.bare;\n"
+
+        "\n"
+
+        "public class BareGlideModule extends AppGlideModule {\n"
+
+        "    @Override\n"
+
+        "    public void applyOptions(Context context, GlideBuilder builder) {\n"
+
+        "        builder.setLogLevel(6);\n"
+
+        "    }\n"
+
+        "}\n"
+
+    ),
+}
+
+
+def test_glide_module_is_instantiated_by_the_generated_component(tmp_path: Path):
+    report = _report(tmp_path, _GLIDE_FILES)
+    flagged = _of(report, DeadCodeKind.UNUSED_EXPORT) | _of(report, DeadCodeKind.UNUSED_INTERNAL)
+    assert "ApGlideModule.java" not in _of(report, DeadCodeKind.UNREACHABLE_FILE)
+    assert "ApGlideModule" not in flagged
+    # Glide ignores a module class without the annotation, so it stays reported.
+    assert "BareGlideModule.java" in _of(report, DeadCodeKind.UNREACHABLE_FILE)
+    assert "BareGlideModule" in flagged
+
+
+def test_framework_registration_accepts_the_glide_annotation():
+    assert _is_framework_registered(["@GlideModule"])

@@ -66,6 +66,8 @@ def _result(
     return SimpleNamespace(
         repo_name=repo_name,
         index_persisted_incrementally=True,
+        parsed_files=[],
+        file_infos=[],
         generated_pages=generated_pages,
         tech_stack=None,
         vector_store=vector_store,
@@ -212,10 +214,10 @@ async def test_persist_result_curated_zero_modules_sweeps_stale(tmp_path):
     stale_id = "module_page:community-0"
     await _seed_stale_module_page(repo_path, stale_id)
 
-    # Run emits only a layer page but is authoritative for module_page too.
-    current = _generated_page("layer_page", "layer:Data")
+    # Run emits only a cycle page but is authoritative for module_page too.
+    current = _generated_page("scc_page", "scc-Data")
     await persist_result(
-        _result("r", [current], authoritative_page_types={"module_page", "layer_page"}),
+        _result("r", [current], authoritative_page_types={"module_page", "scc_page"}),
         repo_path,
     )
 
@@ -224,7 +226,7 @@ async def test_persist_result_curated_zero_modules_sweeps_stale(tmp_path):
         async with get_session(sf) as session:
             ids = (await session.execute(select(Page.id))).scalars().all()
         assert stale_id not in ids
-        assert "layer_page:layer:Data" in ids
+        assert "scc_page:scc-Data" in ids
     finally:
         await engine.dispose()
 

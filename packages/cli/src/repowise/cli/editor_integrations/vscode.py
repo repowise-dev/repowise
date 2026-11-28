@@ -8,6 +8,7 @@ from typing import Any
 from repowise.cli.agent_targets.targets import vscode as vscode_target
 from repowise.cli.agent_targets.types import FileAction
 from repowise.cli.editor_setup import EditorSetupOptions
+from repowise.cli.ui.glyphs import glyph
 
 
 class VSCodeSetup:
@@ -62,6 +63,7 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
     happened rather than a restatement of what we intended.
     """
 
+    from repowise.cli.agent_targets.formats.server_entry import RENAME_HINT, RemoteServerEntryError
     from repowise.cli.mcp_config import (
         save_vscode_extensions_config,
         save_vscode_mcp_config,
@@ -71,8 +73,10 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
     written: list[Path] = []
     try:
         mcp_path = save_vscode_mcp_config(repo_path)
-        console_obj.print(f"  [{OK}]✓[/] VS Code MCP configured ({mcp_path})")
+        console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code MCP configured ({mcp_path})")
         written.append(Path(mcp_path))
+    except RemoteServerEntryError:
+        console_obj.print(f"  [{WARN}].vscode/mcp.json left unchanged: {RENAME_HINT}.[/]")
     except ValueError:
         console_obj.print(
             f"  [{WARN}].vscode/mcp.json left unchanged (not valid JSON; it may contain "
@@ -81,7 +85,7 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
 
     try:
         ext_path = save_vscode_extensions_config(repo_path)
-        console_obj.print(f"  [{OK}]✓[/] VS Code extension recommended ({ext_path})")
+        console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code extension recommended ({ext_path})")
         written.append(Path(ext_path))
     except ValueError:
         console_obj.print(
@@ -101,6 +105,6 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
                 "markers are unpaired or duplicated, or it could not be read.[/]"
             )
         else:
-            console_obj.print(f"  [{OK}]✓[/] Copilot instructions updated ({instructions.path})")
+            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Copilot instructions updated ({instructions.path})")
             written.append(instructions.path)
     return written

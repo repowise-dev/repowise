@@ -289,7 +289,7 @@ describe("FindingsTable row affordances", () => {
     renderTable([finding({ id: "a" }), finding({ id: "b" })], { onGeneratePrompt });
 
     // Per-row: the prompt leads the row, named for the file it is about.
-    fireEvent.click(inTable().getByRole("button", { name: "Copy prompt for your agent: src/a.ts" }));
+    fireEvent.click(inTable().getByRole("button", { name: "Copy prompt: src/a.ts" }));
     expect(onGeneratePrompt).toHaveBeenCalledWith(["a"]);
 
     // Header: every row the filters show, until there is a selection.

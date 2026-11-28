@@ -242,3 +242,15 @@ def test_a_commented_out_export_alias_publishes_nothing(tmp_path: Path) -> None:
     }
     edges = _build_calls(tmp_path, files)
     assert ("caller.ts::run", "leaf.ts::real") not in edges, edges
+
+
+def test_a_star_reexport_does_not_forward_the_default_export(tmp_path: Path) -> None:
+    """``export * from`` re-exports every name but ``default``, so a default
+    import of the barrel never binds the leaf's default declaration."""
+    files = {
+        "leaf.ts": "export default function helper(x: number) {\n  return x;\n}\n",
+        "barrel.ts": 'export * from "./leaf.js";\n',
+        "caller.ts": 'import h from "./barrel.js";\n\nexport function run() {\n  return h(1);\n}\n',
+    }
+    edges = _build_calls(tmp_path, files)
+    assert ("caller.ts::run", "leaf.ts::helper") not in edges, edges

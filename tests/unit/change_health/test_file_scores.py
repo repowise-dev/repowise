@@ -18,7 +18,7 @@ def test_a_simplified_file_reports_its_score_on_both_sides(make_repo):
     repo.commit("seed", {"app.py": python_complex("tangle", 26), "ok.py": "x = 1\n"})
     repo.commit("simplify", {"app.py": python_complex("tangle", 1), "ok.py": "x = 2\n"})
 
-    block = health_delta_block(_delta(repo), revspec="HEAD")
+    block = health_delta_block(_delta(repo), revspec="HEAD", full=True)
 
     assert block["files_total"] == 2
     assert block["score_basis"] == "structure_only"
@@ -33,6 +33,19 @@ def test_a_simplified_file_reports_its_score_on_both_sides(make_repo):
     assert change["head"] > change["base"]
     assert change["structure_delta"] < 0
     assert change["delta"] == round(change["head"] - change["base"], 2)
+
+
+def test_by_default_every_scored_file_is_listed_without_its_deductions(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": python_complex("tangle", 26), "ok.py": "x = 1\n"})
+    repo.commit("simplify", {"app.py": python_complex("tangle", 1), "ok.py": "x = 2\n"})
+
+    block = health_delta_block(_delta(repo), revspec="HEAD")
+
+    assert [r["path"] for r in block["files"]] == ["app.py", "ok.py"]
+    assert not any("base_structure" in r or "head_structure" in r for r in block["files"])
+    assert block["files_total"] == 2
+    assert block["score_change"]["files_compared"] == 2
 
 
 def test_a_new_file_has_no_base_score_and_stays_out_of_the_average(make_repo):

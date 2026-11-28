@@ -75,13 +75,51 @@ def _vitest_glob_to_regex(glob: str) -> re.Pattern[str]:
     """Translate a vitest/minimatch glob into a regex matching repo paths.
 
     ``**`` is zero or more segments, ``*`` one segment, ``?`` one non-``/``
-    char; ``fnmatch`` would make ``foo/**/x`` miss ``foo/x``.
+    char, ``{a,b}`` either alternative; ``fnmatch`` would make ``foo/**/x``
+    miss ``foo/x``.
     """
-    out: list[str] = ["^"]
+    return re.compile(f"^{_glob_body(glob)}$")
+
+
+def _brace_end(glob: str, start: int) -> int:
+    """Index of the ``}`` closing the ``{`` at *start*, or -1 when unbalanced."""
+    depth = 0
+    for i in range(start, len(glob)):
+        if glob[i] == "{":
+            depth += 1
+        elif glob[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _brace_alternatives(inner: str) -> list[str]:
+    """The top-level comma-separated alternatives of a brace group's text."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for c in inner:
+        if c == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        depth += (c == "{") - (c == "}")
+        current.append(c)
+    parts.append("".join(current))
+    return parts
+
+
+def _glob_body(glob: str) -> str:
+    out: list[str] = []
     i = 0
     while i < len(glob):
         c = glob[i]
-        if c == "*":
+        if c == "{" and (end := _brace_end(glob, i)) > i and "," in glob[i:end]:
+            alternatives = _brace_alternatives(glob[i + 1 : end])
+            out.append("(?:" + "|".join(_glob_body(alt) for alt in alternatives) + ")")
+            i = end + 1
+        elif c == "*":
             if i + 1 < len(glob) and glob[i + 1] == "*":
                 # Consume a trailing ``/`` so ``foo/**/bar`` matches ``foo/bar``.
                 i += 2
@@ -102,8 +140,7 @@ def _vitest_glob_to_regex(glob: str) -> re.Pattern[str]:
         else:
             out.append(c)
             i += 1
-    out.append("$")
-    return re.compile("".join(out))
+    return "".join(out)
 
 
 def _glob_matches(regex: re.Pattern[str], path_set: set[str]) -> set[str]:

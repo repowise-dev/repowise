@@ -165,6 +165,19 @@ async def test_health_states_the_sizes_of_the_new_lanes_too(setup_mcp, oversized
 
 
 @pytest.mark.asyncio
+async def test_health_stale_rows_say_only_what_git_can_answer(setup_mcp, oversized_health):
+    """Gone files are named on the rows served; a record with no birth date
+    gets no commit count instead of a guessed one."""
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why()
+
+    for row in result["stale_decisions"]:
+        assert row["moved_files"] == row["affected_files"] == [f"src/{row['id']}.py"]
+        assert "commits_since" not in row
+
+
+@pytest.mark.asyncio
 async def test_health_leaves_the_conflicts_lane_alone(setup_mcp, oversized_health):
     """``conflicts`` already names both sides; pinned so it is not thinned to
     match its neighbours.

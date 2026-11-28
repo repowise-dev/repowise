@@ -12,6 +12,7 @@ import {
   SheetTitle,
 } from "@repowise-dev/ui/ui/sheet";
 import { CommitDetailCard } from "@repowise-dev/ui/commits/commit-detail-card";
+import { CommitEvents } from "@repowise-dev/ui/commits/commit-events";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   AiPromptButton,
@@ -21,9 +22,36 @@ import {
 } from "@repowise-dev/ui/health";
 import { getCommit } from "@/lib/api/git";
 import { getRiskRange } from "@/lib/api/risk";
+import { listEvents } from "@/lib/api/events";
 import { commitFixPromptInput, commitReviewPromptInput } from "@/lib/commit-prompt";
 import { useTranslations } from "next-intl";
 import { useCommitLedeCopy, useHealthDeltaLabels } from "./history-labels";
+
+/**
+ * What the index run at this commit flagged, the important ones only. The
+ * API filters by the full sha, so this mounts once the commit detail is in.
+ */
+function CommitEventsSection({ repoId, sha }: { repoId: string; sha: string }) {
+  const t = useTranslations("commits.detail.events");
+  const { data: events } = useSWR(
+    `commit-events:${repoId}:${sha}`,
+    () => listEvents(repoId, { commit: sha, important: true, limit: 50 }).then((r) => r.events),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+  if (!events) return null;
+  return (
+    <CommitEvents
+      events={events}
+      labels={{
+        title: t("title"),
+        description: t("description"),
+        repository: t("repository"),
+        kind: (k) => (t.has(`kinds.${k}`) ? t(`kinds.${k}`) : k),
+        severity: (sev) => t(`severities.${sev}`),
+      }}
+    />
+  );
+}
 
 /**
  * The commit detail drawer, driven entirely by `?commit=`.
@@ -100,6 +128,7 @@ export function CommitDetailSheet({ repoId }: { repoId: string }) {
                 }
               />
             )}
+            {detail && <CommitEventsSection repoId={repoId} sha={detail.sha} />}
           </div>
         </SheetContent>
       </Sheet>

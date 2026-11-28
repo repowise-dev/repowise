@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hasRole, healthBandLabel, nodeRoles } from "../../src/zoom/node-signals";
+import { healthBandLabel, nodeRoles } from "../../src/zoom/node-signals";
 import type { ZoomMetrics, ZoomNode } from "../../src/zoom/types";
 
 const METRICS: ZoomMetrics = {
@@ -53,9 +53,8 @@ function node(
 }
 
 describe("nodeRoles", () => {
-  it("is empty when the node carries no role, so no dot is drawn", () => {
+  it("is empty when the node carries no role", () => {
     expect(nodeRoles(node())).toEqual([]);
-    expect(hasRole(node())).toBe(false);
   });
 
   it("names every applicable role, not just the priority winner", () => {
@@ -65,13 +64,12 @@ describe("nodeRoles", () => {
     expect(nodeRoles(both)).toEqual(["Entry point", "Hotspot"]);
   });
 
-  it("inherits a role from the subtree, matching what the card's dot tests", () => {
+  it("inherits a role from the subtree, matching the card's footer counts", () => {
     const container = node({
       kind: "folder",
       metrics: { file_count: 9, hotspot_count: 2 },
     });
     expect(nodeRoles(container)).toEqual(["Hotspot"]);
-    expect(hasRole(container)).toBe(true);
   });
 });
 
@@ -80,7 +78,7 @@ describe("healthBandLabel", () => {
     expect(healthBandLabel(null)).toBeNull();
   });
 
-  it("uses the one band scale the card's dot paints on", () => {
+  it("uses the one band scale the card's corner score is coloured by", () => {
     expect(healthBandLabel(9.0)).toBe("Excellent");
     expect(healthBandLabel(7.4)).toBe("Good");
     expect(healthBandLabel(6.0)).toBe("Fair");

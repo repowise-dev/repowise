@@ -5,7 +5,12 @@
  */
 
 import type { Hotspot } from "./git.js";
-import type { DefectAccuracy, HealthBand, HealthSeverity } from "./health.js";
+import type {
+  DefectAccuracy,
+  HealthBand,
+  HealthSeverity,
+  PerformanceCauses,
+} from "./health.js";
 import type { QueueCounts } from "./queue.js";
 
 export interface OverviewRepoMeta {
@@ -101,8 +106,8 @@ export interface OverviewHealth {
   /** Co-equal performance pillar headline: static performance RISK (I/O-in-loop
    *  / N+1). `null` when not yet measured. */
   performance_average?: number | null;
-  /** Open findings homing under the performance pillar — the actionable count. */
-  performance_findings?: number;
+  /** Open performance causes: worth fixing now, in production code, overall. */
+  performance_causes?: PerformanceCauses | null;
   /** Lowest-scoring file by performance risk, surfaced only when score < 10. */
   worst_performance_path?: string | null;
   worst_performance_score?: number | null;

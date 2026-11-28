@@ -22,6 +22,11 @@ from repowise.cli.helpers import NO_SAVE_KEY_ENV, save_config
 from repowise.cli.main import cli
 
 
+def _a_source_file(root) -> None:
+    """init stops on a folder with nothing to index, so give it one file."""
+    (root / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+
+
 class TestInteractiveGate:
     """The questionnaire gate: --resume must skip it (issue #2098)."""
 
@@ -194,6 +199,7 @@ class TestDocsFlag:
             "REPOWISE_PROVIDER",
         ):
             monkeypatch.delenv(var, raising=False)
+        _a_source_file(tmp_path)
         result = runner.invoke(cli, ["init", str(tmp_path), "--docs", "deterministic", "--yes"])
         assert result.exit_code == 0, result.output
 
@@ -226,48 +232,44 @@ class TestProseFlag:
 
     def test_no_prose_needs_no_key(self, runner, tmp_path, keyless_env):
         """`--no-prose` is the current spelling of --index-only: a free wiki."""
+        _a_source_file(tmp_path)
         result = runner.invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
         assert result.exit_code == 0, result.output
 
     @pytest.mark.parametrize(
-        "flags", [["--no-prose"], ["--index-only"], ["--docs", "deterministic"]]
+        "flags",
+        [
+            ["--no-prose"],
+            ["--no-prose", "--provider", "openai"],
+            ["--index-only"],
+            ["--docs", "deterministic"],
+        ],
     )
-    def test_scripted_structural_init_does_not_auto_detect_a_decision_provider(
+    def test_no_prose_never_builds_a_provider_with_keys_set(
         self, runner, tmp_path, keyless_env, monkeypatch, flags
     ):
+        """`--no-prose` means zero model calls, whatever keys or flags are present."""
         from unittest.mock import Mock
 
-        resolver = Mock(return_value=None)
-        monkeypatch.setattr(
-            "repowise.cli.commands.init_cmd._prepare.resolve_provider", resolver
-        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-dummy-openai")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+        factory = Mock(side_effect=AssertionError("a --no-prose run built an LLM provider"))
+        for module in (
+            "repowise.core.providers",
+            "repowise.core.providers.llm",
+            "repowise.core.providers.llm.registry",
+        ):
+            monkeypatch.setattr(f"{module}.get_provider", factory)
+        _a_source_file(tmp_path)
         result = runner.invoke(cli, ["init", str(tmp_path), *flags, "--yes"])
         assert result.exit_code == 0, result.output
-        resolver.assert_not_called()
-
-    @pytest.mark.parametrize("opt_in", ["provider", "key"])
-    def test_structural_init_preserves_explicit_decision_provider_opt_in(
-        self, runner, tmp_path, keyless_env, monkeypatch, opt_in
-    ):
-        from unittest.mock import Mock
-
-        resolver = Mock(return_value=None)
-        monkeypatch.setattr(
-            "repowise.cli.commands.init_cmd._prepare.resolve_provider", resolver
-        )
-        flags = ["--provider", "openai"] if opt_in == "provider" else []
-        if opt_in == "key":
-            monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        result = runner.invoke(
-            cli, ["init", str(tmp_path), "--no-prose", "--yes", *flags]
-        )
-        assert result.exit_code == 0, result.output
-        resolver.assert_called_once_with(
-            "openai" if opt_in == "provider" else None, None, tmp_path
-        )
+        factory.assert_not_called()
+        assert "No LLM provider is configured" not in result.output
+        assert "this run builds from code" in result.output
 
     def test_index_only_prints_deprecation(self, runner, tmp_path, keyless_env):
         """The deprecated alias still works and says so."""
+        _a_source_file(tmp_path)
         result = runner.invoke(cli, ["init", str(tmp_path), "--index-only", "--yes"])
         assert result.exit_code == 0, result.output
         assert "deprecated" in result.output.lower()
@@ -306,8 +308,9 @@ class TestNonInteractiveKeyPersistence:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-from-the-environment")
         save_config(tmp_path, "openai", "gpt-5.4-nano", "openai")
 
-        ignored = (tmp_path / ".gitignore").read_text(encoding="utf-8")
-        assert ".repowise/.env" in {line.strip() for line in ignored.splitlines()}
+        ignored = (tmp_path / ".repowise" / ".gitignore").read_text(encoding="utf-8")
+        assert "/.env" in {line.strip() for line in ignored.splitlines()}
+        assert not (tmp_path / ".gitignore").exists()
 
     def test_no_save_key_leaves_nothing_behind(self, tmp_path, monkeypatch):
         """The opt-out is for keys injected per-process that must not hit disk."""
@@ -357,13 +360,10 @@ class TestNonInteractiveKeyPersistence:
     def test_unwritable_gitignore_warns_but_does_not_lose_the_index(
         self, tmp_path, monkeypatch, capsys
     ):
-        """This runs after the index is paid for, so it must never abort the run.
-
-        It is also the first thing on the scripted path to write outside
-        `.repowise/`, so it is the first that can fail on a read-only checkout.
-        """
+        """This runs after the index is paid for, so it must never abort the run."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-key")
-        (tmp_path / ".gitignore").mkdir()  # a directory where a file must go
+        # A directory where the ignore file must go.
+        (tmp_path / ".repowise" / ".gitignore").mkdir(parents=True)
 
         save_config(tmp_path, "openai", "gpt-5.4-nano", "openai")
 
@@ -378,3 +378,88 @@ class TestNonInteractiveKeyPersistence:
 
         written = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
         assert "OPENAI_API_KEY=sk-newline\n" in written
+
+
+class TestAdvancedExcludeMergesWithFlag:
+    """Customize answers must add to `-x` patterns, not replace them (issue #4034)."""
+
+    @staticmethod
+    def _exclude_patterns(tmp_path, args, typed):
+        import subprocess
+        from unittest import mock
+
+        from repowise.cli.commands.init_cmd import _plan, _prepare
+        from repowise.cli.ui.plan_screen import ModelOffer
+
+        repo = tmp_path / "repo"
+        (repo / "vendor").mkdir(parents=True)
+        (repo / "vendor" / "lib.py").write_text("x = 1\n")
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+        answers = {
+            "commit_limit": 5000,
+            "follow_renames": False,
+            "skip_tests": False,
+            "skip_infra": False,
+            "exclude": typed,
+            "run_mode": "standard",
+            "max_file_pages": None,
+            "generate_docs": False,
+        }
+        seen: list[list[str]] = []
+
+        def _stop_after_settings(run):
+            seen.append(list(run.exclude_patterns))
+            return False
+
+        with (
+            mock.patch.object(_prepare, "_interactive_gate", lambda **_: True),
+            # e (edit plan), then Enter.
+            mock.patch.object(_plan, "read_plan_key", mock.Mock(side_effect=["edit", "start"])),
+            mock.patch.object(_plan, "build_offer", lambda *a, **k: ModelOffer()),
+            mock.patch.object(_plan, "agent_providers_set_up", lambda _r: ()),
+            mock.patch(
+                "repowise.cli.ui.provider_selection._detect_provider_status", lambda _r: {}
+            ),
+            mock.patch.object(
+                _plan, "interactive_advanced_config", lambda *a, **k: dict(answers)
+            ),
+            mock.patch.object(_prepare, "_confirm_wiki_overwrite", _stop_after_settings),
+        ):
+            result = CliRunner().invoke(cli, ["init", str(repo), *args])
+
+        assert result.exit_code == 0, result.output
+        assert seen, result.output
+        return seen[0]
+
+    def test_typed_pattern_is_added_after_flag(self, tmp_path):
+        got = self._exclude_patterns(tmp_path, ["-x", "vendor/"], ("build/",))
+        assert got == ["vendor/", "build/"]
+
+    def test_enter_keeps_flag_patterns(self, tmp_path):
+        got = self._exclude_patterns(tmp_path, ["-x", "vendor/"], ())
+        assert got == ["vendor/"]
+
+    def test_repeated_pattern_is_not_duplicated(self, tmp_path):
+        got = self._exclude_patterns(tmp_path, ["-x", "vendor/"], ("vendor/",))
+        assert got == ["vendor/"]
+
+    def test_no_flag_uses_typed_patterns(self, tmp_path):
+        got = self._exclude_patterns(tmp_path, [], ("build/",))
+        assert got == ["build/"]
+
+
+def test_an_empty_folder_stops_before_anything_is_wired(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    result = CliRunner().invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
+    assert result.exit_code != 0
+    assert "No source files to index" in result.output
+    assert "repowise init <path>" in result.output
+
+
+def test_a_folder_without_git_says_what_is_missing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    _a_source_file(tmp_path)
+    result = CliRunner().invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "No git commits here" in result.output

@@ -25,10 +25,8 @@ function activityLine(owner: OwnerProfile, labels: OwnershipLabels): string | nu
 
 /** Every folded-in name and address other than the ones the page already shows. */
 function otherIdentities(owner: OwnerProfile): string[] {
-  return [
-    ...owner.aliases.names.filter((n) => n !== owner.name),
-    ...owner.aliases.emails.filter((e) => e !== owner.email),
-  ];
+  const { names = [], emails = [] } = owner.aliases ?? {};
+  return [...names.filter((n) => n !== owner.name), ...emails.filter((e) => e !== owner.email)];
 }
 
 export function OwnerIdentity({ owner, labels }: { owner: OwnerProfile; labels: OwnershipLabels }) {

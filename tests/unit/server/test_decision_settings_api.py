@@ -47,6 +47,7 @@ async def test_get_returns_the_full_source_registry(client: AsyncClient):
         "session_discovery",
         "conventions",
         "cli",
+        "agent",
     ]
     assert body["preset"] == "default"
     assert body["enabled"] is True

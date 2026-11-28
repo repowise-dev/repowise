@@ -34,7 +34,7 @@ def _install_analysis_writers(rec: StepRecorder) -> None:
         "save_dead_code_findings",
         "replace_doc_drift_guarded",
         "save_coverage_files",
-        "upsert_git_function_blame_bulk",
+        "replace_git_function_blame_for_files",
         "set_repo_function_mod_p80",
     ):
         rec.patch(crud, name)
@@ -75,7 +75,7 @@ async def test_analysis_writes_then_decision_chain_in_pinned_order(monkeypatch):
         "_analyzed_commit",
         "save_full_health_report",
         "save_coverage_files",
-        "upsert_git_function_blame_bulk",
+        "replace_git_function_blame_for_files",
         "set_repo_function_mod_p80",
         "snapshot_health_from_store",
         "unretire_auto_superseded",

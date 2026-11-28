@@ -56,7 +56,7 @@ async def test_listed_rows_and_repo_figures_do_not_move_with_the_limit(
             session,
             repo["id"],
             [_finding(i, "prior_defect", 0.3) for i in range(6)]
-            + [_finding(i, "low_cohesion", 0.4 + i / 10) for i in range(0, _FILES, 2)],
+            + [_finding(i, "god_class", 0.4 + i / 10) for i in range(0, _FILES, 2)],
         )
 
     async def overview(limit: int) -> dict:

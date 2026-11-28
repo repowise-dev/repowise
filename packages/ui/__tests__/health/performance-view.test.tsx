@@ -218,12 +218,34 @@ describe("PerformanceView queue", () => {
     expect(within(first!).getByText("Run the independent awaits together")).toBeTruthy();
     expect(within(first!).getByText("Proven safe")).toBeTruthy();
     expect(within(first!).getByText(/2 call sites across 2 files/)).toBeTruthy();
-    expect(within(first!).getByRole("button", { name: "Copy prompt for your agent" })).toBeTruthy();
+    expect(within(first!).getByText("Plan ready")).toBeTruthy();
+    expect(
+      within(first!).getByRole("button", { name: /^Copy prompt: Database call/ }),
+    ).toBeTruthy();
     expect(within(first!).getByRole("link", { name: "Open plan" })).toBeTruthy();
     // The file is one verb among the row's others, behind its menu.
     expect(within(first!).queryByRole("button", { name: "Open file" })).toBeNull();
     fireEvent.click(within(first!).getByRole("button", { name: /More actions for/ }));
     expect(await screen.findByRole("button", { name: "Open the file" })).toBeTruthy();
+  });
+
+  it("keeps every prompt on the queue quiet: no filled prompt without a scope-level one", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await rows();
+    const filled = screen
+      .getAllByRole("button", { name: /Copy prompt/ })
+      .filter((button) => button.className.split(/\s+/).includes("bg-[var(--color-model-muted)]"));
+    expect(filled).toEqual([]);
+    expect(screen.getByRole("button", { name: /^Copy prompt for these \d+ in / })).toBeTruthy();
+  });
+
+  it("keeps the row's tip from opening the drawer, by click or by key", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    const [first] = await rows();
+    const tip = within(first!).getByRole("button", { name: "Why this cause sits here" });
+    fireEvent.click(tip);
+    fireEvent.keyDown(tip, { key: "Enter" });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("offers no plan link where there is no plan, and says there is no fix yet", async () => {
@@ -309,6 +331,94 @@ describe("PerformanceView states", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText(/read code shape, not latency/)).toBeTruthy();
+  });
+
+  it("asks for runtime evidence instead of a clean result when none is connected", async () => {
+    const empty = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      scopes: { now: 0, production: 0, all: 0 },
+      summary: { ...page().summary, total: 0, repository_total: 0 },
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => empty })}
+        runtimeEvidence={{ connected: false, found: [".benchmarks/run.json"] }}
+      />,
+    );
+    expect(await screen.findByText("Add runtime evidence to rank by measured time")).toBeTruthy();
+    expect(screen.getByText(".benchmarks/run.json")).toBeTruthy();
+    expect(screen.queryByText(/No performance changes/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toContain("repowise evidence setup --format json");
+    expect(screen.getByText("repowise evidence setup")).toBeTruthy();
+  });
+
+  it("copies the host's connect prompt and hint in place of the local setup ones", async () => {
+    const empty = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      scopes: { now: 0, production: 0, all: 0 },
+      summary: { ...page().summary, total: 0, repository_total: 0 },
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => empty })}
+        runtimeEvidence={{ connected: false, found: null }}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+        connectEvidenceHint={<a href="/docs/evidence">Read the setup guide</a>}
+      />,
+    );
+    expect(await screen.findByText("Add runtime evidence to rank by measured time")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Read the setup guide" })).toBeTruthy();
+    expect(screen.queryByText("repowise evidence setup")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
+  });
+
+  it("copies the host's connect prompt from the row above a queue with causes", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter()}
+        runtimeEvidence={{ connected: false }}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+      />,
+    );
+    expect(await screen.findByText("Ranked by code shape.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
+  });
+
+  it("keeps the good state once runtime evidence is connected", async () => {
+    const empty = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      scopes: { now: 0, production: 0, all: 0 },
+      summary: { ...page().summary, total: 0, repository_total: 0 },
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => empty })}
+        runtimeEvidence={{ connected: true }}
+      />,
+    );
+    expect(await screen.findByText(/No performance changes worth making now/)).toBeTruthy();
+    expect(screen.queryByText("Add runtime evidence to rank by measured time")).toBeNull();
   });
 
   it("names the scope of a good state and folds the left-out reasons into its sentence", async () => {
@@ -397,6 +507,16 @@ describe("PerformanceView drawer", () => {
     render(<PerformanceView adapter={adapter()} />);
     const first = await openFirstRow();
     expect(within(first).getByText("1")).toBeTruthy();
+    const panel = await screen.findByRole("dialog");
+    expand(panel, "Why it ranks here");
+    expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
+  });
+
+  it("keeps the row's queue position when the detail by id carries the repository rank", async () => {
+    const getDetail = vi.fn(async () => resolvedDetail({ rank_position: 7 }));
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunity: getDetail })} />);
+    await openFirstRow();
+    await waitFor(() => expect(getDetail).toHaveBeenCalled());
     const panel = await screen.findByRole("dialog");
     expand(panel, "Why it ranks here");
     expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
@@ -589,7 +709,7 @@ describe("PerformanceView drawer", () => {
     render(<PerformanceView adapter={adapter({ getRefactoringPlan: async () => exact })} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
-    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt" }));
     expect(await screen.findByText("Prompt for your agent")).toBeTruthy();
     expect(await screen.findByText(/chars, approx/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("Causal performance opportunity");
@@ -620,7 +740,7 @@ describe("PerformanceView drawer", () => {
     );
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
-    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt" }));
     expect(await screen.findByText(/served plan-1 generic/)).toBeTruthy();
     expect(served).toHaveBeenCalledWith("plan-1", "generic");
   });
@@ -629,7 +749,7 @@ describe("PerformanceView drawer", () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
-    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt" }));
     expect(await screen.findByText(/Causal performance opportunity/)).toBeTruthy();
   });
 
@@ -637,7 +757,7 @@ describe("PerformanceView drawer", () => {
     const served = vi.fn(async (planId: string, flavor: string) => `served ${planId} ${flavor}`);
     render(<PerformanceView adapter={adapter({ getRefactoringPlanPrompt: served })} />);
     const [first] = await rows();
-    fireEvent.click(within(first!).getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(within(first!).getByRole("button", { name: /^Copy prompt:/ }));
     // No plan fetch on this host, so the evidence handoff, and no drawer.
     expect(await screen.findByText(/Causal performance opportunity/)).toBeTruthy();
     expect(screen.queryByText("Show this cause on the map")).toBeNull();
@@ -647,7 +767,7 @@ describe("PerformanceView drawer", () => {
   it("hands a whole area to an agent as one prompt", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await rows();
-    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for these 3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for these 3 in src" }));
     expect(await screen.findByText(/Performance causes in `src`/)).toBeTruthy();
     expect(document.body.textContent).toContain("perf2_investigate");
   });
@@ -713,6 +833,85 @@ describe("PerformanceView drawer", () => {
     await openFirstRow();
     fireEvent.click(await screen.findByRole("button", { name: /Read the raw observations/ }));
     expect(await screen.findByText(/does not page the remaining observations/)).toBeTruthy();
+  });
+});
+
+describe("PerformanceView measured hotspot drawer", () => {
+  it("shows the run as the evidence, never zero raw observations", async () => {
+    const measurement = 'Measured: rank 1 of repo code in entry_point "cli build" (12% self, 9-15%), 2d old';
+    const hotspot = opportunity({
+      opportunity_id: "perf2_hotspot",
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "src/a.py::build",
+      observations_total: 0,
+      evidence: [
+        {
+          finding_id: "",
+          file_path: "src/a.py",
+          biomarker_type: "measured_hotspot",
+          function_name: "build",
+          line_start: null,
+          line_end: null,
+          reason: measurement,
+          path: [],
+          provenance: "measured",
+        },
+      ],
+    });
+    const one = page({ items: [hotspot], total: 1, next_offset: null });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => one,
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions: undefined,
+        })}
+      />,
+    );
+    await openFirstRow();
+    expect(await screen.findByText("Runs that measured it")).toBeTruthy();
+    expect(screen.getByText(measurement)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Read the raw observations/ })).toBeNull();
+  });
+});
+
+describe("PerformanceView measured hotspot with no static finding", () => {
+  it("renders an evidence row whose finding_id is null", async () => {
+    const measurement = 'Measured: rank 2 of repo code in entry_point "cli serve" (8% self), 1d old';
+    const hotspot = opportunity({
+      opportunity_id: "perf2_hotspot_null",
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "src/b.py::serve",
+      observations_total: 0,
+      evidence: [
+        {
+          finding_id: null,
+          file_path: "src/b.py",
+          biomarker_type: "measured_hotspot",
+          function_name: "serve",
+          line_start: null,
+          line_end: null,
+          reason: measurement,
+          path: [],
+          provenance: "measured",
+        },
+      ],
+    });
+    const one = page({ items: [hotspot], total: 1, next_offset: null });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => one,
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions: undefined,
+        })}
+      />,
+    );
+    await openFirstRow();
+    expect(await screen.findByText("Runs that measured it")).toBeTruthy();
+    expect(screen.getByText(measurement)).toBeTruthy();
   });
 });
 
@@ -1274,5 +1473,16 @@ describe("performance drawer preview", () => {
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
     expect(await within(panel).findByRole("button", { name: `Preview: ${note}` })).toBeTruthy();
+  });
+});
+
+describe("PerformanceView summary rows", () => {
+  it("renders a queue row the summary view sends without its actionability reason", async () => {
+    const summaryRows = page();
+    summaryRows.items = summaryRows.items.map(({ actionability_reason: _reason, ...row }) => row);
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => summaryRows })} />);
+    expect((await rows()).length).toBe(summaryRows.items.length);
+    await openFirstRow();
+    expect(await screen.findByRole("dialog")).toBeTruthy();
   });
 });

@@ -63,17 +63,25 @@ def _target_risk(
         command="risk",
     )
 
+    arguments = {
+        "targets": list(targets),
+        "changed_files": list(changed_files) or None,
+        # Every block the card prints; --format json also keeps the PR blast radius.
+        "include": [
+            "churn",
+            "owners",
+            "blast",
+            # Orientation for a multi-file question; beside one named file it is noise.
+            *(["hotspots"] if len(targets) > 1 and not changed_files else []),
+        ],
+    }
+
     def _factory():
         from repowise.server.mcp_server.tool_risk.get_risk import get_risk
 
-        return get_risk(
-            targets=list(targets),
-            changed_files=list(changed_files) or None,
-            # Every block the card prints; --format json also keeps the PR blast radius.
-            include=["churn", "owners", "blast"],
-        )
+        return get_risk(**arguments)
 
-    payload = _ta.run(repo, _factory, "get_risk")
+    payload = _ta.run(repo, _factory, "get_risk", arguments=arguments)
 
     if full:
         _ta.emit_full(payload)
@@ -143,7 +151,9 @@ def _print_global_hotspots(hotspots: list) -> None:
     table.add_column("File", style="cyan")
     table.add_column("Hotspot", justify="right")
     table.add_column("Owner")
-    table.add_column("Fixes", justify="right")
+    # The header carries the window the rows' counts share.
+    window = next((h["window"] for h in hotspots if h.get("window")), None)
+    table.add_column(f"Fixes ({window})" if window else "Fixes", justify="right")
     for h in hotspots:
         score = h.get("hotspot_score")
         fixes = h.get("fix_count")

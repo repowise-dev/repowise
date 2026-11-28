@@ -65,6 +65,18 @@ async def _insert_page(session: AsyncSession, repo_id: str, page_id: str) -> Non
     await session.commit()
 
 
+async def _mark_tombstone(session: AsyncSession, page_id: str) -> None:
+    """Retire a page the way the pipeline does: row stays, file is gone."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Page
+
+    await session.execute(
+        update(Page).where(Page.id == page_id).values(freshness_status="tombstone")
+    )
+    await session.commit()
+
+
 async def _insert_decision(session: AsyncSession, repo_id: str, title: str) -> str:
     rec = DecisionRecord(repository_id=repo_id, title=title, decision="because")
     session.add(rec)
@@ -151,6 +163,57 @@ async def test_missing_decision_vectors_isolated_to_decision_drift():
         assert report["page_drift"] == 0.0
         assert report["vector_decision_count"] == 0
         assert report["decision_drift"] == 1.0
+    finally:
+        await session.close()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_tombstoned_pages_are_not_counted_as_pages():
+    """A retired file keeps its wiki_pages row but loses its vector, so counting
+    tombstones as pages reports drift that no repair can clear."""
+    engine, session = await _setup_session()
+    try:
+        repo = await _insert_repo(session)
+        await _insert_page(session, repo.id, "file_page:a.py")
+        await _insert_page(session, repo.id, "file_page:gone.py")
+        await _mark_tombstone(session, "file_page:gone.py")
+
+        vs = InMemoryVectorStore(MockEmbedder())
+        await vs.embed_and_upsert("file_page:a.py", "a", {})
+
+        coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vs)
+        report = await coord.health_check()
+
+        assert report["sql_pages"] == 1
+        assert report["vector_page_count"] == 1
+        assert report["page_drift"] == 0.0
+    finally:
+        await session.close()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unswept_tombstone_vector_still_reads_as_drift():
+    """Excluding tombstones must not hide a store that still holds their
+    vectors: one live page plus one unswept tombstone vector is real drift."""
+    engine, session = await _setup_session()
+    try:
+        repo = await _insert_repo(session)
+        await _insert_page(session, repo.id, "file_page:a.py")
+        await _insert_page(session, repo.id, "file_page:gone.py")
+        await _mark_tombstone(session, "file_page:gone.py")
+
+        vs = InMemoryVectorStore(MockEmbedder())
+        await vs.embed_and_upsert("file_page:a.py", "a", {})
+        await vs.embed_and_upsert("file_page:gone.py", "gone", {})
+
+        coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vs)
+        report = await coord.health_check()
+
+        assert report["sql_pages"] == 1
+        assert report["vector_page_count"] == 2
+        assert report["page_drift"] == 1.0
     finally:
         await session.close()
         await engine.dispose()

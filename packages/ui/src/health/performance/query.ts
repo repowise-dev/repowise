@@ -7,6 +7,7 @@ import type {
   PerformanceOpportunityConfidence,
   PerformanceOpportunityQuery,
   PerformanceScope,
+  PerformanceStaticCost,
 } from "@repowise-dev/types/health";
 
 /**
@@ -30,8 +31,10 @@ export interface PerformanceFilterState {
   confidence: PerformanceOpportunityConfidence | null;
   /** The actionability bar's selection. */
   actionability: PerformanceActionabilityState | null;
-  /** Outside "now", whose causes are all measured and served. */
+  /** Outside "now", whose causes are all proven and served. */
   proof: PerformanceCostProof | null;
+  /** What the code alone shows about the cost; narrows inside any scope. */
+  static_cost: PerformanceStaticCost | null;
   role: PerformanceExecutionRole | null;
   sort: PerformanceSort;
   /** 1-based page of `PAGE_SIZE` causes. */
@@ -52,6 +55,7 @@ export const INITIAL_FILTERS: PerformanceFilterState = {
   confidence: null,
   actionability: null,
   proof: null,
+  static_cost: null,
   role: null,
   sort: "rank",
   page: 1,
@@ -65,12 +69,19 @@ export const SCOPES: readonly PerformanceScope[] = ["now", "production", "all"];
 const NOW_STATES: readonly PerformanceActionabilityState[] = ["plan_ready", "advisory"];
 
 /** The filters behind "More filters", each offered only where it can narrow. */
-export const NARROWING_KEYS = ["context", "boundary", "confidence", "proof", "role"] as const;
+export const NARROWING_KEYS = [
+  "context",
+  "boundary",
+  "confidence",
+  "proof",
+  "static_cost",
+  "role",
+] as const;
 export type NarrowingKey = (typeof NARROWING_KEYS)[number];
 
 export function narrowingKeysFor(scope: PerformanceScope): readonly NarrowingKey[] {
-  if (scope === "now") return ["boundary", "confidence"];
-  if (scope === "production") return ["boundary", "confidence", "proof", "role"];
+  if (scope === "now") return ["boundary", "confidence", "static_cost"];
+  if (scope === "production") return ["boundary", "confidence", "proof", "static_cost", "role"];
   return NARROWING_KEYS;
 }
 
@@ -83,6 +94,14 @@ const ACTIONABILITIES: readonly PerformanceActionabilityState[] = [
   "expected",
 ];
 const PROOFS: readonly PerformanceCostProof[] = ["proven", "unproven", "background_unproven"];
+const STATIC_COSTS: readonly PerformanceStaticCost[] = [
+  "grows_with_data",
+  "grows_by_shape",
+  "per_call_reached",
+  "per_call_unreached",
+  "bounded",
+  "size_unknown",
+];
 const ROLES: readonly PerformanceExecutionRole[] = PERFORMANCE_EXECUTION_ROLES;
 const CONTEXTS: readonly PerformanceExecutionContext[] = [
   "production",
@@ -128,6 +147,7 @@ export function toQuery(
   }
   if (state.boundary) query.boundary = state.boundary;
   if (state.confidence) query.confidence = state.confidence;
+  if (state.static_cost) query.static_cost = state.static_cost;
   if (state.area) query.area = state.area;
   if (state.depth) query.area_depth = state.depth;
   return query;
@@ -142,6 +162,7 @@ export function serverKey(state: PerformanceFilterState): string {
     state.confidence ?? "",
     state.actionability ?? "",
     state.proof ?? "",
+    state.static_cost ?? "",
     state.role ?? "",
     state.sort,
     state.page,
@@ -166,6 +187,7 @@ export function writeFilters(state: PerformanceFilterState, params: URLSearchPar
     "confidence",
     "actionability",
     "proof",
+    "static_cost",
     "role",
   ] as const) {
     const value = state[key];
@@ -201,6 +223,7 @@ function narrowing(params: URLSearchParams) {
       oneOf(params.get("actionability"), ACTIONABILITIES) ??
       oneOf(params.get("state"), ACTIONABILITIES),
     proof: oneOf(params.get("proof"), PROOFS),
+    static_cost: oneOf(params.get("static_cost"), STATIC_COSTS),
     role: oneOf(params.get("role"), ROLES),
     sort: oneOf(params.get("sort"), SORTS) ?? INITIAL_FILTERS.sort,
   };
@@ -319,6 +342,7 @@ export function clearNarrowing(state: PerformanceFilterState): PerformanceFilter
     confidence: null,
     actionability: null,
     proof: null,
+    static_cost: null,
     role: null,
   });
 }

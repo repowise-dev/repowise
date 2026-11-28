@@ -36,7 +36,7 @@ def _commit(repo, path: str, text: str, message: str, ts: int) -> str:
 
 def _flat(index) -> dict[str, list[tuple]]:
     return {
-        path: [(r.sha, r.ts, r.added, r.deleted, r.subject) for r in recs]
+        path: [(r.sha, r.ts, r.added, r.deleted, r.subject, r.author_name) for r in recs]
         for path, recs in index.items()
     }
 
@@ -147,3 +147,241 @@ def test_no_cache_dir_writes_nothing(tmp_path: Path) -> None:
     _commit(repo, "a.py", "x = 1\n", "c0", 1_700_000_000)
     _walk(repo, {"a.py"}, None)
     assert not list(tmp_path.glob("**/" + _WINDOW_CACHE_NAME))
+
+
+def _numstat_walks(monkeypatch) -> list[tuple[str, ...]]:
+    """Every ``git log --numstat`` the commit index asks for, by its revision args."""
+    from repowise.core.ingestion import git_commit_index
+
+    walks: list[tuple[str, ...]] = []
+    real = git_commit_index._log_records
+    monkeypatch.setattr(
+        git_commit_index,
+        "_log_records",
+        lambda repo, *revs: walks.append(revs) or real(repo, *revs),
+    )
+    return walks
+
+
+def test_skewed_dates_still_reuse_the_cache(tmp_path: Path, monkeypatch) -> None:
+    """A child dated before its parent leaves git's walk out of time order;
+    the cache must still serve, diffing only the new commit."""
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i, ts in enumerate((100, 300, 200, 400)):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + ts)
+    _walk(repo, {"a.py"}, cache_dir)
+    new = _commit(repo, "a.py", "x = 9\n", "c4", base + 150)
+
+    walks = _numstat_walks(monkeypatch)
+    warm = _walk(repo, {"a.py"}, cache_dir)
+    assert walks == [("--no-walk=unsorted", new)]
+    assert warm == _walk(repo, {"a.py"}, None)
+
+
+def test_a_force_push_diffs_only_the_rewritten_commits(tmp_path: Path, monkeypatch) -> None:
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(4):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, {"a.py", "b.py"}, cache_dir)
+
+    repo.git.reset("--hard", "HEAD~2")
+    rewritten = _commit(repo, "b.py", "y = 1\n", "c2 rewritten", base + 25)
+
+    walks = _numstat_walks(monkeypatch)
+    files = {"a.py", "b.py"}
+    warm = _walk(repo, files, cache_dir)
+    assert walks == [("--no-walk=unsorted", rewritten)]
+    assert warm == _walk(repo, files, None)
+
+
+def test_a_branch_switch_matches_a_fresh_walk(tmp_path: Path) -> None:
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    _commit(repo, "a.py", "x = 0\n", "c0", base)
+    trunk = repo.active_branch.name
+    repo.git.checkout("-b", "side")
+    _commit(repo, "b.py", "y = 1\n", "side", base + 10)
+    _walk(repo, {"a.py", "b.py"}, cache_dir)
+    repo.git.checkout(trunk)
+    _commit(repo, "a.py", "x = 1\n", "trunk", base + 20)
+
+    assert _walk(repo, {"a.py", "b.py"}, cache_dir) == _walk(repo, {"a.py", "b.py"}, None)
+
+
+def test_deepening_a_shallow_clone_rediffs_its_old_boundary(tmp_path: Path) -> None:
+    """A shallow clone's boundary commit diffs against the empty tree; once the
+    clone is deepened its record changes, so the cached one must not be reused."""
+    import git as gitpython
+
+    origin = _init(tmp_path / "origin")
+    base = 1_700_000_000
+    for i in range(4):
+        _commit(origin, "a.py", "x = 1\n" * (i + 1), f"c{i}", base + i * 10)
+    clone_dir = tmp_path / "clone"
+    gitpython.Repo.clone_from(f"file://{tmp_path / 'origin'}", clone_dir, depth=2)
+    clone = gitpython.Repo(clone_dir)
+    cache_dir = clone_dir / ".repowise"
+    cache_dir.mkdir()
+    shallow = _walk(clone, {"a.py"}, cache_dir)
+    assert shallow == _walk(clone, {"a.py"}, None)
+
+    clone.git.fetch("--deepen=2")
+    deepened = _walk(clone, {"a.py"}, cache_dir)
+    assert deepened == _walk(clone, {"a.py"}, None)
+    assert deepened != shallow
+    clone.close()
+
+
+def test_unshallowing_at_the_same_head_drops_the_shallow_records(tmp_path: Path) -> None:
+    import git as gitpython
+
+    origin = _init(tmp_path / "origin")
+    for i in range(4):
+        _commit(origin, "a.py", "x = 1\n" * (i + 1), f"c{i}", 1_700_000_000 + i * 10)
+    clone_dir = tmp_path / "clone"
+    gitpython.Repo.clone_from(f"file://{tmp_path / 'origin'}", clone_dir, depth=2)
+    clone = gitpython.Repo(clone_dir)
+    cache_dir = clone_dir / ".repowise"
+    cache_dir.mkdir()
+    _walk(clone, {"a.py"}, cache_dir)
+
+    clone.git.fetch("--unshallow")
+    full = _walk(clone, {"a.py"}, cache_dir)
+    assert full == _walk(clone, {"a.py"}, None)
+    assert len(full["a.py"]) == 4
+    clone.close()
+
+
+def test_a_mailmap_change_is_not_served_from_the_cache(tmp_path: Path) -> None:
+    """``%aN`` follows the .mailmap at HEAD, so cached author names go stale."""
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    _commit(repo, "a.py", "x = 1\n", "c0", 1_700_000_000)
+    _walk(repo, {"a.py"}, cache_dir)
+    _commit(repo, ".mailmap", "Carol <alice@example.com>\n", "mailmap", 1_700_000_010)
+
+    warm = _walk(repo, {"a.py"}, cache_dir)
+    assert warm == _walk(repo, {"a.py"}, None)
+    assert warm["a.py"][0][-1] == "Carol"
+
+
+def _small_patch_limits(monkeypatch, *, scattered: int, run: int) -> None:
+    from repowise.core.ingestion import git_commit_index
+
+    monkeypatch.setattr(git_commit_index, "_MAX_PATCHED_COMMITS", scattered)
+    monkeypatch.setattr(git_commit_index, "_MIN_WALKED_RUN", run)
+
+
+def test_a_deep_jump_walks_only_the_commits_below_the_cache(tmp_path: Path, monkeypatch) -> None:
+    """Deepening past the scattered-patch cap reads the new older commits with
+    one ranged walk, not a full walk, and still answers what a fresh walk does."""
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    files = {"a.py", "b.py"}
+    base = 1_700_000_000
+    for i in range(12):
+        _commit(repo, "ab"[i % 2] + ".py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, files, cache_dir, depth=3)
+    _small_patch_limits(monkeypatch, scattered=2, run=3)
+
+    walks = _numstat_walks(monkeypatch)
+    deep = _walk(repo, files, cache_dir, depth=10)
+    head = repo.head.commit.hexsha
+    assert walks == [(head, "--skip=3", "-7")]
+    assert deep == _walk(repo, files, None, depth=10)
+    cached = json.loads((cache_dir / _WINDOW_CACHE_NAME).read_text(encoding="utf-8"))
+    assert (cached["depth"], len(cached["records"])) == (10, 10)
+
+
+def test_new_commits_and_a_deeper_window_patch_both_ends(tmp_path: Path, monkeypatch) -> None:
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(8):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, {"a.py"}, cache_dir, depth=2)
+    new = [_commit(repo, "a.py", f"y = {i}\n", f"n{i}", base + 100 + i) for i in range(4)]
+    _small_patch_limits(monkeypatch, scattered=0, run=3)
+
+    walks = _numstat_walks(monkeypatch)
+    warm = _walk(repo, {"a.py"}, cache_dir, depth=12)
+    assert walks == [(new[-1], "--skip=0", "-4"), (new[-1], "--skip=6", "-6")]
+    assert warm == _walk(repo, {"a.py"}, None, depth=12)
+
+
+def test_a_deep_region_extends_from_its_own_skip(tmp_path: Path, monkeypatch) -> None:
+    """A slice that starts below the window offsets its ranged walk by its skip."""
+    from repowise.core.ingestion.git_commit_index import _window_records
+
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(10):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _window_records(repo, 2, cache_dir, skip=3)
+    _small_patch_limits(monkeypatch, scattered=0, run=2)
+
+    walks = _numstat_walks(monkeypatch)
+    warm = _window_records(repo, 6, cache_dir, skip=3)
+    assert walks == [(repo.head.commit.hexsha, "--skip=5", "-4")]
+    assert warm == _window_records(repo, 6, None, skip=3)
+
+
+def test_a_ranged_walk_that_disagrees_with_the_order_is_a_miss(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.ingestion import git_commit_index
+
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(9):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, {"a.py"}, cache_dir, depth=2)
+    _small_patch_limits(monkeypatch, scattered=0, run=2)
+    real = git_commit_index._log_records
+
+    def _off_by_one(repo, *revs):
+        # The run's length, one commit further down: right size, wrong commits.
+        if len(revs) == 3 and revs[1].startswith("--skip="):
+            head, skip, count = revs
+            return real(repo, head, f"--skip={int(skip.split('=')[1]) + 1}", count)
+        return real(repo, *revs)
+
+    monkeypatch.setattr(git_commit_index, "_log_records", _off_by_one)
+    warm = _walk(repo, {"a.py"}, cache_dir, depth=6)
+    monkeypatch.setattr(git_commit_index, "_log_records", real)
+    assert warm == _walk(repo, {"a.py"}, None, depth=6)
+
+
+def test_too_many_walked_runs_take_one_full_walk(tmp_path: Path, monkeypatch) -> None:
+    """Every ranged walk re-traverses the commits above it, so many runs walk afresh."""
+    from repowise.core.ingestion import git_commit_index
+
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(4):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, {"a.py"}, cache_dir, depth=2)
+    for i in range(4):
+        _commit(repo, "a.py", f"y = {i}\n", f"n{i}", base + 100 + i)
+    _small_patch_limits(monkeypatch, scattered=0, run=2)
+    monkeypatch.setattr(git_commit_index, "_MAX_WALKED_RUNS", 1)
+
+    walks = _numstat_walks(monkeypatch)
+    warm = _walk(repo, {"a.py"}, cache_dir, depth=8)
+    assert walks == [(repo.head.commit.hexsha, "-8")]
+    assert warm == _walk(repo, {"a.py"}, None, depth=8)

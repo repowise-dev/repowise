@@ -28,6 +28,7 @@ from repowise.core.ingestion.languages.php_same_namespace import (
 )
 
 from ..calls import call_chain, call_sites, file_strings
+from ..dialect import rows_gate
 from ..langs import JS_TS, PHP
 from ..strings import Arg, call_arguments, match_paren, unescape_backslashes
 from .dialect import SocketCall, channel_scope, event_contracts
@@ -153,6 +154,7 @@ class LaravelBroadcastDialect:
 
     name = "laravel-broadcast"
     extensions = PHP
+    requires = ("broadcastOn", *_PUSHER_TRIGGER.requires, *_ANONYMOUS.requires)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
@@ -202,6 +204,7 @@ class EchoDialect:
 
     name = "echo"
     extensions = JS_TS
+    requires = rows_gate((_ECHO_LISTEN, _USE_ECHO, _PUSHER_SUBSCRIBE))
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

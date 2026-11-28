@@ -34,6 +34,7 @@ from .extractors.imports import (
     ImportExtractor,
 )
 from .extractors.visibility import (
+    apex_visibility,
     csharp_visibility,
     dart_visibility,
     elixir_visibility,
@@ -49,6 +50,7 @@ from .extractors.visibility import (
     ts_visibility,
     vbnet_visibility,
 )
+from .languages.perl_packages import perl_sub_name
 
 
 def _identity_name(name: str, _node_type: str) -> str:
@@ -155,6 +157,11 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             # Top-level const/let with a literal value (the .scm pattern is
             # program-anchored). Refined in the parser like Python assignments.
             "variable_declarator": "constant",
+            # ``obj.f = function () {}`` (the .scm pattern gates on a function
+            # value). A value kind here, like the declarator above, so an
+            # assignment never reads as a callable that hides the definitions
+            # nested under it; the parser sets the kind.
+            "assignment_expression": "constant",
             # Overload signatures (the .scm keeps method ones to class bodies).
             "function_signature": "function",
             "method_signature": "method",
@@ -177,6 +184,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "method_definition": "method",
             "lexical_declaration": "function",
             "variable_declarator": "constant",
+            "assignment_expression": "constant",  # see typescript
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
@@ -188,7 +196,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         symbol_node_types={
             "function_declaration": "function",
             "method_declaration": "method",
+            "method_elem": "method",  # interface method spec; bodiless
             "type_spec": "struct",  # refined in post-processing
+            "type_alias": "type_alias",  # type Old = int
             "const_spec": "variable",  # const MaxRetries = 3
             "var_spec": "variable",  # var ErrNotFound = errors.New(...)
         },
@@ -197,6 +207,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=go_visibility,
         parent_extraction="receiver",
         parent_class_types=frozenset(),
+        # An interface method spec promises a body it does not carry; keep it
+        # out of the definition indexes, as Rust trait signatures are.
+        declaration_node_types=frozenset({"method_elem"}),
     ),
     "rust": LanguageConfig(
         import_extractor=RUST_IMPORTS,
@@ -249,6 +262,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import_declaration"],
         export_node_types=[],
         visibility_fn=java_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset(
             {
@@ -310,6 +324,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "object_declaration": "class",
             "type_alias": "type_alias",
             "property_declaration": "variable",
+            # Named after its class by the query, like a Java constructor.
+            "secondary_constructor": "method",
         },
         import_node_types=["import"],
         export_node_types=[],
@@ -395,6 +411,29 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
                 "enum_block",
                 "namespace_block",
             }
+        ),
+    ),
+    # Apex reads Java's node names; there are no imports to extract.
+    "apex": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "enum_declaration": "enum",
+            # A trigger is one body the platform runs on DML events.
+            "trigger_declaration": "function",
+            "method_declaration": "method",
+            "constructor_declaration": "function",
+            # Only a field with an accessor list is captured (a property).
+            "field_declaration": "variable",
+        },
+        import_node_types=[],
+        export_node_types=[],
+        visibility_fn=apex_visibility,
+        # ``global``, ``webservice``, ``testmethod``, ...; annotations stay decorators.
+        modifier_node_types=frozenset({"modifiers"}),
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {"class_declaration", "interface_declaration", "enum_declaration"}
         ),
     ),
     "swift": LanguageConfig(
@@ -646,7 +685,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "paragraph_header": "function",
             "data_description": "variable",
         },
-        # COPY/include resolution is intentionally outside this good-tier cut.
+        # COPY is masked before parsing; parse_file reads it from the source.
         import_node_types=[],
         export_node_types=[],
         visibility_fn=public_by_default,
@@ -717,6 +756,21 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="none",
         parent_class_types=frozenset(),
+    ),
+    "perl": LanguageConfig(
+        # `package Foo;` scopes the subs that follow it as siblings, not
+        # children, so the parser reads a sub's package off the tree
+        # (`parser/symbols.py`) rather than by nesting.
+        symbol_node_types={
+            "subroutine_declaration_statement": "function",
+            "method_declaration_statement": "method",
+        },
+        import_node_types=["use_statement", "require_expression"],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+        symbol_name_fn=perl_sub_name,
     ),
 }
 

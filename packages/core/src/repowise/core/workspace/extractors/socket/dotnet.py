@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..langs import CSHARP
 from ..strings import Arg
 from .dialect import SocketCall, SocketDialect
@@ -24,7 +26,7 @@ DOTNET = SocketDialect(
             label="ClientWebSocket.ConnectAsync",
             extensions=CSHARP,
             name=_URL,
-            confidence=0.75,
+            requires=("ConnectAsync", "connectAsync"),
         ),
         SocketCall(
             head=re.compile(r"\bWithUrl\s*\(", re.IGNORECASE),
@@ -42,7 +44,6 @@ DOTNET = SocketDialect(
             label="NativeWebSocket.WebSocket",
             extensions=CSHARP,
             name=_URL,
-            confidence=0.75,
             requires=("NativeWebSocket",),
         ),
         SocketCall(
@@ -52,7 +53,6 @@ DOTNET = SocketDialect(
             label="WebSocketSharp.WebSocket",
             extensions=CSHARP,
             name=_URL,
-            confidence=0.75,
             requires=("WebSocketSharp",),
         ),
         SocketCall(
@@ -62,7 +62,8 @@ DOTNET = SocketDialect(
             label="MapHub",
             extensions=CSHARP,
             name=_URL,
-            confidence=0.85,
+            origin=ContractOrigin.ROUTE_REGISTRATION,
+            requires=("MapHub", "mapHub"),
         ),
     ),
 )

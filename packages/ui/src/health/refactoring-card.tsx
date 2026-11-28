@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ArrowUpRight, ChevronDown, ChevronRight } from "lucide-react";
 import { InfoTip } from "../shared/info-tip";
 import { FilePath } from "../shared/file-path";
+import { hairlineCardClass } from "../shared/hairline-card";
 import {
   biomarkerInfo,
   biomarkerLabel,
@@ -12,7 +13,7 @@ import {
   isWatchOnlyBiomarker,
 } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
-import type { Severity } from "./tokens";
+import { MICRO, type Severity } from "./tokens";
 import { EFFORT_LABEL } from "./labels";
 import { ImpactFigure } from "./impact-figure";
 import { FindingOpportunityLink } from "./file-opportunity";
@@ -25,8 +26,6 @@ import { PreviewBadge } from "./preview-badge";
 import { AiPromptButton } from "./ai-prompt-button";
 import { AGENT_PROMPT_LABEL } from "./ai-prompt-action";
 import { cn } from "../lib/cn";
-
-const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -170,12 +169,7 @@ export function HealthWorkItemCard({
     <div
       data-health-work-item={target.file_path}
       data-highlighted={highlighted || undefined}
-      className={cn(
-        "overflow-hidden rounded-lg border bg-transparent transition-colors",
-        highlighted
-          ? "border-[var(--color-border-hover)] ring-1 ring-[var(--color-accent-primary)]/40"
-          : "border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] focus-within:border-[var(--color-border-hover)]",
-      )}
+      className={cn("overflow-hidden", hairlineCardClass("group", { highlighted }))}
     >
       <div className="p-4 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
@@ -227,7 +221,7 @@ export function HealthWorkItemCard({
           type="button"
           data-work-item-header=""
           onClick={onSelect ? () => onSelect(target) : undefined}
-          className="group/file flex w-full items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:cursor-default"
+          className="group/file flex w-full items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:cursor-default"
           disabled={!onSelect}
           title={onSelect ? "Open file health drawer" : undefined}
         >
@@ -275,7 +269,7 @@ export function HealthWorkItemCard({
             type="button"
             onClick={toggle}
             aria-expanded={expanded}
-            className="flex w-full items-center gap-2 border-t border-[var(--color-border-default)] px-4 py-2 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)]"
+            className="flex w-full items-center gap-2 border-t border-[var(--color-border-default)] px-4 py-2 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)]"
           >
             {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
             {expanded ? "Hide" : "Show"} all {target.finding_count} findings

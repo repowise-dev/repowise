@@ -44,6 +44,20 @@ def reset_cache() -> None:
     _CACHE.clear()
 
 
+def drop_repo(repo_id: str) -> None:
+    """Drop every grouping cached for *repo_id*."""
+    for key in [k for k in _CACHE if k[0] == repo_id]:
+        del _CACHE[key]
+
+
+def set_limit(entries: int) -> None:
+    """Keep at most *entries* groupings, dropping the oldest now."""
+    global _CACHE_MAX
+    _CACHE_MAX = entries
+    while len(_CACHE) > entries:
+        _CACHE.pop(next(iter(_CACHE)))
+
+
 async def _grouping(
     session: AsyncSession, repo_id: str, cache_key: str
 ) -> dict[str, dict[str | None, int]]:

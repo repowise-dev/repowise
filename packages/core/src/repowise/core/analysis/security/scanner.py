@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -14,7 +15,9 @@ from .credentials import (
     _PEM_BODY_LINE,
     _PEM_HEADER_LINE,
     _assignment_name,
+    _is_empty_public_env_assignment,
     _is_secret_value,
+    _public_env_value,
     _redaction,
     _snippet,
     _value_span,
@@ -39,21 +42,73 @@ from .patterns import (
     SECRET_KINDS,
 )
 from .refinements import (
-    _NOT_FOR_SECURITY,
-    _call_text,
     _interpolates_sql_value,
     _is_html_type_annotation,
+    _lower_committed_keystore_passwords,
     _match_starting_in,
+    _weak_hash_is_an_id,
 )
 from .suppression import IGNORE_TOKEN, _allowlisted_lines, marker_silences
 
 
-def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> list[dict]:
-    """Scan *source* text and symbol names; return finding dicts. No I/O."""
+def _is_duplicate_secret(
+    rank: int,
+    value: str,
+    secret_hits: list[tuple[dict[str, Any], str, int]],
+) -> bool:
+    if rank == -1:
+        return any(r > rank and o == value for _, o, r in secret_hits)
+    return any(r > rank and (o in value or value in o) for _, o, r in secret_hits)
+
+
+def _deduplicate_line_secrets(
+    findings: list[dict[str, Any]],
+    secret_hits: list[tuple[dict[str, Any], str, int]],
+) -> None:
+    # One secret, one finding: the highest-ranked kind that saw it names it.
+    # Either value can hold the other: a keyword's runs to the closing quote.
+    for finding, value, rank in secret_hits:
+        if _is_duplicate_secret(rank, value, secret_hits):
+            findings.remove(finding)
+
+
+def _match_fstring_sql(
+    pattern: re.Pattern[str],
+    line: str,
+    masked: str,
+    lines: list[str],
+    lineno: int,
+) -> re.Match[str] | None:
+    """Return the first *pattern* match starting in code whose f-string interpolates SQL."""
+    pos = 0
+    while (match := pattern.search(line, pos)) is not None:
+        if (
+            match.start() < len(masked)
+            and masked[match.start()] == line[match.start()]
+            and _interpolates_sql_value(line, match.start(), lines, lineno)
+        ):
+            return match
+        pos = match.start() + 1
+    return None
+
+
+def scan_source(
+    file_path: str,
+    source: str,
+    symbols: Iterable[Any] = (),
+    *,
+    repo_root: str | None = None,
+) -> list[dict]:
+    """Scan *source* text and symbol names; return finding dicts.
+
+    *repo_root* lets the origin read the folders around the file (a docs site's
+    config, a data folder's contents), as indexing does; without it only the
+    path rules apply and nothing is read from disk.
+    """
     findings: list[dict] = []
     lines = source_lines(source)
     is_prose = file_path.lower().endswith(_PROSE_EXTENSIONS)
-    origin = code_origin(file_path, source)
+    origin = code_origin(file_path, source, repo_root=repo_root)
     secrets_only = is_prose or _holds_no_written_code(file_path, origin)
 
     # Masking is the costly step and most files match no pattern at all, so
@@ -83,7 +138,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     # Line-by-line pattern scan. A line's edges and the newline around it read
     # alike to every lookaround in ``_ANY_PATTERN``, so a file the whole-source
     # search rejects has no matching line, and most files are such.
-    is_low_sev_file = _is_low_severity_path(file_path)
+    is_low_sev_file = _is_low_severity_path(file_path, origin)
     is_python = file_path.lower().endswith((".py", ".pyi"))
     tls_lines: list[set[int] | None] = []
     scan_lines = lines if _ANY_PATTERN.search(source) else []
@@ -108,16 +163,13 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                         match = None
             elif kind == "fstring_sql":
                 # The ``f`` must open a literal in code, not sit inside another
-                # string, and the query must interpolate a value.
-                match = _match_starting_in(pattern, line, masked_line(lineno, line))
-                if match and not _interpolates_sql_value(line, match.start(), lines, lineno):
-                    match = None
+                # string, and the query must interpolate a value. Scan past any
+                # earlier non-SQL f-string on the same line.
+                match = _match_fstring_sql(pattern, line, masked_line(lineno, line), lines, lineno)
             elif kind == "weak_hash":
-                # Written in code, and not declared a non-security use.
+                # Written in code, and not a declared or visible id (refinements).
                 match = _match_starting_in(pattern, line, masked_line(lineno, line))
-                if match and _NOT_FOR_SECURITY.search(
-                    _call_text(mask()[1], lineno, match.start())
-                ):
+                if match and _weak_hash_is_an_id(line, mask()[1], lineno, match.start()):
                     match = None
             elif kind in _KEYWORD_KINDS:
                 # ``password = "..."`` in a comment or docstring is an example.
@@ -127,6 +179,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 # alone: the name is often quoted (``ENV["NEXT_PUBLIC_KEY"]``).
                 uncommented = masked_line(lineno, line, strings=False)
                 match = _match_starting_in(pattern, line, uncommented)
+                if match and _is_empty_public_env_assignment(line, match.end()):
+                    match = None
             else:
                 # Vendor key shapes are real wherever they sit, comments included.
                 match = pattern.search(line)
@@ -141,6 +195,10 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                         continue
                     if is_low_sev_file:
                         severity = "low"
+                elif kind == "public_env_secret":
+                    span = _public_env_value(line, match.end())
+                    if span is not None:
+                        value = line[slice(*span)]
                 if snippet is None:
                     snippet = _snippet(line)
                 finding = {
@@ -152,11 +210,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 findings.append(finding)
                 if kind in SECRET_KINDS:
                     secret_hits.append((finding, value, _SECRET_SPECIFICITY.get(kind, 2)))
-        # One secret, one finding: the highest-ranked kind that saw it names it.
-        # Either value can hold the other: a keyword's runs to the closing quote.
-        for finding, value, rank in secret_hits:
-            if any(r > rank and (o in value or value in o) for _, o, r in secret_hits):
-                findings.remove(finding)
+                elif kind == "public_env_secret" and value:
+                    secret_hits.append((finding, value, -1))
+        _deduplicate_line_secrets(findings, secret_hits)
 
     # Calls that open on one line and set ``shell=True`` on a later one; reported
     # on the opening line, unless the per-line pass already did.
@@ -224,6 +280,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     for finding in findings:
         if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
             finding["severity"] = "low"
+    _lower_committed_keystore_passwords(
+        findings, file_path, lines, lambda: mask()[1], repo_root
+    )
 
     # Symbol-name scan (informational / low). Machine output and declarations
     # hold no written code, so their names are not ours to flag.
@@ -267,17 +326,19 @@ def scan_source_map(
     findings_by_file: dict[str, list[dict]] = {}
     scanned_paths: list[str] = []
     allowlisted: Callable[[str], bool] | None = None
+    root: str | None = None
     for pf in parsed_files:
         path = pf.file_info.path
         if allowlisted is None:
-            allowlisted = secret_path_allowlist(_repo_root(pf.file_info))
+            root = _repo_root(pf.file_info)
+            allowlisted = secret_path_allowlist(root)
         raw = source_map.get(path, b"")
         if isinstance(raw, (bytes, bytearray)):
             source_text = raw.decode("utf-8", errors="replace")
         else:
             source_text = raw or ""
         scanned_paths.append(path)
-        findings = scan_source(path, source_text, pf.symbols)
+        findings = scan_source(path, source_text, pf.symbols, repo_root=root)
         if findings and allowlisted(path):
             findings = [f for f in findings if f["kind"] not in SECRET_KINDS]
         if findings and IGNORE_TOKEN in source_text:

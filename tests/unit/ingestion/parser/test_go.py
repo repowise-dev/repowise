@@ -6,6 +6,9 @@ Covers Python, TypeScript, Go, Rust, Java, C++ — one test class per language.
 
 from __future__ import annotations
 
+import pytest
+
+from repowise.core.ingestion.extractors.helpers import extract_go_receiver_type
 from repowise.core.ingestion.parser import ASTParser
 from tests.unit.ingestion.parser._helpers import _make_file_info
 
@@ -134,3 +137,49 @@ class TestGoParser:
     def test_module_docstring_none_when_no_comments(self, parser: ASTParser) -> None:
         fi = _make_file_info("go_pkg/calculator/plain.go", "go")
         assert parser.parse_file(fi, b"package x\n").docstring is None
+
+    def test_method_on_a_generic_type_is_parented_by_the_type(self, parser: ASTParser) -> None:
+        source = (
+            b"package main\n\n"
+            b"type Stack[T any] struct{ items []T }\n\n"
+            b"func (s *Stack[T]) Push(x T) {}\n\n"
+            b"type Pair[K comparable, V any] struct{}\n\n"
+            b"func (p *Pair[K, V]) Key() K { var k K; return k }\n\n"
+            b"func (Pair[K, V]) Len() int { return 0 }\n"
+        )
+        fi = _make_file_info("go_pkg/generic/generic.go", "go")
+        result = parser.parse_file(fi, source)
+        parents = {s.name: s.parent_name for s in result.symbols if s.kind == "method"}
+        assert parents == {"Push": "Stack", "Key": "Pair", "Len": "Pair"}
+        ids = {s.id for s in result.symbols}
+        assert "go_pkg/generic/generic.go::Stack::Push" in ids
+        assert "go_pkg/generic/generic.go::Pair::Key" in ids
+
+    def test_alias_declaration_is_a_type_alias(self, parser: ASTParser) -> None:
+        source = b"package main\n\ntype Old = int\n\ntype list[T any] = []T\n\ntype G int\n"
+        fi = _make_file_info("go_pkg/alias/alias.go", "go")
+        result = parser.parse_file(fi, source)
+        kinds = {s.name: (s.kind, s.visibility) for s in result.symbols}
+        assert kinds["Old"] == ("type_alias", "public")
+        assert kinds["list"] == ("type_alias", "private")
+        # A defined type was already found through type_spec.
+        assert kinds["G"] == ("type_alias", "public")
+        assert [s.name for s in result.symbols].count("Old") == 1
+
+
+@pytest.mark.parametrize(
+    ("receiver", "expected"),
+    [
+        ("(c *Calculator)", "Calculator"),
+        ("(c Calculator)", "Calculator"),
+        ("(*Calculator)", "Calculator"),
+        ("(s *startEnd)", "startEnd"),
+        ("(s Stack[T])", "Stack"),
+        ("(s *Stack[T])", "Stack"),
+        ("(p *Pair[K, V])", "Pair"),
+        ("(Pair[K, V])", "Pair"),
+        ("()", None),
+    ],
+)
+def test_extract_go_receiver_type(receiver: str, expected: str | None) -> None:
+    assert extract_go_receiver_type(receiver) == expected

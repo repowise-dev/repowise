@@ -22,7 +22,8 @@ MANIFEST_BASENAME = "decisions.yaml"
 CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     "traversal": frozenset({"exclude_patterns"}),
     "git_history": frozenset({"commit_limit", "follow_renames"}),
-    "health": frozenset({"assertions", "coverage", "refactoring"}),
+    # ``health`` holds switches for parts of the health pass (duplication).
+    "health": frozenset({"assertions", "coverage", "health", "refactoring"}),
     "generation": frozenset(
         {
             "provider",
@@ -34,14 +35,36 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "wiki_style",
             "language",
             "max_file_pages",
+            "folder_coverage",
             "generation_context",
             "enable_onboarding",
+            "context_window",
         }
     ),
     # Agent-surface preferences. init records `hooks` and `editor_files` after
     # it fingerprints the config, so leaving them in "other" turned the first
-    # update after every init into a full rebuild.
-    "state_only": frozenset({"distill", "editor_files", "events", "hooks", "mcp"}),
+    # update after every init into a full rebuild. `managed_checkout` says how
+    # the server keeps the checkout current, not what the index holds.
+    "state_only": frozenset(
+        {
+            # Opt-in contract extraction keeps its own stamp in contracts.json;
+            # wiki.db does not depend on it.
+            "contracts",
+            "distill",
+            "editor_files",
+            "editor_setup",
+            "events",
+            # Caps read by `evidence add`; the index does not depend on them.
+            "evidence",
+            "hooks",
+            "managed_checkout",
+            "mcp",
+            # Read by a process when it starts (the MCP cache warmup).
+            "performance",
+            # Version history kept per page: trims old rows, never changes a page.
+            "wiki",
+        }
+    ),
 }
 
 
@@ -80,7 +103,10 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
     if not config_path.exists():
         return {}
 
-    text = config_path.read_text(encoding="utf-8")
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise RepoConfigError(f"Could not parse {config_path}: {exc}") from exc
     try:
         import yaml  # type: ignore[import-untyped]
 
@@ -159,6 +185,92 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
     resolver = sys.modules.get("repowise.core.providers.llm.resolve")
     if resolver is not None:
         resolver.forget_cached(target)
+
+
+#: Repo settings whose one home is ``.repowise/config.yaml``, so the CLI and the
+#: web UI read and write the same value. A server row's ``settings_json`` may
+#: still hold them from before: that stored value is a fallback while the file
+#: lacks the key, and moves into the file on the next save.
+FILE_SETTING_KEYS: tuple[str, ...] = ("exclude_patterns", "wiki_style")
+
+
+def _file_setting_default(key: str) -> Any:
+    """What an absent ``key`` means, so writing it would change nothing."""
+    if key == "wiki_style":
+        from repowise.core.generation.styles import DEFAULT_STYLE
+
+        return DEFAULT_STYLE
+    return []
+
+
+def resolve_file_settings(repo_path: Path | str, stored: dict[str, Any]) -> dict[str, Any]:
+    """The effective :data:`FILE_SETTING_KEYS` values: config.yaml's, else *stored*'s.
+
+    *stored* is the legacy server copy (``settings_json``). Keys neither source
+    sets are left out; a bare ``key:`` (null) in the file counts as unset.
+    Raises :class:`RepoConfigError` for a broken config file.
+    """
+    config = load_repo_config(repo_path)
+    resolved = {}
+    for key in FILE_SETTING_KEYS:
+        value = config.get(key)
+        if value is None:
+            value = stored.get(key)
+        if value is not None:
+            resolved[key] = value
+    return resolved
+
+
+def save_file_settings(
+    repo_path: Path | str, updates: dict[str, Any], stored: dict[str, Any]
+) -> dict[str, Any]:
+    """Write *updates* for :data:`FILE_SETTING_KEYS` into config.yaml.
+
+    Legacy *stored* values the file lacks move in with this save, so the server
+    copy can be dropped afterwards. A value equal to what the file already
+    means is not written, and the default removes the key: a save that changes
+    nothing leaves the bytes, and so the config fingerprint, alone. Other keys
+    are preserved. Returns the saved :data:`FILE_SETTING_KEYS` values.
+    """
+    config = load_repo_config(repo_path)
+    before = dict(config)
+    for key in FILE_SETTING_KEYS:
+        default = _file_setting_default(key)
+        if config.get(key) is None and stored.get(key) not in (None, default):
+            config[key] = stored[key]
+        if key in updates:
+            _set_file_setting(config, key, updates[key], default)
+    if config != before:
+        save_repo_config(repo_path, config)
+    return {key: config[key] for key in FILE_SETTING_KEYS if config.get(key) is not None}
+
+
+def write_file_setting(repo_path: Path | str, key: str, value: Any) -> None:
+    """Write one :data:`FILE_SETTING_KEYS` value through :func:`save_file_settings`.
+
+    The settings-registry writer for these keys; ``None`` restores the default.
+    A style must be a built-in or one under ``.repowise/styles/``: generation
+    reads an unknown name as the default, so saving one would change nothing.
+    """
+    if key == "wiki_style" and value is not None:
+        from repowise.core.generation.styles import is_known_style, list_styles
+
+        if not is_known_style(value, repo_path):
+            names = ", ".join(spec.name for spec in list_styles(repo_path))
+            raise ValueError(f"wiki_style: no style named {value!r}; known: {names}")
+    save_file_settings(repo_path, {key: value}, {})
+
+
+def _set_file_setting(config: dict[str, Any], key: str, value: Any, default: Any) -> None:
+    """Set *key* to *value* in *config*; the default (or ``None``) removes it."""
+    value = default if value is None else value
+    current = config.get(key)
+    if value == (default if current is None else current):
+        return
+    if value == default:
+        config.pop(key, None)
+    else:
+        config[key] = value
 
 
 def config_fingerprint(repo_path: Path | str) -> str:
@@ -244,6 +356,37 @@ def changed_config_dependencies(previous: Any, current: dict[str, str]) -> set[s
     return {
         name for name in set(previous) | set(current) if previous.get(name) != current.get(name)
     }
+
+
+def carry_config_fingerprints(repo_path: Path | str, before: tuple[str, dict[str, str]]) -> None:
+    """Move state.json's config fingerprints past the caller's own config write.
+
+    *before* is ``(config_fingerprint, config_dependency_fingerprints)`` taken
+    ahead of that write. Only a fingerprint that still matched it moves, so a
+    real config change waiting for the next update is still seen.
+    """
+    from repowise.core.fsutils import atomic_write_text
+
+    state_path = get_repowise_dir(repo_path) / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(state, dict):
+        return
+    old_fp, old_deps = before
+    changed = False
+    if state.get("config_fingerprint") == old_fp:
+        state["config_fingerprint"] = config_fingerprint(repo_path)
+        changed = True
+    stored = state.get("config_dependency_fingerprints")
+    if isinstance(stored, dict):
+        for bucket, value in config_dependency_fingerprints(repo_path).items():
+            if stored.get(bucket) == old_deps.get(bucket) and value != old_deps.get(bucket):
+                stored[bucket] = value
+                changed = True
+    if changed:
+        atomic_write_text(state_path, json.dumps(state, indent=2))
 
 
 def _read_flat_scalar(text: str, key: str) -> str | None:
@@ -377,13 +520,15 @@ def write_private_file(
     """Write a secret ``.repowise/<name>``: git-ignored first, owner-only after.
 
     Some repositories commit ``.repowise/`` for its shared config, so a secret
-    there needs its own ignore rule. Ignore rule first, secret second: if the
-    .gitignore write fails (a read-only checkout, a root-owned file) this
-    raises before the secret is on disk rather than after, which costs the
-    caller a saved secret instead of leaving a committable one behind.
+    there needs its own ignore rule. It goes in ``.repowise/.gitignore``, not
+    the repo root's: nothing outside ``.repowise/`` is touched, and the rule
+    travels with the directory when it is committed. Ignore rule first, secret
+    second: if that write fails this raises before the secret is on disk
+    rather than after, which costs the caller a saved secret instead of
+    leaving a committable one behind.
     """
     if ignore:
-        _ensure_gitignored(repo_path, f".repowise/{name}", comment)
+        _ensure_gitignored(repo_path, name, comment)
     path = get_repowise_dir(repo_path) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -439,24 +584,23 @@ def ensure_manifest_tracked(repo_path: Path | str) -> bool:
     return True
 
 
-def _ensure_gitignored(repo_path: Path | str, pattern: str, comment: str) -> None:
-    """Add *pattern* to the repo's ``.gitignore`` unless git already ignores it."""
-    gitignore = Path(repo_path) / ".gitignore"
-    if _git_ignores(repo_path, pattern):
-        return  # e.g. a ``.repowise/`` rule: a second line would only dirty the file
+def _ensure_gitignored(repo_path: Path | str, name: str, comment: str) -> None:
+    """Ignore ``.repowise/<name>`` from ``.repowise/.gitignore`` unless git already does."""
+    if _git_ignores(repo_path, f".repowise/{name}"):
+        return  # e.g. a root ``.repowise/`` rule: a second line would only add noise
 
-    if gitignore.exists():
-        content = gitignore.read_text(encoding="utf-8")
-        # Line membership, not substring, so the pattern buried in an unrelated
-        # comment doesn't suppress the real ignore rule.
-        if pattern in {line.strip() for line in content.splitlines()}:
-            return
-        if not content.endswith("\n"):
-            content += "\n"
-        content += f"\n# {comment}\n{pattern}\n"
-        gitignore.write_text(content, encoding="utf-8")
-    else:
-        gitignore.write_text(f"# {comment}\n{pattern}\n", encoding="utf-8")
+    gitignore = get_repowise_dir(repo_path) / ".gitignore"
+    rule = f"/{name}"
+    content = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    # Line membership, not substring, so the name buried in an unrelated
+    # comment doesn't suppress the real ignore rule.
+    if rule in {line.strip() for line in content.splitlines()}:
+        return
+    if content:
+        content = content.rstrip("\n") + "\n\n"
+    content += f"# {comment}\n{rule}\n"
+    gitignore.parent.mkdir(parents=True, exist_ok=True)
+    gitignore.write_text(content, encoding="utf-8")
 
 
 def _git_ignores(repo_path: Path | str, pattern: str) -> bool:
