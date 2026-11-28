@@ -2758,21 +2758,24 @@ class CallResolver(
     def _declared_types_named(self, name: str) -> list[tuple[str, tuple[str, ...], int]]:
         """``(file, identity, arity)`` for each repository type declared as *name*.
 
-        The fragments of one ``partial`` type share an identity. A forward
-        declaration and a Rust ``impl`` block declare no type.
+        The fragments of one ``partial`` type share an identity, headed by the
+        first fragment's type id: callers read ``identity[0]`` as a symbol id.
+        A forward declaration and a Rust ``impl`` block declare no type.
         """
         found = self._declared_types.get(name)
         if found is not None:
             return found
         found = []
+        partial_heads: dict[tuple[str, ...], str] = {}
         for sym_id in self._global_symbols.get(name, ()):
             symbol = self._symbols_by_id[sym_id]
             if symbol.kind not in _TYPE_KINDS or symbol.kind == "impl" or symbol.is_declaration:
                 continue
             path = self._symbol_paths_by_id[sym_id]
             arity = symbol.type_parameter_count or 0
-            identity = self._partial_fragments.get((path, name)) or (sym_id,)
-            found.append((path, (*identity, str(arity)), arity))
+            fragments = self._partial_fragments.get((path, name))
+            head = partial_heads.setdefault(fragments, sym_id) if fragments else sym_id
+            found.append((path, (head, str(arity)), arity))
         self._declared_types[name] = found
         return found
 
