@@ -92,9 +92,9 @@ def _headers_under(dirs: Iterable[str], headers: list[str]) -> list[str]:
     """The paths in sorted *headers* below any of *dirs* (repo-relative directories)."""
     out: list[str] = []
     for d in dirs:
-        # Unexpanded ``${...}``, absolute paths and the repo root itself name
-        # no directory of the repo to read.
-        if not d or "${" in d or d.startswith("/") or ":" in d:
+        # Unexpanded ``${...}``, absolute paths (``/x``, ``C:/x``) and the repo
+        # root itself name no directory of the repo to read.
+        if not d or "${" in d or d.startswith("/") or d[1:2] == ":":
             continue
         prefix = d.rstrip("/") + "/"
         i = bisect_left(headers, prefix)

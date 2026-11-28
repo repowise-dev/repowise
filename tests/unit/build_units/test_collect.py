@@ -1029,6 +1029,44 @@ def test_cmake_deps_outside_the_repo_are_dropped(tmp_path):
     assert _deps(index)["cmake:app"] == ()
 
 
+def test_cmake_target_declared_in_if_and_else_arms_owns_both_arms(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "if(WIN32)\n  add_executable(tool win.cpp)\n"
+            "else()\n  add_executable(tool posix.cpp)\nendif()\n"
+            "target_link_libraries(tool PRIVATE core)\n"
+            "add_library(core c.cpp)\n"
+        ),
+        "win.cpp": "",
+        "posix.cpp": "",
+        "c.cpp": "",
+    })
+    assert _owners(index, "win.cpp") == ["cmake:tool"]
+    assert _owners(index, "posix.cpp") == ["cmake:tool"]
+    assert _deps(index)["cmake:tool"] == ("cmake:core",)
+
+
+def test_cmake_include_dir_with_a_colon_is_read_and_a_drive_path_is_not():
+    # In-memory: Windows cannot create a directory named ``a:b``.
+    headers = ["C/x.h", "third_party/a:b/include/x.h"]
+    assert cmake_adapter._headers_under(["third_party/a:b/include"], headers) == [
+        "third_party/a:b/include/x.h"
+    ]
+    assert cmake_adapter._headers_under(["C:/x", "C:"], headers) == []
+
+
+def test_cmake_root_target_keeps_the_root_fallback_unit(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_library(core c.cpp)\n",
+        "c.cpp": "",
+        "Gemfile": "",
+        "lib/x.rb": "",
+    })
+    assert set(index.units) == {"cmake:core", "manifest:."}
+    assert _owners(index, "c.cpp") == ["cmake:core"]
+    assert _owners(index, "lib/x.rb") == ["manifest:."]
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="the CMake parser reads add_library(<name> ALIAS <target>) as a library of its own",
