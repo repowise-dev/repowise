@@ -163,12 +163,7 @@ def _resolve_commands(class_to_parent: dict[str, str]) -> set[str]:
     return command_fqns
 
 
-def _resolve_subscribers(
-    class_to_parent: dict[str, str],
-    class_to_interfaces: dict[str, list[str]],
-    interface_to_parents: dict[str, list[str]],
-) -> set[str]:
-    """Find all classes implementing Symfony EventSubscriberInterface transitively."""
+def _resolve_subscriber_interfaces(interface_to_parents: dict[str, list[str]]) -> set[str]:
     subscriber_ifaces = {SYMFONY_EVENT_SUBSCRIBER_LOWER}
     changed = True
     while changed:
@@ -179,7 +174,16 @@ def _resolve_subscribers(
             ):
                 subscriber_ifaces.add(iface_fqn)
                 changed = True
+    return subscriber_ifaces
 
+
+def _resolve_subscribers(
+    class_to_parent: dict[str, str],
+    class_to_interfaces: dict[str, list[str]],
+    interface_to_parents: dict[str, list[str]],
+) -> set[str]:
+    """Find all classes implementing Symfony EventSubscriberInterface transitively."""
+    subscriber_ifaces = _resolve_subscriber_interfaces(interface_to_parents)
     subscriber_classes: set[str] = set()
     changed = True
     while changed:
@@ -197,32 +201,29 @@ def _resolve_subscribers(
     return subscriber_classes
 
 
-def _add_symfony_edges(
-    graph: nx.DiGraph,
-    parsed_files: dict[str, Any],
-    ctx: ResolverContext,
-    path_set: set[str],
-) -> int:
-    source_map = getattr(ctx, "source_map", None) or {}
-    php_files = [
-        f
-        for path, parsed in parsed_files.items()
-        if parsed.file_info.language == "php"
-        and (f := _PhpFile(path, parsed, source_map)).text
-    ]
-    if not php_files:
-        return 0
+def _collect_php_files(
+    parsed_files: dict[str, Any], source_map: dict[str, bytes]
+) -> list[_PhpFile]:
+    files = []
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language == "php":
+            f = _PhpFile(path, parsed, source_map)
+            if f.text:
+                files.append(f)
+    return files
 
+
+def _collect_target_files(php_files: list[_PhpFile]) -> set[str]:
     class_to_files: dict[str, set[str]] = {}
     class_to_parent: dict[str, str] = {}
     class_to_interfaces: dict[str, list[str]] = {}
     interface_to_parents: dict[str, list[str]] = {}
-    attributed_files: set[str] = set()
+    target_files: set[str] = set()
 
     for f in php_files:
         blanked = f.blanked
         if _has_symfony_attribute(f, blanked):
-            attributed_files.add(f.path)
+            target_files.add(f.path)
         _record_declarations(
             f,
             blanked,
@@ -236,21 +237,34 @@ def _add_symfony_edges(
     subscriber_fqns = _resolve_subscribers(
         class_to_parent, class_to_interfaces, interface_to_parents
     )
-
-    target_files: set[str] = set(attributed_files)
-    for cls_fqn in command_fqns:
+    for cls_fqn in command_fqns | subscriber_fqns:
         target_files.update(class_to_files.get(cls_fqn, ()))
-    for cls_fqn in subscriber_fqns:
-        target_files.update(class_to_files.get(cls_fqn, ()))
+    return target_files
 
+
+def _anchor_targets(graph: nx.DiGraph, targets: set[str]) -> int:
     count = 0
-    for target in sorted(target_files):
+    for target in sorted(targets):
         if anchor_edge(graph, SYMFONY, target):
             if target in graph:
                 graph.nodes[target]["is_reachability_root"] = True
             count += 1
-
     return count
+
+
+def _add_symfony_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    ctx: ResolverContext,
+    path_set: set[str],
+) -> int:
+    source_map = getattr(ctx, "source_map", None) or {}
+    php_files = _collect_php_files(parsed_files, source_map)
+    if not php_files:
+        return 0
+
+    target_files = _collect_target_files(php_files)
+    return _anchor_targets(graph, target_files)
 
 
 class _SymfonyHandler:
