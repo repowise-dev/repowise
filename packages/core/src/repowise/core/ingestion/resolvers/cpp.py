@@ -141,9 +141,12 @@ def _resolve_single(
     if candidate_rel in ctx.path_set:
         return candidate_rel
 
-    # 6. Stem fallback (5 was system-include filter above)
-    stem = Path(module_path).stem.lower()
-    return ctx.stem_lookup(stem)
+    # 6. Stem fallback (5 was system-include filter above): only accept a
+    #    candidate whose *file name* matches the include, so ``<zlib.h>``
+    #    never links to e.g. ``tools/zlib.py``.
+    name = Path(module_path).name.lower()
+    candidates = ctx.stem_map.get(Path(module_path).stem.lower(), ())
+    return next((c for c in candidates if Path(c).name.lower() == name), None)
 
 
 def resolve_cpp_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:

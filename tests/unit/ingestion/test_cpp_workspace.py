@@ -84,6 +84,19 @@ def test_stdlib_includes_are_dropped(tmp_path):
     assert resolve_cpp_import("stdio.h", "main.cc", ctx) is None
 
 
+def test_stem_fallback_requires_matching_file_name(tmp_path):
+    # Headers outside the stdlib list reach the stem fallback, but the
+    # fallback must only accept a candidate with the *same file name*:
+    # <zlib.h> must not link to tools/zlib.py, <sqlite3.h> not to
+    # db/sqlite3.ts, and <curl.h> not to net/curl.cpp.
+    paths = ["tools/zlib.py", "db/sqlite3.ts", "net/curl.cpp", "src/main.cc"]
+    for rel in paths:
+        _write(tmp_path, rel, "")
+    ctx = _make_ctx(tmp_path, paths)
+    for include in ("zlib.h", "sqlite3.h", "curl.h"):
+        assert resolve_cpp_import(include, "src/main.cc", ctx) is None
+
+
 def test_resolve_all_fans_out_to_target_siblings(tmp_path):
     """A ``#include`` of a public header fans out to every TU sharing
     the owning target so the header's defining files aren't orphaned."""
