@@ -229,3 +229,24 @@ def test_a_class_local_to_a_member_body_lends_no_constructor(tmp_path: Path) -> 
     graph = _build(tmp_path)
     assert _callees_of(graph, "use.cc::Copy") == set()
     assert _callee_lines(graph, "use.cc::Make") == {("method", 8)}
+
+
+def test_constructions_through_the_repo_wide_tier_bind_by_argument_count(tmp_path: Path) -> None:
+    # The out-of-line definition makes the repo-wide tier see several
+    # constructor ids, so it used to answer with the class itself.
+    (tmp_path / "vec.h").write_text(
+        "#pragma once\nclass Vec {\n public:\n  Vec() = default;\n"
+        "  Vec(const Vec& o) = default;\n  Vec(float x, float y, float z);\n};\n"
+        "struct Pair { int a; int b; };\n"
+    )
+    (tmp_path / "vec.inl").write_text("Vec::Vec(float x, float y, float z) {}\n")
+    (tmp_path / "use.cc").write_text(
+        "Vec Make(float a) { return Vec(a, a, a); }\n"
+        "Vec Zero() { return Vec(); }\n"
+        "Pair Two() { return Pair(1, 2); }\n"
+    )
+    graph = _build(tmp_path)
+    (made,) = _callees_of(graph, "use.cc::Make")
+    assert graph.nodes[made]["kind"] == "method" and made.endswith("Vec::Vec")
+    assert _callee_lines(graph, "use.cc::Zero") == {("method", 4)}
+    assert _callees_of(graph, "use.cc::Two") == set()
