@@ -1649,11 +1649,14 @@ class ReceiverTypingMixin(
             if assignment.name in declared or assignment.name in rebound:
                 continue
             site = sites.get((assignment.line, assignment.receiver, assignment.target))
-            type_id = (
-                None
-                if site is None
-                else self._site_returned_type_id(file_path, site, assignment.awaited)
-            )
+            if language == "cpp":
+                type_id = self._cpp_call_assigned_type(
+                    file_path, site, assignment.target, assignment.receiver
+                )
+            elif site is None:
+                type_id = None
+            else:
+                type_id = self._site_returned_type_id(file_path, site, assignment.awaited)
             if type_id is not None:
                 record_type(types, assignment.name, type_id)
             elif language in ("python", "rust"):
@@ -1800,9 +1803,15 @@ class ReceiverTypingMixin(
         (``Result<T>``) or prefixed (``p.Foo``) return type types nothing.
         """
         raw = declared_return_type(symbol.signature or "") or ""
+        if symbol.language == "cpp":
+            raw = self._cpp_written_return(symbol, path, raw)
         written = _awaited_type(raw, symbol.language) if awaited else raw
         written = (written or "").rstrip("?")
-        if not written.isidentifier() or self._csharp_type_parameter(symbol, path, written):
+        if (
+            not written.isidentifier()
+            or self._csharp_type_parameter(symbol, path, written)
+            or (symbol.language == "cpp" and self._cpp_template_parameter(symbol, path, written))
+        ):
             return None
         found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
         return None if found is None else found.callee_id

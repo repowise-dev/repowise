@@ -319,19 +319,38 @@ _CPP_TYPE = r"(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*(?:\s*<(?:[^<>]|<[^<>]*>)*>)?
 # the same punctuation the C family requires plus ``{`` for brace init.
 #
 # ``(`` is NOT a closer: ``Status doIt(int x);`` is a method declaration, the
-# commonest line in a header. That also drops ``Foo bar(args);``, costing an
-# edge, the safe direction. ``>`` and ``:`` in the lookbehind stop a restart
-# inside a type already read (``std::shared_ptr<Foo>& p``).
+# commonest line in a header. ``Foo bar(args);`` is read by
+# ``_CPP_DIRECT_INIT`` instead. ``>`` and ``:`` in the lookbehind stop a
+# restart inside a type already read (``std::shared_ptr<Foo>& p``).
 _CPP_DECLARATION = re.compile(
     rf"(?<![\w.>:])(?!{_CPP_KEYWORDS}\b)(?P<type>{_CPP_TYPE})"
     rf"(?:\s*[*&]{{1,2}}\s*|\s+)(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,){{]))"
 )
 
-# Direct construction only: a member/factory call or a chained result carries
-# no evidence that the local has the named type.
+# ``Foo bar(args);``, a local constructed in place. The same spelling declares
+# a function (``Status doIt(int x);``, ``Foo bar(Baz);``), so
+# ``_cpp_constructs_in_place`` keeps it only when the list holds a value and
+# the statement ends right after it. No closer: it is never a field. No ``*``
+# or ``&``: ``a * b(c)`` is an expression.
+_CPP_DIRECT_INIT = re.compile(
+    rf"(?<![\w.>:])(?!{_CPP_KEYWORDS}\b)(?P<type>{_CPP_TYPE})\s+(?P<name>[a-z_]\w*)\s*\("
+)
+
+# ``for (const Node* n : nodes)``, which no closer above ends. An ``auto``
+# element spells no type and is not read.
+_CPP_RANGE_FOR = re.compile(
+    rf"\bfor\s*\(\s*(?:const\s+)?(?!{_CPP_KEYWORDS}\b)(?P<type>{_CPP_TYPE})"
+    r"(?:\s*[*&]{1,2}\s*|\s+)(?P<name>[a-z_]\w*)\s*:(?!:)"
+)
+
+# ``auto x = T()``, ``auto x = T{..}``, ``auto x = new T(..)``,
+# ``auto x = W<T>(..)``: the right-hand side names a type. ``T(args)`` with no
+# template arguments may be a function call, so ``_cpp_construction_ends``
+# leaves it to the call-typed scan, which can tell the two apart. A
+# member/factory call or a chained result carries no evidence of the type.
 _CPP_CONSTRUCTED = re.compile(
-    r"\bauto\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Za-z_]\w*)"
-    r"\s*(?:\(\s*\)|\{\s*\})(?=\s*;)"
+    rf"\bauto\s*[*&]{{0,2}}\s*(?P<name>[a-z_]\w*)\s*=\s*(?P<new>new\s+)?"
+    rf"(?!{_CPP_KEYWORDS}\b)(?P<type>{_CPP_TYPE})\s*(?=[({{;])"
 )
 
 
@@ -402,7 +421,7 @@ _TS_FAMILY = (_TS_ANNOTATED, _TS_PARAMETER_PROPERTY, _TS_CONSTRUCTED)
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     # Apex declares Java's way (``Foo foo``) and has no ``var``.
     "apex": (_TYPED_DECLARATION,),
-    "cpp": (_CPP_DECLARATION, _CPP_CONSTRUCTED),
+    "cpp": (_CPP_DECLARATION, _CPP_DIRECT_INIT, _CPP_RANGE_FOR, _CPP_CONSTRUCTED),
     "csharp": (*_C_FAMILY, _CS_MEMBER, _CS_FOREACH_TYPED),
     "dart": _DART_FAMILY,
     "go": _GO_FAMILY,
@@ -1310,9 +1329,8 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
         for match in pattern.finditer(cleaned):
             if inside_type is not None and inside_type(match.start()):
                 continue
-            if pattern is _KT_CONSTRUCTED_LAMBDA and not _ends_statement(
-                cleaned, _lambda_end(cleaned, match.end()), language
-            ):
+            keeps = _MATCH_CHECKS.get(pattern)
+            if keeps is not None and not keeps(cleaned, match):
                 continue
             raw = match.group("type")
             if raw not in resolved:
@@ -1431,8 +1449,17 @@ _RUST_CALL_ASSIGNMENT = re.compile(
 )
 # What unwraps the call's ``Result``/``Option`` and still ends the statement.
 _RUST_UNWRAP = re.compile(r"[ \t]*(?:\?|\.unwrap\(\)|\.expect\((?:[^()]|\([^()]*\))*\))")
+# ``auto x = f(..);``, ``const auto& x = ns::f(..);``, ``auto x = y->f(..);``.
+# A namespace or class qualifier is the call site's scope, not its receiver.
+# A template argument list (``f<T>(..)``) is no call site at all: such a
+# right-hand side is read by ``_CPP_CONSTRUCTED``.
+_CPP_CALL_ASSIGNMENT = re.compile(
+    r"(?<![\w.])auto\s*[*&]{0,2}\s*(?P<name>[a-z_]\w*)\s*=\s*(?:(?P<receiver>[A-Za-z_]\w*)"
+    r"\s*(?:\.|->)\s*|(?:[A-Za-z_]\w*\s*::\s*)+)?(?P<target>[A-Za-z_]\w*)\s*\("
+)
 
 _CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "cpp": _CPP_CALL_ASSIGNMENT,
     "csharp": _CS_CALL_ASSIGNMENT,
     "dart": _DART_CALL_ASSIGNMENT,
     "go": _GO_CALL_DECL,
@@ -1448,14 +1475,15 @@ CALL_TYPED_LANGUAGES = frozenset(_CALL_ASSIGNMENT_PATTERNS)
 _QUOTES = frozenset("\"'`")
 _STATEMENT_ENDS = frozenset("\n;}")
 # A Python ``;`` may rebind the name later on the line, where no scan sees it.
-# Dart, C# and Rust end a statement only at ``;``, so ``f()\n.g()`` is one statement.
+# Dart, C#, Rust and C++ end a statement only at ``;``, so ``f()\n.g()`` is one statement.
 _LANGUAGE_STATEMENT_ENDS = {
     "python": frozenset("\n"),
+    "cpp": frozenset(";"),
     "dart": frozenset(";"),
     "csharp": frozenset(";"),
     "rust": frozenset(";"),
 }
-_NEWLINE_BLIND_LANGUAGES = frozenset({"dart", "csharp", "rust"})
+_NEWLINE_BLIND_LANGUAGES = frozenset({"cpp", "dart", "csharp", "rust"})
 # Kotlin and Swift may carry a statement onto a line that starts with a member
 # access or an operator (``.f()``, ``?: x``, ``as T``, ``&& y``). Refused
 # wholesale: a new statement starting so only costs the local its type.
@@ -1559,6 +1587,86 @@ def _ends_statement(cleaned: str, end: int, language: str, start: int = 0) -> bo
         return False
     continues = _NEXT_LINE_CONTINUES.get(language)
     return continues is None or not continues.match(rest.lstrip())
+
+
+# An argument that can only be a parameter: ``int x``, ``const Foo& f``.
+_CPP_NAMED_PARAMETER = re.compile(
+    rf"(?:const\s+)?(?!{_CPP_KEYWORDS}\b){_CPP_TYPE}(?:\s*[*&]{{1,2}}\s*|\s+)[A-Za-z_]\w*"
+    r"(?:\s*=.*)?",
+    re.DOTALL,
+)
+_CPP_UNNAMED_PARAMETER = re.compile(
+    rf"(?P<const>const\s+)?(?P<type>{_CPP_TYPE})\s*(?P<pointer>[*&]*)", re.DOTALL
+)
+
+
+def _cpp_names_a_type(argument: str) -> bool:
+    """Could *argument* be an unnamed parameter (``Baz``, ``int``, ``const Foo&``)?"""
+    match = _CPP_UNNAMED_PARAMETER.fullmatch(argument)
+    if match is None:
+        return False
+    if match.group("const") or match.group("pointer") or "<" in match.group("type"):
+        return True
+    name = bare_type_name(match.group("type"))
+    return name[:1].isupper() or builtin_type_spelling(name, "cpp") is not None
+
+
+def _top_level_arguments(text: str) -> list[str]:
+    """*text*, an argument list's inside, split at its top-level commas."""
+    pieces, depth, start = [], 0, 0
+    for index, char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and not depth:
+            pieces.append(text[start:index].strip())
+            start = index + 1
+    pieces.append(text[start:].strip())
+    return pieces
+
+
+def _cpp_constructs_in_place(cleaned: str, match: re.Match[str]) -> bool:
+    """Is ``T name(args)`` a local built in place rather than a function declared?
+
+    Every argument must be a value: an empty list, a named parameter, or a
+    list of type names alone (the vexing parse) declares a function. The
+    statement must end at the ``)``, which keeps a definition's header out.
+    """
+    end = _call_end(cleaned, match.end())
+    if end < 0 or not cleaned[end:].lstrip().startswith(";"):
+        return False
+    arguments = _top_level_arguments(cleaned[match.end() : end - 1])
+    if not all(arguments) or any(_CPP_NAMED_PARAMETER.fullmatch(a) for a in arguments):
+        return False
+    return not all(_cpp_names_a_type(a) for a in arguments)
+
+
+def _cpp_construction_ends(cleaned: str, match: re.Match[str]) -> bool:
+    """Does ``auto x = [new] T..`` build a ``T`` and end its statement there?
+
+    ``T(args)`` with no template arguments is left to the call-typed scan.
+    """
+    opener = match.end()
+    if cleaned[opener] == ";":
+        return bool(match.group("new"))
+    if cleaned[opener] == "{":
+        return _ends_statement(cleaned, _lambda_end(cleaned, opener), "cpp")
+    end = _call_end(cleaned, opener + 1)
+    named = match.group("new") or "<" in match.group("type")
+    if not named and cleaned[opener + 1 : end - 1].strip():
+        return False
+    return _ends_statement(cleaned, end, "cpp")
+
+
+# Declaration shapes a regex cannot close by itself, checked past the match.
+_MATCH_CHECKS: dict[re.Pattern[str], Callable[[str, re.Match[str]], bool]] = {
+    _CPP_CONSTRUCTED: _cpp_construction_ends,
+    _CPP_DIRECT_INIT: _cpp_constructs_in_place,
+    _KT_CONSTRUCTED_LAMBDA: lambda cleaned, match: _ends_statement(
+        cleaned, _lambda_end(cleaned, match.end()), "kotlin"
+    ),
+}
 
 
 def _rust_call_ends(cleaned: str, opened: int) -> tuple[bool, bool]:
