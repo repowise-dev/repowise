@@ -114,6 +114,9 @@ class InitRun:
     # PhaseTimingRecorder shared by every stage.
     recorder: Any = None
     run_warnings: list[str] = field(default_factory=list)
+    # With no git commit: the files as indexing found them, which update diffs
+    # against (see ``repowise.core.ingestion.content_baseline``).
+    content_snapshot: dict[str, str] | None = None
     # Embedder of the template wiki, None when none was rendered.
     index_only_embedder: str | None = None
     cost_declined: bool = False

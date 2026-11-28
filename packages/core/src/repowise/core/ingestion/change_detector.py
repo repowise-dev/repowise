@@ -237,6 +237,31 @@ class ChangeDetector:
 
         return results
 
+    def get_content_changes(
+        self, baseline: dict[str, str], current: dict[str, str]
+    ) -> list[FileDiff]:
+        """FileDiffs between two content snapshots (see :mod:`.content_baseline`).
+
+        There is no old blob to parse, so a modified file's symbols all read
+        as added and no rename is detected: its pages regenerate in full.
+        """
+        diffs: list[FileDiff] = []
+        for path, fingerprint in sorted(current.items()):
+            previous = baseline.get(path)
+            if previous == fingerprint:
+                continue
+            status: Literal["added", "modified"] = "added" if previous is None else "modified"
+            diffs.append(
+                self._unindexable_as_deleted(
+                    self._added_from_disk(path, self.repo_path / path, status=status)
+                )
+            )
+        diffs.extend(
+            FileDiff(path, "deleted", path, None, None, None)
+            for path in sorted(baseline.keys() - current.keys())
+        )
+        return diffs
+
     def stale_working_tree_diffs(
         self,
         previous_paths: Iterable[str],

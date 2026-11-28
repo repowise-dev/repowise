@@ -86,9 +86,10 @@ older than most of the people maintaining it.
 layers is derived from history; the graph, documentation, decisions and
 code-health layers are all computed from the working tree. Point `repowise init`
 at a plain directory, an export, or a Perforce or SVN workspace and those four
-build normally. What is missing is the history-derived half: hotspots, ownership,
-co-change, bus factor, bug history, and change risk, all of which need a commit
-log to mine.
+build normally, and `repowise update` keeps them current by comparing file
+contents with the last run, so no re-init is needed. What is missing is the
+history-derived half: hotspots, ownership, co-change, bus factor, bug history,
+and change risk, all of which need a commit log to mine.
 
 Closing that gap means teaching the history layer to read something other than
 `git log`. The signals above it do not care where the history came from once it

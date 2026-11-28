@@ -611,6 +611,7 @@ def _persist_index_only_update(
     stale_config_buckets: Collection[str] = (),
     timings: PhaseTimings | None = None,
     unchecked_repair: dict | None = None,
+    content_snapshot: dict[str, str] | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
@@ -777,6 +778,9 @@ def _persist_index_only_update(
     _stamp_scope(repo_path, new_state, failed_steps)
     stamp_file_page_scope(repo_path, new_state, parsed_files, graph_builder, git_meta_map)
     save_state(repo_path, new_state)
+    from repowise.core.ingestion.content_baseline import advance_baseline
+
+    advance_baseline(repo_path, head, content_snapshot, clean=not (failed_steps or prune_refusals))
     elapsed = time.monotonic() - start
     from repowise.core.index_scope import upgrade_command
 
