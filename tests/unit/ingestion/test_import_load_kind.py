@@ -95,6 +95,12 @@ elif TYPE_CHECKING:
 from typing import TYPE_CHECKING as TC
 if TC:
     from .aliased import A
+if False:
+    from .never import N
+else:
+    from .never_else import NE
+if 0:
+    from .zero import Z
 """
 
 
@@ -111,8 +117,10 @@ if TC:
         (".negated", (False, False)),  # `if not TYPE_CHECKING:` runs
         (".negated_attr", (False, False)),
         (".elif_branch", (True, False)),
-        # Ceiling: an alias is not recognised, so the import stays runtime.
-        (".aliased", (False, False)),
+        (".aliased", (True, False)),  # `from typing import TYPE_CHECKING as TC`
+        (".never", (True, False)),  # `if False:` never runs
+        (".never_else", (False, False)),  # its else branch runs
+        (".zero", (True, False)),  # `if 0:` never runs
     ],
 )
 def test_python_import_load_kind(module: str, expected: tuple[bool, bool]) -> None:
