@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from repowise.core.ingestion.symbol_identity import make_symbol_id
+
 from ..apex_reachability import is_apex_entry_member
 from ..cobol_paragraphs import unreachable_paragraph_findings
 from ..constants import _DEAD_CODE_EXEMPT_LANGUAGES, _is_fixture_path
@@ -58,14 +60,17 @@ class UnusedInternalPass:
             # named as a value). ``new X(..)`` lands on X's constructor
             # (``path::X::X``) when X declares one, and constructing X uses it.
             if self.ctx._has_inbound_use(node) or self.ctx._has_inbound_use(
-                f"{file_path}::{sym_name}::{sym_name}"
+                make_symbol_id(file_path, sym_name, sym_name)
             ):
                 continue
 
             # A private helper imported by name elsewhere (a dispatch table
-            # entry) is referenced even with no ``calls`` edge.
+            # entry) is referenced even with no ``calls`` edge. A Pascal
+            # ``uses`` wildcard never reaches a unit's private routines: they
+            # are not in its interface.
+            wildcard_rescues = node_data.get("language") != "pascal"
             if any(
-                sym_name in imported or "*" in imported
+                sym_name in imported or ("*" in imported and wildcard_rescues)
                 for imported in self.ctx._imported_names_by_edge(file_path)
             ):
                 continue

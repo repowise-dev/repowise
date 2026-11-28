@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isServeLock, type ServeLock } from "@repowise-dev/types/serve-lock";
+
+export { isPidAlive } from "./serverProcess";
 
 /**
  * Reads and validates the lockfile. Returns null when the file is missing,
@@ -19,16 +22,12 @@ export async function readLockfile(path: string): Promise<ServeLock | null> {
   }
 }
 
-/**
- * True when a process with this pid exists (signal-0 probe, no signal sent).
- * EPERM means alive but owned by someone else; ESRCH (or anything else) means
- * gone.
- */
-export function isPidAlive(pid: number): boolean {
+/** `readLockfile` for paths that cannot await (extension shutdown). */
+export function readLockfileSync(path: string): ServeLock | null {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return isServeLock(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
 }

@@ -10,10 +10,9 @@ The grouping now lives on the pages that are grouped — each carries the id and
 display name of its layer — so nothing has to emit a page for a reader-facing
 tree to build layer rows.
 
-The page type stays registered on purpose. Indexes written before this change
-hold ``layer_page`` rows, and a stored page whose type the serving layer does
-not know is a broken page for every one of them. New ids are not minted; old
-ones still render, and an inbound link to one still resolves.
+The page type is retired outright. Every persist sweeps stored ``layer_page``
+rows (:func:`~repowise.core.pipeline.persist.sweep_retired_pages`), and an
+inbound link to one still resolves to the overview through the redirect table.
 """
 
 from __future__ import annotations
@@ -43,25 +42,20 @@ _TEMPLATE_DIR = (
 )
 
 
-class TestLayerPageStaysRegistered:
-    """A stored layer page has to keep rendering and keep resolving."""
+class TestLayerPageIsRetired:
+    """Nothing declares the type; only its redirect remains."""
 
-    def test_layer_page_is_still_a_page_type(self):
-        assert "layer_page" in PageType.__args__
+    def test_layer_page_is_not_a_page_type(self):
+        assert "layer_page" not in PageType.__args__
 
-    def test_layer_page_still_has_a_generation_level(self):
-        assert GENERATION_LEVELS["layer_page"] == 5
+    def test_layer_page_has_no_generation_level(self):
+        assert "layer_page" not in GENERATION_LEVELS
 
-    def test_layer_page_is_still_structurally_keyed(self):
-        assert "layer_page" in STRUCTURALLY_KEYED_PAGE_TYPES
+    def test_layer_page_is_not_structurally_keyed(self):
+        assert "layer_page" not in STRUCTURALLY_KEYED_PAGE_TYPES
 
-    def test_layer_page_still_costs_nothing(self):
-        """A stored layer page was rendered from structure, never prompted.
-
-        Dropping it from the cost table would price historical telemetry as if
-        a model had written one.
-        """
-        assert "layer_page" in COST_STRUCTURAL_PAGE_TYPES
+    def test_layer_page_is_not_priced(self):
+        assert "layer_page" not in COST_STRUCTURAL_PAGE_TYPES
 
     def test_a_retired_layer_id_hands_off_to_the_overview(self):
         assert repo_wide_successor_type("layer_page:layer:core") == "repo_overview"
@@ -143,35 +137,24 @@ class TestGroupingSurvivesWithoutTheirPages:
     def test_every_module_is_stamped_when_no_layer_page_exists(self):
         nodes = self._repo()
         assert not any(n.page_type == "layer_page" for n in nodes)
-        assign_page_tree(nodes, ["layer:analysis"])
+        assign_page_tree(nodes)
         module = next(n for n in nodes if n.page_id == "module_page:core/analysis")
         assert module.metadata["layer_id"] == "layer:analysis"
         assert module.metadata["layer_name"] == "Analysis"
 
     def test_every_cycle_is_stamped_when_no_layer_page_exists(self):
         nodes = self._repo()
-        assign_page_tree(nodes, ["layer:analysis"])
+        assign_page_tree(nodes)
         cycle = next(n for n in nodes if n.page_id == "scc_page:cycle-1")
         assert cycle.metadata["layer_id"] == "layer:analysis"
         assert cycle.metadata["layer_name"] == "Analysis"
 
     def test_members_parent_onto_the_overview_not_a_missing_page(self):
         nodes = self._repo()
-        assign_page_tree(nodes, ["layer:analysis"])
+        assign_page_tree(nodes)
         for page_id in ("module_page:core/analysis", "scc_page:cycle-1"):
             node = next(n for n in nodes if n.page_id == page_id)
             assert node.parent_page_id == "repo_overview:demo"
-
-    def test_a_stored_layer_page_still_gets_a_place_in_the_tree(self):
-        """An index written before the retirement is rebuilt from its store."""
-        nodes = [
-            *self._repo(),
-            self._node("layer_page:layer:analysis", "layer_page", "layer:analysis"),
-        ]
-        assign_page_tree(nodes, ["layer:analysis"])
-        stored = next(n for n in nodes if n.page_id == "layer_page:layer:analysis")
-        assert stored.parent_page_id == "repo_overview:demo"
-        assert stored.section_number is not None
 
 
 class TestTheRunCountsWhatGroupingReached:

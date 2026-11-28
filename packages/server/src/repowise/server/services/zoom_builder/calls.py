@@ -21,20 +21,24 @@ the ones projection itself creates.
 
 from __future__ import annotations
 
-import os
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.execution_graph import file_of_symbol, is_reliable_execution_edge
+from repowise.core.analysis.execution_graph import is_reliable_execution_edge
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.models import GraphEdge
 
 
 def _ext(path: str) -> str:
-    """Lower-case extension of *path* (``a/b/x.py`` -> ``py``), ``""`` if none."""
-    base = os.path.basename(path)
-    return base.rsplit(".", 1)[1].lower() if "." in base else ""
+    """Lower-case extension of *path* (``a/b/x.py`` -> ``py``), ``""`` if none.
+
+    Node ids are POSIX repo paths on every platform, so the base name is split
+    on ``/`` directly: ``os.path.basename`` is ntpath on Windows, which is
+    several times slower over the 100k call edges a large repository has.
+    """
+    base = path.rpartition("/")[2]
+    return base.rpartition(".")[2].lower() if "." in base else ""
 
 
 def keep_projected_edge(src_file: str, tgt_file: str) -> bool:
@@ -90,9 +94,10 @@ async def load_projected_calls(
             continue
         src_file = file_of_symbol(source)
         tgt_file = file_of_symbol(target)
-        if not keep_projected_edge(src_file, tgt_file):
-            continue
+        # The set lookups first; the extension test below is the costlier one.
         if src_file not in known_files or tgt_file not in known_files:
+            continue
+        if not keep_projected_edge(src_file, tgt_file):
             continue
         projected.append((src_file, tgt_file, edge_type))
     return projected

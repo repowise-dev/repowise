@@ -29,7 +29,9 @@ class Generic(BaseForge):
     def change_url(self, ref: RemoteRef, number: int) -> str:
         return ""
 
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str:
+    def blob_url(
+        self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
+    ) -> str:
         return ""
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:

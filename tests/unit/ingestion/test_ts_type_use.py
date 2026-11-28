@@ -268,6 +268,23 @@ class TestTsTypeUseEdges:
             )
         assert not builder.build().has_edge("hook.ts", "py/dispatch.py")
 
+    def test_stem_match_reaches_an_astro_component(self, tmp_path: Path) -> None:
+        """An ``.astro`` file is in the TS family, as ``.svelte`` and ``.vue`` are."""
+        sources = {
+            "ui/Widget.astro": "---\nconst id = 1;\n---\n<div>{id}</div>\n",
+            "show.ts": "export function show(w: Widget): void {}\n",
+        }
+        for rel, body in sources.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(body, encoding="utf-8")
+        builder = GraphBuilder(repo_path=tmp_path)
+        for rel, lang in (("ui/Widget.astro", "astro"), ("show.ts", "typescript")):
+            path = tmp_path / rel
+            builder.add_file(
+                _PARSER.parse_file(_file_info(rel, str(path.resolve()), lang), path.read_bytes())
+            )
+        assert builder.build().has_edge("show.ts", "ui/Widget.astro")
+
     def test_type_only_import_produces_type_use_provenance(
         self, tmp_path: Path
     ) -> None:

@@ -85,8 +85,9 @@ class BarrelForwardingMixin:
     ) -> None:
         source_syms = self._file_symbols.get(resolved, {})
         source_parsed = self._parsed_files.get(resolved)
+        # ``export * from`` re-exports every name except ``default``.
         published = (
-            (*source_syms, *source_parsed.export_aliases)
+            (*source_syms, *(a for a in source_parsed.export_aliases if a != "default"))
             if source_parsed
             else tuple(source_syms)
         )

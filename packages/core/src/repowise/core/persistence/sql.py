@@ -36,7 +36,8 @@ class json_text(FunctionElement):  # noqa: N801 - reads as the SQL function it r
     """One top-level key of a JSON text column, as text, in SQL.
 
     SQLite and PostgreSQL spell it differently and neither indexes it, so it
-    narrows a read the caller already scoped; it never drives a filter.
+    narrows a read the caller already scoped (by repository, and behind a
+    CASE on an indexed column where it filters), never a whole table.
     """
 
     type = String()

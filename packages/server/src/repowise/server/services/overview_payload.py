@@ -19,7 +19,9 @@ from repowise.core.analysis.health.aggregation import (
 )
 from repowise.core.analysis.health.grading import headline_band
 from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.analysis.health.trends import latest_per_day
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.health.snapshots import HEALTH_SNAPSHOT_RETENTION
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
@@ -31,6 +33,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.stats_highlights import file_mix
 from repowise.server.services.attention import build_attention
+from repowise.server.services.hotspots import count_hotspots
 from repowise.server.services.knowledge_map import (
     compute_knowledge_silos,
     compute_onboarding_targets,
@@ -108,13 +111,8 @@ async def stat_strip(session: AsyncSession, repo_id: str) -> dict:
             ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
         ),
     )
-    hotspot_count = await _count(
-        session,
-        select(func.count(GitMetadata.id)).where(
-            GitMetadata.repository_id == repo_id,
-            GitMetadata.is_hotspot.is_(True),
-        ),
-    )
+    # The hotspot list's own count, so "All N hotspots" opens N rows.
+    hotspot_count = await count_hotspots(session, repo_id)
     return {
         "file_count": file_count,
         "symbol_count": symbol_count,
@@ -244,6 +242,14 @@ def defect_accuracy(health_metrics: list[Any], findings: list[Any]) -> dict | No
         return None
 
 
+#: How many days the health card's trend line plots, one point per day.
+HEALTH_HISTORY_POINTS = 12
+#: Snapshot rows the overview reads for it: every retained row (scalars only,
+#: one query), so same-day runs push older days off the window only once the
+#: store's retention has dropped those days' rows.
+HEALTH_HISTORY_READ = HEALTH_SNAPSHOT_RETENTION
+
+
 def snapshot_history(snapshot: Any) -> list[dict]:
     return [
         {
@@ -251,7 +257,7 @@ def snapshot_history(snapshot: Any) -> list[dict]:
             "average_health": round(s.average_health, 2),
             "hotspot_health": (round(s.hotspot_health, 2) if s.hotspot_health is not None else None),
         }
-        for s in snapshot.recent
+        for s in latest_per_day(snapshot.recent)[-HEALTH_HISTORY_POINTS:]
     ]
 
 

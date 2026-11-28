@@ -10,6 +10,8 @@ The extension publishes to the Visual Studio Marketplace (publisher
   package**. The only cross-version coupling is the `MIN_SERVER_VERSION`
   constant the extension checks against the running server. Bump it only when
   the extension starts relying on a newer server contract.
+- The CI smoke test pins VS Code 1.142.0 in `.vscode-test.mjs`; update that
+  version deliberately when validating a newer editor release.
 - Marketplace pre-releases use the same version number published to the
   pre-release channel. Cut a stable release from a tag once a pre-release has
   been dogfooded.

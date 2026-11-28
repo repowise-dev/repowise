@@ -230,6 +230,11 @@ const ORIGINS = {
     because: "the name is unique across the repo, so nothing else could match",
     tier: "name_match",
   },
+  import_elsewhere: {
+    label: "Name match",
+    because: "the name is imported only inside another function of this file",
+    tier: "name_match",
+  },
 } as const satisfies Record<ResolutionOrigin, OriginDescriptor>;
 
 /** An index outlives the bundle reading it, so a newer indexer can stamp a

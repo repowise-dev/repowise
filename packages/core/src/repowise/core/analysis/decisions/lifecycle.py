@@ -31,12 +31,17 @@ __all__ = [
     "DECISION_STATUS_ORDER",
     "GRANTING_ACTIONS",
     "HISTORY_CURRENCIES",
+    "MARK_ACTIONS",
     "NEEDS_REVIEW_STALENESS",
     "NO_ACCEPTANCE_IDENTITY_BLOCKER",
     "NO_DECISION_BLOCKER",
     "NO_EVIDENCE_BLOCKER",
     "NO_RATIONALE_BLOCKER",
+    "PIN_ENDING_ACTIONS",
     "REVIEW_LANES",
+    "RULE_DRIFTED",
+    "RULE_HOLDS",
+    "RULE_UNKNOWN",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
     "UNRECORDED_ACCEPTER_KIND",
@@ -55,6 +60,7 @@ __all__ = [
     "record_evidence",
     "record_scope",
     "requirement",
+    "rule_drift_reason",
     "status_rank",
 ]
 
@@ -182,7 +188,21 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     # A withdrawal like ``dismissed``, stored at the same currency; the action
     # is what tells a retired decision from a rejected one.
     "deprecated",
+    # Marks, not authority: see :data:`MARK_ACTIONS`.
+    "pinned",
+    "unpinned",
 )
+
+#: Rows that mark a decision without changing its authority. A pin says a
+#: person holds the decision as law; it restates the current row's currency,
+#: scope and evidence so the log's contract holds, and every "which row is
+#: current" read skips it, so pinning never changes who a decision reads as
+#: accepted by or what it amounts to.
+MARK_ACTIONS: frozenset[str] = frozenset({"pinned", "unpinned"})
+
+#: Actions after which a decision is no longer pinned: an unpin, or the
+#: decision leaving force. A later reaffirm or merge keeps the pin.
+PIN_ENDING_ACTIONS: frozenset[str] = frozenset({"unpinned", "superseded", "dismissed", "deprecated"})
 
 #: Actions that create or renew authority, against the ones that withdraw it.
 GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})
@@ -245,6 +265,24 @@ def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | Non
 #: stays an internal supporting fact and the product word is what is shown.
 NEEDS_REVIEW_STALENESS: float = 0.5
 
+#: :mod:`.rule_check`'s verdicts on whether a record's rule still holds in the
+#: code. ``unknown`` means the check could not tell, and the churn rule stands.
+RULE_HOLDS = "holds"
+RULE_DRIFTED = "drifted"
+RULE_UNKNOWN = "unknown"
+
+
+def rule_drift_reason(basis: str | None) -> str:
+    """What went away from a ``drifted`` record's rule, in words, from its stored basis."""
+    kind, _, what = (basis or "").partition(":")
+    if kind == "quote_gone":
+        return "the comment it came from was removed"
+    if kind == "symbol_gone":
+        return f"`{what}` no longer exists"
+    if kind == "literal_gone":
+        return f"`{what}` was removed from the code it names"
+    return basis or "its rule changed"
+
 #: Currencies that still bind future work. ``needs_review`` deliberately does:
 #: a decision whose code moved is a decision to re-read, not one to ignore.
 _GOVERNING: frozenset[str] = frozenset({"active", "needs_review"})
@@ -289,6 +327,7 @@ def effective_currency(
     staleness: float,
     repo_wide: bool = False,
     artifacts_gone: bool = False,
+    rule_check: str | None = None,
 ) -> str:
     """The currency to show for a decision stored at *stored*.
 
@@ -305,6 +344,11 @@ def effective_currency(
     *artifacts_gone* says every file and path the record names is absent at
     HEAD, renames followed: it describes code that no longer exists, so it is
     ``stale`` history. Never ``superseded``, which needs a successor.
+
+    *rule_check* is :mod:`.rule_check`'s reading of the rule itself, which
+    outranks file churn when it has one: ``holds`` is ``active`` however much
+    the files moved, ``drifted`` is ``needs_review`` however little. Anything
+    else (``unknown``, or ``None`` before the first check) keeps the churn rule.
     """
     if stored != "active":
         return stored if stored in DECISION_CURRENCIES else "active"
@@ -314,7 +358,9 @@ def effective_currency(
         return "uncheckable"
     if artifacts_gone:
         return "stale"
-    if staleness >= NEEDS_REVIEW_STALENESS:
+    if rule_check == RULE_HOLDS:
+        return "active"
+    if rule_check == RULE_DRIFTED or staleness >= NEEDS_REVIEW_STALENESS:
         return "needs_review"
     return "active"
 

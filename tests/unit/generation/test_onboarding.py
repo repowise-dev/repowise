@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,11 +28,11 @@ from repowise.core.generation.models import GENERATION_LEVELS, GeneratedPage, Ge
 from repowise.core.generation.onboarding.signals import OnboardingSignals
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
+    ONBOARDING_SLOTS,
     PROMOTED_SLOTS,
     SLOT_ACTIVE_LANDSCAPE,
     SLOT_GETTING_STARTED,
     SLOT_HOW_IT_WORKS,
-    SLOT_KEY_CONCEPTS,
     target_path,
 )
 from repowise.core.generation.page_generator import PageGenerator
@@ -114,7 +115,6 @@ def _signals(
     community: dict[str, int] | None = None,
     entry_points: list[str] | None = None,
     tour_stops: tuple[dict, ...] = (),
-    layer_order: tuple[str, ...] = (),
     completed_page_summaries: dict[str, str] | None = None,
     flows: tuple[object, ...] = (),
 ) -> OnboardingSignals:
@@ -151,7 +151,6 @@ def _signals(
         external_systems=external_systems,
         completed_page_summaries=completed_page_summaries or {},
         tour_stops=tour_stops,
-        layer_order=layer_order,
     )
 
 
@@ -165,15 +164,12 @@ def test_subkinds_registered_in_canonical_order() -> None:
     slots = [s.slot for s in specs]
     # Promoted slots are excluded from iter_specs even though they're in
     # ONBOARDING_ORDER.
-    expected = [s for s in ONBOARDING_ORDER if s not in PROMOTED_SLOTS.values()]
+    expected = [s for s in ONBOARDING_SLOTS if s not in PROMOTED_SLOTS.values()]
     assert slots == expected
-    # Four templated subkinds plus the glossary, which is rendered without a
-    # model at all. The promoted overview brings orientation to six pages.
-    assert len(slots) == 5
-    assert len(ONBOARDING_ORDER) == 6
-    # Last, and it must stay last: a glossary is a lookup surface, not a
-    # reading step.
-    assert slots[-1] == "glossary"
+    # The reading order is the overview, Getting Started and How It Works;
+    # Active Landscape is generated but sits outside it.
+    assert ONBOARDING_ORDER == ("project_overview", "getting_started", "how_it_works")
+    assert slots == ["getting_started", "how_it_works", "active_landscape"]
 
 
 def test_onboarding_level_is_eight() -> None:
@@ -181,7 +177,7 @@ def test_onboarding_level_is_eight() -> None:
 
 
 def test_target_path_format() -> None:
-    assert target_path("key_concepts") == "onboarding/key_concepts"
+    assert target_path("how_it_works") == "onboarding/how_it_works"
 
 
 def test_promoted_slots_map() -> None:
@@ -208,6 +204,37 @@ def test_active_landscape_skipped_below_threshold() -> None:
     git_meta = {f.file_info.path: {"commit_count_90d": 5} for f in files[:5]}
     sig = _signals(files=files, git_meta=git_meta)
     assert spec.build_context(sig) is None
+
+
+def test_active_landscape_is_dated_by_its_newest_commit_and_groups_by_directory() -> None:
+    """``last_commit_at`` arrives as a datetime from a fresh index and as an
+    ISO string from a rehydrated one; the newest of either kind dates the page.
+    A root-level file groups under ``(root)``, a nested one under its own
+    directory, not the top-level one."""
+    from datetime import UTC, datetime
+
+    spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
+    assert spec is not None
+    paths = ["setup.py", *(f"pkg/core/f{i}.py" for i in range(11))]
+    git_meta = {
+        path: {
+            "commit_count_90d": 10,
+            "is_hotspot": path == "setup.py",
+            "last_commit_at": datetime(2026, 3, 1, tzinfo=UTC),
+        }
+        for path in paths
+    }
+    git_meta["pkg/core/f3.py"]["last_commit_at"] = "2026-05-22T10:00:00+00:00"
+    git_meta["pkg/core/f4.py"]["last_commit_at"] = "2026-04-01 09:00:00"
+    sig = _signals(files=[_file(p) for p in paths], git_meta=git_meta)
+
+    ctx = spec.build_context(sig)
+
+    assert ctx is not None
+    assert ctx.as_of == "2026-05-22"
+    dirs = {d.path: (d.total_commits_90d, d.file_count, d.hotspot_count) for d in ctx.hot_dirs}
+    assert dirs == {"pkg/core": (110, 11, 0), "(root)": (10, 1, 1)}
+    assert ctx.hot_dirs[0].path == "pkg/core"
 
 
 def test_active_landscape_fires_above_threshold() -> None:
@@ -352,8 +379,7 @@ Run `pip install -e .`.
     sig = _signals(files=[_file("src/a.py")], source_map={"README.md": readme})
     ctx = spec.build_context(sig)
     assert ctx is not None
-    headings = {s.heading for s in ctx.readme_sections}
-    assert "Install" in headings
+    assert "Installation" in {s.heading for s in ctx.user_docs}
 
 
 def test_getting_started_reads_ranked_contributor_setup_documents() -> None:
@@ -371,13 +397,11 @@ def test_getting_started_reads_ranked_contributor_setup_documents() -> None:
 
     ctx = spec.build_context(sig)
 
+    # The user path comes from the README; contributing is the second block.
     assert ctx is not None
-    assert ctx.readme_sections[0].source_path == ".github/CONTRIBUTING.md"
-    assert "uv sync --all-packages" in ctx.readme_sections[0].body
-    assert {section.source_path for section in ctx.readme_sections} == {
-        ".github/CONTRIBUTING.md",
-        "README.md",
-    }
+    assert [d.path for d in ctx.user_docs] == ["README.md"]
+    assert ctx.dev_docs[0].path == ".github/CONTRIBUTING.md"
+    assert "uv sync --all-packages" in ctx.dev_docs[0].text
 
 
 def test_getting_started_keeps_root_readme_when_nested_guides_fill_cap() -> None:
@@ -394,25 +418,22 @@ def test_getting_started_keeps_root_readme_when_nested_guides_fill_cap() -> None
     ctx = spec.build_context(_signals(files=[_file("src/a.py")], source_map=source_map))
 
     assert ctx is not None
-    assert "README.md" in {section.source_path for section in ctx.readme_sections}
+    assert "README.md" in {section.path for section in ctx.user_docs}
 
 
-def test_getting_started_reserves_root_readme_section_when_guides_fill_section_cap() -> None:
+def test_getting_started_reads_a_quickstart_guide_in_rst() -> None:
     spec = onboarding.get_spec(SLOT_GETTING_STARTED)
     assert spec is not None
-    many_sections = "\n".join(
-        f"## Setup option {i}\n\nRun contributor setup {i}." for i in range(12)
-    ).encode()
-    source_map = {
-        "README.md": b"# Project\n\n## Usage\n\nRun the root tool.\n",
-        "CONTRIBUTING.md": many_sections,
-    }
+    guide = b"Quickstart\n==========\n\nInstall it with ``pip install cool``.\n"
+    sig = _signals(files=[_file("src/a.py")], source_map={})
+    sig = replace(sig, doc_sources={"docs/start/quickstart.rst": guide})
 
-    ctx = spec.build_context(_signals(files=[_file("src/a.py")], source_map=source_map))
+    ctx = spec.build_context(sig)
 
     assert ctx is not None
-    assert len(ctx.readme_sections) == 10
-    assert ctx.readme_sections[-1].source_path == "README.md"
+    assert [(d.path, d.heading) for d in ctx.user_docs] == [
+        ("docs/start/quickstart.rst", "Quickstart")
+    ]
 
 
 def test_getting_started_uses_exact_manifest_scripts_without_a_readme() -> None:
@@ -439,7 +460,7 @@ def test_getting_started_uses_exact_manifest_scripts_without_a_readme() -> None:
         ("lint", "npm run lint", "."),
         ("start", "npm run start", "packages/app"),
     ]
-    assert ctx.readme_sections == []
+    assert ctx.user_docs == [] and ctx.dev_docs == []
 
 
 def test_getting_started_prioritizes_root_manifest_and_setup_scripts() -> None:
@@ -538,51 +559,14 @@ async def test_getting_started_uses_shared_bounded_source_evidence_channel() -> 
 
     assert page is not None
     prompt = provider.calls[0]["user_prompt"]
-    assert '<repository-file path=".github/CONTRIBUTING.md">' in prompt
+    # The contributor guide is in the prompt once, as a cited section; only the
+    # manifest, whose script keys are untrusted, goes through the evidence channel.
+    assert "From `.github/CONTRIBUTING.md:" in prompt
     assert '<repository-file path="package.json">' in prompt
     assert prompt.count("uv sync --all-packages") == 1
     assert page.metadata["source_evidence"]["included"] == [
-        {"path": ".github/CONTRIBUTING.md", "truncated": False},
         {"path": "package.json", "truncated": False},
     ]
-
-
-# ---------------------------------------------------------------------------
-# Key concepts — gated on ≥4 high-PageRank public symbols
-# ---------------------------------------------------------------------------
-
-
-def test_key_concepts_skipped_when_too_few_concepts() -> None:
-    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
-    assert spec is not None
-    sig = _signals(files=[_file("src/a.py", symbols=["A"])])
-    assert spec.build_context(sig) is None
-
-
-def test_key_concepts_fires_with_enough_concepts() -> None:
-    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
-    assert spec is not None
-    files = [
-        _file("src/handler.py", symbols=["Handler"]),
-        _file("src/router.py", symbols=["Router"]),
-        _file("src/middleware.py", symbols=["Middleware"]),
-        _file("src/session.py", symbols=["Session"]),
-        _file("src/util.py", symbols=["Util"]),
-    ]
-    # Boost the first four files into the top decile.
-    pagerank = {
-        "src/handler.py": 0.9,
-        "src/router.py": 0.8,
-        "src/middleware.py": 0.7,
-        "src/session.py": 0.6,
-        "src/util.py": 0.05,
-    }
-    sig = _signals(files=files, pagerank=pagerank)
-    ctx = spec.build_context(sig)
-    assert ctx is not None
-    assert len(ctx.concept_symbols) >= 4
-    names = {c.name for c in ctx.concept_symbols}
-    assert {"Handler", "Router", "Middleware", "Session"}.issubset(names)
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +670,109 @@ def test_how_it_works_prefers_declared_broad_lifecycle_over_narrow_high_score() 
     assert ctx is not None
     assert ctx.flows[0].entry_point == "cli/main.py::main"
     assert ctx.flows[0].lifecycle_breadth == 4
+
+
+def test_how_it_works_walks_the_flow_that_drives_the_most_code() -> None:
+    """Reach leads the order, ahead of a declared entry point and breadth; a
+    declared entry point then beats breadth when reach ties."""
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+
+    def flow(entry: str, hops: list[str], reach: int) -> ExecutionFlow:
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=entry.rsplit("::", 1)[1],
+            entry_point_score=0.9,
+            trace=[entry, *hops],
+            depth=len(hops),
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    view = flow("ui/view.py::render", ["ui/a.py::a", "lib/b.py::b", "db/c.py::c"], reach=20)
+    update = flow("cli/update.py::run_update", ["cli/x.py::x", "cli/y.py::y"], reach=500)
+    entry = flow("cli/main.py::main", ["cli/p.py::p", "cli/q.py::q"], reach=20)
+    signals = _signals(
+        files=[_file("cli/main.py", is_entry_point=True)],
+        entry_points=["cli/main.py"],
+        flows=(view, entry, update),
+    )
+
+    ctx = spec.build_context(signals)
+
+    assert ctx is not None
+    assert [f.entry_point for f in ctx.flows] == [
+        "cli/update.py::run_update",
+        "cli/main.py::main",
+        "ui/view.py::render",
+    ]
+
+
+def test_collect_flows_ranks_filters_and_limits_the_candidates() -> None:
+    """End to end over ``_collect_flows``: a trace under ``_MIN_TRACE_HOPS`` is
+    dropped, only the ``_FLOW_CANDIDATE_LIMIT`` highest-reach flows are
+    considered, and the top ``_TOP_FLOWS`` come back in reach order."""
+    from repowise.core.generation.onboarding.subkinds import how_it_works as hiw
+
+    def flow(i: int, reach: int, hops: int = 3) -> ExecutionFlow:
+        entry = f"pkg/m{i}.py::f{i}"
+        trace = [entry, *(f"pkg/h{i}_{k}.py::h" for k in range(hops - 1))]
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=f"f{i}",
+            entry_point_score=0.5,
+            trace=trace,
+            depth=len(trace) - 1,
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    short = flow(0, reach=10_000, hops=2)  # most reach, but too short to walk
+    ranked = [flow(i, reach=1_000 - i) for i in range(1, hiw._FLOW_CANDIDATE_LIMIT + 5)]
+    signals = _signals(files=[_file("pkg/m1.py")], flows=(short, *reversed(ranked)))
+
+    chosen = hiw._collect_flows(signals)
+
+    assert [f.entry_point for f in chosen] == [
+        f"pkg/m{i}.py::f{i}" for i in range(1, hiw._TOP_FLOWS + 1)
+    ]
+    assert all(len(f.hops) >= hiw._MIN_TRACE_HOPS for f in chosen)
+
+
+def test_collect_flows_looks_only_at_the_candidate_limit() -> None:
+    """A flow past the limit by reach is never considered, even if it would
+    win a later tie-break."""
+    from repowise.core.generation.onboarding.subkinds import how_it_works as hiw
+
+    def flow(entry: str, reach: int) -> ExecutionFlow:
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=entry.rsplit("::", 1)[1],
+            entry_point_score=0.5,
+            trace=[entry, "lib/a.py::a", "lib/b.py::b"],
+            depth=2,
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    inside = [flow(f"pkg/m{i}.py::f{i}", reach=100) for i in range(hiw._FLOW_CANDIDATE_LIMIT)]
+    outside = flow("cli/main.py::main", reach=1)  # declared entry point, lowest reach
+    signals = _signals(
+        files=[_file("cli/main.py", is_entry_point=True)],
+        entry_points=["cli/main.py"],
+        flows=(outside, *inside),
+    )
+
+    chosen = hiw._collect_flows(signals)
+
+    assert "cli/main.py::main" not in {f.entry_point for f in chosen}
+    assert len(chosen) == hiw._TOP_FLOWS
 
 
 def test_how_it_works_treats_flat_repo_files_as_one_region() -> None:
@@ -1095,13 +1182,13 @@ async def test_missing_onboarding_evidence_is_visible_in_page_provenance() -> No
 
 
 async def test_evidence_for_a_gated_page_is_reported_as_not_generated() -> None:
-    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
+    spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
     assert spec is not None
-    # One symbol is below the concept gate, so the page is never generated.
-    signals = _signals(files=[_file("src/one.py", symbols=["One"])])
+    # No git history, so the page is never generated.
+    signals = _signals(files=[_file("src/one.py", symbols=["One"])], git_meta=None)
     config = GenerationConfig(
         source_evidence_files={
-            "onboarding/key_concepts": ("docs/concepts.md",),
+            "onboarding/active_landscape": ("docs/concepts.md",),
         },
     )
     generator = PageGenerator(MockProvider(), ContextAssembler(config), config)
@@ -1212,25 +1299,6 @@ def _jinja_env() -> jinja2.Environment:
             ),
         ),
         (
-            SLOT_KEY_CONCEPTS,
-            lambda: onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(
-                _signals(
-                    files=[
-                        _file("src/handler.py", symbols=["Handler"]),
-                        _file("src/router.py", symbols=["Router"]),
-                        _file("src/middleware.py", symbols=["Middleware"]),
-                        _file("src/session.py", symbols=["Session"]),
-                    ],
-                    pagerank={
-                        "src/handler.py": 0.9,
-                        "src/router.py": 0.8,
-                        "src/middleware.py": 0.7,
-                        "src/session.py": 0.6,
-                    },
-                )
-            ),
-        ),
-        (
             SLOT_HOW_IT_WORKS,
             lambda: onboarding.get_spec(SLOT_HOW_IT_WORKS).build_context(
                 _signals(
@@ -1247,7 +1315,9 @@ def test_subkind_template_renders(subkind_slot: str, ctx_factory: Any) -> None:
     ctx = ctx_factory()
     assert ctx is not None, f"gate failed for {subkind_slot}"
     env = _jinja_env()
-    template = env.get_template(f"onboarding/{spec.template}")
+    # A deterministic subkind has no prompt; its page template is the page.
+    folder = "stub/onboarding" if spec.deterministic else "onboarding"
+    template = env.get_template(f"{folder}/{spec.template}")
     rendered = template.render(ctx=ctx, slot=subkind_slot)
     assert rendered.strip()  # non-empty
     assert "{{" not in rendered  # no unrendered Jinja
@@ -1323,3 +1393,100 @@ def test_how_it_works_renders_legacy_tour_steps() -> None:
     assert ctx.kg_tour_steps[0]["nodeIds"] == ["file:src/main.py"]
     rendered = _jinja_env().get_template("onboarding/how_it_works.j2").render(ctx=ctx)
     assert "`src/main.py`" in rendered
+
+
+# ---------------------------------------------------------------------------
+# How It Works from the walkthroughs; the archetype hint; the reading order
+# ---------------------------------------------------------------------------
+
+
+def _journeys(n: int) -> tuple:
+    from repowise.core.generation.onboarding.surface import Journey
+
+    return tuple(
+        Journey(f"How `tool cmd{i}` works", f"`run_cmd{i}` builds the store.", "1. Parse.")
+        for i in range(n)
+    )
+
+
+def test_how_it_works_is_told_from_the_walkthroughs() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    docs = {
+        "docs/architecture.md": b"# Architecture\n\n## Building\n\n`run_cmd0` writes the store.\n",
+        "docs/other.md": b"# Other\n\n## Chat\n\nThe chat panel streams replies.\n",
+    }
+    sig = replace(_signals(files=[_file("src/a.py")]), journeys=_journeys(2), doc_sources=docs)
+
+    ctx = spec.build_context(sig)
+
+    assert ctx is not None
+    assert [j.title for j in ctx.journeys] == ["How `tool cmd0` works", "How `tool cmd1` works"]
+    assert [s.path for s in ctx.arch_docs] == ["docs/architecture.md"]
+    assert spec.build_context(replace(sig, journeys=_journeys(4))).word_budget > ctx.word_budget
+
+
+def test_an_application_with_entry_points_is_not_a_library() -> None:
+    from repowise.core.generation.onboarding.subkinds.how_it_works import _classify_archetype
+    from repowise.core.ingestion.models import PackageInfo
+
+    sig = _signals(files=[_file("src/app/main.py", is_entry_point=True)])
+    packages = [PackageInfo(name="app", path="src/app", language="python", manifest_file=None, entry_points=[])]
+    sig = replace(sig, repo_structure=replace(sig.repo_structure, packages=packages))
+    assert _classify_archetype(sig)[0] != "library"
+    from repowise.core.generation.onboarding.surface import Surfaces
+
+    assert _classify_archetype(replace(sig, surfaces=Surfaces(programs=["tool"])))[0] == "cli"
+
+
+def test_the_next_page_skips_a_gated_slot() -> None:
+    from repowise.core.generation.onboarding import next_slot, with_next_link
+
+    assert next_slot("project_overview", {SLOT_HOW_IT_WORKS}) == SLOT_HOW_IT_WORKS
+    assert next_slot(SLOT_GETTING_STARTED, {SLOT_GETTING_STARTED}) is None
+    page = with_next_link("# Getting Started\n\nBody.\n", "How It Works")
+    assert page.endswith("\nNext: **How It Works**\n")
+    assert with_next_link(page, "How It Works").count("Next: **") == 1
+
+
+def test_active_landscape_is_outside_the_reading_order() -> None:
+    """No Next link leads to or from it, and its pages carry the activity flag."""
+    from repowise.core.generation.onboarding import next_slot, slot_metadata
+
+    every = set(ONBOARDING_SLOTS)
+    assert next_slot(SLOT_HOW_IT_WORKS, every) is None
+    assert next_slot(SLOT_ACTIVE_LANDSCAPE, every) is None
+    assert slot_metadata(SLOT_ACTIVE_LANDSCAPE)["nav_section"] == "project_activity"
+    assert "nav_section" not in slot_metadata(SLOT_HOW_IT_WORKS)
+
+
+def test_active_landscape_counts_code_only() -> None:
+    """Tests and documentation never fill the activity tables."""
+    spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
+    assert spec is not None
+    code = [f"src/f{i}.py" for i in range(12)]
+    noise = ["tests/test_a.py", "docs/guide.md", "src/test_b.py"]
+    git_meta = {p: {"commit_count_90d": 10} for p in code}
+    git_meta.update({p: {"commit_count_90d": 99} for p in noise})
+    ctx = spec.build_context(_signals(files=[_file(p) for p in code], git_meta=git_meta))
+    assert ctx is not None
+    assert {h.path for h in ctx.hot_files} <= set(code)
+    assert all(not d.path.startswith(("tests", "docs")) for d in ctx.hot_dirs)
+    assert ctx.files_touched_90d == 12
+
+
+def test_a_tombstoned_page_is_not_a_next_link_target() -> None:
+    """A slot this run did not build counts as present only when its kept row is live."""
+    from repowise.core.generation.page_generator.levels import _present_slots
+
+    how = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    started = onboarding.get_spec(SLOT_GETTING_STARTED)
+    page_id = "onboarding:onboarding/how_it_works"
+
+    def gen(status: str) -> SimpleNamespace:
+        prior = PriorPage(source_hash="h", model_name="m", content="x", freshness_status=status)
+        return SimpleNamespace(_prior_pages={page_id: prior})
+
+    contexts = {SLOT_GETTING_STARTED: object()}
+    assert SLOT_HOW_IT_WORKS in _present_slots(gen("fresh"), [started, how], contexts)
+    assert SLOT_HOW_IT_WORKS not in _present_slots(gen("tombstone"), [started, how], contexts)

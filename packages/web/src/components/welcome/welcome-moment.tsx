@@ -8,6 +8,7 @@ import { analyzeBlastRadius } from "@/lib/api/blast-radius";
 import { getHealthCoverage } from "@/lib/api/code-health";
 import { getStatsHighlights } from "@/lib/api/stats";
 import { getMetaVersion } from "@/lib/api/meta";
+import { getWorkspace } from "@/lib/api/workspace";
 import { isNewBrowser, markVersionSeen, sessionMomentTaken, takeSessionMoment } from "@/lib/release-moment";
 import {
   decideWelcome,
@@ -26,6 +27,9 @@ export interface WelcomeMomentProps {
   figures: WelcomeFigures;
   /** The busiest file: the risk card's change and an example question. */
   hotspotPath: string | null;
+  /** The least healthy file and a recorded decision, for the first prompts. */
+  worstPath?: string | null;
+  decisionTitle?: string | null;
 }
 
 interface Loaded {
@@ -66,7 +70,15 @@ async function loadExtras(repoId: string, hotspotPath: string | null, needTests:
  * on the server, stores the current version as seen so What's new stays
  * quiet, and takes the session's one interruption.
  */
-export function WelcomeMoment({ repoId, repoName, fileCount, figures, hotspotPath }: WelcomeMomentProps) {
+export function WelcomeMoment({
+  repoId,
+  repoName,
+  fileCount,
+  figures,
+  hotspotPath,
+  worstPath = null,
+  decisionTitle = null,
+}: WelcomeMomentProps) {
   const search = useSearchParams()?.toString() ?? "";
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -98,7 +110,7 @@ export function WelcomeMoment({ repoId, repoName, fileCount, figures, hotspotPat
       years={loaded.years}
       lenses={loaded.lenses}
       setup={loaded.setup}
-      hotspotPath={hotspotPath}
+      promptFacts={{ hotspot: hotspotPath, worst: worstPath, decision: decisionTitle }}
     />
   );
 }
@@ -136,12 +148,24 @@ async function prepareWelcome({
     sessionTaken: sessionMomentTaken(),
   });
   if (mode === "none") return null;
+  // A workspace member: the workspace has its own welcome, so a member's
+  // overview opens this one only on request.
+  if (mode === "auto" && (await inWorkspace())) return null;
   if (mode === "auto") await stampAutoOpen(repoId);
   // A first look through `?tour=1` (the first-index hand-off) still counts as
   // seen; a replay from Setup changes nothing.
   else if (seen === false) await stampRepoSeen(repoId);
   const { extras, years } = await loadExtras(repoId, hotspotPath, figures.coveragePct == null);
   return { setup, lenses: welcomeLenses(figures, extras), years };
+}
+
+/** True when this server runs a workspace; false when it does not or cannot say. */
+async function inWorkspace(): Promise<boolean> {
+  try {
+    return (await getWorkspace()).is_workspace;
+  } catch {
+    return false;
+  }
 }
 
 /** Marks the repo's welcome seen on this machine. Best-effort: a failed

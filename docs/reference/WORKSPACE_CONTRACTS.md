@@ -40,10 +40,15 @@ follows from the strategy.
 | 1.0 | `service_mapped` | exact | The consumer's host or base token maps to the providing service |
 | 1.0 | `unique_path` | exact | The consumer's base is unread and one service serves the path |
 | 0.6 | `ambiguous_path` | candidate | The base is unread and several services of one repo serve the path; linked to each |
-| 0.6 | `prefix_stripped` | candidate | Matched only after stripping mount, version or base prefixes |
+| 0.6 | `prefix_stripped` | candidate | Matched only after stripping mount, version or base prefixes; never for a call whose base or host points at a service nothing places |
+| 0.6 | `param_segment` | candidate | A concrete path segment in the call meets the route's `{param}` segment (`/render/1` to `/render/{id}`); the most literal route wins, routes in two or more repos link to none, and a call whose base or host points at a service nothing places links to none |
 | 0.5 | `host_only` | candidate | The host names a workspace service, but no route there serves the path; a service-level edge |
 | 1.0 | `gateway_route` | exact | A gateway's config forwards the path to the service: the gateway's own edge, and a call through it linked on the forwarded path |
 | 1.0 | `manual` | manual | Declared in the workspace config |
+
+A relative `fetch` (no host, no base) whose own service declares the route is served
+there and linked to no other service, so a browser call to a Next.js route handler is not linked past
+it to the API the handler forwards to; the handler's own forwarding call links there.
 
 A new dialect picks an existing origin, not a number. A system-graph edge carries the
 strategy of the link that gave it its confidence, and `manifest` for a package dependency.
@@ -87,6 +92,12 @@ nothing). Such a link carries the exchange as its `contract_id` and the queue as
 binding site itself is linked. A publish to the default exchange
 (`publish('', 'jobs')`) is a publish to the queue `jobs`.
 
+Two ends link only when they can be one broker's destination. The same broker
+always can. A Dapr, Laravel or NestJS name runs over a transport configured
+outside the code, so it meets any broker but BullMQ, whose queue is Redis keys
+only BullMQ reads. Any other pair must be the same broker: a Kafka topic and a
+RabbitMQ queue of one name are two things.
+
 ## Data contracts
 
 Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](../scale/WORKSPACES.md#system-graph). An ORM model with no explicit table name takes its library's default: the Prisma model name, the TypeORM class name in snake case, the Sequelize model name pluralized, the Eloquent class name in snake case and plural. A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. A table on an embedded database (SQLite) links only within its own repo, on either side: a reader or declaration in a file that opens one, and every table in a repo whose code names an embedded engine and no server database (Postgres, MySQL, SQL Server), since that file is the repo's own database. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
@@ -99,9 +110,17 @@ Go route groups, Laravel `Route::prefix(...)->group(...)` and `Route::group(['pr
 Fastify `register(plugin, {prefix})`, Koa `new Router({prefix})` and nested `router.use()`,
 hapi `register({plugin, routes: {prefix}})`) is stitched onto each handler path before matching.
 A Fastify, Koa or hapi prefix that does not resolve to a string, or a plugin mounted at two
-different prefixes, leaves those routes out rather than at a guessed path. Laravel's `routes/api.php` is
+different prefixes, leaves those routes out rather than at a guessed path. A Go route group
+handed to a package-level register function (`articles.Register(v1.Group("/articles"))`) serves
+that function's routes under the group, and a function registered under two groups serves its
+routes at both; a group taken from `g.Use(mw)` serves under `g`. Once the repo is indexed, a Go
+register function whose name is called only where another copy of it is imported (a duplicate
+router package nothing mounts) registers no routes. Laravel's `routes/api.php` is
 served under `/api` unless `bootstrap/app.php` (`apiPrefix`) or a route provider says
-otherwise, and `Route::resource` / `apiResource` expand into the routes they register. A NestJS
+otherwise, and `Route::resource` / `apiResource` expand into the routes they register. An
+Express router handed to a module's exported function (`require('./routes/users')(api)`) serves
+that function's routes under the handed router's mount; a function handed routers at two
+different prefixes keeps its routes' in-function paths. A NestJS
 route is served at the app's `setGlobalPrefix` (unless its `exclude` list names the route), then
 its URI version (`enableVersioning`, `@Version`), then the `@Controller` prefix. A call through an
 axios, ky, got or ofetch instance is read with the instance's `baseURL` / `prefixUrl`, also when

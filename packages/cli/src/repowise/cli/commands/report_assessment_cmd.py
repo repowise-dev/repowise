@@ -106,9 +106,12 @@ def _scope(target: Any) -> tuple[list[tuple[str | None, Path]], dict]:
 
 def _renderer(fmt: str) -> Any:
     """The renderer *fmt* names on the ``report-renderer`` seam; a usage error otherwise."""
+    from repowise.core.report.first_look.render import PREFIX
     from repowise.core.report.render import report_renderers
 
-    available = dict(report_renderers.all())  # loads plugins, so plugin formats count
+    # Loads plugins, so plugin formats count. The repo report renderers read
+    # another document; `report repo` picks them.
+    available = {k: v for k, v in report_renderers.all() if not k.startswith(PREFIX)}
     if fmt not in available:
         raise click.BadParameter(
             f"unknown format {fmt!r}; available: {', '.join(available)}",

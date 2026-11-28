@@ -12,9 +12,10 @@ from typing import ClassVar
 
 from repowise.core.distill.filters.base import OutputFilter
 from repowise.core.distill.registry import filter_registry
+from repowise.core.git_sha import SHA_PREFIX_PATTERN
 
 _COMMAND_RE = re.compile(r"^git(?:\.exe)? log\b")
-_COMMIT_RE = re.compile(r"^commit (?P<sha>[0-9a-f]{7,40})")
+_COMMIT_RE = re.compile(rf"^commit (?P<sha>{SHA_PREFIX_PATTERN})")
 _ONELINE_RE = re.compile(r"^[0-9a-f]{7,12} \S")
 _AUTHOR_RE = re.compile(r"^Author:\s+(?P<name>.*?)\s*(?:<[^>]*>)?\s*$")
 _DATE_RE = re.compile(r"^Date:\s+(?P<date>.+)$")

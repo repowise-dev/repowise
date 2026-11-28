@@ -95,7 +95,15 @@ def _writes_var(node: Node, var: str) -> bool:
         target = node.child_by_field_name(field)
         if target is not None:
             return var in _identifiers(target)
+    # Pascal's ``lhs`` binds only a bare name or an inline ``var X``: a field
+    # or element target (``Obj.F := ...``) writes no local, as its dialect says.
+    target = node.child_by_field_name("lhs")
+    if target is not None:
+        return target.type in _BINDING_LHS_KINDS and var in _identifiers(target)
     return var in _identifiers(node)
+
+
+_BINDING_LHS_KINDS = frozenset({"identifier", "varAssignDef"})
 
 
 # Scalar literal node types across the supported grammars, read off node

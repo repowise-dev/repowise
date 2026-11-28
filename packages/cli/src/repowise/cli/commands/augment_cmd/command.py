@@ -13,8 +13,9 @@ asymmetric, durable value:
     * Flood digest: a multi-file grep flood is served as a compact
       per-file digest via updatedToolOutput, with match counts and anchor
       line numbers per file, with the dropped tail named. Opt-in
-      (hooks.search_digest), default off, Claude Code only. Falls back
-      to appending the same digest beside the flood, as it always did.
+      (hooks.search_digest), default off, Claude Code only. When it is
+      not served, nothing is added: appending it beside the flood only
+      grew the result.
     * Zero-result rescue: grep returned 0 hits but the wiki has a
       semantic match (FTS on docs, fuzzy symbol match, decision record
       mention). Surfaces the closest hit so the agent doesn't burn
@@ -31,9 +32,9 @@ is still answered for installs predating its retirement, but nothing we ship
 registers it any more — see :mod:`.codex`.)
 
   SessionStart (Claude Code)
-    * Emits a one-paragraph context block: whether the index is current,
-      behind (with a changed-file count), or mid-update, plus the core-tool
-      trust rule. CLAUDE.md stays static and cache-friendly; live freshness
+    * Emits a context block only when it has something new: the index
+      behind (with a changed-file count) or mid-update, plus the core-tool
+      trust rule; a current index is silent. CLAUDE.md stays static and cache-friendly; live freshness
       arrives here instead. When active decisions are relevant to the
       session's working set, a capped standing-decisions block rides along.
 
@@ -117,7 +118,7 @@ from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .coverage_reingest import coverage_reingest_notice
 from .decision_capture import commit_capture_notice
 from .edit_capture import capture_edit
-from .read_state import _handle_edit_post, _handle_read_post, _record_edit
+from .read_state import _handle_edit_post, _handle_read_post, _record_edit, bind_agent
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
 from .session_start import _handle_claude_session_start
@@ -207,6 +208,8 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
     except json.JSONDecodeError:
         return
 
+    # A subagent shares its parent's session id; its state must not.
+    bind_agent(payload)
     event = payload.get("hook_event_name", "")
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
@@ -301,7 +304,7 @@ def _run_coverage_only(payload: dict, client: str | None) -> None:
     cwd = payload.get("cwd", "")
     session_id = payload.get("session_id", "")
     session_id = session_id if isinstance(session_id, str) else ""
-    result = as_result(coverage_reingest_notice(payload.get("tool_input", {}), cwd))
+    result = as_result(coverage_reingest_notice(payload.get("tool_input", {}), cwd, client))
     if result:
         _emit_response(event, result, session_id)
     _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
@@ -371,6 +374,97 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
 # duplicate. Generous enough to cover two hook processes racing on the same
 # tool event, short enough that a genuinely repeated search later still speaks.
 _EMIT_DEDUP_TTL_SECONDS = 8.0
+# Markers live in a directory of their own. The system temp dir can hold
+# hundreds of thousands of entries (151k on one Windows box), and listing it on
+# a hook's hot path cost 0.2 s warm and several seconds cold, enough to trip
+# Claude Code's hook timeout on the first emission of a session.
+_MARKER_DIR_NAME = "repowise-augment"
+_SWEEP_STAMP_NAME = ".sweep.stamp"
+# Expired markers are inert (a stale one is taken over on the next claim), so
+# they only cost disk entries; sweeping hourly keeps the directory small
+# without listing it on every emission.
+_SWEEP_INTERVAL_SECONDS = 3600.0
+# Bounds one sweep's unlink cost. A sweep that hits the cap schedules the next
+# one a short retry later instead of an hour later, so a backlog drains at up to
+# 500 markers a minute while the hot path pays for at most one sweep a minute.
+_MAX_MARKER_CLEANUP_PER_RUN = 500
+_BACKLOG_RETRY_SECONDS = 60.0
+
+
+def _marker_dir() -> Path | None:
+    """This user's marker dir, or None when the path is not one we can trust.
+
+    The temp dir can be shared between OS users (``/tmp``), so the name carries
+    the uid where there is one and the dir is created 0o700. A path that is a
+    symlink, not a directory, or owned by someone else is refused: the sweep
+    unlinks what it lists, so it must only ever list a directory this user owns.
+    """
+    import os
+    import stat
+    import tempfile
+
+    getuid = getattr(os, "getuid", None)  # absent on Windows, where temp is per-user
+    name = _MARKER_DIR_NAME if getuid is None else f"{_MARKER_DIR_NAME}-{getuid()}"
+    path = Path(tempfile.gettempdir()) / name
+    with contextlib.suppress(FileExistsError):
+        path.mkdir(mode=0o700)
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    if getuid is not None and info.st_uid != getuid():
+        return None
+    return path
+
+
+def _is_sweep_throttled(marker_dir: Path, now: float) -> bool:
+    """Return True if a sweep ran within the last sweep interval; else claim this one."""
+    stamp = marker_dir / _SWEEP_STAMP_NAME
+    with contextlib.suppress(OSError):
+        if now - stamp.stat().st_mtime < _SWEEP_INTERVAL_SECONDS:
+            return True
+    with contextlib.suppress(OSError):
+        stamp.write_text(str(now), encoding="utf-8")
+    return False
+
+
+def _sweep_dir(marker_dir: Path, now: float, max_delete: int) -> bool:
+    """Unlink expired markers; return True when the cap stopped the sweep early."""
+    import os
+
+    deleted = 0
+    with contextlib.suppress(OSError), os.scandir(marker_dir) as entries:
+        for entry in entries:
+            if entry.name == _SWEEP_STAMP_NAME:
+                continue
+            with contextlib.suppress(OSError):
+                if now - entry.stat().st_mtime > _EMIT_DEDUP_TTL_SECONDS:
+                    os.unlink(entry.path)
+                    deleted += 1
+                    if deleted >= max_delete:
+                        return True
+    return False
+
+
+def _cleanup_stale_markers(
+    marker_dir: Path, now: float, max_delete: int = _MAX_MARKER_CLEANUP_PER_RUN
+) -> None:
+    """Delete expired markers from repowise's own marker dir, at most once per sweep interval."""
+    import os
+
+    if not _is_sweep_throttled(marker_dir, now) and _sweep_dir(marker_dir, now, max_delete):
+        backdated = now - _SWEEP_INTERVAL_SECONDS + _BACKLOG_RETRY_SECONDS
+        with contextlib.suppress(OSError):
+            os.utime(marker_dir / _SWEEP_STAMP_NAME, (backdated, backdated))
+
+
+def _take_over_stale_marker(marker: Path, now: float) -> bool:
+    """Take over an existing marker if older than TTL. Return True if claimed."""
+    with contextlib.suppress(OSError):
+        if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
+            return False
+    with contextlib.suppress(OSError):
+        marker.write_text(str(now), encoding="utf-8")
+    return True
 
 
 def _claim_emission(event: str, context: str) -> bool:
@@ -391,13 +485,16 @@ def _claim_emission(event: str, context: str) -> bool:
     """
     import hashlib
     import os
-    import tempfile
     import time
 
     try:
         key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
-        marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
+        marker_dir = _marker_dir()
+        if marker_dir is None:
+            return True
+        marker = marker_dir / key
         now = time.time()
+        claimed = False
         try:
             # O_EXCL: only the first concurrent caller creates the file.
             fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -405,19 +502,15 @@ def _claim_emission(event: str, context: str) -> bool:
                 os.write(fd, str(now).encode())
             finally:
                 os.close(fd)
-            return True
+            claimed = True
         except FileExistsError:
             # Someone emitted recently — defer unless the marker is stale, in
             # which case take it over (handles a real repeat search later, and
             # a crashed prior run that left the marker behind).
-            try:
-                if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
-                    return False
-            except OSError:
-                return True
-            with contextlib.suppress(OSError):
-                marker.write_text(str(now), encoding="utf-8")
-            return True
+            claimed = _take_over_stale_marker(marker, now)
+        if claimed:
+            _cleanup_stale_markers(marker_dir, now)
+        return claimed
     except Exception:
         return True
 
@@ -492,6 +585,6 @@ def _shell_post(
             _handle_bash_post(tool_input, tool_output, cwd),
             commit_capture_notice(tool_input, tool_output, cwd, session_id),
             # Claude Code gets this from its own ``--coverage-only`` entry.
-            coverage_reingest_notice(tool_input, cwd) if client == "codex" else None,
+            coverage_reingest_notice(tool_input, cwd, client) if client == "codex" else None,
         )
     )

@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { X } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { config } from "@/lib/config";
-import { hostedLink } from "@/lib/hosted";
+import { homeLink, hostedLink } from "@/lib/hosted";
 import type { OnboardingState } from "@/lib/api/setup";
 import { useHideOnThisMachine } from "./use-setup";
 
@@ -71,12 +71,12 @@ export function HostedSetupCard({ onboarding }: { onboarding: OnboardingState })
       </ul>
       <div className="flex flex-wrap items-center gap-3">
         <Button asChild size="sm">
-          <a href={hostedLink(HOSTED_CARD_SURFACE, "start")} target="_blank" rel="noopener noreferrer">
+          <a href={homeLink(HOSTED_CARD_SURFACE)} target="_blank" rel="noopener noreferrer">
             {t("start")}
           </a>
         </Button>
         <a
-          href={hostedLink(HOSTED_CARD_SURFACE, "team")}
+          href={hostedLink(HOSTED_CARD_SURFACE)}
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] hover:decoration-[var(--color-text-primary)]"

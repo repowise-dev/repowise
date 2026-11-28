@@ -354,3 +354,122 @@ def test_spring_boot_main_is_a_declared_entry(tmp_path: Path) -> None:
 
     idx = _index(repo)
     assert idx.project["entry_points"][0] == main
+
+
+_LAUNCHER_MANIFEST = """<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application android:name=".FlashApp">
+    <activity android:name=".Settings" />
+    <activity android:name=".ui.Launch" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>
+"""
+_LIBRARY_MANIFEST = """<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <provider android:name=".Files" />
+    <activity android:name=".Picker" />
+  </application>
+</manifest>
+"""
+
+
+def _android_repo(tmp_path: Path, app_manifest: str | None, app_module: str = "app") -> Path:
+    files = {
+        "settings.gradle.kts": 'include(":app", ":core")\n',
+        "core/build.gradle.kts": 'plugins { id("com.android.library") }\n'
+        'android { namespace = "com.acme.core" }\n',
+        "core/src/main/AndroidManifest.xml": _LIBRARY_MANIFEST,
+        "core/src/main/java/com/acme/core/Files.kt": "package com.acme.core\nclass Files\n",
+        "core/src/main/java/com/acme/core/Picker.kt": "package com.acme.core\nclass Picker\n",
+    }
+    if app_manifest is not None:
+        files |= {
+            f"{app_module}/build.gradle.kts": 'plugins { id("com.android.application") }\n'
+            'android { namespace = "com.acme.flash" }\n',
+            f"{app_module}/src/main/AndroidManifest.xml": app_manifest,
+            f"{app_module}/src/main/java/com/acme/flash/FlashApp.kt": "package com.acme.flash\nclass FlashApp\n",
+            f"{app_module}/src/main/java/com/acme/flash/Settings.kt": "package com.acme.flash\nclass Settings\n",
+            f"{app_module}/src/main/java/com/acme/flash/ui/Launch.kt": "package com.acme.flash.ui\nclass Launch\n",
+        }
+    return _write(tmp_path, files)
+
+
+def _structure(repo: Path):
+    traverser = FileTraverser(repo)
+    return traverser.get_repo_structure(list(traverser.traverse()))
+
+
+def _archetype(structure) -> str:
+    from repowise.core.generation.onboarding.subkinds.how_it_works import _classify_archetype
+
+    signals = SimpleNamespace(
+        external_systems=(), parsed_files=(), repo_structure=structure, surfaces=None
+    )
+    return _classify_archetype(signals)[0]
+
+
+def test_android_launcher_activity_is_an_application_main(tmp_path: Path) -> None:
+    """The activity the launcher starts is where an Android app begins: the
+    index lists it as an application main, so the repo reads as an app."""
+    structure = _structure(_android_repo(tmp_path, _LAUNCHER_MANIFEST))
+    launch = "app/src/main/java/com/acme/flash/ui/Launch.kt"
+    assert structure.application_mains == [launch]
+    assert launch in structure.entry_points
+    assert _archetype(structure) == "service"
+
+
+def test_android_library_only_has_no_application_main(tmp_path: Path) -> None:
+    structure = _structure(_android_repo(tmp_path, None))
+    assert structure.application_mains == []
+    assert _archetype(structure) != "service"
+
+
+def test_commented_out_launcher_is_not_an_application_main(tmp_path: Path) -> None:
+    off = _LAUNCHER_MANIFEST.replace("<intent-filter>", "<!-- <intent-filter>").replace(
+        "</intent-filter>", "</intent-filter> -->"
+    )
+    assert _structure(_android_repo(tmp_path, off)).application_mains == []
+
+
+def test_sample_module_launcher_is_not_an_application_main(tmp_path: Path) -> None:
+    """A launcher in a sample beside a library demonstrates the library."""
+    structure = _structure(_android_repo(tmp_path, _LAUNCHER_MANIFEST, app_module="sample"))
+    assert structure.application_mains == []
+    assert _archetype(structure) != "service"
+
+
+@pytest.mark.parametrize(
+    ("manifest", "expected"),
+    [
+        # A TV launcher, and an alias that launches its target activity.
+        (
+            _LAUNCHER_MANIFEST.replace("category.LAUNCHER", "category.LEANBACK_LAUNCHER"),
+            [".ui.Launch"],
+        ),
+        (
+            _LIBRARY_MANIFEST.replace(
+                "</application>",
+                '<activity-alias android:name=".Alias" android:targetActivity=".Picker">'
+                '<intent-filter><action android:name="android.intent.action.MAIN"/>'
+                '<category android:name="android.intent.category.LAUNCHER"/></intent-filter>'
+                "</activity-alias></application>",
+            ),
+            [".Picker"],
+        ),
+        # MAIN without a launcher category, and the two split across filters.
+        (_LAUNCHER_MANIFEST.replace("category.LAUNCHER", "category.DEFAULT"), []),
+        (
+            _LAUNCHER_MANIFEST.replace("<category", "</intent-filter><intent-filter><category"),
+            [],
+        ),
+    ],
+    ids=["leanback", "activity-alias", "no-launcher-category", "split-filters"],
+)
+def test_launcher_activity_names(manifest: str, expected: list[str]) -> None:
+    from repowise.core.ingestion.framework_edges.android_manifest import launcher_activity_names
+
+    assert launcher_activity_names(manifest) == expected

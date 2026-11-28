@@ -56,3 +56,36 @@ async def _replace_security_findings(
         scan_source_map, parsed_files, source_map
     )
     await SecurityScanner(session, repo_id).replace_findings(findings_by_file, scanned_paths)
+
+
+async def rescan_repo_security(
+    repo_path: Any, parsed_files: Any, source_map: dict[str, Any]
+) -> None:
+    """Replace every working-tree security finding from a whole-repo parse.
+
+    The rescan a scanner version bump owes (#3072): the incremental persist only
+    rescans the changed files, so every other file keeps rows the old scanner
+    wrote. *parsed_files* and *source_map* must cover the whole repo.
+    ``replace_findings`` only replaces working-tree rows; history rows from
+    ``scan --history`` are untouched.
+    """
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import resolve_db_url
+
+    if parsed_files and not source_map:
+        # Scanning no text would wipe every real finding; fail so the stamp stays.
+        raise ValueError("a full security rescan needs the parsed source text")
+    engine = create_engine(resolve_db_url(repo_path))
+    try:
+        await init_db(engine)
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            await _replace_security_findings(session, repo.id, parsed_files, source_map)
+    finally:
+        await engine.dispose()

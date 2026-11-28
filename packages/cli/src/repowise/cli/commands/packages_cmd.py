@@ -4,7 +4,10 @@
 owner teams and reachability. ``export --format cyclonedx`` writes that as a
 CycloneDX 1.6 document (``evidence.occurrences``); it records usage and is not
 an SBOM. ``import`` reads a Syft, SPDX, CycloneDX or OSV JSON file the user
-supplies and joins its packages to usage by name. Nothing is fetched.
+supplies, joins its packages to usage by name and stores it. ``vulns`` lists
+each stored advisory with how close production code comes to it, and
+``check`` says whether the stored document lists an advisory for a package at
+a version. Nothing is fetched.
 """
 
 from __future__ import annotations
@@ -18,6 +21,10 @@ from repowise.cli.helpers import console, repo_index_session, resolve_command_ta
 from repowise.cli.output import emit_json, format_option
 
 _NO_INDEX = "No index found for this repository; run `repowise init` first."
+_NO_DOCUMENT = (
+    "No advisory document imported; run `repowise packages import <file>` "
+    "(OSV-Scanner JSON works best: its versions are already resolved)."
+)
 
 
 def _repo_root(path: str | None) -> Path:
@@ -141,12 +148,15 @@ def packages_export(fmt: str, output: str | None, repo: str | None) -> None:
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd).")
 @format_option(choices=("text", "json"), default="text")
 def packages_import(file: str, repo: str | None, fmt: str) -> None:
-    """Join a Syft, SPDX, CycloneDX or OSV JSON FILE to where its packages are used."""
+    """Join a Syft, SPDX, CycloneDX or OSV JSON FILE to where its packages are used.
+
+    The document is stored as the repository's advisory data, replacing the last one.
+    """
     from repowise.core.inventory.advisories import join_usage
 
     root = _repo_root(repo)
     try:
-        result = run_async(_with_index(root, lambda s, rid: join_usage(s, rid, root, file)))
+        result = run_async(_with_index(root, lambda s, rid: join_usage(s, rid, root, file, store=True)))
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     if fmt == "json":
@@ -165,7 +175,7 @@ def packages_import(file: str, repo: str | None, fmt: str) -> None:
             reach = row["summary"]["reachability"]
             table.add_row(
                 escape(f"{row['ecosystem'] or '?'}:{row['name']}"),
-                escape(", ".join(a["id"] for a in row.get("advisories", []))),
+                escape(", ".join(_advisory_cell(a) for a in row.get("advisories", []))),
                 str(row["summary"]["files"]),
                 str(reach["reachable"]),
                 str(reach["unknown"]),
@@ -177,4 +187,197 @@ def packages_import(file: str, repo: str | None, fmt: str) -> None:
         console.print(
             f"[dim]{escape(row['name'])} ({escape(ids)}): not declared or imported here.[/dim]"
         )
+    clear = sum(len(row.get("not_affected", ())) for row in result["matched"])
+    if clear:
+        console.print(f"{clear} advisory match(es) left out: the pinned version is outside the range.")
     console.print(f"[dim]{escape(result['method'])}.[/dim]")
+
+
+def _advisory_cell(a: dict[str, Any]) -> str:
+    """``GHSA-x (high, fixed in 2.32.0)``; ``?`` marks one no version could decide."""
+    notes = [n for n in (a.get("severity"), a.get("fix") and f"fixed in {a['fix']}") if n]
+    text = f"{a['id']}{'?' if a.get('affected') is None else ''}"
+    return f"{text} ({', '.join(notes)})" if notes else text
+
+
+#: ``--tier`` / ``--fail-on`` values, strongest first; ``imported`` also takes
+#: in ``unknown``, which is never ranked below it.
+_TIER_CHOICES = ("package_called", "imported")
+_TIER_RANK = {"package_called": 0, "imported": 1}
+
+
+@packages_group.command("vulns")
+@click.option(
+    "--tier",
+    "min_tier",
+    type=click.Choice(_TIER_CHOICES),
+    default=None,
+    help="List only advisories at this tier or stronger.",
+)
+@click.option(
+    "--fail-on",
+    type=click.Choice([*_TIER_CHOICES, "never"]),
+    default="package_called",
+    show_default=True,
+    help="Exit 1 when an advisory sits at this tier or stronger.",
+)
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd).")
+@format_option(choices=("text", "json", "sarif"), default="text")
+def packages_vulns(min_tier: str | None, fail_on: str, repo: str | None, fmt: str) -> None:
+    """Each stored advisory, tiered by how close production code comes to it.
+
+    Tiers: package_called (a function production code reaches calls into the
+    package, at the call site shown; Python), imported (shipping code imports
+    it), unknown (no shipping import found; it may still come through another
+    dependency, so it ranks with imported). Exits 2 when no advisory document
+    was imported.
+    """
+    from repowise.core.inventory.advisory_tiers import tier_advisories
+
+    root = _repo_root(repo)
+    rows = run_async(_with_index(root, lambda s, rid: tier_advisories(s, rid, root)))
+    if rows is None:
+        click.echo(_NO_DOCUMENT, err=True)
+        raise SystemExit(2)
+    # The gate reads every stored advisory; --tier only narrows the listing.
+    failing = fail_on != "never" and any(r.rank <= _TIER_RANK[fail_on] for r in rows)
+    if min_tier is not None:
+        rows = [r for r in rows if r.rank <= _TIER_RANK[min_tier]]
+    if fmt == "json":
+        emit_json({"advisories": [r.as_dict() for r in rows], "fail_on": fail_on, "failed": failing})
+    elif fmt == "sarif":
+        emit_json(_vulns_sarif(rows))
+    else:
+        _print_vulns(rows)
+    if failing:
+        raise SystemExit(1)
+
+
+def _print_vulns(rows: list[Any]) -> None:
+    from collections import Counter
+
+    from rich.markup import escape
+    from rich.table import Table
+
+    if not rows:
+        console.print("No stored advisory applies to the versions in use.")
+        return
+    table = Table("Tier", "Package", "Advisory", "Where")
+    for r in rows:
+        notes = [n for n in (r.advisory.severity, r.fix and f"fixed in {r.fix}") if n]
+        advisory = f"{r.advisory.id}{'?' if r.affected is None else ''}"
+        sites = r.sites()
+        where = ", ".join(sites[:2]) + (f" (+{len(sites) - 2})" if len(sites) > 2 else "")
+        table.add_row(
+            r.shown_tier,
+            escape(f"{r.ecosystem or '?'}:{r.package}"),
+            escape(f"{advisory} ({', '.join(notes)})" if notes else advisory),
+            escape(where),
+        )
+    console.print(table)
+    counts = Counter(r.shown_tier for r in rows)
+    console.print(
+        f"{len(rows)} advisory(ies): " + ", ".join(f"{n} {t}" for t, n in counts.items()) + "."
+    )
+    if any(r.affected is None for r in rows):
+        console.print("[dim]? = no exact version to check the range against.[/dim]")
+
+
+_SARIF_LEVEL = {"package_called": "warning"}
+
+
+def _vulns_sarif(rows: list[Any]) -> dict[str, Any]:
+    """One result per advisory with an evidence site, located at its first site."""
+    from repowise.cli import __version__
+    from repowise.core.ci import sarif
+
+    rules: dict[str, dict] = {}
+    results = []
+    for r in rows:
+        if not r.shown_sites:
+            # Code scanning needs a location; an advisory without one is in
+            # the text and JSON output.
+            continue
+        tier = r.shown_tier
+        rule_id = f"advisory/{tier}"
+        rules.setdefault(
+            rule_id,
+            sarif.rule(
+                rule_id,
+                tier,
+                f"Package advisory, tier {tier}",
+                "A package advisory and the closest production code comes to it.",
+            ),
+        )
+        site = r.shown_sites[0]
+        fix = f"; fixed in {r.fix}" if r.fix else ""
+        results.append(
+            sarif.result(
+                rule_id,
+                _SARIF_LEVEL.get(tier, "note"),
+                f"{r.advisory.id} in {r.package} ({tier}){fix}",
+                site.path,
+                site.line,
+                "repowiseAdvisory/v1",
+                f"{r.ecosystem}:{r.package}:{r.advisory.id}",
+                {"tier": tier, "severity": r.advisory.severity},
+            )
+        )
+    return sarif.run("repowise", __version__, list(rules.values()), results)
+
+
+@packages_group.command("check")
+@click.argument("target")
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd).")
+@format_option(choices=("text", "json"), default="text")
+def packages_check(target: str, repo: str | None, fmt: str) -> None:
+    """Whether the stored advisory document lists an advisory for TARGET.
+
+    TARGET is ``[ecosystem:]name[@version]``, e.g. ``pypi:requests@2.31.0``.
+    Answers from the last imported document only; exits 1 when an advisory applies.
+    """
+    from repowise.core.inventory.advisories import load_advisories
+    from repowise.core.inventory.advisory_tiers import check_package, split_version
+    from repowise.core.inventory.usage import package_usage, parse_query
+
+    root = _repo_root(repo)
+    query, version = split_version(target)
+    name, eco = parse_query(query)
+
+    async def answer(session: Any, rid: str) -> tuple[Any, dict[str, Any]]:
+        stored = await load_advisories(session, rid)
+        usage = await package_usage(session, rid, root, query)
+        return check_package(stored, eco, name, version), usage
+
+    check, usage = run_async(_with_index(root, answer))
+    doc = check.as_dict()
+    doc["declared"] = [
+        {k: d[k] for k in ("package_key", "version", "declared_in")} for d in usage["declared"]
+    ]
+    doc["files"] = usage["summary"]["files"]
+    if fmt == "json":
+        emit_json(doc)
+    else:
+        _print_check(doc)
+    if check.verdict == "has_advisories":
+        raise SystemExit(1)
+
+
+def _print_check(doc: dict[str, Any]) -> None:
+    from rich.markup import escape
+
+    label = f"{doc.get('ecosystem') or '?'}:{doc['package']}" + (
+        f"@{doc['version']}" if doc.get("version") else ""
+    )
+    console.print(f"{escape(label)}: {doc['verdict']}")
+    for a in doc.get("advisories", []):
+        console.print(f"  {escape(_advisory_cell(a))}")
+    for d in doc["declared"]:
+        version = f" {d['version']}" if d["version"] else ""
+        console.print(f"Declared{escape(version)} in {escape(d['declared_in'])}")
+    if doc["files"]:
+        console.print(f"Imported in {doc['files']} file(s).")
+    if doc["verdict"] == "unknown_no_source":
+        console.print(
+            f"[dim]No stored advisory document names it. {escape(_NO_DOCUMENT)}[/dim]"
+        )

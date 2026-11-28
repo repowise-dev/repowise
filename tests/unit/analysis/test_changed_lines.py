@@ -16,6 +16,7 @@ from repowise.core.analysis.changed_lines import (
     change_set,
     changed_lines,
     diff_since,
+    split_commit_patches,
 )
 
 
@@ -310,6 +311,7 @@ def test_change_set_keeps_what_changed_lines_drops(git_repo) -> None:
     assert "mod.py" not in changed_lines(str(git_repo), "HEAD~1..HEAD")[0]
     assert set(change.files) == {"mod.py", "new_name.py", "logo.png"}
     assert change.deleted == {"gone.py", "old_name.py"}
+    assert change.added == {"new_name.py", "logo.png"}  # a rename adds its new path
     assert change.files["mod.py"].new_lines == set()
     assert change.files["mod.py"].old_ranges == [(2, 2)]
     assert change.label == "HEAD~1..HEAD"
@@ -330,6 +332,7 @@ def test_change_set_drops_excluded_paths_in_every_listing(git_repo) -> None:
 
     change = change_set(str(git_repo), working_tree=True, exclude_patterns=("/gen.md", "out/"))
     assert set(change.files) == {"mod.py", "new.py"}
+    assert change.added == {"new.py"}  # untracked
     assert change.deleted == set()
 
 
@@ -449,3 +452,13 @@ def test_change_set_and_diff_since_name_files_from_a_nested_checkout(git_repo) -
 
     diffs = diff_since(str(svc), "HEAD", None, ["a.py"])
     assert set(diffs) == {"a.py"} and diffs["a.py"].new_lines == {2}
+
+
+def test_split_commit_patches_starts_a_commit_only_at_a_line_start_commit_id():
+    sha1, sha256 = "a" * 40, "b" * 64
+    raw = f"\0{sha1}\n\n+x = '\0{sha1}'\n+\0;\n\0{sha256}\n\n-y\n\0{sha1}"
+    assert split_commit_patches(raw) == [
+        (sha1, f"\n+x = '\0{sha1}'\n+\0;\n"),
+        (sha256, "\n-y\n"),
+        (sha1, ""),
+    ]

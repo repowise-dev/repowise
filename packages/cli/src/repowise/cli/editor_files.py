@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.cli.helpers import get_db_url_for_repo, load_config
+from repowise.cli.helpers import get_db_url_for_repo, load_config, load_config_for_write
 from repowise.core.generation.editor_files import (
     AgentsMdGenerator,
     EditorFileData,
@@ -21,19 +21,13 @@ from repowise.core.persistence.crud import get_repository_by_path
 
 def set_editor_file_enabled(repo_path: Path, key: str, enabled: bool) -> None:
     """Persist an editor_files.<key> preference in .repowise/config.yaml."""
-    import yaml  # type: ignore[import-untyped]
+    from repowise.core.repo_config import save_repo_config
 
-    cfg = load_config(repo_path)
-    editor_files = dict(cfg.get("editor_files", {}))
+    cfg = load_config_for_write(repo_path)
+    editor_files = dict(cfg.get("editor_files") or {})
     editor_files[key] = enabled
     cfg["editor_files"] = editor_files
-
-    cfg_path = repo_path / ".repowise" / "config.yaml"
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path.write_text(
-        yaml.dump(cfg, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
-    )
+    save_repo_config(repo_path, cfg)
 
 
 def should_generate_editor_file(
@@ -47,8 +41,10 @@ def should_generate_editor_file(
     if override is not None:
         set_editor_file_enabled(repo_path, key, override)
         return override
-    cfg = load_config(repo_path)
-    return bool(cfg.get("editor_files", {}).get(key, default))
+    from repowise.core.settings.model import flag
+
+    editor_files = load_config(repo_path).get("editor_files")
+    return flag(editor_files.get(key) if isinstance(editor_files, dict) else None, default)
 
 
 async def fetch_editor_file_data(repo_path: Path) -> EditorFileData | None:

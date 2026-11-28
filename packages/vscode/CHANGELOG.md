@@ -7,6 +7,120 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
+## Unreleased
+
+### Server
+
+- With `repowise.server.autoStart` on `ask` (the default), opening an indexed
+  repo with no server running asks once: **Start**, **Always** or **Never**.
+  Always and Never are saved to the setting.
+- The status bar item opens a menu to start, stop or restart the server, or open
+  its web UI when it runs one. **Repowise: Restart Server** is a new command.
+- Stop works on any server: one this window started stops at once, one started
+  in a terminal stops after a one-line confirm. The lockfile is removed with it.
+- Closing the window that started the server stops it, process tree included on
+  Windows.
+- New `repowise.server.idleStopMinutes` (off by default) stops a server the
+  extension started after that many minutes without a request from the editor.
+- A lockfile left by a server that is gone reads as stopped and is replaced
+  cleanly on the next start.
+- The status bar says "Repowise: server stopped" instead of "offline", and the
+  welcome view says your agent's MCP tools work without the server.
+
+### Editors and shells
+
+- Activation no longer fails on editors without the MCP provider API (VS Code
+  forks installing from Open VSX); the other features load, and Configure MCP
+  for this Workspace still writes the config.
+- The extension activates for folders that hold an index (or when you open its
+  view or run a command) instead of on every startup.
+- A `repowise.cliPath` with spaces runs in PowerShell (`& 'path' init`), cmd and
+  POSIX terminals alike, and a `.cmd` shim works as the CLI path.
+- CLI runs and the MCP server the extension starts set
+  `REPOWISE_CLIENT=vscode_ext`, so the CLI's usage telemetry labels them as the
+  extension rather than a plain VS Code terminal.
+
+### Panels
+
+- The Change Risk panel and its tab read **Review**, the name of the web page
+  the panel shows, and the command reads **Review Change**. The command id is
+  unchanged.
+
+### Color
+
+- The gutter and overview ruler mark findings in red and amber, as the web UI
+  does, with low findings in neutral gray; the custom orange tier is gone.
+- No status bar item keeps a warning background: "index behind" and "update
+  needed" carry their state in the icon and wording.
+- The activity bar icon is a single-colour vector of the owl, so it follows the
+  theme like the built-in icons.
+
+### Removed
+
+- The six Copilot Chat language model tools and the `repowise.agentTools.enabled`
+  setting. The MCP server the extension registers carries the same lookups and
+  more, and does not need the local server running.
+- The `repowise.risk.baseBranch` setting. The Review panel compares against the
+  base the change list gives.
+
+## 0.16.0
+
+The bundled Code Health and overview views carry the health and decisions
+wording of repowise 0.61.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved; repowise
+0.61.0 fills every view in this release.
+
+### Code Health
+
+- Marker descriptions say where each one scores: duplicated code scores in
+  TypeScript and error handling in Python, low cohesion is advisory, and an
+  advisory marker costs the file no points.
+- The complex-method finding reads "Many paths through one function", naming
+  what it measures.
+- Copy prompts treat mined decision records as background: the agent checks one
+  only when it bears on the change, and can put it in force with
+  `repowise decision confirm`.
+
+### Overview
+
+- The decisions summary counts decisions in force and background records, and
+  its attention row lists in-force decisions drifting from their code.
+- Setup steps share one ranking with the other next actions, and a finish-setup
+  prompt hands the remaining steps to your agent.
+
+## 0.15.0
+
+The Docs panel reads as a table of contents with walkthroughs in their own group,
+and every health score reads on the same five bands.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved; repowise
+0.60.0 fills every view in this release, including the walkthrough pages.
+
+### Docs
+
+- The overview and onboarding chapters lead the page tree in reading order,
+  walkthroughs that follow one operation end to end get their own group, and
+  generated code pages sit under one "Reference" folder.
+- Sections are numbered two levels deep and labelled as titles, such as "CLI"
+  where the tree used to show "Cli Overview".
+- The tree searches as you type and stays quick on large wikis.
+- Page sources name the cited line range, as `path:12-40`.
+- Mermaid diagrams use a neutral palette.
+
+### Code Health
+
+- Scores and the trend chart use the five canonical bands: Excellent, Good,
+  Fair, Needs work and At risk.
+
+### Other
+
+- The CLI-not-found and out-of-date server notices offer `uv tool install` /
+  `uv tool upgrade` first, with a pip command beside it.
+- The walkthrough points to `repowise serve` for the guided tour and Setup.
+- Figures group their digits the same way in every view, whatever the system
+  locale.
+
 ## 0.14.0
 
 Code Health findings come with the rule that silences them and an agent prompt

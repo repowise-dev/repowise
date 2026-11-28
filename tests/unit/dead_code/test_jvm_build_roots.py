@@ -211,6 +211,56 @@ def test_kotlin_typealias_shadows_the_name():
     )
 
 
+_STATUS = "app/src/main/java/com/ex/utils/ViewModelUtils.kt"
+_STATUS_TEXT = (
+    b"package com.ex.utils\n\nsealed class InitStatus {\n"
+    b"    data object Pending : InitStatus()\n}\n"
+)
+# Another parent's nested ``Pending``: the bare name is ambiguous.
+_VOICES = "app/src/main/java/com/ex/tts/Voices.kt"
+_VOICES_TEXT = b"package com.ex.tts\n\nsealed interface Load {\n    data object Pending : Load\n}\n"
+
+
+def _nested_refers(writer_text: bytes) -> bool:
+    from repowise.core.analysis.dead_code.jvm_name_scope import JvmNameScope
+
+    writer = "app/src/main/java/com/ex/dialogs/Dialog.kt"
+    source_map = {_STATUS: _STATUS_TEXT, _VOICES: _VOICES_TEXT, writer: writer_text}
+    return JvmNameScope(source_map).can_refer("Pending", _STATUS, set(source_map), writer)
+
+
+def test_a_nested_type_written_through_its_parent_refers_to_it():
+    assert _nested_refers(
+        b"package com.ex.dialogs\n\nimport com.ex.utils.InitStatus\n\n"
+        b"val s: InitStatus = InitStatus.Pending\n"
+    )
+    assert _nested_refers(
+        b"package com.ex.dialogs\n\nimport com.ex.utils.InitStatus.Pending\n\nval s = Pending\n"
+    )
+
+
+def test_a_kotlin_enum_class_parent_qualifies():
+    from repowise.core.analysis.dead_code.jvm_name_scope import JvmNameScope
+
+    declaring = "app/src/main/java/com/ex/utils/Mode.kt"
+    writer = "app/src/main/java/com/ex/dialogs/Dialog.kt"
+    source_map = {
+        declaring: b"package com.ex.utils\n\nenum class Mode {\n    A;\n    object Pending\n}\n",
+        _VOICES: _VOICES_TEXT,
+        writer: b"package com.ex.dialogs\n\nimport com.ex.utils.Mode\n\nval s = Mode.Pending\n",
+    }
+    assert JvmNameScope(source_map).can_refer("Pending", declaring, set(source_map), writer)
+
+
+def test_a_parent_the_writer_cannot_see_does_not_qualify():
+    # No import of InitStatus: ``InitStatus.Pending`` cannot mean ours.
+    assert not _nested_refers(b"package com.ex.dialogs\n\nval s = InitStatus.Pending\n")
+    # Another parent's ``Pending`` stays another type.
+    assert not _nested_refers(
+        b"package com.ex.dialogs\n\nimport com.ex.tts.Load\n\nval s = Load.Pending\n"
+    )
+
+
 def test_each_writer_is_read_once(monkeypatch):
     from repowise.core.analysis.dead_code import jvm_name_scope
 
@@ -285,3 +335,132 @@ def test_spring_boot_servlet_initializer_is_not_reported(tmp_path: Path):
     report = _spring_report(tmp_path)
     assert not [f for f in report.findings if "ServletInitializer" in f.file_path]
     assert "Leftover" in _named(report, DeadCodeKind.UNUSED_EXPORT)
+
+
+_J = "src/main/java/com/example/legacy/"
+_CONTAINER_FILES = {
+    _J + "OrderRoutes.java": (
+        "package com.example.legacy;\n\n"
+        "import org.apache.camel.builder.RouteBuilder;\n\n"
+        "public class OrderRoutes extends RouteBuilder {\n"
+        "  @Override\n  public void configure() {\n"
+        '    from("direct:orders").to("log:orders");\n  }\n}\n'
+    ),
+    _J + "EndpointRoutes.java": (
+        "package com.example.legacy;\n\n"
+        "import org.apache.camel.builder.endpoint.EndpointRouteBuilder;\n\n"
+        "public class EndpointRoutes extends EndpointRouteBuilder {\n"
+        "  @Override\n  public void configure() {}\n}\n"
+    ),
+    _J + "StockEndpoint.java": (
+        "package com.example.legacy;\n\n"
+        "import jakarta.jws.WebService;\n\n"
+        "@WebService\npublic class StockEndpoint {\n"
+        "  public int stock(String sku) {\n    return 0;\n  }\n}\n"
+    ),
+    _J + "LegacyServlet.java": (
+        "package com.example.legacy;\n\n"
+        "import jakarta.servlet.http.HttpServlet;\n\n"
+        "public class LegacyServlet extends HttpServlet {\n}\n"
+    ),
+    _J + "AuditFilter.java": (
+        "package com.example.legacy;\n\n"
+        "import jakarta.servlet.Filter;\n\n"
+        "public abstract class AuditFilter implements Filter {\n}\n"
+    ),
+    "src/main/webapp/WEB-INF/web.xml": (
+        '<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee" version="6.0">\n'
+        "  <servlet>\n    <servlet-name>legacy</servlet-name>\n"
+        "    <servlet-class>com.example.legacy.LegacyServlet</servlet-class>\n"
+        "  </servlet>\n"
+        "  <filter>\n    <filter-name>audit</filter-name>\n"
+        "    <filter-class>com.example.legacy.AuditFilter</filter-class>\n"
+        "  </filter>\n"
+        "  <!-- <servlet-class>com.example.legacy.CommentedServlet</servlet-class> -->\n"
+        "</web-app>\n"
+    ),
+    # Controls: a servlet named only by a test resource, one named only inside
+    # a comment, and a class nothing names and nothing roots.
+    _J + "TestOnlyServlet.java": (
+        "package com.example.legacy;\n\n"
+        "import jakarta.servlet.http.HttpServlet;\n\n"
+        "public class TestOnlyServlet extends HttpServlet {\n}\n"
+    ),
+    "src/test/resources/WEB-INF/web.xml": (
+        "<web-app>\n  <servlet>\n"
+        "    <servlet-class>com.example.legacy.TestOnlyServlet</servlet-class>\n"
+        "  </servlet>\n</web-app>\n"
+    ),
+    _J + "CommentedServlet.java": (
+        "package com.example.legacy;\n\n"
+        "import jakarta.servlet.http.HttpServlet;\n\n"
+        "public class CommentedServlet extends HttpServlet {\n}\n"
+    ),
+    _J + "Plain.java": "package com.example.legacy;\n\npublic class Plain {\n}\n",
+}
+
+
+def _container_report(root: Path, files: dict[str, str]):
+    from repowise.core.pipeline.incremental import build_repo_graph
+
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _, sources, builder, _, _ = build_repo_graph(
+        root, [], collect_sources=True, log=lambda *a, **k: None, read_only=True
+    )
+    return DeadCodeAnalyzer(
+        builder.graph(),
+        {},
+        parsed_files=builder._parsed_files,
+        source_map=sources,
+        repo_root=root,
+    ).analyze({"min_confidence": 0.0})
+
+
+def test_container_loaded_jvm_classes_are_not_reported(tmp_path: Path):
+    report = _container_report(tmp_path, _CONTAINER_FILES)
+    reported = {Path(f.file_path).stem for f in report.findings}
+    for root in ("OrderRoutes", "EndpointRoutes", "StockEndpoint", "LegacyServlet", "AuditFilter"):
+        assert root not in reported, root
+    unused = _named(report, DeadCodeKind.UNUSED_EXPORT)
+    assert {"TestOnlyServlet", "CommentedServlet", "Plain"} <= unused
+
+
+def test_web_xml_in_ant_layouts_names_live_classes(tmp_path: Path):
+    servlet = (
+        "package com.example.legacy;\n\n"
+        "import jakarta.servlet.http.HttpServlet;\n\n"
+        "public class {name} extends HttpServlet {{\n}}\n"
+    )
+    files = {
+        "src/com/example/legacy/ContentServlet.java": servlet.format(name="ContentServlet"),
+        "WebContent/WEB-INF/web.xml": (
+            "<web-app><servlet>"
+            "<servlet-class>com.example.legacy.ContentServlet</servlet-class>"
+            "</servlet></web-app>\n"
+        ),
+        "src/com/example/legacy/AntServlet.java": servlet.format(name="AntServlet"),
+        "web/WEB-INF/web.xml": (
+            "<web-app><servlet>"
+            "<servlet-class>com.example.legacy.AntServlet</servlet-class>"
+            "</servlet></web-app>\n"
+        ),
+    }
+    reported = {Path(f.file_path).stem for f in _container_report(tmp_path, files).findings}
+    assert "ContentServlet" not in reported
+    assert "AntServlet" not in reported
+
+
+def test_a_route_builder_base_without_a_camel_import_is_not_a_root(tmp_path: Path):
+    files = {
+        _J + "RouteBuilder.java": (
+            "package com.example.legacy;\n\npublic abstract class RouteBuilder {\n}\n"
+        ),
+        _J + "HomeGrown.java": (
+            "package com.example.legacy;\n\npublic class HomeGrown extends RouteBuilder {\n}\n"
+        ),
+    }
+    report = _container_report(tmp_path, files)
+    assert "HomeGrown" in _named(report, DeadCodeKind.UNUSED_EXPORT)

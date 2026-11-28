@@ -3,23 +3,25 @@
 Two delivery moments, both pure indexed-SQLite lookups (no LLM, no network,
 target well under 100ms):
 
-  * SessionStart — score the repo's decisions against the session's likely
+  * SessionStart (off unless ``decisions.session_start`` is on) — score the
+    repo's decisions against the session's likely
     working set (dirty/staged files, branch-vs-main changed files, the previous
     session's edited files, branch-name tokens) expanded one hop via import
     edges and co-change partners, and inject the top few under a hard token
     cap. Relevance or silence: nothing clears the floor, nothing is injected.
     Never top-confidence-globally. Two labelled sections under two separate
-    caps: accepted decisions, then the candidates nobody has agreed to. The
+    caps: decisions in force, then background records nobody put in force. The
     second cannot shrink the first. A dismissed record is in neither.
-  * Edit-time (PostToolUse Edit/Write) — when the edited file has a governing
-    decision (via decision_node_links), say so once per session per decision,
-    under a strict per-session cap.
+  * Edit-time (PostToolUse Edit/Write) — when the edited file has decisions
+    in force over it (via decision_node_links), name up to three of them, one
+    line each, once per session per decision, under a per-session cap.
+    Background records never reach this moment.
 
 Working agreements (records whose ``kind`` says they govern how the work is
-conducted, so they name no file and have no node links) can only reach the
-agent here: they carry a flat base relevance at SessionStart so a rule like
-"never use em dashes" is deliverable at all, but they still compete under the
-same floor and cap as everything else.
+conducted rather than the code) are not delivered by either moment: rules for
+how the work is done belong in the agent's own instruction files. They stay
+stored. A store written before ``kind`` existed cannot name them, so there an
+unlinked session record still gets the flat base relevance it always had.
 
 Every injected decision id is recorded in the sessions.db sidecar so the
 update-time miner can check whether the guidance was followed or contradicted
@@ -68,13 +70,13 @@ _W_GLOBAL_RULE = 0.5
 #: costs at most one slot until it is dismissed.
 _MAX_GLOBAL_RULES = 2
 
-#: Budget for the candidate section, held separately from ``_TOKEN_CAP`` rather
-#: than carved out of it. A shared cap would mean every candidate admitted
-#: displaces an accepted decision that is injected today, which is the one
-#: thing restoring candidates must not do; a separate cap makes the trade
-#: explicit and bounded instead. Tighter than the accepted block by design:
-#: nobody has agreed to any of these.
-_CANDIDATE_TOKEN_CAP = 120
+#: Budget for the background section, held separately from ``_TOKEN_CAP``
+#: rather than carved out of it. A shared cap would mean every background
+#: record admitted displaces a decision in force, which this section must never
+#: do; a separate cap makes the trade explicit and bounded instead. Tighter
+#: than the first section by design: none of these is in force. The header is
+#: charged to this cap; 80 tokens are left for the lines.
+_CANDIDATE_TOKEN_CAP = 103
 #: Never more than this many candidates, whatever the token budget allows.
 _MAX_CANDIDATE_ITEMS = 2
 #: And at most one of those slots may go to an unlinked repo-wide rule. A
@@ -108,8 +110,13 @@ _GENERIC_BRANCH_TOKENS = frozenset(
 
 # --- Edit-time tunables ------------------------------------------------------
 
-#: Strict per-session cap on edit-time decision notices.
-_MAX_EDIT_NOTICES = 3
+#: At most this many decisions named for one edited file, one line each.
+_MAX_EDIT_DECISIONS_PER_FILE = 3
+#: Per-session cap on edit-time decisions named, across files: two fully
+#: governed files' worth, then silence.
+_MAX_EDIT_NOTICES = 6
+#: Per-session cap on bug-history notices, one per file.
+_MAX_FIX_NOTICES = 3
 
 _CLIP_DECISION = 220
 _CLIP_RATIONALE = 160
@@ -252,11 +259,18 @@ def _branch_tokens(branch: str) -> list[str]:
     ]
 
 
-def _collect_seeds(repo_path: Path) -> tuple[list[str], str]:
-    """The session's likely working set (repo-relative POSIX) + branch name."""
-    dirty, branch = _dirty_files_and_branch(repo_path)
+def _collect_seeds(repo_path: Path, checkout: Path | None = None) -> tuple[list[str], str]:
+    """The session's likely working set (repo-relative POSIX) + branch name.
+
+    Git runs in *checkout* (a worktree reading *repo_path*'s index), else in
+    *repo_path*. The previous session's edits are the main checkout's, so a
+    worktree does not take them.
+    """
+    tree = checkout or repo_path
+    dirty, branch = _dirty_files_and_branch(tree)
+    previous = _previous_session_edits(repo_path) if tree == repo_path else []
     seen: dict[str, None] = {}
-    for f in dirty + _branch_changed_files(repo_path, branch) + _previous_session_edits(repo_path):
+    for f in dirty + _branch_changed_files(tree, branch) + previous:
         norm = f.replace("\\", "/").removeprefix("./")
         if norm:
             seen.setdefault(norm, None)
@@ -326,16 +340,8 @@ _UNMIGRATED = "1 = 1"
 #: ``lifecycle.AGREEMENT_KIND``, spelled out for the same reason as _ACCEPTED.
 _AGREEMENT_KIND = "agreement"
 
-#: Capture tiers a record may be delivered on with no acceptance row. A
-#: ``(source, scope_basis)`` pair belongs here only once a census of its
-#: (record, file) pairs has measured at least 90% governs with a 95% lower
-#: bound of at least 80%; today only ``comment`` has. That is a result about
-#: this corpus and not a property of the miner, so re-measure before adding a
-#: pair, and re-measure if comment attribution changes.
-_EVIDENCE_TIERS: frozenset[tuple[str, str]] = frozenset({("comment", "")})
-
-#: Measured trust per tier, for ordering the candidate lane only. It orders,
-#: it does not admit: the relevance floor still decides what enters the lane.
+#: Measured trust per capture tier, for ordering the background section only.
+#: It orders, it does not admit: the relevance floor still decides what enters.
 _TIER_TRUST: dict[tuple[str, str], int] = {
     ("comment", ""): 2,
     ("pr", "commit_selected"): 1,
@@ -384,51 +390,6 @@ def _has_column(conn: sqlite3.Connection, column: str) -> bool:
         return False
 
 
-def _untouched_clause(conn: sqlite3.Connection, ref: str) -> str:
-    """SQL matching records no reviewer has acted on.
-
-    ``review_state`` is the column that knows, not ``status``: of the four
-    review actions only ``dismiss_candidate`` writes ``status``, so a merged or
-    split-flagged candidate still reads as ``proposed`` with no acceptance row.
-    ``1 = 0`` where the store has no such table -- unreadable is not untouched.
-    """
-    try:
-        found = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            ("decision_candidate_meta",),
-        ).fetchone()
-    except sqlite3.Error:
-        return "1 = 0"
-    if not found:
-        return "1 = 0"
-    return (
-        f"NOT EXISTS (SELECT 1 FROM decision_candidate_meta m "
-        f"WHERE m.decision_id = {ref}.id AND m.review_state <> 'open')"
-    )
-
-
-def _evidence_tier_clause(conn: sqlite3.Connection, ref: str) -> str:
-    """SQL matching records whose capture tier delivers on its own evidence.
-
-    ``1 = 0`` where the store cannot answer, which is the safe direction: a
-    tier that cannot be read is not a tier that has been earned.
-    """
-    if not _EVIDENCE_TIERS or not _has_column(conn, "scope_basis"):
-        return "1 = 0"
-    # Interpolated, so anything but a bare identifier must not reach the SQL.
-    if any(
-        not isinstance(v, str) or not re.fullmatch(r"[a-z_]*", v)
-        for pair in _EVIDENCE_TIERS
-        for v in pair
-    ):
-        return "1 = 0"
-    terms = [
-        f"({ref}.source = '{src}' AND COALESCE({ref}.scope_basis, '') = '{basis}')"
-        for src, basis in sorted(_EVIDENCE_TIERS)
-    ]
-    return "(" + " OR ".join(terms) + ")"
-
-
 def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
     """Accepted, current decisions with their node links, as plain dicts."""
     return _load_decisions(
@@ -463,11 +424,17 @@ def _load_candidate_decisions(conn: sqlite3.Connection) -> list[dict]:
 
 
 def _load_decisions(conn: sqlite3.Connection, where: str) -> list[dict]:
-    """Decision rows matching *where*, with their node links, as plain dicts."""
+    """Decision rows matching *where*, with their node links, as plain dicts.
+
+    Working agreements are never among them (see the module docstring).
+    """
+    kind = _kind_column(conn)
+    if kind == "kind":
+        where = f"({where}) AND COALESCE(kind, '') <> '{_AGREEMENT_KIND}'"
     try:
         rows = conn.execute(
             "SELECT id, title, decision, rationale, confidence, staleness_score, source, "
-            + _kind_column(conn)
+            + kind
             + ", "
             + ("COALESCE(scope_basis, '')" if _has_column(conn, "scope_basis") else "''")
             + " FROM decision_records WHERE "
@@ -585,13 +552,13 @@ _ACCEPTED_HEADER = (
     "(accumulated from prior sessions; follow them unless the user says otherwise):"
 )
 
-#: Candidates are proposed, not agreed. The header carries the whole of that
+#: Background records are not in force. The header carries the whole of that
 #: distinction in the transcript, so it says it in words rather than leaving an
-#: agent to infer a lane from a blank line. Source-neutral: candidates come
-#: from PRs, commits, comments and agents as well as sessions.
+#: agent to infer it from a blank line. Source-neutral: these come from PRs,
+#: commits, comments and unmerged agent records as well as sessions.
 _CANDIDATE_HEADER = (
-    "[repowise] Candidate decisions awaiting review, NOT accepted; weigh them, "
-    "do not treat them as rules. Review and accept or dismiss: repowise decision candidates"
+    "[repowise] Background from this repository's history, not in force; "
+    "context only, not rules:"
 )
 
 
@@ -660,7 +627,39 @@ def _select_lines(
     return lines, shown
 
 
-def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
+def _session_start_enabled(repo_path: Path) -> bool:
+    """Whether this repository asked for decisions at session start. Off by default."""
+    from repowise.core.analysis.decisions.policy_store import load_policy
+
+    try:
+        return load_policy(repo_path).policy.session_start_on
+    except Exception:  # an unreadable config never fails a session start
+        return False
+
+
+def _delivers(repo_path: Path) -> bool:
+    """Whether this repository shows decisions at all (``decisions.mode`` not off)."""
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    return layer_mode(repo_path) != "off"
+
+
+def _session_decision_block(
+    repo_path: Path, session_id: str, checkout: Path | None = None
+) -> str | None:
+    """The SessionStart decision block, or None while ``decisions.session_start`` is off.
+
+    Checked before any git call or store read, so the default costs one config
+    read and nothing else.
+    """
+    if not _session_start_enabled(repo_path):
+        return None
+    return _ranked_session_block(repo_path, session_id, checkout)
+
+
+def _ranked_session_block(
+    repo_path: Path, session_id: str, checkout: Path | None = None
+) -> str | None:
     """The relevance-ranked SessionStart decision block, or None (silence).
 
     Two sections under two budgets: accepted decisions under ``_TOKEN_CAP``,
@@ -678,7 +677,7 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
         candidates = _load_candidate_decisions(conn)
         if not decisions and not candidates:
             return None
-        seeds, branch = _collect_seeds(repo_path)
+        seeds, branch = _collect_seeds(repo_path, checkout)
         seed_set = set(seeds)
         hop = _expand_one_hop(conn, seeds)
         tokens = _branch_tokens(branch)
@@ -723,71 +722,48 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
 
 
 def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
-    """Decisions governing *rel* via file links or module-prefix links.
+    """Decisions in force over *rel*, the most specific first.
 
-    Two disjoint ways in: a record someone accepted, or one nobody has
-    reviewed whose capture tier was measured to hold (:data:`_EVIDENCE_TIERS`).
-    Review wins either way -- accepting delivers whatever the tier, and any
-    other review action removes the record from the tier branch.
+    In force means accepted: by a person, by an agent, or by the merge of the
+    commit an agent's record cites. A record nobody put in force is background
+    and is never delivered here, however it was mined. A record held until its
+    commit lands has no acceptance yet, so it never reaches this moment either.
 
-    **File links only.** What was measured is whether a record governs a file
-    it names; a module link claims a whole subtree, so those stay
-    acceptance-only.
+    A decision governs the paths its scope names: the file itself, or a
+    directory the file sits under when the scope names a directory, which is
+    what makes a file created there governed too. Module links are not read. A
+    record's module list is the folders its files sit in, so reading it would
+    let a decision about two files govern their whole directory tree; ``get_why``
+    path mode and the core governing-by-file query follow the same rule.
 
     Link node ids are matched in POSIX regardless of how they were stored
-    (Windows extraction persists backslashes). Top-level module links are
-    ignored (see :func:`_module_deep_enough`).
+    (Windows extraction persists backslashes).
     """
     out: list[dict] = []
     seen: set[str] = set()
-    native = rel.replace("/", "\\")
-    accepted = _accepted_clause(conn, "d")
-    on_evidence = (
-        f"(d.status IN ('active', 'proposed') AND NOT ({accepted}) "
-        f"AND {_untouched_clause(conn, 'd')} "
-        f"AND {_evidence_tier_clause(conn, 'd')})"
-    )
-    governs_file = f"(d.status = 'active' AND {accepted}) OR {on_evidence}"
-    # A tier delivers on the surface it was measured on: file pairs, not
-    # subtrees.
-    governs_module = f"d.status = 'active' AND {accepted}"
+    in_force = f"d.status = 'active' AND {_accepted_clause(conn, 'd')}"
+    # char(92) is a backslash; a directory scope may be stored with a trailing slash.
+    node = "RTRIM(REPLACE(l.node_id, char(92), '/'), '/')"
     with contextlib.suppress(sqlite3.Error):
         for row in conn.execute(
-            "SELECT d.id, d.title, d.decision, d.rationale, " + accepted + " "
+            "SELECT d.id, d.title, d.decision, d.rationale "
             "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.node_id IN (?, ?) AND l.link_type = 'file' AND (" + governs_file + ")",
-            (rel, native),
+            f"WHERE l.link_type = 'file' AND ({node} = ?1 "
+            f"OR substr(?1, 1, length({node}) + 1) = {node} || '/') "
+            f"AND ({in_force}) "
+            f"ORDER BY {node} = ?1 DESC, length({node}) DESC, "
+            "COALESCE(d.staleness_score, 0) ASC, COALESCE(d.confidence, 0) DESC, d.id",
+            (rel,),
         ):
             if row[0] not in seen:
                 seen.add(row[0])
                 out.append(_governing_row(row))
-        # Module links are few; prefix-match them in Python.
-        for row in conn.execute(
-            "SELECT d.id, d.title, d.decision, d.rationale, " + accepted + ", l.node_id "
-            "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.link_type = 'module' AND (" + governs_module + ")"
-        ):
-            if (
-                row[0] not in seen
-                and _module_deep_enough(row[5])
-                and rel.startswith(_norm_path(row[5]).rstrip("/") + "/")
-            ):
-                seen.add(row[0])
-                out.append(_governing_row(row))
-    # A reviewed decision outranks a mined one whatever the link order said.
-    out.sort(key=lambda d: not d["accepted"])
     return out
 
 
 def _governing_row(row: tuple) -> dict:
-    """One ``_governing_decisions`` row, with how it earned its place."""
-    return {
-        "id": row[0],
-        "title": row[1],
-        "decision": row[2],
-        "rationale": row[3],
-        "accepted": bool(row[4]),
-    }
+    """One ``_governing_decisions`` row."""
+    return {"id": row[0], "title": row[1], "decision": row[2], "rationale": row[3]}
 
 
 def _session_evidence_count(conn: sqlite3.Connection, decision_id: str) -> int:
@@ -803,65 +779,88 @@ def _session_evidence_count(conn: sqlite3.Connection, decision_id: str) -> int:
     return row[0] if row and isinstance(row[0], int) else 0
 
 
-def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dict) -> str | None:
-    """One-line governing-decision notice for an edited file, deduplicated.
+def _governing_reason(decision: dict, sessions_n: int) -> str:
+    """``<title> because <why>`` for one governing decision, with its closing mark."""
+    why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
+    if _echoes_title(decision["title"], why):
+        why = ""  # legacy rows echo the title into decision/rationale
+    text = _clip(decision["title"], 100)
+    # The line supplies its own closing period, so a rationale that already
+    # ends a sentence must not add a second terminal mark.
+    why = why.rstrip(".!? ")
+    if why:
+        text += f" because {why}"
+    if sessions_n >= 2:
+        text += f" (seen in {sessions_n} sessions)"
+    # A clipped rationale already ends in an ellipsis; do not follow it with ".".
+    return text if text.endswith("…") else text + "."
 
-    Once per session per decision, and at most :data:`_MAX_EDIT_NOTICES`
-    notices per session total — an agent editing many governed files gets the
-    first few, not a drumbeat. The authoritative dedup is the atomic
-    ``INSERT OR IGNORE`` into the injections sidecar: the JSON session state
-    is written read-modify-write by concurrently racing hook processes and
-    loses updates (dogfood: the same decision re-fired minutes apart), so it
-    is kept only as a cheap fast-path. The caller owns loading/saving *state*.
+
+def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dict) -> str | None:
+    """The decisions governing an edited file, one line each, deduplicated.
+
+    At most :data:`_MAX_EDIT_DECISIONS_PER_FILE` per file, each once per
+    session, and at most :data:`_MAX_EDIT_NOTICES` per session in all: an
+    agent editing many governed files gets the first few, not a drumbeat. One
+    governing decision is one line; several are a header and a line each. The
+    authoritative dedup is the atomic ``INSERT OR IGNORE`` into the injections
+    sidecar: the JSON session state is written read-modify-write by
+    concurrently racing hook processes and loses updates (dogfood: the same
+    decision re-fired minutes apart), so it is kept only as a cheap fast-path.
+    The caller owns loading/saving *state*.
     """
     shown: list = state.setdefault("decisions_shown", [])
-    if len(shown) >= _MAX_EDIT_NOTICES:
+    if len(shown) >= _MAX_EDIT_NOTICES or not _delivers(repo_path):
         return None
     conn = _open_wiki_ro(repo_path)
     if conn is None:
         return None
     try:
         governing = [d for d in _governing_decisions(conn, rel) if d["id"] not in shown]
-        if not governing:
-            return None
-        decision = governing[0]
-        sessions_n = _session_evidence_count(conn, decision["id"])
+        picked = _claim_lines(conn, repo_path, rel, session_id, governing, shown)
     finally:
         conn.close()
+    if not picked:
+        return None
+    if len(picked) == 1:
+        return f"[repowise] {rel} is governed by a standing decision: {picked[0]}"
+    header = f"[repowise] {rel} is governed by standing decisions:"
+    return "\n".join([header, *(f"- {r}" for r in picked)])
 
-    shown.append(decision["id"])
 
-    # Built before the claim, not after: the claim records what this emission
-    # costs, and the cost model sums that column. A row claimed at zero chars
-    # is an injection the net reports as free. Building first is a handful of
-    # string operations on a path that has already done a database query.
-    why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
-    if _echoes_title(decision["title"], why):
-        why = ""  # legacy rows echo the title into decision/rationale
-    # "Standing" means a person stood behind it, so a record delivered on its
-    # tier alone must not borrow the word.
-    if decision["accepted"]:
-        line = f"[repowise] {rel} is governed by a standing decision: {_clip(decision['title'], 100)}"
-    else:
-        line = (
-            f"[repowise] {rel} has a decision recorded in it, mined but not reviewed: "
-            f"{_clip(decision['title'], 100)}"
-        )
-    if why:
-        line += f" because {why}"
-    if sessions_n >= 2:
-        line += f" (seen in {sessions_n} sessions)"
-    line += "."
+def _claim_lines(
+    conn: sqlite3.Connection,
+    repo_path: Path,
+    rel: str,
+    session_id: str,
+    governing: list[dict],
+    shown: list,
+) -> list[str]:
+    """Render and claim up to :data:`_MAX_EDIT_DECISIONS_PER_FILE` of *governing*.
 
-    if session_id:
-        from repowise.cli.hook_ledger import _claim_injection
+    A decision another hook process already showed this session is skipped,
+    so the next one in rank takes its slot; the per-session cap stops it all.
+    """
+    picked: list[str] = []
+    for decision in governing:
+        if len(picked) >= _MAX_EDIT_DECISIONS_PER_FILE:
+            break
+        reason = _governing_reason(decision, _session_evidence_count(conn, decision["id"]))
+        shown.append(decision["id"])
+        if session_id:
+            from repowise.cli.hook_ledger import _claim_injection
 
-        claimed, session_total = _claim_injection(
-            repo_path, session_id, decision["id"], rel, chars=len(line)
-        )
-        if not claimed or session_total > _MAX_EDIT_NOTICES:
-            return None
-    return line
+            # Claimed with what this line costs: the cost model sums that
+            # column, and a row claimed at zero chars reads as free.
+            claimed, session_total = _claim_injection(
+                repo_path, session_id, decision["id"], rel, chars=len(reason)
+            )
+            if session_total > _MAX_EDIT_NOTICES:
+                break
+            if not claimed:
+                continue
+        picked.append(reason)
+    return picked
 
 
 # ---------------------------------------------------------------------------
@@ -954,7 +953,7 @@ def _edit_fix_history_notice(repo_path: Path, rel: str, session_id: str) -> str 
             category="edit_notice",
             chars=len(line),
         )
-        if not claimed or shown > _MAX_EDIT_NOTICES:
+        if not claimed or shown > _MAX_FIX_NOTICES:
             return None
     return line
 

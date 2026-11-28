@@ -24,7 +24,7 @@ from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
     MAX_TESTS_PER_TARGET,
-    load_test_files,
+    cached_test_files,
     tests_reaching_by_tier,
 )
 from repowise.core.analysis.test_selection import expand_test_scopes, scope_kind
@@ -309,7 +309,7 @@ async def _analyze_consumer(
                 if any(
                     scope_kind(t) for hit in reached.values() for t in hit.all_tests or hit.tests
                 ):
-                    test_files = await load_test_files(session, repo_index.repo_id)
+                    test_files = await cached_test_files(session, repo_index.repo_id)
                     narrowed = await narrow_scopes(
                         session,
                         repo_index.repo_id,

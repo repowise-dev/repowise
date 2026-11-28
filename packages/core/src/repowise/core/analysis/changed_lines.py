@@ -26,6 +26,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from repowise.core.git_sha import FULL_SHA_PATTERN
+
 from .git_cli import _git, checkout_relative, path_filter, split_revspec, untracked_paths
 
 # ``@@ -a,b +c,d @@`` - both sides. ``b``/``d`` default to 1 when omitted; a
@@ -186,6 +188,22 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
     return result
 
 
+# A record of ``git log -p --format=%x00%H`` opens with a NUL at the start of a
+# line, then a full commit id (sha1 or sha256). Patch text can hold a NUL too:
+# git calls a file binary only from a NUL in its first 8000 bytes. A patch line
+# always opens with its ``+``/``-``/space prefix, so a NUL there never starts one.
+_COMMIT_START = re.compile(rf"(?<![^\n])\x00(?={FULL_SHA_PATTERN}(?:\n|$))")
+
+
+def split_commit_patches(raw: str) -> list[tuple[str, str]]:
+    """``(sha, patch)`` per commit of ``git log -p --format=%x00%H`` output."""
+    return [
+        (sha, patch)
+        for record in _COMMIT_START.split(raw)[1:]
+        for sha, _, patch in [record.partition("\n")]
+    ]
+
+
 def line_ranges(lines: Iterable[int]) -> tuple[tuple[int, int], ...]:
     """Adjacent line numbers as inclusive spans: ``{1,2,3,7}`` -> ``((1,3),(7,7))``."""
     spans: list[tuple[int, int]] = []
@@ -292,7 +310,9 @@ class ChangeSet:
     change, which have no new-side lines); *deleted* the paths it removed. A
     rename reads as a deletion plus an addition. *base* and *head* are the
     commits either side; *head* is ``None`` for staged changes, and either is
-    ``None`` when git cannot name it.
+    ``None`` when git cannot name it. *added* are the paths of *files* absent
+    before the change (an untracked file in working-tree mode); empty when
+    the reader could not tell.
     """
 
     files: dict[str, FileDiff]
@@ -300,6 +320,7 @@ class ChangeSet:
     label: str
     base: str | None
     head: str | None
+    added: set[str] = field(default_factory=set)
 
 
 def change_set(
@@ -328,6 +349,7 @@ def change_set(
     fields = [f.strip("\n") for f in listing.split("\0")]
     files: dict[str, FileDiff] = {}
     deleted: set[str] = set()
+    added: set[str] = set()
     counts = path_filter(exclude_patterns=exclude_patterns)
     for status, path in zip(fields[0::2], fields[1::2], strict=False):
         if not path or not counts(path):
@@ -336,14 +358,19 @@ def change_set(
             deleted.add(path)
         else:
             files[path] = diffs.get(path) or FileDiff(path=path)
+            if status.startswith("A"):
+                added.add(path)
     if working_tree:
-        files.update(untracked_diffs(repo_path, exclude_patterns))
-    # One re-keying for both sides: each relative path maps back to git's.
+        untracked = untracked_diffs(repo_path, exclude_patterns)
+        files.update(untracked)
+        added.update(untracked)
+    # One re-keying for every side: each relative path maps back to git's.
     named = checkout_relative(repo_path, {p: p for p in [*files, *deleted]})
     deleted = {rel for rel, top in named.items() if top in deleted}
+    added = {rel for rel, top in named.items() if top in added}
     files = {rel: replace(files[top], path=rel) for rel, top in named.items() if top in files}
     base, head = _change_ends(repo_path, revspec, staged=staged or working_tree)
-    return ChangeSet(files, deleted, label, base, head)
+    return ChangeSet(files, deleted, label, base, head, added)
 
 
 def _change_ends(
@@ -441,9 +468,10 @@ def diff_since(
     What moves a line number read at one commit (an index's symbol spans) to
     the code being asked about (:func:`map_old_line` over ``FileDiff.hunks``).
     *paths* and the keys are relative to *repo_path*, as the index names them.
+    Each path is compared with itself: a file renamed in between reads as added.
     """
     tail = [until] if until else []
-    args = ["diff", "--unified=0", *DIFF_ARGS, since, *tail, "--", *paths]
+    args = ["diff", "--unified=0", "--no-renames", *DIFF_ARGS, since, *tail, "--", *paths]
     diffs = checkout_relative(repo_path, parse_unified_diff(_diff(repo_path, args)))
     return {p: replace(d, path=p) for p, d in diffs.items()}
 
@@ -484,21 +512,36 @@ def _diff(repo_path: str, args: list[str]) -> str:
         return _git(args, repo_path)
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip().splitlines()
+        for line in detail:
+            if line.lower().startswith(("fatal:", "error:")):
+                raise ValueError(line) from exc
         raise ValueError(detail[-1] if detail else f"git {args[0]} failed") from exc
 
 
-def is_shallow_root(repo_path: str, rev: str) -> bool:
-    """Whether *rev* is a boundary a shallow clone cut its parents from.
+def shallow_roots(repo_path: str) -> frozenset[str]:
+    """Full shas of the commits a shallow clone cut its parents from.
 
     Read from git's own list of grafted commits, so a genuine root commit is
-    never mistaken for a cut one.
+    never mistaken for a cut one. Empty for a full clone or when git cannot
+    answer.
     """
-    shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
-    path = Path(repo_path, shallow)
-    if not shallow or not path.is_file():
+    try:
+        shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
+        path = Path(repo_path, shallow)
+        if not shallow or not path.is_file():
+            return frozenset()
+        return frozenset(path.read_text(encoding="utf-8").split())
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+
+
+def is_shallow_root(repo_path: str, rev: str) -> bool:
+    """Whether *rev* is a boundary a shallow clone cut its parents from."""
+    roots = shallow_roots(repo_path)
+    if not roots:
         return False
     sha = _git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], repo_path, check=False)
-    return bool(sha.strip()) and sha.strip() in path.read_text(encoding="utf-8").split()
+    return sha.strip() in roots
 
 
 def index_gap(repo_path: str, indexed_commit: str | None, change: ChangeSet) -> list[str] | None:

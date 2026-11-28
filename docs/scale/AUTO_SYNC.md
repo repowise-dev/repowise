@@ -11,6 +11,7 @@ method that fits your setup; they can be combined.
 | [GitLab webhook](#4-gitlab-webhook) | Teams, a shared repowise server | Yes |
 | [Gitea / Forgejo webhook](#5-gitea--forgejo-webhook) | Self-hosted teams | Yes |
 | [Polling fallback](#6-polling-fallback) | Safety net for missed webhooks | Yes |
+| [Server-owned clones](#7-server-owned-clones) | A server whose checkout is a clone of GitLab, GitHub or Gitea | Yes |
 
 Whichever you use, agents are told when the index is behind: the SessionStart
 hook reports indexed commit vs `HEAD` ([HOOKS.md](../agent/HOOKS.md)), and MCP
@@ -21,7 +22,8 @@ responses carry a `stale_warning` when a file they served has changed.
 ## 1. Post-Commit Git Hook (Recommended)
 
 Runs `repowise update` in the background after every local commit. Your
-terminal is never blocked.
+terminal is never blocked. This hook is what updates the index; the agent
+hooks check freshness and flag stale results, and do not update it.
 
 `repowise init` installs the hook by default (interactive runs ask first;
 `--no-hook` skips it). To manage it yourself:
@@ -160,8 +162,8 @@ Without the secret, only local callers are accepted and every other caller gets
 `403 Forbidden`, as with GitHub and GitLab.
 
 Gitea and Forgejo also send GitHub's `X-Hub-Signature-256` for compatibility,
-so an existing hook pointed at `/api/webhooks/github` keeps working — it is
-just recorded as a GitHub event. Use this endpoint to have the delivery
+so an existing hook pointed at `/api/webhooks/github` keeps working; it is
+recorded as a GitHub event. Use this endpoint to have the delivery
 attributed to the forge that sent it, and to give it its own secret.
 
 All three endpoints match the payload's repository to a registered one by a
@@ -178,6 +180,55 @@ No configuration is needed.
 
 ---
 
+## 7. Server-owned clones
+
+A webhook and the poller start a sync of the checkout on the server's disk. On
+a developer's machine that checkout is the working tree, so the sync indexes
+what is there. On a server whose checkout is a clone, nothing moves the clone
+when someone pushes, so the index would stay where the clone was made.
+
+Tell the server it owns the clone, once per repository. `--no-editor-setup`
+keeps init from editing agent files such as a committed `CLAUDE.md`, which
+would count as local edits:
+
+```bash
+git clone https://gitlab.example.com/group/project.git /srv/repos/project
+cd /srv/repos/project
+repowise init --no-prose --yes --no-editor-setup
+repowise config set managed_checkout true
+repowise serve --host 0.0.0.0
+```
+
+For a managed checkout, every server sync first fetches the branch the clone
+has checked out from its upstream and fast-forwards to it:
+
+- The GitLab, GitHub or Gitea push webhook syncs the pushed commit.
+- The poller compares the remote branch (read with `git ls-remote`, no fetch)
+  with the last indexed commit, and syncs when they differ.
+- The fetch runs inside `.repowise/.update.lock`, so it never overlaps a
+  `repowise update` or another sync.
+- Credentials come from the clone's own git config: the remote URL, a
+  credential helper or an SSH key for the user the server runs as. Nothing
+  prompts; a missing credential fails the fetch.
+
+A managed checkout holds no local work. When it has edited tracked files, or
+commits the remote does not have, the sync is refused with that reason in the
+job's error and the server log (`managed_checkout_not_moved`); nothing is reset
+or discarded. A fetch that fails (network, credentials, a deleted branch) is
+refused the same way, and the checkout and the index stay where they were. SSH
+runs in batch mode unless the clone sets `core.sshCommand`, so an unknown host
+key fails the fetch instead of waiting. A remote the poller cannot read is
+logged as `managed_checkout_remote_unreadable` and skipped.
+
+Until the cause is fixed, each poll after a push starts a sync that is refused
+again, so the job list shows the reason every 15 minutes.
+
+The setting lives in the clone's `.repowise/config.yaml`, which is not
+committed, so a teammate's working tree never inherits it. Leave it off for any
+checkout someone edits.
+
+---
+
 ## How updates work
 
 ### `repowise update`
@@ -190,7 +241,7 @@ No configuration is needed.
    (`--cascade-budget N` to override).
 4. Regenerate those pages with the LLM, when the repo was indexed with docs.
    Affected pages beyond the budget are marked stale, not regenerated;
-   `repowise generate --stale` refreshes them when you choose to spend on it.
+   `repowise update --full` refreshes them all, pricing the model's pages first.
 5. In a workspace, re-run the cross-repo analysis.
 6. Save the new `HEAD` as the last synced commit.
 
@@ -211,9 +262,14 @@ uses its own docs setting; `--docs` / `--no-docs` override it for the run.
 
 ### Server sync
 
-`POST /api/repos/{id}/sync` re-parses the repo, re-indexes git metadata, and
-rescans dead code and decisions. It does not regenerate wiki pages, so it has no
-LLM cost. `POST /api/repos/{id}/full-resync` also regenerates every page.
+`POST /api/repos/{id}/sync`, a webhook push and the poller all run the same
+sync job. It re-parses the repo, re-indexes git metadata, and rescans dead code
+and decisions, then re-renders the pages of the changed files from structure,
+with no model call; pages a model wrote stay as they are. With a provider
+configured, decision extraction can call the model during a sync; set
+`decisions.llm: false` to keep sync model-free. With no provider configured a
+sync makes no model calls. `POST /api/repos/{id}/full-resync` regenerates every
+page.
 
 ---
 
@@ -265,6 +321,10 @@ Gitea's and Forgejo's `X-Gitea-Signature` must not have one.
 non-local caller. Set `REPOWISE_GITHUB_WEBHOOK_SECRET`,
 `REPOWISE_GITLAB_WEBHOOK_TOKEN` or `REPOWISE_GITEA_WEBHOOK_SECRET`, restart the
 server, and redeliver the payload.
+
+**A push does not reach a server's index**: if the checkout is a clone the
+server owns, set `managed_checkout` ([above](#7-server-owned-clones)). If it is
+set, the job's error says why the clone was not moved.
 
 **Update is slow**: the first update after many commits does more work.
 `repowise update --index-only` skips page regeneration when you only need the

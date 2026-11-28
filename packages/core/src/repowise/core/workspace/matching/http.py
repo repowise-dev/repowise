@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.contracts import ContractLink, normalize_contract_id
+from repowise.core.workspace.extractors.http.paths import LOCALHOST_HOSTS
 from repowise.core.workspace.origins import (
     ORIGIN_CONFIDENCE,
     ContractOrigin,
@@ -49,6 +50,9 @@ if TYPE_CHECKING:
 # they double as legitimate route segments and would conflate unrelated routes.
 _MOUNT_PREFIX_SEGMENTS = frozenset({"api", "rest"})
 _VERSION_SEGMENT_RE = re.compile(r"^v\d+$")
+
+# What every parameter style (``:id``, ``{id}``, ``[id]``, ``${expr}``) normalizes to.
+_PARAM = "{param}"
 
 # Segments of the operational endpoints nearly every service serves (health,
 # readiness, liveness, metrics, version, Spring's actuator). A path made only of
@@ -107,11 +111,6 @@ _STATIC_ASSET_SUFFIXES = (
     ".wasm",
 )
 
-# Hosts that name the local machine, not a specific service. A consumer URL
-# pointing here carries no service identity, so it is resolved by path uniqueness
-# rather than excluded as third-party.
-_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
-
 # Internal-DNS suffixes whose leading label names a service (k8s / mesh / LAN).
 # Only for these do we map ``<label>.<suffix>`` to a repo alias; a public host
 # like ``backend.stripe.com`` must never be mistaken for the ``backend`` repo.
@@ -155,7 +154,8 @@ def _resolve_consumer_target(
     if host:
         if host in service_bases:
             return service_bases[host], False, ServiceName(host, HOST, service_bases[host], VIA_SERVICE_BASES, "")
-        if host in _LOCALHOST_HOSTS:
+        if host in LOCALHOST_HOSTS:
+            # No service identity: resolved by path uniqueness, not excluded as third-party.
             return None, False, None
         internal_dns = host not in repo_aliases and host.endswith(_INTERNAL_HOST_SUFFIXES)
         label = host.split(".")[0] if internal_dns else host
@@ -240,10 +240,9 @@ def _through_gateway(
     separate frontend repo is not routed; it would need the frontend's own
     proxy or base config to say which gateway it talks to.
     """
-    meta = consumer.meta
     if target is not None:
         gateway = target
-    elif not meta.get("host") and not meta.get("base_token"):
+    elif is_relative(consumer):
         gateway = consumer.repo
     else:
         return None
@@ -316,17 +315,61 @@ def _is_generic_path(path: str) -> bool:
     return all(s in _GENERIC_SEGMENTS for s in segments)
 
 
+def is_relative(consumer: Contract) -> bool:
+    """Whether *consumer* names neither a host nor a base, so it calls its own origin."""
+    return not consumer.meta.get("host") and not consumer.meta.get("base_token")
+
+
+def reaches_own_origin(consumer: Contract) -> bool:
+    """Whether *consumer* is a relative native ``fetch``, which the page's own server receives.
+
+    A wrapper (``apiRequest('/api/x')``) is left out: it may prepend a backend
+    origin the extractor did not read. Ceiling: an axios or HttpClient call
+    with no configured base reaches its origin too; reading that needs the
+    instance's config.
+    """
+    return is_relative(consumer) and consumer.meta.get("client") == "fetch"
+
+
+# A base that is the page's own origin (``${window.location.origin}/x``), as the
+# dialects record it: the whole expression or its last name.
+_PAGE_ORIGIN_RE = re.compile(r"(?:^|\.)location\.(?:origin|host)$|^origin$")
+
+
+def aims_elsewhere(consumer: Contract) -> bool:
+    """Whether *consumer*'s base or host points at a service nothing in the workspace places.
+
+    An unresolved env var or SDK ``baseURL`` (``${RAG_API_URL}/health``) or an
+    unmapped hostname may name another program entirely. The local machine and
+    the page's own origin are no such evidence, and a target the host or base
+    resolved settles it.
+    """
+    meta = consumer.meta
+    if meta.get("target_repo"):
+        return False
+    host = meta.get("host")
+    # ``${env.API_URL || location.origin}``: the configured name comes first.
+    token = re.split(r"\|\||\?\?", meta.get("base_token") or "")[0].strip().lower()
+    if token and not _PAGE_ORIGIN_RE.search(token):
+        return True
+    return bool(host) and host not in LOCALHOST_HOSTS
+
+
 def accepts(provider: Contract, consumer: Contract) -> bool:
     """Whether *provider* may serve *consumer* when the path alone joins them.
 
     A generic path (:func:`_is_generic_path`) links only to the consumer's
     resolved target repo, or, with no target, to a provider in the consumer's
-    own repo (a script probing the server it ships beside). Any other path
-    is accepted.
+    own repo (a script probing the server it ships beside) when nothing in the
+    call points elsewhere (:func:`aims_elsewhere`): every service answers
+    ``/health``, so an unplaced base says nothing about which one. Any other
+    path is accepted.
     """
     split = _split_http_id(normalize_contract_id(consumer.contract_id))
     if split is None or not _is_generic_path(consumer.meta.get("route_path", split[1]).lower()):
         return True
+    if aims_elsewhere(consumer):
+        return False
     return provider.repo == (consumer.meta.get("target_repo") or consumer.repo)
 
 
@@ -350,12 +393,20 @@ def gateway_pass(state: MatchState) -> None:
     """Link each gateway-routed consumer on the path its route forwards, in the route's target.
 
     A routed consumer no provider there serves is left to :func:`service_pass`,
-    which draws the service-level edge the route itself establishes.
+    which draws the service-level edge the route itself establishes. A relative
+    ``fetch`` its own service serves is served there, as in the exact pass.
     """
     for consumer in state.unmatched("http"):
         upstream = consumer.meta.get("route_path")
         split = _split_http_id(normalize_contract_id(consumer.contract_id))
         if upstream is None or split is None:
+            continue
+        if reaches_own_origin(consumer) and any(
+            internal(p, consumer)
+            for k in find_matching_keys(consumer.contract_id, state.provider_index)
+            for p in state.provider_index[k]
+        ):
+            state.mark_served(consumer)
             continue
         target = consumer.meta.get("target_repo")
         keys = find_matching_keys(f"http::{split[0]}::{upstream}", state.provider_index)
@@ -452,7 +503,10 @@ def _one_repo_strategy(providers: list[Contract]) -> LinkStrategy:
 def candidate_pass(state: MatchState) -> None:
     """Retry unmatched consumers after collapsing mount/version/base prefixes on both sides.
 
-    A collapsed path two or more repos serve links to none of them.
+    A collapsed path two or more repos serve links to none of them. A consumer
+    whose base or host points elsewhere (:func:`aims_elsewhere`) is not
+    retried: with the host open, a path that only meets a route once rewritten
+    is no evidence (an SDK's ``${baseURL}/files`` is not ``/{id}/files``).
     """
     candidate_index: dict[str, list[Contract]] = defaultdict(list)
     for key, providers in state.provider_index.items():
@@ -466,7 +520,7 @@ def candidate_pass(state: MatchState) -> None:
 
     for consumer in state.unmatched("http"):
         split = _split_http_id(normalize_contract_id(consumer.contract_id))
-        if split is None:
+        if split is None or aims_elsewhere(consumer):
             continue
         method, path = split
         path = consumer.meta.get("route_path", path)
@@ -486,6 +540,126 @@ def candidate_pass(state: MatchState) -> None:
             continue
         for provider in servers:
             state.add(consumer, provider, LinkStrategy.PREFIX_STRIPPED)
+
+
+def _segments(path: str) -> list[str]:
+    return [s for s in path.split("/") if s]
+
+
+def _names_a_resource(segments: list[str]) -> bool:
+    """Whether *segments* hold a literal that is no mount, version or operational word.
+
+    A provider path with none (``/{param}``, ``/api/{param}``, ``/{param}/status``) is a
+    catch-all: a concrete call segment meeting it says nothing about the route.
+    """
+    return any(
+        s != _PARAM
+        and s not in _MOUNT_PREFIX_SEGMENTS
+        and s not in _GENERIC_SEGMENTS
+        and not _VERSION_SEGMENT_RE.match(s)
+        for s in segments
+    )
+
+
+def _param_hits(call: list[str], route: list[str]) -> int | None:
+    """How many of *route*'s ``{param}`` segments a concrete segment of *call* fills.
+
+    ``None`` when the paths differ in length or any segment differs where *route*
+    holds a literal. ``0`` means the two paths are the same text.
+    """
+    if len(call) != len(route):
+        return None
+    hits = 0
+    for seen, declared in zip(call, route, strict=True):
+        if seen == declared:
+            continue
+        if declared != _PARAM:
+            return None
+        hits += 1
+    return hits
+
+
+def _matching_param_routes(
+    call: list[str],
+    method: str,
+    routes: list[tuple[str, list[str], Contract]],
+) -> list[tuple[int, Contract]]:
+    """Return compatible provider routes ranked by the number of parameter hits."""
+    fits = []
+    for route_method, segments, provider in routes:
+        hits = _param_hits(call, segments)
+        if hits and _methods_compatible(method, route_method):
+            fits.append((hits, provider))
+    return fits
+
+
+def _link_param_candidates(
+    state: MatchState,
+    consumer: Contract,
+    fits: list[tuple[int, Contract]],
+) -> None:
+    """Link the most-literal candidates or refuse an ambiguous cross-repo match."""
+    if not fits:
+        return
+
+    fewest = min(hits for hits, _ in fits)
+    candidates = [p for hits, p in fits if hits == fewest]
+    servers = [
+        p
+        for p in prefer_target_repo(candidates, consumer)
+        if not internal(p, consumer) and accepts(p, consumer)
+    ]
+
+    if spans_repos(servers):
+        state.refuse(consumer)
+        return
+
+    for provider in servers:
+        state.add(consumer, provider, LinkStrategy.PARAM_SEGMENT)
+
+
+def segment_pass(state: MatchState) -> None:
+    """Link a call with a concrete value in a parameter position to the route declaring a ``{param}`` there.
+
+    ``GET /api/render/1`` meets ``GET /api/render/{param}``: same segment count, every
+    segment equal or a provider ``{param}``, at least one of the latter. Runs last among
+    the path passes, so only consumers an exact, base-resolved or prefix-stripped match
+    left alone get here; links are :attr:`LinkStrategy.PARAM_SEGMENT` candidates.
+
+    Of the routes a call fits, only the most literal stand: ``/users/me`` leaves
+    ``/users/{param}`` out when both are declared. A provider with no literal naming a
+    resource (:func:`_names_a_resource`) is never a target. Routes in two or more repos
+    link to none of them, and a consumer whose base or host points elsewhere is not
+    tried, as in :func:`candidate_pass`.
+    """
+    routes: dict[int, list[tuple[str, list[str], Contract]]] = defaultdict(list)
+    for key, providers in state.provider_index.items():
+        split = _split_http_id(key)
+        if split is None:
+            continue
+        segments = _segments(split[1])
+        if _PARAM not in segments or not _names_a_resource(segments):
+            continue
+        routes[len(segments)].extend((split[0], segments, p) for p in providers)
+
+    for consumer in state.unmatched("http"):
+        split = _split_http_id(normalize_contract_id(consumer.contract_id))
+        if split is None or aims_elsewhere(consumer):
+            continue
+        method, path = split
+        path = consumer.meta.get("route_path", path)
+        if _is_static_asset_path(path):
+            continue
+        call = _segments(path)
+        if not call:
+            continue
+
+        fits = _matching_param_routes(
+            call,
+            method,
+            routes.get(len(call), []),
+        )
+        _link_param_candidates(state, consumer, fits)
 
 
 def service_pass(state: MatchState) -> None:
@@ -538,5 +712,8 @@ __all__ = [
     "gateway_pass",
     "gateway_route_links",
     "is_deferred",
+    "is_relative",
+    "reaches_own_origin",
+    "segment_pass",
     "service_pass",
 ]

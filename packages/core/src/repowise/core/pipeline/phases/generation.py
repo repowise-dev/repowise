@@ -89,6 +89,42 @@ def _report_run_failures(
         logger.warning("generation_completion_callback_failed", error=str(exc))
 
 
+def _selected_file_pages_written(
+    selection: Any, generated_pages: list[Any], preserved_page_ids: set[str] | None
+) -> int:
+    """How many selected files have a file page after this run.
+
+    A page this run wrote counts, and so does one a resumed run kept from the
+    run it resumes. A selected file with neither is a real gap.
+    """
+    written = {p.target_path for p in generated_pages if p.page_type == "file_page"}
+    kept = {
+        page_id.removeprefix("file_page:")
+        for page_id in preserved_page_ids or ()
+        if page_id.startswith("file_page:")
+    }
+    return len(set(selection.file_page_paths) & (written | kept))
+
+
+def _fill_file_page_scope(
+    scope: dict[str, Any],
+    selection: Any,
+    generated_pages: list[Any],
+    preserved_page_ids: set[str] | None,
+) -> None:
+    """Write the run's file-page figures into *scope*; leave it empty without a selection."""
+    if selection is None:
+        return
+    eligible = selection.eligible_file_pages
+    generated = _selected_file_pages_written(selection, generated_pages, preserved_page_ids)
+    scope.update(
+        eligible=eligible,
+        effective_cap=selection.effective_file_page_cap,
+        generated=generated,
+        omitted=max(0, eligible - generated),
+    )
+
+
 async def run_generation(
     *,
     repo_path: Path,
@@ -296,17 +332,12 @@ async def run_generation(
         stats_out["embed_failed_pages"] = generator.embed_failed_pages
     if on_generation_complete is not None:
         _report_run_failures(job_system, generator.last_job_id, on_generation_complete)
-    selection = getattr(generator, "selection", None)
-    if selection_out is not None and selection is not None:
-        selection_out.update(
-            eligible=selection.eligible_file_pages,
-            effective_cap=selection.effective_file_page_cap,
-            # A resumed run may reuse already-persisted file pages rather than
-            # returning them in ``generated_pages``.  Selection is the durable
-            # contract: after a successful phase every selected file has a page.
-            generated=len(selection.file_page_paths),
+    # A test run selected from a sample, so its selection says nothing about
+    # the repository; the caller then counts against every parsed file.
+    if selection_out is not None and not test_run:
+        _fill_file_page_scope(
+            selection_out, getattr(generator, "selection", None), generated_pages, preserved_page_ids
         )
-        selection_out["omitted"] = max(0, selection_out["eligible"] - selection_out["generated"])
 
     # Which onboarding slots were made goes to the log; the screen has the
     # onboarding row's page count.

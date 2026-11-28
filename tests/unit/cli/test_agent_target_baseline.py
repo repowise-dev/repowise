@@ -209,6 +209,11 @@ def baseline_env(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(
         claude_config, "resolve_repowise_command", lambda script="repowise": PINNED_COMMAND
     )
+    # Hook commands pin their script the same way; the golden keeps the
+    # unpinned form, which is what a machine without the scripts writes.
+    from repowise.cli import mcp_config
+
+    monkeypatch.setattr(mcp_config, "resolve_repowise_command", lambda script="repowise": script)
 
     # Instruction-file bodies are out of scope (see the module docstring); the
     # decision logic around them is not.

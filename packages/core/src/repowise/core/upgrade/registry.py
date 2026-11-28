@@ -66,6 +66,21 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
         action=None,
     ),
+    # v2 -> v3: the reorganized wiki (directory-ordered chapters, per-symbol
+    # spotlight selection, flow walkthroughs, rewritten subsystem prompts).
+    # Page ids, selection and prompts all moved, so the first update after the
+    # upgrade rebuilds the wiki once through the whole generation ladder; model
+    # spend goes through the update's cost question.
+    Migration(
+        to_version=3,
+        tier=UpgradeTier.AUTO,
+        summary=(
+            "This release reorganizes the wiki. The next update rebuilds it once: "
+            "pages the new build no longer makes retire, and pages built from code "
+            "refresh at no cost."
+        ),
+        action=UpgradeActionKind.REBUILD_WIKI,
+    ),
 )
 
 

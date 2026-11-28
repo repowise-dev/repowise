@@ -235,8 +235,8 @@ def _emit(
             for line in render.render_github_annotations(findings, gate=gate):
                 click.echo(line)
             append_step_summary(markdown)
-            if gate is not None:
-                write_gate_summary(render.gate_summary(gate))
+        if gate is not None:
+            write_gate_summary(render.gate_summary(gate))
     else:
         _render(payload)
         if gate is not None:

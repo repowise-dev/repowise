@@ -168,6 +168,23 @@ def test_a_secret_that_predates_the_change_is_not_blamed_on_it(repo):
     assert _scan(repo).findings == []
 
 
+def test_a_nul_byte_inside_a_patch_does_not_split_its_commit(repo):
+    # Past git's 8000-byte binary sniff, so the NUL lines appear in the patch.
+    pad = "# pad\n" * 1500
+    _write(repo, "sep.ts", f'{pad}const SEP = "\0";\nexport {{ SEP }};\n')
+    _write(repo, "use.ts", "export const n = 1;\n")  # a file after it in the same patch
+    _commit(repo, "add a NUL line")
+    _write(repo, "sep.ts", f"{pad}export {{}};\n")
+    _commit(repo, "remove it")
+    _write(repo, "cfg.py", f"AWS = '{KEY}'\n")
+    _commit(repo, "add key")
+    _write(repo, "cfg.py", "AWS = None\n")
+    _commit(repo, "remove key")
+    scan = _scan(repo)
+    assert scan.commits_scanned == 4
+    assert _kinds(scan) == [("aws_access_key", 1, True)]
+
+
 def test_code_smells_in_intermediate_commits_do_not_count(repo):
     _write(repo, "tmp.py", "eval('1')\n")
     _commit(repo, "smell")
@@ -297,6 +314,50 @@ def test_no_raw_secret_in_any_format(repo, tmp_path):
     for raw in (KEY, "hunter2hunter2", PEM_BODY[:20]):
         for text in outputs:
             assert raw not in text
+
+
+def test_a_secret_is_shown_by_kind_and_place_only(repo, tmp_path):
+    password = "Zq9XjW7vK3pLm2Nb"  # made up for this test
+    _write(repo, "cfg.py", f"AWS_KEY = '{KEY}'\npassword = '{password}'\nos.system(cmd)\n")
+    _commit(repo, "secrets")
+    scan = _scan(repo)
+    assert {f["kind"] for f in scan.findings} >= {"aws_access_key", "hardcoded_password"}
+    gate = evaluate(scan.findings)
+    baseline = tmp_path / "b.json"
+    write_baseline(baseline, scan.findings)
+    outputs = [
+        json.dumps(scan.findings),
+        json.dumps(gate.to_dict()),
+        render_markdown(gate, label="main...HEAD", files_scanned=1, commits_scanned=1),
+        "\n".join(github_annotations(scan.findings, gate)),
+        json.dumps(render_sarif(scan.findings, tool_version="0")),
+        json.dumps(render_gitlab(scan.findings)),
+        baseline.read_text(encoding="utf-8"),
+    ]
+    for text in outputs:
+        assert "AWS_KEY" not in text and "****" not in text
+        for value in (KEY[4:], password):
+            for at in range(len(value) - 2):
+                assert value[at : at + 3] not in text
+    # A pattern finding with no secret on its line keeps its line text.
+    assert "os.system(cmd)" in outputs[0]
+    assert "cfg.py:2" in outputs[2]
+    # An entry an older version wrote loses its snippet when the file is rewritten.
+    old = {"fingerprint": "f1", "file_path": "a.py", "kind": "hardcoded_password"}
+    write_baseline(baseline, [], keep=[{**old, "snippet": f"password = '{password[:4]}****'"}])
+    assert read_entries(baseline) == [{**old, "snippet": ""}]
+
+
+def test_the_trim_never_keeps_a_secrets_characters_without_their_marker():
+    from repowise.core.analysis.security_scan import masked_snippet, shown_snippet
+
+    value = "Zq9XjW7vK3pLm2Nb"  # made up for this test
+    # Every column the 120-character cut can land on around the redaction.
+    for pad in range(80, 130):
+        snippet = masked_snippet(f"run({'a' * pad}); password = '{value}'")
+        shown = shown_snippet("os_system", snippet)
+        for at in range(len(value) - 2):
+            assert value[at : at + 3] not in shown, pad
 
 
 def test_annotations_are_capped_escaped_and_skip_the_baseline():
@@ -514,6 +575,7 @@ def test_a_submodule_in_the_change_is_skipped_not_fatal(repo, tmp_path):
     _git(sub, "init", "-q")
     _git(sub, "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "s")
     _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.as_uri(), "sub")
+    assert scan_change(str(repo), {"sub": {1}}, "staged", staged=True).findings == []
     _commit(repo, "submodule")
     assert _scan(repo).findings == []
 

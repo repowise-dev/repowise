@@ -20,6 +20,7 @@ from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.crud.analysis.performance import (
     list_performance_opportunities,
 )
+from repowise.server.auth import read_route
 from repowise.server.deps import cross_repo_cut_inputs, get_db_session
 from repowise.server.repo_paths import normalize_target_path
 from repowise.server.schemas import RelatedWorkRequest, RelatedWorkResponse
@@ -71,6 +72,7 @@ def _validated(raw: list[str]) -> list[str]:
     # An item states only what its lens knows; a null would claim a field.
     response_model_exclude_none=True,
 )
+@read_route
 async def get_related_work(
     repo_id: str,
     payload: RelatedWorkRequest,

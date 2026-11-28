@@ -15,14 +15,14 @@ it moves under ``ingestion`` the day one does.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
-from ..strings import StringSyntax, literal_span, resolve_string
+from ..strings import Arg, StringSyntax, literal_span, resolve_string, select_argument
 from .dialect import build_consumer_contract, method_from_callee
 
 if TYPE_CHECKING:
@@ -88,6 +88,25 @@ def method_from_argument(text: str) -> str | None:
     return word.upper() if word.lower() in VERBS else None
 
 
+_METHOD_KEY = Arg(keys=("method",))
+# TypeScript casts and checks after a value or an options object (`'DELETE' as
+# const`, `{ ... } as unknown as RequestInit`, `{ ... } satisfies RequestInit`).
+_TS_CAST_RE = re.compile(r"(?:\s+(?:as|satisfies)\s+[\w.<>\[\]]+)+\s*$")
+
+
+def method_from_options(args: list[str]) -> str | None:
+    """The verb a call's options names (``{ method: 'POST' }``, ``method="POST"``), else ``None``.
+
+    *args* are the call's arguments after the URL. Only a top-level ``method``
+    entry of an options object (or a ``method=`` keyword) counts, so a
+    ``method`` key inside a request body is not read as the call's verb. Only
+    an HTTP verb counts: a body passed as the second argument may carry its
+    own ``method`` field (``{ method: 'card' }``).
+    """
+    methods = select_argument([_TS_CAST_RE.sub("", a) for a in args], _METHOD_KEY)
+    return method_from_argument(_TS_CAST_RE.sub("", methods[0]).strip()) if methods else None
+
+
 # ---------------------------------------------------------------------------
 # Contracts
 # ---------------------------------------------------------------------------
@@ -102,6 +121,13 @@ def is_rooted_url(url: str) -> bool:
     return _ROOTED_URL_RE.match(url) is not None
 
 
+def join_base(base: str, url: str) -> str:
+    """*url* on a client instance's *base*; an absolute URL ignores the base."""
+    if not base or url.startswith(("http://", "https://", "//")):
+        return url
+    return base.rstrip("/") + "/" + url.lstrip("/") if url else base
+
+
 def consumer_contracts(
     ctx: ScanContext,
     matches: Iterable[ClientCallMatch],
@@ -110,6 +136,7 @@ def consumer_contracts(
     constants: dict[str, str] | None = None,
     path_only: bool = False,
     rooted_only: bool = False,
+    bound_bases: Collection[str] = (),
 ) -> list[Contract]:
     """Consumer contracts for *matches*, resolving each URL through *syntax*.
 
@@ -119,6 +146,10 @@ def consumer_contracts(
     *rooted_only* drops a URL that is neither absolute nor rooted. A client
     with a configured base composes ``"some/path"`` onto it, so the path the
     request reaches has a prefix this layer cannot see.
+
+    *bound_bases* are the base-placeholder names the dialect read from a
+    binding; a call to the service root (``/``) is kept only through one of
+    them or a literal host (see :func:`.dialect.build_consumer_contract`).
 
     A call in a comment (a usage example in a doc comment) is skipped here,
     once for every recogniser.
@@ -142,6 +173,8 @@ def consumer_contracts(
             client=m.client,
             line=line_at(ctx.content, m.offset),
             origin=m.origin,
+            bound_bases=bound_bases,
+            offset=m.offset,
         )
         if c is not None:
             out.append(c)
@@ -185,6 +218,8 @@ __all__ = [
     "ClientCallMatch",
     "consumer_contracts",
     "is_rooted_url",
+    "join_base",
     "matches_in",
     "method_from_argument",
+    "method_from_options",
 ]

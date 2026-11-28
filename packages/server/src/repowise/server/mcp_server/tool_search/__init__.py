@@ -48,6 +48,9 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
     vector_search_timeout_s,
 )
+from repowise.server.mcp_server._helpers import (
+    wait_for_vector_store as _wait_for_vector_store,
+)
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, semantic_search_state
@@ -86,6 +89,11 @@ from repowise.server.mcp_server._references import path_identity, symbol_identit
 from repowise.server.mcp_server._retrieval_rank import (
     boost_named_paths,
     rerank_pages_first,
+)
+from repowise.server.mcp_server.tool_search.concept_lift import (
+    definition_lifts,
+    entry_point_rows,
+    lift_named_rows,
 )
 from repowise.server.mcp_server.tool_search.ordering import (
     _FILE_WINDOW_OVERFETCH,
@@ -128,7 +136,6 @@ from repowise.server.mcp_server.tool_search.retrieval import (
     _safe_vector,
     _search_single_repo,
     _symbol_leg_target,
-    _wait_for_vector_store,
 )
 from repowise.server.mcp_server.tool_search.serve import (
     _FRESHNESS_TIEBREAK,
@@ -165,6 +172,7 @@ from repowise.server.mcp_server.tool_search.structured import (
     _symbol_mode_results,
     _symbol_query_for,
     _tag_repo,
+    attach_directory_hit,
 )
 from repowise.server.mcp_server.tool_search.tool import (
     _concept_search,

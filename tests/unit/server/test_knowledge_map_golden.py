@@ -17,7 +17,7 @@ from httpx import AsyncClient
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GraphNode, Page
+from repowise.core.persistence.models import GraphNode, HealthFileMetric, Page
 from repowise.server.routers import knowledge_map
 from repowise.server.services.knowledge_map import (
     compute_knowledge_map,
@@ -49,7 +49,20 @@ _NODES = [(f"src/m{i:02d}.py", 0.01 * (i + 1), False) for i in range(8)] + [
     ("src/core.py", 0.9, False),
     ("tests/test_core.py", 0.7, True),
     ("src/zero.py", 0.0, False),
+    # Not onboarding candidates, however central: an import outside the repo, a
+    # symbol, two non-code files, a vendored file and a stub-documented file.
+    ("external:os", 0.95, False),
+    ("src/core.py::Core", 0.94, False),
+    ("Dockerfile", 0.93, False),
+    ("README.md", 0.92, False),
+    ("third_party/lib.py", 0.91, False),
 ]
+
+# Files the git index holds as history only (docs and config): no ownership signal.
+_HISTORY_ONLY = {"Dockerfile", "README.md"}
+
+# Files the health index classed as something other than production code.
+_ORIGIN = {"third_party/lib.py": "vendored"}
 
 # Shortlisted by character length (m11 before m10), reported in words.
 _PAGES = {
@@ -58,6 +71,10 @@ _PAGES = {
     "src/api.py": "a " * 400,
     "src/core.py": "documented " * 50,
 }
+
+# A page the template provider rendered from the code alone: it carries text
+# but documents nothing, so the file must still read as undocumented.
+_TEMPLATE_PAGES = {"src/m00.py": "stub " * 30}
 
 
 async def _seed(session_factory, repo_id: str) -> None:
@@ -72,6 +89,24 @@ async def _seed(session_factory, repo_id: str) -> None:
                 primary_owner_commit_pct=pct,
                 commit_count_90d=commits,
                 is_hotspot=hotspot,
+            )
+        seeded = {row[0] for row in _GIT}
+        for node_id, _pagerank, is_test in _NODES:
+            if is_test or "::" in node_id or node_id.startswith("external:"):
+                continue
+            if node_id not in seeded:
+                await crud.upsert_git_metadata(
+                    session,
+                    repository_id=repo_id,
+                    file_path=node_id,
+                    history_only=node_id in _HISTORY_ONLY,
+                )
+            session.add(
+                HealthFileMetric(
+                    repository_id=repo_id,
+                    file_path=node_id,
+                    code_origin=_ORIGIN.get(node_id, "production"),
+                )
             )
         session.add_all(
             [
@@ -103,6 +138,24 @@ async def _seed(session_factory, repo_id: str) -> None:
                 for path, content in _PAGES.items()
             ]
         )
+        session.add_all(
+            [
+                Page(
+                    id=f"file_page:{path}",
+                    repository_id=repo_id,
+                    page_type="file_page",
+                    title=path,
+                    content=content,
+                    target_path=path,
+                    source_hash="h",
+                    model_name="template",
+                    provider_name="template",
+                    created_at=_AT,
+                    updated_at=_AT,
+                )
+                for path, content in _TEMPLATE_PAGES.items()
+            ]
+        )
         await session.commit()
 
 
@@ -130,3 +183,29 @@ async def test_knowledge_map_matches_the_golden(
         GOLDEN.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
         pytest.skip("golden rewritten")
     assert result == json.loads(GOLDEN.read_text(encoding="utf-8"))
+
+
+@pytest.mark.anyio
+async def test_onboarding_targets_are_production_code_files_only(
+    client: AsyncClient, session_factory
+) -> None:
+    """Imports, symbols, non-code files and vendored code never lead the list,
+    and a template-provider page does not make its file look documented."""
+    repo = await create_test_repo(client)
+    await _seed(session_factory, repo["id"])
+
+    async with get_session(session_factory) as session:
+        targets = await compute_onboarding_targets(session, repo["id"])
+
+    paths = [t["path"] for t in targets]
+    for excluded in (
+        "external:os",
+        "src/core.py::Core",
+        "Dockerfile",
+        "README.md",
+        "third_party/lib.py",
+        "tests/test_core.py",
+    ):
+        assert excluded not in paths
+    stub = next(t for t in targets if t["path"] == "src/m00.py")
+    assert stub["doc_words"] == 0

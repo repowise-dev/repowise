@@ -17,11 +17,6 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.refactoring.commands import (
-    TestRuns,
-    js_root_runs,
-    runs_for_tests,
-)
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import (
     DEFAULT_TEST_LIMIT,
@@ -46,6 +41,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 )
 from repowise.core.analysis.test_collection import narrow_scopes
 from repowise.core.analysis.test_reachability import (
+    cached_file_paths,
     cached_test_files,
     imported_names_by_test,
     reach_into_symbols,
@@ -53,6 +49,11 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 from repowise.core.ingestion.package_roots import scan_package_manifests
+from repowise.core.test_runners.packages import (
+    TestRuns,
+    js_root_runs,
+    runs_for_tests,
+)
 
 from ...models import GraphMetric, GraphNode, HealthFileMetric, Repository
 from .._shared import _BATCH_SIZE
@@ -177,6 +178,7 @@ async def validation_inputs(
     *in_degree* is the stored fan-in a caller already read; without it, read here.
     With the *checkout*, each test's package is read, for the plans to store;
     without it, JS/TS tests run from the repository root and others get no command.
+    The checkout also names the workload each performance plan is timed with.
     """
     measured = await tests_covering_files(session, repository_id, set(target_files))
 
@@ -206,7 +208,11 @@ async def validation_inputs(
     )
     unreached = sorted(unanswered - inferred.keys())
     if unreached:
-        inferred.update(tests_matching_by_name(unreached, test_files))
+        inferred.update(
+            tests_matching_by_name(
+                unreached, test_files, await cached_file_paths(session, repository_id)
+            )
+        )
     walked = {path: reached.all_tests or tuple(reached.tests) for path, reached in inferred.items()}
     narrowed = await narrow_scopes(session, repository_id, walked, test_files)
     inferred = {
@@ -228,6 +234,7 @@ async def validation_inputs(
             symbols=await _symbol_spans(session, repository_id, target_files),
             function_tests=await tests_in_files(session, repository_id, target_files),
             test_runs=runs,
+            timed=await _timed_targets(session, repository_id, checkout, suggestions),
         ),
     )
     return ValidationInputs(
@@ -281,6 +288,45 @@ async def _test_runs(checkout: str | None, test_files: set[str]) -> TestRuns:
     # The health pass already scanned this commit's package roots; this reuses it.
     manifests = await asyncio.to_thread(scan_package_manifests, root)
     return await asyncio.to_thread(runs_for_tests, root, manifests, test_files)
+
+
+async def _timed_targets(
+    session: AsyncSession,
+    repository_id: str,
+    checkout: str | None,
+    suggestions: Sequence[RefactoringSuggestion],
+) -> dict[str, dict[str, Any]]:
+    """The workload ``perf measure`` times for each performance plan's file:
+    the entry point or benchmark ``evidence setup`` names for its unit."""
+    paths = sorted(
+        {s.file_path for s in suggestions if s.refactoring_type == "performance_fix" and s.file_path}
+    )
+    root = Path(checkout) if checkout else None
+    if not paths or root is None or not root.is_dir():
+        return {}
+    from repowise.core.evidence.runtime_setup import load_runtime_inputs
+    from repowise.core.evidence.setup import detect_go_mains, timed_targets
+    from repowise.core.test_runners.stacks import detect_repo_stacks
+
+    from ..build_units import load_build_units
+
+    units = await load_build_units(session, repository_id)
+    runtime = await load_runtime_inputs(session, repository_id)
+    # Both plan finalizers of an update ask, over one tree: the session keeps
+    # the first detection and Go main walk. Ceiling: a session held across a
+    # working-tree edit keeps what it read; sessions here last one update or one request.
+    manifests = frozenset(u.manifest for u in units.units.values())
+    key = ("detected_stacks", str(root), manifests)
+    stacks = session.info.get(key)
+    if stacks is None:
+        stacks = session.info[key] = await asyncio.to_thread(detect_repo_stacks, root, units)
+    mains_key = ("go_mains", str(root), manifests)
+    mains = session.info.get(mains_key)
+    if mains is None:
+        mains = session.info[mains_key] = await asyncio.to_thread(detect_go_mains, root, stacks)
+    return await asyncio.to_thread(
+        timed_targets, root, paths, units=units, runtime=runtime, stacks=stacks, go_mains=mains
+    )
 
 
 async def _symbol_spans(

@@ -68,16 +68,14 @@ def lead_and_worth(findings: Sequence[Any]) -> tuple[Any | None, bool]:
     from .biomarkers.registry import continuous_biomarkers
     from .governance import GOVERNANCE_BIOMARKERS
     from .rows import field as row_field
-    from .scoring import HISTORY_CATEGORY, biomarker_category, is_advisory
+    from .scoring import HISTORY_CATEGORY, biomarker_category, finding_is_advisory
 
     if not findings:
         return None, False
     # An advisory finding describes; it never accuses. Leaving it eligible made
     # it the stated "one reason" for any file whose only open finding was
     # advisory - printed beside a total deduction of zero.
-    candidates = [
-        item for item in findings if not is_advisory(row_field(item, "biomarker_type"))
-    ]
+    candidates = [item for item in findings if not finding_is_advisory(item)]
     if not candidates:
         return None, False
     # A history marker is measured from git, so it names a file's context, not
@@ -273,6 +271,12 @@ class HealthReport:
     # closure whose performance rows/plans were recomputed for full parity.
     authoritative_paths: set[str] = field(default_factory=set)
     performance_authoritative_paths: set[str] = field(default_factory=set)
+    # What an incremental run diffed, for the writer that carries each
+    # function's lineage (``analysis.lineage``): the base commit, renamed
+    # files ``{old: new}`` and deleted files.
+    base_commit: str | None = None
+    renamed_paths: dict[str, str] = field(default_factory=dict)
+    deleted_paths: set[str] = field(default_factory=set)
     # Plan policy for the writer that persists these findings. The performance
     # plans in ``refactoring_suggestions`` above are a report-level convenience
     # built from one run's findings; the authoritative ones are generated once,

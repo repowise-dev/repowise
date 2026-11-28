@@ -14,6 +14,7 @@ import { FilePath } from "../../shared/file-path";
 import { linkStrategyCopy, strategyNeedsCheck } from "../link-provenance";
 import { routeTitle } from "./routes-between";
 import type { ContractRef } from "./system-map-drawer";
+import { formatNumber } from "../../lib/format";
 
 export interface RouteRowProps {
   row: ServiceLinkEntry;
@@ -76,7 +77,7 @@ function Evidence({ row }: { row: ServiceLinkEntry }) {
   if (c) {
     return (
       <span className="text-[10px] tabular-nums text-[var(--color-text-secondary)]">
-        changed together {c.frequency.toLocaleString()} {c.frequency === 1 ? "time" : "times"}
+        changed together {formatNumber(c.frequency)} {c.frequency === 1 ? "time" : "times"}
       </span>
     );
   }

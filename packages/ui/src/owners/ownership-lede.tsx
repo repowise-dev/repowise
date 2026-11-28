@@ -9,6 +9,7 @@ import { PageLede } from "../shared/page-lede";
 import { WELL_SHARED_MIN, type KnowledgeCoverage } from "./knowledge-coverage";
 import { ownershipLabels, type OwnershipLabels } from "./labels";
 import { spreadPromptRequest } from "./prompt-requests";
+import { formatNumber } from "../lib/format";
 
 export type OwnershipTab = "risks" | "loss" | "offboarding";
 
@@ -36,7 +37,7 @@ function ownershipReads(
     reads.push({
       key: "hotspots",
       label: labels.readHotspots,
-      value: summary.single_owner_hotspots.toLocaleString(),
+      value: formatNumber(summary.single_owner_hotspots),
       unit: labels.readHotspotsUnit(summary.single_owner_files),
       why: labels.readHotspotsWhy,
       href: hrefForTab("risks"),
@@ -46,7 +47,7 @@ function ownershipReads(
     reads.push({
       key: "quiet",
       label: labels.readQuiet,
-      value: summary.quiet_owners_total.toLocaleString(),
+      value: formatNumber(summary.quiet_owners_total),
       unit: labels.readQuietUnit(summary.quiet_owners_total),
       why: labels.readQuietWhy(summary.activity_window_days),
       href: hrefForTab("loss"),
@@ -62,7 +63,7 @@ function ownershipReads(
     reads.push({
       key: "truck",
       label: labels.readTruck,
-      value: tf.toLocaleString(),
+      value: formatNumber(tf),
       why: labels.readTruckWhy,
       href: hrefForTab("offboarding", keys),
     });

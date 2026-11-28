@@ -711,7 +711,7 @@ def test_update_sweeps_pages_retired_since_the_index_was_built(tmp_path: Path) -
     (tmp_path / ".repowise").mkdir()
     retired = sorted(RETIRED_IDS)
     assert retired, "no retired ids to exercise"
-    survivor = "onboarding:onboarding/key_concepts"
+    survivor = "onboarding:onboarding/how_it_works"
     asyncio.run(_seed_pages(tmp_path, "repo", [*retired, survivor]))
 
     asyncio.run(

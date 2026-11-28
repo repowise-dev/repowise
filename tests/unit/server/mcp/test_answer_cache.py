@@ -264,9 +264,29 @@ async def test_scoped_and_unscoped_answers_never_cross_contaminate(
 @pytest.mark.asyncio
 async def test_distinct_scopes_never_cross_contaminate(setup_mcp, factory, monkeypatch):
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import GraphNode
     from repowise.server.mcp_server import get_answer
 
+    async with get_session(factory) as session:
+        session.add(
+            GraphNode(
+                id="billing",
+                repository_id=setup_mcp,
+                node_id="src/billing/invoice.py",
+                node_type="file",
+                language="python",
+            )
+        )
+
     _patch_retrieval(monkeypatch, answer_mod)
+    # Each scope holds a file: a scope holding none never reaches synthesis.
+    billing = [{"page_id": "file_page:src/billing/invoice.py", "score": 3.0}]
+
+    async def _fake_retrieve(question, ctx):
+        return [dict(h) for h in (*_HITS, *billing)]
+
+    monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
     provider = _Provider("Scoped answer (src/auth/service.py).")
     _patch_provider(monkeypatch, answer_mod, provider)
 

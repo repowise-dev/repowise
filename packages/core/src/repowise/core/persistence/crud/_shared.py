@@ -14,8 +14,9 @@ from datetime import UTC, datetime
 from functools import cache
 from typing import Any
 
-from sqlalchemy import delete, insert, inspect, select
+from sqlalchemy import bindparam, delete, insert, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from repowise.core.persistence.models import _new_uuid, _now_utc
 
@@ -60,16 +61,18 @@ class UpsertGate:
     table: the graph node / metric / membership snapshots rewrite every row
     every update, and on a steady-state update almost none of them moved.
     With a gate, :func:`_batch_upsert_keyed` reads the comparison columns as
-    plain tuples first (no ORM hydration), and hydrates + touches only the
-    rows that actually differ.
+    plain tuples first (no ORM hydration), and writes only the rows that
+    actually differ, as plain UPDATE statements (see :func:`_rewrite_gated_rows`).
 
     - *columns* are the comparison columns, keyed positionally; the key column
       is not one of them.
     - *item_values_fn* returns exactly the fields ``update_fn`` would write for
-      that item. A field it returns that is not in *columns* makes the item
-      unconditionally "changed": the gate can never suppress a write it cannot
-      prove is redundant, so a payload that grows a field degrades to the
-      ungated behaviour instead of silently dropping it.
+      that item, with the values it would write: a changed row is written from
+      it, without ``update_fn``. A field it returns that is not in *columns*
+      makes the item unconditionally "changed" and sends it through
+      ``update_fn``: the gate can never suppress a write it cannot prove is
+      redundant, so a payload that grows a field degrades to the ungated
+      behaviour instead of silently dropping it.
     - *float_columns* are compared with ``float_atol`` absolute tolerance. See
       :func:`_gate_unchanged` for why that is not the same thing as sloppiness.
     - *prefetched* lets a caller that already scans the table for its own
@@ -157,7 +160,7 @@ async def _batch_upsert_keyed(
     primary key included, exactly as they would be passed to ``model(...)``.
 
     *gate*, when given, skips items whose stored row already matches (see
-    :class:`UpsertGate`). Only the surviving items are hydrated as ORM rows.
+    :class:`UpsertGate`) and writes the changed ones without hydrating them.
     It is disabled for a batch with duplicate keys, where "already matches"
     would have to reason about the whole run of items sharing that key.
     """
@@ -184,18 +187,11 @@ async def _batch_upsert_keyed(
                 ).all()
                 stored = {row[0]: row[1:] for row in stored_rows}
             stored_count = len(stored)
-            surviving: list[Any] = []
-            gated_keys = []
-            for item, key in zip(materialized, keys, strict=True):
-                current = stored.get(key)
-                if current is None:
-                    surviving.append(item)  # new row — nothing to compare against
-                    continue
-                if _gate_unchanged(gate, index, item, current):
-                    continue
-                surviving.append(item)
-                gated_keys.append(key)
-            materialized = surviving
+            materialized, gated_keys, rewrites = _sort_gated_items(
+                gate, index, materialized, keys, stored
+            )
+            if rewrites:
+                await _rewrite_gated_rows(session, model, prefilter, gate, rewrites)
             if not materialized:
                 await session.flush()
                 return
@@ -258,6 +254,115 @@ async def _batch_upsert_keyed(
             for key, values in pending.items():
                 flushed[key] = tuple(values[k] for k in pk_keys)
         await session.flush()
+
+
+def _sort_gated_items(
+    gate: UpsertGate,
+    index: dict[str, int],
+    items: list[Any],
+    keys: list[Any],
+    stored: dict[Any, tuple],
+) -> tuple[list[Any], list[Any], list[tuple[Any, dict[str, Any]]]]:
+    """Split items into those for the ORM path, their stored keys, and rewrites.
+
+    Unchanged items are dropped. A changed item whose fields the gate fully
+    compares is a rewrite (key, values); a new or partly comparable one stays.
+    """
+    surviving: list[Any] = []
+    gated_keys: list[Any] = []
+    rewrites: list[tuple[Any, dict[str, Any]]] = []
+    for item, key in zip(items, keys, strict=True):
+        current = stored.get(key)
+        if current is None:
+            surviving.append(item)  # new row — nothing to compare against
+            continue
+        if _gate_unchanged(gate, index, item, current):
+            continue
+        values = gate.item_values_fn(item)
+        if values.keys() <= index.keys():
+            rewrites.append((key, values))
+            continue
+        surviving.append(item)
+        gated_keys.append(key)
+    return surviving, gated_keys, rewrites
+
+
+async def _rewrite_gated_rows(
+    session: AsyncSession,
+    model: type[Any],
+    prefilter: tuple[Any, ...],
+    gate: UpsertGate,
+    rewrites: list[tuple[Any, dict[str, Any]]],
+) -> None:
+    """Write the rows the gate found changed as executemany UPDATEs.
+
+    A gate's ``item_values_fn`` is exactly what ``update_fn`` would set, so
+    these rows need no ORM object. Hydrating and flushing them one by one
+    issued an UPDATE per row with its own column set (the unit of work cannot
+    batch rows whose changed columns differ): ~0.4 ms each, 5-10 s on a
+    structural change that renumbers or renormalises most of a large graph.
+    Rows are grouped by field set, so each group is one statement.
+    """
+    # Pending ORM changes land first, so the statements below have the last word.
+    await session.flush()
+    table = model.__table__
+    mapper = inspect(model)
+    key_column = gate.key_column.property.columns[0]
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for key, values in rewrites:
+        params = {"_gate_key": key}
+        params.update({f"_gate_{name}": value for name, value in values.items()})
+        groups.setdefault(tuple(sorted(values)), []).append(params)
+    for names, params in groups.items():
+        stmt = (
+            update(table)
+            .where(*prefilter, key_column == bindparam("_gate_key"))
+            .values({mapper.attrs[name].columns[0]: bindparam(f"_gate_{name}") for name in names})
+        )
+        for start in range(0, len(params), _BATCH_SIZE):
+            await session.execute(stmt, params[start : start + _BATCH_SIZE])
+    await _refresh_held_rows(session, model, prefilter, gate, dict(rewrites))
+
+
+async def _refresh_held_rows(
+    session: AsyncSession,
+    model: type[Any],
+    prefilter: tuple[Any, ...],
+    gate: UpsertGate,
+    written: dict[Any, dict[str, Any]],
+) -> None:
+    """Put the written values on rows the session already holds.
+
+    The statements bypass the identity map, and the ORM path this replaces
+    left held rows carrying the new values. Expiring them instead would make
+    the next attribute read a lazy load, which an async session cannot do.
+    Only rows the prefilter selects are touched: another repository may hold
+    the same key.
+    """
+    key_attr = gate.key_column.key
+    held: dict[tuple, Any] = {}
+    for obj in list(session.sync_session.identity_map.values()):
+        if not isinstance(obj, model):
+            continue
+        state = inspect(obj)
+        if state.dict.get(key_attr) in written and state.identity is not None:
+            held[state.identity] = obj
+    if not held:
+        return
+    mapper = inspect(model)
+    keys = list({inspect(obj).dict[key_attr] for obj in held.values()})
+    for start in range(0, len(keys), _GATE_LOAD_CHUNK):
+        rows = await session.execute(
+            select(*mapper.primary_key).where(
+                *prefilter, gate.key_column.in_(keys[start : start + _GATE_LOAD_CHUNK])
+            )
+        )
+        for row in rows:
+            obj = held.get(tuple(row))
+            if obj is None:
+                continue
+            for name, value in written[inspect(obj).dict[key_attr]].items():
+                set_committed_value(obj, name, value)
 
 
 @cache

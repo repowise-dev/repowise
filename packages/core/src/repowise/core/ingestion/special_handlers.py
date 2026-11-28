@@ -24,6 +24,7 @@ from .models import FileInfo, Import, ParsedFile, Symbol
 from .salesforce_flow import parse_flow_file
 from .salesforce_schema import parse_object_metadata
 from .salesforce_soql import parse_soql_file
+from .symbol_identity import make_symbol_id
 
 log = structlog.get_logger(__name__)
 
@@ -161,6 +162,20 @@ _ENTRYPOINT_RE = re.compile(r"^\s*(?:ENTRYPOINT|CMD)\s+(.+)", re.IGNORECASE)
 _EXPOSE_RE = re.compile(r"^\s*EXPOSE\s+(\d+)", re.IGNORECASE)
 _ENV_RE = re.compile(r"^\s*ENV\s+(\w+)", re.IGNORECASE)
 _ARG_RE = re.compile(r"^\s*ARG\s+(\w+)", re.IGNORECASE)
+# ``FROM [--platform=...] image AS name``: the name ``docker build --target`` takes.
+_STAGE_RE = re.compile(r"^\s*FROM\s+(?:--\S+\s+)*\S+\s+AS\s+(\S+)", re.IGNORECASE)
+
+
+def iter_docker_stages(text: str) -> Iterator[str]:
+    """Yield the named build stages a Dockerfile declares, in order.
+
+    The Dockerfile counterpart of :func:`iter_make_targets`: the names a reader
+    can pass to ``docker build --target``. An unnamed ``FROM`` declares none.
+    """
+    for line in text.splitlines():
+        m = _STAGE_RE.match(line)
+        if m:
+            yield m.group(1)
 
 
 def _parse_dockerfile(file_info: FileInfo, source: bytes) -> ParsedFile:
@@ -195,7 +210,7 @@ def _parse_dockerfile(file_info: FileInfo, source: bytes) -> ParsedFile:
             name = "entrypoint" if "ENTRYPOINT" in line.upper() else "cmd"
             symbols.append(
                 Symbol(
-                    id=f"{file_info.path}::{name}",
+                    id=make_symbol_id(file_info.path, name),
                     name=name,
                     qualified_name=name,
                     kind="function",
@@ -304,7 +319,7 @@ def _parse_makefile(file_info: FileInfo, source: bytes) -> ParsedFile:
     for target, lineno in iter_make_targets(text):
         symbols.append(
             Symbol(
-                id=f"{file_info.path}::{target}",
+                id=make_symbol_id(file_info.path, target),
                 name=target,
                 qualified_name=target,
                 kind="function",
@@ -439,7 +454,7 @@ def _extract_sql_symbols(file_info: FileInfo, text: str) -> tuple[list[Symbol], 
         line, cursor = _locate_line(text, name, cursor)
         symbols.append(
             Symbol(
-                id=f"{file_info.path}::{qualified}",
+                id=make_symbol_id(file_info.path, qualified),
                 name=name,
                 qualified_name=qualified,
                 kind=kind,  # type: ignore[arg-type]

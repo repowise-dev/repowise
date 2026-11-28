@@ -125,3 +125,6 @@ ehthumbs.db
 # Written by Claude Code into a plugin dir it loads a mod from
 plugins/claude-code/.claude-plugin/types/
 plugins/claude-code/tsconfig.json
+
+# Gradle build state a JVM fixture run leaves behind
+.gradle/

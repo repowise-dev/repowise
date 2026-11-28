@@ -164,7 +164,8 @@ async def upsert_decision(
         that the title query cannot see. ``identity_quote`` is not among the
         fields, because it is pinned at first capture.
         """
-        rec.status = status
+        # A restated proposal must not demote an accepted or retired record.
+        rec.status = _merge_status(rec.status, status)
         if kind is not None:
             rec.kind = _extraction_kind(kind)
         rec.context = context
@@ -472,6 +473,8 @@ async def update_decision_status(
     superseded_by: str | None = None,
     accepter: str = "",
     kind: str = "person",
+    reason: str = "",
+    force: bool = False,
 ) -> DecisionRecord | None:
     """Move a decision record between statuses, recording authority changes.
 
@@ -481,8 +484,11 @@ async def update_decision_status(
     Writing the column alone would leave the two disagreeing, which is how a
     dismissal survives in one surface and not another.
 
-    Raises ValueError for an invalid status, and for an acceptance the record
-    cannot support. Returns None if not found.
+    *reason* is the accepter's why, for an acceptance of a record that states
+    none. Raises ValueError for an invalid status, and AcceptanceRefusedError
+    (a ValueError) naming each gap for an acceptance the record cannot
+    support. Returns None if not found. *force* lets a person retire a pinned
+    decision; see ``record_acceptance``.
     """
     if status not in _VALID_DECISION_STATUSES:
         raise ValueError(
@@ -493,32 +499,35 @@ async def update_decision_status(
         return None
 
     from .authority import (
-        AcceptanceRefusedError,
         accept_decision,
         is_accepted,
         record_acceptance,
     )
 
     accepted = await is_accepted(session, rec.id)
-    try:
-        if status == "active":
-            if not accepted:
-                await accept_decision(
-                    session, rec, accepter=accepter or "unrecorded", kind=kind
-                )
-        elif accepted and status in RETIRED_STATUSES:
-            await record_acceptance(
+    # A refusal propagates as AcceptanceRefusedError, a ValueError that keeps
+    # its blockers so a caller can name each one.
+    if status == "active":
+        if not accepted:
+            await accept_decision(
                 session,
                 rec,
-                # ``deprecated`` and ``dismissed`` share a currency; the action
-                # keeps which one happened.
-                action=status,
-                currency="superseded" if status == "superseded" else "dismissed",
                 accepter=accepter or "unrecorded",
                 kind=kind,
+                reason=reason.strip(),
             )
-    except AcceptanceRefusedError as exc:
-        raise ValueError(str(exc)) from exc
+    elif accepted and status in RETIRED_STATUSES:
+        await record_acceptance(
+            session,
+            rec,
+            # ``deprecated`` and ``dismissed`` share a currency; the action
+            # keeps which one happened.
+            action=status,
+            currency="superseded" if status == "superseded" else "dismissed",
+            accepter=accepter or "unrecorded",
+            kind=kind,
+            force=force,
+        )
 
     rec.status = status
     if superseded_by is not None:

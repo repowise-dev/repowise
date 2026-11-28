@@ -7,9 +7,7 @@ without walking the tree itself. Pure post-order aggregation, no DB.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
-from .models import ZoomMetrics, ZoomNode
+from .models import ZoomMetrics, ZoomNode, evolve
 
 
 def rollup_metrics(root_id: str, nodes: dict[str, ZoomNode]) -> dict[str, ZoomNode]:
@@ -32,7 +30,7 @@ def rollup_metrics(root_id: str, nodes: dict[str, ZoomNode]) -> dict[str, ZoomNo
                 entry_point_count=1 if node.is_entry_point else 0,
                 on_flow_count=1 if node.on_flow else 0,
             )
-            updated[node_id] = replace(node, metrics=m)
+            updated[node_id] = evolve(node, metrics=m)
             return m
 
         files = hot = dead = entry = flow = descendants = 0
@@ -52,7 +50,7 @@ def rollup_metrics(root_id: str, nodes: dict[str, ZoomNode]) -> dict[str, ZoomNo
             entry_point_count=entry,
             on_flow_count=flow,
         )
-        updated[node_id] = replace(node, metrics=m)
+        updated[node_id] = evolve(node, metrics=m)
         return m
 
     visit(root_id)
@@ -86,7 +84,7 @@ def rollup_health(root_id: str, nodes: dict[str, ZoomNode]) -> dict[str, ZoomNod
             weighted_sum += cs
             weight += cw
         score = weighted_sum / weight if weight > 0 else None
-        updated[node_id] = replace(node, health_score=score)
+        updated[node_id] = evolve(node, health_score=score)
         return weighted_sum, weight
 
     visit(root_id)

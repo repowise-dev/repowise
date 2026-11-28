@@ -38,7 +38,8 @@ class InitOptions:
     run_mode: str
     exclude: tuple[str, ...]
     commit_limit: int | None
-    follow_renames: bool
+    #: ``None`` when neither --follow-renames nor --no-follow-renames was given.
+    follow_renames: bool | None
     no_claude_md: bool
     seed_from: str | None
     no_seed: bool
@@ -62,6 +63,8 @@ class InitOptions:
     progress: str
     # Raw ``GLOB=PCT`` rules, validated by the option callback.
     folder_coverage_rules: tuple[str, ...] = ()
+    #: Hidden ``--source``: which setup instructions started the run.
+    source: str | None = None
 
 
 @dataclass
@@ -105,6 +108,9 @@ class InitRun:
     no_provider: bool = False
     total_phases: int = 4
     result: Any = None
+    # Built before indexing (decision mining calls the model) and reused by
+    # generation; None when the run calls no model.
+    cost_tracker: Any = None
     # PhaseTimingRecorder shared by every stage.
     recorder: Any = None
     run_warnings: list[str] = field(default_factory=list)
@@ -118,12 +124,16 @@ class InitRun:
     scope_embedder: str | None = None
     # What the finish reported, kept for the --progress json summary.
     mcp_repointed: bool = False
+    #: Agent config bytes before setup wrote anything, to name the hosts to restart.
+    agent_configs_before: dict[str, Any] | None = None
     setup_outcome: Any = None
     files_written: list[Path] = field(default_factory=list)
     next_steps: list[tuple[str, str]] = field(default_factory=list)
-    #: The finish panel's findings (StoodOut) and model block (ModelUpgrade).
+    #: The finish panel's findings (StoodOut) and its first question for the agent.
     stood_out: Any = None
-    model_upgrade: Any = None
+    first_prompt: str | None = None
+    #: The repo report this run wrote or kept (``ui.finish_panel.FirstLook``); None when none.
+    first_look: Any = None
 
 
 def resolve_structural_flags(opts: InitOptions) -> InitOptions:

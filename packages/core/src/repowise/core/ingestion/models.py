@@ -42,6 +42,7 @@ LanguageTag = Literal[
     "luau",
     "dart",
     "pascal",
+    "perl",
     "cobol",
     "gdscript",
     "vbnet",
@@ -102,6 +103,11 @@ LanguageTag = Literal[
     "unknown",
 ]
 
+# TypeScript, JavaScript and the single-file components whose script blocks
+# ``sfc_source`` projects into a TS buffer at identical offsets, so every TS/JS
+# code path applies to them verbatim.
+TS_JS_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "svelte", "vue", "astro"})
+
 # ---------------------------------------------------------------------------
 # Extension → language map (used by FileTraverser and ASTParser)
 #
@@ -158,6 +164,9 @@ SymbolKind = Literal[
     "property",
 ]
 
+#: Kinds that name a stored value rather than behaviour or a type.
+VALUE_SYMBOL_KINDS: frozenset[str] = frozenset({"constant", "variable", "property"})
+
 # ---------------------------------------------------------------------------
 # Core models
 # ---------------------------------------------------------------------------
@@ -187,6 +196,9 @@ class FileInfo:
     # Starts a framework application (``SpringApplication.run``): ranked with
     # the manifest entries, but not a public API the way those are.
     is_application_main: bool = False
+    # Plugin that extracts an otherwise unsupported source file as Markdown.
+    extractor_name: str | None = None
+    extractor_version: str | None = None
 
 
 @dataclass
@@ -287,6 +299,8 @@ class NamedBinding:
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
     is_global: bool = False  # C# `global using` — applies to every file in the project
     is_static_import: bool = False  # C# `using static` / Java static import — pulls members
+    # Java ``import static a.B.m``: the type ``B`` that declares the member.
+    member_of: str | None = None
     # Position of the local name (1-based line, byte column), set where a
     # binding can sit inside a function body (``require``, ``import()``), so
     # it is not read as a shadowing local.
@@ -310,6 +324,15 @@ class Import:
     type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
     # Inside a function or lambda body: runs on first call, not at module load.
     deferred: bool = False
+    # Python: in a ``try`` body with an ``except ImportError`` handler; runs at
+    # load, but the module already survives it failing.
+    guarded: bool = False
+    # Python: ``import b`` / ``import a.b`` (not ``from``) whose bound name no
+    # module-level code mentions, so it cannot fail at import inside a cycle.
+    module_form: bool = False
+    # Python: the ``(start_line, end_line)`` of each function whose body holds
+    # the statement, the only code its names are bound for. None: file-wide.
+    scopes: tuple[tuple[int, int], ...] | None = None
 
     @property
     def local_names(self) -> list[str]:
@@ -328,6 +351,17 @@ class Import:
         being the token that appears in this file.
         """
         return [b.local_name for b in self.bindings] or list(self.imported_names)
+
+
+@dataclass
+class GlobImport(Import):
+    """A Vite ``import.meta.glob`` call: it loads every indexed file its patterns match.
+
+    ``module_path`` is the first pattern; ``glob_patterns`` holds all of them in
+    order, ``!`` negations included.
+    """
+
+    glob_patterns: tuple[str, ...] = ()
 
 
 @dataclass
@@ -354,6 +388,10 @@ CallSiteEdgeType = Literal["calls", "references"]
 #: no name can be spelled this way, and receiver typing reads it as ``String``.
 STRING_LITERAL_RECEIVER = '""'
 
+#: The argument type of a C# unsuffixed integer constant, which converts to any
+#: numeric type its value fits, unlike an ``int`` value.
+CSHARP_INTEGER_CONSTANT = "int constant"
+
 
 @dataclass
 class CallSite:
@@ -368,6 +406,7 @@ class CallSite:
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
+    start_byte: int = field(default=0, compare=False)  # 0-indexed start byte offset of the call node in the source file
     # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
     # ``receiver_name`` because that field routes to the member strategies,
     # and cpp has none -- a scoped call must stay on the free-call path. Java
@@ -491,6 +530,8 @@ EdgeType = Literal[
     # that something holds a handle to it, which is enough to make deleting it
     # unsafe.
     "references",
+    # A document links to or names a repository file; source is always a Markdown node.
+    "documents",
 ]
 
 # Runtime mirror of the Literal, for the places that must test membership
@@ -534,6 +575,10 @@ ResolutionOrigin = Literal[
     # named for Rust trait impls but is gated on no language.
     "receiver_global",
     "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # 0.50 — Python: the name is imported only inside another function of
+    # this file, so here it is a local or a global that import never binds.
+    # The one such import is read as a guess.
+    "import_elsewhere",
     # The four below reach the same scopes as their untyped twins, but through
     # a receiver whose type was read off its declaration rather than written at
     # the call. They share their twin's confidence deliberately: the inferred
@@ -607,6 +652,12 @@ CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
 # look like an import of its own subject.
 TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 
+# Prose pointing at code: a document naming a file says nothing about what the file depends on.
+DOCUMENTATION_EDGE_TYPES: frozenset[str] = frozenset({"documents"})
+
+# Edges that are not code at all: history and prose.
+NON_CODE_EDGE_TYPES: frozenset[str] = TEMPORAL_EDGE_TYPES | DOCUMENTATION_EDGE_TYPES
+
 # Edge types that are *not* code dependencies, and so must be excluded by any
 # consumer answering "what depends on this?" about FILES.
 #
@@ -616,8 +667,8 @@ TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 # ``calls`` / ``extends`` / ``implements``, and nothing points from a symbol
 # back to a file. Drop ``defines`` and a caller can no longer walk from a file
 # to the functions it declares, so anything traversing the graph wants
-# ``TEMPORAL_EDGE_TYPES`` and a ``node_type`` check instead.
-NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | TEMPORAL_EDGE_TYPES
+# ``NON_CODE_EDGE_TYPES`` and a ``node_type`` check instead.
+NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | NON_CODE_EDGE_TYPES
 
 # ---------------------------------------------------------------------------
 # The named views. Ask for the one that matches your question.
@@ -718,19 +769,24 @@ def is_dynamic_edge(edge_type: str | None) -> bool:
 
 
 def combine_load_kinds(
-    first: tuple[bool, bool], second: tuple[bool, bool]
-) -> tuple[bool, bool]:
-    """``(type_only, deferred)`` for two imports of one target folded together.
+    first: tuple[bool, bool, bool], second: tuple[bool, bool, bool]
+) -> tuple[bool, bool, bool]:
+    """``(type_only, deferred, guarded)`` for two imports of one target folded together.
 
-    Each side is runtime ``R`` (neither flag), type-only ``T`` or deferred
-    ``D``; the result is the one that runs earliest::
+    Each side is runtime ``R`` (no flag), type-only ``T``, deferred ``D`` or
+    guarded ``G`` (runs at load, failure caught); the result is the one that
+    runs earliest, and an unguarded load beats a guarded one::
 
-        T + T -> T      T + D -> D      D + T -> D
-        D + D -> D      D + R -> R      R + D -> R      T + R -> R
+        T + T -> T      T + D -> D      D + T -> D      D + D -> D
+        G + T -> G      G + D -> G      G + G -> G
+        R + anything -> R
     """
+    if not any(first) or not any(second):
+        return False, False, False
+    if first[2] or second[2]:
+        return False, False, True
     type_only = first[0] and second[0]
-    deferred = not type_only and any(first) and any(second)
-    return type_only, deferred
+    return type_only, not type_only, False
 
 
 @dataclass
@@ -757,6 +813,8 @@ class TypeReference:
         "generic_constraint",  # TS/JS
         "extends",
         "implements",  # TS heritage clauses (file-level type_use)
+        "mixin",  # Ruby ``include`` / ``extend`` / ``prepend``
+        "constant",  # Ruby: any other constant mention
     ] = "ctor_param"
 
 
@@ -784,6 +842,9 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # Go's package clause affects the names callers use after importing a
+    # directory, but it is not a Symbol. Store it for incremental surface checks.
+    module_name: str | None = None
     # ``{exported name: local name}`` where a TS/JS module publishes a symbol
     # it declares under a different name (``export { stringType as string }``).
     # Empty for every other language and for the far commoner clause that does

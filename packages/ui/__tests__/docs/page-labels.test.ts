@@ -27,17 +27,27 @@ function summary(overrides: Partial<DocPageSummary> = {}): DocPageSummary {
 }
 
 const CYCLE_BODY = [
-  "# Circular Dependency: scc-103",
+  "# Static Import Cycle: scc-103",
   "",
   "- `packages/core/src/generation/page_generator/core.py`",
   "- `packages/core/src/generation/page_generator/prompts.py`",
 ].join("\n");
 
 describe("displayLabel", () => {
+  it("prefers the nav title the server derives, keeping the title for the heading", () => {
+    const page = summary({ page_type: "module_page", title: "Cli Overview", nav_title: "CLI" });
+    expect(displayLabel(page)).toBe("CLI");
+    expect(treeLabel(page, undefined)).toBe("CLI");
+  });
+
+  it("falls back to the title when a backend sends no nav title", () => {
+    expect(displayLabel(summary({ page_type: "module_page", title: "Ingestion" }))).toBe("Ingestion");
+  });
+
   it("names a cycle after the directory its members share", () => {
     const page = summary({
       page_type: "scc_page",
-      title: "Circular Dependency: scc-103",
+      title: "Static Import Cycle: scc-103",
       target_path: "scc-103",
       content: CYCLE_BODY,
     });
@@ -49,10 +59,10 @@ describe("displayLabel", () => {
     // The title is a worse label, but it is a true one.
     const page = summary({
       page_type: "scc_page",
-      title: "Circular Dependency: scc-103",
+      title: "Static Import Cycle: scc-103",
       target_path: "scc-103",
     });
-    expect(displayLabel(page)).toBe("Circular Dependency: scc-103");
+    expect(displayLabel(page)).toBe("Static Import Cycle: scc-103");
   });
 
   it("names other page types without touching the body at all", () => {

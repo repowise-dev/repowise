@@ -112,6 +112,7 @@ async def save_full_health_report(
     *,
     analyzed_commit: str | None,
     repo_path: Any = None,
+    refresh_governance: bool = False,
 ) -> None:
     """Full-replace a repository's health rows and everything derived from them.
 
@@ -125,7 +126,13 @@ async def save_full_health_report(
     commit these scores were computed against; ``None`` reads as "not
     recorded", which is honest, while a wrong sha would not be. ``repo_path``
     lets a plan whose file is gone read as deleted.
+
+    ``refresh_governance`` rebuilds the governance findings, which the findings
+    replace below deletes, before the refactoring queue is folded, so the queue
+    is composed once. For a caller whose decisions are already stored (the
+    update's re-score); the index stores its decisions after this writer.
     """
+    from repowise.core.evidence.hotness import refresh_symbol_hotness
     from repowise.core.persistence.crud import (
         PayoffContext,
         finalize_performance_opportunities,
@@ -152,8 +159,7 @@ async def save_full_health_report(
     # that were never stored. It runs on an empty finding set too: the queue
     # has to be reconciled to nothing just the same.
     async with session.begin_nested():
-        if findings:
-            await save_health_findings(session, repo_id, findings)
+        await save_health_findings(session, repo_id, findings)
         # Structured refactoring suggestions (Extract Class, ...). Repo-wide
         # reconciliation: an unchanged plan keeps its id and its triage state,
         # and one nobody detects any more resolves rather than disappearing.
@@ -186,7 +192,15 @@ async def save_full_health_report(
                 fact_rows,
                 roles=getattr(hr, "execution_roles", None),
                 tests=getattr(hr, "function_tests", None),
+                # A full run knows no diff: lineage carries by id and by
+                # unique body; a moved and edited function starts afresh.
+                commit=analyzed_commit,
             )
+        # The measured functions follow the facts just written: ids, lineage
+        # and bodies. Nothing is read past one lookup without stored evidence.
+        await refresh_symbol_hotness(
+            session, repo_id, head_commit=analyzed_commit, repo_path=repo_path
+        )
         # Group the stored performance findings into the materialized causal
         # read model, then reconcile lifecycle and plans.
         await finalize_performance_opportunities(
@@ -196,10 +210,24 @@ async def save_full_health_report(
             plan_policy=getattr(hr, "performance_plan_policy", None),
             execution_roles=getattr(hr, "execution_roles", None),
         )
+        if refresh_governance:
+            await _refresh_governance_best_effort(session, repo_id)
         # Fold the plans just written into per-file opportunities. Last in the
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+
+
+async def _refresh_governance_best_effort(session: Any, repo_id: str) -> None:
+    """Governance refresh inside the health savepoint; a failure keeps the health rows.
+
+    The refresh runs in its own savepoint, so a failure rolls back only its
+    half-written replace.
+    """
+    try:
+        await _persist.refresh_governance_findings(session, repo_id, recompose_queue=False)
+    except Exception as exc:
+        logger.warning("governance_findings_skipped", error=str(exc))
 
 
 async def refresh_governance_findings(

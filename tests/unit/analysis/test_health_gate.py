@@ -225,9 +225,10 @@ def test_github_annotates_errors_and_warnings_only():
 def test_a_failing_annotation_carries_the_first_sentence_of_its_fix():
     error, warning = github_annotations(mixed())
     assert error.endswith(
-        "::tangle has cyclomatic complexity 26 (introduced, high). Reduce cyclomatic complexity."
+        "::tangle has cyclomatic complexity 26 (introduced, high). "
+        "Split the function where its paths serve separate jobs."
     )
-    assert "Reduce cyclomatic complexity" not in warning
+    assert "Split the function" not in warning
 
 
 def test_a_failing_run_ends_in_one_reproduce_notice():

@@ -404,6 +404,15 @@ class VectorStore(ABC):
         """
         return set()  # default: empty (subclasses should override)
 
+    async def holds_current_vectors(self) -> bool:
+        """Whether stored vectors have the width the running embedder writes.
+
+        False when it cannot tell, so a caller that would keep a stored vector
+        embeds again instead. A store whose embedder changed width is rebuilt
+        on its next write, which leaves nothing to keep.
+        """
+        return False
+
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
 

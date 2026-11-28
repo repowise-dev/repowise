@@ -43,7 +43,7 @@ def test_alembic_versions_never_flagged_as_unreachable():
 def test_alembic_upgrade_downgrade_never_flagged_as_unused():
     """``upgrade()`` / ``downgrade()`` in Alembic migration scripts are
     called via reflection by the Alembic runner — the file pattern
-    exemption (``*/alembic/versions/*.py``) already covers them, so the
+    exemption (``code_origin.is_migration_path``) already covers them, so the
     symbols inside must not surface as unused exports either."""
     g = _build_graph(
         nodes={

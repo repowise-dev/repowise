@@ -33,6 +33,7 @@ from .ast_utils import (
     _find_function_entry_name,
     _find_name,
     _node_text,
+    function_start_line,
     is_function_node,
 )
 from .languages import LanguageNodeMap
@@ -722,7 +723,9 @@ class _PerfWalk:
         self.do_bound = _overrides(dialect, "concurrency_bound")
         self.do_loop_facts = self.do_chunked or self.do_magnitude or self.do_batch or self.do_bound
         self.do_in_place = _overrides(dialect, "runs_in_place")
-        self.do_runs_once = _overrides(dialect, "runs_once_in_loop")
+        self.do_runs_once = bool(dialect.statement_block_kinds) or _overrides(
+            dialect, "runs_once_in_loop"
+        )
         # Node kinds a loop, scope or call handler can apply to: one set test per node.
         self.loop_probe = self.loop_kinds | (self.call_kinds if self.do_block_loop else frozenset())
         self.scope_probe = self.scope_kinds | self.async_fn_kinds
@@ -777,9 +780,7 @@ class _PerfWalk:
             self.sources[key] = self.dialect.loop_source(loop, self.probe) or LoopSource()
         return self.sources[key]
 
-    def sink_facts(
-        self, node: Node, loop: Node, sink: bool
-    ) -> tuple[BatchForm | None, str | None]:
+    def sink_facts(self, node: Node, loop: Node, sink: bool) -> tuple[BatchForm | None, str | None]:
         """``(batch, concurrency_bound)`` of *node* in *loop*; both ``None`` off a sink."""
         dialect = self.dialect
         batch = dialect.batch_form(node, loop, self.probe) if sink and self.do_batch else None
@@ -906,7 +907,7 @@ class _PerfWalk:
     def _scope_owner(self, node: Node, t: str, cur: _Frame) -> tuple[str | None, int]:
         """``(func, start)`` the hits under *node* key to; a top-level lambda's span is recorded."""
         if t in self.fn_kinds and is_function_node(node, self.lmap):
-            return _perf_func_name(node) or cur.func, node.start_point[0] + 1
+            return _perf_func_name(node) or cur.func, function_start_line(node)
         if t in self.lambda_kinds and cur.func is None:
             self.lambda_spans.append(
                 (
@@ -923,7 +924,7 @@ class _PerfWalk:
         # A data-dependent loop inside another, iterating the same named
         # collection (all-pairs O(n^2)), is a fact the engine turns into
         # ``nested_loop_quadratic`` only for a hot function.
-        if cur.loop_depth >= 1 and self.do_nested_quadratic:
+        if cur.loop_depth >= 1 and self.do_nested_quadratic and not self._runs_once(node):
             nm = dialect.loop_iterable_name(node)
             if nm and nm in _enclosing_loop_iterables(
                 node, dialect, self.loop_kinds, self.fn_kinds, self.do_block_loop
@@ -1007,8 +1008,11 @@ class _PerfWalk:
     def _on_sink(
         self, call: _Call, kind: str, chain: tuple[Node, bool], cur: _Frame, nxt: _Frame
     ) -> None:
-        """*chain* is ``(chain_top, chain_awaited)`` from :meth:`_sink_chain`."""
-        if cur.loop_depth >= 1:
+        """*chain* is ``(chain_top, chain_awaited)`` from :meth:`_sink_chain`.
+
+        A sink the loop ends after runs once per call, like one outside any loop.
+        """
+        if cur.loop_depth >= 1 and not self._runs_once(call.node):
             if not (chain[1] and call.line in self.awaits_allowed):
                 self._loop_sink_hits(call, kind, chain, cur, nxt)
         else:
@@ -1041,8 +1045,13 @@ class _PerfWalk:
             kinds.append("nested_loop_with_io")
         self.hits.extend(
             PerfHit(
-                k, call.line, nxt.func, kind,
-                func_start=nxt.start, loop=facts, sink_call=sink_call,
+                k,
+                call.line,
+                nxt.func,
+                kind,
+                func_start=nxt.start,
+                loop=facts,
+                sink_call=sink_call,
             )
             for k in kinds
         )
@@ -1070,38 +1079,54 @@ class _PerfWalk:
     def _on_helper_call(self, call: _Call, cur: _Frame, nxt: _Frame) -> None:
         """A non-sink call: a loop marker, or a reachability entry in a loop or under a lock."""
         if cur.loop_depth >= 1:
-            marker = (
-                self.dialect.loop_call_marker(
-                    call.root_name, call.method, call.node, self.list_names
-                )
-                if self.do_loop_call_marker
-                else None
-            )
-            if marker == "lock_in_loop" and self._lock_not_hoistable(
-                call.node, call.root_name if self.dialect.callee_is_attribute(call.node) else "", nxt
-            ):
-                marker = None
-            if marker is not None:
-                self.hits.append(
-                    PerfHit(
-                        marker, call.line, nxt.func, "", func_start=nxt.start,
-                        loop=self.loop_facts(call.node, sink=False),
-                        # ``arr.includes(x)``: the list is the receiver.
-                        subject=call.root_name if marker == _MEMBERSHIP else "",
-                    )
-                )
-            elif self._is_loop_target(call):
-                self._record_loop_call(call, cur, nxt)
+            self._on_loop_helper_call(call, cur, nxt)
         if self.do_lock_io and cur.lock_depth >= 1 and call.method:
             lock_targets = self._acc(nxt.start, nxt.func)[1]
             if call.method not in lock_targets:
                 lock_targets[call.method] = call.line
 
+    def _on_loop_helper_call(self, call: _Call, cur: _Frame, nxt: _Frame) -> None:
+        marker = self._loop_call_marker(call, nxt)
+        if marker is None:
+            if self._is_loop_target(call):
+                self._record_loop_call(call, cur, nxt)
+            return
+        if self._runs_once(call.node):
+            return
+        self.hits.append(
+            PerfHit(
+                marker,
+                call.line,
+                nxt.func,
+                "",
+                func_start=nxt.start,
+                loop=self.loop_facts(call.node, sink=False),
+                # ``arr.includes(x)``: the list is the receiver.
+                subject=call.root_name if marker == _MEMBERSHIP else "",
+            )
+        )
+
+    def _loop_call_marker(self, call: _Call, nxt: _Frame) -> str | None:
+        if not self.do_loop_call_marker:
+            return None
+        marker = self.dialect.loop_call_marker(
+            call.root_name, call.method, call.node, self.list_names
+        )
+        if marker == "lock_in_loop" and self._lock_not_hoistable(
+            call.node, call.root_name if self.dialect.callee_is_attribute(call.node) else "", nxt
+        ):
+            return None
+        return marker
+
+    def _runs_once(self, node: Node) -> bool:
+        """*node* runs at most once per entry to its loop: the loop ends after it."""
+        return self.do_runs_once and self.dialect.runs_once_in_loop(node, self.loop_kinds)
+
     def _is_loop_target(self, call: _Call) -> bool:
         """A loop-nested helper call that runs on each pass."""
         if not call.method or (call.awaited and call.line in self.awaits_allowed):
             return False
-        return not (self.do_runs_once and self.dialect.runs_once_in_loop(call.node))
+        return not self._runs_once(call.node)
 
     def _record_loop_call(self, call: _Call, cur: _Frame, nxt: _Frame) -> None:
         """A loop-nested helper call, kept at the first line it is seen."""
@@ -1160,7 +1185,7 @@ class _PerfWalk:
             self._on_loop_statement(node, nxt)
 
     def _on_string_concat(self, node: Node, nxt: _Frame) -> None:
-        if _grows_loop_variable(node, self.loop_kinds, self.fn_kinds):
+        if self._runs_once(node) or _grows_loop_variable(node, self.loop_kinds, self.fn_kinds):
             return
         self.hits.append(
             PerfHit(
@@ -1178,7 +1203,7 @@ class _PerfWalk:
         sm = self.dialect.loop_stmt_marker(node, self.list_names)
         if sm == "lock_in_loop" and self._lock_not_hoistable(node, None, nxt):
             sm = None
-        if sm is None:
+        if sm is None or self._runs_once(node):
             return
         self.hits.append(
             PerfHit(
@@ -1253,7 +1278,13 @@ class _PerfWalk:
                 loop_call_lines=tuple(sorted(self.call_loop_lines.get(start, {}).items())),
             )
             for start, (name, loop_targets, lock_targets, sink, misc) in self.fn_acc.items()
-            if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)
+            if (
+                loop_targets
+                or lock_targets
+                or sink[0] is not None
+                or misc[0]
+                or misc[1] is not None
+            )
         ]
         fn_facts.sort(key=lambda f: f.func_start)
         return fn_facts

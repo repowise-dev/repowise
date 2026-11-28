@@ -89,6 +89,54 @@ def test_the_traverser_reads_the_same_list():
     assert package_manifest_names() == _MANIFEST_FILES
 
 
+_CMAKE_BAZEL = (
+    "CMakeLists.txt",
+    "BUILD",
+    "BUILD.bazel",
+    "MODULE.bazel",
+    "WORKSPACE",
+    "WORKSPACE.bazel",
+)
+
+
+def test_cmake_and_bazel_files_are_manifests_but_never_package_roots(tmp_path):
+    """Every CMake subdirectory has a ``CMakeLists.txt`` and every Bazel package
+    a ``BUILD``: recognised as build config, they mark no unit, so monorepo
+    detection, the package-root scan and health's module column all ignore them."""
+    for name in _CMAKE_BAZEL:
+        assert REGISTRY.is_manifest(f"lib/{name}"), name
+        assert not REGISTRY.is_package_manifest(f"lib/{name}"), name
+        assert name not in package_manifest_names(), name
+
+    for i, name in enumerate(_CMAKE_BAZEL):
+        _write(tmp_path, f"src/mod{i}/{name}", "x\n")
+        _write(tmp_path, f"src/mod{i}/a.cpp", "int a();\n")
+    _write(tmp_path, "CMakeLists.txt", "project(x)\n")
+    _write(tmp_path, "web/package.json", '{"name":"web"}')
+
+    roots = scan_package_roots(tmp_path)
+    assert roots == {"web"}
+    assert module_for("src/mod0/a.cpp", roots) != "src/mod0"
+    structure = FileTraverser(tmp_path).get_repo_structure()
+    assert [p.path for p in structure.packages] == ["web"]
+
+
+def test_registry_manifest_queries_follow_one_matching_rule():
+    """Exact names compare as the tool spells them; the ``*.csproj`` glob ignores case."""
+    assert REGISTRY.is_package_manifest("services/api/go.mod")
+    assert REGISTRY.is_package_manifest("Package.swift")
+    assert REGISTRY.is_package_manifest("app\\pubspec.yaml")
+    assert REGISTRY.is_package_manifest("src/Shop/Shop.CSPROJ")
+    assert REGISTRY.is_package_manifest("backend/requirements-dev.txt")
+    assert REGISTRY.is_package_manifest("Requirements.TXT")
+    assert not REGISTRY.is_package_manifest("requirements/base.txt")
+    assert not REGISTRY.is_package_manifest("Cargo.TOML")
+    assert not REGISTRY.is_package_manifest("vite.config.js")
+    assert REGISTRY.is_manifest("vite.config.js")
+    assert not REGISTRY.is_manifest("src/main.py")
+    assert REGISTRY.package_manifest_filenames() <= REGISTRY.manifest_filenames()
+
+
 # ---------------------------------------------------------------------------
 # The disk scan
 # ---------------------------------------------------------------------------
@@ -256,3 +304,48 @@ def test_roots_above_some_paths_agree_with_the_full_scan(tmp_path):
     above = package_roots_above(tmp_path, paths)
     assert above == {"services/api", "services/api/internal/tools", "web/Shop", "packages/tool"}
     assert [module_for(p, above) for p in paths] == [module_for(p, full) for p in paths]
+
+
+def test_cargo_manifest_publishes() -> None:
+    from repowise.core.analysis.published_packages import cargo_manifest_publishes
+
+    assert cargo_manifest_publishes({}) is False
+    assert cargo_manifest_publishes({"package": "not-a-dict"}) is False
+    assert cargo_manifest_publishes({"package": {"name": "foo"}}) is True
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": True}}) is True
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": ["crates-io"]}}) is True
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": ["none"]}}) is False
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": False}}) is False
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": []}}) is False
+
+
+def test_traverser_package_root_cargo_published(tmp_path: Path) -> None:
+    _write(tmp_path, "crates/pub/Cargo.toml", '[package]\nname = "pub"\nversion = "0.1.0"\n')
+    _write(tmp_path, "crates/unpub/Cargo.toml", '[package]\nname = "unpub"\npublish = false\n')
+    _write(tmp_path, "crates/unpub_list/Cargo.toml", '[package]\nname = "unpub_list"\npublish = []\n')
+    _write(tmp_path, "crates/unpub_none/Cargo.toml", '[package]\nname = "unpub_none"\npublish = ["none"]\n')
+    _write(tmp_path, "crates/virtual_ws/Cargo.toml", '[workspace]\nmembers = ["a", "b"]\n')
+    _write(tmp_path, "crates/mixed/Cargo.toml", '[package]\nname = "mixed"\npublish = false\n')
+    _write(tmp_path, "crates/mixed/package.json", '{"name": "mixed-node"}\n')
+    _write(tmp_path, "crates/corrupt/Cargo.toml", "not valid toml ::: [[\n")
+
+    traverser = FileTraverser(tmp_path)
+    assert traverser._is_package_root_dir("crates/pub") is True
+    assert traverser._is_package_root_dir("crates/unpub") is False
+    assert traverser._is_package_root_dir("crates/unpub_list") is False
+    assert traverser._is_package_root_dir("crates/unpub_none") is False
+    assert traverser._is_package_root_dir("crates/virtual_ws") is True
+    assert traverser._is_package_root_dir("crates/mixed") is True
+    assert traverser._is_package_root_dir("crates/corrupt") is False
+
+
+def test_traverser_rust_tests_harness_crate_is_test_origin(tmp_path: Path) -> None:
+    _write(tmp_path, "tests-build/Cargo.toml", '[package]\nname = "tests-build"\npublish = false\n')
+    _write(tmp_path, "tests-build/src/main.rs", "fn main() {}\n")
+    _write(tmp_path, "tests-shipped/Cargo.toml", '[package]\nname = "tests-shipped"\n')
+    _write(tmp_path, "tests-shipped/src/main.rs", "fn main() {}\n")
+
+    traverser = FileTraverser(tmp_path)
+    files = {f.path: f.is_test for f in traverser.traverse()}
+    assert files["tests-build/src/main.rs"] is True
+    assert files["tests-shipped/src/main.rs"] is False

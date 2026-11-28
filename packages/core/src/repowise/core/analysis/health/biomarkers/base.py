@@ -158,8 +158,14 @@ class FileContext:
     @property
     def outside_coverage_scope(self) -> bool:
         """Test material, or code that does not ship (tooling, build, vendored,
-        generated, docs examples): no test is owed for its coverage."""
-        return self.is_test_material or self.code_origin not in (None, "production")
+        generated, docs examples, migrations): no test is owed for its coverage
+        (:func:`~repowise.core.code_origin.owes_a_test`; no origin computed reads
+        as production)."""
+        from ....code_origin import owes_a_test
+
+        return self.is_test_material or not owes_a_test(
+            self.file_path, self.code_origin or "production"
+        )
 
 
 # A repo whose trailing-90-day window has at most this many active human

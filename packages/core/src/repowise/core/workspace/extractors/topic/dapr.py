@@ -1,10 +1,19 @@
-"""Dapr pub/sub: a topic named on a component, which runs over any broker.
+"""Dapr pub/sub: a topic named on a component, which runs over any broker except BullMQ.
 
 ``[Topic("pubsub", "orders")]`` subscribes a handler and
 ``daprClient.PublishEventAsync("pubsub", "orders", evt)`` publishes. The first
 argument is the pub/sub component, the second the topic, so the topic is read
 from position 1. ``PublishEventAsync`` is too common to read on any receiver,
 so it is read only on the names the file declares as a ``DaprClient``.
+
+Java's ``publishEvent`` and JS's ``pubsub.publish`` / ``pubsub.subscribe`` are
+as generic, so they too are read only on a declared ``DaprClient`` or
+``DaprServer``. Python's ``publish_event`` and ``@app.subscribe`` and Go's
+``PublishEvent`` and ``<alias>.Subscription{PubsubName: ...}`` are distinctive enough
+to read on any receiver, but only in a file importing the Dapr SDK. An app
+answering ``/dapr/subscribe`` itself needs no SDK, so its ``{pubsubname,
+topic}`` objects are read in a file naming that route instead; the route
+string and the objects must be in the same file.
 """
 
 from __future__ import annotations
@@ -17,7 +26,7 @@ import yaml
 from repowise.core.workspace.contracts import TOPIC_KIND_TOPIC
 from repowise.core.workspace.origins import ContractOrigin
 
-from ..langs import CSHARP
+from ..langs import CSHARP, GO, JAVA, JS_TS, PYTHON
 from ..strings import Arg
 from .dialect import ReceiverCall, TopicCall, TopicDialect, topic_contract
 
@@ -28,6 +37,12 @@ if TYPE_CHECKING:
 
 
 _DAPR = ("Dapr",)
+_DAPR_GO = ("github.com/dapr/go-sdk",)
+_DAPR_GO_COMMON = ("github.com/dapr/go-sdk/service/common",)
+_DAPR_JAVA = ("io.dapr",)
+_DAPR_JS = ("@dapr/dapr",)
+_DAPR_SUBSCRIBE = ("/dapr/subscribe",)
+_DAPR_PY = ("from dapr.", "import dapr.", "flask_dapr")
 _TOPIC = Arg(keys=("name", "topicName"), pos=1)
 
 DAPR = TopicDialect(
@@ -42,6 +57,33 @@ DAPR = TopicDialect(
             name=_TOPIC,
             requires=_DAPR,
         ),
+        ReceiverCall(
+            types=re.compile(r"\bDaprClient\b"),
+            verbs="publishEvent",
+            role="provider",
+            label="publishEvent",
+            extensions=JAVA,
+            name=Arg(pos=1),
+            requires=_DAPR_JAVA,
+        ),
+        ReceiverCall(
+            types=re.compile(r"\bDaprClient\b"),
+            verbs=r"pubsub\s*\.\s*publish",
+            role="provider",
+            label="pubsub.publish",
+            extensions=JS_TS,
+            name=Arg(pos=1),
+            requires=_DAPR_JS,
+        ),
+        ReceiverCall(
+            types=re.compile(r"\bDaprServer\b"),
+            verbs=r"pubsub\s*\.\s*subscribe",
+            role="consumer",
+            label="pubsub.subscribe",
+            extensions=JS_TS,
+            name=Arg(pos=1),
+            requires=_DAPR_JS,
+        ),
     ),
     calls=(
         TopicCall(
@@ -51,6 +93,60 @@ DAPR = TopicDialect(
             extensions=CSHARP,
             name=_TOPIC,
             requires=_DAPR,
+        ),
+        TopicCall(
+            head=re.compile(r"@Topic\s*\("),
+            role="consumer",
+            label="@Topic",
+            extensions=JAVA,
+            name=Arg(keys=("name",)),
+            requires=_DAPR_JAVA,
+        ),
+        TopicCall(
+            head=re.compile(r"\.\s*publish_event\s*\("),
+            role="provider",
+            label="publish_event",
+            extensions=PYTHON,
+            name=Arg(keys=("topic_name",), pos=1),
+            requires=_DAPR_PY,
+        ),
+        TopicCall(
+            head=re.compile(r"@\s*[\w.]+\s*\.\s*subscribe\s*\("),
+            role="consumer",
+            label="subscribe",
+            extensions=PYTHON,
+            # `App.subscribe(pubsub_name, topic)`, `DaprApp.subscribe(pubsub, topic)`
+            name=Arg(keys=("topic",), pos=1),
+            requires=_DAPR_PY,
+        ),
+        TopicCall(
+            head=re.compile(r"\.\s*PublishEvents?\s*\("),
+            role="provider",
+            label="PublishEvent",
+            extensions=GO,
+            name=Arg(pos=2),
+            requires=_DAPR_GO,
+        ),
+        TopicCall(
+            # `<alias>.Subscription{` under any import alias, plus the type-elided
+            # elements of a `[]common.Subscription{{...}, {...}}` slice (a `{`
+            # after whitespace, `{` or `,`), each needing a `PubsubName:` field before
+            # any nested brace. GCP's `pubsubpb.Subscription{Topic: t}` and a
+            # local `Config{PubsubName: ...}` are not read.
+            head=re.compile(r"(?:\b\w+\.Subscription\s*|(?<![^\s{,]))\{(?=[^{}]*\bPubsubName\s*:)"),
+            role="consumer",
+            label="common.Subscription",
+            extensions=GO,
+            name=Arg(keys=("Topic",)),
+            requires=_DAPR_GO_COMMON,
+        ),
+        TopicCall(
+            head=re.compile(r"""\{(?=[^{}]*['"]?pubsubname['"]?\s*:)""", re.IGNORECASE),
+            role="consumer",
+            label="/dapr/subscribe",
+            extensions=GO | JS_TS | PYTHON,
+            name=Arg(keys=("topic", "Topic")),
+            requires=_DAPR_SUBSCRIBE,
         ),
     ),
 )

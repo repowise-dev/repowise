@@ -28,6 +28,11 @@ def _console(*, terminal: bool) -> tuple[Console, io.StringIO]:
     return console, buf
 
 
+def _done_rows(buf: io.StringIO) -> list[str]:
+    """The done rows a pipe got; it also gets a start line per step."""
+    return [ln for ln in buf.getvalue().splitlines() if "✓" in ln]
+
+
 def _render(progress: ChecklistProgress, width: int = 160) -> str:
     console = Console(file=io.StringIO(), width=width, color_system=None)
     with console.capture() as cap:
@@ -207,7 +212,7 @@ def test_a_step_that_raises_gets_no_done_row() -> None:
             pass
 
     out = buf.getvalue()
-    assert "Writing index state" not in out
+    assert "✓ Writing index state" not in out
     assert "✓ Refreshing agent views" in out
 
 
@@ -248,7 +253,7 @@ def test_a_failed_step_is_hidden_without_a_done_row() -> None:
         callback.on_phase_start("checkpoint.index", None)
         emit_phase_failed(callback, "checkpoint.index")
         assert not [t for t in bar.tasks if t.visible]
-    assert "Saving a resume checkpoint" not in buf.getvalue()
+    assert "✓ Saving a resume checkpoint" not in buf.getvalue()
     emit_phase_failed(None, "checkpoint.index")  # headless: a no-op
 
 
@@ -288,7 +293,7 @@ def test_concurrent_graph_steps_fold_into_one_row_and_name_what_still_runs() -> 
         asyncio.run(run())
 
     assert seen == ["symbol betweenness"]
-    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    lines = _done_rows(buf)
     assert len(lines) == 1
     assert lines[0].startswith("    ✓ Computing graph metrics (PageRank, betweenness) · 2 algorithms · ")
 
@@ -307,7 +312,7 @@ def test_generation_done_row_counts_pages_made_including_its_paid_tier() -> None
         for phase in ("onboarding", "generation.llm", "generation"):
             callback.on_phase_done(phase)
 
-    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    lines = _done_rows(buf)
     assert lines[0].startswith("    ✓ Curating onboarding docs · 4 pages")
     assert lines[1].startswith("    ✓ Writing overview and subsystem pages · 6 pages")
     assert lines[2].startswith("  ✓ Generating pages · 132 pages")

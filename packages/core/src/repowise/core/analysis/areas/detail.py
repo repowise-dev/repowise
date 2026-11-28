@@ -8,7 +8,7 @@ from typing import Any
 from repowise.core.analysis.health.grading import band_for, distribution
 from repowise.core.analysis.health.ranking import sort_metrics_worst_first
 from repowise.core.analysis.health.rows import field
-from repowise.core.analysis.health.scoring import is_advisory
+from repowise.core.analysis.health.scoring import finding_is_advisory
 
 from .owners import owner_breakdown
 from .paths import in_area
@@ -40,9 +40,7 @@ def _top_findings(index: AreaIndex, area: str, limit: int) -> list[dict[str, Any
     for finding in index.findings:
         if len(out) >= limit:
             break
-        if in_area(finding["file_path"], area) and not is_advisory(
-            finding["biomarker_type"] or ""
-        ):
+        if in_area(finding["file_path"], area) and not finding_is_advisory(finding):
             out.append(finding)
     return out
 

@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,10 +31,14 @@ from repowise.core.workspace.origins import LinkStrategy, legacy_strategy
 from repowise.core.workspace.signature_schema import attach_signature_schemas
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from repowise.core.workspace.code_api import CodeSurface
     from repowise.core.workspace.extractors.masstransit import MessageTypeIndex
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
+    from repowise.core.workspace.matching.common import MatchState
     from repowise.core.workspace.repo_index import RepoIndex, WorkspaceIndex
+    from repowise.core.workspace.service_names import ServiceNameMap
 
 _log = logging.getLogger("repowise.workspace.contracts")
 
@@ -82,7 +87,23 @@ CONTRACTS_FILENAME = "contracts.json"
 # its repo, on either side.
 # An HTTP or gRPC consumer whose id two or more repos serve, with nothing
 # placing it in one, carries ``meta['ambiguous_provider']`` and links to none.
-CONTRACTS_VERSION = 15
+# Version 16 adds Temporal task queues (workers and clients).
+# Version 17 scopes a FastAPI include_router prefix to the router it mounts and
+# keys Express mounts by module; reads a client call's method from its options
+# and a typed wrapper; composes a base left to a class field or a wrapper, drops
+# the prefix a wrapper's own inner call yields, and reads a static field through
+# ``this`` or its class name; keeps a class's name when a comment above its
+# header says class, and strips a base built from a scheme and a host
+# placeholder; and leaves contract ends in test, docs, tooling, generated and
+# vendored code out (#6005, #6012, #6014, #6015, #6089, #6104, #6113, #6119).
+# Version 18 serves Go routes under the group prefix a register function is
+# handed (#6347), and Express routes on a router handed to a module's exported
+# function under that router's mount (#6362), puts the base a JS client
+# factory's call sites pass before the requests it builds (#6415), follows a Go
+# group taken from ``Use``, and drops the routes of a Go register function only
+# another copy's callers name. ``routes_fingerprint`` includes this version, so
+# stored HTTP routes and ``contracts.json`` refresh with it.
+CONTRACTS_VERSION = 18
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans
@@ -495,13 +516,16 @@ def _build_manual_links(
 
 def save_contract_store(store: ContractStore, workspace_root: Path) -> Path:
     """Write contract store to ``.repowise-workspace/contracts.json``."""
-    data_dir = ensure_workspace_data_dir(workspace_root)
-    out_path = data_dir / CONTRACTS_FILENAME
+    return write_contract_store(
+        store, ensure_workspace_data_dir(workspace_root) / CONTRACTS_FILENAME
+    )
+
+
+def write_contract_store(store: ContractStore, out_path: Path) -> Path:
+    """Write *store* to *out_path* atomically and return the path."""
     # Atomic: the MCP enricher reads these artifacts from a separate
     # process and must never observe a half-written file.
-    atomic_write_text(
-        out_path, json.dumps(store.to_dict(), indent=2, ensure_ascii=False)
-    )
+    atomic_write_text(out_path, json.dumps(store.to_dict(), indent=2, ensure_ascii=False))
     return out_path
 
 
@@ -510,7 +534,11 @@ def load_contract_store(workspace_root: Path) -> ContractStore | None:
 
     Returns ``None`` if the file is missing or unparseable.
     """
-    path = workspace_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
+    return read_contract_store(workspace_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME)
+
+
+def read_contract_store(path: Path) -> ContractStore | None:
+    """The store at *path*, or ``None`` if it is missing or unparseable."""
     if not path.is_file():
         return None
     try:
@@ -601,9 +629,6 @@ async def run_contract_extraction(
     from .extractors import build_message_type_index
     from .extractors.base import make_exclude_predicate
     from .extractors.masstransit import MessageTypeIndex
-    from .matching import annotate_consumer_targets, run_matching
-    from .matching.base_paths import apply_base_paths
-    from .matching.third_party import mark_third_party_calls
     from .service_names import ServiceNameMap, build_service_name_map, service_names_fingerprint
 
     contract_config = ws_config.contracts
@@ -685,10 +710,7 @@ async def run_contract_extraction(
         names = ServiceNameMap.from_dict(prior.service_names)
     else:
         names = await asyncio.to_thread(build_service_name_map, repo_paths, workspace_root)
-    apply_base_paths(all_contracts, names.base_paths)
-    annotate_consumer_targets(all_contracts, contract_config.service_bases, names)
-    mark_third_party_calls(all_contracts)
-    matched = run_matching(all_contracts, names.routes)
+    matched = link_contracts(all_contracts, contract_config.service_bases, names)
     links = matched.links
 
     # Merge manual links
@@ -722,6 +744,23 @@ async def run_contract_extraction(
     )
 
     return store
+
+
+def link_contracts(
+    contracts: list[Contract], service_bases: dict[str, str], names: ServiceNameMap
+) -> MatchState:
+    """Resolve each consumer's target service or third-party host, then match.
+
+    Shared by the workspace run and the single-repo run, so both link alike.
+    """
+    from .matching import annotate_consumer_targets, run_matching
+    from .matching.base_paths import apply_base_paths
+    from .matching.third_party import mark_third_party_calls
+
+    apply_base_paths(contracts, names.base_paths)
+    annotate_consumer_targets(contracts, service_bases, names)
+    mark_third_party_calls(contracts)
+    return run_matching(contracts, names.routes)
 
 
 def _indexed_repo_paths(ws_config: WorkspaceConfig, workspace_root: Path) -> dict[str, Path]:
@@ -867,6 +906,70 @@ def _extractor_kwargs(
     return {}
 
 
+#: The ``extraction_stats`` key counting contract ends left out for their origin.
+NON_PRODUCTION_ENDS_STAT = "contract_ends_not_production"
+#: Code origins whose calls and routes are not the system's own contract ends: a
+#: test, an e2e or smoke script, a docs example or a tooling script calls real
+#: routes. Generated code is the output of a contract and vendored code a copy
+#: of someone else's library, neither a party to one; a data folder's code is
+#: material the product reads by path.
+_NOT_CONTRACT_ORIGINS = frozenset(
+    {"test", "docs_example", "tooling", "generated", "vendored", "data"}
+)
+
+
+async def stored_origins(paths: Collection[str], repo_index: RepoIndex | None) -> dict[str, str]:
+    """``code_origin`` of each of *paths*: the stored one when the repo's index
+    has it (handed to :meth:`RepoIndex.from_symbols`, else read through its
+    session), else :func:`~repowise.core.code_origin.path_origin`."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.code_origin import path_origin
+    from repowise.core.evidence.ingest import load_origins
+
+    origins: dict[str, str] = {}
+    session = repo_index.session if repo_index is not None else None
+    held = getattr(repo_index, "origins", None)
+    if isinstance(held, Mapping):
+        # Handed in by a caller with no health rows to read (load_origins' rule).
+        origins = {p: held.get(p) or path_origin(p) for p in paths}
+    elif session is not None:
+        try:
+            origins = await load_origins(session, repo_index.repo_id, paths)
+        except (SQLAlchemyError, AttributeError, TypeError):
+            # An index without health rows, or a stand-in session: the path decides.
+            origins = {}
+    return origins or {p: path_origin(p) for p in paths}
+
+
+async def _production_ends(
+    contracts: list[Contract], repo_index: RepoIndex | None
+) -> tuple[list[Contract], int]:
+    """*contracts* without the ends in non-production code, and how many were left out.
+
+    The origin is the stored ``code_origin`` when the repo's index has one
+    (handed to :meth:`RepoIndex.from_symbols`, else read through its session),
+    else :func:`~repowise.core.code_origin.path_origin`. Only source code is
+    judged: a schema document (an OpenAPI spec under ``docs/``, a ``.proto``,
+    SQL) and a schema migration describe the contract wherever they sit.
+    """
+    from repowise.core.code_origin import is_migration_path
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    code = REGISTRY.all_code_extensions()
+    judged = {
+        c.file_path
+        for c in contracts
+        if Path(c.file_path).suffix.lower() in code and not is_migration_path(c.file_path)
+    }
+    if not judged:
+        return contracts, 0
+    origins = await stored_origins(judged, repo_index)
+    left_out = {p for p in judged if origins.get(p) in _NOT_CONTRACT_ORIGINS}
+    kept = [c for c in contracts if c.file_path not in left_out]
+    return kept, len(contracts) - len(kept)
+
+
 async def _extract_one_repo(
     extraction: _RepoExtraction, alias: str, repo_path: Path
 ) -> tuple[list[Contract], dict[str, int]]:
@@ -878,6 +981,7 @@ async def _extract_one_repo(
     from .extractors import assign_service, detect_service_boundaries, merge_openapi_providers
     from .extractors.base import iter_source_files
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+    from .unmounted_routes import UNMOUNTED_PROVIDERS_STAT, drop_unmounted_providers
 
     code_surface = extraction.code_surface
     contracts: list[Contract] = []
@@ -928,6 +1032,17 @@ async def _extract_one_repo(
     contracts.extend(code_rows)
     stats.update(code_surface.stats.get(alias, {}))
 
+    # The probe still sees every end a dialect read: a call left out for its
+    # origin was recognised, not missed.
+    read = contracts
+    contracts, dropped = await _production_ends(contracts, repo_index)
+    if dropped:
+        stats[NON_PRODUCTION_ENDS_STAT] = dropped
+    # A route only a never-mounted copy of a register function declares is not served.
+    contracts, unmounted = await drop_unmounted_providers(contracts, repo_index, files)
+    if unmounted:
+        stats[UNMOUNTED_PROVIDERS_STAT] = unmounted
+
     # The OpenAPI document and a framework route describe one provider: keep the
     # code-backed identity, enriched with the spec's wire shape.
     contracts = merge_openapi_providers(contracts, stats)
@@ -938,7 +1053,7 @@ async def _extract_one_repo(
     # The calls no dialect read, the miss half of any coverage figure.
     stats.update(
         await asyncio.to_thread(
-            _probe_misses, files, contracts, extraction.contract_config.detect_topics
+            _probe_misses, files, read, extraction.contract_config.detect_topics
         )
     )
 

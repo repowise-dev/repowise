@@ -20,13 +20,14 @@ Each registry (seams, CLI commands, MCP tools, pipeline hooks, LLM providers,
 embedders) calls ``note_registration`` so ``repowise plugins`` can show what
 every plugin added. Providers import it lazily to keep their import cheap.
 
-Discovery (about 100 ms) runs at ``SeamRegistry.get``, FastAPI app creation,
-MCP surface attach and each pipeline run; built-in CLI dispatch never runs
-it, only an unknown command name or a command listing does. Ceiling: a
-discovered plugin can add CLI commands but not replace a built-in one.
-Loading is meant for one thread: a registration made from another thread
-while plugins load is misattributed, and a plugin that waits on a thread
-calling ``get()`` deadlocks.
+Discovery (about 10 ms with nothing installed) runs at ``SeamRegistry.get``,
+FastAPI app creation, MCP surface attach, each pipeline run and each open of
+the index (``init_db`` and ``schema_behind``, so plugin storage revisions are
+seen); built-in CLI dispatch never runs it, only an unknown command name or a
+command listing does. Ceiling: a discovered plugin can add CLI commands but
+not replace a built-in one. Loading is meant for one thread: a registration
+made from another thread while plugins load is misattributed, and a plugin
+that waits on a thread calling ``get()`` deadlocks.
 """
 
 from __future__ import annotations
@@ -64,11 +65,13 @@ class PluginRecord:
     name: str
     source: str  # "entry point" or "env"
     target: str  # "module" or "module:attr"
-    status: str = "loaded"  # or "failed" / "skipped"
+    #: Or "failed", "skipped", or "pending" when a storage revision it registered
+    #: could not apply because the store is read-only.
+    status: str = "loaded"
     error: str | None = None
     #: ``"kind:name"`` pairs registered while this plugin loaded, where kind is
     #: a seam name or one of ``cli-command``, ``mcp-tool``, ``pipeline-hook``,
-    #: ``llm-provider``, ``embedder``.
+    #: ``llm-provider``, ``embedder``, ``storage-migration``.
     seams: list[str] = field(default_factory=list)
 
 
@@ -153,8 +156,10 @@ def reset() -> None:
         _records = None
 
 
-def note_registration(kind: str, name: str) -> None:
-    """Record ``kind:name`` against the plugin loading now; a no-op otherwise.
+def note_registration(kind: str, name: str) -> PluginRecord | None:
+    """Record ``kind:name`` against the plugin loading now and return its record.
+
+    Returns None, recording nothing, when no plugin is loading.
 
     A built-in module first imported inside a plugin's ``register()`` registers
     its own implementations then, so those are skipped: walking out from the
@@ -164,6 +169,8 @@ def note_registration(kind: str, name: str) -> None:
     """
     if _current is not None and not _made_by_builtin_import():
         _current.seams.append(f"{kind}:{name}")
+        return _current
+    return None
 
 
 def _made_by_builtin_import() -> bool:
@@ -188,12 +195,15 @@ class SeamRegistry(Generic[T]):
     """Seam name to named implementations, with one chosen default.
 
     Defining a seam name again returns the existing registry, so a module
-    reload keeps what plugins registered.
+    reload keeps what plugins registered. An implementation whose plugin is
+    ``pending`` is unready: ``all()`` leaves it out and ``get()`` treats it
+    as unregistered.
     """
 
     seam: str
     env_var: str
     _impls: dict[str, T]
+    _owners: dict[str, PluginRecord]
     _chosen: str | None
 
     def __new__(cls, seam: str) -> SeamRegistry[T]:
@@ -206,6 +216,7 @@ class SeamRegistry(Generic[T]):
         self.seam = seam
         self.env_var = SEAM_ENV_PREFIX + seam.upper().replace("-", "_")
         self._impls = {}
+        self._owners = {}
         self._chosen = None
         _SEAMS[seam] = self
         return self
@@ -215,7 +226,11 @@ class SeamRegistry(Generic[T]):
         self._impls[name] = impl
         if default:
             self._chosen = name
-        note_registration(self.seam, name)
+        owner = note_registration(self.seam, name)
+        if owner is not None:
+            self._owners[name] = owner
+        else:
+            self._owners.pop(name, None)
 
     @property
     def names(self) -> list[str]:
@@ -227,10 +242,14 @@ class SeamRegistry(Generic[T]):
         selected = os.environ.get(self.env_var, "").strip()
         return selected or self._chosen or next(iter(self._impls), None)
 
+    def _unready(self, name: str) -> PluginRecord | None:
+        owner = self._owners.get(name)
+        return owner if owner is not None and owner.status == "pending" else None
+
     def all(self) -> list[tuple[str, T]]:
-        """Every ``(name, implementation)`` in registration order, loading plugins first."""
+        """Every ready ``(name, implementation)`` in registration order, loading plugins first."""
         load_plugins()
-        return list(self._impls.items())
+        return [(name, impl) for name, impl in self._impls.items() if not self._unready(name)]
 
     def get(self, name: str | None = None) -> T:
         """Return the selected implementation, loading plugins first."""
@@ -238,14 +257,15 @@ class SeamRegistry(Generic[T]):
         name = name or self.default
         if name is None:
             raise LookupError(f"no implementation registered for seam {self.seam!r}")
-        try:
+        unready = self._unready(name)
+        if name in self._impls and unready is None:
             return self._impls[name]
-        except KeyError:
-            # Loud on purpose: silently falling back to the local default
-            # would hide a misconfigured auth or data source.
-            raise KeyError(
-                f"seam {self.seam!r} has no implementation {name!r}; registered: {self.names}"
-            ) from None
+        # Loud on purpose: silently falling back to the local default
+        # would hide a misconfigured auth or data source.
+        reason = f" (plugin {unready.name}: {unready.error})" if unready else ""
+        raise KeyError(
+            f"seam {self.seam!r} has no implementation {name!r}{reason}; registered: {self.names}"
+        )
 
 
 __all__ = [

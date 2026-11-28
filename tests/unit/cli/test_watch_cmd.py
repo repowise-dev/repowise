@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from repowise.cli.commands import watch_cmd
 from repowise.cli.helpers import CommandTarget
 from repowise.cli.main import cli
+from repowise.core.update_lock import release_own_update_lock
 
 
 @pytest.mark.parametrize(
@@ -142,16 +143,20 @@ class TestSingleRepoTrigger:
 
     def _fire(self, monkeypatch: pytest.MonkeyPatch, tmp_path, **watch_kwargs):
         """Start the watcher, touch a file, and return run_update's kwargs."""
+        from watchdog.observers.polling import PollingObserver
+
+        # Snapshot before start returns, so the write cannot precede observation.
+        observer = PollingObserver(timeout=0.01)
+        monkeypatch.setattr("watchdog.observers.Observer", lambda: observer)
         calls: list[dict] = []
         done = threading.Event()
+        stop = threading.Event()
 
         def fake_run_update(**kwargs):
             calls.append(kwargs)
             done.set()
 
-        monkeypatch.setattr(
-            "repowise.cli.commands.update_cmd.command.run_update", fake_run_update
-        )
+        monkeypatch.setattr("repowise.cli.commands.update_cmd.command.run_update", fake_run_update)
         monkeypatch.setattr(watch_cmd, "ensure_repowise_dir", lambda _p: None)
 
         started = threading.Event()
@@ -167,8 +172,7 @@ class TestSingleRepoTrigger:
             @staticmethod
             def sleep(_seconds: float) -> None:
                 started.set()
-                time.sleep(0.01)
-                if done.is_set():
+                if stop.wait(0.01) or done.is_set():
                     raise KeyboardInterrupt
 
         monkeypatch.setattr(watch_cmd, "time", _Clock)
@@ -180,11 +184,15 @@ class TestSingleRepoTrigger:
             daemon=True,
         )
         watcher.start()
-        assert started.wait(5), "watcher never started"
-
-        (tmp_path / "touched.py").write_text("def x():\n    return 1\n", encoding="utf-8")
-        assert done.wait(10), "no update was triggered by the file change"
-        watcher.join(timeout=10)
+        try:
+            assert started.wait(5), "watcher never started"
+            (tmp_path / "touched.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+            assert done.wait(10), "no update was triggered by the file change"
+        finally:
+            stop.set()
+            watcher.join(timeout=10)
+        assert not watcher.is_alive(), "watcher did not stop"
+        assert not observer.is_alive(), "observer did not stop"
         return calls
 
     def test_a_file_save_runs_an_update_over_the_working_tree(
@@ -200,9 +208,7 @@ class TestSingleRepoTrigger:
         assert calls[0]["path"] == str(tmp_path)
         assert calls[0]["index_only"] is False
 
-    def test_index_only_is_passed_through(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ) -> None:
+    def test_index_only_is_passed_through(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         calls = self._fire(monkeypatch, tmp_path, index_only=True)
 
         assert calls[0]["index_only"] is True
@@ -222,7 +228,7 @@ class TestReleaseOwnUpdateLock:
         assert try_acquire_update_lock(tmp_path, "abc123") is None
         assert update_lock_path(tmp_path).exists()
 
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
         assert not update_lock_path(tmp_path).exists()
 
@@ -241,12 +247,12 @@ class TestReleaseOwnUpdateLock:
             encoding="utf-8",
         )
 
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
         assert lock.exists()
 
     def test_no_lock_is_not_an_error(self, tmp_path) -> None:
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
 
 class TestEventPaths:
@@ -282,3 +288,12 @@ class TestEventPaths:
         event = self._Event(str(tmp_path / ".repowise" / "state.json"))
 
         assert watch_cmd._event_paths(event, tmp_path) == set()
+
+
+def test_watch_missing_path_exits_2(tmp_path) -> None:
+    """A missing path argument is rejected with exit code 2 and creates no directory (#5981)."""
+    missing = tmp_path / "does_not_exist"
+    result = CliRunner().invoke(cli, ["watch", str(missing)])
+
+    assert result.exit_code == 2, result.output
+    assert not missing.exists()

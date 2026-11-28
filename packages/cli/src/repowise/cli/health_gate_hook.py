@@ -155,10 +155,18 @@ def gate(command: str, cwd: str, *, budget: float = BUDGET_SECONDS) -> str | Non
 
 
 def _enabled(cwd: str) -> bool:
-    from repowise.cli.commands.augment_cmd._shared import _find_repo_root, hook_flag_enabled
+    from repowise.cli.commands.augment_cmd._shared import (
+        _borrowed_index,
+        _find_repo_root,
+        hook_flag_enabled,
+    )
 
     repo = _find_repo_root(Path(cwd))
-    return repo is not None and hook_flag_enabled(repo, "health_gate")
+    # A worktree reading its main checkout's index has no index of its own to
+    # check against; the check would only fail open after paying for itself.
+    if repo is None or _borrowed_index(Path(cwd), repo):
+        return False
+    return hook_flag_enabled(repo, "health_gate")
 
 
 # -- reading the command ------------------------------------------------------

@@ -63,6 +63,7 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
     happened rather than a restatement of what we intended.
     """
 
+    from repowise.cli.agent_targets.formats.server_entry import RENAME_HINT, RemoteServerEntryError
     from repowise.cli.mcp_config import (
         save_vscode_extensions_config,
         save_vscode_mcp_config,
@@ -74,6 +75,8 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
         mcp_path = save_vscode_mcp_config(repo_path)
         console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code MCP configured ({mcp_path})")
         written.append(Path(mcp_path))
+    except RemoteServerEntryError:
+        console_obj.print(f"  [{WARN}].vscode/mcp.json left unchanged: {RENAME_HINT}.[/]")
     except ValueError:
         console_obj.print(
             f"  [{WARN}].vscode/mcp.json left unchanged (not valid JSON; it may contain "

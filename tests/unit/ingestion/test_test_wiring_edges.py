@@ -208,7 +208,7 @@ def test_ancestor_and_repo_root_paths_are_linked() -> None:
         "packages/types/src/dead-code.ts",
         "packages/types/src/doc-drift.ts",
         "packages/ui/src/docs/reader-persona.ts",
-        "plugins/claude-code/hooks/lens/lens.js",
+        "plugins/claude-code/scripts/bundle.js",
         "packages/data/sample.json",
     }
     # 1. Direct parents[n] chain inside a function
@@ -245,11 +245,11 @@ READER_PERSONA_TS = REPO_ROOT / "packages" / "ui" / "src" / "docs" / "reader-per
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_ROOT = ROOT / "plugins" / "claude-code"
 def test_plugin():
-    bundle = PLUGIN_ROOT / "hooks" / "lens" / "lens.js"
+    bundle = PLUGIN_ROOT / "scripts" / "bundle.js"
 """
     assert path_string_targets(
         "tests/unit/cli/test_claude_plugin.py", src_plugin, path_set
-    ) == ["plugins/claude-code/hooks/lens/lens.js"]
+    ) == ["plugins/claude-code/scripts/bundle.js"]
 
     # 5. .parent.parent.parent.parent chain
     src_parent_chain = b"""

@@ -1,4 +1,4 @@
-"""Ingestion-phase persistence: files, symbols, graph and edges."""
+"""Ingestion-phase persistence: files, symbols, graph, edges and build units."""
 
 from __future__ import annotations
 
@@ -15,11 +15,62 @@ from .graph import _edge_row, prune_absent_graph_rows, stamp_edges_parser_finger
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
 
+async def persist_build_units(session: Any, repo_id: str, graph_builder: Any) -> None:
+    """Replace the stored build units with the ones *graph_builder*'s build collected.
+
+    Skipped when it collected none (a rehydrated builder, a failed collection),
+    so the stored units stay those of the last build that read them.
+    """
+    index = getattr(graph_builder, "build_units", None)
+    if index is None:
+        return
+    from repowise.core.persistence.crud import replace_build_units
+
+    await replace_build_units(session, repo_id, index)
+
+
+async def persist_external_call_sites(session: Any, repo_id: str, graph_builder: Any) -> None:
+    """Store the package calls *graph_builder*'s last build resolved (``external_call_sites``).
+
+    A full build replaces the repository's rows; a scoped patch replaces its
+    scope's files and drops files that left the index. Skipped when no build
+    ran in this process (a rehydrated builder), so the stored rows stay. The
+    write is one savepoint: on failure the old rows come back, the stamp is
+    cleared so the next update rebuilds the graph in full and refills them, and
+    the error is the caller's.
+    """
+    sites = getattr(graph_builder, "external_call_sites", None)
+    if sites is None:
+        return
+    from repowise.core.persistence.crud import (
+        replace_external_call_sites,
+        stamp_external_call_sites,
+    )
+
+    try:
+        async with session.begin_nested():
+            await replace_external_call_sites(
+                session,
+                repo_id,
+                sites,
+                scope=graph_builder.external_call_scope,
+                live_paths=graph_builder._parsed_files.keys(),
+                complete=getattr(graph_builder, "external_calls_complete", True),
+            )
+    except Exception:
+        try:
+            async with session.begin_nested():
+                await stamp_external_call_sites(session, repo_id, None)
+        except Exception as exc:  # keep the write's error, the root cause
+            logger.warning("external_call_sites_stamp_not_cleared", error=repr(exc))
+        raise
+
+
 async def persist_ingestion(
     result: Any, session: Any, repo_id: str, *, timings: Any | None = None
 ) -> int:
-    """Persist ingestion-phase outputs: graph nodes/edges, external systems,
-    symbols, and the per-file security scan.
+    """Persist ingestion-phase outputs: graph nodes/edges, build units,
+    external systems, symbols, and the per-file security scan.
 
     Every write here is an idempotent UPSERT keyed by ``(repo_id, …)``, so
     this is safe to call incrementally (per phase) and to re-run on resume.
@@ -74,6 +125,12 @@ async def persist_ingestion(
     from repowise.core.ingestion.parse_cache import parser_fingerprint
 
     await stamp_edges_parser_fingerprint(session, repo_id, parser_fingerprint())
+
+    await persist_build_units(session, repo_id, result.graph_builder)
+    try:
+        await _persist.persist_external_call_sites(session, repo_id, result.graph_builder)
+    except Exception as exc:  # a derived table never fails an index
+        logger.warning("external_call_sites_not_written", error=repr(exc))
 
     # ---- External systems (C4 L1) -------------------------------------------
     # Persist before symbols so the FK linkage step below sees the IDs.

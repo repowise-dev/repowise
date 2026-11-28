@@ -151,13 +151,17 @@ class PhaseCheckpointer:
                 if kind is _EventKind.STOP:
                     return
                 if kind is _EventKind.START:
+                    # A phase announced again once its total is known (git
+                    # does) is still the one open run: keep its job.
+                    if phase in self._job_ids:
+                        continue
                     job = await self._job_store.create_job(
                         repository_id=self._repository_id, phase=phase
                     )
                     self._job_ids[phase] = job.id
                     await self._job_store.update_state(job.id, JobState.RUNNING)
                 elif kind is _EventKind.DONE:
-                    job_id = self._job_ids.get(phase)
+                    job_id = self._job_ids.pop(phase, None)
                     if job_id is not None:
                         await self._job_store.update_state(
                             job_id, JobState.COMPLETED

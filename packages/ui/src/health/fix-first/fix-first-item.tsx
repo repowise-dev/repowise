@@ -16,7 +16,7 @@ import { ChevronDown } from "lucide-react";
 import type { FixItem, FixStep, FixTier } from "@repowise-dev/types/fix-first";
 import type { OpportunityStatus } from "@repowise-dev/types/refactoring";
 
-import { getLanguageFromPath } from "../../c4/panels/CodeViewer";
+import { getLanguageFromPath } from "../../lib/language-from-path";
 import { HighlightedCodeBlock } from "../../shared/code-block";
 import { CommandLine } from "../../shared/command-line";
 import { PlaceholderHint } from "../../refactoring/placeholder-hint";
@@ -390,7 +390,7 @@ function Actions({
             className={failed ? "text-[var(--color-error)]" : "text-[var(--color-text-tertiary)]"}
           >
             {failed
-              ? "Could not save that. Nothing changed."
+              ? "Could not save all of that. The list shows what was saved."
               : saved
                 ? `Saved as ${STATUS_LABEL[saved].toLowerCase()}.`
                 : ""}

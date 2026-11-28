@@ -27,7 +27,10 @@ through its imports can break a test through either:
    a class keep every test. A fixture a test asks for affects the tests that
    ask for it, directly, through other fixtures, through ``usefixtures`` or by
    ``getfixturevalue``; the index records each of those requests as a fixture
-   edge, and those tests are selected.
+   edge, and those tests are selected. A test file or conftest that asks for
+   fixtures in a way the index cannot record (``pytest_edges.UNRECORDED_HINT``)
+   is selected too, standing for its own tests: a request resolves for the
+   test making it, and every other file's requests are recorded.
 
 Granularity is the module, not the function: a fixture that names anything in
 a module on the route to the change counts as reaching it, however deep the
@@ -42,12 +45,11 @@ app.models  # registers them``) is imported for its side effects, which every
 test sees, so it keeps every test.
 
 Fails closed, keeping every test under the conftest with the reason, when the
-conftest does not parse, loads plugins, star-imports a module on the route, has
-a route the analysis cannot tie to one of its imports, when a test or conftest
-asks for its fixtures in a way the index cannot record
-(``pytest_edges.UNRECORDED_HINT``), when some file imports a conftest by a
-name the index could not resolve, or when the index predates fixture-request
-edges.
+conftest does not parse, loads a plugin that may be a module of the repository
+(:mod:`.plugin_loaders`), star-imports a module on the route, has
+a route the analysis cannot tie to one of its imports, when some file imports
+a conftest by a name the index could not resolve, or when the index predates
+fixture-request edges.
 
 Ceiling: an import-time side effect of the changed module itself (it registers
 itself in a shared registry) that a test observes without any import route of
@@ -77,6 +79,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.pyparse import parse_python, symtable_python
 
 from ..ingestion.framework_edges.pytest_edges import (
@@ -87,6 +90,7 @@ from ..ingestion.framework_edges.pytest_edges import (
 )
 from ..ingestion.languages.python_modules import module_parts
 from ..ingestion.languages.python_strings import PY_DYNAMIC_LOAD_MARKERS
+from .plugin_loaders import plugin_names
 from .test_reach.db import _in_clause
 from .test_selection import BROADCAST_VIA, is_runnable_test, scope_kind
 
@@ -415,15 +419,21 @@ def _runs_by_attribute(attr: str) -> bool:
     )
 
 
+def _has_dynamic_load(text: str) -> bool:
+    return any(m in text for m in PY_DYNAMIC_LOAD_MARKERS)
+
+
 def _globals_used(
     node: ast.FunctionDef | ast.AsyncFunctionDef, scope: symtable.SymbolTable
 ) -> set[str] | None:
     """The module names *node* reads, or None when it imports or assigns outside itself."""
-    if any(m in ast.unparse(node) for m in PY_DYNAMIC_LOAD_MARKERS) or any(
+    # The cheap walk first, and one unparse for every marker: unparsing per
+    # marker was most of a finalize's test-route time.
+    if any(
         (isinstance(sub, (ast.Import, ast.ImportFrom)) and not _stdlib_import(sub))
         or (isinstance(sub, ast.Attribute) and _runs_by_attribute(sub.attr))
         for sub in ast.walk(node)
-    ):
+    ) or _has_dynamic_load(ast.unparse(node)):
         return None
     # Decorators and defaults run in the module's scope, the body in its own.
     defaults = [*node.decorator_list, *node.args.defaults, *node.args.kw_defaults]
@@ -503,7 +513,9 @@ def _module_names(tree: ast.Module, counts: Mapping[str, int]) -> _ModuleNames:
         and isinstance(value, (ast.Call, ast.Dict, ast.List, ast.Set))
         and all(s.id in outside for s in ast.walk(value) if isinstance(s, ast.Name))
     } | {n: "cache_clear" for n, node in functions.items() if _cached(node, outside, tree.body)}
-    return _ModuleNames(_parents(tree), frozenset(literals), frozenset(outside), resets, functions)
+    # Only a reset is checked against its parents; most modules have none.
+    parents = _parents(tree) if resets else {}
+    return _ModuleNames(parents, frozenset(literals), frozenset(outside), resets, functions)
 
 
 def _not_local(deps: Mapping[str, set[str] | None]) -> set[str]:
@@ -753,7 +765,12 @@ class ConftestFacts:
     exported: set[str] = field(default_factory=set)
 
     @classmethod
-    def parse(cls, source: str, path: str) -> ConftestFacts:
+    def parse(
+        cls, source: str, path: str, local_plugin: Callable[[str], bool] | None = None
+    ) -> ConftestFacts:
+        """*local_plugin* (:func:`~.plugin_loaders.local_module_check`) tells a plugin
+        module of the repository from an installed one; without it, any plugin
+        the conftest loads keeps every test under it."""
         try:
             tree = parse_python(source)
         except (SyntaxError, ValueError):
@@ -771,7 +788,21 @@ class ConftestFacts:
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Name):
                     facts._read_module_name(sub)
+        if local_plugin is not None:
+            facts._allow_installed_plugins(tree, local_plugin)
         return facts
+
+    @property
+    def _plugins_error(self) -> str:
+        return f"{self.path} loads pytest plugins"
+
+    def _allow_installed_plugins(self, tree: ast.Module, local: Callable[[str], bool]) -> None:
+        """Drop the plugin error when every plugin named is installed: no local fixture to follow."""
+        if self.error != self._plugins_error:
+            return
+        names = plugin_names(tree)
+        if names is not None and not any(local(n) for n in names):
+            self.error = None
 
     def _read_unit_body(self, name: str, unit: _Unit) -> None:
         """Record the imports in *unit*'s body, the names it reads, and the units it names."""
@@ -788,7 +819,7 @@ class ConftestFacts:
         if isinstance(sub.ctx, ast.Load):
             self.code_loads.append(sub)
         if sub.id == "pytest_plugins":
-            self.error = f"{self.path} loads pytest plugins"
+            self.error = self._plugins_error
         if sub.id == "__all__":
             # Re-exported for the tests that import the conftest, which
             # the selection adds as its importers.
@@ -1054,6 +1085,7 @@ async def scoped_candidates(
     read: Callable[[str], str | None],
     *,
     plugin_loader: str | None = None,
+    local_plugin: Callable[[str], bool] | None = None,
     read_source: Callable[[str], str | None] | None = None,
 ) -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
     """Each target's ``[(test file, via)]`` with conftest routes narrowed, and the notes.
@@ -1062,12 +1094,14 @@ async def scoped_candidates(
     reached through; *parents* the test files importing each test file and
     *parent_entries* the files each importer reached it through; *read* returns
     a conftest's text and *read_source* any file's, for the local names a
-    conftest reads (without it, every read counts as reaching). Every conftest
+    conftest reads (without it, every read counts as reaching); *local_plugin*
+    (:meth:`ConftestFacts.parse`) lets a conftest loading only installed plugins
+    be narrowed. Every conftest
     on a route that this module cannot narrow keeps today's answer: every test
     under it.
     """
     routes = _conftest_routes(found, entries, parents, parent_entries)
-    _judge_routes(routes, read, plugin_loader, read_source)
+    _judge_routes(routes, read, plugin_loader, read_source, local_plugin)
     scope = await _load_scope(session, repo_id, routes, parents, test_files)
     out: dict[str, list[tuple[str, str]]] = {}
     notes: dict[tuple[str, str], list[str]] = {}
@@ -1112,20 +1146,25 @@ def _judge_routes(
     read: Callable[[str], str | None],
     plugin_loader: str | None,
     read_source: Callable[[str], str | None] | None = None,
+    local_plugin: Callable[[str], bool] | None = None,
 ) -> None:
     """Set each route's use and reason. One parse per conftest and per entry; each distinct
     route through it is matched against it once."""
     facts: dict[str, ConftestFacts | None] = {}
     consts: dict[str, EntryNames] = {}
     uses: dict[tuple, ConftestUse] = {}
+    # Entries share re-export origins, each probed by path: read every file once per call.
+    source_of = lru_cache(maxsize=None)(read_source) if read_source else None
     for target, conf, route in ((t, c, r) for t, by in routes.items() for c, r in by.items()):
         if conf not in facts:
             source = read(conf)
-            facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
+            facts[conf] = (
+                None if source is None else ConftestFacts.parse(source, conf, local_plugin)
+            )
         # The changed file's own local names may be what changed.
         others = route.entries - {target}
-        for e in others - set(consts) if read_source else ():
-            consts[e] = entry_names(e, read_source)
+        for e in others - set(consts) if source_of else ():
+            consts[e] = entry_names(e, source_of)
         stable = {e: names for e in others if e in consts and (names := consts[e].stable(target))}
         _judge(conf, route, facts[conf], plugin_loader, uses, stable)
 
@@ -1163,7 +1202,7 @@ async def _load_scope(
     judged = [(conf, r) for by_conf in routes.values() for conf, r in by_conf.items()]
     narrowable = {conf for conf, r in judged if r.use is not None and r.reason is None}
     declared = {
-        f"{conf}::{name}"
+        make_symbol_id(conf, name)
         for conf, r in judged
         if conf in narrowable and r.use is not None
         for name in r.use.declared
@@ -1173,7 +1212,7 @@ async def _load_scope(
     unstamped = any(
         r.use is not None
         and r.use.fixtures
-        and not any(f"{conf}::{n}" in stamped for n in r.use.declared)
+        and not any(make_symbol_id(conf, n) in stamped for n in r.use.declared)
         for conf, r in judged
         if conf in narrowable
     )
@@ -1255,7 +1294,7 @@ def _narrow(
             result[t] = BROADCAST_VIA
     for conf in narrowed:
         check = _add_import_check(conf, result, scope)
-        _add_note(notes, _narrow_note(conf, routes[conf], check), target)
+        _add_note(notes, _narrow_note(conf, routes[conf], check, scope), target)
     return list(result.items())
 
 
@@ -1310,14 +1349,33 @@ def _dir_prefix(conf: str) -> str:
     return "" if d == "." else f"{d}/"
 
 
-def _narrow_note(conf: str, route: _Route, check: str | None) -> tuple[str, str]:
+def _narrow_note(conf: str, route: _Route, check: str | None, scope: _Scope) -> tuple[str, str]:
     use = route.use
     fixtures = sorted(use.fixtures) if use else []
     what = (
         f"the tests requesting {', '.join(fixtures)}" if fixtures else "no fixture-requesting test"
     )
+    hidden = sorted(_hidden_requesters(conf, scope)) if fixtures else []
+    if hidden:
+        who = hidden[0] if len(hidden) == 1 else f"{len(hidden)} files (e.g. {hidden[0]})"
+        what += f", and {who} asking for fixtures in a way the index cannot record"
     tail = f"; {check} runs as its import check" if check else ""
     return "", f" reaches {conf} only through its imports: selected {what}{tail}"
+
+
+def _hidden_requesters(conf: str, scope: _Scope) -> set[str]:
+    """Files under *conf* that may ask for its fixtures in a way no edge records.
+
+    Each is a collected test file or a conftest (:data:`UNRECORDED_HINT` is
+    stamped only on their conftest edges). A request resolves for the test
+    making it, so such a file can reach a fixture only for its own tests, or,
+    for a conftest, for the tests under it.
+    """
+    return {
+        e.source
+        for e in scope.edges
+        if e.target == conf and e.edge_type == "framework" and e.hint == UNRECORDED_HINT
+    }
 
 
 def _fixture_users(conf: str, use: ConftestUse, scope: _Scope) -> set[str] | str:
@@ -1325,30 +1383,20 @@ def _fixture_users(conf: str, use: ConftestUse, scope: _Scope) -> set[str] | str
 
     A reason string instead when the users cannot be known. A conftest whose
     fixtures no recorded request names has no users: nothing asks for them.
+    A file asking for fixtures in a way the index cannot record
+    (:func:`_hidden_requesters`) counts as a user: every other file's requests
+    are all recorded, so the hidden ones cannot reach past it.
     """
     if not use.fixtures:
         return set()
     if not scope.recorded:
         return "the index was built before fixture requests were recorded; run `repowise update`"
-    hidden = next(
-        (
-            e.source
-            for e in scope.edges
-            if e.target == conf and e.edge_type == "framework" and e.hint == UNRECORDED_HINT
-        ),
-        None,
-    )
-    if hidden:
-        return (
-            f"{hidden} asks for fixtures in a way the index cannot record, and "
-            f"{', '.join(sorted(use.fixtures))} reach the change"
-        )
-    wanted = {f"{conf}::{n}" for n in use.fixtures}
-    users: set[str] = set()
+    wanted = {make_symbol_id(conf, n) for n in use.fixtures}
+    users: set[str] = _hidden_requesters(conf, scope)
     for edge in scope.edges:
         if edge.target not in wanted or edge.edge_type == "framework":
             continue
-        source_file = edge.source.split("::", 1)[0]
+        source_file = file_of_symbol(edge.source)
         if source_file == conf:
             continue
         if is_runnable_test(source_file) or scope_kind(source_file) == "conftest":

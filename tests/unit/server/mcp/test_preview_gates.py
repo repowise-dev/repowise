@@ -49,16 +49,15 @@ def test_shipped_table_states():
     states = {(g.layer, g.language): g.state for g in finding_registry.LANGUAGE_GATES}
     audited = ("java", "csharp", "c", "cpp")
     expected = {
-        ("health", "cpp"): "preview",
         **{(layer, lang): "preview" for layer in ("refactoring", "performance") for lang in audited},
         **{("dead_code", lang): "preview" for lang in (*audited, "kotlin", "swift", "apex")},
     }
     assert states == expected
     assert all(finding_registry.gates_on(layer) == () for layer in ("health", "refactoring",
                                                                      "performance", "dead_code"))
-    health_cpp = finding_registry.preview_for("health", "src/a.cpp")
-    assert health_cpp is not None and health_cpp.measure == "not wrong"
-    for path in ("src/A.java", "src/A.cs", "src/a.c"):
+    # Health is served unlabelled on every language: C++ left preview on
+    # a not-wrong bar of 0.90 on 4 corpora.
+    for path in ("src/A.java", "src/A.cs", "src/a.c", "src/a.cpp", "src/a.hpp"):
         assert finding_registry.preview_for("health", path) is None
 
 

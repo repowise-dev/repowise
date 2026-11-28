@@ -1,6 +1,7 @@
 ---
 description: Ask a codebase question and get a cited, synthesised answer with a confidence rating (costs an LLM call).
 allowed-tools: Bash(repowise ask:*), Read
+disable-model-invocation: true
 ---
 
 # Repowise Ask

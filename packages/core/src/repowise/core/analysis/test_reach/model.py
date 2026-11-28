@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal, NamedTuple
 
 from repowise.core.analysis.execution_graph import UNRELIABLE_EXECUTION_ORIGINS
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import paired_test_names
 
 # How many call hops a test may take and still be said to reach a file. The walk
@@ -48,7 +49,9 @@ ReachedVia = Literal["call-graph", "import-graph", "name-match", "changed-test",
 # ``type_only``  it declares only types: there is nothing for a test to run;
 # ``mocked_only`` every test that reaches it replaces it with a double, so
 #                none is shown to run it, and nothing says none could.
-ReachState = Literal["reached", "unreached", "new", "no_signal", "type_only", "mocked_only"]
+ReachState = Literal[
+    "reached", "unreached", "new", "no_signal", "type_only", "mocked_only", "not_applicable"
+]
 
 
 class ReachDistance(NamedTuple):
@@ -156,15 +159,15 @@ def rank_reaching(
     the one mirroring more of its directories, and the path. Targets, tests
     and *changed* may be ``path::name`` ids; every key reads the file part.
     """
-    path_of = target.split("::", 1)[0]
+    path_of = file_of_symbol(target)
     names = paired_test_names(path_of)
     dirs = set(path_of.split("/")[:-1])
     reach = reach or {}
     if edited is None:
-        edited = {c.split("::", 1)[0] for c in changed}
+        edited = {file_of_symbol(c) for c in changed}
 
     def key(test: str) -> tuple[bool, bool, int, bool, int, bool, int, str]:
-        path = test.split("::", 1)[0]
+        path = file_of_symbol(test)
         distance = reach.get(test) or reach.get(path)
         return (
             path not in edited,
@@ -180,19 +183,77 @@ def rank_reaching(
     return sorted(tests, key=key)
 
 
-def tests_matching_by_name(targets: list[str], test_files: Collection[str]) -> dict[str, ReachedBy]:
+def _owners(
+    all_files: Collection[str],
+    by_name: Mapping[str, list[str]],
+    tests_by_dir_and_name: Mapping[tuple[str, str], list[str]],
+) -> dict[str, set[str]]:
+    """Each test that belongs to some files of its name only: a sibling, else
+    the ones it mirrors most (:func:`tests_matching_by_name`)."""
+    owned_by: dict[str, set[str]] = {}
+    sources_by_name: dict[str, set[str]] = {}
+    for source in all_files:
+        dir_path, _, _ = source.rpartition("/")
+        for name in paired_test_names(source):
+            if source not in by_name.get(name, (source,)):
+                sources_by_name.setdefault(name, set()).add(source)
+            siblings = [t for t in tests_by_dir_and_name.get((dir_path, name), ()) if t != source]
+            for test in siblings:
+                owned_by.setdefault(test, set()).add(source)
+    unowned = (
+        (test, rivals)
+        for name, rivals in sources_by_name.items()
+        if len(rivals) > 1
+        for test in by_name[name]
+        if test not in owned_by
+    )
+    for test, rivals in unowned:
+        nearest = _mirrored_most(test, rivals)
+        if len(nearest) < len(rivals):
+            owned_by[test] = nearest
+    return owned_by
+
+
+def _mirrored_most(test: str, sources: Collection[str]) -> set[str]:
+    """The *sources* sharing the most directory names with *test*; all of them on a tie at none."""
+    dirs = set(test.split("/")[:-1])
+    shared = {s: len(dirs & set(s.split("/")[:-1])) for s in sources}
+    best = max(shared.values(), default=0)
+    return {s for s, n in shared.items() if n == best} if best else set(sources)
+
+
+def tests_matching_by_name(
+    targets: list[str], test_files: Collection[str], indexed_files: Collection[str] = ()
+) -> dict[str, ReachedBy]:
     """Tests named for each target by convention: the fallback when no edge answered.
 
     An unresolved graph (dynamic client, unindexed framework) leaves
     ``tests/test_x.py`` with no edge to ``x.py``; "unknown" there argues
-    against a change a test guards.
+    against a change a test guards.  A test beside a source file it names is
+    owned by that sibling, though: ``a/index.test.ts`` is not evidence for
+    every other ``index.ts`` in the repository.  A test elsewhere goes to the
+    files of its name whose directories it mirrors most
+    (``tests/providers/test_registry.py`` to ``providers/registry.py``, not
+    ``dynamic_hints/registry.py``); when none shares a directory with it, every
+    one keeps the cross-directory fallback.
     """
+    all_files = set(targets) | set(test_files) | set(indexed_files)
     by_name: dict[str, list[str]] = {}
+    tests_by_dir_and_name: dict[tuple[str, str], list[str]] = {}
     for path in test_files:
-        by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+        dir_path, _, name = path.rpartition("/")
+        by_name.setdefault(name, []).append(path)
+        tests_by_dir_and_name.setdefault((dir_path, name), []).append(path)
+
+    owned_by = _owners(all_files, by_name, tests_by_dir_and_name)
     out: dict[str, ReachedBy] = {}
     for target in targets:
-        found = [path for name in paired_test_names(target) for path in by_name.get(name, ())]
+        found = [
+            path
+            for name in paired_test_names(target)
+            for path in by_name.get(name, ())
+            if path not in owned_by or target in owned_by[path]
+        ]
         if found:
             out[target] = capped(target, found, "name-match")
     return out

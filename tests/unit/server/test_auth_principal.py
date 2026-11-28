@@ -461,6 +461,9 @@ class _Workspace:
             return repo
         raise ValueError(repo)
 
+    def repo_id(self, repo):
+        return {"alpha": "id-alpha", "beta": "id-beta"}.get(repo)
+
 
 def test_mcp_workspace_aliases_and_all_refused_outside_scope(monkeypatch) -> None:
     monkeypatch.setattr(_state, "_registry", _Workspace())

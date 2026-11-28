@@ -12,6 +12,7 @@ from repowise.core.analysis.dead_code.risk_factors import (
 )
 from repowise.core.analysis.dead_code.serving import (
     DEFAULT_EXCLUDED_KINDS,
+    DETAIL_FIELDS,
     SUMMARY_SCOPE,
     TIER_FLOORS,
     FindingFilters,
@@ -173,8 +174,11 @@ def test_serialization_is_the_same_for_rows_and_mappings() -> None:
 
 def test_serialization_adds_the_last_meaningful_change() -> None:
     gm = SimpleNamespace(significant_commits_json=json.dumps([{"date": "2026-03-01"}]))
-    out = serialize_finding(_ROWS[0], {"src/a/one.py": gm})
+    out = serialize_finding(_ROWS[0], {"src/a/one.py": gm}, detail=True)
     assert out["last_meaningful_change"] == "2026-03-01"
+    lean = serialize_finding(_ROWS[0], {"src/a/one.py": gm})
+    assert not set(DETAIL_FIELDS) & set(lean)
+    assert lean.items() <= out.items()
     assert last_meaningful_change(SimpleNamespace(significant_commits_json="not json")) is None
     assert last_meaningful_change(None) is None
 
@@ -262,12 +266,36 @@ def test_only_a_contract_link_lowers_confidence() -> None:
     assert not any(f["safe_to_delete"] for f in by_path.values())
 
 
-def test_package_dependents_are_named_only_where_their_link_reaches() -> None:
-    # Outside every link: nobody is named, yet safety is withdrawn.
+def test_an_export_outside_every_package_link_keeps_its_safety() -> None:
+    # A dependent repo cannot import a file its package link does not reach.
     lone = _served([_row("src/c/six.py", 0.9)])
-    assert "mobile" not in lone[0]["cross_repo_note"]
+    assert "cross_repo_note" not in lone[0]
     assert lone[0]["confidence"] == 0.9
-    assert not lone[0]["safe_to_delete"]
+    assert lone[0]["safe_to_delete"]
+
+
+class _ReachedLookup(_Lookup):
+    """A package link that recorded which files the dependent's imports reach."""
+
+    def get_package_consumers(self, repo_alias: str) -> list[dict]:
+        return [
+            {
+                "source_repo": "mobile",
+                "target_manifest": "src/b/package.json",
+                "reached_files": frozenset({"src/b/index.ts", "src/b/five.py"}),
+            }
+        ]
+
+
+def test_a_recorded_reach_decides_which_exports_lose_safety() -> None:
+    reached, inside_but_unreached = _served(
+        [_row("src/b/five.py", 0.9), _row("src/b/internal.py", 0.9)], _ReachedLookup()
+    )
+    assert "mobile may consume this export." in reached["cross_repo_note"]
+    assert not reached["safe_to_delete"]
+    # Inside the package directory, but no import of the dependent reaches it.
+    assert "cross_repo_note" not in inside_but_unreached
+    assert inside_but_unreached["safe_to_delete"]
 
 
 class _ContractOnlyLookup(_Lookup):

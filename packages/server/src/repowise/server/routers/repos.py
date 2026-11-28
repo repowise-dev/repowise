@@ -24,7 +24,7 @@ from repowise.core.persistence.models import (
     Page,
     Repository,
 )
-from repowise.server.auth import get_authorizer
+from repowise.server.auth import Action, authorize_repo, checks_repo_access, read_route
 from repowise.server.deps import get_db_session, get_fts, request_principal, verify_api_key
 from repowise.server.job_executor import execute_job
 from repowise.server.routers._repo_generate import (
@@ -49,6 +49,7 @@ from repowise.server.routers._repo_pricing import (
 )
 from repowise.server.routers._repo_settings import repo_response, save_settings, stored_settings
 from repowise.server.routers._repo_summary import _freshness_for, _summary_rows_for
+from repowise.server.routers.page_archive import router as page_archive_router
 from repowise.server.schemas import (
     JobAcceptedResponse,
     RepoCreate,
@@ -67,6 +68,7 @@ router = APIRouter(
     tags=["repos"],
     dependencies=[Depends(verify_api_key)],
 )
+router.include_router(page_archive_router)
 
 
 async def _get_repo_or_404(session: AsyncSession, repo_id: str) -> Repository:
@@ -257,9 +259,8 @@ async def list_repos(
         responses.extend(unregistered_workspace_rows(ws_config, ws_root_path, matched))
 
     principal = request_principal(request)
-    if principal is not None and principal.repo_scope is not None:
-        authorizer = get_authorizer()
-        responses = [r for r in responses if authorizer.can_access_repo(principal, (r.id, r.name))]
+    if principal is not None and checks_repo_access(principal):
+        responses = [r for r in responses if authorize_repo(principal, (r.id, r.name), Action.READ)]
     return responses
 
 
@@ -579,6 +580,7 @@ async def generate_pages(
 
 
 @router.post("/{repo_id}/generate/estimate")
+@read_route
 async def generate_estimate(
     repo_id: str,
     request: Request,
@@ -615,7 +617,9 @@ async def generate_estimate(
     gen_config = _build_generation_config(repo_path, job_config, wiki_style)
 
     # Price with the repo's configured provider/model, if one resolves.
-    _client, provider_name, model_name, provider_error = resolve_provider(str(repo_path), provider)
+    _client, provider_name, model_name, provider_error = resolve_provider(
+        str(repo_path), provider, repo_id=repo_id
+    )
     priced_with = {"name": provider_name, "model": model_name, "error": provider_error}
 
     session_factory = _resolve_repo_session_factory(request.app.state, repo_id)
@@ -717,6 +721,7 @@ async def index_repo(
 
 
 @router.post("/{repo_id}/preflight")
+@read_route
 async def preflight_index(
     repo_id: str,
     request: Request,
@@ -738,7 +743,7 @@ async def preflight_index(
 
     exclude_patterns = _repo_exclude_patterns(repo, repo_path)
 
-    provider = await probe_provider(repo_path)
+    provider = await probe_provider(repo_path, repo_id)
 
     try:
         file_count = await asyncio.to_thread(count_files, repo_path, exclude_patterns)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from repowise.cli.providers.keys import (
@@ -19,7 +20,7 @@ def _embedder_kwargs(embedder_name: str, repo_path: Any = None) -> dict[str, Any
     return embedder_kwargs(embedder_name, repo_path)
 
 
-def resolve_embedding_model(embedder_name: str) -> str | None:
+def resolve_embedding_model(embedder_name: str, repo_path: Path | str | None = None) -> str | None:
     """Return the configured embedding model for *embedder_name*, if any.
 
     The same value :func:`_embedder_kwargs` builds with, so what ``init``
@@ -28,10 +29,14 @@ def resolve_embedding_model(embedder_name: str) -> str | None:
     """
     from repowise.core.providers.embedding.resolve import embedding_model_for
 
-    return embedding_model_for(embedder_name)
+    return embedding_model_for(embedder_name, repo_path)
 
 
-def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = None) -> str:
+def resolve_embedder(
+    embedder_flag: str | None,
+    env: Mapping[str, str] | None = None,
+    repo_path: Any = None,
+) -> str:
     """Auto-detect the embedder backend, or use the flag value.
 
     *env* layers a repo's persisted ``.repowise/.env`` under the process
@@ -40,25 +45,31 @@ def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = 
     this is the choice ``init`` makes afresh. Order: flag > ``REPOWISE_EMBEDDER``
     > detection from keys > ``~/.repowise/config.yaml``'s ``embedder`` > mock.
     """
-    return resolve_embedder_choice(embedder_flag, env)[0]
+    return resolve_embedder_choice(embedder_flag, env, repo_path=repo_path)[0]
 
 
 def resolve_embedder_choice(
-    embedder_flag: str | None, env: Mapping[str, str] | None = None
+    embedder_flag: str | None,
+    env: Mapping[str, str] | None = None,
+    repo_path: Any = None,
 ) -> tuple[str, str]:
     """:func:`resolve_embedder` plus why it was picked, for the run to state."""
     from repowise.core.providers.embedding.resolve import embedder_reason, resolve_embedder_name
+    from repowise.core.providers.llm.resolve import repo_getenv
 
     overlay = env or {}
+    base_getenv = repo_getenv(repo_path)
 
     def getenv(name: str) -> str | None:
-        return os.environ.get(name) or overlay.get(name) or None
+        return os.environ.get(name) or overlay.get(name) or base_getenv(name)
 
-    name, source = resolve_embedder_name(embedder_flag, getenv=getenv, use_pin=False)
-    return name, embedder_reason(name, source, getenv=getenv)
+    name, source = resolve_embedder_name(
+        embedder_flag, repo_path=repo_path, getenv=getenv, use_pin=False
+    )
+    return name, embedder_reason(name, source, repo_path=repo_path, getenv=getenv)
 
 
-def model_run_embedder(pinned: str | None) -> tuple[str | None, str, bool]:
+def model_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str | None, str, bool]:
     """``(name, stated, replaced_mock)`` for a run that pays a model.
 
     A keyless run pins ``mock`` because it promised no spend. A run already
@@ -67,7 +78,7 @@ def model_run_embedder(pinned: str | None) -> tuple[str | None, str, bool]:
     """
     name, reason, upgraded = pinned, "pinned in .repowise/config.yaml", False
     if not pinned or pinned == "mock":
-        resolved, reason = resolve_embedder_choice(None)
+        resolved, reason = resolve_embedder_choice(None, repo_path=repo_path)
         if resolved != (pinned or "mock"):
             if pinned == "mock":
                 reason += ", replacing the keyless mock"
@@ -78,7 +89,7 @@ def model_run_embedder(pinned: str | None) -> tuple[str | None, str, bool]:
     return name, f"{stated} ({reason})", upgraded
 
 
-def keyless_run_embedder(pinned: str | None) -> tuple[str, str]:
+def keyless_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str, str]:
     """``(name, stated)`` for a run with no model, which promises no spend.
 
     An embedder the user chose (a real pin, ``REPOWISE_EMBEDDER``) is kept and
@@ -87,7 +98,7 @@ def keyless_run_embedder(pinned: str | None) -> tuple[str, str]:
     if pin_names_an_embedder(pinned):
         name, reason = str(pinned).strip(), "pinned in .repowise/config.yaml"
     else:
-        name, reason = resolve_embedder_choice(None)
+        name, reason = resolve_embedder_choice(None, repo_path=repo_path)
         kept = template_run_embedder(name, embedder_was_requested(None, pinned))
         if kept != name:
             name, reason = kept, "keyless run"
@@ -111,11 +122,16 @@ def semantic_search_command(repo_path: Any = None, used: str | None = None) -> s
 
 def semantic_search_setup_hint() -> str:
     """How to get an embedder when none is detectable, for a one-line note."""
+    from rich.markup import escape
+
+    from repowise.core.providers.embedding.registry import install_spec
     from repowise.core.providers.embedding.resolve import EMBEDDER_KEY_ENVS
 
     keys = " or ".join(EMBEDDER_KEY_ENVS[name][0] for name in ("gemini", "openai"))
     return (
         "Run [bold]repowise reindex --embedder ollama[/bold] with Ollama running, "
+        "or [bold]--embedder fastembed[/bold] after "
+        f"[bold]pip install {escape(install_spec('fastembed'))}[/bold] (no service to run), "
         f"or set {keys} and run [bold]repowise reindex[/bold]."
     )
 
@@ -155,11 +171,11 @@ def embedder_was_requested(embedder_flag: str | None, pinned_embedder: Any = Non
 def is_free_embedder(name: str) -> bool:
     """Whether an embedder can never put anything on the bill.
 
-    The keyless mock and the local ollama server cost nothing; every other
-    built-in calls a hosted endpoint. Runs that promise "no spend" ask this
+    The keyless mock, the local ollama server and in-process fastembed cost
+    nothing; every other built-in calls a hosted endpoint. Runs that promise "no spend" ask this
     instead of spelling the names, so the answer lives in one place.
     """
-    return name in ("mock", "ollama")
+    return name in ("mock", "ollama", "fastembed")
 
 
 def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: bool) -> str:
@@ -195,7 +211,9 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     return resolve_embedder_name(repo_path=repo_path)[0]
 
 
-def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:
+def build_embedder(
+    embedder_name_resolved: str, repo_path: Any = None, *, fallback: bool = True
+) -> Any:
     """Construct the configured embedder, falling back to KeylessEmbedder.
 
     *repo_path* lets the credential come from that repo's ``.repowise/.env``
@@ -218,6 +236,13 @@ def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:
 
     Warn only when someone named a real backend. ``mock`` is the keyless
     default and reaching it is not a failure, so it stays silent.
+
+    The in-process fastembed model loads here, so a machine that cannot
+    download it goes keyless at once, with one line, instead of failing every
+    embed call of the run (see :func:`_model_loads`).
+
+    *fallback* False is for a run with nothing to do without the backend
+    (``reindex``): it states why and returns ``None`` instead of falling back.
     """
     from repowise.core.providers.embedding.base import KeylessEmbedder
     from repowise.core.providers.embedding.registry import get_embedder
@@ -225,7 +250,7 @@ def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:
     if embedder_name_resolved == "mock":
         return KeylessEmbedder()
     try:
-        return get_embedder(
+        embedder = get_embedder(
             embedder_name_resolved, **_embedder_kwargs(embedder_name_resolved, repo_path)
         )
     except Exception as exc:
@@ -238,6 +263,8 @@ def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:
         # gone away otherwise prints this warning in front of the JSON and
         # breaks every parser reading it — and that is the common case for a
         # keyless repo, not an exotic one.
+        from rich.markup import escape
+
         from repowise.cli.helpers import err_console
 
         # Name the places that were actually consulted. "Set OPENAI_API_KEY" is
@@ -250,11 +277,54 @@ def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:
                 places = "\n".join(f"  · {place}" for place in lookup.searched)
                 searched = f"\nNo API key was found in any of:\n{places}"
 
+        # Escaped: an install hint such as "repowise[local-embed]" is not markup.
+        problem = f"{type(exc).__name__}: {escape(str(exc))}{searched}"
+        if not fallback:
+            err_console.print(
+                f"[red]Embedder '{embedder_name_resolved}' could not be built:[/red] {problem}"
+            )
+            return None
         err_console.print(
             f"[yellow]Embedder '{embedder_name_resolved}' could not be built:[/yellow] "
-            f"{type(exc).__name__}: {exc}{searched}\n"
+            f"{problem}\n"
             "Falling back to keyless embeddings, which means [bold]no semantic search[/bold] "
             "for this run.\nFull-text and symbol search are unaffected. Fix the key or "
             "endpoint and run [cyan]repowise reindex[/cyan]\nto restore semantic search."
         )
         return KeylessEmbedder()
+    if embedder_name_resolved == "fastembed" and not _model_loads(
+        embedder, embedder_name_resolved, repo_path, fallback=fallback
+    ):
+        return KeylessEmbedder() if fallback else None
+    return embedder
+
+
+#: Model-load failures this process has reported: init builds its embedder
+#: twice, and the second build fails the same way at once.
+_REPORTED_LOAD_FAILURES: set[str] = set()
+
+
+def _model_loads(embedder: Any, name: str, repo_path: Any, *, fallback: bool) -> bool:
+    """Load *embedder*'s in-process model now; when it cannot, say so in one line.
+
+    The embedder remembers a failure for the process, so asking again costs
+    nothing. stderr, for the same reason as :func:`build_embedder`'s warning.
+    """
+    try:
+        embedder.load()
+        return True
+    except RuntimeError as exc:
+        from rich.markup import escape
+
+        from repowise.cli.helpers import err_console
+
+        reason = str(exc)
+        if not fallback:
+            err_console.print(f"[red]{escape(reason)}[/red]")
+        elif reason not in _REPORTED_LOAD_FAILURES:
+            _REPORTED_LOAD_FAILURES.add(reason)
+            err_console.print(
+                f"[yellow]Semantic search is off for this run:[/yellow] {escape(reason.rstrip('.'))}. "
+                f"Run [cyan]{semantic_search_command(repo_path, name)}[/cyan] once it can be downloaded."
+            )
+        return False

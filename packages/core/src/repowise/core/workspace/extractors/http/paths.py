@@ -8,6 +8,7 @@ footing regardless of the framework's parameter syntax.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 
 from ..strings import match_paren
 
@@ -50,6 +51,10 @@ def normalize_http_path(path: str) -> str:
     # A whole-segment ``*`` (Spring ``/owners/*/pets``, Express ``/files/*``)
     # matches one segment, as a parameter does.
     s = re.sub(r"(?<=/)\*(?=/|$)", "{param}", s)
+    # A whole-segment ``*name`` (gin and echo ``/swagger/*any``,
+    # ``/static/*filepath``) is a named catch-all; ``/**`` and a ``*`` inside
+    # a longer segment (``/a*b``) are left alone.
+    s = re.sub(r"(?<=/)\*\w+(?=/|$)", "{param}", s)
     return s or "/"
 
 
@@ -124,6 +129,9 @@ def absolute_host(url: str) -> str | None:
     authority = after.split("/", 1)[0]
     if "$" in authority or "{" in authority:
         return None  # the host is itself an unresolved expression, not a literal
+    if authority.startswith("["):
+        host, closing, _ = authority[1:].partition("]")
+        return host.lower() if closing and host else None
     return authority.split(":", 1)[0].lower() or None
 
 
@@ -131,8 +139,13 @@ def absolute_host(url: str) -> str | None:
 # or ``${apiUrl}/v1/users``. The captured group is the inner expression, used to
 # resolve the call's target service (see :func:`base_token_identifier`). Anchored
 # at the start so interior expressions (real path params like ``/users/${id}``)
-# are untouched.
-_LEADING_BASE_EXPR_RE = re.compile(r"^\s*\$\{([^}]+)\}")
+# are untouched. A scheme placeholder may lead an authority that is one too,
+# ``${location.protocol}//${location.host}/users``: the whole base goes, and the
+# host's expression is the token, since it names the service. Only a whole
+# host: ``${tenant}.example.com`` is not one.
+_LEADING_BASE_EXPR_RE = re.compile(
+    r"^\s*\$\{([^}]+)\}(?://\$\{([^}]+)\}(?::(?:\$\{[^}]+\}|\d+))?(?=/|$))?"
+)
 
 
 def strip_leading_base_expr(path: str) -> tuple[str, str]:
@@ -151,7 +164,10 @@ def strip_leading_base_expr(path: str) -> tuple[str, str]:
     new_path = path[m.end() :]
     if not new_path.startswith("/"):
         new_path = "/" + new_path
-    return new_path, m.group(1).strip()
+    if m.group(2) is None:
+        return new_path, m.group(1).strip()
+    # ``${env.API_HOST || location.host}``: the configured name comes first.
+    return new_path, re.split(r"\|\||\?\?", m.group(2))[0].strip()
 
 
 # A trailing interpolated suffix, e.g. ``/repos${qs}``. Anchored, and required
@@ -176,6 +192,20 @@ def strip_trailing_query_expr(path: str) -> str:
     populated variant. Widen only with evidence of the value's shape.
     """
     return _TRAILING_QUERY_EXPR_RE.sub("", path)
+
+
+_HOLE_NAME_RE = re.compile(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}")
+
+
+def trailing_glued_name(path: str) -> str | None:
+    """The name of the one bare-name hole glued onto *path*'s last segment.
+
+    ``/api/v1${endpoint}`` gives ``endpoint``; a parameter segment
+    (``/users/${id}``), an expression hole, or two holes give None.
+    """
+    m = _TRAILING_QUERY_EXPR_RE.search(path)
+    hole = _HOLE_NAME_RE.fullmatch(m.group()) if m else None
+    return hole.group(1) if hole else None
 
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -206,6 +236,27 @@ def is_unusable_consumer_path(path: str) -> bool:
         return True
     segments = [s for s in path.split("/") if s]
     return not any(s != "{param}" for s in segments)
+
+
+# Hosts that name the local machine, not a specific service. A consumer URL
+# pointing here carries no service identity (the matcher resolves it by path).
+LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
+
+
+def names_a_target(host: str | None, base_token: str, bound_bases: Collection[str] = ()) -> bool:
+    """True when a consumer URL carries something that can place it on a service.
+
+    A literal host other than the local machine is that evidence. A base
+    placeholder is only when the dialect read its name from a binding
+    (*bound_bases*, e.g. the env keys a Go ``mustMapEnv`` fills): in
+    ``${endpoint}`` the name is a local variable and says nothing about where
+    the call goes. A path alone is never enough: ``/`` is served by nearly
+    every service, so a root call with neither would link anywhere.
+    """
+    if host is not None and host not in LOCALHOST_HOSTS:
+        return True
+    ident = base_token_identifier(base_token)
+    return bool(ident) and ident in bound_bases
 
 
 def consumer_meta(

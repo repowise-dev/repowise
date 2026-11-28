@@ -60,7 +60,7 @@ def _add_flask_edges(
 
 class _FlaskHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        return "flask" in dctx.stack_lower
+        return dctx.uses("Flask")
 
     def add_edges(
         self,

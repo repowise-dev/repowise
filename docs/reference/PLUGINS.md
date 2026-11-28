@@ -19,6 +19,7 @@ The plugin API is experimental. Read [Stability](#stability) before you publish.
 | Add an LLM provider | `register_provider(name, factory)` | `llm-provider` |
 | Add an embedding provider | `register_embedder(name, factory)` | `embedder` |
 | Add or replace an implementation of a seam | `<seam registry>.register(name, impl)` | the seam name, for example `event-sink` |
+| Create and change your own tables | `storage_migrations.register(StorageMigration(...))` | `storage-migration` |
 
 Every row is listed in the [extension points catalog](#extension-points-catalog).
 
@@ -38,6 +39,19 @@ Every row is listed in the [extension points catalog](#extension-points-catalog)
 | Internal API as an agent tool | `mcp-tool` | Gives agents a read-only tool that queries an internal service |
 | Team shortcut command | `cli-command` | Wraps a repowise workflow your team runs often in one command |
 | Phase timings | `pipeline-hook` | Records when each index phase starts and ends and sends the timings to your metrics system |
+| Database statement statistics | `evidence-source` | Reads a database's statement statistics on a schedule and stores them as production `statement_stats` runs |
+| Extract an unsupported document type | `document-extractors` | Converts a plugin-supported file type to Markdown for the existing ingestion path |
+
+## Community plugins
+
+Plugins built and maintained outside this repository. Each is owned by its
+author, so read its README for install steps and supported versions.
+
+| Plugin | Uses | What it does |
+|--------|------|--------------|
+| [repowise-markitdown-plugin](https://github.com/digimangos/repowise-markitdown-plugin) | `document-extractors` | Indexes PDFs through Microsoft's MarkItDown, with results cited by the original PDF path |
+
+To list yours, open a pull request that adds a row here.
 
 ## Build your first plugin
 
@@ -106,8 +120,11 @@ repowise plugins --format json
 ```
 
 The listing shows each plugin with its source, target, status (`loaded`,
-`failed` with the error, or `skipped` for a duplicate) and everything it
-registered as `"<kind>:<name>"` strings. It then lists every seam with the
+`failed` with the error, `skipped` for a duplicate, or `pending` when a
+[storage revision](#storage-revisions) it registered is not applied to the
+index in the current directory) and everything it registered as
+`"<kind>:<name>"` strings, followed by its storage revisions applied and
+pending. It then lists every seam with the
 implementation `get()` picks and all registered names. The JSON form carries
 the same data:
 
@@ -121,7 +138,8 @@ the same data:
       "target": "repowise_hello:register",
       "status": "loaded",
       "error": null,
-      "seams": ["cli-command:hello", "mcp-tool:hello_greet", "event-sink:hello-stderr", "report-section:hello"]
+      "seams": ["cli-command:hello", "mcp-tool:hello_greet", "event-sink:hello-stderr", "report-section:hello"],
+      "storage": {"applied": [], "pending": []}
     }
   ],
   "seams": {
@@ -149,7 +167,8 @@ Plugins load once per process, the first time repowise needs them:
 
 | Moment | What triggers loading |
 |--------|-----------------------|
-| CLI | an unknown command name or a command listing (`repowise --help`); a built-in command runs without loading plugins |
+| CLI | an unknown command name or a command listing (`repowise --help`); a built-in command runs without loading plugins until it opens the index |
+| Opening the index | `init_db`, and the read path's check for a store that is behind, so the store sees every [storage revision](#storage-revisions) |
 | MCP server | server start, before tools attach |
 | `repowise serve` | app creation |
 | Index and update | each pipeline run, before hooks are wrapped |
@@ -170,6 +189,7 @@ repowise runs each registered implementation in registration order.
 | `pipeline-hook` | `register_hook(phase, callback, when=...)` from `repowise.core.registry` | every | before (`pre`) or after (`post`) the named phase of `repowise init` and `repowise update` | an exception is logged and the pipeline continues | `packages/core/src/repowise/core/registry/pipeline_hooks.py` |
 | `llm-provider` | `register_provider(name, factory)` from `repowise.core.providers.llm` | one, by name | when that provider name is selected | a name that a built-in provider holds raises `ValueError` | `packages/core/src/repowise/core/providers/llm/registry.py` |
 | `embedder` | `register_embedder(name, factory)` from `repowise.core.providers.embedding` | one, by name | when that embedder name is selected | a name that a built-in embedder holds raises `ValueError` | `packages/core/src/repowise/core/providers/embedding/registry.py` |
+| `storage-migration` | `storage_migrations.register(StorageMigration(...))` from `repowise.core.registry.storage_migrations` | every, in registration order within a namespace | when the index is opened, after the core schema, once per store | `StorageMigrationError` naming the plugin, namespace and revision; on a store that cannot take the write the plugin is `pending` instead | `packages/core/src/repowise/core/registry/storage_migrations.py` |
 
 `parent=` attaches a command under an existing Click group instead of the
 root. For `register_lazy_command`, `name` must equal the Click command's own
@@ -206,6 +226,48 @@ returns an `Embedder` (`repowise.core.providers.embedding.base`). Users select a
 registered provider by name like a built-in one, for example
 `REPOWISE_PROVIDER=<name>` or `REPOWISE_EMBEDDER=<name>`.
 
+### Storage revisions
+
+A plugin that keeps its own tables, such as the records an
+`index-persistence` implementation writes, registers a revision for each
+change to them. Registering touches no database:
+
+```python
+import hashlib
+from pathlib import Path
+
+from repowise.core.registry.storage_migrations import StorageMigration, storage_migrations
+
+from . import v1  # one module per revision, with `async def apply(connection)`
+
+
+def register() -> None:
+    checksum = hashlib.sha256(Path(v1.__file__).read_bytes()).hexdigest()
+    storage_migrations.register(StorageMigration("example.plugin", "v1", checksum, v1.apply))
+```
+
+Opening an index applies each revision not yet applied there, after the core
+schema, in its own transaction with its row in `plugin_storage_revisions`,
+under the writer lock (`BEGIN IMMEDIATE` on SQLite, an advisory lock on
+PostgreSQL). `apply` receives the `AsyncConnection` and must not commit or roll
+back. Revisions apply in the order a namespace registers them; namespaces are
+independent. Alembic never sees them, so removing the plugin leaves nothing for
+core to resolve. A failure raises `StorageMigrationError` naming the plugin,
+namespace and revision.
+
+- A changed checksum fails every open, and `repowise plugins` lists the plugin
+  as `failed`. Add a new revision instead of editing one. The checksum above
+  hashes the module's bytes, so a line-ending change or a comment edit to an
+  applied revision fails every open too: keep an applied revision's file
+  byte-stable, or hash a normalised string instead.
+- An index that cannot take the write (read-only, or a SQLite store another
+  writer holds past the busy timeout) still opens; the revision stays pending
+  there and the plugin is `pending` until a later open in the same process
+  applies it, or finds it applied, on every store where it was pending.
+- A pending plugin's seam implementations are unready: `all()` leaves them out
+  and `get()` raises `KeyError` naming the plugin and revision. Its MCP tools,
+  CLI commands and pipeline hooks stay registered.
+
 ### Seams
 
 Each seam is a `SeamRegistry` instance. Import the registry object from the
@@ -215,12 +277,16 @@ module in the last column and call `.register(name, impl)`, for example
 | Seam | Registry object | One or every | When it runs | On failure | Defined in |
 |------|-----------------|--------------|--------------|------------|------------|
 | `event-sink` | `event_sinks` | every sink named in `events.sinks` (default: the seam default, `jsonl`) | after an index run stores component events | logged; the events stay in the store | `packages/core/src/repowise/core/events/sinks.py` |
+| `index-persistence` | `index_persistence` | every | `apply` inside each index write's transaction, before commit, including init's checkpoint (mode `checkpoint`); `publish` after commit and cleanup, except after the checkpoint | an `apply` failure rolls back and propagates, except in the checkpoint, which logs it and leaves the final write to apply; a `publish` failure propagates and the commit stays; a cleanup failure after the commit skips `publish` | `packages/core/src/repowise/core/pipeline/index_persistence.py` |
 | `report-section` | `report_sections` | every | `repowise report` builds a document | the section becomes one inconclusive item marked `failed`; other sections run | `packages/core/src/repowise/core/report/model.py` |
 | `report-renderer` | `report_renderers` | one, chosen by `repowise report assessment --format` | when a report is written | propagates | `packages/core/src/repowise/core/report/render.py` |
 | `change-outcome` | `change_outcome_providers` | every | when a change record's outcomes are read | `OutcomeUnknownError` marks the outcome unknown; any other exception propagates | `packages/core/src/repowise/core/changes/outcomes.py` |
 | `change-metadata` | `change_metadata_sources` | one | when change records are stored | propagates | `packages/core/src/repowise/core/changes/source.py` |
+| `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages rather than files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
+| `evidence-source` | `evidence_sources` | every; the host chooses which source to fetch, when, and with which credentials | when a host calls `run_fetch` (repowise itself schedules no fetch) | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
+| `document-extractors` | `document_extractors` | every; later extension claim wins | During traversal and source reads for otherwise unsupported extensions | indexing propagates with plugin name and original path; optional previews omit unavailable content | `packages/core/src/repowise/core/ingestion/document_extractors.py` |
 | `team-directory` | `team_directories` | one | when components and declared owners load | propagates | `packages/core/src/repowise/core/ownership/directory.py` |
 | `authenticator` | `authenticators` | one | each `repowise serve` request and MCP HTTP request | propagates | `packages/server/src/repowise/server/auth.py` |
 | `authorizer` | `authorizers` | one | each repository or tool access check in `repowise serve`, MCP over HTTP and chat | propagates | `packages/server/src/repowise/server/auth.py` |
@@ -241,6 +307,227 @@ registry, for example `EventSink.deliver` in `events/sinks.py`, `Section` and
 Read that protocol before you write an implementation. The
 `chat-dataset` and `chat-view` seams have decorators,
 `register_dataset(...)` and `register_view_builder(...)`, in the same modules.
+
+### Writing an evidence source
+
+A `profile-format` turns a file someone hands over into a run. An
+`evidence-source` fetches: it reads a window of measurements from a service
+(a database's statement statistics, a continuous profiler), may need
+credentials only the host holds, and can return several runs per fetch.
+The protocol, `EvidenceSource`, is in
+`packages/core/src/repowise/core/evidence/sources.py`:
+
+```python
+from repowise.core.evidence.sources import SourceBatch, SourceRequest, evidence_sources
+
+
+class StatementSource:
+    name = "postgres-statements"
+    kinds = ("statement_stats",)
+
+    def fetch(self, request: SourceRequest):
+        rows, cursor = read_statements(request.credentials, after=request.cursor)
+        yield SourceBatch(
+            kind="statement_stats", workload="prod db", workload_class=None,
+            commit=None, environment="production",
+            entries=rows, document={"window": {"start": ..., "end": ...}},
+            next_cursor=cursor,
+        )
+
+
+def register():
+    evidence_sources.register(StatementSource.name, StatementSource())
+```
+
+| `SourceRequest` field | Meaning |
+|-----------------------|---------|
+| `repository_id`, `repository_name` | The repository the runs are for |
+| `since`, `until` | The window to read; `None` leaves the bound to the source |
+| `cursor` | What the last stored batch returned as `next_cursor`; `None` on the first fetch |
+| `settings` | Plain settings such as a database or service name. Never secrets |
+| `credentials` | The host's credentials object, passed through untouched and left out of `repr` |
+
+| `SourceBatch` field | Meaning |
+|---------------------|---------|
+| `kind`, `workload`, `workload_class`, `environment` | The run header, as `evidence add` takes it; with no `environment`, a production run reads as `production` and any other as `unknown` |
+| `commit` | The full commit SHA measured; `None` only for a production-only kind (`route_latency`, `statement_stats`) whose deployed commit is unknown |
+| `measured_at` | When the run was measured (for a window, its end) |
+| `entries` and `document` | `repowise-evidence-v1` entries of `kind`, and the document's other fields (`value_kind`, `unit`, totals, `tool`, `window`, `base_commit_sha`) |
+| `data` and `format` | Or a file's bytes in a registered `profile-format`, such as pprof bytes a profiler service returns; `value_kind` names the clock when the bytes do not. The bytes must read as a run of `kind` |
+| `next_cursor` | Where the next fetch resumes once this batch is stored; `None` keeps the cursor as it was |
+
+The rules a source follows, which the contract tests in
+`tests/unit/evidence/test_sources.py` check against a test double:
+
+- **Credentials stay with the host.** repowise passes `credentials` through
+  and never stores, logs or prints it. Do not copy it, or anything derived
+  from it, into a batch or an exception message.
+- **Cursor.** The cursor is opaque to repowise and only moves past a batch
+  once that batch is stored, so return batches oldest first, each with the
+  cursor that resumes after it. A batch that joins to no function is still
+  read (its result says `stored: false` and why), as a file is added once.
+  Fetching again from an old cursor is safe: a batch whose entries, header
+  and index are unchanged is the same run, and storing it again writes
+  nothing new.
+- **Commit.** A measured run names the full commit it measured, including a
+  `production` profile. Only a production-only kind whose deployed commit is
+  unknown leaves `commit` as `None`; it is stored as measured at an unknown
+  commit.
+- **Class.** A source is trusted by the host that installed it, so its
+  batches may carry `production` where the kind allows it. A production-only
+  kind (`route_latency`, `statement_stats`) needs no class. `evidence add
+  --class production` stays refused.
+- **Failure.** Raise `SourceUnavailable` when the far side is down, times out
+  or rate limits: the fetch stops, keeps what it stored and returns the
+  cursor to retry from. Raise `SourceRefused` when it refuses the credentials
+  or settings: the host shows its message to the user. Anything else fails
+  that fetch, as does a batch repowise refuses (a missing commit, a class
+  the kind does not take). A batch is stored whole or not at all, and the
+  batches stored before a failure stay: the host commits them together with
+  the cursor the fetch returns.
+
+A host runs a fetch with `run_fetch(source, request, store)`, where `store`
+stores one batch. Against a repowise index, `store` is
+`repowise.core.evidence.add.ingest_batch`, which reads the batch the way
+`evidence add` reads a file of the same entries, so the stored rows,
+hotness and payloads are the same. A host with no checkout (a server that
+keeps only the index) passes a `repo_path` that does not exist: a batch of
+entries is stored with no checkout root, while a batch of profile bytes is
+refused, since its frames are placed on the checkout's source. `fetch` is a plain iterable, so a source
+that waits on the network holds the caller's event loop while it reads; a
+server runs `run_fetch` in its own task or worker. `repowise plugins` lists
+each registered source under `evidence-source`; repowise has no command that
+fetches.
+
+### Authenticator and authorizer
+
+An `Authenticator` turns a bearer token or a request into a `Principal`. An
+`Authorizer` decides what that principal may reach. Both live in
+`repowise.server.auth`.
+
+| `Principal` field | Meaning |
+|-------------------|---------|
+| `id`, `kind` | Who is calling. `kind` is free text for your own principals, such as `"sso"` |
+| `repo_scope`, `tool_scope` | Built-in scopes. `None` means unrestricted |
+| `claims` | Your own data about the caller (roles, groups, tenant). repowise never reads it. It survives the MCP HTTP token round trip, so keep it JSON-serializable |
+
+| Authorizer method | Arguments |
+|-------------------|-----------|
+| `can_access_repo(principal, identifiers, action=Action.READ)` | `identifiers` are the forms one repo is known by: its id, stored name or workspace alias, any of which may be `None`. On a workspace MCP server the id is read from each repo's index, so a scope written in repo ids works there too. An empty tuple is a server-wide route that names no repo, such as registering one: decide from `action` alone |
+| `can_use_tool(principal, tool, action=Action.READ)` | `action` is `WRITE` for a tool registered with `safety="mutating"`, or a tool the registry does not know |
+
+`action` is `Action.READ` or `Action.WRITE`. A REST route's action follows its
+HTTP method: GET, HEAD and OPTIONS read, anything else writes. A POST route that
+only reads, such as chat, `generate/estimate` or `preflight`, declares it with
+`@read_route` under the router decorator. Webhook deliveries are writes.
+
+Declaring `action` opts in. An authorizer whose `can_access_repo` accepts an
+`action` keyword (or `**kwargs`) is asked on every call, for every principal,
+including routes that name no repo. One that does not keeps the original
+contract: called without `action`, and asked about repos only for a principal
+with a `repo_scope`. Both satisfy the `Authorizer` protocol, so an existing
+plugin needs no change.
+
+On MCP, `repo="all"` is refused for a principal with a `repo_scope`. For any
+other principal, an action-aware authorizer must allow every repo it expands
+to, or the call is refused.
+
+A read-only role, with repos chosen by id:
+
+```python
+from repowise.server.auth import Action, authorizers
+
+
+class RoleAuthorizer:
+    def can_access_repo(self, principal, identifiers, action=Action.READ):
+        roles = principal.claims.get("roles", ())
+        if action is Action.WRITE and "writer" not in roles:
+            return False
+        allowed = principal.claims.get("repo_ids")
+        ids = [i for i in identifiers if i]
+        return allowed is None or not ids or any(i in allowed for i in ids)
+
+    def can_use_tool(self, principal, tool, action=Action.READ):
+        return action is Action.READ or "writer" in principal.claims.get("roles", ())
+
+
+def register():
+    authorizers.register("roles", RoleAuthorizer())
+```
+
+Pair it with an authenticator that returns
+`Principal(id=..., kind="sso", claims={"roles": [...], "repo_ids": [...]})`,
+then select both with `REPOWISE_SEAM_AUTHENTICATOR` and
+`REPOWISE_SEAM_AUTHORIZER`.
+
+The `document-extractors` seam is format-agnostic. A plugin claims lower-case
+extensions that Repowise does not already process and returns Markdown from
+`extract(path, data)`. Registration requires a non-empty set of valid
+single-suffix extensions (for example `.pptx`, not `.drawio.xml`), a non-empty
+string `version`, and a callable `extract` method.
+Supported language extensions and files whose bytes identify a supported
+language (including shebang scripts) keep their normal parser and cannot be
+claimed by an extractor.
+
+Repowise keeps the original path and owns discovery, exclusions, size checks,
+change detection and deletion handling. The same current plugin claim is used
+when parsing working-tree files and historical Git blobs. Historical blobs are
+converted with the currently installed extractor; Repowise does not retain
+historical plugin implementations. The extractor's name, version and original
+source bytes participate in the parse-cache fingerprint. Extracted Markdown is
+cached behind the shared source reader under `.repowise/document-cache/`, so
+ingestion, historical blob parsing and appropriate MCP reads reuse conversion.
+Entries are keyed by original path, source bytes, extractor name and version.
+Cache corruption or unavailable storage causes reconversion, not lost content.
+The converted Markdown also yields `documents` edges from the original path to
+the repository files it links to or names
+([edge types](../layers/GRAPH.md#edge-types)).
+The cache has no automatic eviction; removing this directory only causes
+reconversion. Bump `version` when
+extraction behaviour changes, then run `repowise init --force` to rebuild the
+repository index; an otherwise clean repository is not scanned just because a
+plugin version changed. Check `repowise plugins` to see which extractor owns a
+claimed extension. Change-history diffs use the current plugin for the
+historical blob's path and bytes; they do not replay old plugin versions or
+run a full repository traversal over each historical tree. Historical blob
+routing uses the changed path and that blob's bytes, applying the current
+invocation's exclusions, directory boundaries and source-size rules before
+conversion. It does not reconstruct historical ignore files or configuration.
+
+Size limits for claimed documents:
+
+| Limit | Default | Notes |
+|-------|---------|-------|
+| Source file | 500 KB, the limit for any file with no parser | Set `max_source_bytes` (a positive `int`) on the extractor to change it for the extensions it claims. Registration rejects any other value |
+| Source file, hard ceiling | 100 MiB | A larger `max_source_bytes` is clamped to it. The parent process reads the whole file and sends it to a worker |
+| Extracted Markdown | 2 MB, the limit for parseable source files | Fixed |
+
+The source limit is checked during traversal, for historical Git blobs and for
+MCP reads, before the extractor runs. A document whose Markdown is over 2 MB is
+not indexed and its Markdown is not cached. The run continues and reports it
+with the other skipped files as
+`Not indexed: <path> (<size> KB, extracted Markdown over the 2,048 KB limit)`;
+traversal stats record the reason `extracted_over_max_size`. When an update
+finds that an indexed document has crossed either limit, the document is
+removed from the index as if it were deleted.
+
+Extraction runs in the existing spawned parse-worker pool with the
+`REPOWISE_PARSE_TIMEOUT_S` per-file deadline (60 seconds by default; `0`
+disables the deadline). A timeout, worker crash, unavailable pool or extractor
+exception fails the indexing run;
+Repowise deliberately does not retry plugin code in-process. Workers also check
+that the discovered extractor version matches the fingerprinted version. The
+existing worker memory cap (`REPOWISE_PARSE_WORKER_MEMORY_MB`, 2048 MiB by
+default; `0` disables it) is applied where the platform supports it, so these
+are best-effort resource bounds rather than a hard host-memory
+guarantee. Because workers use `spawn`, the plugin must be importable there:
+install its entry point or make its module available through `REPOWISE_PLUGINS`
+and the worker's environment. A registration made only dynamically in the
+parent process is not sufficient. The deadline terminates Repowise's worker
+processes, but cannot guarantee termination of a separate subprocess that a
+plugin starts and detaches. Crash recovery may retry in-flight work, so plugins
+must tolerate repeated calls. These limits do not bound aggregate extracted
+content held by the parent process.
 
 ## Choosing an implementation
 

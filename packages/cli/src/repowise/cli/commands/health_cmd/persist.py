@@ -148,6 +148,39 @@ def _load_stored_analyzer_version(repo_path: object) -> int | None:
     return _read_beside_score(repo_path, get_latest_snapshot_analyzer_version, None)
 
 
+def _load_measured_costs(repo_path: object) -> dict[str, Any] | None:
+    """The measured-cost view (``crud.measured_costs``); ``None`` without
+    ranked evidence or when the store cannot answer.
+
+    Best effort like the performance headline: the view sits beside the
+    report and never fails it.
+    """
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud import measured_costs
+
+    async def _do() -> Any:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
+                return None
+            return await measured_costs(*opened)
+
+    try:
+        return run_async(_do())
+    except Exception:
+        return None
+
+
+def _load_evidence_freshness(repo_path: object) -> dict[str, Any] | None:
+    """The stored evidence freshness block; ``None`` when the store cannot answer.
+    Best effort, like the measured-cost view beside it."""
+    from repowise.cli.commands._evidence_freshness import stored_freshness
+
+    try:
+        return stored_freshness(Path(str(repo_path)))
+    except Exception:
+        return None
+
+
 def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str]] | None:
     """The health analysis the last ``init``/``update`` stored, read without writing.
 
