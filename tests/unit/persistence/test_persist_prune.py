@@ -240,3 +240,70 @@ async def test_prune_retains_health_metric_for_generated_file_while_pruning_grap
         KEPT,
         STALE,
     }
+
+
+async def test_persist_pipeline_result_prunes_stale_graph_rows_for_file_becoming_generated(
+    async_session, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from repowise.core.ingestion.traverser import TraversalStats
+    from repowise.core.pipeline.persist import persist_pipeline_result
+
+    repo = await insert_repo(async_session)
+    await _seed(async_session, repo.id)
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.persist.persist_ingestion", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr("repowise.core.pipeline.persist.persist_git", AsyncMock())
+    monkeypatch.setattr("repowise.core.pipeline.persist.persist_analysis", AsyncMock())
+    monkeypatch.setattr("repowise.core.pipeline.persist.persist_generation", AsyncMock())
+    monkeypatch.setattr(
+        "repowise.core.pipeline.persist._sweep_stale_generated_pages", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.persist.sweep_store_hygiene", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.page_tree_sync.rebuild_page_tree", AsyncMock()
+    )
+
+    gb = MagicMock()
+    gb.graph().number_of_nodes.return_value = 1
+    gb.graph().number_of_edges.return_value = 0
+
+    file_info_kept = SimpleNamespace(path=KEPT)
+    parsed_kept = SimpleNamespace(file_info=file_info_kept)
+    result = SimpleNamespace(
+        file_infos=[file_info_kept],
+        traversal_stats=TraversalStats(generated_files=[STALE]),
+        git_metadata_list=[{"file_path": KEPT}],
+        generated_pages=[],
+        authoritative_page_types=None,
+        preserved_page_ids=None,
+        parsed_files=[parsed_kept],
+        graph_builder=gb,
+    )
+
+    await persist_pipeline_result(result, async_session, repo.id, scan_commit_health=False)
+    await async_session.commit()
+
+    # GraphNode, WikiSymbol, SecurityFinding for STALE must be pruned
+    assert await _paths(async_session, GraphNode, GraphNode.node_id, repo.id) == {
+        KEPT,
+        f"{KEPT}::main",
+    }
+    assert await _paths(async_session, WikiSymbol, WikiSymbol.file_path, repo.id) == {KEPT}
+    assert await _paths(async_session, SecurityFinding, SecurityFinding.file_path, repo.id) == {
+        KEPT
+    }
+    assert await _paths(async_session, DeadCodeFinding, DeadCodeFinding.file_path, repo.id) == {
+        KEPT
+    }
+    # But HealthFileMetric for STALE survives because it is in current_health_file_paths
+    assert await _paths(async_session, HealthFileMetric, HealthFileMetric.file_path, repo.id) == {
+        KEPT,
+        STALE,
+    }

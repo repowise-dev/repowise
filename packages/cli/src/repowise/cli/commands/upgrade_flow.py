@@ -689,6 +689,14 @@ async def _recompute_full_tier_health(
                 )
                 if health_report.findings:
                     await save_health_findings(session, repo_id, health_report.findings)
+                from repowise.core.pipeline.persist import persist_skipped_generated_placeholders
+
+                await persist_skipped_generated_placeholders(
+                    session,
+                    repo_id,
+                    repo_path=repo_path,
+                    analyzed_commit=get_head_commit(repo_path),
+                )
                 kpis = health_report.kpis or {}
                 with contextlib.suppress(Exception):  # snapshot is best-effort
                     fields = snapshot_fields(

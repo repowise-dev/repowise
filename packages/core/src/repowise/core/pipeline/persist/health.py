@@ -124,6 +124,26 @@ def _read_skipped_head(repo_path: Any, rel_path: str) -> bytes | None:
     return None
 
 
+def _read_skipped_manifest_paths(repo_path: Any) -> list[str]:
+    """Read paths marked as 'generated' in .repowise/skipped_files.txt."""
+    if repo_path is None:
+        return []
+    skipped_file = Path(repo_path) / ".repowise" / "skipped_files.txt"
+    if not skipped_file.is_file():
+        return []
+    paths: list[str] = []
+    try:
+        for line in skipped_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 3 and parts[2].strip() == "generated":
+                paths.append(parts[0].strip())
+    except OSError as exc:
+        logger.warning("skipped_files_manifest_read_failed", error=str(exc))
+    return paths
+
+
 def _collect_skipped_generated_paths(
     skipped_generated_files: list[str] | None,
     traversal_stats: Any,
@@ -132,18 +152,7 @@ def _collect_skipped_generated_paths(
     skipped_paths: list[str] = list(skipped_generated_files or ())
     if traversal_stats is not None:
         skipped_paths.extend(getattr(traversal_stats, "generated_files", ()) or ())
-    if repo_path is not None:
-        skipped_file = Path(repo_path) / ".repowise" / "skipped_files.txt"
-        if skipped_file.is_file():
-            try:
-                for line in skipped_file.read_text(encoding="utf-8").splitlines():
-                    if line.startswith("#"):
-                        continue
-                    parts = line.split("\t")
-                    if len(parts) >= 3 and parts[2].strip() == "generated":
-                        skipped_paths.append(parts[0].strip())
-            except OSError:
-                pass
+    skipped_paths.extend(_read_skipped_manifest_paths(repo_path))
     return skipped_paths
 
 
@@ -181,49 +190,146 @@ def _build_skipped_generated_metrics(
     return gen_metrics
 
 
-async def _save_skipped_generated_placeholders(
+def _reset_generated_metric_row(row: Any, analyzed_commit: str | None) -> None:
+    row.code_origin = "generated"
+    row.score = None
+    row.max_ccn = None
+    row.max_nesting = None
+    row.nloc = 0
+    row.duplication_pct = None
+    row.cognitive_complexity = None
+    row.has_test_file = False
+    row.is_test = False
+    if analyzed_commit is not None:
+        row.analyzed_commit = analyzed_commit
+
+
+async def persist_skipped_generated_placeholders(
     session: Any,
     repo_id: str,
-    gen_metrics: list[Any],
-    analyzed_commit: str | None,
-) -> None:
+    gen_metrics: list[Any] | None = None,
+    analyzed_commit: str | None = None,
+    *,
+    repo_path: Any = None,
+    traversal_stats: Any = None,
+    skipped_generated_files: list[str] | None = None,
+) -> list[str]:
+    """Record minimal placeholder rows for skipped generated files (#6303)."""
+    if gen_metrics is None:
+        paths = _collect_skipped_generated_paths(
+            skipped_generated_files, traversal_stats, repo_path
+        )
+        gen_metrics = _build_skipped_generated_metrics(paths, set(), repo_path)
     if not gen_metrics:
-        return
-    from sqlalchemy import select
+        return []
+    from sqlalchemy import delete, select
 
-    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.core.persistence.models import HealthFileMetric, HealthFinding
 
-    paths = [m.file_path for m in gen_metrics]
-    existing = set(
-        (
+    metric_paths = [m.file_path for m in gen_metrics]
+    existing = {
+        row.file_path: row
+        for row in (
             await session.execute(
-                select(HealthFileMetric.file_path).where(
+                select(HealthFileMetric).where(
                     HealthFileMetric.repository_id == repo_id,
-                    HealthFileMetric.file_path.in_(paths),
+                    HealthFileMetric.file_path.in_(metric_paths),
                 )
             )
         )
         .scalars()
         .all()
-    )
+    }
     for m in gen_metrics:
         if m.file_path in existing:
-            continue
-        session.add(
-            HealthFileMetric(
-                repository_id=repo_id,
-                file_path=m.file_path,
-                score=None,
-                max_ccn=None,
-                max_nesting=None,
-                nloc=0,
-                has_test_file=False,
-                is_test=False,
-                code_origin="generated",
-                analyzed_commit=analyzed_commit,
+            _reset_generated_metric_row(existing[m.file_path], analyzed_commit)
+        else:
+            session.add(
+                HealthFileMetric(
+                    repository_id=repo_id,
+                    file_path=m.file_path,
+                    score=None,
+                    max_ccn=None,
+                    max_nesting=None,
+                    nloc=0,
+                    has_test_file=False,
+                    is_test=False,
+                    code_origin="generated",
+                    analyzed_commit=analyzed_commit,
+                )
             )
+    await session.execute(
+        delete(HealthFinding).where(
+            HealthFinding.repository_id == repo_id,
+            HealthFinding.file_path.in_(metric_paths),
         )
+    )
     await session.flush()
+    return metric_paths
+
+
+_save_skipped_generated_placeholders = persist_skipped_generated_placeholders
+
+
+async def _persist_health_subsystems(
+    session: Any,
+    repo_id: str,
+    hr: Any,
+    *,
+    analyzed_commit: str | None,
+    repo_path: Any,
+    refresh_governance: bool,
+) -> None:
+    from repowise.core.evidence.hotness import refresh_symbol_hotness
+    from repowise.core.persistence.crud import (
+        PayoffContext,
+        finalize_performance_opportunities,
+        finalize_refactoring_opportunities,
+        save_health_findings,
+        save_refactoring_suggestions,
+        write_function_facts,
+    )
+
+    findings = list(getattr(hr, "findings", None) or [])
+    async with session.begin_nested():
+        await save_health_findings(session, repo_id, findings)
+        await save_refactoring_suggestions(
+            session,
+            repo_id,
+            [
+                s
+                for s in (getattr(hr, "refactoring_suggestions", None) or [])
+                if getattr(s, "refactoring_type", None) != "performance_fix"
+            ],
+            payoff=PayoffContext(
+                fact_rows=getattr(hr, "function_facts", None),
+                is_live=path_liveness(repo_path),
+                commit=analyzed_commit,
+            ),
+        )
+        fact_rows = getattr(hr, "function_facts", None)
+        if fact_rows is not None:
+            await write_function_facts(
+                session,
+                repo_id,
+                fact_rows,
+                roles=getattr(hr, "execution_roles", None),
+                tests=getattr(hr, "function_tests", None),
+                commit=analyzed_commit,
+            )
+        await refresh_symbol_hotness(
+            session, repo_id, head_commit=analyzed_commit, repo_path=repo_path
+        )
+        await finalize_performance_opportunities(
+            session,
+            repo_id,
+            analyzed_commit=analyzed_commit,
+            plan_policy=getattr(hr, "performance_plan_policy", None),
+            execution_roles=getattr(hr, "execution_roles", None),
+        )
+        if refresh_governance:
+            await _refresh_governance_best_effort(session, repo_id)
+        await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
 
 
 async def save_full_health_report(
@@ -255,15 +361,8 @@ async def save_full_health_report(
     is composed once. For a caller whose decisions are already stored (the
     update's re-score); the index stores its decisions after this writer.
     """
-    from repowise.core.evidence.hotness import refresh_symbol_hotness
     from repowise.core.persistence.crud import (
-        PayoffContext,
-        finalize_performance_opportunities,
-        finalize_refactoring_opportunities,
-        save_health_findings,
         save_health_metrics,
-        save_refactoring_suggestions,
-        write_function_facts,
     )
 
     hr = health_report
@@ -294,68 +393,14 @@ async def save_full_health_report(
         metrics.extend(gen_metrics)
 
     await save_health_metrics(session, repo_id, metrics, analyzed_commit=analyzed_commit)
-    # One savepoint over the findings and everything derived from them, so a
-    # rebuild that failed halfway cannot leave the queue describing findings
-    # that were never stored. It runs on an empty finding set too: the queue
-    # has to be reconciled to nothing just the same.
-    async with session.begin_nested():
-        await save_health_findings(session, repo_id, findings)
-        # Structured refactoring suggestions (Extract Class, ...). Repo-wide
-        # reconciliation: an unchanged plan keeps its id and its triage state,
-        # and one nobody detects any more resolves rather than disappearing.
-        # Performance plans are excluded: the finalizer below owns them, so
-        # they are generated once, from the merged stored findings, by the same
-        # writer on every path.
-        await save_refactoring_suggestions(
-            session,
-            repo_id,
-            [
-                suggestion
-                for suggestion in (getattr(hr, "refactoring_suggestions", None) or [])
-                if getattr(suggestion, "refactoring_type", None) != "performance_fix"
-            ],
-            # Before the facts below replace the stored ones: those are the
-            # measures a resolved plan was detected against.
-            payoff=PayoffContext(
-                fact_rows=getattr(hr, "function_facts", None),
-                is_live=path_liveness(repo_path),
-                commit=analyzed_commit,
-            ),
-        )
-        # No rows means no graph to key them on: the stored ones stay. Before
-        # the finalizers, which read each plan's nearest tests off these rows.
-        fact_rows = getattr(hr, "function_facts", None)
-        if fact_rows is not None:
-            await write_function_facts(
-                session,
-                repo_id,
-                fact_rows,
-                roles=getattr(hr, "execution_roles", None),
-                tests=getattr(hr, "function_tests", None),
-                # A full run knows no diff: lineage carries by id and by
-                # unique body; a moved and edited function starts afresh.
-                commit=analyzed_commit,
-            )
-        # The measured functions follow the facts just written: ids, lineage
-        # and bodies. Nothing is read past one lookup without stored evidence.
-        await refresh_symbol_hotness(
-            session, repo_id, head_commit=analyzed_commit, repo_path=repo_path
-        )
-        # Group the stored performance findings into the materialized causal
-        # read model, then reconcile lifecycle and plans.
-        await finalize_performance_opportunities(
-            session,
-            repo_id,
-            analyzed_commit=analyzed_commit,
-            plan_policy=getattr(hr, "performance_plan_policy", None),
-            execution_roles=getattr(hr, "execution_roles", None),
-        )
-        if refresh_governance:
-            await _refresh_governance_best_effort(session, repo_id)
-        # Fold the plans just written into per-file opportunities. Last in the
-        # savepoint because it composes over the stored rows, so it has to see
-        # the reconciliation above rather than the detector output.
-        await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+    await _persist_health_subsystems(
+        session,
+        repo_id,
+        hr,
+        analyzed_commit=analyzed_commit,
+        repo_path=repo_path,
+        refresh_governance=refresh_governance,
+    )
 
 
 async def _refresh_governance_best_effort(session: Any, repo_id: str) -> None:

@@ -330,6 +330,14 @@ def _persist_health(repo_path: object, *, report: object) -> None:
             findings = list(getattr(report, "findings", []) or [])
             if findings:
                 await save_health_findings(session, repo_id, findings)
+            from repowise.core.pipeline.persist import persist_skipped_generated_placeholders
+
+            await persist_skipped_generated_placeholders(
+                session,
+                repo_id,
+                repo_path=repo_path,
+                analyzed_commit=get_head_commit(repo_path),
+            )
 
             kpis = getattr(report, "kpis", {}) or {}
             metrics = getattr(report, "metrics", []) or []
