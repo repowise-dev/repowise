@@ -613,6 +613,9 @@ class GraphBuilder(
         import time as _t
 
         lang_import_time: dict[str, float] = {}
+        from ..extractors.bindings.go import build_go_directory_package_map
+
+        _go_dir_pkgs = build_go_directory_package_map(self._parsed_files)
 
         import_items = self._scoped_items(scope_set)
         if progress:
@@ -644,6 +647,10 @@ class GraphBuilder(
             for imp, targets in zip(parsed.imports, resolved, strict=True):
                 if targets:
                     imp.resolved_file = targets[0]
+                    if _lang == "go":
+                        from ..extractors.bindings.go import sync_go_import_binding
+
+                        sync_go_import_binding(imp, targets[0], self._parsed_files, _go_dir_pkgs)
                 for target in targets:
                     file_imports.add(target)
                     self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)

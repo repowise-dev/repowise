@@ -7,6 +7,9 @@ from pathlib import Path
 
 import networkx as nx
 
+from repowise.core.ingestion.extractors.bindings.go import (
+    build_go_directory_package_map,
+)
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
@@ -276,3 +279,189 @@ class TestInterfaceTypedReceiverCalls:
         edges = _call_edges(tmp_path, sources)
         assert ("cmd/run.go::run", "detect/store.go::Store::Save") in edges
         assert ("cmd/run.go::run", "other/store.go::Store::Save") not in edges
+
+
+class TestPackageClauseImportBindings:
+    def test_explicit_alias_flag_is_recorded_on_binding(self) -> None:
+        parser = ASTParser()
+        content = b'package main\n\nimport alias "example.com/m/pkg"\n'
+        info = FileInfo(
+            path="main.go",
+            abs_path="/tmp/main.go",
+            language="go",
+            size_bytes=len(content),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        parsed = parser.parse_file(info, content)
+        (imp,) = parsed.imports
+        assert imp.bindings[0].is_explicit_alias is True
+
+    def test_directory_package_map_resolves_each_directory_once(self, tmp_path: Path) -> None:
+        sources = {
+            "go.mod": "module example.com/m\n\ngo 1.22\n",
+            "db/db.go": "package db\n\nfunc Open() {}\n",
+            "db/db_test.go": "package db_test\n",
+        }
+        for rel, body in sources.items():
+            path = tmp_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+
+        parsed = {}
+        parser = ASTParser()
+        for rel in ("db/db.go", "db/db_test.go"):
+            info = FileInfo(
+                path=rel,
+                abs_path=str((tmp_path / rel).resolve()),
+                language="go",
+                size_bytes=100,
+                git_hash="",
+                last_modified=datetime.now(),
+                is_test=rel.endswith("_test.go"),
+                is_config=False,
+                is_api_contract=False,
+                is_entry_point=False,
+            )
+            parsed[rel] = parser.parse_file(info, (tmp_path / rel).read_bytes())
+
+        assert build_go_directory_package_map(parsed) == {"db": "db"}
+
+    def test_go_foo_declaring_package_foo_gains_calls_edge(self, tmp_path: Path) -> None:
+        sources = {
+            "go.mod": "module example.com/m\n\ngo 1.22\n",
+            "go-foo/foo.go": "package foo\n\nfunc Do() {}\n",
+            "app/main.go": (
+                "package main\n\n"
+                'import "example.com/m/go-foo"\n\n'
+                "func Run() {\n"
+                "\tfoo.Do()\n"
+                "}\n"
+            ),
+        }
+        edges = _call_edges(tmp_path, sources)
+        assert ("app/main.go::Run", "go-foo/foo.go::Do") in edges
+
+    def test_explicit_alias_still_wins_over_package_clause(self, tmp_path: Path) -> None:
+        sources = {
+            "go.mod": "module example.com/m\n\ngo 1.22\n",
+            "go-foo/foo.go": "package foo\n\nfunc Do() {}\n",
+            "app/main.go": (
+                "package main\n\n"
+                'import myalias "example.com/m/go-foo"\n\n'
+                "func Run() {\n"
+                "\tmyalias.Do()\n"
+                "}\n"
+            ),
+        }
+        edges = _call_edges(tmp_path, sources)
+        assert ("app/main.go::Run", "go-foo/foo.go::Do") in edges
+
+    def test_external_version_suffixes_stripped_in_bindings(self) -> None:
+        parser = ASTParser()
+        content = (
+            b"package main\n\n"
+            b'import "gopkg.in/yaml.v3"\n'
+            b'import "example.com/m/v2"\n'
+            b'import custom "gopkg.in/check.v1"\n'
+            b'import . "example.com/other/v3"\n'
+            b'import _ "example.com/blank/v4"\n'
+        )
+        info = FileInfo(
+            path="app/main.go",
+            abs_path="/tmp/app/main.go",
+            language="go",
+            size_bytes=len(content),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        parsed = parser.parse_file(info, content)
+        by_path = {imp.module_path: imp for imp in parsed.imports}
+
+        # yaml.v3 binds yaml
+        yaml_imp = by_path["gopkg.in/yaml.v3"]
+        assert yaml_imp.local_names == ["yaml"]
+        assert yaml_imp.bindings[0].local_name == "yaml"
+
+        # example.com/m/v2 binds m
+        v2_imp = by_path["example.com/m/v2"]
+        assert v2_imp.local_names == ["m"]
+        assert v2_imp.bindings[0].local_name == "m"
+
+        # Explicit alias custom wins
+        custom_imp = by_path["gopkg.in/check.v1"]
+        assert custom_imp.local_names == ["custom"]
+        assert custom_imp.bindings[0].local_name == "custom"
+
+        # Dot import binds *
+        dot_imp = by_path["example.com/other/v3"]
+        assert dot_imp.local_names == ["*"]
+        assert dot_imp.bindings[0].local_name == "*"
+
+        # Blank import binds nothing
+        blank_imp = by_path["example.com/blank/v4"]
+        assert blank_imp.local_names == []
+        assert blank_imp.bindings == []
+
+    def test_package_matching_path_element_unchanged(self, tmp_path: Path) -> None:
+        sources = {
+            "go.mod": "module example.com/m\n\ngo 1.22\n",
+            "pkg/util.go": "package pkg\n\nfunc Helper() {}\n",
+            "app/main.go": (
+                "package main\n\n"
+                'import "example.com/m/pkg"\n\n'
+                "func Run() {\n"
+                "\tpkg.Helper()\n"
+                "}\n"
+            ),
+        }
+        edges = _call_edges(tmp_path, sources)
+        assert ("app/main.go::Run", "pkg/util.go::Helper") in edges
+
+    def test_bare_major_version_import_fallback_to_version_element(self) -> None:
+        parser = ASTParser()
+        content = b'package main\n\nimport "gopkg.in/v2"\n'
+        info = FileInfo(
+            path="app/main.go",
+            abs_path="/tmp/app/main.go",
+            language="go",
+            size_bytes=len(content),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        parsed = parser.parse_file(info, content)
+        (imp,) = parsed.imports
+        # Does not leave dotted "gopkg.in"; falls back to valid identifier "v2"
+        assert imp.local_names == ["v2"]
+        assert imp.bindings[0].local_name == "v2"
+
+    def test_sibling_package_clause_wins_over_first_main_file(self, tmp_path: Path) -> None:
+        sources = {
+            "go.mod": "module example.com/m\n\ngo 1.22\n",
+            # Alphabetically first file has package main (e.g. generator/script)
+            "db/0_gen.go": "package main\n\nfunc Gen() {}\n",
+            "db/db.go": "package db\n\nfunc Open() {}\n",
+            "app/main.go": (
+                "package main\n\n"
+                'import "example.com/m/db"\n\n'
+                "func Run() {\n"
+                "\tdb.Open()\n"
+                "}\n"
+            ),
+        }
+        edges = _call_edges(tmp_path, sources)
+        assert ("app/main.go::Run", "db/db.go::Open") in edges
+
+
