@@ -198,12 +198,7 @@ class _CommitIndex:
         if not isinstance(link, IssueLink):
             raise ValueError(f"a source yields IssueLink objects, got {type(link).__name__}")
         shas = _link_shas(link, self.known, self.by_change)
-        kind = (link.type or "").lower()
-        if kind not in ISSUE_TYPES:
-            raise ValueError(f"link {link.key!r} has type {link.type!r}; use one of {ISSUE_TYPES}")
-        key = (link.key or "").strip()
-        if not key or len(key) > MAX_KEY:
-            raise ValueError(f"an issue key must be 1 to {MAX_KEY} characters, got {link.key!r}")
+        key, kind = _key_and_type(link)
         return [
             StoredLink(
                 sha=sha,
@@ -218,6 +213,16 @@ class _CommitIndex:
         ]
 
 
+def _key_and_type(link: IssueLink) -> tuple[str, str]:
+    kind = (link.type or "").lower()
+    if kind not in ISSUE_TYPES:
+        raise ValueError(f"link {link.key!r} has type {link.type!r}; use one of {ISSUE_TYPES}")
+    key = (link.key or "").strip()
+    if not key or len(key) > MAX_KEY:
+        raise ValueError(f"an issue key must be 1 to {MAX_KEY} characters, got {link.key!r}")
+    return key, kind
+
+
 def _link_shas(link: IssueLink, known: set[str], by_change: dict[int, list[str]]) -> list[str]:
     if bool(link.sha) == (link.change is not None):
         raise ValueError(f"link {link.key!r} must name exactly one of sha and change")
@@ -227,7 +232,10 @@ def _link_shas(link: IssueLink, known: set[str], by_change: dict[int, list[str]]
                 f"link {link.key!r} names commit {link.sha!r}, which was not asked about"
             )
         return [link.sha]
-    return by_change.get(int(link.change), [])  # type: ignore[arg-type]
+    change = link.change
+    if not isinstance(change, int):
+        raise ValueError(f"link {link.key!r} names change {change!r}; use the number")
+    return by_change.get(change, [])
 
 
 async def run_issue_fetch(

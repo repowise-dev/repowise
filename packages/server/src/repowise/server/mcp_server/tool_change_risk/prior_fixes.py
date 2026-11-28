@@ -206,6 +206,18 @@ async def _with_linked_issues(
         return impact
     if not linked:
         return impact
+    quotes = _quotes_by_file(events, linked)
+    files = tuple(
+        replace(f, linked_issues=tuple(quotes[f.file_path].values()))
+        if quotes.get(f.file_path)
+        else f
+        for f in impact.files
+    )
+    return replace(impact, files=files)
+
+
+def _quotes_by_file(events: list[Any], linked: dict[str, list[Any]]) -> dict[str, dict[str, str]]:
+    """``path -> {key: quote}``, newest fix first, at most three issues per file."""
     quotes: dict[str, dict[str, str]] = {}
     newest_first = sorted(
         events, key=lambda e: e.committed_at.timestamp() if e.committed_at else 0.0, reverse=True
@@ -215,13 +227,7 @@ async def _with_linked_issues(
         for issue in linked.get(event.fix_sha, ()):
             if len(per_file) < _LINKED_ISSUES_LIMIT:
                 per_file.setdefault(issue.key, issue.quote())
-    files = tuple(
-        replace(f, linked_issues=tuple(quotes[f.file_path].values()))
-        if quotes.get(f.file_path)
-        else f
-        for f in impact.files
-    )
-    return replace(impact, files=files)
+    return quotes
 
 
 async def _events_before(ctx: Any, events: list[Any], history_ref: str) -> list[Any]:

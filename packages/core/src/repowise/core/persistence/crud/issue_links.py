@@ -174,10 +174,7 @@ async def fix_issue_quotes(
     if not wanted:
         return {}
     try:
-        # A savepoint, so a failed read (a store older than the table) leaves
-        # the caller's transaction usable on Postgres.
-        async with session.begin_nested():
-            events, linked = await _quoted_events(session, repository_id, wanted)
+        events, linked = await _quoted_events(session, repository_id, wanted)
     except SQLAlchemyError:
         return {}
     out: dict[str, dict[str, str]] = {}

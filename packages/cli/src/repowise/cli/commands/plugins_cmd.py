@@ -19,6 +19,7 @@ BUILTIN_SEAM_MODULES = (
     "repowise.core.evidence.profile_formats",
     "repowise.core.evidence.sources",
     "repowise.core.ingestion.document_extractors",
+    "repowise.core.issues.sources",
     "repowise.core.inventory.advisories",
     "repowise.core.ownership.directory",
     "repowise.core.pipeline.index_persistence",
