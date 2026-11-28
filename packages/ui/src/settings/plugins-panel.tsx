@@ -204,6 +204,8 @@ function SourceItem({
               <p className="text-xs text-[var(--color-text-secondary)]">{source.message}</p>
             )}
             <CommandLine command={source.next_command} />
+            {/* What it stored stays in the index, so its last sync stays here too. */}
+            {source.last_sync?.at && <LastSync source={source} labels={labels} />}
           </>
         )}
       </div>

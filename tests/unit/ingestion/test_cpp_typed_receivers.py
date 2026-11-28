@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
 
@@ -109,6 +111,114 @@ class TestSmartPointerReceivers:
         """``items.sendMessage()`` is not ``Peer::sendMessage`` on a vector."""
         _repo(tmp_path, "  std::vector<Peer> items;\n  return items.sendMessage(1);")
         assert not any(t.endswith("Peer::sendMessage") for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+
+_FACTORIES = (
+    "Peer* MakePeer(int n);\n"
+    "Stranger& TheStranger();\n"
+    "template <typename Stranger> Stranger Wrap(Stranger s) { return s; }\n"
+    "inline auto Trailing(int n) -> Peer* { return nullptr; }\n"
+    "inline auto Fresh() -> Peer* { return nullptr; }\n"
+    "inline auto Deduced(int n) { return Peer(); }\n"
+    "using PeerAlias = Peer;\n"
+    "inline auto Aliased(int n) -> PeerAlias* { return nullptr; }\n"
+)
+
+
+def _factory_repo(root: Path, caller_body: str) -> None:
+    """``_repo`` plus free functions whose return types differ in how they are written."""
+    _repo(root, caller_body, extra=_FACTORIES)
+    with (root / "lib" / "peer.cc").open("a") as source:
+        source.write("Peer* MakePeer(int n) { return nullptr; }\n")
+
+
+class TestLocalDeclarationForms:
+    """A local typed by how C++ writes it: built in place, walked by a range-for, or ``auto``."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "  Peer peer(1, 2);\n  return peer.sendMessage(1);",
+            "  for (Peer* peer : peers) peer->sendMessage(1);\n  return 0;",
+            "  for (const Peer& peer : peers) peer.sendMessage(1);\n  return 0;",
+            "  auto peer = new Peer(1, 2);\n  return peer->sendMessage(1);",
+            "  auto peer = Peer{};\n  return peer.sendMessage(1);",
+            "  auto peer = Peer();\n  return peer.sendMessage(1);",
+            "  auto peer = Peer(1, 2);\n  return peer.sendMessage(1);",
+            "  auto peer = std::unique_ptr<Peer>(new Peer);\n  return peer->sendMessage(1);",
+        ],
+    )
+    def test_a_constructed_local_binds_to_its_type(self, tmp_path: Path, body: str) -> None:
+        _repo(tmp_path, body)
+        targets = _call_targets(_build(tmp_path), "lib/caller.cc")
+        assert "lib/peer.cc::Peer::sendMessage" in targets
+        assert not any("Stranger" in t for t in targets)
+
+    def test_a_function_declaration_types_nothing(self, tmp_path: Path) -> None:
+        """``Peer peer(int);`` declares a function: the vexing parse."""
+        _repo(tmp_path, "  Peer peer(int);\n  return peer.sendMessage(1);")
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "  auto peer = MakePeer(1);\n  return peer->sendMessage(1);",
+            "  auto* peer = Trailing(1);\n  return peer->sendMessage(1);",
+            "  auto peer = Aliased(1);\n  return peer->sendMessage(1);",
+            "  auto peer = Fresh();\n  return peer->sendMessage(1);",
+        ],
+    )
+    def test_an_auto_local_takes_the_return_type_the_callee_declares(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """The header declaration carries no return type; its definition does."""
+        _factory_repo(tmp_path, body)
+        assert "lib/peer.cc::Peer::sendMessage" in _call_targets(_build(tmp_path), "lib/caller.cc")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # No definition writes what it returns.
+            "  auto& s = TheStranger();\n  return s.sendMessage(1);",
+            # A template parameter is no class, even one spelled like a class.
+            "  auto s = Wrap(1);\n  return s.sendMessage(1);",
+            # A deduced return type is not written at all.
+            "  auto peer = Deduced(1);\n  return peer.sendMessage(1);",
+        ],
+    )
+    def test_an_auto_local_with_no_written_return_type_binds_nothing(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        _factory_repo(tmp_path, body)
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+    def test_a_name_another_block_leaves_untyped_is_unanswerable(self, tmp_path: Path) -> None:
+        """The body is one scope: the second ``p`` is not the first block's ``Peer``."""
+        _factory_repo(
+            tmp_path,
+            "  { auto p = MakePeer(1); }\n  { auto p = Deduced(1); p->sendMessage(1); }\n"
+            "  return 0;",
+        )
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            # A member typedef is not the same-named class declared elsewhere.
+            "struct Other { struct Item { int sendMessage(int n) { return n; } }; };\n"
+            "struct Box { typedef Peer Item; Item get() { return Item(); } };\n",
+            # A template parameter list several lines long still names a parameter.
+            "struct Item { int sendMessage(int n) { return n; } };\n"
+            "template <typename Alloc,\n          typename Hash,\n          typename Eq,\n"
+            "          typename Item>\n"
+            "struct Box { Item get() { return Item(); } };\n",
+        ],
+    )
+    def test_a_return_type_that_names_no_class_binds_nothing(
+        self, tmp_path: Path, extra: str
+    ) -> None:
+        _repo(tmp_path, "  Box b;\n  auto s = b.get();\n  return s.sendMessage(1);", extra=extra)
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
 
 
 def _field_repo(root: Path, run_body: str) -> None:

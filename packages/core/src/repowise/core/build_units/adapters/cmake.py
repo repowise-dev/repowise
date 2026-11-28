@@ -22,12 +22,6 @@ CMake evaluator (see ``ingestion/external_systems/cmake.py``):
 
 - **Generator expressions are skipped.** A dep or source written as
   ``$<$<CONFIG:Debug>:core>`` is not seen, so its edge is missing.
-- **Directory variables resolve wrongly below the repo root.** In a
-  ``CMakeLists.txt`` that is not at the root, a source or include directory
-  written as ``${CMAKE_CURRENT_SOURCE_DIR}/x`` (or ``CMAKE_CURRENT_LIST_DIR``)
-  resolves to ``<dir>/<dir>/x``, and on Windows ``${PROJECT_SOURCE_DIR}/x``
-  is read as relative. Such files are missed; paths written relative to the
-  ``CMakeLists.txt`` resolve correctly.
 - **Only literal variables expand.** Targets, sources and deps built in a
   ``foreach`` loop, a function or macro, or an ``include()``-d helper module
   are missed or kept unexpanded; unexpanded deps are dropped.

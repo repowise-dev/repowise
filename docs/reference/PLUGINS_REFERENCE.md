@@ -109,7 +109,10 @@ with a Sync now button for each configured source. The page reads
 `GET /api/repos/{id}/plugins`, which returns this JSON, so an agent can call
 it too. `POST /api/repos/{id}/plugins/sync` starts a sync of one source
 (`{"source": "<name>"}`) or of every configured one (`{}`) and answers `202`
-before it finishes.
+before it finishes. A name that is not a source here gets `404` with the
+names that are. The server keeps the listing for a minute, so a plugin
+installed or a value set in a terminal can take that long to show. A sync
+started from the page and a setting changed in the web UI show at once.
 
 ## Check the contracts
 
@@ -487,13 +490,22 @@ a value. Plain values arrive in `request.settings` and secrets in
 the source declares no secret.
 
 Batches are stored with `ingest_batch`, and each source's cursor is kept in
-`.repowise/state.json`. Secrets are read from the environment on every run and
+`.repowise/state.json`. Each source prints one line saying what it stored,
+for example `stored 1 run` for an evidence source or
+`stored 3 issue links (1 to a bug or incident)` for an issue source. With
+`--format json` the same numbers are in `counts`. Secrets are read from the environment on every run and
 are never written down. A secret that shows up in a failure message is printed
 as `***`.
 
 `repowise update` runs the same sync after its own work. A failing source
 prints one line and the update still succeeds. With no configured source the
 update does exactly what it did before.
+
+A source can also define `not_applicable(repo_path)`, returning
+`(why, next_command)` when it has nothing to read in that repository, or
+`None`. Such a source is listed as not configured with that reason and
+command, and `repowise update` skips it. `sources sync --source <name>`
+still runs it, so its own error explains the problem.
 
 A source with `settings = ()` needs nothing, so it runs on every sync and
 every update. A source with no `settings` attribute is never run by repowise:
@@ -541,6 +553,12 @@ calls `https://<host>/api/graphql` or `https://<host>/api/v4`. Set
 `plugins.forge.api_url` when the API has another path. It must be https on
 the remote's host (or its `api.` host), since the token is sent there. Other hosts
 (Azure DevOps, Bitbucket) are refused with a message that names the host.
+
+A repository with no remote, or one on another host, has no project for
+`forge` to read. There it is listed as not configured with the command that
+helps (`git remote add origin <url>`, a `forges.hosts` mapping, or
+`repowise plugins new issue-source` for another tracker), even with the
+token set, and `repowise update` does not run it.
 
 A rate limit stops the sync with the time to try again, and the next
 `repowise update` picks it up. GitHub is read in batched GraphQL queries,

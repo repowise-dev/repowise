@@ -1075,9 +1075,46 @@ class TestCppDeclarations:
         """
         assert declared_types("Status doIt(int x);", "cpp") == {}
 
-    def test_a_constructed_local_is_given_up_rather_than_guessed(self) -> None:
-        """Same exclusion seen from the other side: a real declaration, dropped."""
-        assert declared_types("BtRequestMessage msg(0, 16);", "cpp") == {}
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("BtRequestMessage msg(0, 16);", {"msg": "BtRequestMessage"}),
+            ("EdgeEnv env(this, EdgeEnv::kShellEscape);", {"env": "EdgeEnv"}),
+            ("GraphViz graph(&state_,\n    &disk_);", {"graph": "GraphViz"}),
+            ("for (Cursor it(str); it.ok(); it.next()) {}", {"it": "Cursor"}),
+            ("for (Node* node : nodes) {}", {"node": "Node"}),
+            ("for (const Edge& edge : edges) {}", {"edge": "Edge"}),
+            ("auto peer = new Peer(1, 2);", {"peer": "Peer"}),
+            ("auto* peer = new Peer;", {"peer": "Peer"}),
+            ("auto spec = Spec{1};", {"spec": "Spec"}),
+            ("auto buf = detail::counting_buffer<>();", {"buf": "counting_buffer"}),
+            ("auto rule = std::unique_ptr<Rule>(new Rule(name));", {"rule": "Rule"}),
+        ],
+    )
+    def test_a_constructed_local_is_typed(self, body: str, expected: dict[str, str]) -> None:
+        assert declared_types(body, "cpp") == expected
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Peer make(Config);",
+            "Peer make(const Config&);",
+            "Peer make(int);",
+            "Peer make();",
+            "Peer make(config) {",
+            "Peer make(x) const;",
+            "return a * b(c);",
+            "for (auto* node : nodes) {}",
+            "auto peer = makePeer(1);",
+            "auto peer = makePeer();",
+            "auto spec = Spec(s).Clone();",
+            "auto spec = Spec{1}.Clone();",
+            "auto peer = new Peer(1)\n  ->Next();",
+        ],
+    )
+    def test_a_function_declaration_or_call_is_not_a_construction(self, body: str) -> None:
+        """``T name(..)`` also declares a function, and ``auto x = f(..)`` is typed by ``f``."""
+        assert declared_types(body, "cpp") == {}
 
     def test_auto_names_no_type(self) -> None:
         assert declared_types("auto it = m.begin();", "cpp") == {}

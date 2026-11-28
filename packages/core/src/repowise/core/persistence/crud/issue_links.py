@@ -47,7 +47,7 @@ async def store_issue_links(
     source: str,
     covered_shas: Iterable[str] | None = None,
 ) -> dict:
-    """Store *links* from *source*; returns ``{stored, removed, defect_changed}``.
+    """Store *links* from *source*; returns ``{stored, defect_links, removed, defect_changed}``.
 
     All or nothing: the writes run in a savepoint, so a failure leaves the
     stored links as they were. A (commit, issue) pair already stored is
@@ -117,6 +117,8 @@ async def _store(
     after = await _defect_shas(session, repository_id, touched)
     return {
         "stored": len(values),
+        # How many of them link a bug or incident: the ones that count as fixes.
+        "defect_links": sum(v["issue_type"] in DEFECT_TYPES for v in values),
         "removed": len(stale),
         "defect_changed": sorted({sha for sha, _ in before ^ after}),
     }

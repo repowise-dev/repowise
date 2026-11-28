@@ -68,6 +68,9 @@ class FetchingSeam:
     store_for: Callable[[Any, Any, Path], Callable[[Any], Awaitable[dict[str, Any]]]]
     #: The command that shows what a sync stored.
     review: str
+    #: What the stores of one fetch hold, for the line a sync prints:
+    #: ``{"runs": n}`` for evidence, ``{"links": n, "bug_links": m}`` for issues.
+    tally: Callable[[list[dict[str, Any]]], dict[str, int]] = lambda stored: {}
     #: Sync at the start of ``repowise update`` instead of its end, for a seam
     #: whose facts the update itself reads (``issue-source``).
     before_update: bool = False
@@ -111,6 +114,17 @@ async def _run_issue_sync(source: Any, request: Any, target: _IssueTarget) -> An
     )
 
 
+def _evidence_tally(stored: list[dict[str, Any]]) -> dict[str, int]:
+    return {"runs": len(stored)}  # each batch is one run
+
+
+def _issue_tally(stored: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "links": sum(s.get("stored", 0) for s in stored),
+        "bug_links": sum(s.get("defect_links", 0) for s in stored),
+    }
+
+
 def fetching_seams() -> tuple[FetchingSeam, ...]:
     """Every seam ``sources sync`` runs, in the order it runs them."""
     from repowise.core.evidence.sources import evidence_sources, run_fetch
@@ -123,6 +137,7 @@ def fetching_seams() -> tuple[FetchingSeam, ...]:
             run_fetch,
             _evidence_store,
             "repowise evidence status",
+            tally=_evidence_tally,
         ),
         # Before the update, so a commit it indexes is counted with its linked issues.
         FetchingSeam(
@@ -131,6 +146,7 @@ def fetching_seams() -> tuple[FetchingSeam, ...]:
             _run_issue_sync,
             _issue_target,
             "repowise update",
+            tally=_issue_tally,
             before_update=True,
         ),
     )
@@ -150,6 +166,9 @@ class PlannedSource:
     missing: tuple[Any, ...] = ()
     #: The source declares ``settings``, so repowise may run it; else only its host does.
     declared: bool = True
+    #: ``(why, next command)`` when the source has nothing to read in this
+    #: repository (the forge source with no GitHub or GitLab remote).
+    inapplicable: tuple[str, str] | None = None
 
     @property
     def ledger_id(self) -> str:
@@ -166,14 +185,26 @@ class PlannedSource:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
     @property
-    def configured(self) -> bool:
+    def settings_ready(self) -> bool:
+        """Every setting it needs has a value, whether or not it applies here."""
         return self.declared and not self.missing
+
+    @property
+    def configured(self) -> bool:
+        return self.settings_ready and self.inapplicable is None
 
 
 def plan_sources(
-    config: Mapping[str, Any] | None, environ: Mapping[str, str] | None = None
+    config: Mapping[str, Any] | None,
+    environ: Mapping[str, str] | None = None,
+    *,
+    root: Path | None = None,
 ) -> list[PlannedSource]:
-    """Every source on every fetching seam, loading plugins first, configured or not."""
+    """Every source on every fetching seam, loading plugins first, configured or not.
+
+    With *root*, a source that has a ``not_applicable(root)`` method is asked
+    whether it has anything to read in that repository.
+    """
     from repowise.core.settings.plugins import source_values
 
     planned = []
@@ -191,15 +222,32 @@ def plan_sources(
                     secrets if has_secret else None,
                     tuple(missing),
                     declared=hasattr(source, "settings"),
+                    inapplicable=_inapplicable(source, root),
                 )
             )
     return planned
 
 
+def _inapplicable(source: Any, root: Path | None) -> tuple[str, str] | None:
+    check = getattr(source, "not_applicable", None)
+    if root is None or check is None:
+        return None
+    try:
+        found = check(root)
+    except Exception:  # a broken check must not hide the source; its fetch reports
+        return None
+    if isinstance(found, tuple) and len(found) == 2 and all(isinstance(x, str) for x in found):
+        return found
+    return None
+
+
 def not_configured(planned: PlannedSource) -> dict[str, Any]:
-    """The result for a source whose required settings are not all set."""
+    """The result for a source whose required settings are not all set, or that does not apply."""
     from repowise.core.settings.plugins import fix_command
 
+    if planned.declared and planned.inapplicable is not None:
+        why, fix = planned.inapplicable
+        return _result(planned, "not_configured", message=why, next_command=fix)
     if not planned.declared:
         return _result(
             planned,
@@ -228,6 +276,7 @@ def _result(
     message: str | None = None,
     next_command: str | None = None,
     batches: int = 0,
+    counts: dict[str, int] | None = None,
     missing: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -235,6 +284,7 @@ def _result(
         "seam": planned.seam.name,
         "state": state,
         "batches": batches,
+        "counts": counts or {},
         "message": message,
         "next_command": next_command,
         "missing": missing or [],
@@ -248,6 +298,8 @@ def _next_command(planned: PlannedSource, status: str) -> str:
     if status == "unavailable":
         return sync_command(planned.name)
     if status == "refused":
+        if planned.inapplicable is not None:  # run by name where it does not apply
+            return planned.inapplicable[1]
         # The far side refused a value the settings hold: list them to fix one.
         return "repowise config list --area plugins"
     return "repowise plugins"
@@ -284,6 +336,7 @@ async def sync_source(
         message=_masked(outcome.error, planned.credentials),
         next_command=_next_command(planned, outcome.status),
         batches=len(outcome.stored),
+        counts=planned.seam.tally(outcome.stored),
     )
     return result, outcome.cursor
 
@@ -349,7 +402,7 @@ def unsynced_sources(root: Path) -> tuple[str, ...]:
     from repowise.core.repo_config import load_repo_config
     from repowise.core.workspace.state import read_repo_state
 
-    planned = [p for p in plan_sources(load_repo_config(root)) if p.configured]
+    planned = [p for p in plan_sources(load_repo_config(root), root=root) if p.configured]
     if not planned:
         return ()
     ledger = _ledger(read_repo_state(root))
