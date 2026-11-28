@@ -2560,13 +2560,15 @@ implementation per seam. Plugin commands load only for an unknown command name o
 
 ```bash
 repowise plugins --format json
+repowise plugins check [--format json]   # each plugin's implementations against their seam contracts
 ```
 
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--format` | `table` or `json`. | `table` |
 
-See the [plugin author guide](PLUGINS.md).
+`check` prints a status for each registration and, for a failure, the rule that broke and how to fix it. It
+exits 1 if a check fails or a plugin fails to load. See the [plugin author guide](PLUGINS.md#check-the-contracts).
 
 ### `repowise attribution`
 

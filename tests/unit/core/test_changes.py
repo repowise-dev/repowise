@@ -466,6 +466,33 @@ async def test_attribution_off_stores_no_provenance(tmp_path, history):
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_failing_metadata_plugin_falls_back_to_git_and_still_stores_changes(
+    tmp_path, history, monkeypatch
+):
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    class Down:
+        def metadata(self, repo_path, changes):
+            raise ConnectionError("tracker unreachable")
+
+    change_metadata_sources.register("test-down", Down())
+    monkeypatch.setenv("REPOWISE_SEAM_CHANGE_METADATA", "test-down")
+    r, _ = history
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        async with get_session(factory) as session:
+            assert await refresh_changes(session, repo_id, r.root, rebuild=True) == 9
+        async with get_session(factory) as session:
+            row = await get_change(session, repo_id, "pr-7")
+            assert (row.metadata_source, row.approvals) == ("git", 1)
+    finally:
+        await engine.dispose()
+        change_metadata_sources._impls.pop("test-down", None)
+
+
 # ---------------------------------------------------------------------------
 # Health filters in SQL, and the run's commit window
 # ---------------------------------------------------------------------------

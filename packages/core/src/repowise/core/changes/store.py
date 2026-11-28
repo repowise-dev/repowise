@@ -13,7 +13,7 @@ import structlog
 
 from .category import classify_change
 from .reconstruct import ReconstructedChange, reconstruct_changes
-from .source import ChangeMetadata, resolve_source
+from .source import ChangeMetadata, change_metadata_sources, resolve_source
 
 logger = structlog.get_logger(__name__)
 
@@ -118,6 +118,34 @@ def _read_changes(
             repo.close()
 
 
+async def _read_metadata(
+    repo_path: Path, changes: list[ReconstructedChange]
+) -> tuple[str, Mapping[str, ChangeMetadata]]:
+    """``(source name, metadata)`` from the selected source.
+
+    A failing plugin source falls back to the built-in ``git`` source with a
+    warning, so the changes are still stored and their rows say ``git``.
+    """
+    # A source that cannot be resolved (a misspelt REPOWISE_SEAM_CHANGE_METADATA)
+    # raises here on purpose: SeamRegistry.get never falls back silently.
+    name, source = resolve_source()
+    if not changes:
+        return name, {}
+    try:
+        return name, await asyncio.to_thread(source.metadata, repo_path, changes)
+    except Exception as exc:
+        if name == "git":
+            raise
+        logger.warning(
+            "change_metadata_failed",
+            source=name,
+            fallback="git",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        git = change_metadata_sources.get("git")
+        return "git", await asyncio.to_thread(git.metadata, repo_path, changes)
+
+
 async def refresh_changes(
     session: Any,
     repo_id: str,
@@ -170,8 +198,7 @@ async def refresh_changes(
             labels = await get_commit_labels(
                 session, repo_id, [s for c in changes for s in c.commit_shas]
             )
-        source_name, source = resolve_source()
-        metadata = await asyncio.to_thread(source.metadata, repo_path, changes) if changes else {}
+        source_name, metadata = await _read_metadata(repo_path, changes)
         rows = [
             change_row(
                 c,

@@ -123,7 +123,7 @@ differently say so.
 | `SNAPSHOT_VERSION` | `core/perf_check.py` | Versions the saved exact-metric snapshots under `.repowise/perf/exact/` | The snapshot format changes |
 | `BASELINE_VERSION` | `core/perf_measure.py` | An older `.repowise/perf/<name>.json` baseline is refused rather than misread | A breaking change to the baseline format |
 | `_RECONCILE_LOGIC_VERSION` | `core/persistence/database.py` | Part of the schema reconcile stamp, so stores stamped by older code run the reconcile again | The reconcile learns a repair the model shape alone does not reveal |
-| `PLUGIN_API_VERSION` | `core/registry/plugins.py` | Tells plugins the registry or seam contract changed | A breaking change to any registry or seam contract |
+| `PLUGIN_API_VERSION` | `core/registry/plugins.py` | Tells plugins the registry or seam contract changed | A breaking change to any registry or seam contract (a plugin whose `MIN_PLUGIN_API_VERSION` is higher is marked failed) |
 | `SCHEMA_VERSION` | `core/report/model.py` | Versions the change report document | The document changes for an existing reader |
 | `SCHEMA_VERSION` | `core/report/first_look/model.py` | A reader refuses a first-look document newer than it knows | The document's shape changes |
 | `SCHEMA_VERSION` | `core/savings/contracts.py` | Versions each savings event payload | The event payload changes for an existing reader |
