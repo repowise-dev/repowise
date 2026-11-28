@@ -399,6 +399,7 @@ migration.
 | `speedscope` | pyinstrument through its API, as `setup` prints (sampled), `pyinstrument -r speedscope` (evented, no sample count), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
 | `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, `perf record -e cpu-clock -g` converted with `perf_to_profile` and given its files and lines by `pprof -proto` with the binary (Free Pascal built with `-gw3`), any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it, or the `cpu-clock` / `task-clock` event value of a `perf_to_profile` profile; memory, block, mutex and hardware-counter profiles are refused |
 | `cpuprofile` | `node --cpu-prof`, as `setup` prints, or a CPU profile saved from a browser's developer tools (plain JavaScript) | function name, `file://` URL or path, and the function's start line and column. Frames join by file, line and column only, never by name: V8 names a function by its own name. `node:` modules and the runtime (`(program)`, `(garbage collector)`) sit outside the checkout, `node_modules` is a library, and both are charged to the calling repo function; `(idle)` is a wait. The weight is the time to the next sample, in microseconds, with one sample each; the clock is `wall` |
+| `speedscope` from `dotnet-trace` | `dotnet-trace collect --format speedscope -- <app>` | `Module!Namespace.Type+Nested.Method(params)` per frame, no file or line; the clock is `wall` (the sampler counts waiting threads too). Each frame goes on the indexed `.cs` file that declares its type, by namespace and type, not by directory |
 | `jfr` | `jfr print --events jdk.ExecutionSample --stack-depth 64 run.jfr > run.txt` of a JDK Flight Recorder run (`-XX:StartFlightRecording=filename=run.jfr,settings=profile`, through `JAVA_TOOL_OPTIONS` when the build pins surefire's `argLine`) | class, method, parameter types and executing line per frame, one sample per event; the clock is `cpu`. Frames name no file: each goes on its class's indexed `.java` or `.kt` file by package directories and class name. `jfr print --json` is not read (about 1 KB per frame) |
 | `collapsed` | `py-spy record --format raw --full-filenames`, async-profiler `-o collapsed` (with `lines` or `sig` for overloads), jfrconv, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line`. A JVM frame with no line joins by class and method when one method has the name, by parameter count and types from a `sig` descriptor among overloads, else `ambiguous` |
 | `pstats` | `python -m cProfile -o app.prof`, or any `pstats.Stats.dump_stats()` marshal file | function, file, line, and exact call count. Deterministic tracer: provides an ordering of functions only, never a share of the run (tracer overhead scales with call count). |
@@ -963,10 +964,11 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
 - An entry joins exactly or not at all: a profile frame needs its line inside an
   indexed function and a second signal that agrees, and nothing is matched by path
   suffix (a JVM frame, which names a class and no file, is placed on the one
-  indexed file its package and class name spell). What does not join is counted by reason, and a value that was not
+  indexed file its package and class name spell; a .NET frame on the one
+  indexed `.cs` file whose namespaces and types spell its type). What does not join is counted by reason, and a value that was not
   measured is unknown, never zero.
-- A profile joins to code for Python, Go, JavaScript, Java, Kotlin, Rust and Object Pascal
-  frames.
+- A profile joins to code for Python, Go, JavaScript, Java, Kotlin, Rust, Object Pascal
+  and C# frames.
   A JVM frame joins by its line to the method holding it, with the method name
   and class checked; without a line, by name only when one method fits.
   Compiler-made JVM frames (bridges, accessors, `$$Lambda`) count as generated
@@ -979,6 +981,12 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   type checked for a method or trait impl; closures and async bodies charge
   the function around them, and code an attribute macro such as
   `#[instrument]` writes joins the function the attribute sits on.
+- A .NET frame from `dotnet-trace` carries no line: it joins by name to the
+  method of its type, an overload only by the parameter types the frame
+  writes. Lambdas, local functions and async or iterator state machines
+  charge the method they are written in. Top-level statements and a
+  constructor the compiler writes (field initializers only) have no symbol
+  and do not join, and neither do property accessors.
 - A profile or query-count run where more than half the entries did not map is
   refused unless `--allow-partial`.
 - A profile of one process misses the processes it starts; profile each one and
