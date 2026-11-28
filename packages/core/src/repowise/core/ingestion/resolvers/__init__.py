@@ -56,6 +56,9 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "rust": resolve_rust_import,
     "cpp": resolve_cpp_import,
     "c": resolve_cpp_import,
+    # ``#import`` / ``#include`` name a header exactly as in C; ``@import Mod;``
+    # names a module, which the stem fallback matches by exact file name only.
+    "objectivec": resolve_cpp_import,
     "java": resolve_java_import,
     "kotlin": resolve_kotlin_import,
     "luau": resolve_luau_import,
