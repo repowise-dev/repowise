@@ -123,6 +123,38 @@ class TestJavaChainedFieldCalls:
             ("use/U.java::U::u", "attrs/Attrs.java::Attrs::get", 0.88, "receiver_chain_import")
         ]
 
+    def test_same_package_hops_resolve_without_imports(self, tmp_path: Path) -> None:
+        files = {
+            "p/U.java": (
+                "java",
+                'package p;\nclass U {\n  String u(El el) { return el.attributes.get("x"); }\n}\n',
+            ),
+            "p/El.java": (
+                "java",
+                "package p;\nclass El {\n  Attrs attributes;\n}\n",
+            ),
+            "p/Attrs.java": (
+                "java",
+                "package p;\nclass Attrs {\n  String get(String k) { return k; }\n}\n",
+            ),
+        }
+        edges = _edges(tmp_path, files)
+        assert [e for e in edges if e[0] == "p/U.java::U::u"] == [
+            ("p/U.java::U::u", "p/Attrs.java::Attrs::get", 0.88, "receiver_chain_import")
+        ]
+
+    def test_an_unresolved_qualified_type_does_not_fall_back_to_a_bare_class(
+        self, tmp_path: Path
+    ) -> None:
+        source = (
+            "class Attrs {\n  String get(String k) { return k; }\n}\n"
+            "class Outer {}\n"
+            "class El {\n  Outer.Attrs attributes;\n}\n"
+            "class U {\n"
+            '  String u(El el) { return el.attributes.get("x"); }\n}\n'
+        )
+        assert not _edges(tmp_path, {"A.java": ("java", source)})
+
     @pytest.mark.parametrize("type_name", ["External", "T"])
     def test_an_unknown_or_type_parameter_hop_does_not_bind_by_name(
         self, tmp_path: Path, type_name: str
@@ -151,15 +183,19 @@ class TestJavaChainedFieldCalls:
             "class U<T> {\n  String u(T el) { return el.attributes.get(\"x\"); }\n}\n",
             "class El<T> {\n  T attributes;\n}\n"
             "class U {\n  String u(El el) { return el.attributes.attributes.get(\"x\"); }\n}\n",
+            "class U<Item> {\n  String u(Item el) { return el.attributes.get(\"x\"); }\n}\n",
+            "class El<Attrs> {\n  Attrs attributes;\n}\n"
+            "class U {\n  String u(El el) { return el.attributes.get(\"x\"); }\n}\n",
         ],
-        ids=["head", "field"],
+        ids=["head", "field", "multi-letter-head", "multi-letter-field"],
     )
     def test_a_type_parameter_does_not_mean_a_same_named_class(
         self, tmp_path: Path, owner: str
     ) -> None:
         source = (
             "class Attrs {\n  String get(String k) { return k; }\n}\n"
-            "class T {\n  Attrs attributes;\n}\n" + owner
+            "class T {\n  Attrs attributes;\n}\n"
+            "class Item {\n  Attrs attributes;\n}\n" + owner
         )
         assert not _edges(tmp_path, {"A.java": ("java", source)})
 

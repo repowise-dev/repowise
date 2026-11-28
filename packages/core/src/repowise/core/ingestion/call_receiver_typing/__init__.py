@@ -1177,10 +1177,7 @@ class ReceiverTypingMixin(
         member type seen from *scope_id* answers first.
         """
         if scope_id is not None and self._language_of(file_path) == "java":
-            type_id = self._java_written_type(file_path, scope_id, type_name)
-            if type_id is not None:
-                return self._located(file_path, type_id)
-            type_name = bare_type_name(type_name)
+            return self._java_class_named(file_path, scope_id, type_name)
         # A chain hop asks for the type by its written name, arity aside.
         type_name = id_segment_name(type_name)
         bound = self._import_names.get(file_path, {}).get(type_name)
