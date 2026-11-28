@@ -26,11 +26,15 @@ __all__ = [
     "STORED_SNIPPET_CHARS",
     "BatchChunkFailure",
     "BatchEmbeddingError",
+    "VectorCoverage",
     "VectorStore",
     "cap_embed_text",
     "cosine_similarity",
     "embed_item",
+    "embed_page_chunks",
     "iter_embed_chunks",
+    "iter_page_chunk_groups",
+    "split_embed_text",
 ]
 
 EmbeddingItem = tuple[str, str, dict]
@@ -239,6 +243,96 @@ def iter_embed_chunks(
         yield chunk, [cap_embed_text(page_id, text) for page_id, text, _ in chunk]
 
 
+def split_embed_text(page_id: str, text: str) -> list[str]:
+    """Split *text* into pieces that each fit one embedding input.
+
+    A page that fits returns as the single piece it always was. A longer one
+    is cut into pieces of at most :data:`EMBED_TEXT_MAX_CHARS`, each ending on
+    a line break where one falls in the back half of the window, so a piece
+    rarely starts mid-line. The pieces join back into *text* exactly: nothing
+    is dropped and nothing repeats, which is what lets the tail of a long page
+    be found at all (:func:`cap_embed_text` cuts everything past the cap).
+    """
+    if len(text) <= EMBED_TEXT_MAX_CHARS:
+        return [text]
+    pieces: list[str] = []
+    start = 0
+    while len(text) - start > EMBED_TEXT_MAX_CHARS:
+        end = start + EMBED_TEXT_MAX_CHARS
+        newline = text.rfind("\n", start + EMBED_TEXT_MAX_CHARS // 2, end)
+        if newline != -1:
+            end = newline + 1
+        pieces.append(text[start:end])
+        start = end
+    pieces.append(text[start:])
+    logger.info(
+        "embed_text_chunked page_id=%s chars=%d chunks=%d cap=%d",
+        page_id,
+        len(text),
+        len(pieces),
+        EMBED_TEXT_MAX_CHARS,
+    )
+    return pieces
+
+
+PageChunks = tuple[EmbeddingItem, list[str]]
+
+
+def iter_page_chunk_groups(items: list[EmbeddingItem]) -> Iterator[list[PageChunks]]:
+    """Group pages, each with its pieces, so a group fills about one request.
+
+    A page is never split across groups, so a group either embeds every piece
+    of each of its pages or fails as a whole, and a failed page keeps whatever
+    vectors it had before. A group holds at most :data:`EMBED_BATCH_MAX_ITEMS`
+    pieces unless a single page has more, in which case that page travels
+    alone and :func:`embed_page_chunks` spends several requests on it.
+    """
+    group: list[PageChunks] = []
+    pieces_in_group = 0
+    for item in items:
+        pieces = split_embed_text(item[0], item[1])
+        if group and pieces_in_group + len(pieces) > EMBED_BATCH_MAX_ITEMS:
+            yield group
+            group, pieces_in_group = [], 0
+        group.append((item, pieces))
+        pieces_in_group += len(pieces)
+    if group:
+        yield group
+
+
+async def embed_page_chunks(embedder: object, group: list[PageChunks]) -> list[list[list[float]]]:
+    """Embed every piece in *group*; one list of vectors per page, in order."""
+    texts = [piece for _item, pieces in group for piece in pieces]
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), EMBED_BATCH_MAX_ITEMS):
+        batch = texts[start : start + EMBED_BATCH_MAX_ITEMS]
+        vectors.extend(await embedder.embed(batch))  # type: ignore[attr-defined]
+    if len(vectors) != len(texts):
+        raise RuntimeError(f"embedder returned {len(vectors)} vectors for {len(texts)} inputs")
+    out: list[list[list[float]]] = []
+    offset = 0
+    for _item, pieces in group:
+        out.append(vectors[offset : offset + len(pieces)])
+        offset += len(pieces)
+    return out
+
+
+@dataclass(frozen=True)
+class VectorCoverage:
+    """How completely a store's vectors cover the pages it holds.
+
+    A long page is stored as one vector per piece, keyed
+    ``(page_id, chunk_index)``, and its vectors count as current only when
+    every planned piece is there. ``incomplete`` names the pages holding a
+    different number of pieces than their write planned, which only an
+    interrupted write can leave behind.
+    """
+
+    pages: int
+    chunked_pages: int
+    incomplete: frozenset[str]
+
+
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors (returns 0.0 for zero vectors)."""
     dot = sum(x * y for x, y in zip(a, b, strict=False))
@@ -403,6 +497,14 @@ class VectorStore(ABC):
         inconsistencies.  Implementations may override for efficiency.
         """
         return set()  # default: empty (subclasses should override)
+
+    async def vector_coverage(self) -> VectorCoverage | None:
+        """Report which stored pages hold every piece their write planned.
+
+        ``None`` when the backend keeps a single vector per page and so does
+        not chunk (pgvector, which stores the vector on the page row).
+        """
+        return None
 
     async def holds_current_vectors(self) -> bool:
         """Whether stored vectors have the width the running embedder writes.
