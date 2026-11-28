@@ -184,7 +184,7 @@ async def get_community_detail(
     # hot/dead counts here and its disc on the canvas can never disagree.
     member_paths = [m.node_id for m in members]
     signals = await collect_node_signals(session, repo_id, member_paths)
-    hot_count = sum(1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).is_hotspot)
+    hot_count = sum(1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).shown_hotspot)
     dead_count = sum(1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).is_dead)
     decision_count = sum(
         1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).has_decision

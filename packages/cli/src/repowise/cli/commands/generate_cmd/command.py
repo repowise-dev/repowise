@@ -377,15 +377,7 @@ def run_generate(
     config = _generation_config(cfg, concurrency, reasoning)
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
 
-    # A keyless init records `embedder: mock`, because that mode promises no
-    # spend and a hosted embedder is a real bill. The promise is void here: the
-    # user is already paying a model to write these pages. Honouring the pin
-    # would embed that paid prose as 8-dim SHA-256 hashes and leave semantic
-    # search as useless as it was before, with nothing in the output saying so.
-    # `update --full` has re-resolved here since it was written; `generate`
-    # never did. Same rule, same message.
-    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"), repo_path=repo_path)
-    console.print(f"Embedder: [cyan]{stated}[/cyan].")
+    embedder_name, embedder_upgraded = _announce_embedder(cfg, repo_path, provider)
 
     start = time.monotonic()
     outcome = run_async(
@@ -660,6 +652,24 @@ def _report_pages(outcome: Any, elapsed: float) -> None:
             f"[dim]{len(stuck)} stale page(s) were not produced this run; "
             "regenerating will not refresh them.[/dim]"
         )
+
+
+def _announce_embedder(cfg: dict, repo_path: Path, provider: Any) -> tuple[str | None, bool]:
+    """``(embedder, replaced_mock)`` for this run, after printing which one.
+
+    A keyless init records `embedder: mock`, because that mode promises no
+    spend and a hosted embedder is a real bill. The promise is void here: the
+    user is already paying a model to write these pages. Honouring the pin
+    would embed that paid prose as 8-dim SHA-256 hashes and leave semantic
+    search as useless as it was before, with nothing in the output saying so.
+    `update --full` has re-resolved here since it was written; `generate`
+    never did. Same rule, same message.
+    """
+    embedder_name, stated, upgraded = model_run_embedder(
+        cfg.get("embedder"), repo_path=repo_path, provider=getattr(provider, "provider_name", None)
+    )
+    console.print(f"Embedder: [cyan]{stated}[/cyan].")
+    return embedder_name, upgraded
 
 
 def _reembed_after_upgrade(repo_path: Path, embedder_name: str) -> None:

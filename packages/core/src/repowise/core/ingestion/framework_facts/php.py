@@ -36,6 +36,7 @@ TYPO3 = FrameworkFacts(
 
 SYMFONY = FrameworkFacts(
     name="Symfony",
+    anchor="framework:symfony",
     composer_packages=("symfony/framework-bundle", "symfony/symfony"),
 )
 

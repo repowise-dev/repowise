@@ -147,6 +147,21 @@ function LowSignalNotice({
 }
 
 /**
+ * A production window's claim, "in production over 2026-10-30 to 2026-11-26,
+ * deployed ee257d145f19"; nothing for a run that is not production.
+ */
+export function WindowClaim({ claim, className = "" }: { claim: string | undefined; className?: string }) {
+  if (!claim) return null;
+  return (
+    <p
+      className={`font-mono text-[11px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere] ${className}`}
+    >
+      {claim}
+    </p>
+  );
+}
+
+/**
  * `summary` is the open run's header; `measured` its ranked basis when it
  * ranks. `heading` shows the block's own title and names the run, for when
  * no strip sits above to name it.
@@ -202,6 +217,7 @@ export function RunOverview({
           </span>
         ) : null}
       </p>
+      {heading ? <WindowClaim claim={summary.window?.claim} /> : null}
       {shares ? (
         <div className="max-w-2xl">
           <SplitBar

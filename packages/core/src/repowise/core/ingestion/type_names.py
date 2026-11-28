@@ -58,10 +58,14 @@ def strip_type_arguments(raw: str) -> str:
     for opener, closer in _TYPE_ARGUMENT_BRACKETS:
         out: list[str] = []
         depth = 0
+        previous = ""
         for char in text:
+            # The ``>`` of ``->`` and of ``=>`` is an arrow, and closes no ``<``.
+            arrow = char == ">" and previous in ("-", "=")
+            previous = char
             if char == opener:
                 depth += 1
-            elif char == closer:
+            elif char == closer and not arrow:
                 # An unbalanced closer means the text was already truncated
                 # upstream; dropping it is better than keeping a stray bracket.
                 depth = max(0, depth - 1)
@@ -155,6 +159,14 @@ def type_qualifier(raw: str) -> str:
     text = strip_type_arguments(raw.strip())
     head = text[: len(text) - len(bare_type_name(text))]
     return head.rstrip("".join(_QUALIFIER_SEPARATORS))
+
+
+def scoped_type_segments(raw: str) -> list[str]:
+    """``::Billing::Invoice`` -> ``["Billing", "Invoice"]``: a ``::`` path, segment by segment.
+
+    A leading ``::`` (Ruby's top-level scope, C++'s global namespace) is dropped.
+    """
+    return [s.strip() for s in strip_type_arguments(raw.strip()).removeprefix("::").split("::")]
 
 
 def dotted_type_segments(raw: str) -> list[str]:

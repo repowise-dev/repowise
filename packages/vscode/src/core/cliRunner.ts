@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { Logger } from "./log";
+import { cliSpawn } from "./cliInvocation";
 
 /** Outcome of one CLI invocation. */
 export interface CliResult {
@@ -38,9 +39,10 @@ export interface DoctorReport {
 
 /**
  * Runs short-lived CLI invocations one at a time. Calls are serialized so
- * concurrent commands cannot interleave on the same index. Never uses a shell:
- * arguments are passed as an array so nothing in a path or workspace name is
- * interpreted by a shell.
+ * concurrent commands cannot interleave on the same index. Never uses a shell
+ * (except to launch a Windows `.cmd` shim, see `cliSpawn`): arguments are
+ * passed as an array so nothing in a path or workspace name is interpreted by
+ * a shell.
  */
 export interface CliRunner {
   /**
@@ -66,11 +68,17 @@ export function createCliRunner(
     return new Promise<CliResult>((resolve, reject) => {
       const executable = currentExecutable();
       log.debug(`cli: ${executable} ${args.join(" ")}`);
-      const child = spawn(executable, args, {
-        cwd: options.cwd,
-        shell: false,
-        windowsHide: true,
-      });
+      let child: ChildProcess;
+      try {
+        const spec = cliSpawn(executable, args, {
+          cwd: options.cwd,
+          windowsHide: true,
+        });
+        child = spawn(spec.command, spec.args, spec.options);
+      } catch (err) {
+        reject(err);
+        return;
+      }
       let stdout = "";
       let stderr = "";
       let settled = false;
@@ -100,12 +108,12 @@ export function createCliRunner(
         }
       };
 
-      child.stdout.on("data", (chunk: Buffer) => {
+      child.stdout?.on("data", (chunk: Buffer) => {
         const text = chunk.toString();
         stdout += text;
         emitLines(text, false);
       });
-      child.stderr.on("data", (chunk: Buffer) => {
+      child.stderr?.on("data", (chunk: Buffer) => {
         stderr += chunk.toString();
       });
       child.on("error", (err) => {

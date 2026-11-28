@@ -77,9 +77,10 @@ def frame_language(path: str, function: str = "") -> FrameLanguage:
     extension (a runtime frame such as ``<built-in>``). A frame with no such
     file whose *function* reads as a JVM ``class.method``
     (:func:`~repowise.core.frame_resolver.parse_jvm_frame`) is ``java``: a JVM
-    profile names classes, not files. Any language but the five
+    profile names classes, not files. Any language but the seven
     :func:`~repowise.core.frame_resolver.resolve_frames` checks (Go, Python,
-    JavaScript, Java, Kotlin) is skipped there as ``unsupported_language``.
+    JavaScript, Java, Kotlin, Rust, Pascal) is skipped there as
+    ``unsupported_language``.
     """
     from repowise.core.frame_resolver import parse_jvm_frame
 

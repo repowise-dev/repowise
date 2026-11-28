@@ -367,6 +367,7 @@ class CallResolver(
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
         csharp_project_usings: dict[str, frozenset[str]] | None = None,
         cpp_index: Any | None = None,
+        rails_index: Any | None = None,
         source_map: dict[str, bytes] | None = None,
     ) -> None:
         # {repo path: bytes} of the revision under analysis, when it is not the
@@ -545,6 +546,9 @@ class CallResolver(
             # The C/C++ workspace index the build's warmup already made over
             # these files; without it one is built here on first use.
             self._cpp_index, self._cpp_index_built = cpp_index, True
+        if rails_index is not None:
+            # The Zeitwerk index the type-reference pass already built.
+            self._rails_index, self._rails_index_built = rails_index, True
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()

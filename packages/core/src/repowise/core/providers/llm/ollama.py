@@ -116,6 +116,8 @@ def _ollama_model_options(
         model_id = raw.get("name") or raw.get("model")
         if not isinstance(model_id, str) or not model_id:
             continue
+        if not _generates_text(base_url, model_id):
+            continue
         details = raw.get("details")
         notes = ""
         if isinstance(details, dict):
@@ -146,6 +148,17 @@ class _ModelFacts:
     trained: int | None = None  # context length the model was trained with
     num_ctx: int | None = None  # a window set in the model's Modelfile
     thinks: bool = False
+    generates: bool | None = None  # has the "completion" capability; None when unreported
+
+
+def _generates_text(base_url: str, model: str) -> bool:
+    """Whether a pulled model can write pages; an embedding-only model cannot.
+
+    /api/show's capabilities decide. An older server that reports none falls
+    back to the name, since Ollama's embedding models carry "embed" in it.
+    """
+    generates = _read_model_facts(base_url, model).generates
+    return generates if generates is not None else "embed" not in model.lower()
 
 
 def _read_model_facts(base_url: str, model: str) -> _ModelFacts:
@@ -162,11 +175,24 @@ def _read_model_facts(base_url: str, model: str) -> _ModelFacts:
         (v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int)),
         None,
     )
+    thinks, generates = _capability_facts(data.get("capabilities"))
     return _ModelFacts(
         trained,
         _modelfile_num_ctx(str(data.get("parameters") or "")),
-        "thinking" in (data.get("capabilities") or ()),
+        thinks,
+        generates,
     )
+
+
+def _capability_facts(capabilities: object) -> tuple[bool, bool | None]:
+    """``(thinks, generates)`` from /api/show's ``capabilities`` list.
+
+    ``generates`` is None when the server reports no capabilities, so the
+    caller can fall back to the model's name.
+    """
+    if not isinstance(capabilities, list) or not capabilities:
+        return False, None
+    return "thinking" in capabilities, "completion" in capabilities
 
 
 def _modelfile_num_ctx(parameters: str) -> int | None:

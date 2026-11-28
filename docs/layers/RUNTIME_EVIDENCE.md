@@ -397,7 +397,7 @@ migration.
 | Format | Written by | What a frame carries |
 |---|---|---|
 | `speedscope` | pyinstrument through its API, as `setup` prints (sampled), `pyinstrument -r speedscope` (evented, no sample count), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
-| `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
+| `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, `perf record -e cpu-clock -g` converted with `perf_to_profile` and given its files and lines by `pprof -proto` with the binary (Free Pascal built with `-gw3`), any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it, or the `cpu-clock` / `task-clock` event value of a `perf_to_profile` profile; memory, block, mutex and hardware-counter profiles are refused |
 | `cpuprofile` | `node --cpu-prof`, as `setup` prints, or a CPU profile saved from a browser's developer tools (plain JavaScript) | function name, `file://` URL or path, and the function's start line and column. Frames join by file, line and column only, never by name: V8 names a function by its own name. `node:` modules and the runtime (`(program)`, `(garbage collector)`) sit outside the checkout, `node_modules` is a library, and both are charged to the calling repo function; `(idle)` is a wait. The weight is the time to the next sample, in microseconds, with one sample each; the clock is `wall` |
 | `jfr` | `jfr print --events jdk.ExecutionSample --stack-depth 64 run.jfr > run.txt` of a JDK Flight Recorder run (`-XX:StartFlightRecording=filename=run.jfr,settings=profile`, through `JAVA_TOOL_OPTIONS` when the build pins surefire's `argLine`) | class, method, parameter types and executing line per frame, one sample per event; the clock is `cpu`. Frames name no file: each goes on its class's indexed `.java` or `.kt` file by package directories and class name. `jfr print --json` is not read (about 1 KB per frame) |
 | `collapsed` | `py-spy record --format raw --full-filenames`, async-profiler `-o collapsed` (with `lines` or `sig` for overloads), jfrconv, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line`. A JVM frame with no line joins by class and method when one method has the name, by parameter count and types from a `sig` descriptor among overloads, else `ambiguous` |
@@ -422,7 +422,10 @@ migration.
   (missing, inline `data:`, remote, indexed, or with sources outside the
   checkout or in another scheme), a generated bundle stays a library frame,
   and any other bundle refuses the whole profile with an error naming that
-  bundle; so does a frame whose position the map does not cover. Generate
+  bundle. A frame at a position the map leaves unmapped (tsc's shebang line,
+  a helper the compiler wrote) is skipped as `not_indexed` and the rest of the
+  profile joins; a frame past the map's last line still refuses it, since that
+  map was built from another bundle. Generate
   external maps for every bundle the profile runs. Collapsed frames without
   columns need exactly one mapping segment starting at column zero on their
   generated line.
@@ -534,8 +537,21 @@ changed since. Every run listing names a production run's window and deploy
 as its rows' claim, `window`: "in production over 2026-10-30 to 2026-11-26,
 deployed commit unknown" (`evidence status`, the REST `status`, `runs` and
 `measured` routes, and `get_health`'s measured `runs`). A run of any other
-class has no `window` key. A route row is stored without a function until the
-route table joins it, and nothing reads route rows yet.
+class has no `window` key.
+
+A route row names the function that handles it. Every index stores the repo's
+routes (`http_routes`: method, path template and handler), and the join reads
+both templates in one form first: every parameter is the same whatever its
+syntax (`{repo_id}`, `{path:path}`, `:id`, `<int:id>`, `[id]`, a whole-segment
+`*` or `*name`), with case and a trailing slash ignored. It then needs the same
+method (a stored route that serves every method answers only when no route
+names the method) and the same template, never a pattern match of one against
+the other. A row names a handler only when every matching route names that one;
+otherwise it names none and `evidence add` counts why in `unlinked`:
+`ambiguous_route` (routes with different handlers match), `no_handler` (the
+route's handler is inline, so the index names none) or `unknown_route` (no
+stored route matches: a prefix the index could not see, a route another
+service serves). A route row is joined once, when it is stored.
 
 A statement row names the function that issues it. Every index stores the
 repo's statement sites (`statement_sites`): each PostgREST client call
@@ -580,6 +596,16 @@ listed, never leading: no rule reads a statement's cost into a next step yet,
 so they mint no measured hotspot and no Fix first item. A store with statement
 runs is never `no_runtime_data`; one whose newest windows name no function
 reads `not_ranked`.
+
+Route runs read back the same way, as the `routes` group: one row per handler
+the route join named, ranked by the request time of its routes, with `share` of
+the window's stored request time, `routes` (`requests`, `total_ms`, `mean_ms`
+per request, the slowest route's `p95_ms`, `errors`, and its `routes` as
+`METHOD template`, costliest first) and `verify` the next production window.
+The run's `unattributed` counts the routes on no handler as `unjoined`. Route
+rows never lead either, and a store with route runs is never
+`no_runtime_data`. The group is left out of every response when no route run
+names a handler, so those responses are unchanged.
 
 A Postgres database's statement statistics are one SELECT away, run by whoever
 may read the database, with no connector:
@@ -685,24 +711,26 @@ is counted there as `unplaced`.
   never joins.
 - **Two signals.** The line must fall in an indexed function, and a second
   signal from the frame must agree: the qualified name for Python, the start
-  line for Go, the start line and column for JavaScript.
+  line for Go, the start line and column for JavaScript, the name in any case
+  for Object Pascal.
 - **Skip reasons, counted:** `outside_root` (stored as `outside_repo`),
   `unsupported_language`, `bad_line`, `dirty`, `generated`, `vendored`,
   `not_indexed`, `no_span`, `ambiguous`, `no_second_signal`, `no_source`,
   `second_signal_mismatch`.
 - **Nested code.** Lambdas, generator expressions and nested functions with no
   symbol of their own are charged to the enclosing function when the frame's
-  qualified name shows it.
+  qualified name shows it, and a Pascal nested routine when the enclosing
+  function's source declares it above the sampled line.
 - **Import time is a row.** Import-time code (Python `<module>`, Go package
-  `init`) resolves to its file. A Python module body is ranked with the
-  functions as the row `<path>::<module>` (no lines), shown as "import time":
+  `init`, a Pascal program, `initialization` or `finalization` block) resolves
+  to its file. A Python module body is ranked with the functions as the row `<path>::<module>` (no lines), shown as "import time":
   a module and the repo modules it imports in turn are one import, charged to
   the outermost one, with the libraries and standard-library modules they load
   named by package in `inside` (`sqlalchemy`, `json`). A module a function
   imports starts its own row, driven by that function; a library a function
   imports stays that function's cost. The row takes no next step: whether the
-  run needed the import is not in the profile. Go package `init` and the
-  CommonJS wrapper have no row yet; their self time is reported under
+  run needed the import is not in the profile. Go package `init`, the
+  CommonJS wrapper and Pascal blocks have no row yet; their self time is reported under
   `self_unattributed` as `module_body`, never dropped. An import row measured
   at another commit than the indexed one reads stale, as a module's top level
   has no stored body to compare.
@@ -930,7 +958,8 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   suffix (a JVM frame, which names a class and no file, is placed on the one
   indexed file its package and class name spell). What does not join is counted by reason, and a value that was not
   measured is unknown, never zero.
-- A profile joins to code for Python, Go, JavaScript, Java and Kotlin frames.
+- A profile joins to code for Python, Go, JavaScript, Java, Kotlin, Rust and Object Pascal
+  frames.
   A JVM frame joins by its line to the method holding it, with the method name
   and class checked; without a line, by name only when one method fits.
   Compiler-made JVM frames (bridges, accessors, `$$Lambda`) count as generated
@@ -939,6 +968,10 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   their original source through a local external source map; a frame that
   names a TypeScript file directly is refused, and so is a Go binary built
   with `-trimpath`.
+  A Rust frame (pprof-rs) joins by its line and demangled name, with the
+  type checked for a method or trait impl; closures and async bodies charge
+  the function around them, and code an attribute macro such as
+  `#[instrument]` writes joins the function the attribute sits on.
 - A profile or query-count run where more than half the entries did not map is
   refused unless `--allow-partial`.
 - A profile of one process misses the processes it starts; profile each one and

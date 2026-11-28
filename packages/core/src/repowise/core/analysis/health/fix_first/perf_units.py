@@ -70,7 +70,7 @@ def _perf_unit(
         may_lead=may_lead,
         # Only a measured hotspot carries a row, and it may lead only when its
         # run leads and a rule fired on it (``opportunities._measured_hotspot``).
-        measured_share=float(row["share"]) if may_lead and row.get("share") is not None else None,
+        measured_share=float(row["share"]) if row.get("share") is not None else None,
         source_id=f"{path}::{cause.symbol or path}",
         value=perf_value(lead, cause.facets),
         ready=perf_ready(lead, cause.plan),

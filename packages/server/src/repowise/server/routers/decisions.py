@@ -627,6 +627,7 @@ def _apply_settings_update(policy, body: DecisionSettingsUpdate):
                 update_mining=policy.update_mining,
                 session_start=policy.session_start,
                 upkeep_prompt=policy.upkeep_prompt,
+                stop_prompt=policy.stop_prompt,
                 mode=policy.mode,
             )
     if body.enabled is not None:

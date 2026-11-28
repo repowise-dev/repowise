@@ -74,7 +74,7 @@ def _resolve_or_fall_back(run: InitRun) -> None:
         # A provider that was configured but could not be built is a different
         # problem from none being configured, and the message above would send
         # the user to set a key they have already set.
-        if "Could not set up" in str(exc):
+        if "Could not set up" in str(exc) or getattr(exc, "extra", None):
             console.print(f"  [dim]{exc}[/dim]")
 
 
@@ -134,7 +134,9 @@ def _stated_embedder(run: InitRun) -> str:
             name, reason = keyless, "keyless run"
     if name == "mock":
         return f"mock ({reason}, semantic search off)"
-    return f"{name} ({reason})"
+    from repowise.cli.providers.embedders import embedder_label
+
+    return f"{embedder_label(name, run.repo_path)} ({reason})"
 
 
 def _verify_provider(provider: Any, reasoning: str) -> None:
@@ -169,7 +171,9 @@ def resolve_docs_provider(run: InitRun) -> None:
     # Re-resolve the embedder so the display and the embed path honor the key
     # the user just pasted, rather than the pre-prompt "mock" fallback.
     run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(
-        run.opts.embedder_name, repo_path=run.repo_path
+        run.opts.embedder_name,
+        repo_path=run.repo_path,
+        provider=getattr(run.provider, "provider_name", None),
     )
     _print_provider_summary(run)
     # Nothing to verify when there is no provider: this run renders from

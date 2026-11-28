@@ -24,11 +24,9 @@ const DEFAULTS: SettingsValues = {
   "server.autoStart": "ask",
   "server.port": null,
   "cliPath": "",
-  "risk.baseBranch": "",
   "changeIntel.cochangeNudge": true,
   "changeIntel.cochangeMinScore": 4,
   "agentHandoff.enabled": true,
-  "agentTools.enabled": true,
 };
 
 /** Host whose updateSetting echoes the merged map back, like the real one. */
@@ -71,7 +69,7 @@ describe("settings App", () => {
 
     expect(await screen.findByText("Editor signals")).toBeTruthy();
     expect(screen.getByText("Server")).toBeTruthy();
-    expect(screen.getByText("Branch risk")).toBeTruthy();
+    expect(screen.queryByText("Branch risk")).toBeNull();
 
     const toggle = screen.getByLabelText("Problems panel findings");
     expect(toggle.getAttribute("aria-checked")).toBe("true");

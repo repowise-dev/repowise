@@ -47,6 +47,13 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
+        ("tests-build/src/lib.rs", "test"),
+        ("tests-integration/src/lib.rs", "test"),
+        ("tests-integration/tests/macros.rs", "test"),
+        ("app/tests_results/service.py", "production"),
+        ("lab/tests_catalog/models.py", "production"),
+        ("src/tests-ui/app.ts", "production"),
+        ("internal/tests_api/handler.go", "production"),
         (
             "packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx",
             "test",
@@ -95,6 +102,11 @@ _OWN_HEADER = (
         ("samples/hello/Program.cs", "docs_example"),
         ("tutorials/part1/app.js", "docs_example"),
         ("tutorial_01/app.py", "docs_example"),
+        ("sample-app/src/Main.kt", "docs_example"),
+        ("sample-apps/demo/App.tsx", "docs_example"),
+        ("test-app/src/Main.kt", "docs_example"),
+        ("playground/a.py", "docs_example"),
+        ("src/pkg/playground/a.py", "production"),
         ("scripts/release.py", "tooling"),
         (".github/scripts/label.js", "tooling"),
         # Browser scripts a served static tree ships are product code.

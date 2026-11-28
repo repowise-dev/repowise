@@ -521,6 +521,32 @@ def test_ts_module_const_read_in_the_same_file_is_not_reported():
     assert "STRANDED" in found  # the control: a const nothing reads
 
 
+def test_js_ts_short_and_dollar_identifiers_read_in_same_file_not_reported():
+    source = (
+        "const currentUser$ = makeStore();\n"  # 1
+        "const ws = makeStore();\n"  # 2
+        "const unused$ = makeStore();\n"  # 3
+        "function makeStore() { return {}; }\n"  # 4
+        "export function run(cb) {\n"  # 5
+        "  cb(currentUser$);\n"  # 6
+        "  cb(ws);\n"  # 7
+        "}\n"
+    )
+    found = _internals_over(
+        "src/a.ts",
+        source,
+        [
+            {"name": "currentUser$", "kind": "constant", "start_line": 1, "end_line": 1},
+            {"name": "ws", "kind": "constant", "start_line": 2, "end_line": 2},
+            {"name": "unused$", "kind": "constant", "start_line": 3, "end_line": 3},
+        ],
+        language="typescript",
+    )
+    assert "currentUser$" not in found
+    assert "ws" not in found
+    assert "unused$" in found
+
+
 def test_python_callback_passed_as_target_is_not_reported():
     source = (
         "import threading\n"  # 1

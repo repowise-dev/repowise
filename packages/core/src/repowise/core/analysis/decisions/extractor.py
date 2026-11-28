@@ -221,9 +221,9 @@ def _pagerank(g: Any) -> dict[str, float]:
     if not 0 < node_count <= _PAGERANK_NODE_CEILING:
         return {}
     try:
-        import networkx as nx
+        from repowise.core.ingestion.graph._pagerank import pagerank
 
-        return nx.pagerank(g, max_iter=50, tol=1e-4)
+        return pagerank(g, max_iter=50, tol=1e-4)
     except Exception:
         return {}
 

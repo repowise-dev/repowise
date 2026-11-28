@@ -272,6 +272,9 @@ class PageVersion(Base):
     """Historical snapshot of a wiki page, created each time the page is re-generated."""
 
     __tablename__ = "wiki_page_versions"
+    # Each update asks whether any of a repository's pages is over the
+    # version cap; this answers it from the index alone.
+    __table_args__ = (Index("ix_wiki_page_versions_repo_page", "repository_id", "page_id"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
     # Indexed so deleting a page does not scan every version for the FK check.

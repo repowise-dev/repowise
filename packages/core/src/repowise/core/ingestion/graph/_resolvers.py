@@ -655,12 +655,14 @@ class ResolveMixin:
         scope: frozenset[str] | None = None,
         registrations: bool = True,
         cpp_index: Any | None = None,
+        rails_index: Any | None = None,
     ) -> None:
         """Run three-tier call resolution and add CALLS edges to the graph.
 
         *registrations* also links registering decorators to what they
         decorate, over every file. *cpp_index* is the C/C++ workspace index
-        the build already made, so the call resolver does not make another.
+        the build already made, so the call resolver does not make another;
+        *rails_index* is the Zeitwerk index, on the same terms.
         """
         from ..call_resolver import CallResolver
 
@@ -673,6 +675,7 @@ class ResolveMixin:
             partial_fragments=self._partial_fragments,
             csharp_project_usings=self._csharp_project_usings,
             cpp_index=cpp_index,
+            rails_index=rails_index,
             source_map=self._source_map,
         )
 

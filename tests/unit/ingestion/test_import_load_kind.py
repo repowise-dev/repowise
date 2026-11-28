@@ -272,6 +272,14 @@ try:
 except (ImportError, OSError) as exc:
     T = None
 try:
+    from .unparen_guarded import UG
+except OSError, ImportError:
+    UG = None
+try:
+    from .unparen_other import UO
+except OSError, ValueError:
+    UO = None
+try:
     import pkg.missing
 except builtins.ModuleNotFoundError:
     pass
@@ -328,6 +336,8 @@ def f():
     [
         (".plain", (False, False, True)),
         (".tupled", (False, False, True)),  # in a tuple, with `as`
+        (".unparen_guarded", (False, False, True)),  # unparenthesized multi-exception
+        (".unparen_other", (False, False, False)),  # unparenthesized without ImportError
         ("pkg.missing", (False, False, True)),  # builtins.ModuleNotFoundError
         (".broad", (False, False, False)),  # except Exception guards more than the import
         (".bare", (False, False, False)),

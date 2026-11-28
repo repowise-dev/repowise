@@ -10,15 +10,16 @@ from pathlib import Path
 from .astro import ASTRO
 from .base import FrameworkFacts, _js
 from .expo_router import EXPO_ROUTER
-from .next import NEXT_PAGES
+from .next import NEXT_APP, NEXT_PAGES
 from .npm import NpmManifest, npm_manifests
 from .nuxt import NUXT, nuxt_facts
 from .react_email import REACT_EMAIL, _react_email_dirs
 from .remix import REMIX
 from .sveltekit import SVELTEKIT, sveltekit_facts
+from .vite_pages import VITE_PAGES
 
 JS_FRAMEWORKS: tuple[FrameworkFacts, ...] = (
-    REACT_EMAIL, NEXT_PAGES, REMIX, NUXT, SVELTEKIT, ASTRO, EXPO_ROUTER,
+    REACT_EMAIL, NEXT_PAGES, NEXT_APP, REMIX, NUXT, SVELTEKIT, ASTRO, EXPO_ROUTER, VITE_PAGES,
 )
 
 
