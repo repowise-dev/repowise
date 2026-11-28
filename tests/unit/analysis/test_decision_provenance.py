@@ -243,6 +243,50 @@ def test_gate_keeps_unverifiable_when_no_source_text(tmp_path):
     assert kept[0].verification == "unverified"
 
 
+def test_gate_clears_echoed_rationale_matching_decision(tmp_path):
+    """When rationale echoes the decision sentence, clear it while keeping the decision."""
+    ex = _extractor(tmp_path)
+    text = (
+        "ChatMarkdown takes a density prop shared across panels and replaces "
+        "per-panel prose styles."
+    )
+    d = ExtractedDecision(
+        title="Density prop",
+        decision=text,
+        rationale=text,
+        source="pr",
+        source_text=text,
+    )
+    kept, rejected = ex._apply_substring_gate([d])
+    assert rejected == 0
+    assert len(kept) == 1
+    # Echoed rationale is cleared so NO_RATIONALE_BLOCKER triggers
+    assert kept[0].decision == text
+    assert kept[0].rationale == ""
+    assert kept[0].verification in ("exact", "fuzzy")
+
+
+def test_gate_keeps_distinct_grounded_rationale(tmp_path):
+    """When decision and rationale are distinct and both grounded, both survive."""
+    ex = _extractor(tmp_path)
+    d = ExtractedDecision(
+        title="Density prop",
+        decision="ChatMarkdown takes a density prop shared across panels",
+        rationale="to replace per-panel prose styles across views",
+        source="pr",
+        source_text=(
+            "ChatMarkdown takes a density prop shared across panels "
+            "to replace per-panel prose styles across views."
+        ),
+    )
+    kept, rejected = ex._apply_substring_gate([d])
+    assert rejected == 0
+    assert len(kept) == 1
+    assert kept[0].decision == "ChatMarkdown takes a density prop shared across panels"
+    assert kept[0].rationale == "to replace per-panel prose styles across views"
+    assert kept[0].verification in ("exact", "fuzzy")
+
+
 # --- completeness into confidence ------------------------------------------
 
 
