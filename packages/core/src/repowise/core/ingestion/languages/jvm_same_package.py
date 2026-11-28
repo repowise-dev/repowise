@@ -41,6 +41,7 @@ separately and any false positive is diagnosable at the source.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..cohesion import SAME_PACKAGE_HINT
@@ -49,6 +50,7 @@ from .scope_scan import FileScope, ScopeTier, collect_source_texts, emit_scope_e
 if TYPE_CHECKING:
     import networkx as nx
 
+    from ...build_units import BuildUnitIndex
     from ..resolvers.jvm_workspace import JvmWorkspaceIndex
 
 _JVM_LANGUAGES = ("java", "kotlin", "scala")
@@ -120,15 +122,44 @@ def resolve_jvm_same_package_refs(
     graph: nx.DiGraph,
     jvm_index: JvmWorkspaceIndex,
     texts: dict[str, str],
+    build_units: BuildUnitIndex | None = None,
 ) -> int:
     """Emit same-package ``imports`` edges for JVM files.
 
     *texts* maps repo-relative path → source text for every Java/Kotlin
     (and Scala, once routed through the index) file to scan.
 
+    *build_units*, when given, enforces the build tool's dependency
+    directions: a candidate edge whose **declaring** file's unit depends,
+    directly or transitively, on the **referencing** file's unit is dropped —
+    Gradle forbids that dependency, so the reference cannot be real (a
+    package split across modules is one scope to the package index, so a
+    KDoc mention alone would otherwise link a library to the app built on
+    it). A file with no unit, or a missing index, keeps every edge.
+
     Returns the number of edges added.
     """
     from ..resolvers.jvm_workspace import _JAVA_LANG_TYPES
+
+    transitive_deps = _transitive_deps_fn(build_units)
+
+    def may_link(referencing: str, declaring: str) -> bool:
+        if build_units is None:
+            return True
+        ref_units = {u.id for u in build_units.units_owning(referencing)}
+        if not ref_units:
+            return True
+        dec_units = {u.id for u in build_units.units_owning(declaring)}
+        # Files sharing a build unit always link.
+        if ref_units & dec_units:
+            return True
+        for unit in dec_units:
+            for ref in transitive_deps(unit) & ref_units:
+                if unit not in transitive_deps(ref):
+                    # the declaring module is built on the referrer and the
+                    # referrer doesn't depend back on it
+                    return False
+        return True
 
     def plan(path: str, text: str) -> FileScope | None:
         pkg_fqn = jvm_index.package_for_file(path)
@@ -154,7 +185,44 @@ def resolve_jvm_same_package_refs(
         texts.items(),
         plan,
         skip_names=_JAVA_LANG_TYPES | _KOTLIN_DEFAULT_TYPES | _SCALA_DEFAULT_TYPES,
+        may_link=may_link,
     )
+
+
+def _transitive_deps_fn(
+    build_units: BuildUnitIndex | None,
+) -> Callable[[str], frozenset[str]]:
+    """Memoized transitive-dependency closure over the build-unit graph."""
+    closures: dict[str, frozenset[str]] = {}
+    if build_units is None:
+        return lambda unit_id: frozenset()
+
+    def closure(unit_id: str) -> frozenset[str]:
+        cached = closures.get(unit_id)
+        if cached is not None:
+            return cached
+        # Explicit stack; only *finished* closures are cached, so cycles
+        # never leave an incomplete closure behind.
+        reached: set[str] = set()
+        unit = build_units.unit(unit_id)
+        stack = list(unit.deps) if unit else []
+        while stack:
+            dep = stack.pop()
+            if dep in reached:
+                continue
+            reached.add(dep)
+            finished = closures.get(dep)
+            if finished is not None:
+                reached |= finished
+                continue
+            dep_unit = build_units.unit(dep)
+            if dep_unit:
+                stack.extend(dep_unit.deps)
+        closures[unit_id] = frozenset(reached)
+        return closures[unit_id]
+
+    return closure
+
 
 
 def collect_jvm_source_texts(

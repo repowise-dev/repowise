@@ -186,7 +186,9 @@ class ResolveMixin:
             texts = collect_jvm_source_texts(self._parsed_files, self._source_map)
             if scope is not None:
                 texts = {path: text for path, text in texts.items() if path in scope}
-            added = resolve_jvm_same_package_refs(self._graph, jvm_index, texts)
+            added = resolve_jvm_same_package_refs(
+                self._graph, jvm_index, texts, build_units=self.build_units
+            )
             log.info("same_package_edges", added=added)
         except Exception as exc:
             log.warning("jvm_same_package_failed", error=str(exc))

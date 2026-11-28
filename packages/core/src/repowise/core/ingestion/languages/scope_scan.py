@@ -60,6 +60,7 @@ def emit_scope_edges(
     skip_names: frozenset[str],
     ident_re: re.Pattern[str] = _TYPE_IDENT_RE,
     declared_name: Callable[[str], str] = str,
+    may_link: Callable[[str, str], bool] | None = None,
 ) -> int:
     """Scan *files* for implicit scope references and add ``imports`` edges.
 
@@ -71,6 +72,10 @@ def emit_scope_edges(
     type names are not reliably capitalised ASCII. *declared_name* maps an
     identifier to the name its target declares, for a language whose
     identifiers can be qualified; an edge's ``imported_names`` carries that.
+    *may_link*, when given, vetoes one candidate edge ``(referencing path,
+    declaring target)`` before it is added — the build-unit rule a repo-wide
+    scope index needs, since a build tool can forbid a dependency the scope
+    cannot see.
 
     Returns the number of edges added.
 
@@ -107,6 +112,8 @@ def emit_scope_edges(
                 continue
             if graph.has_edge(path, target):
                 continue  # a real import (or stronger evidence) wins
+            if may_link is not None and not may_link(path, target):
+                continue  # the build graph forbids this direction
             graph.add_edge(
                 path,
                 target,
