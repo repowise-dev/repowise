@@ -19,12 +19,14 @@ land on a class, one of its constructors or a type alias. Three rules settle it:
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from dataclasses import replace
+from itertools import accumulate
 
 from .call_receiver_typing._shared import _FUNCTION_KINDS
 from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
-from .symbol_identity import id_segment_name
+from .symbol_identity import id_segment_name, outer_scope
 from .type_names import bare_type_name, strip_type_arguments
 
 # The C++ kinds a function-style cast can construct; an enum cast calls nothing.
@@ -32,7 +34,9 @@ _CONSTRUCTIBLE_KINDS = frozenset({"class", "struct"})
 _USING_ALIAS = re.compile(r"\busing\s+(?P<name>\w+)\s*(?:\[\[[^\]]*\]\]\s*)?=\s*(?P<target>[^;]+);")
 _TYPEDEF = re.compile(r"\btypedef\s+(?P<target>[^;]+?)\s*\b(?P<name>\w+)\s*;")
 # ``typedef struct {..} Name;`` declares the class it names.
-_TYPEDEF_CLASS_BODY = re.compile(r"\s*typedef\s+(?:struct|class|union)\b[^;]*\{")
+_TYPEDEF_CLASS_BODY = re.compile(
+    r"\s*typedef\s+(?:struct|class|union)\b[^;{]*\{.*\}\s*(?P<name>\w+)\s*;", re.S
+)
 _INLINE_CLASS = "{"
 _TYPE_QUALIFIERS = re.compile(r"\b(?:typename|const|volatile|struct|class|union)\b")
 # An alias of an alias is followed this many hops before it counts as unresolved.
@@ -88,15 +92,18 @@ class CppConstructionMixin:
         local = self._cpp_function_local_ids.get(path)
         if local is None:
             symbols = getattr(self._parsed_files.get(path), "symbols", ())
-            bodies = [
+            bodies = sorted(
                 (s.start_line, s.end_line)
                 for s in symbols
                 if s.kind in _FUNCTION_KINDS and s.end_line > s.start_line
-            ]
+            )
+            starts = [start for start, _ in bodies]
+            # reach[i]: the furthest end line among the bodies opening at or before bodies[i].
+            reach = list(accumulate((end for _, end in bodies), max))
             local = self._cpp_function_local_ids[path] = frozenset(
                 s.id
                 for s in symbols
-                if any(start < s.start_line and s.end_line <= end for start, end in bodies)
+                if (i := bisect_left(starts, s.start_line)) and reach[i - 1] >= s.end_line
             )
         return sym_id in local
 
@@ -119,13 +126,18 @@ class CppConstructionMixin:
             for entry in self._declared_types_named(constructor.name)
             if self._symbols_by_id[entry[1][0]].kind in _CONSTRUCTIBLE_KINDS
         ]
+        own = [entry for entry in declared if entry[1][0] == outer_scope(constructor.id)]
         path = self._symbol_paths_by_id.get(constructor.id)
         local = [entry for entry in declared if entry[0] == path]
-        chosen = local or declared
+        chosen = own or local or declared
         return chosen[0][1][0] if len(chosen) == 1 else None
 
     def _cpp_alias_names_repo_class(self, alias: Symbol, hops: int = _ALIAS_HOPS) -> bool:
-        """Does C++ type alias *alias* name a class or struct the repository declares?"""
+        """Does C++ type alias *alias* name a class or struct the repository declares?
+
+        Only a verdict reached with the full hop budget is cached, so a chain
+        cut short (or a cycle) never poisons a later direct lookup.
+        """
         cached = self._cpp_alias_classes.get(alias.id)
         if cached is not None:
             return cached
@@ -146,20 +158,23 @@ class CppConstructionMixin:
                     and self._symbols_by_id[sym_id].kind == "type_alias"
                     and self._symbols_by_id[sym_id].language == "cpp"
                 )
-        self._cpp_alias_classes[alias.id] = verdict
+        if hops == _ALIAS_HOPS:
+            self._cpp_alias_classes[alias.id] = verdict
         return verdict
 
     def _cpp_alias_target(self, alias: Symbol) -> str | None:
         """The type *alias* stands for, as written, or None when it names no plain type.
 
-        None for a pointer, reference, array or function type and for a
-        ``std::`` type: converting to one constructs no repository class.
+        None for a pointer, reference, array or function type, a ``std::``
+        type and a member of a template (``typename Impl<C>::type``):
+        converting to one constructs no class the repository can name.
         """
         path = self._symbol_paths_by_id.get(alias.id)
         lines = self._lines_of(path) if path else []
         text = " ".join(lines[alias.start_line - 1 : alias.end_line])
-        if _TYPEDEF_CLASS_BODY.match(text):
-            return _INLINE_CLASS
+        inline = _TYPEDEF_CLASS_BODY.match(text)
+        if inline is not None:
+            return _INLINE_CLASS if inline.group("name") == alias.name else None
         for pattern in (_USING_ALIAS, _TYPEDEF):
             for match in pattern.finditer(text):
                 if match.group("name") != alias.name:
@@ -167,6 +182,8 @@ class CppConstructionMixin:
                 target = _TYPE_QUALIFIERS.sub(" ", match.group("target")).strip()
                 shape = strip_type_arguments(target)
                 if any(mark in shape for mark in "*&[(") or re.match(r"(?:::)?std::", shape):
+                    return None
+                if re.search(r">\s*::\s*\w+$", target):
                     return None
                 return target
         return None

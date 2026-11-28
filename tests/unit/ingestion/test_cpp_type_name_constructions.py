@@ -97,3 +97,26 @@ def test_a_name_local_to_another_files_function_is_no_rival(tmp_path: Path) -> N
     (tmp_path / "use.cc").write_text("void Show() { auto v = view(); }\n")
     graph = _build(tmp_path)
     assert _callees_of(graph, "use.cc::Show") == {"view.h::view"}
+
+
+def test_alias_chains_and_inline_struct_typedefs(tmp_path: Path) -> None:
+    (tmp_path / "types.h").write_text(
+        "struct base {};\nusing mid = base;\nusing top = mid;\n"
+        "typedef struct {\n  int x;\n} point;\n"
+        "typedef struct {\n  int y;\n} *point_ptr;\n"
+        "struct type {};\n"
+        "template <typename C> struct impl { using type = C; };\n"
+        "template <typename C> using member = typename impl<C>::type;\n"
+    )
+    (tmp_path / "use.cc").write_text(
+        '#include "types.h"\n'
+        "void Chain() { auto t = top(); }\n"
+        "void Inline() { auto p = point(); }\n"
+        "void Pointer(void* v) { auto p = point_ptr(v); }\n"
+        "void Member(int v) { auto m = member<int>(v); }\n"
+    )
+    graph = _build(tmp_path)
+    assert _callees_of(graph, "use.cc::Chain") == {"types.h::top"}
+    assert _callees_of(graph, "use.cc::Inline") == {"types.h::point"}
+    assert _callees_of(graph, "use.cc::Pointer") == set()
+    assert _callees_of(graph, "use.cc::Member") == set()
