@@ -807,14 +807,46 @@ class LanguageStrategiesMixin:
         return len(self._cpp_member_owners_of(call.target_name)) > 1
 
     def _cpp_member_owners_of(self, name: str) -> frozenset[str]:
-        """The bare names of the repository C++ classes declaring a member function *name*."""
+        """The repository C++ classes that may declare a member function *name*, as type ids.
+
+        The method index keys a member on its class's bare name, so every class
+        of that name counts: ``a::Rule`` and ``b::Rule`` are two owners.
+        """
         if self._cpp_member_owners is None:
             owners: dict[str, set[str]] = {}
             for (parent, method), entries in self._global_methods.items():
                 if any(self._is_cpp_class_method(sym_id) for _, sym_id in entries):
-                    owners.setdefault(method, set()).add(bare_type_name(parent))
+                    owners.setdefault(method, set()).update(
+                        identity[0]
+                        for _, identity, _ in self._declared_types_named(bare_type_name(parent))
+                    )
             self._cpp_member_owners = {k: frozenset(v) for k, v in owners.items()}
         return self._cpp_member_owners.get(name, frozenset())
+
+    def _cpp_typed_chain(
+        self, call: CallSite, caller_id: str, type_name: str, found: tuple[str, str] | None
+    ) -> tuple[bool, ResolvedCall | None]:
+        """A C++ chain on a value of known type *type_name*, as ``(handled, edge)``.
+
+        It binds where the caller's file or its includes declare the method on
+        the one repository class of that name. It is refused where that class,
+        whose whole lineage the repository holds, neither declares nor inherits
+        the method. Anything else is left to the bare-name tiers.
+        """
+        types = {identity[0] for _, identity, _ in self._declared_types_named(type_name)}
+        if len(types) != 1:
+            return False, None
+        type_id = types.pop()
+        if found is not None and found[1] != "global":
+            return True, self._return_typed_call(caller_id, found[0], found[1], call.line)
+        if (
+            found is None
+            and self._symbols_by_id[type_id].kind in ("class", "struct")
+            and self._lineage_is_in_repo(type_id)
+            and self._ancestor_method(type_id, call.target_name, caller_id) is None
+        ):
+            return True, None
+        return False, None
 
     def _is_cpp_class_method(self, sym_id: str) -> bool:
         """A C++ member function, not a constructor, of a class the repository declares."""

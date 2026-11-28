@@ -1461,14 +1461,8 @@ class CallResolver(
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if found is None and language == "csharp":
             return self._csharp_chain_member(file_path, call, caller_id, type_name)
-        if (
-            language == "cpp"
-            and not _admitted_cpp_chain(type_name, call.target_name)
-            and (found is None or found[1] == "global")
-        ):
-            # A C++ return type binds only where the caller's file or its
-            # includes declare the method on it; refusing is ``future.get()``'s alone.
-            return False, None
+        if language == "cpp" and not _admitted_cpp_chain(type_name, call.target_name):
+            return self._cpp_typed_chain(call, caller_id, type_name, found)
         if found is None or (found[1] == "global" and language in _BOUND_CHAIN_LANGUAGES):
             return self._chain_refusal_is_proven(language, type_name, from_table), None
 

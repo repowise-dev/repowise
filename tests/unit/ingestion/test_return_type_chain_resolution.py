@@ -1552,3 +1552,33 @@ def test_cpp_chain_keeps_a_name_one_class_declares(tmp_path: Path) -> None:
     )
 
     assert _cpp_chain_edges(tmp_path, source, "name") == ["example.cpp::Rule::name"]
+
+
+def test_cpp_chain_counts_same_named_classes_in_two_namespaces(tmp_path: Path) -> None:
+    parsed = {}
+    for path, scope in (("a.h", "a"), ("b.h", "b")):
+        source = f"namespace {scope} {{ struct Rule {{ void name() {{}} }}; }}\n"
+        parsed.update(_parse(tmp_path, path, "cpp", source))
+    parsed.update(
+        _parse(
+            tmp_path,
+            "use.cpp",
+            "cpp",
+            '#include "a.h"\n#include "b.h"\nExt make() { return {}; }\n'
+            "void use() { make().name(); }\n",
+        )
+    )
+    calls = [c for c in parsed["use.cpp"].calls if c.target_name == "name"]
+    imports = {"a.h": set(), "b.h": set(), "use.cpp": {"a.h", "b.h"}}
+
+    assert CallResolver(parsed, imports).resolve_file("use.cpp", calls) == []
+
+
+def test_cpp_chain_on_a_class_without_the_method_is_refused(tmp_path: Path) -> None:
+    source = (
+        "struct Rule { void other() {} };\n"
+        "struct Pool { void name() {} };\n"
+        "Rule make() { return {}; }\nvoid use() { make().name(); }\n"
+    )
+
+    assert _cpp_chain_edges(tmp_path, source, "name") == []
