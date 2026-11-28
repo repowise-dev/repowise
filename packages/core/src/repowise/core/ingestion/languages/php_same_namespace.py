@@ -108,6 +108,9 @@ def qualify_php_name(name: str, namespace: str | None, aliases: dict[str, str]) 
     head, sep, rest = name.partition("\\")
     if head in aliases:
         return aliases[head] + sep + rest
+    lower_map = {k.lower(): v for k, v in aliases.items()}
+    if head.lower() in lower_map:
+        return lower_map[head.lower()] + sep + rest
     return f"{namespace}\\{name}" if namespace else name
 
 
