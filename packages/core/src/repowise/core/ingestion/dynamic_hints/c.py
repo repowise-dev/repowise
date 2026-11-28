@@ -9,7 +9,16 @@ from pathlib import Path
 from .base import DynamicEdge, DynamicHintExtractor
 
 # Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
-_SKIP_DIRS = {"build", "out", "third_party"}
+_SKIP_DIRS = {"build", "out"}
+# Vendored third-party spellings matched case-insensitively (#6613), so
+# engine trees that vendor into ``ThirdParty/`` or ``3rdParty/`` are skipped
+# like ``third_party``/``thirdparty``. Other _SKIP_DIRS stay case-sensitive
+# (a first-party ``src/Build/`` tree is still read).
+_VENDORED_DIRS = {"third_party", "thirdparty", "3rdparty", "3rd_party"}
+
+
+def _part_is_skip_dir(part: str) -> bool:
+    return part in _SKIP_DIRS or part.lower() in _VENDORED_DIRS
 
 # fp = some_function;  (assigning a function name to a variable — common C function-pointer wiring)
 _FN_PTR_ASSIGN_RE = re.compile(
@@ -65,7 +74,7 @@ class CDynamicHints(DynamicHintExtractor):
                     rel_path = src.resolve().relative_to(repo_root_resolved)
                 except ValueError:
                     continue
-                if any(part in _SKIP_DIRS for part in rel_path.parts):
+                if any(_part_is_skip_dir(part) for part in rel_path.parts):
                     continue
                 try:
                     text = src.read_text(encoding="utf-8", errors="ignore")

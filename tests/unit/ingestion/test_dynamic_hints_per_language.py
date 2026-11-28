@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion.dynamic_hints.c import CDynamicHints
 from repowise.core.ingestion.dynamic_hints.go import GoDynamicHints
 from repowise.core.ingestion.dynamic_hints.luau import LuauDynamicHints
@@ -215,6 +217,27 @@ class TestCHints:
         )
         edges = CDynamicHints().extract(tmp_path)
         assert any(e.hint_source == "c:dlopen" for e in edges)
+
+    @pytest.mark.parametrize("dirname", ["ThirdParty", "thirdparty", "3rdParty"])
+    def test_thirdparty_case_variants_skipped(self, tmp_path: Path, dirname: str) -> None:
+        # #6613: the skip test is case-sensitive and lists one spelling, so
+        # engine trees that vendor into ThirdParty/ or 3rdParty/ are read.
+        (tmp_path / dirname / "lib").mkdir(parents=True)
+        (tmp_path / dirname / "lib" / "a.c").write_text(
+            "#include <dlfcn.h>\nvoid load(){ dlopen(\"./libignored.so\", 0); }\n"
+        )
+        edges = CDynamicHints().extract(tmp_path)
+        assert not any("libignored.so" in e.target for e in edges)
+
+    def test_src_build_dir_still_read(self, tmp_path: Path) -> None:
+        # Only the vendored spellings are case-insensitive: a first-party
+        # src/Build/ tree keeps its hint edges (review of #6629).
+        (tmp_path / "src" / "Build").mkdir(parents=True)
+        (tmp_path / "src" / "Build" / "loader.c").write_text(
+            "#include <dlfcn.h>\nvoid load() { dlopen(\"./libwanted.so\", 0); }\n"
+        )
+        edges = CDynamicHints().extract(tmp_path)
+        assert any("libwanted.so" in e.target for e in edges)
 
     def test_static_function_in_another_c_file_is_not_a_target(self, tmp_path: Path) -> None:
         # Internal linkage: the assignment in b.c can only mean its own handler.
