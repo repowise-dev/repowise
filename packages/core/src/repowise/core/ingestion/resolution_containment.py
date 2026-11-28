@@ -44,7 +44,7 @@ def resolve_contained(
     except MemoryError:
         raise
     except Exception as exc:
-        if os.environ.get(STRICT_ENV, "").strip() in ("1", "true", "yes"):
+        if os.environ.get(STRICT_ENV, "").strip().lower() in ("1", "true", "yes"):
             raise
         failures.append((pass_name, path, type(exc).__name__))
         log.warning(
@@ -61,12 +61,12 @@ def failure_summary(failures: list[Failure]) -> str | None:
     """One degraded line for the files the build skipped, or ``None`` when none were."""
     if not failures:
         return None
-    files = list(dict.fromkeys(path for _, path, _ in failures))
-    named = ", ".join(
-        f"{path} ({graph_pass}: {error})"
-        for graph_pass, path, error in failures[:_NAMED_IN_SUMMARY]
-    )
-    more = len(failures) - _NAMED_IN_SUMMARY
+    first: dict[str, str] = {}
+    for graph_pass, path, error in failures:
+        first.setdefault(path, f"{path} ({graph_pass}: {error})")
+    files = list(first.values())
+    named = ", ".join(files[:_NAMED_IN_SUMMARY])
+    more = len(files) - _NAMED_IN_SUMMARY
     tail = f" and {more} more" if more > 0 else ""
     return (
         f"Graph build skipped some edges of {len(files)} file(s) after a resolver error: "

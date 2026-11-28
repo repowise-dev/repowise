@@ -771,7 +771,10 @@ class GraphBuilder(
 
         self._built = True
         if summary := failure_summary(self.resolve_failures):
-            log.warning("graph_build_files_skipped", files=len(self.resolve_failures))
+            # Unrecorded, so the next update rebuilds in full instead of seeding the gap.
+            for _, path, _ in self.resolve_failures:
+                self.import_resolutions.pop(path, None)
+            log.warning("graph_build_files_skipped", failures=len(self.resolve_failures))
             emit_warning(progress, summary)
 
         # Keep the resolver-built DotNetProjectIndex reachable after the

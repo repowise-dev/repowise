@@ -9,6 +9,7 @@ import pytest
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder, type_ref_resolution
 from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.heritage_resolver import HeritageResolver
+from repowise.core.ingestion.models import CallSite
 from repowise.core.ingestion.resolution_containment import STRICT_ENV
 
 _FILES = {
@@ -84,8 +85,51 @@ def test_call_failure_skips_only_that_file(tmp_path: Path, monkeypatch) -> None:
     assert ("calls", "bad.py", "KeyError") in builder.resolve_failures
     assert builder.external_call_sites is not None
     assert "bad.py" not in builder.external_call_sites
+    # Unrecorded, so the next update cannot seed from the gap.
+    assert "bad.py" not in builder.import_resolutions
+    assert "good.py" in builder.import_resolutions
     [warning] = progress.warnings
-    assert "bad.py (calls: KeyError)" in warning
+    assert "of 1 file(s)" in warning and "bad.py (calls: KeyError)" in warning
+
+
+@pytest.mark.usefixtures("lenient")
+def test_call_failure_marks_package_calls_incomplete(tmp_path: Path, monkeypatch) -> None:
+    original = CallResolver.resolve_file
+
+    def append_then_raise(self, path, calls, external=None):
+        if path == "bad.py":
+            external.append(object())
+            raise KeyError("missing symbol")
+        return original(self, path, calls, external)
+
+    monkeypatch.setattr(CallResolver, "resolve_file", append_then_raise)
+    builder = _builder(tmp_path)
+    builder.build()
+    assert "bad.py" not in builder.external_call_sites
+    assert builder.external_calls_complete is False
+
+
+@pytest.mark.usefixtures("lenient")
+def test_reference_failure_writes_neither_batch(tmp_path: Path, monkeypatch) -> None:
+    original = CallResolver.resolve_file
+
+    def raise_on_qualified(self, path, sites, *args):
+        if path == "bad.py" and any(site.receiver_name for site in sites):
+            raise KeyError("missing symbol")
+        return original(self, path, sites, *args)
+
+    monkeypatch.setattr(CallResolver, "resolve_file", raise_on_qualified)
+    builder = _builder(tmp_path)
+    for path, caller in (("good.py", "good.py::go"), ("bad.py", "bad.py::bad")):
+        builder._parsed_files[path].references = [
+            CallSite("Base", None, caller, 9, None, edge_type="references"),
+            CallSite("helper", "util", caller, 9, None, edge_type="references"),
+        ]
+    graph = builder.build()
+
+    assert "util.py::Base" in _edges(graph, "good.py::go", "references")
+    assert _edges(graph, "bad.py::bad", "references") == set()
+    assert builder.resolve_failures == [("references", "bad.py", "KeyError")]
 
 
 @pytest.mark.usefixtures("lenient")
@@ -113,6 +157,7 @@ def test_import_failure_leaves_no_half_resolved_imports(tmp_path: Path, monkeypa
     assert "good.py" in builder.import_resolutions
     bad_imports = builder._parsed_files["bad.py"].imports
     assert all(imp.resolved_file is None for imp in bad_imports)
+    assert all(b.source_file is None for imp in bad_imports for b in imp.bindings)
     assert builder.resolve_failures == [("imports", "bad.py", "KeyError")]
 
 
@@ -136,8 +181,9 @@ def test_type_ref_failure_rolls_back_the_files_new_edges(tmp_path: Path, monkeyp
     assert ("type_refs", "bad.py", "KeyError") in builder.resolve_failures
 
 
-def test_strict_mode_reraises(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv(STRICT_ENV, "1")
+@pytest.mark.parametrize("value", ["1", "TRUE"])
+def test_strict_mode_reraises(tmp_path: Path, monkeypatch, value: str) -> None:
+    monkeypatch.setenv(STRICT_ENV, value)
     _raise_for_bad(monkeypatch, CallResolver, "resolve_file")
     with pytest.raises(KeyError):
         _builder(tmp_path).build()

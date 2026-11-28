@@ -723,7 +723,10 @@ class ResolveMixin:
                 parsed.calls,
                 external,
             )
-            if external and resolved is not None:
+            if resolved is None:
+                # The file's package calls are missing, so the stored set is incomplete.
+                resolver.external_call_failures += 1
+            elif external:
                 external_sites[path] = external
             for rc in resolved or ():
                 if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
