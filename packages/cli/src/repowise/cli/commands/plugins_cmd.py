@@ -196,6 +196,19 @@ def _source_rows(rows: list[dict], config: dict) -> list[dict]:
     return out
 
 
+def _sources_or_none(rows: list[dict], config: dict) -> list[dict]:
+    """:func:`_source_rows`, or none when a source breaks the listing; the plugins still list."""
+    import logging
+
+    try:
+        return _source_rows(rows, config)
+    except Exception as exc:  # a broken source must not hide every plugin
+        logging.getLogger("repowise.plugins").warning(
+            "sources not listed: %s", type(exc).__name__
+        )
+        return []
+
+
 def plugins_report() -> dict:
     """What ``repowise plugins --format json`` prints, for the repository in the current directory."""
     from repowise.core.ingestion.document_extractors import document_extractor_claims
@@ -215,7 +228,7 @@ def plugins_report() -> dict:
     return {
         "api_version": PLUGIN_API_VERSION,
         "plugins": rows,
-        "sources": _source_rows(rows, config),
+        "sources": _sources_or_none(rows, config),
         "seams": {
             name: {"default": registry.default, "implementations": registry.names}
             for name, registry in sorted(seams().items())

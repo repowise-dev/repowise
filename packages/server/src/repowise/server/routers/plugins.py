@@ -42,13 +42,19 @@ ALL_SOURCES = "*"
 _SOURCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 
 
+_SYNC_STOPPED = "The sync stopped with an error. Run it in a terminal: repowise sources sync"
+
+
+# Kept per process: a second worker or a terminal `repowise sources sync` is
+# not seen here. `repowise serve` runs one worker; a deployment with more
+# would need the lock in the store, next to the sync ledger.
 @dataclass
 class _RepoSyncs:
     """The syncs this server started for one repository."""
 
     #: Source names a running sync covers, or ``ALL_SOURCES``.
     running: set[str] = field(default_factory=set)
-    #: Why the last finished sync did not run, if it did not.
+    #: Why the last finished sync did not run, until a listing reports it.
     error: str | None = None
 
 
@@ -72,10 +78,8 @@ def _refusal(run: setup_cli.CliRun) -> str | None:
         return None
     if isinstance(payload, dict) and isinstance(payload.get("message"), str):
         return payload["message"]
-    if run.ok:
-        return None
-    lines = run.lines(limit=1)
-    return lines[0] if lines else "The sync did not run."
+    # Raw output can quote a plugin's error text, which is not masked: never send it.
+    return None if run.ok else _SYNC_STOPPED
 
 
 @router.get("/api/repos/{repo_id}/plugins", response_model=PluginsResponse)
@@ -90,7 +94,9 @@ async def list_plugins(
             detail="Couldn't list plugins here. Run it in a terminal: repowise plugins",
         )
     syncs = _syncs(request, repo.id)
-    return {**payload, "syncing": sorted(syncs.running), "sync_error": syncs.error}
+    # Reported once, so a later sync run in a terminal never hides behind it.
+    error, syncs.error = syncs.error, None
+    return {**payload, "syncing": sorted(syncs.running), "sync_error": error}
 
 
 @router.post(
@@ -124,7 +130,7 @@ async def sync_sources(
             syncs.error = _refusal(result)
         except Exception:  # a task error must never leave the repo marked as syncing
             logger.exception("plugin_sync_failed", extra={"repo_id": repo.id})
-            syncs.error = "The sync stopped with an error. Run it in a terminal: repowise sources sync"
+            syncs.error = _SYNC_STOPPED
         finally:
             syncs.running = set()
 

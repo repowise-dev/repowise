@@ -241,6 +241,22 @@ function EmptyPlugins({
   );
 }
 
+/** Starts a sync through the host; which source is starting, and why it did not start. */
+function useSyncAction(onSync: PluginsPanelProps["onSync"], fallbackError: string) {
+  const [starting, setStarting] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const sync = onSync
+    ? (source: string) => {
+        setStarting(source);
+        setError(null);
+        onSync(source)
+          .catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : fallbackError))
+          .finally(() => setStarting(null));
+      }
+    : undefined;
+  return { sync, starting, error };
+}
+
 export function PluginsPanel({
   data,
   onSync,
@@ -254,18 +270,7 @@ export function PluginsPanel({
   const sources = data.sources ?? [];
   const syncing = new Set(data.syncing ?? []);
   const anySync = syncing.size > 0;
-  const [starting, setStarting] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-
-  const sync = onSync
-    ? (source: string) => {
-        setStarting(source);
-        setError(null);
-        onSync(source)
-          .catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : labels.syncFailed))
-          .finally(() => setStarting(null));
-      }
-    : undefined;
+  const { sync, starting, error } = useSyncAction(onSync, labels.syncFailed);
 
   return (
     <div className="flex flex-col gap-6">

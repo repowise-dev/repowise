@@ -243,3 +243,25 @@ async def test_sync_needs_write_access_and_a_credential(
     assert (await client.post(f"{url}/sync", json={}, headers=headers)).status_code == 403
     assert (await client.get(url, headers=headers)).status_code == 200
     assert not any(call[:1] == ["sources"] for call in cli.calls)
+
+
+@pytest.mark.anyio
+async def test_raw_cli_output_never_becomes_the_sync_error(
+    app, client: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli.sync_output = f"Traceback: cannot connect with {SECRET}"
+    cli_exit = setup_cli.CliRun
+
+    def failing(args, *, cwd, timeout):
+        run = cli(args, cwd=cwd, timeout=timeout)
+        return cli_exit(1, run.stdout, "") if args[:1] == ["sources"] else run
+
+    monkeypatch.setattr(setup_cli, "run_cli", failing)
+    await client.post(f"/api/repos/{repo['id']}/plugins/sync", json={})
+    cli.release.set()
+    await _drain(app)
+    first = await client.get(f"/api/repos/{repo['id']}/plugins")
+    assert SECRET not in first.text
+    assert first.json()["sync_error"] == plugins._SYNC_STOPPED
+    # Reported once: a later listing no longer carries it.
+    assert (await client.get(f"/api/repos/{repo['id']}/plugins")).json()["sync_error"] is None

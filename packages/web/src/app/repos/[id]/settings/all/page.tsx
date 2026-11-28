@@ -24,6 +24,7 @@ export default async function RepoAllSettingsPage({ params, searchParams }: Prop
   return (
     <SettingsGroup title={tg("all.title")} description={tg("all.description")}>
       <SettingsRegistryPanel
+        key={typeof q === "string" ? q : ""}
         repoId={id}
         repoName={repo.name}
         initialQuery={typeof q === "string" ? q : undefined}
