@@ -563,9 +563,87 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
 
 
 _MARKUP_TAG = re.compile(rb"<(?:!--|([\w.]+))")
+_ATTR_PATTERN = re.compile(rb"""([@\w.:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+_EVENT_ATTR_RE = re.compile(
+    rb"^(?:@on\w+|on\w+|click|change|select|submit|callback|\w+(?:click|change|changed|select|selected|submit|callback|handler))$",
+    re.IGNORECASE,
+)
+_CSHARP_KEYWORDS = frozenset({
+    "await", "async", "true", "false", "null", "new", "this", "base", "var"
+})
 
 
-def _byte_scan_tags(source: bytes, hidden: list[tuple[int, int]], state: dict) -> None:
+def _extract_event_targets(val: bytes) -> list[str]:
+    val = val.strip()
+    if val.startswith(b"@"):
+        val = val[1:].strip()
+    while val.startswith(b"(") and val.endswith(b")"):
+        val = val[1:-1].strip()
+        if val.startswith(b"@"):
+            val = val[1:].strip()
+    targets: list[str] = []
+    if b"=>" in val:
+        for m in re.finditer(rb"\b([A-Za-z_]\w*)\s*\(", val):
+            name = m.group(1).decode("utf-8")
+            if name not in _CSHARP_KEYWORDS:
+                targets.append(name)
+    else:
+        candidate = val.rsplit(b".", 1)[-1].strip()
+        if re.match(rb"^[A-Za-z_]\w*$", candidate):
+            name = candidate.decode("utf-8")
+            if name not in _CSHARP_KEYWORDS:
+                targets.append(name)
+    return targets
+
+
+def _find_tag_end(source: bytes, pos: int) -> int:
+    tag_end = pos
+    size = len(source)
+    while tag_end < size:
+        b = source[tag_end : tag_end + 1]
+        if b in (b'"', b"'"):
+            tag_end = source.find(b, tag_end + 1)
+            if tag_end < 0:
+                return size
+            tag_end += 1
+            continue
+        if b == b">":
+            return tag_end + 1
+        tag_end += 1
+    return size
+
+
+def _scan_tag_event_handlers(
+    source: bytes,
+    tag_start: int,
+    tag_end: int,
+    line: int,
+    line_pos: int,
+    tags: list[tuple[str, int]],
+) -> tuple[int, int]:
+    tag_content = source[tag_start:tag_end]
+    for match in _ATTR_PATTERN.finditer(tag_content):
+        attr_name = match.group(1)
+        if not _EVENT_ATTR_RE.match(attr_name):
+            continue
+        raw_val = match.group(2) if match.group(2) is not None else match.group(3)
+        if not raw_val:
+            continue
+        attr_offset = tag_start + match.start()
+        line += source.count(b"\n", line_pos, attr_offset)
+        line_pos = attr_offset
+        for target in _extract_event_targets(raw_val):
+            tags.append((target, line))
+    return line, line_pos
+
+
+def _byte_scan_tags(
+    source: bytes,
+    hidden: list[tuple[int, int]],
+    state: dict,
+    *,
+    scan_event_handlers: bool = True,
+) -> None:
     """Record ``(name, line)`` for each Razor component tag outside the disjoint ``hidden`` ranges.
 
     HTML comments are skipped too.
@@ -584,13 +662,20 @@ def _byte_scan_tags(source: bytes, hidden: list[tuple[int, int]], state: dict) -
             close = source.find(_HTML_COMMENT_CLOSE, pos)
             pos = len(source) if close < 0 else close + len(_HTML_COMMENT_CLOSE)
             continue
-        # A namespace-qualified tag (``<Shared.Grid />``) instantiates the last
-        # dotted segment.
+
+        tag_end = _find_tag_end(source, pos)
         name = _razor_component_name(tag.group(1).decode("utf-8").rsplit(".", 1)[-1])
         if name:
             line += source.count(b"\n", line_pos, tag.start())
             line_pos = tag.start()
             state["tags"].append((name, line))
+
+        if scan_event_handlers:
+            line, line_pos = _scan_tag_event_handlers(
+                source, tag.start(), tag_end, line, line_pos, state["tags"]
+            )
+
+        pos = tag_end
 
 
 def _razor_component_name(name: str) -> str | None:

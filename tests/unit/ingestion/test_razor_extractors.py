@@ -139,15 +139,24 @@ class TestCalls:
         # A 4x input should take about 4x as long, not the 16x of quadratic work.
         assert large < 8 * small, f"4x input took {large / small:.2f}x as long"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="attribute-bound handlers (Click=\"@SaveOrders\") are not projected yet",
-    )
     def test_attribute_bound_handler_carries_an_edge(self, parsed) -> None:
         # ``Click="@SaveOrders"`` is the only reference to SaveOrders in the
-        # component. Until attribute expressions are projected it reads as
-        # unreferenced; this turns green when they are.
+        # component. Attribute expressions are projected as calls so it is referenced.
         assert "SaveOrders" in {c.target_name for c in parsed.calls}
+
+    def test_html_button_onclick_and_lambda_handlers(self, parser: ASTParser) -> None:
+        content = b"""@page "/test"
+<button @onclick="HandleClick">Click</button>
+<button @onchange="@((e) => ProcessChange(e))">Change</button>
+@code {
+    void HandleClick() {}
+    void ProcessChange(object e) {}
+}
+"""
+        parsed = parser.parse_file(_file("Pages/Test.razor"), content)
+        targets = {c.target_name for c in parsed.calls}
+        assert "HandleClick" in targets
+        assert "ProcessChange" in targets
 
 
 class TestCshtml:
