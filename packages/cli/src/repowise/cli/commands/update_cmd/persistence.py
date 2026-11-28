@@ -576,6 +576,19 @@ async def _load_page_paths_and_hotspots(repo_path: Any) -> tuple[set[str], set[s
         await engine.dispose()
 
 
+def _hold_content_pointers(
+    new_state: dict, state: dict, content_snapshot: dict | None, *, clean: bool
+) -> None:
+    """Keep the null pointers of a content-synced run that left work behind.
+
+    No repair marker can name a range without a commit, so the old baseline and
+    the null pointers are what make the next update diff these files again.
+    """
+    if content_snapshot is not None and not clean:
+        new_state["last_sync_commit"] = state.get("last_sync_commit")
+        new_state["last_docs_commit"] = state.get("last_docs_commit")
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,
@@ -769,11 +782,7 @@ def _persist_index_only_update(
             "the next update will re-cover it.[/yellow]"
         )
     content_clean = not (failed_steps or prune_refusals or content_docs_pending)
-    if content_snapshot is not None and not content_clean:
-        # No repair marker can name a range without a commit: hold the null
-        # pointers and the old baseline so the next update diffs these files again.
-        new_state["last_sync_commit"] = state.get("last_sync_commit")
-        new_state["last_docs_commit"] = state.get("last_docs_commit")
+    _hold_content_pointers(new_state, state, content_snapshot, clean=content_clean)
     backfill_docs_pointer(new_state, state)
     if knowledge_graph_result is not None:
         try:
