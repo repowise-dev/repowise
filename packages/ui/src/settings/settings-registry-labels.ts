@@ -85,6 +85,7 @@ export const DEFAULT_SETTINGS_REGISTRY_LABELS: SettingsRegistryLabels = {
     hooks: "Agent hooks",
     indexing: "Indexing",
     mcp: "MCP",
+    performance: "Performance",
     providers: "Model providers",
     server: "Server",
   },

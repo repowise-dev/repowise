@@ -182,6 +182,51 @@ class TestPythonParser:
         imp = next(i for i in result.imports if i.module_path == "python_pkg.models")
         assert imp.imported_names == ["Operation", "Result"]
 
+    def test_multi_name_import_yields_one_import_per_module(self, parser: ASTParser) -> None:
+        # Regression (#6262): ``import a, b`` produced one Import for ``a``
+        # carrying both names, so ``b`` never got an edge.
+        fi = _make_file_info("pkg/use.py", "python")
+        result = parser.parse_file(fi, b"import a, b\n")
+        assert [(i.module_path, i.imported_names) for i in result.imports] == [
+            ("a", ["a"]),
+            ("b", ["b"]),
+        ]
+        assert [[b.local_name for b in i.bindings] for i in result.imports] == [["a"], ["b"]]
+        assert all(i.raw_statement == "import a, b" for i in result.imports)
+
+    def test_multi_name_import_keeps_aliases(self, parser: ASTParser) -> None:
+        fi = _make_file_info("pkg/use.py", "python")
+        result = parser.parse_file(fi, b"import a as x, b.c\n")
+        assert [(i.module_path, i.imported_names) for i in result.imports] == [
+            ("a", ["x"]),
+            ("b.c", ["c"]),
+        ]
+        assert [[b.local_name for b in i.bindings] for i in result.imports] == [["x"], ["b.c"]]
+
+    def test_multi_name_import_mixed_line(self, parser: ASTParser) -> None:
+        # Plain, dotted and aliased names on one line, next to a from-import
+        # that must stay a single Import.
+        fi = _make_file_info("pkg/use.py", "python")
+        result = parser.parse_file(fi, b"import os, pkg.mod as m, sys; from x import y, z\n")
+        assert [(i.module_path, i.imported_names) for i in result.imports] == [
+            ("os", ["os"]),
+            ("pkg.mod", ["m"]),
+            ("sys", ["sys"]),
+            ("x", ["y", "z"]),
+        ]
+
+    def test_multi_name_import_load_kind_per_name(self, parser: ASTParser) -> None:
+        # Each name of ``import a, b`` is module-form on its own: only ``b``
+        # is used at load, so only ``a`` can be imported lazily in a cycle.
+        # A repeat of the statement in a function folds into the same pair.
+        fi = _make_file_info("pkg/use.py", "python")
+        result = parser.parse_file(fi, b"import a, b\nVALUE = b.f()\n\ndef g():\n    import a, b\n")
+        assert [(i.module_path, i.module_form) for i in result.imports] == [
+            ("a", True),
+            ("b", False),
+        ]
+        assert all(not i.deferred and i.scopes is None for i in result.imports)
+
     def test_nested_function_not_extracted_as_top_level(self, parser: ASTParser) -> None:
         # Regression (D8): orchestrator-style helpers defined inside an
         # async method (e.g. ``_on_start``, ``_on_done``, ``_step``) were

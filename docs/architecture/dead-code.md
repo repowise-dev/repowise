@@ -71,7 +71,13 @@ count, so a file only a README links to is still a candidate. Base confidence co
 | Otherwise | `0.70` |
 
 Caps to `0.40`: a dynamic-import marker in the same directory, any path risk
-factor, a namespace-import language (C#). `unreachable_file` is in
+factor, a namespace-import language (C#). Caps to `0.50`
+(`UNPROVEN_FILE_CONFIDENCE`): a language in `_WEAK_RESOLVER_LANGUAGES` (every
+tag whose `import_support` is not `full`, plus PHP, Ruby and Swift), or a file
+whose stem or public top-level module name another production file of the same
+language family writes (`_production_mentions`: one identifier scan, writers
+judged by `code_origin`;
+type names are left to `clamp_named_types`). `unreachable_file` is in
 `REVIEW_ONLY_KINDS`, so `safe_to_delete` is always false. `lines` is the
 physical line count, or unknown when the source was not read.
 

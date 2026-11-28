@@ -28,17 +28,18 @@ from ..external_calls import ExternalCallSite
 from ..languages.apex_namespace import spell_apex_names
 from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
-from ..models import Import, ParsedFile, Symbol, combine_load_kinds
+from ..models import Import, ParsedFile, combine_load_kinds
 from ..resolvers import ResolverContext
 from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.go_workspace import cached_go_index, go_package_files
+from ..resolvers.ruby_rails import get_or_build_rails_index
 from ..resolvers.typescript import detect_platform_files
 from ..symbol_identity import (
     MODULE_SYMBOL_NAME,
-    has_overload_identity,
     make_symbol_id,
     module_symbol_id,
+    takes_shared_id,
 )
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
@@ -51,24 +52,6 @@ from ._serialize import SerializeMixin
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
-
-_CALLABLE_KINDS = frozenset({"function", "method"})
-
-
-def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -> bool:
-    """Does the definition already holding *sym*'s id keep its node?
-
-    Where overloads get their own ids, two definitions still sharing one erase
-    to one signature: the first declared keeps the node, so its span does not
-    depend on how many follow it. A function sharing its id with a Kotlin
-    property takes the node: calls name it.
-    """
-    if existing is None or existing.get("is_declaration") is not False:
-        return False
-    if not has_overload_identity(sym.language):
-        return False
-    return not (sym.kind in _CALLABLE_KINDS and existing.get("kind") not in _CALLABLE_KINDS)
-
 
 def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
     """Fold one more import into an edge's ``type_only`` / ``deferred`` /
@@ -432,12 +415,7 @@ class GraphBuilder(
             # the one-line declaration overwrites a definition's span, kind and
             # ``is_declaration``, and every consumer that tells the two apart
             # then reads the header line as the whole symbol.
-            existing = self._graph.nodes.get(sym.id)
-            if sym.is_declaration:
-                if existing is not None and existing.get("is_declaration") is False:
-                    self._graph.add_edge(path, sym.id, edge_type="defines")
-                    continue
-            elif _first_definition_keeps_node(existing, sym):
+            if not takes_shared_id(self._graph.nodes.get(sym.id), sym):
                 self._graph.add_edge(path, sym.id, edge_type="defines")
                 continue
 
@@ -736,6 +714,7 @@ class GraphBuilder(
             scope=scope_set,
             registrations=run_global,
             cpp_index=self._shared_cpp_index(ctx),
+            rails_index=get_or_build_rails_index(ctx),
         )
 
         # --- Pascal property -> the read/write methods it runs ---

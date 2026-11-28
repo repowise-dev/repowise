@@ -728,6 +728,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         isLoading={evidenceLoading}
         error={evidenceError}
         decisionTitle={decision.title}
+        fileHref={adapter.fileHref}
       />
 
       <AiPromptModal

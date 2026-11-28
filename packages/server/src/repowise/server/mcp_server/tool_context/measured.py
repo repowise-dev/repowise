@@ -9,7 +9,10 @@ self time (the cost it is ranked by: built-ins and libraries it called
 included, waits excluded) with its interval when the run counted samples, how
 much of the run went to repo code itself, and the age; ``ordering only`` for a
 deterministic tracer. A ``unit_test`` run
-reads "in tests". The ``lead_candidate`` tier is not worded as a claim until
+reads "in tests". A ``production`` run also names the window it covers and
+what was deployed (``evidence.status.window_claim``): ``in production "api"
+over 2026-10-30 to 2026-11-26, deployed 1a2b3c4d5e6f``. Only production rows
+cost that read; every other line is as it was. The ``lead_candidate`` tier is not worded as a claim until
 its thresholds are calibrated: it reads as ranked.
 
 Stale evidence (the body changed since the run) is flagged, never ranked: the
@@ -26,8 +29,9 @@ and never on a file's line or a stale one.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -37,7 +41,12 @@ from repowise.core.evidence.action_row import action_row, row_step, row_why_driv
 from repowise.core.evidence.next_step import STEP_CLASSES
 from repowise.core.evidence.payloads import json_list
 from repowise.core.ingestion.symbol_identity import file_of_symbol
-from repowise.core.persistence.crud import hotness_for_symbols, measured_callers, step_findings
+from repowise.core.persistence.crud import (
+    hotness_for_symbols,
+    measured_callers,
+    production_window_claims,
+    step_findings,
+)
 
 _log = logging.getLogger("repowise.mcp.context")
 
@@ -49,6 +58,9 @@ MEASURED_TARGET = "_measured_target"
 MAX_NAMED_IN_FILE = 3
 
 _RANKED = ("ranked", "lead_candidate")
+
+#: No production window known: every line reads as it did before windows.
+_NO_WINDOWS: Mapping[str, str] = MappingProxyType({})
 
 
 def mark_measured_target(
@@ -99,8 +111,9 @@ async def attach_measured(
         repository_id,
         [rows[k] for kind, k in wanted.values() if kind == "symbol" and k in rows],
     )
+    windows = await _windows(session, repository_id, rows.values())
     for name, (kind, key) in wanted.items():
-        line = _line_for(kind, key, rows, now, extra)
+        line = _line_for(kind, key, rows, now, extra, windows)
         if line:
             cards[name]["measured"] = line
 
@@ -134,6 +147,23 @@ async def _why_and_drivers(
     return {sid: parts for sid, parts in held.items() if parts}
 
 
+async def _windows(session: AsyncSession, repository_id: str, rows: Any) -> dict[str, str]:
+    """``{run id: window claim}`` for the production rows' runs; no read for
+    any other row, so a line without one costs and reads as before.
+
+    Best effort, and the call's last read: a failure leaves every line
+    without its window.
+    """
+    run_ids = {r.run_id for r in rows if r.workload_class == "production" and r.run_id}
+    if not run_ids:
+        return {}
+    try:
+        return await production_window_claims(session, repository_id, run_ids)
+    except Exception:  # Optional part: a failed read or a stored time that does not parse.
+        _log.debug("get_context: production window read failed", exc_info=True)
+        return {}
+
+
 def _why_drivers_of(
     r: Any, findings: list[dict[str, Any]], callers: dict[str, list[str]]
 ) -> list[str]:
@@ -157,26 +187,37 @@ def _why_drivers_of(
 
 
 def _line_for(
-    kind: str, key: str, rows: dict[str, Any], now: datetime, extra: dict[str, list[str]]
+    kind: str,
+    key: str,
+    rows: dict[str, Any],
+    now: datetime,
+    extra: dict[str, list[str]],
+    windows: Mapping[str, str],
 ) -> str | None:
     if kind == "symbol":
-        return symbol_line(rows[key], now, extra.get(key, ())) if key in rows else None
-    return file_line([r for sid, r in rows.items() if file_of_symbol(sid) == key], now)
+        return symbol_line(rows[key], now, extra.get(key, ()), windows) if key in rows else None
+    return file_line([r for sid, r in rows.items() if file_of_symbol(sid) == key], now, windows)
 
 
-def symbol_line(row: Any, now: datetime, extra: Sequence[str] = ()) -> str:
+def symbol_line(
+    row: Any, now: datetime, extra: Sequence[str] = (), windows: Mapping[str, str] = _NO_WINDOWS
+) -> str:
     """One symbol's line, e.g. ``rank 3 of repo code in entry_point "cli build"
     (12% self, 9-15%; repo code itself 40%), 2d old``, then *extra* (its
-    ``why:`` and ``driven by:``), each after ``; ``."""
+    ``why:`` and ``driven by:``), each after ``; ``. *windows* holds the
+    production runs' window claims (:func:`_basis`)."""
+    basis = _basis(row, windows)
     if row.freshness == "stale":
-        return f"stale: measured {_basis(row)} before the body changed, {_age(row, now)}"
+        return f"stale: measured {basis} before the body changed, {_age(row, now)}"
     details = "; ".join(d for d in (_share(row), _repo_self(row)) if d)
     paren = f" ({details})" if details else ""
-    line = f"{_place(row)} {_basis(row)}{paren}, {_age(row, now)}{_earlier(row)}"
+    line = f"{_place(row)} {basis}{paren}, {_age(row, now)}{_earlier(row)}"
     return "; ".join((line, *extra))
 
 
-def file_line(rows: list[Any], now: datetime) -> str | None:
+def file_line(
+    rows: list[Any], now: datetime, windows: Mapping[str, str] = _NO_WINDOWS
+) -> str | None:
     """A file's line: the basis once, then up to :data:`MAX_NAMED_IN_FILE` of
     its functions from that run, strongest first; the rest are counted."""
     if not rows:
@@ -192,7 +233,7 @@ def file_line(rows: list[Any], now: datetime) -> str | None:
     items = "; ".join(_file_item(r) for r in named)
     repo_self = _repo_self(lead)
     paren = f" ({repo_self})" if repo_self else ""
-    line = f"{_basis(lead)}{paren}, {_age(lead, now)}{_earlier(lead)}: {items}"
+    line = f"{_basis(lead, windows)}{paren}, {_age(lead, now)}{_earlier(lead)}: {items}"
     # Counted apart, so nothing from another run reads as measured in this one.
     for count, label in (
         (len(in_lead) - len(named), "more measured"),
@@ -227,13 +268,19 @@ def _place(row: Any) -> str:
     return "measured, not ranked"
 
 
-def _basis(row: Any) -> str:
+def _basis(row: Any, windows: Mapping[str, str] = _NO_WINDOWS) -> str:
     name = row.workload_name or "unnamed"
     if row.workload_class == "unit_test":
         return f'in tests "{name}"'
     if not row.workload_class:
         return f'in "{name}"'
-    return f'in {row.workload_class} "{name}"'
+    basis = f'in {row.workload_class} "{name}"'
+    claim = windows.get(row.run_id) if row.workload_class == "production" else None
+    if claim:
+        # "in production over <window>, deployed <sha>": the workload goes after its class.
+        rest = claim.removeprefix("in production")
+        return f"{basis}{rest}" if rest != claim else f"{basis}, {claim}"
+    return basis
 
 
 def _share(row: Any) -> str | None:

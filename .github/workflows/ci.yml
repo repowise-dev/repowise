@@ -845,6 +845,39 @@ jobs:
         run: uv run --no-sync pytest tests/unit/ingestion/parser/test_query_compilation.py -v --tb=short
 
   # ---------------------------------------------------------------------------
+  # Footprint: install size, distribution count, and the modules each startup
+  # path loads (CLI, MCP server, serve, the Claude Code hooks), against
+  # ci/footprint_budget.json. The install is the default one, no extras, into
+  # a fresh venv, pinned to uv.lock so only this repo's changes move it.
+  # ---------------------------------------------------------------------------
+  footprint:
+    name: Footprint (install size, startup imports)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
+
+      - name: Install the default package into a fresh venv
+        run: |
+          uv python install 3.12
+          uv export --locked --no-dev --no-emit-workspace --no-hashes --package repowise -o "$RUNNER_TEMP/pins.txt"
+          uv venv --python 3.12 "$RUNNER_TEMP/footprint"
+          uv pip install --python "$RUNNER_TEMP/footprint/bin/python" -c "$RUNNER_TEMP/pins.txt" .
+
+      - name: Check the footprint budget
+        run: '"$RUNNER_TEMP/footprint/bin/python" scripts/check_footprint.py'
+
+  # ---------------------------------------------------------------------------
   # Windows smoke test — repowise init and status under a native Windows console
   # with default cp1252 encoding and redirected stdout.
   #

@@ -163,6 +163,10 @@ class ActionRow:
     #: the statements the function issues did in the run's window. ``share``
     #: is then of the window's statement time. ``None`` on a profile row.
     statements: dict[str, Any] | None = None
+    #: A production route row's numbers (:func:`route_facts`): what the
+    #: requests its routes served did in the run's window. ``share`` is then
+    #: of the window's request time. ``None`` on any other row.
+    routes: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON form (``MeasuredRow``). ``on_static_findings`` and
@@ -202,15 +206,14 @@ class ActionRow:
             out["label"] = self.label
         if self.statements is not None:
             out["statements"] = self.statements
+        if self.routes is not None:
+            out["routes"] = self.routes
         out["sources"] = self._sources()
         return out
 
     def _sources(self) -> dict[str, str]:
         held = {
-            "share": (
-                "statement_stats" if self.statements is not None else "workload_hotness",
-                self.share is not None,
-            ),
+            "share": (self._share_source(), self.share is not None),
             "lines": ("symbols", self.lines is not None),
             "callers": ("call_graph", self.callers_total is not None),
             "caller_shares": ("run_drivers", bool(self.caller_shares)),
@@ -226,6 +229,11 @@ class ActionRow:
             "slower": ("compare", self.slower is not None),
         }
         return {key: source for key, (source, present) in held.items() if present}
+
+    def _share_source(self) -> str:
+        if self.statements is not None:
+            return "statement_stats"
+        return "route_latency" if self.routes is not None else "workload_hotness"
 
 
 def action_row(
@@ -244,6 +252,7 @@ def action_row(
     compare: Iterable[Any] = (),
     static_causes: Collection[str] = (),
     statements: Mapping[str, Any] | None = None,
+    routes: Mapping[str, Any] | None = None,
 ) -> ActionRow:
     """The row for one ranked function.
 
@@ -263,7 +272,9 @@ def action_row(
     slower (:func:`row_slower`). *static_causes* the
     open static performance causes on it. *statements* makes it a production
     statement row (:func:`statement_facts`); *measured* is then the
-    function's ``evidence.measured_fold.StatementCost``.
+    function's ``evidence.measured_fold.StatementCost``. *routes* makes it
+    a production route row (:func:`route_facts`); *measured* is then the
+    handler's ``evidence.measured_fold.RouteCost``.
     """
     symbol_id = measured.symbol_id
     listed, shares = weighted_callers(callers, drivers_json, ROW_CALLERS)
@@ -294,6 +305,7 @@ def action_row(
         slower=row_slower(symbol_id, compare, workload_name),
         label=IMPORT_TIME if is_import_row(symbol_id) else None,
         statements=dict(statements) if statements is not None else None,
+        routes=dict(routes) if routes is not None else None,
     )
 
 
@@ -308,6 +320,21 @@ def statement_facts(cost: Any) -> dict[str, Any]:
         "total_ms": cost.total_ms,
         "mean_ms": cost.total_ms / calls if calls else None,
         "statements": cost.statements,
+    }
+
+
+def route_facts(cost: Any) -> dict[str, Any]:
+    """A production route row's numbers from its
+    ``evidence.measured_fold.RouteCost``: ``requests``, ``total_ms``, the
+    ``mean_ms`` per request, the slowest route's ``p95_ms``, ``errors`` and
+    its ``routes`` (``METHOD template``, costliest first)."""
+    return {
+        "requests": int(cost.requests),
+        "total_ms": cost.total_ms,
+        "mean_ms": cost.mean_ms,
+        "p95_ms": cost.p95_ms,
+        "errors": cost.errors,
+        "routes": list(cost.routes),
     }
 
 
@@ -365,6 +392,8 @@ def _facts(row: Mapping[str, Any]) -> str:
     parts = []
     if row.get("statements"):
         parts.extend(_statement_words(row))
+    elif row.get("routes"):
+        parts.extend(_route_words(row))
     elif row.get("share") is not None:
         interval = ""
         if row.get("share_low") is not None and row.get("share_high") is not None:
@@ -399,6 +428,24 @@ def _statement_words(row: Mapping[str, Any]) -> list[str]:
         parts.append(f"{facts['mean_ms']:.3g} ms mean")
     n = facts["statements"]
     parts.append(f"{n} statement{'s' if n != 1 else ''}")
+    return parts
+
+
+def _route_words(row: Mapping[str, Any]) -> list[str]:
+    """``GET /users/{id}``, ``12% of the window's request time``, requests,
+    the mean and p95 per request and errors: a production route row's
+    measurement."""
+    facts = row["routes"]
+    parts = [", ".join(facts["routes"])]
+    if row.get("share") is not None:
+        parts.append(f"{_pct(row['share'])} of the window's request time")
+    parts.append(f"{facts['requests']:,} request{'s' if facts['requests'] != 1 else ''}")
+    if facts.get("mean_ms") is not None:
+        parts.append(f"{facts['mean_ms']:.3g} ms mean")
+    if facts.get("p95_ms") is not None:
+        parts.append(f"{facts['p95_ms']:.3g} ms p95")
+    if facts.get("errors"):
+        parts.append(f"{facts['errors']:,} error{'s' if facts['errors'] != 1 else ''}")
     return parts
 
 
@@ -475,7 +522,7 @@ def row_compact(row: Mapping[str, Any]) -> dict[str, Any]:
         out["on_static_findings"] = row["on_static_findings"]
     if row.get("label"):
         out["label"] = row["label"]  # "import time": a module body's row
-    return out | _statements_compact(row.get("statements"))
+    return out | _statements_compact(row.get("statements")) | _routes_compact(row.get("routes"))
 
 
 def _statements_compact(facts: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -486,6 +533,19 @@ def _statements_compact(facts: Mapping[str, Any] | None) -> dict[str, Any]:
     out = {"calls": facts["calls"]}
     if facts.get("mean_ms") is not None:
         out["mean_ms"] = facts["mean_ms"]
+    return out
+
+
+def _routes_compact(facts: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A production route row's costliest ``route``, ``requests``, ``mean_ms``
+    and ``p95_ms`` (its ``share`` is of the window's request time); nothing
+    on any other row."""
+    if not facts:
+        return {}
+    out: dict[str, Any] = {"route": facts["routes"][0], "requests": facts["requests"]}
+    for key in ("mean_ms", "p95_ms"):
+        if facts.get(key) is not None:
+            out[key] = facts[key]
     return out
 
 
@@ -500,6 +560,7 @@ __all__ = [
     "VERIFY_WORKLOAD",
     "ActionRow",
     "action_row",
+    "route_facts",
     "row_compact",
     "row_slower",
     "row_step",

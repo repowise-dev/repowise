@@ -21,6 +21,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 
 #: Verbs the contract layer records as an HTTP method. A consumer that sees a
 #: wider verb set (Express ``use``/``all``) filters against this.
@@ -187,6 +188,28 @@ def js_router_bindings(content: str) -> dict[str, str]:
     return out
 
 
+def _is_express_setting_read(
+    content: str, paren_offset: int, arg_end: int, path: str
+) -> bool:
+    """True when ``.get('...')`` takes one non-path string argument (an Express setting lookup)."""
+    if path.startswith(("/", "*", ":")) and not any(ch.isspace() for ch in path):
+        return False
+    close = match_paren(content, paren_offset)
+    if close == -1:
+        return False
+    saw_comma = False
+    for i, ch, _depth in scan_code(content, arg_end):
+        if i >= close:
+            break
+        if ch.isspace():
+            continue
+        if ch == "," and not saw_comma:
+            saw_comma = True
+            continue
+        return False
+    return True
+
+
 def express_routes(content: str) -> Iterator[RouteMatch]:
     """Router/app route registrations in *content*.
 
@@ -195,13 +218,20 @@ def express_routes(content: str) -> Iterator[RouteMatch]:
     argument list itself from ``paren_offset``.
     """
     for m in _EXPRESS_ROUTE_RE.finditer(content):
+        verb = m.group("verb").upper()
+        path = m.group("path")
+        paren_offset = m.start("paren")
+        if verb == "GET" and path is not None and _is_express_setting_read(
+            content, paren_offset, m.end(), path
+        ):
+            continue
         yield RouteMatch(
-            verb=m.group("verb").upper(),
-            path=m.group("path"),
+            verb=verb,
+            path=path,
             receiver=m.group("receiver"),
             handler=None,
             offset=m.start(),
-            paren_offset=m.start("paren"),
+            paren_offset=paren_offset,
         )
 
 
@@ -1120,12 +1150,17 @@ _APEX_URL_MAPPING_RE = re.compile(
 _APEX_REST_VERB_RE = re.compile(r"@Http(?P<verb>Get|Post|Put|Patch|Delete)\b", re.IGNORECASE)
 
 
-def apex_code(content: str) -> str:
-    """*content* with Apex comments and string literals blanked, offsets and newlines kept."""
-    out = [c if c == "\n" else " " for c in content]
-    for i, c, _depth in scan_code(content, quotes="'"):
+def _blank_outside(text: str, code: Iterable[tuple[int, str, int]]) -> str:
+    """*text* with every character that *code* (a :func:`scan_code` run) skips blanked."""
+    out = [c if c == "\n" else " " for c in text]
+    for i, c, _depth in code:
         out[i] = c
     return "".join(out)
+
+
+def apex_code(content: str) -> str:
+    """*content* with Apex comments and string literals blanked, offsets and newlines kept."""
+    return _blank_outside(content, scan_code(content, quotes="'"))
 
 
 def apex_rest_routes(content: str, code: str | None = None) -> Iterator[RouteMatch]:
@@ -1713,6 +1748,16 @@ def _spring_paths(args: str, path_key: re.Pattern[str] = _SPRING_PATH_KEY_RE) ->
     if read is None or not masked[read[1] :].lstrip().startswith((",", ")")):
         return None
     return read[0] or ("",)
+
+
+@lru_cache(maxsize=8)
+def java_code(text: str) -> str:
+    """*text* of a Java or Kotlin file with comments, string and char literals blanked.
+
+    Offsets and newlines are kept, as :func:`apex_code` keeps them. The last few texts are
+    kept, so call it with a whole file that is read again, and never with a piece of one.
+    """
+    return _blank_outside(text, _jvm_code(text))
 
 
 def _spring_literals(args: str, masked: str, at: int) -> tuple[tuple[str, ...], int] | None:

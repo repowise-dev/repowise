@@ -33,6 +33,25 @@ describe("createCache", () => {
     expect(cache.get("r", "k", "t")).toBe("new");
   });
 
+  it("keeps the two newest tags per key and drops older ones", () => {
+    const cache = createCache();
+    cache.set("r", "k", "head-1", "one");
+    cache.set("r", "k", "head-2", "two");
+    cache.set("r", "k", "head-3", "three");
+    expect(cache.get("r", "k", "head-3")).toBe("three");
+    expect(cache.get("r", "k", "head-2")).toBe("two");
+    // Bounded: a session's superseded payloads do not pile up.
+    expect(cache.get("r", "k", "head-1")).toBeUndefined();
+  });
+
+  it("keeps the fresh entry when an older request writes last", () => {
+    const cache = createCache();
+    cache.set("r", "k", "head-2", "fresh");
+    // A request started under head-1 resolves after the head-2 one.
+    cache.set("r", "k", "head-1", "late");
+    expect(cache.get("r", "k", "head-2")).toBe("fresh");
+  });
+
   it("drops everything on invalidateAll", () => {
     const cache = createCache();
     cache.set("r", "k1", "t", 1);

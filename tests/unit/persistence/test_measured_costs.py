@@ -19,6 +19,7 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.crud import tests_running_spans as spans_run
 from repowise.core.persistence.models import (
     EvidenceBenchmarkResult,
+    EvidenceRouteLatency,
     EvidenceRun,
     EvidenceStatementStats,
     EvidenceSymbolCost,
@@ -1178,3 +1179,92 @@ async def test_statements_on_no_single_function_rank_nothing_but_are_runtime_dat
     await _seed_statements(async_session, repo.id, joined=False)
     assert await measured_costs(async_session, repo.id, now=NOW) is None
     assert await measured_status(async_session, repo.id) == "not_ranked"
+
+
+def _route_run(repo_id: str, run_id: str) -> EvidenceRun:
+    return EvidenceRun(
+        id=run_id, repository_id=repo_id, run_key=run_id, kind="route_latency",
+        format="repowise-evidence-v1", source="plugin", workload_name="api",
+        workload_class="production", value_kind="wall", unit="ms", environment="prod",
+        commit_sha="d" * 40, measured_at=datetime(2026, 11, 16, tzinfo=UTC),
+        window_start=datetime(2026, 11, 1, tzinfo=UTC),
+        window_end=datetime(2026, 11, 16, tzinfo=UTC),
+    )
+
+
+async def _seed_routes(session, repo_id: str, *, joined: bool = True) -> None:
+    session.add(_route_run(repo_id, "q1"))
+    await session.flush()
+
+    def row(method, route, handler, count, total_ms, p95=None, errors=None):
+        return EvidenceRouteLatency(
+            run_id="q1", method=method, route=route, repository_id=repo_id,
+            handler_symbol_id=f"{APP}::{handler}" if handler else None,
+            request_count=count, p50_ms=None, p95_ms=p95, total_ms=total_ms,
+            error_count=errors,
+        )
+
+    rows = [row("GET", "/x", None, 5, 200.0)]
+    if joined:
+        rows += [
+            row("GET", "/serve/:id", "serve", 30, 600.0, 90.0, 3),
+            row("GET", "/load", "load", 20, 200.0, 20.0, 0),
+        ]
+    session.add_all(rows)
+    await session.flush()
+
+
+async def test_production_routes_list_as_handler_rows_that_never_lead(async_session) -> None:
+    """A production route run with no profile: each handler the route join
+    named carries its requests as a J4 row (share of the window's request
+    time, requests, mean, p95, verify on the next window); routes on no
+    handler are counted, never put on one."""
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_routes(async_session, repo.id)
+    assert await measured_status(async_session, repo.id) == "measured"
+
+    view = await measured_costs(async_session, repo.id, now=NOW)
+    assert set(view) == {"routes"}
+    group = view["routes"]
+    assert group["total"] == 2
+    (run,) = group["runs"]
+    assert (run["run_id"], run["total_ms"], run["requests"], run["routes"]) == ("q1", 1000.0, 55, 3)
+    assert run["window"]["claim"].startswith("in production over 2026-11-01 to 2026-11-16")
+    assert run["unattributed"] == {"unjoined": {"routes": 1, "total_ms": 200.0, "share": 0.2}}
+    serve, load = group["rows"]
+    assert (serve["symbol_id"], serve["rank"], serve["share"]) == (f"{APP}::serve", 1, 0.6)
+    assert serve["routes"] == {
+        "requests": 30, "total_ms": 600.0, "mean_ms": 20.0, "p95_ms": 90.0, "errors": 3,
+        "routes": ["GET /serve/:id"],
+    }
+    assert serve["verify"] == "compare this row in the next api window"
+    assert serve["next_step"] is None and "statements" not in serve
+    assert serve["sources"]["share"] == "route_latency"
+    assert serve["lines"] == [1, 20] and serve["owner"]["name"] == "Grace"
+    assert (load["rank"], load["share"]) == (2, 0.2)
+    only = await measured_costs(async_session, repo.id, now=NOW, symbol_ids={f"{APP}::load"})
+    assert [r["symbol_id"] for r in only["routes"]["rows"]] == [f"{APP}::load"]
+    empty = (await measured_costs(async_session, repo.id, now=NOW, limit=0))["routes"]
+    assert (empty["rows"], empty["total"], len(empty["runs"])) == ([], 2, 1)
+
+
+async def test_routes_on_no_handler_rank_nothing_but_are_runtime_data(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_routes(async_session, repo.id, joined=False)
+    assert await measured_costs(async_session, repo.id, now=NOW) is None
+    assert await measured_status(async_session, repo.id) == "not_ranked"
+
+
+async def test_a_view_without_route_runs_has_no_routes_key(async_session) -> None:
+    """Every other view (and the payload built from it) is unchanged."""
+    from repowise.core.evidence.payloads import measured_payload
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_statements(async_session, repo.id)
+    view = await measured_costs(async_session, repo.id, now=NOW)
+    assert "routes" not in view
+    assert "routes" not in measured_payload(view, "measured")
+    assert "routes" not in measured_payload(None, "no_runtime_data")

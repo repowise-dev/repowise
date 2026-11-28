@@ -147,11 +147,6 @@
           "default": true,
           "description": "Enrich symbol hovers with caller/callee counts, ownership, and governing decisions from the index. Fetched only when you hover, then cached."
         },
-        "repowise.risk.baseBranch": {
-          "type": "string",
-          "default": "",
-          "description": "Base branch for change risk scoring. Leave empty to use the repository's default branch."
-        },
         "repowise.changeIntel.cochangeNudge": {
           "type": "boolean",
           "default": true,
@@ -209,7 +204,7 @@
       },
       {
         "command": "repowise.checkBranchRisk",
-        "title": "Analyze Change Risk",
+        "title": "Review Change",
         "category": "Repowise",
         "icon": "$(pulse)"
       },
@@ -440,6 +435,7 @@
     "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.28.0",
+    "geist": "^1.3.0",
     "jsdom": "^26.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

@@ -24,6 +24,7 @@ from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_fun
 
 from .format_v1 import EVIDENCE_FORMAT, MODULE_FUNCTION, EvidenceDocument
 from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, WORKLOAD_CLASSES, evidence_kinds
+from .route_join import RouteIndex, match_route, route_index
 from .statement_join import StatementSite, match_statement, statement_shape
 from .suite_cost import timing_summary
 
@@ -188,6 +189,7 @@ def join_entries(
     origins: Mapping[str, str],
     changed: frozenset[str],
     sites: Sequence[StatementSite] = (),
+    routes: Iterable[Any] = (),
 ) -> Joined:
     """Every entry of *doc* as a row of its kind's table, or a counted skip.
 
@@ -195,12 +197,15 @@ def join_entries(
     *origins* their ``code_origin``, *changed* the files that differ from the
     commit measured (empty when that is not known), *sites* the repository's
     statement sites (``crud.list_statement_sites``), which a statement entry
-    and a query count with no call site join through.
+    and a query count with no call site join through, *routes* the
+    repository's stored routes (``crud.list_http_routes``), which a route
+    entry joins through (:mod:`.route_join`).
     """
     joined = Joined(rows=[], matched=0)
     seen: set[Any] = set()
+    index = route_index(routes) if evidence_kinds[doc.kind].join == "route" else {}
     for entry in doc.entries:
-        row, reason, path = _join(doc.kind, entry, by_file, origins, changed, sites)
+        row, reason, path = _join(doc.kind, entry, by_file, origins, changed, sites, index)
         if row is not None and reason is not None:
             # Kept without its function: a benchmark or test is a series anyway.
             joined.unlinked[reason] += 1
@@ -228,6 +233,7 @@ def _join(
     origins: Mapping[str, str],
     changed: frozenset[str],
     sites: Sequence[StatementSite] = (),
+    routes: RouteIndex | None = None,
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
     """(row, reason, path) for one entry.
 
@@ -237,13 +243,17 @@ def _join(
     its row and names the function the statement-site join finds, with what
     the join found (*reason* when it is not one function). A query count
     with no call site takes the one function the join finds, else it is
-    skipped. A route entry's row is kept with no function (ceiling: the route
-    table join comes with the evidence-source seam).
+    skipped. A route entry's row is kept and names the handler of the one
+    stored route it matches (:func:`.route_join.match_route`), else none,
+    with *reason* saying why.
     """
     spec = evidence_kinds[kind]
     optional = spec.keeps_unlinked
     if spec.join == "statement" or (kind == "query_count" and entry.get("path") is None):
         return _join_by_statement(spec, entry, sites, changed)
+    if spec.join == "route":
+        match = match_route(entry["method"], entry["route"], routes or {})
+        return spec.row(entry, match.symbol_id), match.reason, None
     if spec.join not in LOCATION_JOINS:
         return spec.row(entry, None), None, None
     location = spec.location(entry)

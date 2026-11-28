@@ -31,18 +31,42 @@ import type {
   HotFilesGraphResponse,
   NodeSearchResult,
   PageResponse,
+  PageSummary,
+  SearchResultResponse,
 } from "@repowise-dev/api-client/types";
-import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
-import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
+import type { listDecisions } from "@repowise-dev/api-client/decisions";
+import type {
+  DecisionAgentPromptKind,
+  DecisionAgentPromptResponse,
+  DecisionCounts,
+  DecisionCreateInput,
+  DecisionEvidence,
+  DecisionHealthResponse,
+  DecisionLaneCounts,
+  DecisionLineageEntry,
+  DecisionStatusUpdate,
+} from "@repowise-dev/types/decisions";
+import type { EpisodeListResponse } from "@repowise-dev/types/episodes";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
-import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import type {
+  AffectedSignal,
+  BlastRadiusRequest,
+  BlastRadiusResponse,
+  ChangeBlastRadiusRequest,
+  ChangeBlastRadiusResponse,
+  ChangeCandidatesResponse,
+  ChangeHealthCheckResponse,
+} from "@repowise-dev/types/blast-radius";
+import type { HotspotResponse } from "@repowise-dev/api-client/types";
 import type { GraphPopulation } from "@repowise-dev/types/graph";
 import type { ZoomMap } from "@repowise-dev/ui/zoom";
 import type {
+  OpportunityStatus,
   RefactoringOpportunityDetail,
   RefactoringOpportunityPage,
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
+import type { RefactoringOpportunityParams } from "@repowise-dev/api-client/refactoring";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 
 /** Every editor-tab webview panel the extension can open. */
@@ -94,7 +118,6 @@ export const SETTING_KEYS = [
   "server.autoStart",
   "server.port",
   "cliPath",
-  "risk.baseBranch",
   "changeIntel.cochangeNudge",
   "changeIntel.cochangeMinScore",
   "agentHandoff.enabled",
@@ -152,10 +175,14 @@ export interface HostApi {
   executionFlows(): Promise<ExecutionFlowsResponse>;
   // Knowledge graph (the web Knowledge Graph page's continuous-zoom map)
   zoomMap(): Promise<ZoomMap>;
-  // Refactoring
-  /** The composed unit the web board and the agent contract both speak. */
-  refactoringOpportunities(filePath?: string): Promise<RefactoringOpportunityPage>;
+  // Refactoring (the web Refactoring page's board and drawers)
+  /** One page of the board, under the filters the board sets. */
+  refactoringOpportunities(query: RefactoringOpportunityParams): Promise<RefactoringOpportunityPage>;
   refactoringOpportunity(opportunityId: string): Promise<RefactoringOpportunityDetail>;
+  /** A file's text at the indexed commit, for a step's inline excerpt. */
+  fileContent(filePath: string): Promise<string>;
+  /** Triage one opportunity; the board refetches after it. */
+  setRefactoringOpportunityStatus(opportunityId: string, status: OpportunityStatus): Promise<void>;
   refactoringOpportunityPrompt(
     opportunityId: string,
     flavor: AiPromptFlavor,
@@ -164,15 +191,40 @@ export interface HostApi {
   /** Built host-side so the prompt matches the CodeLens copy path exactly. */
   refactoringPrompt(suggestionId: string, flavor: AiPromptFlavor): Promise<string>;
   // Decisions
-  decisionsList(): Promise<DecisionRecordResponse[]>;
+  /** One window of one review lane, as the web board pages it. */
+  listDecisions(query?: DecisionListQuery): Promise<DecisionRecordResponse[]>;
+  decisionLaneCounts(): Promise<DecisionLaneCounts>;
+  decisionCounts(): Promise<DecisionCounts>;
+  decisionHealth(): Promise<DecisionHealthResponse>;
+  decisionAgentPrompt(
+    kind: DecisionAgentPromptKind,
+    decisionId?: string,
+  ): Promise<DecisionAgentPromptResponse>;
+  decision(decisionId: string): Promise<DecisionRecordResponse>;
+  decisionLineage(decisionId: string): Promise<DecisionLineageEntry[]>;
+  decisionEvidence(decisionId: string): Promise<DecisionEvidence[]>;
+  createDecision(input: DecisionCreateInput): Promise<DecisionRecordResponse>;
+  patchDecision(decisionId: string, patch: DecisionStatusUpdate): Promise<DecisionRecordResponse>;
+  reaffirmDecision(decisionId: string): Promise<DecisionRecordResponse>;
+  setDecisionPinned(decisionId: string, pinned: boolean): Promise<DecisionRecordResponse>;
+  /** The structural episode tier: facts about the checkout. */
+  checkoutFacts(): Promise<EpisodeListResponse>;
+  /** Module paths for the record's linkage editor autocomplete. */
+  moduleSuggestions(): Promise<string[]>;
   // Docs
-  pagesList(): Promise<PageResponse[]>;
+  /** Every page without its body, the rows a docs tree draws; the reader fetches one page by id. */
+  pageTree(): Promise<PageSummary[]>;
+  /** Full-text and semantic hits for the search palette, in that order. */
+  searchPages(query: string): Promise<SearchResultResponse[]>;
   pageById(pageId: string): Promise<PageResponse>;
   fileDetail(relPath: string): Promise<FileDetailResponse>;
-  // Change risk
-  riskRange(): Promise<RiskRangeReport>;
-  /** Impact of the current change set (uncommitted + unpushed). */
-  changeImpact(): Promise<ChangeImpactReport>;
+  // Change risk (the web Review page's impact view)
+  hotspots(limit: number): Promise<HotspotResponse[]>;
+  blastRadius(body: BlastRadiusRequest): Promise<BlastRadiusResponse & { affected_signals?: AffectedSignal[] }>;
+  /** Work in progress, branches and recent commits to pick from. */
+  reviewChanges(): Promise<ChangeCandidatesResponse>;
+  changeBlastRadius(body: ChangeBlastRadiusRequest): Promise<ChangeBlastRadiusResponse>;
+  changeHealthCheck(changeId: string): Promise<ChangeHealthCheckResponse>;
   // Sidebar home
   homeSummary(): Promise<HomeSummary>;
   // Settings panel
@@ -200,7 +252,8 @@ export interface HomeSummary {
     history: number[];
   } | null;
   counts: {
-    refactoringPlans: number | null;
+    /** Opportunities the Refactoring panel lists (the page total). */
+    refactoringOpportunities: number | null;
     decisions: number | null;
   };
   freshness: {
@@ -215,23 +268,9 @@ export interface HomeSummary {
   };
 }
 
-/** Branch risk payload: the endpoint response plus the refs it compared. */
-export interface RiskRangeReport {
-  base: string;
-  branch: string | null;
-  result: RiskRangeResponse;
-  /**
-   * Patch coverage of the same base...HEAD range. Null when no coverage was
-   * ingested, or when the fetch failed (an older server has no endpoint): the
-   * panel then shows nothing rather than an error.
-   */
-  patchCoverage: PatchCoverageResponse | null;
-}
-
 /**
  * Impact of the working change set, assembled host-side from the blast-radius
- * and reviewer-suggestion endpoints. Shared verbatim by the Change Risk panel
- * and the ambient co-change nudge so there is one analysis, not two.
+ * and reviewer-suggestion endpoints, for the ambient co-change nudge.
  */
 export interface ChangeImpactReport {
   /** Repo-relative paths analyzed, sorted (the change-set signature source). */
@@ -239,12 +278,8 @@ export interface ChangeImpactReport {
   /** How many of the changed paths are staged / unstaged (working tree). */
   stagedCount: number;
   workingCount: number;
-  /**
-   * "branch" includes committed-but-unpushed changes (base..HEAD); "working"
-   * is the uncommitted tree only. The panel asks for branch scope; the nudge
-   * asks for working scope so it speaks to the file being edited right now.
-   */
-  scope: "branch" | "working";
+  /** The uncommitted tree only, so the nudge speaks to the file being edited. */
+  scope: "working";
   /** Blast analysis, or null when git is unavailable or nothing changed. */
   blast: BlastRadiusResponse | null;
   /** Reviewer suggestions for the changed set (names + reasons). */
@@ -252,6 +287,9 @@ export interface ChangeImpactReport {
   /** True when git could not be read at all (distinct from a clean tree). */
   gitUnavailable: boolean;
 }
+
+/** Query for {@link HostApi.listDecisions}: the api-client's own options. */
+export type DecisionListQuery = NonNullable<Parameters<typeof listDecisions>[1]>;
 
 export type HostApiMethod = keyof HostApi;
 

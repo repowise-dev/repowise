@@ -11,7 +11,7 @@ jobs run when, what each one checks, and how to reproduce a failure locally.
 | Python 3.12 tests (shard 1/3, shard 2/3, shard 3/3) | when Python-relevant files change | yes |
 | Python 3.11 tests, Python 3.13 tests | no | yes |
 | Python tests (summary) | always | always |
-| tree-sitter floor, Windows smoke test, Python lint (ruff), Documentation drift | when Python-relevant files change | yes |
+| tree-sitter floor, Footprint, Windows smoke test, Python lint (ruff), Documentation drift | when Python-relevant files change | yes |
 | Web UI lint + type check | when web files change | yes |
 | VS Code extension test | when VS Code files change | yes |
 | Repowise gates | always | no |
@@ -133,6 +133,7 @@ checkout with `uv run repowise impacted-tests origin/main...HEAD`.
 |-----|---------|
 | Python tests | `uv run pytest tests/providers/ tests/unit/ -n auto --dist loadfile` |
 | tree-sitter floor | `uv pip install "tree-sitter==0.25.0"`, then `uv run --no-sync pytest tests/unit/ingestion/parser/test_query_compilation.py` |
+| Footprint | Install the default package (no extras) into a fresh venv, then run `scripts/check_footprint.py` with that venv's Python; the script's docstring has the commands |
 | Windows smoke test | `repowise init` and `repowise status` in a Windows shell with `PYTHONIOENCODING` and `PYTHONUTF8` unset |
 | Python lint (ruff) | `uv run ruff check .` |
 | Documentation drift | `uv run repowise doc-drift --check --baseline .github/doc-drift-baseline.json` |
@@ -152,5 +153,11 @@ checkout with `uv run repowise impacted-tests origin/main...HEAD`.
   downloads from scratch once.
 - Ruff runs as the standalone binary at the version `uv.lock` pins, with no
   project install. Run the same version locally with `uv run ruff check .`.
+- The Footprint job installs the default package, no extras, into a fresh
+  venv pinned to `uv.lock`, and fails when the install size or distribution
+  count passes its budget in `ci/footprint_budget.json`, or when the CLI, the
+  MCP server, `serve` or a Claude Code hook loads a module its entry forbids
+  (scipy, lancedb, pyarrow and the LLM SDKs among them). A budget rises only
+  by editing that file in the pull request that needs it.
 - The Apex and COBOL grammars, which download on first use, are staged once per
   job with retries and cached on `uv.lock`.

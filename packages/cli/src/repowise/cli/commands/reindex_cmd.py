@@ -90,6 +90,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     # --- Create LanceDB vector store ---
     lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+    _refuse_mock_over_semantic_store(lance_dir, embedder_impl)
     try:
         from repowise.core.persistence.vector_store import LanceDBVectorStore
     except ImportError:
@@ -127,9 +128,13 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         f"Found [bold]{len(pages)}[/bold] wiki pages and [bold]{len(decisions)}[/bold] decision records to index."
     )
 
+    from repowise.core.persistence.vector_store.lancedb_store import clear_keyless_store_mark
+
     if total == 0:
         console.print("[yellow]Nothing to index. Run 'repowise init' first.[/yellow]")
         await engine.dispose()
+        # Nothing left to re-embed, so ``update`` must stop proposing it.
+        clear_keyless_store_mark(lance_dir)
         return
 
     # --- Embed and upsert pages in batches ---
@@ -286,6 +291,12 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     if provider_circuit_error is not None:
         raise click.ClickException(_circuit_message(provider_circuit_error))
+    # Nothing failed, so the keyless marker has done its job; kept, it would
+    # propose this re-embed on every ``update`` of a wiki whose pages all sit
+    # below the information floor (no table is ever written). After a failure
+    # it stays, and the next ``update`` retries, as it did over a mock table.
+    if not failed:
+        clear_keyless_store_mark(lance_dir)
 
     # Record the embedder we actually built the table with. Without this, a
     # repo indexed keyless keeps `embedder: mock` in config.yaml, and the next
@@ -317,6 +328,27 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     # failure is visible in the exit status, not just in the printed count.
     if indexed == 0 and failed > 0:
         raise click.Abort()
+
+
+def _refuse_mock_over_semantic_store(lance_dir, embedder_impl: object) -> None:
+    """Stop before mock vectors replace a store a real embedder built.
+
+    The store's writer refuses that write itself (``MockWouldReplaceStoreError``);
+    asked here first, through the guard ``build_vector_store`` uses, the run
+    stops before it reads a page, with one message instead of a failure per
+    batch, and names the one step that replaces the store on purpose.
+    """
+    from repowise.cli.providers.vector_store import _mock_would_clobber, existing_vector_dim
+
+    if not _mock_would_clobber(lance_dir, embedder_impl):
+        return
+    raise click.ClickException(
+        f"The search index at {lance_dir} holds {existing_vector_dim(lance_dir)}-wide "
+        "vectors from a real embedder, and mock test vectors would replace every one "
+        "of them, so its vectors were kept. To refresh it, name the embedder that "
+        "built it: repowise reindex --embedder <name>. To replace it with test "
+        "vectors anyway, delete that folder and run this reindex again."
+    )
 
 
 def _circuit_message(error: Exception) -> str:

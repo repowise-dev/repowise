@@ -509,7 +509,7 @@ def _metric_memo_code() -> str:
 
     digest = hashlib.sha256(
         "|".join(
-            (__version__, community_code_fingerprint(), version("numpy"), version("scipy"))
+            (__version__, community_code_fingerprint(), version("numpy"))
         ).encode()
     )
     for module in (

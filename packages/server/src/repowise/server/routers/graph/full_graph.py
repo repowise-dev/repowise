@@ -209,7 +209,7 @@ async def export_graph(
         return signals.get(n.node_id, EMPTY_SIGNALS)
 
     dead_total = sum(1 for n in all_nodes if _sig(n).is_dead)
-    hot_total = sum(1 for n in all_nodes if _sig(n).is_hotspot)
+    hot_total = sum(1 for n in all_nodes if _sig(n).shown_hotspot)
 
     if truncated:
         entry_nodes = await crud.get_top_entry_points(
@@ -224,7 +224,7 @@ async def export_graph(
         kept_ids: set[str] = set()
         flagged_classes = (
             lambda n: _sig(n).is_dead,
-            lambda n: _sig(n).is_hotspot,
+            lambda n: _sig(n).shown_hotspot,
             lambda n: n.node_id in flow_ids,
         )
         for flagged in flagged_classes:
@@ -260,5 +260,5 @@ async def export_graph(
         dead_total=dead_total,
         dead_in_view=sum(1 for n in nodes if _sig(n).is_dead),
         hot_total=hot_total,
-        hot_in_view=sum(1 for n in nodes if _sig(n).is_hotspot),
+        hot_in_view=sum(1 for n in nodes if _sig(n).shown_hotspot),
     )
