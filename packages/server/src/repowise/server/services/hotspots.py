@@ -15,7 +15,7 @@ from sqlalchemy import Integer, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement, Select
 
-from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS
+from repowise.core.analysis.held_origins import HOTSPOT_HELD_ORIGINS
 from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import GitMetadata, HealthFileMetric
 
@@ -44,8 +44,9 @@ RECENT_DAYS = 30
 
 #: The origins the Code Health hotspot list holds out until the reader brings
 #: one back. Every hotspot count a page quotes uses this scope, so the number on
-#: a card is the number of rows its link opens.
-DEFAULT_HELD: frozenset[str] = frozenset(MAP_HELD_ORIGINS)
+#: a card is the number of rows its link opens. It lives in core so core's folds
+#: count in the same scope (:func:`~repowise.core.analysis.held_origins.counts_as_hotspot`).
+DEFAULT_HELD: frozenset[str] = HOTSPOT_HELD_ORIGINS
 
 #: Facets per (database, repository, index stamp, held set, search).
 _facets = IndexStampCache(64)

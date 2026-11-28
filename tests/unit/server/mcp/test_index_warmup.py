@@ -63,6 +63,52 @@ async def test_warmup_is_skipped_when_free_memory_is_short(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["false", "off"])
+async def test_warmup_is_skipped_when_the_setting_is_off(monkeypatch, tmp_path, value):
+    from repowise.server.mcp_server import _state
+
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text(f"performance:\n  warm_caches: {value}\n", encoding="utf-8")
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    monkeypatch.setattr("repowise.core.procutils.available_memory_bytes", lambda: None)
+    _warmup.start()
+    try:
+        assert _warmup._task is None
+    finally:
+        await _warmup.stop()
+
+
+@pytest.mark.parametrize(
+    "text", [None, "performance:\n  warm_caches: true\n", "performance: [unreadable\n"]
+)
+def test_warmup_stays_on_unless_the_setting_says_off(tmp_path, text):
+    if text is not None:
+        config = tmp_path / ".repowise" / "config.yaml"
+        config.parent.mkdir()
+        config.write_text(text, encoding="utf-8")
+    assert _warmup._turned_off(str(tmp_path)) is False
+
+
+@pytest.mark.asyncio
+async def test_the_served_repository_decides_when_launched_elsewhere(
+    setup_mcp, cold_caches, tmp_path
+):
+    """The repository whose caches are warmed is the one whose setting counts.
+
+    Called past ``start()``, as a server launched at a workspace root whose
+    own config says nothing reaches it, the served repository's switch holds.
+    """
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text("performance:\n  warm_caches: false\n", encoding="utf-8")
+
+    await _warmup.warm_index_caches()
+
+    assert _cached_names(setup_mcp) == set()
+
+
+@pytest.mark.asyncio
 async def test_a_large_store_asks_for_more_free_memory(monkeypatch, tmp_path):
     from repowise.server.mcp_server import _state
 

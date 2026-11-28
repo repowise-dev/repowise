@@ -49,6 +49,15 @@ def _basename(path: str) -> str:
     return path.replace("\\", "/").rsplit("/", 1)[-1]
 
 
+def _build_config_languages(specs: tuple[LanguageSpec, ...]) -> dict[str, frozenset[str]]:
+    """Map each build-config file name to the tags of every spec that lists it."""
+    names = {fn for spec in specs for fn in spec.build_config_manifests}
+    return {
+        fn: frozenset(spec.tag for spec in specs if fn in spec.build_config_manifests)
+        for fn in names
+    }
+
+
 # =========================================================================
 # LanguageRegistry
 # =========================================================================
@@ -62,6 +71,7 @@ class LanguageRegistry:
     """
 
     __slots__ = (
+        "_build_config_langs",
         "_ext_map",
         "_filename_map",
         "_manifest_glob",
@@ -93,6 +103,7 @@ class LanguageRegistry:
         self._package_manifest_names: frozenset[str] = frozenset(
             f for s in specs for f in s.manifest_files if f not in s.build_config_manifests
         )
+        self._build_config_langs = _build_config_languages(specs)
         globs = sorted({g for s in specs for g in s.manifest_globs})
         self._manifest_glob: re.Pattern[str] | None = (
             re.compile("|".join(map(fnmatch.translate, globs)), re.IGNORECASE) if globs else None
@@ -255,6 +266,14 @@ class LanguageRegistry:
         """Whether *path*'s file name marks its directory as a package root."""
         name = _basename(path)
         return name in self._package_manifest_names or self.matches_package_manifest_glob(name)
+
+    def build_config_languages(self, path: str) -> frozenset[str]:
+        """The tags of the languages whose build config *path*'s file name is, empty when none.
+
+        ``CMakeLists.txt`` gives ``{"c", "cpp"}``: a directory holding one is
+        build configuration for those languages, not a package of its own.
+        """
+        return self._build_config_langs.get(_basename(path), frozenset())
 
     def is_manifest(self, path: str) -> bool:
         """Whether *path*'s file name is any manifest: a package manifest or build config."""

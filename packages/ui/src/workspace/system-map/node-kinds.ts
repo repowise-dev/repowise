@@ -1,6 +1,6 @@
 /**
- * Node-kind registry — maps each `SystemNode.kind` to a categorical tone (from
- * the shared graph-primitives palette) and a display label. The single source
+ * Node-kind registry — maps each `SystemNode.kind` to a categorical tone key
+ * and a display label. The single source
  * of truth for how a service node looks; adding a kind is one entry here plus
  * the union member in `@repowise-dev/types/workspace`.
  */
@@ -13,7 +13,7 @@ export interface SystemNodeKindStyle {
   kind: SystemNodeKind;
   /** Display label shown in the node's kind band. */
   label: string;
-  /** Tone key into the shared `TONE_STYLES` palette (graph-primitives). */
+  /** Categorical tone key for the kind. */
   tone: string;
 }
 

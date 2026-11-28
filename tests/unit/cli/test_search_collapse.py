@@ -1061,6 +1061,7 @@ class _FakeChangeResult:
     risk = type("R", (), {"score": 4.2, "level": "moderate", "top_drivers": []})()
     percentile = None
     priority = None
+    riskignore_excludes: tuple = ()
     request_excludes: tuple = ()
     working_tree = False
     owned_excludes: tuple = ()

@@ -17,8 +17,21 @@ Silence is the default. No step when:
   with no static finding that says it spawns one), the framework spine (router
   and middleware chain), a response write, or a database write or commit that
   no loop repeats: each request needs its own, and "batch" would be wrong;
+- the dominant time is irreducible work: a stream decoder reading the next
+  value from its reader (decoding the run's input or a request body reads each
+  byte once, so "parse once" has nothing to reuse), a package metadata scan
+  (plugin discovery runs once per process on the commands that load plugins),
+  or one grouped or ``IN`` read that no loop repeats (it already loads the
+  rows for every item at once);
 - the function is a thin wrapper named like its dominant callee (the cost
   belongs to its drivers);
+- the dominant time is a regular expression run by a function whose job is
+  matching its input (a lexer, tokenizer, parser or router, by its name or its
+  file's): the regex is the work;
+- the row is a module body's import time (``<path>::<module>``): whether the
+  run needed what the file imports is not in the row (ceiling; upgrade path:
+  mark a library the run imported but never called, then say "import it
+  inside the function that uses it");
 - the time sits under ``runtime.cgocall`` and no database call above it says
   what the C code is: a Go profile taken on Windows samples threads inside cgo
   while they wait, so that time is unknown, never a cost claim.
@@ -45,8 +58,12 @@ from repowise.core.analysis.health.perf.dialects.python_lexicon import (
     PY_DB_UNAMBIGUOUS,
     PY_SUBPROC_METHODS,
 )
+from repowise.core.analysis.health.perf.loop_lexicon import words
+from repowise.core.frame_resolver import parse_jvm_frame
 from repowise.core.ingestion.external_systems.io_kind import classify_io_kind
-from repowise.core.ingestion.symbol_identity import file_of_symbol
+from repowise.core.ingestion.symbol_identity import base_symbol_id, file_of_symbol
+
+from .format_v1 import is_import_row
 
 #: Workload classes whose rows lead, so their rows get a step.
 STEP_CLASSES = frozenset({"entry_point", "load_test", "production"})
@@ -192,6 +209,68 @@ _CHILD_WAITS = PY_SUBPROC_METHODS | {"communicate", "wait", "_wait", "_communica
 _IMPORT_PY = frozenset({"_find_and_load", "_gcd_import", "import_module", "__import__"})
 _REGEX_COMPILE = frozenset({"regexp.MustCompile", "regexp.Compile", "Pattern.compile"})
 _PY_RE_MISS_LEAVES = frozenset({"parse", "_parse", "_parse_sub", "_code", "compile"})
+# A regular expression run in the call: the matcher's own frames, by owner. V8
+# names the compiled pattern ``RegExp: <source>`` whichever call ran it (test,
+# exec, match, replace); Python's are the compiled pattern's C methods as
+# pyinstrument (``Pattern.match``) and cProfile name them. Methods that return a
+# lazy sequence (``Matcher.results``, Kotlin's ``findAll``) match nothing in the
+# call and stay out. Ceiling: py-spy names ``re.match`` bare (``match``), which
+# other libraries spell too, so a module-level ``re`` call is not read. Upgrade
+# path: key it on the frame's file (``re/__init__.py``) once ``inside`` carries it.
+_JVM_REGEX_RUNS = {
+    "java.util.regex.Matcher": frozenset(
+        {"matches", "find", "lookingAt", "replaceAll", "replaceFirst"}
+    ),
+    "kotlin.text.Regex": frozenset(
+        {"matches", "matchEntire", "containsMatchIn", "find", "replace", "split"}
+    ),
+}
+_GO_REGEX_RUNS = re.compile(r"regexp\.\(\*Regexp\)\.(?:Match\w*|Find\w*|ReplaceAll\w*|Split)")
+_PY_PATTERN_VERBS = frozenset({"match", "search", "fullmatch", "sub", "subn"})
+_PY_CPROFILE_PATTERN = re.compile(r"<method '(\w+)' of 're\.Pattern' objects>")
+# Calls that compile their pattern each time they run them.
+_JVM_REGEX_PER_CALL = {
+    "java.lang.String": frozenset({"matches", "replaceAll", "replaceFirst"}),
+    "java.util.regex.Pattern": frozenset({"matches"}),
+}
+_GO_REGEX_PER_CALL = frozenset({"regexp.MatchString", "regexp.Match", "regexp.MatchReader"})
+# Words of a function, class or file name whose job is matching its input: the
+# regex is the work.
+_MATCHING_JOB_WORDS = frozenset(
+    {
+        "lex",
+        "lexer",
+        "lexing",
+        "token",
+        "tokens",
+        "tokenize",
+        "tokenizer",
+        "tokenise",
+        "tokeniser",
+        "scan",
+        "scanner",
+        "parse",
+        "parser",
+        "parsing",
+        "grammar",
+        "match",
+        "matcher",
+        "matches",
+        "matching",
+        "regex",
+        "regexp",
+        "pattern",
+        "patterns",
+        "glob",
+        "route",
+        "router",
+        "routes",
+        "routing",
+        "highlight",
+        "highlighter",
+        "syntax",
+    }
+)
 _PARSE = frozenset(
     {
         "loads",
@@ -202,9 +281,15 @@ _PARSE = frozenset(
         "json.Unmarshal",
         "yaml.Unmarshal",
         "xml.Unmarshal",
-        "(*Decoder).Decode",
     }
 )
+# Stream decoders: each call reads the next value off a reader (Go's json, xml,
+# gob and yaml ``Decoder``, a type that only reads a stream), so the bytes are
+# new every call. PyYAML's ``load_all`` takes a stream or a held string alike,
+# so it stays a parse. Ceiling: a decoder built per call over the same buffer
+# re-parses it and stays silent too; upgrade path: a static fact that the
+# reader wraps a value the function already holds.
+_STREAM_DECODE = frozenset({"(*Decoder).Decode"})
 _DEEP_COPY = frozenset(
     {"deepcopy", "_deepcopy_dict", "_deepcopy_list", "cloneDeep", "structuredClone"}
 )
@@ -240,6 +325,14 @@ _PATH_INTERNALS = frozenset(
     }
 )
 _PACKAGE_METADATA = frozenset({"entry_points", "distributions", "packages_distributions"})
+# Query builders that make one read cover many items: a GROUP BY, or an IN over
+# a list of keys (gorm's ``(*DB).Group``; SQLAlchemy's ``group_by`` and
+# ``ColumnOperators.in_``). Builders cost little, so they show only when the run
+# sampled them: silence on what the run saw, never a guess from the name.
+_GO_GROUPED = frozenset({"(*DB).Group"})
+_PY_GROUPED = frozenset(
+    {"Query.group_by", "Select.group_by", "GenerativeSelect.group_by", "ColumnOperators.in_"}
+)
 _GO_MAP = re.compile(r"^(?:runtime\.(?:mapassign|makemap|mapiter|mapIter)|internal/runtime/maps\.)")
 _GO_CGO = "runtime.cgocall"
 
@@ -314,6 +407,13 @@ _PY_DB_RECEIVERS = frozenset(
     }
 )
 _PY_DB_VERBS = PY_DB_UNAMBIGUOUS | PY_DB_NEEDS_EVIDENCE | {"all", "first", "one", "one_or_none"}
+# Django: iterating a queryset (or ``len``, ``bool``, ``iterator()``) runs its query;
+# ``filter`` or ``all`` only build one. Left out: single-row lookups (``first``,
+# ``get``, ``count``), whose one call per request is the request's own work, and
+# raw SQL (``RawQuerySet``, cursor ``execute``), which can be a write: nothing in the
+# row says which (ceiling; upgrade path: read them once the static loop analysis
+# sees Django ORM calls and the statement kind).
+_DJANGO_EVALUATE = frozenset({"__iter__", "__len__", "__bool__", "iterator"})
 _JS_DB_READS = frozenset(
     {
         "findOne",
@@ -353,7 +453,19 @@ _AGREES = {
     "db": frozenset({"db_read", "db_write_loop"}),
 }
 
-_SILENT = frozenset({"wait", "spine", "response_write", "db_write", "unknown_native"})
+_SILENT = frozenset(
+    {
+        "wait",
+        "spine",
+        "response_write",
+        "db_write",
+        "db_grouped",
+        "unknown_native",
+        "regex_work",
+        "input_decode",
+        "package_metadata",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -436,10 +548,12 @@ def next_step(
     function or naming it or its drivers in a loop are read, the rest ignored.
     """
     inside = _items(row.get("inside"))
+    symbol = row.get("symbol_id") or ""
     if row.get("workload_class") not in STEP_CLASSES or not inside:
         return None
+    if is_import_row(symbol):
+        return None
     lang = _family(language)
-    symbol = row.get("symbol_id") or ""
     findings = list(findings)
     own_static = [f for f in findings if _on(f, symbol)]
     picked = _dominant(inside, lang, own_static, symbol)
@@ -447,7 +561,9 @@ def next_step(
         return None
     family, share, group = picked
     drivers = _items(row.get("drivers"))
-    family, loop = _refine(family, group, symbol, drivers, findings, row.get("workload_class"))
+    family, loop = _refine(
+        family, group, inside, lang, symbol, drivers, findings, row.get("workload_class")
+    )
     if family in _SILENT:
         return None
     lead = _lead(group)
@@ -491,7 +607,9 @@ def _dominant(
     family, share = max(families.items(), key=lambda kv: (kv[1], kv[0]))
     if share < DOMINANT or family == "own" or family.startswith("other:"):
         return None
-    if _last(symbol.rsplit("::", 1)[-1]) == _last(str(_lead(members[family]).get("name"))):
+    lead = str(_lead(members[family]).get("name"))
+    # A V8 pattern's source is no call name (``RegExp: ^\/api\/end`` under ``end``).
+    if not lead.startswith("RegExp: ") and _last(symbol.rsplit("::", 1)[-1]) == _last(lead):
         return None  # a thin wrapper: the cost belongs to whoever calls it
     return family, share, members[family]
 
@@ -499,20 +617,47 @@ def _dominant(
 def _refine(
     family: str,
     group: Sequence[Mapping[str, Any]],
+    inside: Sequence[Mapping[str, Any]],
+    lang: str,
     symbol: str,
     drivers: Sequence[Mapping[str, Any]],
     findings: Sequence[Mapping[str, Any]],
     workload_class: Any,
 ) -> tuple[str, str | None]:
     """A database family split into read and write, with the loop that repeats it:
-    a write a loop repeats in one entry point run is ``db_write_loop``."""
+    a write a loop repeats in one entry point run is ``db_write_loop``; one
+    grouped or ``IN`` read that no loop repeats (in a caller or in the function
+    itself) is ``db_grouped``; a regex run by a function whose job is matching
+    its input (a lexer, a parser, a router) is the work (``regex_work``)."""
+    if family == "regex_match":
+        return ("regex_work" if _matching_is_the_job(symbol) else family), None
     if family != "database":
         return family, None
     family = _database_family(group, symbol)
     loop = _loop_owner(symbol, drivers, findings)
     if family == "db_write" and loop and workload_class == "entry_point":
         family = "db_write_loop"
+    if (
+        family == "db_read"
+        and not loop
+        and _one_grouped_read(group, inside, lang, symbol, findings)
+    ):
+        family = "db_grouped"
     return family, loop
+
+
+def _own_loop(
+    group: Sequence[Mapping[str, Any]], symbol: str, findings: Sequence[Mapping[str, Any]]
+) -> bool:
+    """A database loop in the function *symbol* whose sink may be its read."""
+    read = _last(str(_lead(group).get("name") or ""))
+    return any(
+        f.get("kind") == "io_in_loop"
+        and f.get("boundary") == "db"
+        and _on(f, symbol)
+        and _sink_may_be(f.get("sink"), read)
+        for f in findings
+    )
 
 
 # --- classification ----------------------------------------------------------
@@ -610,6 +755,61 @@ def _regex_callee(c: _Callee) -> bool:
     )
 
 
+def _jvm_owner(name: str) -> tuple[str, str] | None:
+    """A JVM frame's class with its package and its method, in any spelling
+    (``java/util/regex/Matcher.matches()Z_[j]`` -> ``java.util.regex.Matcher``, ``matches``)."""
+    parsed = parse_jvm_frame(name)
+    return (".".join((*parsed.package, parsed.cls)), parsed.method) if parsed else None
+
+
+def _regex_run(name: str, kind: Any, lang: str) -> str | None:
+    """``per_call`` for a call that compiles its pattern each time, ``match`` for a
+    matcher run on a built pattern, ``None`` for anything else."""
+    if lang == "javascript":
+        return "match" if name.startswith("RegExp: ") else None
+    if lang == "go":
+        bare = name.split(" (inline)")[0]
+        if bare in _GO_REGEX_PER_CALL:
+            return "per_call"
+        return "match" if _GO_REGEX_RUNS.fullmatch(bare) else None
+    if lang == "jvm":
+        owner = _jvm_owner(name)
+        if owner is None:
+            return None
+        if owner[1] in _JVM_REGEX_PER_CALL.get(owner[0], ()):
+            return "per_call"
+        return "match" if owner[1] in _JVM_REGEX_RUNS.get(owner[0], ()) else None
+    if lang == "python":
+        found = _PY_CPROFILE_PATTERN.fullmatch(name)
+        # pyinstrument's short spelling only for the built-in: a class of one's own
+        # named ``Pattern`` has a file, so it is no native frame.
+        short = kind == "native" and _receiver(name) == "Pattern"
+        verb = found.group(1) if found else (_last(name) if short else "")
+        return "match" if verb in _PY_PATTERN_VERBS else None
+    return None
+
+
+def _regex_machinery(leaf: str, lang: str) -> bool:
+    """Whether a leaf is the regex engine itself, not a callback it ran."""
+    if lang == "go":
+        return leaf.startswith(("regexp.", "regexp/syntax."))
+    if lang == "jvm":
+        owner = _jvm_owner(leaf)
+        return owner is not None and owner[0].startswith(("java.util.regex.", "kotlin.text."))
+    if lang == "python":
+        # Only the compiled pattern's own C methods: a bare ``_parse`` may be a callback's.
+        return _regex_run(leaf, "native", lang) is not None
+    return lang == "javascript" and leaf.startswith("RegExp: ")
+
+
+def _regex_match_callee(c: _Callee) -> bool:
+    """A regular expression run in the callee's own frames; a callee whose time
+    ends in something else (a replacement callback's file read) is not one."""
+    if _regex_run(c.name, c.kind, c.lang) is None:
+        return False
+    return not c.leaf_leads or _regex_machinery(c.leaf, c.lang)
+
+
 def _reflection_callee(c: _Callee) -> bool:
     if c.lang == "go":
         return c.name.startswith("reflect.")
@@ -636,6 +836,8 @@ _RULES: tuple[tuple[str, Callable[[_Callee], bool]], ...] = (
     # A child-process wait, when a static finding says the function spawns one.
     ("subprocess", lambda c: c.kind == "wait" and c.spawns and _last(c.name) in _CHILD_WAITS),
     ("wait", lambda c: c.kind == "wait"),
+    # Before the name sets: a V8 pattern's source can end in any word (``\/end``).
+    ("regex_match", _regex_match_callee),
     ("spine", lambda c: bool(c.names & _SPINE)),
     ("response_write", lambda c: bool(c.names & _RESPONSE_WRITE)),
     ("database", lambda c: _database(c.name, c.lang)),
@@ -649,17 +851,19 @@ _RULES: tuple[tuple[str, Callable[[_Callee], bool]], ...] = (
         lambda c: bool(c.names & _TEMPLATE_RENDER and c.leaf_names & _FILE_READ_LEAVES),
     ),
     ("other", lambda c: bool(c.names & _TEMPLATE_RENDER)),  # rendering itself is the work
+    # Before the filesystem rule: the metadata scan's leaves are file reads and stats.
+    ("package_metadata", lambda c: c.lang == "python" and bool(c.names & _PACKAGE_METADATA)),
     ("etag", lambda c: bool(c.names & _ETAG)),
     ("filesystem", _filesystem_callee),
     ("hash", lambda c: bool(c.names & _HASH)),
     ("subprocess", lambda c: _subprocess(c.name, c.lang)),
     ("regex_compile", _regex_callee),
+    ("input_decode", lambda c: bool(c.names & _STREAM_DECODE)),
     ("parse", lambda c: bool(c.names & _PARSE)),
     ("deep_copy", lambda c: bool(c.names & _DEEP_COPY)),
     ("map_build", lambda c: c.lang == "go" and bool(_GO_MAP.match(c.name))),
     ("reflection", _reflection_callee),
     ("path_parse", _path_callee),
-    ("package_metadata", lambda c: c.lang == "python" and bool(c.names & _PACKAGE_METADATA)),
     # cgo time with nothing above it saying what it is.
     ("unknown_native", _cgo_callee),
 )
@@ -677,9 +881,10 @@ def _database(name: str, lang: str) -> bool:
     if lang == "go":
         return last in _GO_DB_EXEC and _db_package(name)
     if lang == "python":
-        return _receiver(name) in _PY_DB_RECEIVERS and (
-            last in _PY_DB_VERBS or last in _DB_WRITE_VERBS
-        )
+        receiver = _receiver(name)
+        if receiver == "QuerySet":
+            return last in _DJANGO_EVALUATE
+        return receiver in _PY_DB_RECEIVERS and (last in _PY_DB_VERBS or last in _DB_WRITE_VERBS)
     if lang == "javascript":
         return last in _JS_DB_READS
     if lang == "jvm":
@@ -687,6 +892,37 @@ def _database(name: str, lang: str) -> bool:
             last in _JVM_DB_VERBS or last in _DB_WRITE_VERBS
         )
     return False
+
+
+def _sink_may_be(sink: Any, call: str) -> bool:
+    """Whether a loop finding's sink call (``Find``, ``db.Find(&rows)``) may be
+    *call*; a finding that names no sink may be any call."""
+    return not sink or _last(str(sink).split("(")[0]) == call
+
+
+def _one_grouped_read(
+    group: Sequence[Mapping[str, Any]],
+    inside: Sequence[Mapping[str, Any]],
+    lang: str,
+    symbol: str,
+    findings: Sequence[Mapping[str, Any]],
+) -> bool:
+    """One database call (the family's only one, whatever its share) whose query
+    the run saw built with a GROUP BY or an ``IN`` (:data:`_GO_GROUPED`,
+    :data:`_PY_GROUPED`), and no database loop in the function repeats it: it
+    already loads every item's rows at once."""
+    if len(group) != 1 or not any(_grouping_builder(c, lang) for c in inside):
+        return False
+    return not _own_loop(group, symbol, findings)
+
+
+def _grouping_builder(callee: Mapping[str, Any], lang: str) -> bool:
+    name = str(callee.get("name") or "")
+    if callee.get("kind") != "library":
+        return False
+    if lang == "go":
+        return bool(_names(name) & _GO_GROUPED) and _db_package(name)
+    return lang == "python" and bool(_names(name) & _PY_GROUPED)
 
 
 def _subprocess(name: str, lang: str) -> bool:
@@ -710,6 +946,14 @@ def _database_family(callees: Sequence[Mapping[str, Any]], symbol: str) -> str:
     if _TRANSACTION_NAME.fullmatch(_last(symbol.rsplit("::", 1)[-1])):
         return "db_write"
     return "db_read"
+
+
+def _matching_is_the_job(symbol: str) -> bool:
+    """Whether the function's, a class's or its file's name says it matches its
+    input (a lexer, a tokenizer, a parser, a router): the regex is the work."""
+    path, _, rest = base_symbol_id(symbol).partition("::")
+    stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return any(w in _MATCHING_JOB_WORDS for name in (stem, *rest.split("::")) for w in words(name))
 
 
 def _on(finding: Mapping[str, Any], symbol: str) -> bool:
@@ -956,6 +1200,57 @@ def _subprocess_words(ctx: _Ctx) -> tuple[str, str]:
     )
 
 
+def _regex_label(name: str, lang: str) -> str:
+    """A regex callee as a row says it: V8's pattern source cut short, a JVM
+    frame by class and method, else the call."""
+    if name.startswith("RegExp: "):
+        source = name[len("RegExp: ") :]
+        return f"RegExp /{source[:40]}.../" if len(source) > 40 else f"RegExp /{source}/"
+    owner = _jvm_owner(name) if lang == "jvm" else None
+    return f"{owner[0]}.{owner[1]}" if owner else _short(name)
+
+
+def _regex_match(ctx: _Ctx) -> tuple[str, str]:
+    ranked = sorted(ctx.callees, key=lambda c: -(c.get("share") or 0.0))
+    split = ", ".join(
+        f"{_pct(c.get('share') or 0.0)} {_regex_label(str(c.get('name')), ctx.lang)}"
+        for c in ranked
+    )
+    per_call = [
+        c for c in ranked if _regex_run(str(c.get("name")), c.get("kind"), ctx.lang) == "per_call"
+    ]
+    # The compile-per-call step only when those calls hold most of the regex time.
+    if sum(c.get("share") or 0.0 for c in per_call) * 2 >= ctx.share:
+        build = {
+            "jvm": "a static final Pattern whose matcher each call uses",
+            "go": "a package-level regexp.MustCompile for a literal pattern",
+        }.get(ctx.lang, "a pattern compiled once")
+        return (
+            f"{ctx.pct} of it is a regular expression whose pattern is compiled on each call ({split})",
+            f"{_regex_label(str(per_call[0].get('name')), ctx.lang)} compiles the pattern each time: "
+            f"when the pattern is a constant, compile it once ({build}) and reuse it",
+        )
+    methods = {
+        "javascript": "startsWith or includes",
+        "jvm": "startsWith or indexOf",
+        "python": "str.startswith or in",
+        "go": "strings.HasPrefix or strings.Contains",
+    }.get(ctx.lang, "a prefix or substring test")
+    state = (
+        "; leave a global or sticky pattern's calls unguarded, since lastIndex carries between them"
+        if ctx.lang == "javascript"
+        else ""
+    )
+    return (
+        f"{ctx.pct} of it is regular expression matching ({split})",
+        "settle the common inputs without the regex: a cheap check first (the length, a character "
+        f"at a known position, or {methods}) that rejects what the pattern can never match or "
+        "accepts the common simple case, and the regex only for the rest; for a small fixed "
+        "grammar, a hand-written scan that accepts exactly the same strings can replace it"
+        f"{state}",
+    )
+
+
 def _simple(why: str, step: str):
     def words(ctx: _Ctx) -> tuple[str, str]:
         return why.format(pct=ctx.pct, split=ctx.split, callee=ctx.callee), step
@@ -973,6 +1268,7 @@ _WORDS = {
     "db_read": _db_read,
     "db_write_loop": _db_write_loop,
     "subprocess": _subprocess_words,
+    "regex_match": _regex_match,
     "sleep": _simple(
         "{pct} of it sleeps ({callee})",
         "wait on the condition itself (an event, or a poll with backoff) instead of a fixed sleep, or shorten it",
@@ -1000,10 +1296,6 @@ _WORDS = {
     "path_parse": _simple(
         "{pct} of it builds and parses a path object per call ({split})",
         "test the plain string first (str.endswith, os.path) and build the path object only when that passes",
-    ),
-    "package_metadata": _simple(
-        "{pct} of it reads installed package metadata ({callee}), which scans every installed distribution",
-        "run it only on the commands that need it, and at most once per process",
     ),
 }
 

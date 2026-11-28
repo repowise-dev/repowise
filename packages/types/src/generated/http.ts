@@ -651,6 +651,12 @@ export interface ChangeCandidatesResponse {
   health_check_supported?: boolean;
 }
 
+/** What decided ``category``: ``changelog_fragment``, ``forge_label`` or ``title``. */
+export interface ChangeCategoryBasis {
+  signal: string;
+  value?: string | null;
+}
+
 /** The evidence checklist (``repowise.core.changes.evidence``), versioned. */
 export interface ChangeEvidence {
   schema_version: number;
@@ -818,6 +824,7 @@ export interface ChangeRecord {
   provenance?: ChangeProvenance | null;
   health?: ChangeHealthResponse | null;
   touches_hotspot?: number;
+  category_basis?: ChangeCategoryBasis | null;
   commits: string[];
   files: ChangeFile[];
   metadata: ChangeForgeMetadata;
@@ -2242,6 +2249,7 @@ export interface EvidenceRunSummary {
   low_signal?: "pruned_1pct" | "no_samples" | null;
   mapping_partial: boolean;
   tests_failed: number | null;
+  window?: ProductionWindow | null;
 }
 
 /** Every stored run, newest first (bounded by the store's prune caps). */
@@ -3259,6 +3267,11 @@ export interface MeasuredCallee {
   leaf?: MeasuredLeaf | null;
 }
 
+export interface MeasuredChangedIn {
+  sha: string;
+  pr: number | null;
+}
+
 /** A caller that drove part of a measured function's time. */
 export interface MeasuredDriver {
   name: string;
@@ -3348,6 +3361,8 @@ export interface MeasuredResponse {
   command: string | null;
   measured: MeasuredGroup | null;
   measured_in_tests: MeasuredGroup | null;
+  statements?: StatementGroup | null;
+  routes?: RouteGroup | null;
   benchmarks?: BenchmarkGroup | null;
 }
 
@@ -3366,12 +3381,30 @@ export interface MeasuredRow {
   freshness: "current" | "body_unchanged" | "stale";
   callers_total: number | null;
   callers: string[];
+  caller_shares?: Record<string, number>;
   owner: MeasuredOwner | null;
   last_change: MeasuredLastChange | null;
   tests: string[] | null;
   tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
   verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
   on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  label?: string | null;
+  sources?: Record<string, string>;
+}
+
+/** A slower comparison that names a measured function (``evidence.action_row.row_slower``). */
+export interface MeasuredRowSlower {
+  workload: string;
+  base_commit: string | null;
+  metric?: string | null;
+  before?: number | null;
+  after?: number | null;
+  ratio?: number | null;
+  unit?: string | null;
+  changed_in: MeasuredChangedIn[];
 }
 
 /** A run's basis: workload, commit, age, samples and where its time went. */
@@ -3391,6 +3424,7 @@ export interface MeasuredRun {
   value_kind: string | null;
   ordering_only: boolean;
   newer_run?: NewerRun | null;
+  window?: ProductionWindow | null;
 }
 
 export interface ModuleEdgeResponse {
@@ -3650,6 +3684,40 @@ export interface OwnershipEntry {
   owner_pct: number | null;
   file_count: number;
   is_silo: boolean;
+}
+
+/**
+ * The package's stored advisories, strongest tier first.
+ *
+ * *imported* is False when no advisory document was ever imported, so an
+ * empty list then means "not checked", not "no advisories".
+ */
+export interface PackageAdvisoriesResponse {
+  imported: boolean;
+  advisories: PackageAdvisoryRow[];
+}
+
+/** One stored advisory on the package and the closest production code comes to it. */
+export interface PackageAdvisoryRow {
+  package: string;
+  ecosystem?: string | null;
+  id: string;
+  tier: string;
+  basis: string;
+  aliases?: string[];
+  severity?: string | null;
+  score?: number | null;
+  version?: string | null;
+  fix?: string | null;
+  affected?: boolean | null;
+  summary?: string | null;
+  sites?: PackageAdvisorySite[];
+}
+
+export interface PackageAdvisorySite {
+  path: string;
+  line?: number | null;
+  symbol?: string | null;
 }
 
 export interface PackageUsageComponent {
@@ -4028,6 +4096,14 @@ export interface PopulationBreakdown {
   include_tests?: boolean;
   include_examples?: boolean;
   include_docs?: boolean;
+}
+
+/** The window a production run covers: ``evidence.status.production_window``. */
+export interface ProductionWindow {
+  start: string | null;
+  end: string | null;
+  base_commit: string | null;
+  claim: string;
 }
 
 /** One provider in the catalog, as the settings picker renders it. */
@@ -4591,6 +4667,77 @@ export interface RiskScaleRange {
   maximum: number | null;
 }
 
+/** What the requests one handler's routes served did in a production window. */
+export interface RouteFacts {
+  requests: number;
+  total_ms: number;
+  mean_ms: number | null;
+  p95_ms: number | null;
+  errors: number | null;
+  routes: string[];
+}
+
+export interface RouteGroup {
+  runs: RouteRun[];
+  rows: RouteRow[];
+  total: number;
+}
+
+/**
+ * One handler's production requests in one run, as a measured row.
+ *
+ * ``rank`` is by request time and ``share`` is of the window's stored
+ * request time; there is no interval, inclusive share, samples or
+ * freshness: the route was joined to its handler when it was stored. No
+ * ``next_step``: no rule reads a route's cost yet. ``verify`` is the next
+ * production window.
+ */
+export interface RouteRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness?: "current" | "body_unchanged" | "stale" | null;
+  callers_total: number | null;
+  callers: string[];
+  caller_shares?: Record<string, number>;
+  owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
+  tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
+  verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
+  on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  label?: string | null;
+  sources?: Record<string, string>;
+  routes: RouteFacts;
+}
+
+/** A production route workload's newest run. */
+export interface RouteRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  window_start: string | null;
+  window_end: string | null;
+  total_ms: number;
+  requests: number;
+  routes: number;
+  unattributed: Record<string, UnattributedRoutes>;
+  window: ProductionWindow;
+}
+
 /** One agent's savings, labelled from the identity registry. */
 export interface SavingsAgentRow {
   agent: string;
@@ -5081,6 +5228,74 @@ export interface SlowTest {
   workload: string;
 }
 
+/** What the statements one function issues did in a production window. */
+export interface StatementFacts {
+  calls: number;
+  total_ms: number;
+  mean_ms: number | null;
+  statements: number;
+}
+
+export interface StatementGroup {
+  runs: StatementRun[];
+  rows: StatementRow[];
+  total: number;
+}
+
+/**
+ * One function's production statements in one run, as a measured row.
+ *
+ * ``rank`` is by statement time and ``share`` is of the window's stored
+ * statement time; there is no interval, inclusive share or samples, and no
+ * freshness: the statement was joined to the function when it was stored.
+ * No ``next_step``: no rule reads a statement's cost yet. ``verify`` is the
+ * next production window.
+ */
+export interface StatementRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness?: "current" | "body_unchanged" | "stale" | null;
+  callers_total: number | null;
+  callers: string[];
+  caller_shares?: Record<string, number>;
+  owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
+  tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
+  verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
+  on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  label?: string | null;
+  sources?: Record<string, string>;
+  statements: StatementFacts;
+}
+
+/** A production statement workload's newest run. */
+export interface StatementRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  window_start: string | null;
+  window_end: string | null;
+  total_ms: number;
+  statements: number;
+  unattributed: Record<string, UnattributedStatements>;
+  window: ProductionWindow;
+}
+
 /** Where the suite's time goes (``evidence.suite_cost.cost_fold``). */
 export interface SuiteCost {
   verdict: "small_suite" | "no_test_map" | "small_excess" | "clusters";
@@ -5324,6 +5539,18 @@ export interface TransitiveEntry {
   path: string;
   depth: number;
   via?: string | null;
+}
+
+export interface UnattributedRoutes {
+  routes: number;
+  total_ms: number;
+  share: number | null;
+}
+
+export interface UnattributedStatements {
+  statements: number;
+  total_ms: number;
+  share: number | null;
 }
 
 /**

@@ -18,6 +18,7 @@ import structlog
 
 from repowise.core.pipeline.incremental.persist_index import (
     BUILD_UNITS_STEP,
+    EXTERNAL_CALLS_STEP,
     IncrementalPersist,
     capture_commits,
     mark_tombstones,
@@ -274,6 +275,13 @@ async def refresh_route_table(ctx: FullUpdatePersist) -> None:
         await refresh_routes(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs)
 
 
+async def refresh_statement_site_index(ctx: FullUpdatePersist) -> None:
+    from repowise.core.pipeline.incremental import refresh_sites
+
+    with timed(ctx.timings, "persist.statement_sites"):
+        await refresh_sites(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs)
+
+
 async def record_generation_job(ctx: FullUpdatePersist) -> None:
     # Updates the web UI "last synced" timestamp.
     from datetime import UTC, datetime
@@ -386,12 +394,14 @@ FULL_UPDATE_STEPS: tuple[Step, ...] = (
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
     BUILD_UNITS_STEP,
+    EXTERNAL_CALLS_STEP,
     Step("External systems refresh", refresh_externals, range_scoped=True),
     # Last of the store writes: the steps above upsert rows for deleted paths
     # too. Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
     # After the prune, so a handler never binds to a deleted file's symbol.
     Step("Route table refresh", refresh_route_table),
+    Step("Statement site refresh", refresh_statement_site_index),
     Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step("Generation job record", record_generation_job),
     Step("Page count", count_pages),

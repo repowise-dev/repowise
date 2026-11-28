@@ -40,6 +40,7 @@ from . import (
     gtest,
     hono,
     jakarta,
+    js_conventions,
     laravel,
     lwc,
     mainframe,
@@ -54,6 +55,7 @@ from . import (
     rust,
     salesforce_metadata,
     spring,
+    symfony,
     test_path_strings,
     test_runner_setup,
     trpc,
@@ -86,6 +88,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *dotnet_roots.HANDLERS,
     *rails.HANDLERS,
     *laravel.HANDLERS,
+    *symfony.HANDLERS,
     *spring.HANDLERS,
     *jakarta.HANDLERS,
     *camel.HANDLERS,
@@ -101,6 +104,8 @@ _HANDLERS: list[FrameworkHandler] = [
     *next_app.HANDLERS,
     *hono.HANDLERS,
     *remix.HANDLERS,
+    # Files a JS framework declared in a package.json loads from where they sit.
+    *js_conventions.HANDLERS,
     *trpc.HANDLERS,
     *go.HANDLERS,
     # `class_name Foo` registers a project-global identifier other scripts use
@@ -131,6 +136,8 @@ def add_framework_edges(
 ) -> int:
     """Add synthetic edges for framework-mediated relationships.
 
+    *tech_stack* is the names :func:`~repowise.core.ingestion.tech_stack.detect_tech_stack`
+    returns; each handler asks it through :meth:`DetectionContext.uses`.
     Returns the number of edges added.
     """
     path_set = set(parsed_files.keys())

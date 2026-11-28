@@ -76,24 +76,17 @@ class TestCodegenAndConvention:
         assert _matches("packages/api/src/__generated__/schema.ts")
         assert _matches("packages/api/src/generated/openapi.ts")
 
-    def test_next_app_router_conventions(self):
-        assert _matches("apps/web/middleware.ts")
-        assert _matches("apps/web/app/sitemap.ts")
-        assert _matches("apps/web/app/robots.ts")
-        assert _matches("apps/web/app/manifest.ts")
-        assert _matches("apps/web/app/icon.tsx")
-        assert _matches("apps/web/app/opengraph-image.tsx")
-        assert _matches("apps/web/app/global-error.tsx")
-        assert _matches("apps/web/instrumentation.ts")
+    def test_framework_convention_files_are_left_to_framework_facts(self):
+        # Anchored from the package.json that depends on the framework, so a
+        # repo without it keeps these names flaggable.
+        assert not _matches("apps/web/middleware.ts")
+        assert not _matches("apps/web/app/sitemap.ts")
+        assert not _matches("apps/web/instrumentation.ts")
+        assert not _matches("src/routes/+page.svelte")
 
     def test_remix_entries(self):
         assert _matches("app/entry.client.tsx")
         assert _matches("app/entry.server.ts")
-
-    def test_sveltekit_conventions(self):
-        assert _matches("src/routes/+page.svelte")
-        assert _matches("src/routes/+layout.ts")
-        assert _matches("src/routes/api/+server.ts")
 
 
 class TestNeverFlagDoesNotLeak:

@@ -46,7 +46,7 @@ from repowise.core.evidence.add import (
 )
 from repowise.core.evidence.ci_snippet import CI_KINDS
 from repowise.core.evidence.format_v1 import VALUE_KINDS
-from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
+from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES, run_class
 from repowise.core.evidence.profile_formats import profile_formats
 
 
@@ -68,14 +68,14 @@ def evidence_group() -> None:
 @click.option(
     "--class",
     "workload_class",
-    required=True,
-    help="Workload class: " + ", ".join(FLAG_WORKLOAD_CLASSES) + ".",
+    default=None,
+    help="Workload class: " + ", ".join(FLAG_WORKLOAD_CLASSES) + ". Required, except for "
+    "a route_latency or statement_stats file, which is production by its kind.",
 )
 @click.option(
     "--commit",
     default=None,
-    help="The full SHA measured. Defaults to the file's commit_sha; required for a "
-    "converted file.",
+    help="The full SHA measured. Defaults to the file's commit_sha; required for a converted file.",
 )
 @click.option(
     "--checkout-root",
@@ -93,7 +93,7 @@ def evidence_group() -> None:
     "--environment",
     default=None,
     help="Where it ran, one word. Defaults to the OS and whether this is a CI job, "
-    "e.g. linux-ci or macos-local.",
+    "e.g. linux-ci or macos-local; production for a production file.",
 )
 @click.option(
     "--input-format",
@@ -115,13 +115,15 @@ def evidence_group() -> None:
     default=False,
     help="Store the run even when more than half its entries did not map (flagged partial).",
 )
-@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show debug logs.")
 @format_option()
 def evidence_add(
     files: tuple[Path, ...],
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     commit: str | None,
     checkout_root: Path | None,
     dirty: bool | None,
@@ -137,8 +139,11 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile, benchmark
     results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
-    V8 .cpuprofile, collapsed stacks, pytest-benchmark or hyperfine JSON,
-    go test -bench or go test -json output, JUnit XML), detected from its content. Several
+    V8 .cpuprofile, collapsed stacks, Python cProfile/pstats, pytest-benchmark,
+    hyperfine or Vitest
+    benchmark JSON, Criterion estimates,
+    go test -bench or go test -json output, JUnit XML, a pg_stat_statements CSV from
+    psql --csv), detected from its content. Several
     profiles (a parent process and its workers, or a directory holding one file
     per process) merge into one run; they must share a format, unit, tool and
     clock.
@@ -151,7 +156,9 @@ def evidence_add(
     v1 entries name their function (path, qualified name, line) and match
     exactly. Evidence from another commit than HEAD keeps its commit and
     reads as stale; it is never re-mapped. The production class is set only
-    by a verified source, never by this flag.
+    by a verified source or a production kind (route_latency, statement_stats:
+    leave --class out, and --commit is optional since a window spans
+    deploys), never by this flag.
 
     Examples:
 
@@ -163,12 +170,14 @@ def evidence_add(
         repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
         repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)
         repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
+        repowise evidence add statements.csv --workload "prod db"
 
     Exits 1 when nothing was stored, 2 on a usage error.
     """
     configure_cli_logging(verbose=verbose)
     notices = notice_console(fmt)
     commit = commit.lower() if commit is not None else None
+    named_environment = environment
     environment = environment or detect_environment()
     try:
         check_options(workload, workload_class, environment, commit)
@@ -201,7 +210,7 @@ def evidence_add(
         for path, size in zip(paths, sizes, strict=True):
             check_file_size(size, max_file_mb, str(path))
         prepared = prepare_evidence_files(
-            [(str(path), path.read_bytes()) for path in paths],
+            [(path, path.read_bytes()) for path in paths],
             report_dir=evidence_report_dir(paths, root),
             checkout_root=root,
             commit=commit,
@@ -211,6 +220,14 @@ def evidence_add(
         )
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
+    # The class the file's kind takes, refused before the index is opened (a
+    # converted profile is a profile).
+    stored_class, why = run_class(prepared.doc.kind if prepared.doc else "profile", workload_class)
+    if why is not None:
+        raise click.BadParameter(why, param_hint="--class")
+    if stored_class == "production" and named_environment is None:
+        # Production ran where users are, not on the machine adding the file.
+        environment = "production"
     try:
         payload = run_async(
             _ingest(
@@ -260,7 +277,7 @@ async def _store(
     repo_path: Path,
     prepared: PreparedEvidence,
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     environment: str,
     allow_partial: bool,
     caps: Any,
@@ -304,6 +321,10 @@ async def _store(
             payload["truncated"],
             payload["index_commit"],
         )
+        compared = await _compare_stored(session, target.repo.id, repo_path, payload)
+        if compared is not None:
+            payload["compare"] = compared
+            notices.print(_comparison_markup(compared))
     elif payload["reason"] == "mostly_unmapped":
         refuse_partial(
             "evidence file",
@@ -316,10 +337,64 @@ async def _store(
     return payload
 
 
+async def _compare_stored(
+    session: Any, repo_id: str, repo_path: Path, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The stored run's workload against its band of earlier runs, when it has one.
+
+    Never fails the add: the run is stored whatever the comparison meets (a
+    reading the store or git could not finish is logged and left out).
+    """
+    import logging
+
+    from repowise.core.evidence.compare import comparison_payload
+    from repowise.core.evidence.compare_history import load_comparisons
+
+    try:
+        # A savepoint, so a failed read cannot abort the transaction holding the run.
+        async with session.begin_nested():
+            comparisons = await load_comparisons(session, repo_id, repo_path)
+    except Exception:  # a comparison must never undo the stored run
+        logging.getLogger(__name__).warning(
+            "Could not compare the run with earlier runs.", exc_info=True
+        )
+        return None
+    # Only a comparison about the run just stored: a partially mapped run has none.
+    for found in comparisons:
+        if found.head_run_id == payload.get("run_id"):
+            return comparison_payload(found)
+    return None
+
+
+def _comparison_markup(compared: dict[str, Any]) -> str:
+    """A comparison's line (``comparison_payload``), yellow when it is slower."""
+    line = escape(compared["line"])
+    return line if compared["verdict"] == "within_noise" else f"[yellow]{line}[/yellow]"
+
+
+def _ordering_skipped_summary(summary: dict[str, Any]) -> str:
+    """Format skipped repo frames summary for an ordering-only conversion."""
+    skipped_counts = {
+        r: c for r, c in summary.get("skipped", {}).items() if r != "outside_repo"
+    }
+    if not skipped_counts:
+        return "all repo frames resolved" if summary.get("symbols") else "no repo frames"
+    reasons = ", ".join(
+        f"{r} ({c})" if c > 1 else r for r, c in sorted(skipped_counts.items())
+    )
+    total_skipped = sum(skipped_counts.values())
+    suffix = "s" if total_skipped != 1 else ""
+    return f"{total_skipped} repo frame{suffix} skipped ({reasons})"
+
+
 def _report_conversion(notices: Any, name: str, summary: dict[str, Any], profiles: int) -> None:
     """Where the profile's time went and how its frames joined, never silent."""
     from repowise.core.evidence.status import split_words
 
+    if summary.get("total") is None:
+        skipped = _ordering_skipped_summary(summary)
+        notices.print(f"Converted {escape(name)}: ordering of functions only; {skipped}.")
+        return
     rate = summary["skip_rate"]
     split = split_words(summary) or "repo code itself unknown"
     skipped = "no repo frames" if rate is None else f"{rate:.0%} of repo frame time skipped"
@@ -341,7 +416,7 @@ _SHORT_RUN_S = 3.0
 
 
 def _warn_short_run(
-    notices: Any, workload_class: str, value_kind: str | None, summary: dict[str, Any]
+    notices: Any, workload_class: str | None, value_kind: str | None, summary: dict[str, Any]
 ) -> None:
     """Warn (never refuse) when an entry point's wall-clock profile covers only a few seconds.
 
@@ -351,8 +426,8 @@ def _warn_short_run(
     per = _SECONDS.get(summary["unit"])
     if workload_class != "entry_point" or value_kind != "wall" or per is None:
         return
-    seconds = summary["total"] * per
-    if seconds >= _SHORT_RUN_S:
+    seconds = summary["total"] * per if summary.get("total") is not None else None
+    if seconds is None or seconds >= _SHORT_RUN_S:
         return
     notices.print(
         f"[yellow]This entry point's profile covers {seconds:.1f} s: a run "
@@ -371,9 +446,12 @@ def _report_stored(
 ) -> None:
     """Print what was stored, what was left out and whether it reads as current."""
     verb = "Restamped" if restamped else "Stored"
+    commit = summary["commit_sha"]
+    at = commit[:12] if commit else "an unknown deployed commit"
     notices.print(
-        f"[green]{verb} {summary['kind']} evidence for {escape(summary['workload'])}[/green]: "
-        f"{stored} of {summary['entries']} entries stored at {summary['commit_sha'][:12]}."
+        f"[green]{verb} {summary['kind']} evidence for {escape(summary['workload'])}[/green]"
+        f"{escape(_production_window(summary))}: {stored} of {summary['entries']} entries "
+        f"stored at {at}."
     )
     labels = (("Skipped", summary["skipped"]), ("Kept without a function", summary["unlinked"]))
     for label, counts in labels:
@@ -394,13 +472,23 @@ def _report_stored(
     _report_staleness(notices, summary, index_commit)
 
 
+def _production_window(summary: dict[str, Any]) -> str:
+    """`` in production over <start> to <end>`` for a production run; ``""`` otherwise."""
+    window = summary.get("window")
+    if not window:
+        return ""
+    if not (window["start"] or window["end"]):
+        return " in production"
+    return f" in production over {window['start'] or '?'} to {window['end'] or '?'}"
+
+
 def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str | None) -> None:
     if summary["stale"]:
         notices.print(
             "[yellow]Measured at another commit than HEAD: it is kept with its own "
             "commit and reads as stale.[/yellow]"
         )
-    elif index_commit and index_commit != summary["commit_sha"]:
+    elif index_commit and summary["commit_sha"] and index_commit != summary["commit_sha"]:
         notices.print(
             "[yellow]The index is at another commit than the one measured; run "
             "[cyan]repowise update[/cyan] and add the file again to join it to the "
@@ -684,17 +772,35 @@ async def _index_read_error(repo_path: Path) -> str | None:
 
 @evidence_group.command("status")
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--compare",
+    "compare",
+    is_flag=True,
+    default=False,
+    help="Also compare each workload's newest run with its earlier runs: what got slower, "
+    "and the commits in between that changed what it ran.",
+)
 @format_option()
-def evidence_status_command(repo: str | None, fmt: str) -> None:
+def evidence_status_command(repo: str | None, compare: bool, fmt: str) -> None:
     """Show the runtime evidence stored: the newest run of each workload.
 
     Each run says how fresh it is against the indexed commit (current, stale
     or unknown), where its time went (production repo code itself, waits,
     libraries), and what was skipped.
+
+    With --compare, each workload with an earlier run at another commit is
+    compared with a band of up to 5 of them. Against 3 or more earlier runs, a
+    benchmark is slower when its median is past the band's own spread and at
+    least 25% worse (10% when two or more runs of the new commit pool their
+    samples), with no sample overlapping; against fewer it only looks slower,
+    to confirm with perf measure. Allocations per op and query counts are exact:
+    any growth is slower. Profiles compare CPU self seconds and suites their
+    seconds, against 3 or more runs. A slower workload names the commits in
+    between that changed a function it ran.
     """
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
-    payload = run_async(_status(repo_path))
+    payload = run_async(_status(repo_path, compare=compare))
     if fmt == "json":
         emit_json(payload)
         return
@@ -709,6 +815,12 @@ def evidence_status_command(repo: str | None, fmt: str) -> None:
         return
     for run in payload["workloads"]:
         notices.print(_status_line(run))
+    if compare:
+        compared = payload["compare"]
+        if not compared:
+            notices.print("No workload has an earlier run at another commit to compare with.")
+        for found in compared:
+            notices.print(_comparison_markup(found))
 
 
 def _status_line(run: dict[str, Any]) -> str:
@@ -731,8 +843,11 @@ def _status_line(run: dict[str, Any]) -> str:
     return (
         f"[bold]{escape(run['workload'])}[/bold] ({run['kind']}, {run['class']}, "
         f"{escape(run['environment'])}): {run['freshness']} at "
-        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}{explained}"
+        f"{run['commit_sha'][:12] if run['commit_sha'] else 'an unknown commit'}; "
+        f"{stored}{explained}"
         + (f"; {run['tests_failed']:,} tests failed" if run["tests_failed"] else "")
+        # A production run: over which window and which deploy.
+        + (f"; {run['window']['claim']}" if run.get("window") else "")
         + "."
         + (" [red](partial)[/red]" if run["mapping_partial"] else "")
         + _low_signal_note(run.get("low_signal"))
@@ -748,8 +863,10 @@ def _low_signal_note(token: str | None) -> str:
     return f"\n  [yellow]Low signal: {escape(LOW_SIGNAL_FIX[token])}.[/yellow]"
 
 
-def _total(value: float) -> str:
+def _total(value: float | None) -> str:
     """A run total with grouping and never exponent form: 1,234,567 or 0.25."""
+    if value is None:
+        return "unknown"
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
@@ -773,15 +890,24 @@ async def _read_store(repo_path: Path, read: Any, empty: dict[str, Any]) -> dict
         await engine.dispose()
 
 
-async def _status(repo_path: Path) -> dict[str, Any]:
+async def _status(repo_path: Path, *, compare: bool = False) -> dict[str, Any]:
+    from repowise.core.evidence.compare import comparison_payload
+    from repowise.core.evidence.compare_history import load_comparisons
     from repowise.core.evidence.status import evidence_status
     from repowise.core.persistence.crud import list_evidence_runs
 
     async def read(session: Any, repo_row: Any) -> dict[str, Any]:
         runs = await list_evidence_runs(session, repo_row.id)
-        return evidence_status(runs, repo_row.head_commit)
+        out = evidence_status(runs, repo_row.head_commit)
+        if compare:
+            found = await load_comparisons(session, repo_row.id, repo_path)
+            out["compare"] = [comparison_payload(c) for c in found]
+        return out
 
-    return await _read_store(repo_path, read, evidence_status([], None))
+    empty = evidence_status([], None)
+    if compare:
+        empty["compare"] = []
+    return await _read_store(repo_path, read, empty)
 
 
 @evidence_group.command("tests")

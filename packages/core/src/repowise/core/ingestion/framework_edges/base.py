@@ -41,6 +41,16 @@ class DetectionContext:
     ctx: ResolverContext
     path_set: set[str]
 
+    def uses(self, *frameworks: str) -> bool:
+        """Whether the repo's tech stack names any of *frameworks*, case-insensitively.
+
+        The stack is :func:`~repowise.core.ingestion.tech_stack.detect_tech_stack`'s
+        answer, which reads nested manifests too. A handler asks this for
+        presence and never matches stack tokens of its own; what it reads from
+        the code itself (an import, a route file) is a separate signal.
+        """
+        return any(name.lower() in self.stack_lower for name in frameworks)
+
 
 class FrameworkHandler(Protocol):
     """A single framework's detection + edge-emission pair."""

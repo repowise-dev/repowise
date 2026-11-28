@@ -7,18 +7,18 @@ gitignored. Without this module every ``$lib`` import in a SvelteKit app
 resolves to an ``external:`` node, so the whole ``src/lib`` tree looks
 unreachable.
 
-The alias is a fixed convention: ``$lib`` -> ``<project>/src/lib``, where
-``<project>`` is the directory holding ``svelte.config.js``. A monorepo can
-hold several SvelteKit apps, so projects are matched longest-prefix-first
-against the importing file.
+A project is a ``package.json`` that :data:`~..framework_facts.SVELTEKIT`
+matches, and ``$lib`` is the directory :func:`~..framework_facts.sveltekit_lib_dir`
+reads from its ``svelte.config`` (``kit.files.lib``, default ``src/lib``). A
+monorepo can hold several SvelteKit apps, so projects are matched
+longest-prefix-first against the importing file.
 
 The other ``$`` specifiers (``$app/*``, ``$env/*``, ``$service-worker``) are
 virtual modules the framework synthesises at build time — they have no file in
 the repo, so they correctly stay external and are not handled here.
 
-Ceiling: ``kit.files.lib`` can relocate the directory in ``svelte.config.js``.
-Reading it back would mean evaluating JS, so the convention default is used.
-A project that moves ``lib`` falls back to ``external:`` exactly as today.
+Ceiling: a ``kit.files.lib`` that is computed rather than written as a literal
+keeps the default directory.
 """
 
 from __future__ import annotations
@@ -26,13 +26,14 @@ from __future__ import annotations
 import posixpath
 from typing import TYPE_CHECKING
 
+from ..framework_facts import SVELTEKIT, npm_manifests, sveltekit_lib_dir
+
 if TYPE_CHECKING:
     from .context import ResolverContext
 
-_CONFIG_NAMES = ("svelte.config.js", "svelte.config.ts", "svelte.config.mjs")
-
 _LIB_ALIAS = "$lib"
-_DEFAULT_LIB_DIR = "src/lib"
+# Files a SvelteKit app holds, whose directories are asked for a package.json.
+_APP_SUFFIXES = (".svelte", ".ts", ".js", ".mjs", ".mts", ".cjs", ".cts", ".tsx", ".jsx")
 
 
 def _project_lib_dirs(ctx: ResolverContext) -> tuple[tuple[str, str], ...]:
@@ -42,19 +43,13 @@ def _project_lib_dirs(ctx: ResolverContext) -> tuple[tuple[str, str], ...]:
         return cached
 
     projects: list[tuple[str, str]] = []
-    for path in ctx.sorted_paths:
-        name = path.rsplit("/", 1)[-1]
-        if name not in _CONFIG_NAMES:
-            continue
-        project_dir = path[: -(len(name) + 1)] if "/" in path else ""
-        lib_dir = posixpath.join(project_dir, _DEFAULT_LIB_DIR) if project_dir else _DEFAULT_LIB_DIR
-        projects.append((project_dir, lib_dir))
-
-    # A repo can ship a SvelteKit app with no svelte.config.js at the root of
-    # a plain ``src/lib`` layout; fall back to the repo root so single-app
-    # checkouts still resolve.
-    if not projects and any(p.startswith(_DEFAULT_LIB_DIR + "/") for p in ctx.path_set):
-        projects.append(("", _DEFAULT_LIB_DIR))
+    if ctx.repo_path is not None:
+        app_paths = [p for p in ctx.sorted_paths if p.endswith(_APP_SUFFIXES)]
+        projects = [
+            (manifest.rel_dir, sveltekit_lib_dir(manifest))
+            for manifest in npm_manifests(ctx.repo_path, app_paths)
+            if SVELTEKIT.matches_npm(manifest)
+        ]
 
     projects.sort(key=lambda pair: len(pair[0]), reverse=True)
     result = tuple(projects)

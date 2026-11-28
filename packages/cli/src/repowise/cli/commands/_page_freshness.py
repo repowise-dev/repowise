@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,27 @@ from repowise.core.persistence import (
     get_session,
 )
 from repowise.core.persistence.models import Page
+
+# What ``repowise update --full`` does when ``stale_remedy`` returns ``model``.
+WHOLE_WIKI_REMEDY = "writes the whole wiki with a model, and prices it first"
+
+
+def stale_remedy(state: Mapping[str, Any] | None, repo_path: Path) -> str:
+    """What ``repowise update --full`` does to this repo's stale pages.
+
+    ``llm``: a model wrote the wiki, so it prices and rewrites the stale model
+    pages. Otherwise the wiki was built from code and ``--full`` is the upgrade:
+    ``code`` only when nothing names a provider (it rebuilds from code, no model
+    calls), the test ``_resolve_upgrade_provider`` falls back on. Otherwise
+    ``model``: it writes the whole wiki, priced first, and a named provider that
+    cannot be set up (no key) stops it with that error, never a code rebuild.
+    """
+    from repowise.core.docs_mode import resolve_docs_mode
+    from repowise.core.providers.llm import resolve
+
+    if resolve_docs_mode(state) == "llm":
+        return "llm"
+    return "model" if resolve.resolve_llm(repo_path).provider is not None else "code"
 
 
 async def stale_page_count(repo_path: Path, *, model_written: bool | None = None) -> int | None:

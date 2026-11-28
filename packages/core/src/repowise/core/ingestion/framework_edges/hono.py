@@ -60,10 +60,7 @@ def _has_router_imports(parsed_files: dict[str, Any]) -> bool:
 
 class _RouterDslHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        for tok in ("hono", "fastify", "koa", "elysia"):
-            if tok in dctx.stack_lower:
-                return True
-        return _has_router_imports(dctx.parsed_files)
+        return dctx.uses("Hono", "Fastify") or _has_router_imports(dctx.parsed_files)
 
     def add_edges(
         self,

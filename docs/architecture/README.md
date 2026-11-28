@@ -16,8 +16,10 @@ curious; you don't need them to *use* repowise (start with
 | [security.md](security.md) | Security signals internals: per-kind matching rules, placeholder skipping, baseline keys, and the JS/TS precision checks |
 | [test-intelligence.md](test-intelligence.md) | The inferred test tier: call and import walks, their measured precision and recall, the resolution-origin filter, and why nothing is stored |
 | [single-sources.md](single-sources.md) | One owner per concept: the module and function that decides each shared question (file origin, test paths, manifest names, build units, skip directories, commit ids, symbol ids), and the consolidations still open |
+| [version-stamps.md](version-stamps.md) | Every `*_VERSION` constant, grouped by what a bump does (recompute on upgrade, drop a local cache, mark a format), with when to bump and the one-bump-per-release rule |
 | [build-units.md](build-units.md) | The build-unit model: units, file ownership and in-repo deps per ecosystem, storage, how precision is measured, and the recipe for adding an adapter |
 | [language-support.md](language-support.md) | The language pipeline internals and the step-by-step recipe for adding a new language |
+| [runtime-evidence-languages.md](runtime-evidence-languages.md) | Adding a language to runtime evidence: the profile frame join and the test-timing recipe in `evidence setup` |
 | [workspace.md](workspace.md) | The multi-repo workspace layer: per-repo contract extraction, matching, the system graph and its evidence state, artifacts and incremental rules, and the recipes for adding a contract dialect or a service-name source |
 | [forges.md](forges.md) | Git host support: the forges package, its invariants, and the recipes for adding a host or a CI system |
 | [agent-platform.md](agent-platform.md) | Agent identities, provider specs, integration targets and adapters, and the recipes for adding an agent integration or an agent CLI indexing backend |

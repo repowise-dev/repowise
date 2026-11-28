@@ -21,10 +21,13 @@ class ImportExtractor:
     ``deduped`` replaces the shared raw-text dedup for languages that key a
     statement their own way, given a per-file ``seen`` set; those imports
     keep the default load kind. ``dedup_key`` refines the raw-text key, and
-    ``finalize`` rewrites the file's whole import list once.
+    ``finalize`` rewrites the file's whole import list once. ``per_module``
+    keys the dedup on each ``@import.module`` capture too, for a statement
+    that matches once per module and yields one Import per match.
     """
 
     statement: StatementFn
     deduped: Callable[[Node, Node, str, set[str]], list[Import]] | None = None
     dedup_key: Callable[[Node, str, str], str] | None = None
     finalize: Callable[[list[Import]], list[Import]] | None = None
+    per_module: bool = False

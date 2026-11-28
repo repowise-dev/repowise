@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .exports import _DECLARATION_SUFFIXES, _build_exports_map, _ordered_export_targets
+from ...ts_declarations import is_declaration_file
+from .exports import _build_exports_map, _ordered_export_targets
 from .paths import _normalize_repo_rel, _probe_path
 from .scan import _parsed_package_jsons
 
@@ -38,7 +39,7 @@ def _manifest_targets(pkg_data: dict) -> tuple[list[str], tuple[str, ...]]:
     if isinstance(exports, dict) and any(str(k).startswith(".") for k in exports):
         exports = exports.get(".")
     ordered = _ordered_export_targets(exports) if exports is not None else ()
-    return starts, tuple(t for t in ordered if not t.endswith(_DECLARATION_SUFFIXES))
+    return starts, tuple(t for t in ordered if not is_declaration_file(t))
 
 
 def _built_output(pkg_dir: str, target: str) -> tuple[str, re.Match[str]] | None:
@@ -158,7 +159,7 @@ def probe_manifest_target(
     pkg_dir: str, target: str, path_set: set[str], checked_in: Container[str]
 ) -> str | None:
     """The indexed file a ``package.json`` target names, reading built output as its source."""
-    if target.endswith(_DECLARATION_SUFFIXES):
+    if is_declaration_file(target):
         return None  # a declaration never starts a package, committed or not
     hit = _probe_path(f"{pkg_dir}/{target.removeprefix('./')}", path_set)
     return hit if hit is not None else _built_source(pkg_dir, target, path_set, checked_in)

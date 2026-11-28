@@ -84,6 +84,33 @@ async def test_list_pages_summary_drops_the_heavy_fields(
 
 
 @pytest.mark.asyncio
+async def test_list_pages_encodes_rows_as_the_generic_encoder_would(
+    client: AsyncClient, app
+) -> None:
+    """Both listing shapes keep the exact JSON the route returned before it
+    encoded rows with the models' own serializer: UTC instants with a ``Z``,
+    every field present, nothing renamed."""
+    from fastapi.encoders import jsonable_encoder
+
+    from repowise.server.schemas import PageResponse, PageSummaryResponse
+
+    repo_id, _ = await _create_page(client, app.state.session_factory)
+    async with get_session(app.state.session_factory) as session:
+        page = await crud.get_page(session, "file_page:src/main.py")
+        rows = await crud.list_page_summaries(session, repo_id, crud.PageListing())
+        expected_full = jsonable_encoder([PageResponse.from_orm(page)])
+        expected_summary = jsonable_encoder([PageSummaryResponse.from_row(rows[0])])
+
+    full = await client.get("/api/pages", params={"repo_id": repo_id})
+    summary = await client.get("/api/pages", params={"repo_id": repo_id, "fields": "summary"})
+
+    assert full.headers["content-type"] == "application/json"
+    assert full.json() == expected_full
+    assert summary.json() == expected_summary
+    assert summary.json()[0]["created_at"].endswith("Z")
+
+
+@pytest.mark.asyncio
 async def test_list_pages_summary_keeps_the_layer_stamp(
     client: AsyncClient, app
 ) -> None:

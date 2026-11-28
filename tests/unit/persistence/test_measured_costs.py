@@ -11,13 +11,18 @@ from sqlalchemy import insert
 from repowise.core.analysis.function_test_map import MappedTest, encode_tests
 from repowise.core.persistence.crud import (
     measured_costs,
+    measured_status,
     replace_symbol_hotness,
     replace_workload_hotness,
+    unranked_reason,
 )
 from repowise.core.persistence.crud import tests_running_spans as spans_run
 from repowise.core.persistence.models import (
     EvidenceBenchmarkResult,
+    EvidenceRouteLatency,
     EvidenceRun,
+    EvidenceStatementStats,
+    EvidenceSymbolCost,
     FunctionFact,
     GitCommit,
     GitFunctionBlame,
@@ -209,7 +214,12 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     assert load["owner"] is None and load["last_change"] is None
     assert serve["tests"] == ["tests/test_app.py::test_serve"]
     # No per-test map: the nearest test by call graph, labelled so.
-    assert (serve["tests_basis"], serve["verify"]) == ("call_graph", None)
+    # No benchmark measures it: the one verify command reruns its workload.
+    assert (serve["tests_basis"], serve["verify_basis"]) == ("call_graph", "workload")
+    assert serve["verify"] == (
+        "repowise perf measure --save before -- w-r1 before the change, "
+        "then --against before after it"
+    )
     # ``share`` is the cost (self), with its interval; inclusive is context.
     assert (serve["share"], serve["share_low"], serve["share_high"]) == (0.1, 0.08, 0.12)
     assert serve["inclusive"] == 0.3
@@ -305,9 +315,11 @@ async def test_the_per_test_map_names_the_tests_that_ran_each_function(async_ses
         ["tests/test_app.py::test_run"],
         "per_test_map",
     )
+    # A benchmark that measures the function beats its workload's rerun.
     assert rows["serve"]["verify"] == "pytest tests/test_app.py::test_timed --benchmark-only"
+    assert rows["serve"]["verify_basis"] == "benchmark"
     assert rows["load"]["tests"] == ["tests/test_load.py::test_load"]
-    assert rows["load"]["verify"] is None
+    assert rows["load"]["verify_basis"] == "workload"
     # The map has the file and no test ran it: none ran it, not unknown.
     assert (rows["helper"]["tests"], rows["helper"]["tests_basis"]) == ([], "per_test_map")
 
@@ -444,6 +456,51 @@ async def test_callers_are_read_in_one_statement_and_tests_never_count(async_ses
     assert rows[load]["callers"] == [f"src/c00{i}.py::f" for i in range(3)]
     assert rows[f"{APP}::serve"]["callers_total"] == 1
     assert len([s for s in edge_reads if "ORDER BY" in s]) == 1
+
+
+async def test_callers_are_production_ones_and_the_measured_caller_leads(async_session) -> None:
+    """Tooling and test callers never count; the caller the run measured driving the
+    function leads the list with its share, ahead of a more confident static one."""
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    load = f"{APP}::load"
+    confidence = {
+        "src/c1.py::a": 1.0,
+        "src/c2.py::b": 0.9,
+        "src/c3.py::c": 0.8,
+        "src/c4.py::d": 0.7,
+        "scripts/release.py::cut": 1.0,
+        "tests/test_load.py::test_load": 1.0,
+    }
+    async_session.add_all(
+        [GraphNode(repository_id=repo.id, node_id=load, node_type="symbol")]
+        + [
+            GraphEdge(repository_id=repo.id, source_node_id=c, target_node_id=load,
+                      edge_type="calls", confidence=conf)
+            for c, conf in confidence.items()
+        ]
+    )
+    drivers = [
+        {"name": "d", "share": 0.6, "symbol": "src/c4.py::d"},
+        {"name": "cut", "share": 0.3, "symbol": "scripts/release.py::cut"},
+        {"name": "main", "share": 0.1, "path": "src/main.py"},
+    ]
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    # The run's own measured callers of ``load``.
+    async_session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=load, repository_id=repo.id, drivers_json=json.dumps(drivers)
+        )
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("load")])
+
+    (row,) = (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"]
+
+    assert row["callers_total"] == 4
+    assert row["callers"] == ["src/c4.py::d", "src/c1.py::a", "src/c2.py::b"]
+    assert row["caller_shares"] == {"src/c4.py::d": 0.6}
 
 
 async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session) -> None:
@@ -855,3 +912,359 @@ async def test_an_older_benchmark_run_id_keeps_nothing(async_session) -> None:
     assert await measured_costs(async_session, repo.id, now=NOW, run_id="b0") is None
     view = await measured_costs(async_session, repo.id, now=NOW, run_id="b1")
     assert [r["run_id"] for r in view["benchmarks"]["rows"]] == ["b1"]
+
+
+async def test_an_import_row_is_listed_as_import_time_with_no_lines(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    module = f"{APP}::<module>"
+    await replace_workload_hotness(
+        async_session, repo.id, [{**_hot("serve", rank=2), "symbol_id": module}, _hot("serve")]
+    )
+
+    rows = {r["symbol_id"]: r for r in (await measured_costs(async_session, repo.id, now=NOW))[
+        "measured"]["rows"]}
+
+    imported = rows[module]
+    assert (imported["label"], imported["file_path"], imported["lines"]) == (
+        "import time", APP, None,
+    )
+    assert imported["callers"] == [] and imported["owner"] is None
+    # A function's row carries no label: its name says what it is.
+    assert "label" not in rows[f"{APP}::serve"]
+
+
+async def test_a_row_carries_the_step_its_run_measured_inside_it(async_session) -> None:
+    """The run measured stat calls per entry inside ``serve``: its row says what
+    to do, why, and the one verify command; a row with nothing inside stays silent."""
+    from repowise.core.evidence.compare import Cause, ChangedCommit, Comparison
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    inside = [
+        {"name": "is_file", "kind": "library", "share": 0.6,
+         "leaf": {"name": "stat", "kind": "native", "share": 0.6}},
+        {"name": "rglob", "kind": "library", "share": 0.3},
+    ]
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    async_session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=f"{APP}::serve", repository_id=repo.id,
+            inside_json=json.dumps(inside),
+        )
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("serve"), _hot("load", rank=2)])
+    slower = Comparison(
+        kind="profile", workload="w-r1", environment="local", verdict="slower", band_runs=3,
+        head_run_id="r1", current_runs=1, base_commit="a" * 40, head_commit="c" * 40,
+        cause=Cause("a" * 40, "c" * 40, 2, (ChangedCommit("f" * 40, None, 42, (f"{APP}::serve",)),)),
+    )
+
+    rows = (
+        await measured_costs(async_session, repo.id, now=NOW, comparisons=[slower])
+    )["measured"]["rows"]
+    serve, load = rows
+
+    assert serve["next_step"]["rule"] == "filesystem"
+    assert "os.scandir" in serve["next_step"]["next"] and "verify" not in serve["next_step"]
+    assert serve["sources"]["next_step"] == "run_inside"
+    assert serve["slower"]["changed_in"] == [{"sha": "f" * 40, "pr": 42}]
+    assert load["next_step"] is None and "slower" not in load
+    assert serve["verify_basis"] == load["verify_basis"] == "workload"
+
+
+async def _measured_items(session, cls: str = "entry_point") -> tuple[str, list]:
+    """``serve`` and ``load`` measured above the bar by one *cls* run, a step
+    firing on ``serve`` only (its run measured stat calls per entry inside it)."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+
+    repo = await insert_repo(session)
+    await _seed_code(session, repo.id)
+    inside = [
+        {"name": "is_file", "kind": "library", "share": 0.6,
+         "leaf": {"name": "stat", "kind": "native", "share": 0.6}},
+        {"name": "rglob", "kind": "library", "share": 0.3},
+    ]
+    session.add(_run(repo.id, "r1", cls=cls))
+    await session.flush()
+    session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=f"{APP}::serve", repository_id=repo.id,
+            inside_json=json.dumps(inside),
+        )
+    )
+    await session.flush()
+    await replace_workload_hotness(
+        session,
+        repo.id,
+        [
+            {**_hot("load"), "tier": "lead_candidate", "self_share": 0.2},
+            {**_hot("serve", rank=2), "tier": "lead_candidate"},
+        ],
+    )
+    await finalize_performance_opportunities(session, repo.id)
+    rows = (await session.execute(select(PerformanceOpportunity))).scalars().all()
+    return repo.id, [r for r in rows if r.biomarker_type == "measured_hotspot"]
+
+
+async def test_a_measured_item_with_a_next_step_leads_fix_first_with_its_row(
+    async_session,
+) -> None:
+    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+    from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
+
+    repo_id, items = await _measured_items(async_session)
+    by_symbol = {r.intervention_symbol: r for r in items}
+    serve, load = by_symbol[f"{APP}::serve"], by_symbol[f"{APP}::load"]
+    stored = json.loads(serve.details_json)
+    assert stored["may_lead"] is True
+    assert stored["measured_row"]["next_step"]["rule"] == "filesystem"
+    # No rule fired on ``load``: listed, never first, though its share is larger.
+    assert json.loads(load.details_json)["may_lead"] is False
+
+    queue = await load_fix_first(async_session, repo_id, limit=None)
+    lead = queue.lead
+    assert lead.source.opportunity_id == serve.opportunity_id
+    assert lead.title == "Speed up serve"
+    assert "os.scandir" in lead.action.steps[0].text
+    assert lead.gain.text == 'up to 10% of the "w-r1" run'
+    assert lead.verify.command.startswith("repowise perf measure --save before -- w-r1")
+    assert [t.path for t in lead.verify.tests] == ["tests/test_app.py::test_serve"]
+    assert ("self time", '10% of the "w-r1" run') in [(f.label, f.value) for f in lead.facts]
+    compact = lead.compact()
+    assert "os.scandir" in compact["first_step"]["action"] and compact["verify"]["command"]
+
+    # The agent surfaces keep the item with a step and drop the one without.
+    assert await measured_hotspot_ids(async_session, repo_id, without_step=True) == {
+        load.opportunity_id
+    }
+
+
+@pytest.mark.parametrize("cls", ["unit_test", "benchmark"])
+async def test_unit_test_and_benchmark_runs_mint_no_measured_item(async_session, cls) -> None:
+    _, items = await _measured_items(async_session, cls)
+    assert items == []
+
+
+async def test_a_failed_row_read_keeps_the_health_write_and_the_item_never_leads(
+    async_session, monkeypatch
+) -> None:
+    from repowise.core.persistence.crud.analysis import performance
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("no rows today")
+
+    monkeypatch.setattr(performance, "measured_costs", broken)
+    _, items = await _measured_items(async_session)
+    assert len(items) == 2
+    assert all(json.loads(r.details_json)["may_lead"] is False for r in items)
+    assert all("measured_row" not in json.loads(r.details_json) for r in items)
+
+
+def _statement_run(repo_id: str, run_id: str, *, day: int = 16) -> EvidenceRun:
+    return EvidenceRun(
+        id=run_id, repository_id=repo_id, run_key=run_id, kind="statement_stats",
+        format="repowise-evidence-v1", source="plugin", workload_name="orders-db",
+        workload_class="production", value_kind="wall", unit="ms", environment="prod",
+        commit_sha="d" * 40, measured_at=datetime(2026, 11, day, tzinfo=UTC),
+        window_start=datetime(2026, 11, 1, tzinfo=UTC),
+        window_end=datetime(2026, 11, day, tzinfo=UTC),
+    )
+
+
+def _statement(repo_id: str, run_id: str, fp: str, symbol: str | None, issuer: str | None,
+               calls: int, total_ms: float) -> EvidenceStatementStats:
+    return EvidenceStatementStats(
+        run_id=run_id, statement_fp=fp, repository_id=repo_id, query_text="select $1",
+        symbol_id=f"{APP}::{symbol}" if symbol else None, issuer=issuer, calls=calls,
+        total_ms=total_ms, mean_ms=total_ms / calls,
+    )
+
+
+async def _seed_statements(session, repo_id: str, *, joined: bool = True) -> None:
+    session.add(_statement_run(repo_id, "s1"))
+    await session.flush()
+    rows = [
+        _statement(repo_id, "s1", "a" * 16, None, "ambiguous", 3, 300.0),
+        _statement(repo_id, "s1", "b" * 16, None, "database_schedule", 1, 100.0),
+    ]
+    if joined:
+        rows += [
+            _statement(repo_id, "s1", "c" * 16, "serve", "function", 40, 400.0),
+            _statement(repo_id, "s1", "d" * 16, "serve", "function", 10, 100.0),
+            _statement(repo_id, "s1", "e" * 16, "load", "function", 100, 100.0),
+        ]
+    session.add_all(rows)
+    await session.flush()
+
+
+async def test_production_statements_list_as_action_rows_that_never_lead(async_session) -> None:
+    """A production statement run with no profile at all: each function the
+    join named carries its statements as a J4 row (share of the window's
+    statement time, calls, mean, verify on the next window); the statements
+    on no single function are counted by label, never put on one."""
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_statements(async_session, repo.id)
+    assert await measured_status(async_session, repo.id) == "measured"
+
+    view = await measured_costs(async_session, repo.id, now=NOW)
+    assert set(view) == {"statements"}
+    group = view["statements"]
+    assert group["total"] == 2
+    (run,) = group["runs"]
+    assert (run["run_id"], run["workload_class"], run["total_ms"], run["statements"]) == (
+        "s1", "production", 1000.0, 5,
+    )
+    assert run["window_start"].startswith("2026-11-01") and run["age_days"] == 2
+    assert run["window"]["claim"] == (
+        f"in production over 2026-11-01 to 2026-11-16, deployed {'d' * 12}"
+    )
+    assert run["unattributed"] == {
+        "ambiguous": {"statements": 1, "total_ms": 300.0, "share": 0.3},
+        "database_schedule": {"statements": 1, "total_ms": 100.0, "share": 0.1},
+    }
+    serve, load = group["rows"]
+    assert (serve["symbol_id"], serve["rank"], serve["share"]) == (f"{APP}::serve", 1, 0.5)
+    assert serve["statements"] == {"calls": 50, "total_ms": 500.0, "mean_ms": 10.0, "statements": 2}
+    assert serve["verify"] == "compare this row in the next orders-db window"
+    assert serve["verify_basis"] == "workload" and serve["next_step"] is None
+    # The function's context, as on a profile row.
+    assert serve["lines"] == [1, 20] and serve["callers_total"] == 1
+    assert serve["owner"]["name"] == "Grace"
+    assert serve["sources"]["share"] == "statement_stats"
+    assert (load["rank"], load["share"]) == (2, 0.1)
+
+    # One function's rows (a measured hotspot's) and one run.
+    only = await measured_costs(async_session, repo.id, now=NOW, symbol_ids={f"{APP}::load"})
+    assert [r["symbol_id"] for r in only["statements"]["rows"]] == [f"{APP}::load"]
+    assert await measured_costs(async_session, repo.id, now=NOW, run_id="nope") is None
+    assert (await measured_costs(async_session, repo.id, now=NOW, run_id="s1"))["statements"]
+    # ``limit=0`` keeps the run and the total with no rows.
+    empty = (await measured_costs(async_session, repo.id, now=NOW, limit=0))["statements"]
+    assert (empty["rows"], empty["total"], len(empty["runs"])) == ([], 2, 1)
+
+
+async def test_a_profile_comparison_never_marks_a_statement_row_slower(async_session) -> None:
+    """A slower profile of the same workload name measures something else."""
+    from repowise.core.evidence.compare import Comparison, Slower
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_statements(async_session, repo.id)
+    serve = f"{APP}::serve"
+    slower = Comparison(
+        kind="profile", workload="orders-db", environment="prod", verdict="slower",
+        band_runs=3, head_run_id="r1", current_runs=1, base_commit="a" * 40,
+        head_commit="b" * 40,
+        slower=(Slower("self_seconds", serve, 1.0, 2.0, 2.0, "s", symbol_id=serve),),
+        cause=None,
+    )
+    view = await measured_costs(async_session, repo.id, now=NOW, comparisons=[slower])
+    assert all("slower" not in r for r in view["statements"]["rows"])
+
+
+async def test_statements_on_no_single_function_rank_nothing_but_are_runtime_data(
+    async_session,
+) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    assert await unranked_reason(async_session, repo.id) == "no_runtime_data"
+    await _seed_statements(async_session, repo.id, joined=False)
+    assert await measured_costs(async_session, repo.id, now=NOW) is None
+    assert await measured_status(async_session, repo.id) == "not_ranked"
+
+
+def _route_run(repo_id: str, run_id: str) -> EvidenceRun:
+    return EvidenceRun(
+        id=run_id, repository_id=repo_id, run_key=run_id, kind="route_latency",
+        format="repowise-evidence-v1", source="plugin", workload_name="api",
+        workload_class="production", value_kind="wall", unit="ms", environment="prod",
+        commit_sha="d" * 40, measured_at=datetime(2026, 11, 16, tzinfo=UTC),
+        window_start=datetime(2026, 11, 1, tzinfo=UTC),
+        window_end=datetime(2026, 11, 16, tzinfo=UTC),
+    )
+
+
+async def _seed_routes(session, repo_id: str, *, joined: bool = True) -> None:
+    session.add(_route_run(repo_id, "q1"))
+    await session.flush()
+
+    def row(method, route, handler, count, total_ms, p95=None, errors=None):
+        return EvidenceRouteLatency(
+            run_id="q1", method=method, route=route, repository_id=repo_id,
+            handler_symbol_id=f"{APP}::{handler}" if handler else None,
+            request_count=count, p50_ms=None, p95_ms=p95, total_ms=total_ms,
+            error_count=errors,
+        )
+
+    rows = [row("GET", "/x", None, 5, 200.0)]
+    if joined:
+        rows += [
+            row("GET", "/serve/:id", "serve", 30, 600.0, 90.0, 3),
+            row("GET", "/load", "load", 20, 200.0, 20.0, 0),
+        ]
+    session.add_all(rows)
+    await session.flush()
+
+
+async def test_production_routes_list_as_handler_rows_that_never_lead(async_session) -> None:
+    """A production route run with no profile: each handler the route join
+    named carries its requests as a J4 row (share of the window's request
+    time, requests, mean, p95, verify on the next window); routes on no
+    handler are counted, never put on one."""
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_routes(async_session, repo.id)
+    assert await measured_status(async_session, repo.id) == "measured"
+
+    view = await measured_costs(async_session, repo.id, now=NOW)
+    assert set(view) == {"routes"}
+    group = view["routes"]
+    assert group["total"] == 2
+    (run,) = group["runs"]
+    assert (run["run_id"], run["total_ms"], run["requests"], run["routes"]) == ("q1", 1000.0, 55, 3)
+    assert run["window"]["claim"].startswith("in production over 2026-11-01 to 2026-11-16")
+    assert run["unattributed"] == {"unjoined": {"routes": 1, "total_ms": 200.0, "share": 0.2}}
+    serve, load = group["rows"]
+    assert (serve["symbol_id"], serve["rank"], serve["share"]) == (f"{APP}::serve", 1, 0.6)
+    assert serve["routes"] == {
+        "requests": 30, "total_ms": 600.0, "mean_ms": 20.0, "p95_ms": 90.0, "errors": 3,
+        "routes": ["GET /serve/:id"],
+    }
+    assert serve["verify"] == "compare this row in the next api window"
+    assert serve["next_step"] is None and "statements" not in serve
+    assert serve["sources"]["share"] == "route_latency"
+    assert serve["lines"] == [1, 20] and serve["owner"]["name"] == "Grace"
+    assert (load["rank"], load["share"]) == (2, 0.2)
+    only = await measured_costs(async_session, repo.id, now=NOW, symbol_ids={f"{APP}::load"})
+    assert [r["symbol_id"] for r in only["routes"]["rows"]] == [f"{APP}::load"]
+    empty = (await measured_costs(async_session, repo.id, now=NOW, limit=0))["routes"]
+    assert (empty["rows"], empty["total"], len(empty["runs"])) == ([], 2, 1)
+
+
+async def test_routes_on_no_handler_rank_nothing_but_are_runtime_data(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_routes(async_session, repo.id, joined=False)
+    assert await measured_costs(async_session, repo.id, now=NOW) is None
+    assert await measured_status(async_session, repo.id) == "not_ranked"
+
+
+async def test_a_view_without_route_runs_has_no_routes_key(async_session) -> None:
+    """Every other view (and the payload built from it) is unchanged."""
+    from repowise.core.evidence.payloads import measured_payload
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _seed_statements(async_session, repo.id)
+    view = await measured_costs(async_session, repo.id, now=NOW)
+    assert "routes" not in view
+    assert "routes" not in measured_payload(view, "measured")
+    assert "routes" not in measured_payload(None, "no_runtime_data")

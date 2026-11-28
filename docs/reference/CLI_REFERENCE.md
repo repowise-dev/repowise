@@ -798,6 +798,7 @@ repowise risk --fail-above-percentile 95 --format github
   {"fail_above_percentile": P, "percentile": <unrounded>, "status": "pass" | "fail"}`. About (100 - P)% fail by design;
   answer with a split or second reviewer, not a fix (no baseline).
 - Unreadable revspec: exit `2` even ungated; JSON `{"error", "message"}`.
+- With an index holding runtime evidence, a change that edits a measured function lists it with the command to run before and after (`measured` in JSON); see [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md).
 - **Headline**: live percentile by size and spread among recent repo commits (size, not danger), then touched files'
   bug-fix record. Raw 0-10 score: secondary, corpus-anchored, high where commits run large. Drivers: versus the model's
   baseline commit.
@@ -1405,17 +1406,18 @@ repowise coverage suggest-gates --format json
 
 Ingest runtime evidence: a profile, benchmark results, test timings or query counts, as one
 [`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
-profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile` or collapsed
-stacks](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
-runner's ([pytest-benchmark JSON or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
-or a test run's [JUnit XML](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them),
-converted first. Several profiles of one run (a parent process and its workers, or a directory
+profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile`, `jfr print`
+text, collapsed stacks or Python cProfile/pstats](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
+runner's ([pytest-benchmark, Google Benchmark, hyperfine or Vitest benchmark JSON, Criterion estimates, or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
+a test run's [JUnit XML or `go test -json`](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them),
+or a [`pg_stat_statements` CSV](../layers/RUNTIME_EVIDENCE.md#production-files), converted first. Several profiles of one run (a parent process and its workers, or a directory
 holding one file per process) merge into one run, and so do JUnit XML reports (a Maven or Gradle
 report directory, other files in it left out).
 
 ```bash
 repowise evidence add prof.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add prof.speedscope.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
+repowise evidence add app.prof --workload "cli run" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
 repowise evidence add cpu.pprof --workload "go test ./pkg" --class unit_test --commit $(git rev-parse HEAD)
 repowise evidence add app.cpuprofile --workload "node app.js" --class entry_point --commit $(git rev-parse HEAD)
@@ -1424,6 +1426,7 @@ repowise evidence add bench.json --workload "go bench" --class benchmark --forma
 repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)   # every file in the directory
 repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
+repowise evidence add statements.csv --workload "prod db"   # psql --csv over pg_stat_statements: production
 repowise evidence status --format json   # newest run of each workload
 repowise evidence tests                  # groups of tests that make the suite slow, and the slowest tests
 repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
@@ -1441,13 +1444,13 @@ writes nothing.
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--workload` | What ran, e.g. `cli build`. Required. | |
-| `--class` | `unit_test`, `benchmark`, `entry_point` or `load_test`. Required. `production` is refused: only a verified source sets it. | |
-| `--commit` | The full SHA measured. Required when the file has no `commit_sha` and for a converted file; must agree with the file's commit otherwise. | the file's `commit_sha` |
+| `--class` | `unit_test`, `benchmark`, `entry_point` or `load_test`. Required, except for a `route_latency` or `statement_stats` file, which is production by its kind and refuses a class. `production` is refused: only a verified source or a production kind sets it. | |
+| `--commit` | The full SHA measured. Required when the file has no `commit_sha` and for a converted file, except a production file (its window spans deploys); must agree with the file's commit otherwise. | the file's `commit_sha` |
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
-| `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
-| `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu`, `.cpuprofile` `wall` |
+| `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local`; `production` for a production file |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pstats`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`, `criterion`, `junit`, `pg-stat-statements`, `jfr`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument and cProfile `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--path` | Repo path. | cwd, or the workspace primary |
 | `--format` | `table` or `json`. | `table` |
@@ -1484,11 +1487,15 @@ writes nothing.
   kind keeps. Each run says its freshness against the indexed commit (`current`, `stale`, or
   `unknown` when either commit is missing), where its time went (`repo_self_share`,
   `wait_share`, `library_share`; unknown for a run stored before they were recorded, or with no
-  total), and its counts.
-- `tests` reads the JUnit XML timings `evidence add` stored (the newest run of each test workload) and lists
-  the slowest tests and the test time spent on each production file. Time per file is `measured` from the
-  per-test coverage map when one is stored, else `inferred` from each function's nearest tests on the call
-  graph. Timing orders work; it never gates. `--limit` sets how many tests and files to list (default 20,
+  total), and its counts. `--compare` adds what got slower: each workload's newest run against a band
+  of up to 5 earlier runs at other commits, and the commits in between that changed a function the
+  slower workload ran ([rules](../layers/RUNTIME_EVIDENCE.md#evidence-status)).
+- `tests` reads the JUnit XML timings `evidence add` stored (the newest run of each test workload) and says
+  where to start: up to 3 groups of tests that run the same production files and take the most time over
+  the rest's pace, each with the fixture its tests share when they ask for one, then the slowest tests. A
+  suite under a minute, or with no group 5 s over the rest, gets one line. Groups need the per-test coverage
+  map; without it the output is how concentrated the time is
+  ([rules](../layers/RUNTIME_EVIDENCE.md#evidence-tests)). Timing orders work; it never gates. `--limit` sets how many tests to list (default 20,
   1 to 500). Takes `--path` and `--format`.
 - `setup` runs nothing and writes nothing. Per build unit it prints the stack (`unknown` when
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
@@ -1643,17 +1650,23 @@ Find third-party package imports; export or join package data. See [PACKAGE_USAG
 repowise packages where requests
 repowise packages export -o usage.cdx.json
 repowise packages import sbom.json
+repowise packages vulns --fail-on package_called
+repowise packages check pypi:requests@2.31.0
 ```
 
 | Flag | Subcommands | What it does | Default |
 |------|-------------|--------------|---------|
 | `--path` | all | Repo path. | cwd |
-| `--format` | all | `text` or `json`; `export`: `cyclonedx`. | `text`; `export`: `cyclonedx` |
+| `--format` | all | `text` or `json`; `export`: `cyclonedx`; `vulns`: also `sarif`. | `text`; `export`: `cyclonedx` |
 | `--output` / `-o` | `export` | Output file. | stdout |
+| `--tier` | `vulns` | `package_called` or `imported` (with `unknown`): list only advisories at this tier or stronger. | all |
+| `--fail-on` | `vulns` | `package_called`, `imported` (with `unknown`) or `never`: exit 1 when an advisory sits at this tier or stronger. | `package_called` |
 
 - **`where NAME`** (name or `ecosystem:name`): importing files with import line, component, owner teams and reachability, each with basis.
 - **`export`**: declared packages and import sites as CycloneDX 1.6 JSON (`evidence.occurrences`). Not an SBOM.
-- **`import FILE`**: joins your Syft, SPDX, CycloneDX or OSV JSON to usage by package name. Fetches nothing, matches no vulnerability.
+- **`import FILE`**: joins your Syft, SPDX, CycloneDX or OSV JSON to usage by package name and stores it as the repository's advisory data. Fetches nothing.
+- **`vulns`**: each stored advisory with its tier (`package_called`, `imported`, `unknown`; see [package advisories](PACKAGE_USAGE.md#advisories-and-tiers)) and the call or import sites behind it. Exits 2 when no document was imported.
+- **`check TARGET`** (`[ecosystem:]name[@version]`): whether the stored document lists an advisory for that package at that version (`ok`, `has_advisories`, `unknown_no_source`), and where the repository already declares and imports it. Exits 1 on `has_advisories`.
 
 ---
 
@@ -2492,6 +2505,10 @@ repowise doctor --workspace --repair
   with `repowise update` when HEAD has moved on, or with `repowise update --since <ref>` when the commit is not in
   the repository's history. **Update lock** (`update-lock`) appears only when a live `repowise update` has held
   `.repowise/.update.lock` for more than 30 minutes, and says what `update` says about it; `status` shows it too.
+- **wiki.db free space** (`wiki-db-free-space`, also under `--quick`) appears only when more than a quarter of
+  `.repowise/wiki.db` is free pages (left by deletes; SQLite reuses them but never shrinks the file). It warns with
+  the one-line `VACUUM` to run as its fix. Doctor never runs it: a VACUUM rewrites the whole file, needs free disk the
+  size of the file, and blocks every other writer, so close MCP sessions, `serve` and any update first.
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.
@@ -2583,7 +2600,7 @@ repowise config reset mcp.tools           # back to the default
 
 | Subcommand | What it does |
 |------------|--------------|
-| `list` | Settings by area, with their values and where each came from. `--area` keeps one area (`account`, `attribution`, `decisions`, `distill`, `editor`, `events`, `evidence`, `generation`, `health`, `hooks`, `indexing`, `mcp`, `providers`, `report`, `server`); `--changed` keeps settings not at their default; `--suggested` keeps settings worth changing in this repository, with why and the command; `--all` adds debug and test settings. |
+| `list` | Settings by area, with their values and where each came from. `--area` keeps one area (`account`, `attribution`, `decisions`, `distill`, `editor`, `events`, `evidence`, `generation`, `health`, `hooks`, `indexing`, `mcp`, `performance`, `providers`, `report`, `server`); `--changed` keeps settings not at their default; `--suggested` keeps settings worth changing in this repository, with why and the command; `--all` adds debug and test settings. |
 | `explain KEY` | What one setting does, what it accepts, and how to change it. |
 | `get KEY` | One setting's value and where it came from. |
 | `set KEY VALUE` | Change one setting; prints what changed, its effect, and the undo command. `VALUE` is read as the setting's type: `true` or `false` for a switch, a number, `a,b` or `[a, b]` for a list (`[a, b]` when an item holds a comma). |

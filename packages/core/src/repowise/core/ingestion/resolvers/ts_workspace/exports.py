@@ -68,9 +68,6 @@ def _ordered_export_targets(value: Any) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-_DECLARATION_SUFFIXES: tuple[str, ...] = (".d.ts", ".d.mts", ".d.cts")
-
-
 def _build_exports_map(pkg_data: dict) -> dict[str, tuple[str, ...]]:
     """``{exports_key: (target, ...)}``; a string ``exports`` is ``"."``, keys not starting with ``.`` drop."""
     raw = pkg_data.get("exports")

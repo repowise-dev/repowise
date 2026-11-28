@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -87,6 +88,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
 _surface_applied = False
 #: Every tool module imported and in the selection snapshot (a narrowed boot is not).
 _surface_complete = False
+_surface_lock = threading.RLock()
 
 
 def tool_middleware(fn: Any) -> Any:
@@ -541,18 +543,39 @@ def ensure_full_surface() -> Any:
 
     if _surface_complete:
         return _mcp
-    if not _surface_applied:
-        ensure_surface(None)
-        return _mcp
+    # ``repowise serve`` runs this from worker threads (``load_full_surface``),
+    # so two first requests must not register the tools twice, and a narrowed
+    # ``ensure_surface`` takes the same lock.
+    with _surface_lock:
+        if _surface_complete:
+            return _mcp
+        if not _surface_applied:
+            ensure_surface(None)
+            return _mcp
 
-    _register_tools()
+        _register_tools()
 
-    from repowise.core.registry import mcp_tool_registry
-    from repowise.server.mcp_server._tool_selection import extend_full_surface
+        from repowise.core.registry import mcp_tool_registry
+        from repowise.server.mcp_server._tool_selection import extend_full_surface
 
-    extend_full_surface(_tool_definition, mcp_tool_registry.entries())
-    _surface_complete = True
+        extend_full_surface(_tool_definition, mcp_tool_registry.entries())
+        _surface_complete = True
     return _mcp
+
+
+async def load_full_surface() -> None:
+    """:func:`ensure_full_surface` for async web handlers, run off the event loop.
+
+    ``repowise serve`` loads the tool surface on the first request that reads
+    it (the dashboard's ``/mcp`` routes, chat) rather than at startup. That
+    first call imports every tool module, about a second, so it runs
+    in a worker thread instead of stalling every other request. A FastAPI
+    dependency; a no-op once the surface is complete.
+    """
+    if not _surface_complete:
+        import asyncio
+
+        await asyncio.to_thread(ensure_full_surface)
 
 
 def ensure_surface(names: Iterable[str] | None) -> Any:
@@ -567,29 +590,30 @@ def ensure_surface(names: Iterable[str] | None) -> Any:
     global _surface_applied, _surface_complete
     from repowise.server.mcp_server._server import mcp as _mcp
 
-    if _surface_applied:
-        # A later request for more than the boot attached (every tool, or a
-        # tool it did not import) completes the registry and the snapshot.
-        if not _surface_complete and (names is None or not _registered(names)):
-            ensure_full_surface()
+    with _surface_lock:
+        if _surface_applied:
+            # A later request for more than the boot attached (every tool, or a
+            # tool it did not import) completes the registry and the snapshot.
+            if not _surface_complete and (names is None or not _registered(names)):
+                ensure_full_surface()
+            return _mcp
+
+        _register_tools(names)
+
+        from repowise.core.registry import mcp_tool_registry
+        from repowise.server.mcp_server._tool_selection import snapshot_full_surface
+
+        mcp_tool_registry.apply(_mcp, middleware=registered_tool, annotations_for=_annotations)
+        _slim_input_schemas(_mcp)
+
+        # Snapshot the registered surface so per-server tool selection
+        # (single-repo vs workspace, config/CLI overrides) can rebuild from it.
+        # Selection itself runs later, once the repo path is known.
+        snapshot_full_surface(_mcp)
+
+        _surface_applied = True
+        _surface_complete = names is None
         return _mcp
-
-    _register_tools(names)
-
-    from repowise.core.registry import mcp_tool_registry
-    from repowise.server.mcp_server._tool_selection import snapshot_full_surface
-
-    mcp_tool_registry.apply(_mcp, middleware=registered_tool, annotations_for=_annotations)
-    _slim_input_schemas(_mcp)
-
-    # Snapshot the registered surface so per-server tool selection
-    # (single-repo vs workspace, config/CLI overrides) can rebuild from it.
-    # Selection itself runs later, once the repo path is known.
-    snapshot_full_surface(_mcp)
-
-    _surface_applied = True
-    _surface_complete = names is None
-    return _mcp
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +720,7 @@ __all__ = [
     "get_symbol",
     "get_why",
     "list_repos",
+    "load_full_surface",
     "mcp",
     "run_mcp",
     "search_codebase",

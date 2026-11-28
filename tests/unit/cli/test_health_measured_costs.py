@@ -166,3 +166,56 @@ def test_benchmarks_show_the_function_each_measures_and_numbers_per_op() -> None
     assert "10,244 ns/op, 11 allocs/op, 5,456 B/op" in out
     assert "Benchmark404\n" in out and "62.6 ns/op, 0 allocs/op" in out
     assert "of the run" not in out
+
+
+def test_an_import_row_reads_as_the_file_and_import_time() -> None:
+    row = {**ROW, "symbol_id": "src/app.py::<module>", "lines": None, "label": "import time"}
+    out = _rendered({"measured": {"runs": [RUN], "rows": [row]}})
+    assert "1. src/app.py import time" in out
+    assert "<module>" not in out
+
+
+def test_production_statements_say_their_window_and_what_is_on_no_function() -> None:
+    from repowise.core.evidence.action_row import action_row, statement_facts
+    from repowise.core.evidence.measured_fold import StatementCost
+
+    cost = StatementCost("src/app.py::save", "s1", 1, 0.6, 600.0, 40, 2)
+    row = action_row(
+        cost, workload_name="orders-db", workload_class="production",
+        statements=statement_facts(cost),
+    ).as_dict()
+    run = {
+        "run_id": "s1", "workload_class": "production", "workload_name": "orders-db",
+        "commit": "d" * 40, "window_start": "2026-11-01T00:00:00+00:00",
+        "window_end": "2026-11-26T00:00:00+00:00", "total_ms": 1000.0, "statements": 5,
+        "unattributed": {"ambiguous": {"statements": 2, "total_ms": 300.0, "share": 0.3}},
+    }
+    out = _rendered({"statements": {"runs": [run], "rows": [row], "total": 1}})
+    assert (
+        'Production statements (production "orders-db" at ddddddd over 2026-11-01 to '
+        "2026-11-26: 1,000 ms in 5 statements, 30% on no single function)"
+    ) in out
+    assert "60% of the window's statement time · 40 calls · 15 ms mean · 2 statements" in out
+    assert "verify: compare this row in the next orders-db window" in out
+
+
+def test_production_routes_say_their_window_requests_and_what_is_on_no_handler() -> None:
+    from repowise.core.evidence.action_row import action_row, route_facts
+    from repowise.core.evidence.measured_fold import RouteCost
+
+    cost = RouteCost("src/app.py::serve", "q1", 1, 0.6, 600.0, 40, 15.0, None, 30.0, ("GET /x",))
+    row = action_row(
+        cost, workload_name="api", workload_class="production", routes=route_facts(cost)
+    ).as_dict()
+    run = {
+        "run_id": "q1", "workload_class": "production", "workload_name": "api",
+        "commit": None, "window_start": "2026-11-01T00:00:00+00:00",
+        "window_end": "2026-11-26T00:00:00+00:00", "total_ms": 1000.0, "requests": 50,
+        "routes": 3, "unattributed": {"unjoined": {"routes": 2, "total_ms": 400.0, "share": 0.4}},
+    }
+    out = _rendered({"routes": {"runs": [run], "rows": [row], "total": 1}})
+    assert (
+        'Production routes (production "api" over 2026-11-01 to 2026-11-26: 1,000 ms in 50 '
+        "requests to 3 routes, 40% on no single function)"
+    ) in out
+    assert "GET /x · 60% of the window's request time · 40 requests · 15 ms mean · 30 ms p95" in out

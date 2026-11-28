@@ -50,6 +50,14 @@ def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     return target.narrow(notice_console(fmt), command="coverage", repo_option=False)
 
 
+def _report_display_path(path: Path, repo_root: Path) -> str:
+    """Repo-relative POSIX path for *path*, falling back to its file name outside *repo_root*."""
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return path.name
+
+
 #: How a ``coverage add`` run ended, reported as its telemetry ``outcome``. The
 #: first two stored coverage; every other one stored nothing, or (``--strict``)
 #: stored it and still failed.
@@ -177,6 +185,7 @@ def coverage_add(
     ensure_repowise_dir(repo_path)
 
     from repowise.core.analysis.health.coverage import (
+        EMPTY_COVERAGE_REPORT_NOTE,
         CoverageConfig,
         build_coverage_map,
         discover_artifacts,
@@ -225,8 +234,16 @@ def coverage_add(
             get_session,
         )
         from repowise.core.persistence.crud import save_coverage_files, save_test_coverage
-
         url = get_db_url_for_repo(repo_path)
+        from repowise.core.persistence.database import has_db_store
+
+        # A configured database counts as existing (see has_db_store); only the
+        # repo-local default must already be on disk, so none is created here.
+        if not has_db_store(repo_path):
+            console.print(
+                "[yellow]No index yet. Run `repowise init` once before adding coverage.[/yellow]"
+            )
+            return "no_index", None
         # An index from an older repowise lacks newer columns; back-fill them.
         await reconcile_schema_best_effort(url)
         engine = create_engine(url)
@@ -261,7 +278,11 @@ def coverage_add(
             for path, err in errors:
                 # A coverage.py data file's note is said below, once its contexts are read;
                 # any other error about it is printed here as for every report.
-                if err != COVERAGE_DATA_FILE_NOTE:
+                if err == EMPTY_COVERAGE_REPORT_NOTE:
+                    console.print(
+                        f"[dim]  {escape(_report_display_path(path, repo_path))}: {err}[/dim]"
+                    )
+                elif err != COVERAGE_DATA_FILE_NOTE:
                     console.print(f"[yellow]  {path.name}: {err}[/yellow]")
             if stale := resolved.alignment.warning():
                 console.print(f"[yellow]{escape(stale)}[/yellow]")
@@ -474,8 +495,16 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             get_repository_by_path,
             get_test_coverage_summary,
         )
-
         url = get_db_url_for_repo(repo_path)
+        from repowise.core.persistence.database import has_db_store
+
+        # A configured database counts as existing (see has_db_store); only the
+        # repo-local default must already be on disk, so none is created here.
+        if not has_db_store(repo_path):
+            notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
+            if fmt == "json":
+                emit_json({"repo": str(repo_path), "indexed": False})
+            return
         # An index from an older repowise lacks newer columns; back-fill them.
         await reconcile_schema_best_effort(url)
         engine = create_engine(url)

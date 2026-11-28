@@ -14,7 +14,9 @@ Nothing here reads a store.
   route from ``symbol_hotness`` rows, each with its ``next_step``
   (:mod:`.next_step`) from the static performance findings the host passes;
 - :func:`owner_history_payload`: a measured function's owner and last change
-  from its ``git_function_blame`` row and the newest commit's row.
+  from its ``git_function_blame`` row and the newest commit's row;
+- :func:`weighted_callers`: a measured row's production callers, the ones its
+  run measured first with the share each drove.
 """
 
 from __future__ import annotations
@@ -74,6 +76,7 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
             "command": _command(status),
             "measured": None,
             "measured_in_tests": None,
+            "statements": None,
             "benchmarks": None,
         }
     return {
@@ -82,6 +85,9 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
         "command": None,
         "measured": view.get("measured"),
         "measured_in_tests": view.get("measured_in_tests"),
+        "statements": view.get("statements"),
+        # Only when a route run names a handler, so every other payload is unchanged.
+        **({"routes": view["routes"]} if view.get("routes") else {}),
         "benchmarks": view.get("benchmarks"),
     }
 
@@ -139,11 +145,14 @@ def functions_payload(
 def function_payload(row: Any, findings: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """One ``symbol_hotness`` row as the route lists it, with its next step."""
     payload = _function_fields(row)
-    file_path = payload["file_path"]
-    language = REGISTRY.from_extension(posixpath.splitext(file_path)[1]) if file_path else ""
-    step = next_step(payload, language, findings)
+    step = next_step(payload, file_language(payload["file_path"]), findings)
     payload["next_step"] = step.as_dict() if step else None
     return payload
+
+
+def file_language(file_path: str) -> str:
+    """The registry language of *file_path* by its extension; ``""`` when none."""
+    return REGISTRY.from_extension(posixpath.splitext(file_path)[1]) if file_path else ""
 
 
 def _function_fields(row: Any) -> dict[str, Any]:
@@ -172,12 +181,38 @@ def _function_fields(row: Any) -> dict[str, Any]:
         "wait_share": row.wait_share,
         "library_share": row.library_share,
         "run_unlisted": row.run_unlisted,
-        "inside": _json_list(getattr(row, "inside_json", None)),
-        "drivers": _json_list(getattr(row, "drivers_json", None)),
+        "inside": json_list(getattr(row, "inside_json", None)),
+        "drivers": json_list(getattr(row, "drivers_json", None)),
     }
 
 
-def _json_list(text: str | None) -> list[Any] | None:
+def weighted_callers(
+    callers: Sequence[str], drivers_json: str | None, k: int
+) -> tuple[list[str], dict[str, float]]:
+    """A measured row's first *k* *callers* and the share each drove.
+
+    *callers* are the function's production callers by the call graph, best
+    first; *drivers_json* is its run's measured callers (``drivers``: up to
+    three, each with the ``symbol`` it joined and its ``share`` of the
+    function's time). The callers the run measured lead, heaviest first, so
+    the caller that drives the cost is named first; the rest keep their
+    order. A measured caller the graph does not list is not added: the list
+    stays the graph's, ordered by what the run saw.
+    """
+    shares: dict[str, float] = {}
+    for driver in json_list(drivers_json) or ():
+        if not isinstance(driver, Mapping):
+            continue
+        symbol, share = driver.get("symbol"), driver.get("share")
+        if isinstance(symbol, str) and isinstance(share, (int, float)):
+            shares[symbol] = max(float(share), shares.get(symbol, 0.0))
+    order = {caller: i for i, caller in enumerate(callers)}
+    ranked = sorted(callers, key=lambda c: (c not in shares, -shares.get(c, 0.0), order[c]))
+    listed = ranked[: max(k, 0)]
+    return listed, {c: shares[c] for c in listed if c in shares}
+
+
+def json_list(text: str | None) -> list[Any] | None:
     """A stored JSON list column; None when empty or unreadable."""
     if not text:
         return None
@@ -189,10 +224,13 @@ def _json_list(text: str | None) -> list[Any] | None:
 
 
 __all__ = [
+    "file_language",
     "function_payload",
     "functions_payload",
+    "json_list",
     "measured_payload",
     "owner_history_payload",
     "runs_payload",
     "status_payload",
+    "weighted_callers",
 ]

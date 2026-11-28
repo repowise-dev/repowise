@@ -9,7 +9,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import NamedTuple, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from ..lang_helpers.anonymous_classes import is_anonymous_member
 from ..languages.receiver_types import (
@@ -30,6 +30,7 @@ from ..languages.receiver_types import (
     ScopeMarks,
     bound_types,
     external_type_name,
+    go_named_container,
     in_spans,
     merge_spans,
     names_in_span,
@@ -245,6 +246,25 @@ def class_field_types(parsed: ParsedFile, text: str) -> dict[str, dict[str, str 
     return _fields_by_class(scan_declarations(text, language), parsed.symbols, language)
 
 
+def go_named_containers(parsed: ParsedFile, text: str) -> dict[str, str]:
+    """``{type id: container}`` for the Go named container types *parsed* declares.
+
+    ``type methodTrees []methodTree``: the same reading a range over a
+    ``methodTrees`` makes (``RangeVariableTypes._go_underlying_container``), so
+    a caller can tell whether an edit changed what such a range yields.
+    """
+    if parsed.file_info.language != "go":
+        return {}
+    lines = text.splitlines()
+    out: dict[str, str] = {}
+    for symbol in parsed.symbols:
+        if symbol.kind == "type_alias" and 0 < symbol.start_line <= len(lines):
+            container = go_named_container(lines[symbol.start_line - 1], symbol.name)
+            if container:
+                out[symbol.id] = container
+    return out
+
+
 def _type_symbols(symbols: Sequence[Symbol]) -> list[Symbol]:
     """The types *symbols* declare, less an ``impl`` of a type declared beside it.
 
@@ -296,6 +316,7 @@ class ReceiverTypingMixin(
         # few slots always hit and a whole repo's source never stays resident.
         # Scans are memoised per function, not per reference.
         self._source_text: dict[str, str] = {}
+        self._raw_sources: dict[str, bytes] = {}
         self._declarations: dict[str, tuple[Declaration, ...]] = {}
         self._call_assignments: dict[str, tuple[CallAssignment, ...]] = {}
         self._destructurings: dict[str, tuple[Destructuring, ...]] = {}
@@ -315,6 +336,10 @@ class ReceiverTypingMixin(
         self._returned_modules: dict[str, str | None] = {}
         # {file: {type name: [type symbol ids]}}, built once on first use.
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
+        # {directory: its Go files}, built once on first use, as ``_type_ids``.
+        self._go_files_by_dir: dict[str, tuple[str, ...]] | None = None
+        # Go selector chains through package variables (``GoSelectorTypes``).
+        self._go_selector_walk: Any = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._binding_positions: dict[str, tuple[tuple[int, int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
@@ -910,7 +935,7 @@ class ReceiverTypingMixin(
         if call.receiver_name and language not in BINDING_LANGUAGES:
             return False
         return language in CALL_SHADOW_LANGUAGES and self._binds_locally(
-            file_path, caller_id, language, call.target_name, call.line
+            file_path, caller_id, language, call.target_name, call.line, call.start_byte or None
         )
 
     def _binds_locally(
@@ -920,13 +945,17 @@ class ReceiverTypingMixin(
         language: str,
         name: str,
         through_line: int | None = None,
+        through_byte: int | None = None,
     ) -> bool:
         """Does the caller, or a function enclosing it, bind *name* itself?
 
         Scopes are asked innermost first, so a ``global`` stops the walk. When
         *through_line* is given only positional bindings at or before it count:
         a callback's parameter further down cannot shadow a use above, while a
-        hoisted declaration binds its whole scope. When the scope first binds
+        hoisted declaration binds its whole scope. *through_byte*, the use's
+        offset, applies the same rule within that line: in ``make({ id }, ({ id
+        }) => ...)`` the parameter is written after the first ``id`` and does
+        not hide it. When the scope first binds
         *name* on the line an in-body import binds it (``const { f } =
         require(...)``), *name* is the import's unless another binding of it,
         at any other position from that line through *through_line*, shadows it.
@@ -941,10 +970,37 @@ class ReceiverTypingMixin(
             line = scope.first_bound.get(name)
             if line is None or (through_line is not None and line > through_line):
                 continue
+            if (
+                line == through_line
+                and through_byte is not None
+                and self._bound_only_after(file_path, language, name, line, through_byte)
+            ):
+                continue
             if binding is None or line != import_line or through_line is None:
                 return True
             return self._rebinds_import(file_path, language, binding, through_line)
         return False
+
+    def _bound_only_after(
+        self, file_path: str, language: str, name: str, line: int, use_byte: int
+    ) -> bool:
+        """Is every binding of *name* on *line* written to the right of the use at *use_byte*?"""
+        # Offsets are into the raw bytes tree-sitter parsed (``_text_of`` folds
+        # CRLF); the scan counts characters, so the line's head is decoded.
+        raw = self._raw_source(file_path)
+        if len(raw) < use_byte:
+            # Unread or changed since the parse: no column, so the binding stands.
+            return False
+        head = raw[raw.rfind(b"\n", 0, use_byte) + 1 : use_byte]
+        use_column = len(head.decode("utf-8", errors="replace"))
+        columns = [
+            column
+            for _, column, bound in _in_lines(
+                self._binding_positions_for(file_path, language), line, line
+            )
+            if bound == name
+        ]
+        return bool(columns) and min(columns) > use_column
 
     def _rebinds_import(
         self, file_path: str, language: str, binding: NamedBinding, through_line: int
@@ -1128,8 +1184,12 @@ class ReceiverTypingMixin(
 
         Neither binds the name, so the file's own free-call tiers say which
         class a written name means. A nullable ``T?`` is the class ``T``; a
-        generic or prefixed spelling types nothing.
+        generic or prefixed spelling types nothing. A Go package sibling is
+        the one type of the name another file of the directory declares:
+        Go's package is its directory, and an unqualified name is in it.
         """
+        if self._language_of(file_path) == "go":
+            return self._go_package_type(file_path, type_name)
         scope = self._symbols_by_id.get(scope_id or "")
         written = type_name.rstrip("?")
         if (
@@ -1140,6 +1200,29 @@ class ReceiverTypingMixin(
             return None
         found = self._class_seen_from(file_path, scope.id, written, scope.start_line)
         return None if found is None else self._located(file_path, found.callee_id)
+
+    def _go_package_type(self, file_path: str, type_name: str) -> tuple[str, str, str] | None:
+        """``(file, class id, "import")`` for the one Go type *type_name* names in
+        *file_path*'s directory, outside the file itself; two refuse."""
+        if not type_name.isidentifier():
+            return None
+        package = file_path.rpartition("/")[0]
+        found = [
+            (path, class_id)
+            for path in self._go_package_files(package)
+            if path != file_path and (class_id := self._only_type_in(path, type_name))
+        ]
+        return (found[0][0], found[0][1], "import") if len(found) == 1 else None
+
+    def _go_package_files(self, package: str) -> tuple[str, ...]:
+        """The Go files directly in directory *package*, indexed once per resolver."""
+        if self._go_files_by_dir is None:
+            by_dir: dict[str, list[str]] = {}
+            for path, parsed in self._parsed_files.items():
+                if parsed.file_info.language == "go":
+                    by_dir.setdefault(path.rpartition("/")[0], []).append(path)
+            self._go_files_by_dir = {d: tuple(paths) for d, paths in by_dir.items()}
+        return self._go_files_by_dir.get(package, ())
 
     def _only_type_in(self, file_path: str, type_name: str) -> str | None:
         """The id of the single type *file_path* declares as *type_name*."""
@@ -1909,6 +1992,22 @@ class ReceiverTypingMixin(
             spans = {s.id: (s.start_line, s.end_line) for s in (parsed.symbols if parsed else ())}
             _store_capped(self._symbol_spans, file_path, spans, _SOURCE_CACHE_FILES)
         return spans
+
+    def _raw_source(self, file_path: str) -> bytes:
+        """One file's bytes as the parser saw them, or empty if it cannot be read."""
+        raw = self._raw_sources.get(file_path)
+        if raw is not None:
+            return raw
+        raw = (getattr(self, "_source_map", None) or {}).get(file_path)
+        parsed = self._parsed_files.get(file_path)
+        if raw is None and parsed is not None:
+            try:
+                raw = Path(parsed.file_info.abs_path).read_bytes()
+            except OSError:
+                raw = None
+        raw = raw or b""
+        _store_capped(self._raw_sources, file_path, raw, _SOURCE_CACHE_FILES)
+        return raw
 
     def _text_of(self, file_path: str) -> str:
         """One file's source, or empty if it cannot be read."""

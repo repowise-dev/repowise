@@ -9,13 +9,14 @@ so the edit-set scan leaves them out (:class:`_SiblingMember` in
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ingestion.symbol_identity import file_of_symbol, id_segment_name
 from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.server.mcp_server._helpers import node_is_excluded
 
 # ``method_implements`` joins a Go type to an interface its method set satisfies.
 _HERITAGE = ("extends", "implements", "method_implements")
@@ -45,8 +46,13 @@ class Twins(NamedTuple):
     members: tuple[Twin, ...]
 
 
-async def _walk(session: AsyncSession, repo_id: str, cls: str, up: bool) -> set[str] | None:
-    """Classes *cls* inherits from (*up*) or that inherit from it; ``None`` past the cap."""
+async def _walk(
+    session: AsyncSession, repo_id: str, cls: str, up: bool, spec: Any = None
+) -> set[str] | None:
+    """Classes *cls* inherits from (*up*) or that inherit from it; ``None`` past the cap.
+
+    A class in a file *spec* excludes is neither found nor walked through.
+    """
     near, far = GraphEdge.source_node_id, GraphEdge.target_node_id
     if not up:
         near, far = far, near
@@ -60,7 +66,7 @@ async def _walk(session: AsyncSession, repo_id: str, cls: str, up: bool) -> set[
                 near.in_(frontier),
             )
         )
-        frontier = {r for (r,) in rows.all()} - seen - {cls}
+        frontier = {r for (r,) in rows.all() if not node_is_excluded(r, spec)} - seen - {cls}
         if not frontier:
             return seen
         seen |= frontier
@@ -130,10 +136,11 @@ async def _unrelated(
     others: list[tuple[str, int, int]],
     name: str,
     kinds: frozenset[str],
+    spec: Any = None,
 ) -> list[tuple[str, int, int]]:
     """*others* whose class neither inherits from *own_cls* nor is inherited by it."""
-    ancestors = await _walk(session, repo_id, own_cls, up=True)
-    descendants = await _walk(session, repo_id, own_cls, up=False)
+    ancestors = await _walk(session, repo_id, own_cls, up=True, spec=spec)
+    descendants = await _walk(session, repo_id, own_cls, up=False, spec=spec)
     if ancestors is None or descendants is None:
         return []
     # Ceiling: an override of an inherited member shares its edit set with
@@ -158,16 +165,18 @@ async def _class_spans(session: AsyncSession, repo_id: str, path: str) -> list[t
     return [(s, e) for s, e in rows.all() if s and e]
 
 
-async def _based(session: AsyncSession, repo_id: str, classes: set[str]) -> set[str]:
-    """The *classes* the index joins to a base."""
+async def _based(
+    session: AsyncSession, repo_id: str, classes: set[str], spec: Any = None
+) -> set[str]:
+    """The *classes* the index joins to a base outside the files *spec* excludes."""
     rows = await session.execute(
-        select(GraphEdge.source_node_id).where(
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.edge_type.in_(_HERITAGE),
             GraphEdge.source_node_id.in_(classes),
         )
     )
-    return {r for (r,) in rows.all()}
+    return {src for src, tgt in rows.all() if not node_is_excluded(tgt, spec)}
 
 
 def _holds_class(body: tuple[int, int], classes: list[tuple[int, int]]) -> bool:
@@ -181,6 +190,7 @@ async def _twins(
     node: GraphNode,
     own_cls: str,
     others: list[tuple[str, int, int]],
+    spec: Any = None,
 ) -> Twins:
     """Spans, class bodies and heads of *others* beside the symbol's own class."""
     classes = {own_cls} | {o[0] for o in others}
@@ -193,7 +203,7 @@ async def _twins(
     )
     spans = {nid: (s or 0, e or 0) for nid, s, e in rows.all()}
     nested = await _class_spans(session, repo_id, node.file_path)
-    based = await _based(session, repo_id, classes)
+    based = await _based(session, repo_id, classes, spec)
 
     def holding(cls: str, s: int, e: int) -> tuple[int, int] | None:
         b = spans.get(cls)
@@ -231,11 +241,14 @@ async def sibling_twins(
     name: str,
     kin: set[str],
     dirty: frozenset[str],
+    *,
+    exclude_spec: Any = None,
 ) -> Twins | None:
     """Members named *name* in *node*'s file whose class is unrelated to *node*'s.
 
     Only for a member whose file has no edits since the index (its spans would
     be stale). *kin* are the dispatch bases and overrides of *node*, never judged.
+    Heritage rows reaching a file *exclude_spec* matches are not followed.
     """
     from repowise.server.mcp_server._edit_sites import _MEMBER_KINDS
 
@@ -249,7 +262,9 @@ async def sibling_twins(
     own_cls = _class_of(node.node_id)
     others = await _same_named(session, repo_id, node, name, kin, _MEMBER_KINDS)
     if others:
-        others = await _unrelated(session, repo_id, own_cls, others, name, _MEMBER_KINDS)
+        others = await _unrelated(
+            session, repo_id, own_cls, others, name, _MEMBER_KINDS, exclude_spec
+        )
     if not others:
         return None
-    return await _twins(session, repo_id, node, own_cls, others)
+    return await _twins(session, repo_id, node, own_cls, others, exclude_spec)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from repowise.core.evidence.payloads import (
@@ -10,6 +11,7 @@ from repowise.core.evidence.payloads import (
     measured_payload,
     runs_payload,
     status_payload,
+    weighted_callers,
 )
 
 VIEW = {"measured": {"runs": [], "rows": []}, "measured_in_tests": None}
@@ -22,6 +24,7 @@ def test_measured_with_a_view_is_measured() -> None:
         "command": None,
         "measured": VIEW["measured"],
         "measured_in_tests": None,
+        "statements": None,
         "benchmarks": None,
     }
 
@@ -87,3 +90,27 @@ def test_next_step_from_the_row_and_the_file_language() -> None:
     row.workload_class = "unit_test"
     assert function_payload(row)["next_step"] is None
     assert function_payload(_hot("a.py::f", "ranked"))["next_step"] is None
+
+
+def test_weighted_callers_lead_with_the_measured_caller_heaviest_first() -> None:
+    drivers = json.dumps(
+        [
+            {"name": "b", "share": 0.2, "symbol": "b.py::b"},
+            {"name": "c", "share": 0.7, "symbol": "c.py::c"},
+            # Measured, but the graph does not list it: never added.
+            {"name": "x", "share": 0.1, "symbol": "x.py::x"},
+            # Never joined to a symbol: no weight on any caller.
+            {"name": "a", "share": 0.9, "path": "a.py"},
+        ]
+    )
+    callers = ["a.py::a", "b.py::b", "c.py::c", "d.py::d"]
+    assert weighted_callers(callers, drivers, 3) == (
+        ["c.py::c", "b.py::b", "a.py::a"],
+        {"c.py::c": 0.7, "b.py::b": 0.2},
+    )
+
+
+def test_weighted_callers_without_drivers_keep_the_graph_order() -> None:
+    callers = ["a.py::a", "b.py::b"]
+    for drivers in (None, "", "not json", json.dumps({"symbol": "a.py::a"})):
+        assert weighted_callers(callers, drivers, 3) == (callers, {})

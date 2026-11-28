@@ -356,6 +356,17 @@ class Import:
 
 
 @dataclass
+class GlobImport(Import):
+    """A Vite ``import.meta.glob`` call: it loads every indexed file its patterns match.
+
+    ``module_path`` is the first pattern; ``glob_patterns`` holds all of them in
+    order, ``!`` negations included.
+    """
+
+    glob_patterns: tuple[str, ...] = ()
+
+
+@dataclass
 class CallReceiver:
     """A call expression used as the receiver of another call.
 
@@ -804,6 +815,8 @@ class TypeReference:
         "generic_constraint",  # TS/JS
         "extends",
         "implements",  # TS heritage clauses (file-level type_use)
+        "mixin",  # Ruby ``include`` / ``extend`` / ``prepend``
+        "constant",  # Ruby: any other constant mention
     ] = "ctor_param"
 
 

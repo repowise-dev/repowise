@@ -18,7 +18,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
-from tests.unit.cli.test_evidence_cmd import _git_repo, _index, _stored
+from tests.unit.cli.test_evidence_cmd import _indexed_copy, _stored
 
 
 def _speedscope(root: Path) -> bytes:
@@ -45,10 +45,8 @@ def _ingest(root: Path, data: bytes, **options) -> dict:
 
 
 @pytest.fixture
-def indexed(tmp_path: Path) -> tuple[Path, str]:
-    head = _git_repo(tmp_path)
-    _index(tmp_path)
-    return tmp_path, head
+def indexed(tmp_path: Path, tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
+    return tmp_path, _indexed_copy(tmp_path, tmp_path_factory)
 
 
 def test_an_uploaded_profile_is_converted_and_stored(indexed) -> None:
@@ -413,3 +411,42 @@ def test_a_run_where_every_test_errored_is_refused(tmp_path: Path) -> None:
     # One test that ran is a run: kept.
     ran = errored.replace("<error/></testcase></testsuite>", "</testcase></testsuite>")
     assert prepare_evidence(ran.encode(), name="junit.xml", checkout_root=tmp_path, commit="a" * 40).doc
+
+
+def test_input_format_sniffs_junit_when_test_name_mentions_v1(tmp_path: Path) -> None:
+    from repowise.core.evidence.add import input_format, prepare_evidence
+    from repowise.core.evidence.format_v1 import EVIDENCE_FORMAT
+
+    junit_xml = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<testsuites><testsuite name="pytest">'
+        b'<testcase classname="tests.unit.evidence.test_add" '
+        b'name="test_sniff[repowise-evidence-v1]" time="0.12" />'
+        b"</testsuite></testsuites>"
+    )
+    assert input_format(None, junit_xml) == "junit"
+    prepared = prepare_evidence(
+        junit_xml, name="junit.xml", checkout_root=tmp_path, commit="a" * 40
+    )
+    assert prepared.format == "junit"
+    assert prepared.doc is not None
+    assert prepared.doc.kind == "test_timing"
+    assert prepared.doc.entries[0]["duration_s"] == 0.12
+
+    v1_first = b'{"format": "repowise-evidence-v1", "kind": "profile"}'
+    v1_later = (
+        b'\xef\xbb\xbf{\n  "kind": "profile",\n  "tool": {"name": "pyinstrument"},\n'
+        b'  "format": "repowise-evidence-v1"\n}'
+    )
+    hyperfine_mention = (
+        b'{"results": [{"command": "repowise evidence add --input-format repowise-evidence-v1", '
+        b'"mean": 0.1}]}'
+    )
+    hyperfine_nested_format = (
+        b'{"results": [{"command": "bench", "meta": {"n": 1, "format": "repowise-evidence-v1"}}]}'
+    )
+    assert input_format(None, v1_first) == EVIDENCE_FORMAT
+    assert input_format(None, v1_later) == EVIDENCE_FORMAT
+    assert input_format(None, hyperfine_mention) == "hyperfine"
+    assert input_format(None, hyperfine_nested_format) == "hyperfine"
+    assert input_format(None, b"unclaimed plain text") == EVIDENCE_FORMAT

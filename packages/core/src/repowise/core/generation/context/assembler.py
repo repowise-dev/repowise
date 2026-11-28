@@ -384,7 +384,7 @@ class ContextAssembler:
         ]
 
         # Imports (truncate to _MAX_IMPORTS)
-        raw_imports = [imp.raw_statement for imp in parsed.imports]
+        raw_imports = list(dict.fromkeys(imp.raw_statement for imp in parsed.imports))
         import_list = raw_imports[:_MAX_IMPORTS]
         imports_text = "\n".join(import_list)
         imports_tokens = self._estimate_tokens(imports_text)

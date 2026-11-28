@@ -566,6 +566,130 @@ class TestJavaScriptValueReferences:
         assert not _edges_of_type(graph, "references")
 
 
+class TestModuleBindingReads:
+    """A module-level ``const``/``let`` read in its own file is used, and not called."""
+
+    @pytest.mark.parametrize(
+        ("name", "source", "user"),
+        [
+            # Object shorthand, beside a callback that destructures the same name.
+            (
+                "id",
+                "const id = arg('id');\nexport const cmd = make('d', { id }, ({ id }) => id);\n",
+                "cmd",
+            ),
+            ("id", "const id = arg('id');\nexport default { id };\n", "__module__"),
+            ("OP", "const OP = Z.enum;\nexport const opts = () => [{ value: OP.equals }];\n", "opts"),
+            ("s3", "const s3 = new S3();\nexport async function put() { await s3.send(1); }\n", "put"),
+            ("GT", "const GT = 62;\nexport function f(code: number) { return code === GT; }\n", "f"),
+            ("_gen", "const _gen = make();\nexport type P = Params<typeof _gen>;\n", "P"),
+            ("base", "const base = { a: 1 };\nexport const o = { ...base, b: 2 };\n", "o"),
+            ("KEY", "const KEY = 'k';\nexport const o = { [KEY]: 1 };\n", "o"),
+            ("NAME", "const NAME = 'n';\nexport const s = `hi ${NAME}`;\n", "s"),
+            ("fmt", "const fmt = make();\nexport const out = [1].map(fmt);\n", "out"),
+            ("_py", "const _py = make();\nexport const py = _py.pipe(1);\n", "py"),
+            ("user$", "const user$ = new B();\nexport const get = () => user$;\n", "get"),
+            ("DEF", "const DEF = 1;\nexport function f(n = DEF) { return n; }\n", "f"),
+            # A read left of a same-named callback parameter, a shadowed read after it.
+            ("id", "const id = arg('id');\nexport const r = run(id, (id) => id);\n", "r"),
+        ],
+    )
+    def test_reads_reference_the_binding(
+        self, tmp_path: Path, name: str, source: str, user: str
+    ) -> None:
+        _write(tmp_path, {"mod.ts": source})
+        graph = _build(tmp_path)
+        assert _inbound(graph, f"mod.ts::{name}", "references") == {f"mod.ts::{user}"}
+        assert not _inbound(graph, f"mod.ts::{name}", "calls")
+
+    @pytest.mark.parametrize(
+        ("file", "name", "source", "user"),
+        [
+            (
+                "view.tsx",
+                "handler",
+                "const handler = make();\nexport function V() { return <b onClick={handler} />; }\n",
+                "V",
+            ),
+            ("regex.js", "ws", "const ws = make(1);\nexport const regex = { ws };\n", "regex"),
+        ],
+    )
+    def test_jsx_props_and_javascript(
+        self, tmp_path: Path, file: str, name: str, source: str, user: str
+    ) -> None:
+        _write(tmp_path, {file: source})
+        graph = _build(tmp_path)
+        assert _inbound(graph, f"{file}::{name}", "references") == {f"{file}::{user}"}
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            # A parameter or local of the name hides the binding.
+            "const val = make();\nexport function f(val: number) { return val + 1; }\n",
+            "const val = make();\nexport function f() { const val = 2; return val * 2; }\n",
+            # A callback parameter hides it in the arrow body on the same line.
+            "const val = make();\nexport const out = [1].map((val) => val);\n",
+            # A write is not a read.
+            "let val = make();\nexport function f() { val = 2; }\n",
+            # Nor is setting a property on it.
+            "const val = make();\nval.displayName = 'V';\nval['k'] = 1;\nexport { val };\n",
+        ],
+    )
+    def test_shadowed_or_written_names_are_no_reference(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        _write(tmp_path, {"mod.ts": source})
+        graph = _build(tmp_path)
+        assert not _inbound(graph, "mod.ts::val", "references")
+
+    def test_an_unreadable_source_keeps_a_same_line_binding(self, tmp_path: Path) -> None:
+        """No bytes to read a column from: the callback parameter still hides the name."""
+        from repowise.core.ingestion.call_receiver_typing import ReceiverTypingMixin
+
+        typing = ReceiverTypingMixin.__new__(ReceiverTypingMixin)
+        typing._init_receiver_typing_caches()
+        typing._parsed_files = {}
+        typing._source_text = {"mod.ts": "export const out = [1].map((val) => val);\n"}
+        # The binding sits right of offset 5; with no bytes it must still count.
+        assert not typing._bound_only_after("mod.ts", "typescript", "val", 1, 5)
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    def test_same_line_rule_counts_columns_not_bytes(self, tmp_path: Path, newline: str) -> None:
+        """CRLF line ends and non-ASCII text earlier on the line leave the column right."""
+        lines = [f"// filler {n}" for n in range(30)] + [
+            "const id = arg('id');",
+            "const val = make();",
+            "export const cmd = make('é—ü', { id }, ({ id }) => id);",
+            "export const out = ['é—ü'].map((val) => val);",
+        ]
+        (tmp_path / "mod.ts").write_bytes((newline.join(lines) + newline).encode())
+        graph = _build(tmp_path)
+        assert _inbound(graph, "mod.ts::id", "references") == {"mod.ts::cmd"}
+        assert not _inbound(graph, "mod.ts::val", "references")
+
+    def test_a_class_read_through_a_member_keeps_its_calls(self, tmp_path: Path) -> None:
+        """``Store.create()`` uses ``Store`` and still calls only ``Store.create``."""
+        _write(
+            tmp_path,
+            {
+                "mod.ts": (
+                    "class Store {\n  static create() { return 1; }\n}\n"
+                    "export function boot() { return Store.create(); }\n"
+                )
+            },
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "mod.ts::Store::create", "calls") == {"mod.ts::boot"}
+        assert _inbound(graph, "mod.ts::Store", "references") == {"mod.ts::boot"}
+        assert not _inbound(graph, "mod.ts::Store", "calls")
+
+    def test_other_languages_keep_bindings_out(self, tmp_path: Path) -> None:
+        """Python reads still reach functions and classes only."""
+        _write(tmp_path, {"mod.py": "LIMIT = 3\ndef f():\n    return g(LIMIT)\n"})
+        graph = _build(tmp_path)
+        assert not _inbound(graph, "mod.py::LIMIT", "references")
+
+
 class TestPythonValueReferences:
     @pytest.mark.parametrize(
         ("body", "caller"),

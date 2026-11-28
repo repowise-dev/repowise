@@ -864,6 +864,16 @@ def _fresh_keyless_replies(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_origin_walks(monkeypatch):
+    """Each test walks git itself; a kept origin walk would hide it."""
+    from collections import OrderedDict
+
+    from repowise.server.mcp_server.tool_answer import origin
+
+    monkeypatch.setattr(origin, "_WALKS", OrderedDict())
+
+
+@pytest.fixture(autouse=True)
 def _fresh_episode_verdicts(monkeypatch):
     """Each test asks git itself; a remembered verdict would hide the query."""
     from collections import OrderedDict

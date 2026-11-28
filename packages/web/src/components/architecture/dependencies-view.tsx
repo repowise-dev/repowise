@@ -26,6 +26,7 @@ import type {
   ExternalSystemRelationshipGraph,
   ExternalSystemSummaryEntry,
   ExternalSystemsSummary,
+  PackageAdvisories,
 } from "@repowise-dev/types/external-systems";
 import { apiGet } from "@repowise-dev/api-client";
 import "@/lib/api/client";
@@ -131,6 +132,17 @@ export function DependenciesView({ repoId }: { repoId: string }) {
       void setSize(size + 1);
     }
   }, [data, selected, selectedKey, setSize, size, summaryValidating]);
+
+  // Advisories come from a document the user imported; an index without one
+  // answers `imported: false` and the inspector shows nothing for it.
+  const { data: advisories } = useSWR(
+    selected ? `external-system-advisories:${repoId}:${selected.package_key}` : null,
+    () =>
+      apiGet<PackageAdvisories>(
+        `/api/repos/${repoId}/external-systems/${encodeURIComponent(selected!.package_key)}/advisories`,
+      ),
+    { revalidateOnFocus: false, revalidateOnReconnect: false },
+  );
 
   const relationshipRequestIdentity =
     selected && focus === "relationships" ? `${repoId}:${scope}:${selected.package_key}` : null;
@@ -282,6 +294,7 @@ export function DependenciesView({ repoId }: { repoId: string }) {
           state={tableState}
           onStateChange={handleTableStateChange}
           selected={selected}
+          advisories={advisories?.advisories}
           onSelectedChange={(entry) => {
             void setSelectedKey(entry?.package_key ?? null);
             void setFocus(null);

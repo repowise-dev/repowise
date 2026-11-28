@@ -30,6 +30,7 @@ from .build_units import *  # noqa: F403
 from .changes import *  # noqa: F403
 from .chat import *  # noqa: F403
 from .decisions import *  # noqa: F403
+from .external_call_sites import *  # noqa: F403
 from .external_systems import *  # noqa: F403
 from .git import *  # noqa: F403
 from .graph import *  # noqa: F403
@@ -40,6 +41,7 @@ from .page_archive import *  # noqa: F403
 from .page_rekey import *  # noqa: F403
 from .pages import *  # noqa: F403
 from .repository import *  # noqa: F403
+from .statement_sites import *  # noqa: F403
 
 
 def __getattr__(name: str) -> Any:

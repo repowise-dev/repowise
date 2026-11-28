@@ -140,7 +140,7 @@ def _imports_angular(parsed: Any) -> bool:
 
 class _AngularHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        if "angular" in dctx.stack_lower:
+        if dctx.uses("Angular"):
             return True
         return any(
             p.file_info.language in _TS_JS and _imports_angular(p)

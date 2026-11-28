@@ -167,6 +167,30 @@
   arguments: (arguments (string) @import.module)
 ) @import.statement
 
+; Vite glob import: import.meta.glob('./dir/*.ts') or (['./a/*.ts', '!./a/x.ts'], {...}).
+; The bundler loads every file the patterns match, so each gets an edge from
+; the caller (extractors/imports/ts_js.py expands the patterns).
+(call_expression
+  function: (member_expression
+    object: (meta_property)
+    property: (property_identifier) @_glob)
+  arguments: (arguments . [(string) (template_string) (array)] @import.module)
+  (#eq? @_glob "glob")
+) @import.statement
+
+; new URL('./worker.js', import.meta.url): a file the bundler emits beside the
+; caller and the caller loads (a worker, a plugin, an asset).
+(new_expression
+  constructor: (identifier) @_url
+  arguments: (arguments
+    . (string) @import.module
+    . (member_expression
+        object: (meta_property)
+        property: (property_identifier) @_meta_url))
+  (#eq? @_url "URL")
+  (#eq? @_meta_url "url")
+) @import.statement
+
 ; CommonJS: const svc = require('./svc')  /  const { a, b } = require('./svc')
 ; Tag the individual declarator so multi-declarator statements aren't deduped.
 (variable_declarator
@@ -321,4 +345,35 @@
   (assignment_expression right: (member_expression
     object: [(identifier) (this)] @reference.receiver
     property: (property_identifier) @reference.name))
+]
+
+; A name read in place: an operand, a member or index base (``OP.equals``,
+; ``s3.send()``), a spread, a computed key, a template hole, a condition, an
+; arrow body. Same captures, so the same shadow scan and resolution floor
+; apply; what differs is that a module-level ``const``/``let`` may be the
+; target, which is how a binding used only inside its own file reads as used.
+; A write (``x = 1``, ``x++``) is no read and is not captured.
+[
+  (member_expression object: (identifier) @reference.name)
+  (subscript_expression object: (identifier) @reference.name)
+  (subscript_expression index: (identifier) @reference.name)
+  (binary_expression left: (identifier) @reference.name)
+  (binary_expression right: (identifier) @reference.name)
+  (unary_expression argument: (identifier) @reference.name)
+  (spread_element (identifier) @reference.name)
+  (computed_property_name (identifier) @reference.name)
+  (template_substitution (identifier) @reference.name)
+  (ternary_expression condition: (identifier) @reference.name)
+  (ternary_expression consequence: (identifier) @reference.name)
+  (ternary_expression alternative: (identifier) @reference.name)
+  (arrow_function body: (identifier) @reference.name)
+  (parenthesized_expression (identifier) @reference.name)
+  (await_expression (identifier) @reference.name)
+  (yield_expression (identifier) @reference.name)
+  (switch_case value: (identifier) @reference.name)
+  (for_in_statement right: (identifier) @reference.name)
+  (throw_statement (identifier) @reference.name)
+  (augmented_assignment_expression right: (identifier) @reference.name)
+  (assignment_pattern right: (identifier) @reference.name)
+  (object_assignment_pattern right: (identifier) @reference.name)
 ]

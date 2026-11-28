@@ -126,8 +126,7 @@ repowise/
 │   ├── ui/            # shared React components used by the web UI
 │   ├── api-client/    # TypeScript client for the REST API
 │   ├── types/         # shared TypeScript types
-│   ├── vscode/        # VS Code extension
-│   └── claude-mod/    # Repowise Lens, the Claude Code mod (built into plugins/claude-code/hooks/lens/)
+│   └── vscode/        # VS Code extension
 ├── plugins/           # agent plugins: claude-code, codex, cursor, shared
 ├── ci/                # CI templates: github, gitlab
 ├── docker/            # Dockerfile, Dockerfile.mcp, docker-compose.yml
@@ -163,7 +162,7 @@ Key tables:
 |-------|---------|
 | `repos` | Registered repositories, sync state, provider config |
 | `wiki_pages` | All generated wiki pages with content, metadata, confidence score, and a short LLM-extracted `summary` (1–3 sentences) used by `get_context` to keep responses bounded |
-| `page_versions` | Full version history of every page (for diff view) |
+| `page_versions` | The newest earlier versions of each page, for the diff view (`wiki.page_versions_keep`, default 10) |
 | `symbols` | Symbol index: every function, class, method across all files |
 | `answer_cache` | Memoised `get_answer` responses keyed by `(repository_id, question_hash)` plus the provider/model used. Repeated questions return at zero LLM cost; cache entries are invalidated by repository re-indexing. |
 | `generation_jobs` | Job state machine with checkpoint fields for resumability |
@@ -929,7 +928,10 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 - `__init__.py` public re-exports
 - `@pytest.fixture`: `@pytest.mark.*` symbols
 - Files matching `*migrations*`, `*schema*`, `*seed*`
-- TypeScript `.d.ts` files
+- Schema migrations under other directory names (`alembic/versions/`,
+  `db/migrate/`, `db/migration/`, numbered entries of a singular
+  `migration/`), as `code_origin.is_migration_path` reads them
+- TypeScript declaration files (`.d.ts`, `.d.mts`, `.d.cts`)
 - Files where `is_api_contract == True`
 - Files named in the `whitelist` key of the analyzer's config argument (an API
   parameter; no CLI flag or config file populates it today)
@@ -1556,7 +1558,7 @@ Key files:
 | `core/generation/editor_files/base.py` | `BaseEditorFileGenerator`, marker-merge logic shared by all editor-file generators |
 | `core/generation/editor_files/data.py` | `EditorFileData` frozen dataclass, the data contract between fetcher and template |
 | `core/generation/editor_files/fetcher.py` | `EditorFileDataFetcher`, queries DB for architecture summary, modules, hotspots, decisions |
-| `core/generation/editor_files/tech_stack.py` | Filesystem scan for languages, frameworks, build commands |
+| `core/ingestion/tech_stack.py` | Filesystem scan for languages, frameworks (nested `package.json` included), build commands; also the framework set the framework-edge handlers read |
 | `core/generation/editor_files/claude_md.py` | `ClaudeMdGenerator`, 30-line subclass that binds filename + template |
 | `core/generation/templates/_editor_block.j2` | Jinja2 template for the Repowise-managed section |
 | `cli/commands/claude_md_cmd.py` | `repowise generate-claude-md` CLI command |

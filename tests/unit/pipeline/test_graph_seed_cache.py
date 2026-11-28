@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from repowise.core.cache_seal import dump_sealed_pickle
 from repowise.core.ingestion import GraphBuilder
+from repowise.core.ingestion.external_calls import EXTERNAL_CALL_SITES_VERSION
 from repowise.core.ingestion.parse_cache import parser_fingerprint
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
@@ -21,7 +22,7 @@ from repowise.core.persistence import (
     get_session,
     init_db,
 )
-from repowise.core.persistence.crud import upsert_repository
+from repowise.core.persistence.crud import stamp_external_call_sites, upsert_repository
 from repowise.core.persistence.database import resolve_db_url
 from repowise.core.persistence.models import Repository
 from repowise.core.pipeline.incremental.graph_seed import (
@@ -103,6 +104,7 @@ async def _repo_db(tmp_path: Path, monkeypatch):
             head_commit="a" * 40,
         )
         repo.graph_edges_parser_fingerprint = parser_fingerprint()
+        await stamp_external_call_sites(session, repo.id, EXTERNAL_CALL_SITES_VERSION)
         await batch_upsert_graph_edges(
             session,
             repo.id,
@@ -192,6 +194,24 @@ async def test_stale_edge_fingerprint_disables_patch_seed(tmp_path: Path, monkey
         async with get_session(sf) as session:
             repo = (await session.execute(select(Repository))).scalar_one()
             repo.graph_edges_parser_fingerprint = "old-resolver-fingerprint"
+        assert await load_seed_edges(root) is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("version", [None, EXTERNAL_CALL_SITES_VERSION - 1])
+async def test_stale_external_call_sites_disable_patch_seed(
+    tmp_path: Path, monkeypatch, version
+) -> None:
+    # A patch re-resolves only its scope, so a table no full build filled at
+    # this version must be refilled by one.
+    root, engine, sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await save_seed_edge_cache(root, _gb())
+        assert await load_seed_edges(root) is not None
+        async with get_session(sf) as session:
+            repo = (await session.execute(select(Repository))).scalar_one()
+            await stamp_external_call_sites(session, repo.id, version)
         assert await load_seed_edges(root) is None
     finally:
         await engine.dispose()

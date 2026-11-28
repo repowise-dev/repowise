@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -67,6 +69,33 @@ def _index(root: Path) -> None:
     asyncio.run(build())
 
 
+#: One repo and index per test process, built by the first :func:`_indexed_copy`.
+_TEMPLATE: list[tuple[Path, str]] = []
+
+
+def _indexed_copy(root: Path, factory: pytest.TempPathFactory) -> str:
+    """Put a copy of the :func:`_git_repo` + :func:`_index` checkout at *root*; return its head.
+
+    Building the repo and index cost each test that took them about 0.7 s; the
+    copy costs a few milliseconds. Every test still gets its own files and
+    ``wiki.db``, so tests that write to them stay independent.
+    """
+    if not _TEMPLATE:
+        template = factory.mktemp("indexed-template")
+        head = _git_repo(template)
+        _index(template)
+        _TEMPLATE.append((template, head))
+    template, head = _TEMPLATE[0]
+    shutil.copytree(template, root, dirs_exist_ok=True)
+    db = sqlite3.connect(root / ".repowise" / "wiki.db")
+    try:
+        with db:
+            db.execute("UPDATE repositories SET local_path = ?", (str(root),))
+    finally:
+        db.close()
+    return head
+
+
 def _stored(root: Path) -> tuple[list, list]:
     async def read() -> tuple[list, list]:
         engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
@@ -82,9 +111,10 @@ def _stored(root: Path) -> tuple[list, list]:
 
 
 @pytest.fixture
-def indexed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
-    head = _git_repo(tmp_path)
-    _index(tmp_path)
+def indexed(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, str]:
+    head = _indexed_copy(tmp_path, tmp_path_factory)
     monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: tmp_path)
     monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
     monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
@@ -470,7 +500,9 @@ def test_a_collapsed_profile_is_converted_and_stored(indexed, tmp_path_factory) 
     assert (run.value_kind, run.unit, run.total_value, run.explained_value) == (
         "cpu", "samples", 10.0, 6.0,
     )
-    assert (run.repo_self_value, run.wait_value, run.library_value) == (6.0, 0.0, 0.0)
+    # The stack with no repo frame (runpy, then another checkout's file) runs only
+    # code this repo does not maintain: libraries.
+    assert (run.repo_self_value, run.wait_value, run.library_value) == (6.0, 0.0, 3.0)
     assert (cost.symbol_id, cost.total_value, cost.self_value, cost.total_samples) == (
         "src/app.py::build", 6.0, 6.0, 6,
     )
@@ -492,7 +524,7 @@ def test_input_format_is_checked_against_the_registry(indexed) -> None:
     root, head = indexed
     result = _add(
         str(_write(root)), "--workload", "w", "--class", "entry_point", "--commit", head,
-        "--input-format", "jfr",
+        "--input-format", "nosuch",
     )
     assert result.exit_code == 2
     assert all(name in result.stderr for name in ("speedscope", "pprof", "pytest-benchmark", "collapsed"))
@@ -612,6 +644,32 @@ def test_pytest_benchmark_output_is_stored_as_a_benchmark_series(indexed) -> Non
     stats = json.loads(_BENCH_FIXTURE.read_text())["benchmarks"][1]["stats"]
     assert (get.unit, get.median, get.rounds, get.iterations) == (
         "s", stats["median"], stats["rounds"], stats["iterations"],
+    )
+
+
+def test_criterion_output_is_stored_using_its_sibling_benchmark_id(indexed) -> None:
+    root, head = indexed
+    fixture = _BENCH_FIXTURE.parent / "criterion/sort/32/new"
+    path = root / "renamed-estimates.json"
+    path.write_bytes((fixture / "estimates.json").read_bytes())
+    path.with_name("benchmark.json").write_bytes((fixture / "benchmark.json").read_bytes())
+
+    result = _add(
+        str(path), "--workload", "rust bench", "--class", "benchmark",
+        "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["stored"], payload["input_format"], payload["kind"], payload["rows_written"]) == (
+        True, "criterion", "benchmark", 1,
+    )
+    (row,) = _benchmarks(root)
+    assert (row.benchmark_key, row.unit, row.lower_is_better, row.symbol_id) == (
+        "sort/32", "ns", True, None,
+    )
+    point_estimates = json.loads(path.read_bytes())
+    assert (row.mean, row.median, row.stddev) == tuple(
+        point_estimates[key]["point_estimate"] for key in ("mean", "median", "std_dev")
     )
 
 
@@ -1039,3 +1097,85 @@ def test_tests_names_a_suite_total_over_several_workloads_as_a_sum() -> None:
     text = " ".join(evidence_cmd._tests_lines(payload))
 
     assert "the 4 timed tests take 9.0s, summed over 2 workloads." in text
+
+
+_PRODUCTION = Path(__file__).parents[1] / "evidence" / "fixtures" / "production"
+
+
+def test_a_statement_export_is_stored_as_production_with_no_class(indexed) -> None:
+    root, _head = indexed
+    csv = root / "statements.csv"
+    csv.write_bytes((_PRODUCTION / "pg_stat_statements.csv").read_bytes())
+
+    result = _add(str(csv), "--workload", "prod db")
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert "in production" in result.stderr + result.stdout
+    assert "unknown deployed commit" in result.stderr + result.stdout
+    (run,), _ = _stored(root)
+    # Production ran where users are, not on the machine adding the file.
+    assert (run.kind, run.workload_class, run.environment) == (
+        "statement_stats", "production", "production",
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--class", "production"], "never from --class"),
+        (["--class", "load_test"], "production by what it measures"),
+    ],
+)
+def test_a_production_file_refuses_a_typed_class_in_one_line(indexed, args, message) -> None:
+    root, _head = indexed
+    path = root / "statements.json"
+    path.write_bytes((_PRODUCTION / "statement_stats.json").read_bytes())
+
+    result = _add(str(path), "--workload", "prod db", *args)
+
+    assert result.exit_code == 2
+    error = [line for line in result.stderr.splitlines() if line.startswith("Error")]
+    assert len(error) == 1 and message in error[0]
+
+
+def test_a_profile_still_needs_its_class(indexed) -> None:
+    root, head = indexed
+    result = _add(str(_write(root)), "--workload", "w", "--commit", head)
+    assert result.exit_code == 2
+    assert "name the workload class" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+def test_add_and_status_compare_a_run_with_its_band(indexed) -> None:
+    import git as gitpython
+
+    root, _ = indexed
+    base = _go_bench_repo(root)
+    text = (_GO_BENCH / "bench.txt").read_text()
+    workload = ("--workload", "go bench results ./strs", "--class", "benchmark")
+    for i, ns in enumerate(("50.75", "50.80", "50.70")):
+        path = root / f"band{i}.txt"
+        path.write_text(text.replace("50.75 ns/op", f"{ns} ns/op"))
+        result = _add(str(path), *workload, "--commit", base, "--format", "json")
+        assert result.exit_code == 0, result.output
+        # Runs of one commit have no earlier run to compare with.
+        assert "compare" not in _json(result)
+    repo = gitpython.Repo(root)
+    head = repo.index.commit("strs: join twice").hexsha
+    repo.close()
+    slow = root / "slow.txt"
+    slow.write_text(text.replace("56.20 ns/op", "156.2 ns/op").replace("50.75 ns/op", "150.7 ns/op"))
+
+    added = _add(str(slow), *workload, "--commit", head, "--format", "json")
+
+    assert added.exit_code == 0, added.output
+    compared = _json(added)["compare"]
+    assert (compared["verdict"], compared["band_runs"], compared["head_commit"]) == (
+        "slower", 3, head,
+    )
+    assert compared["slower"][0]["name"] == "example.com/gobench/strs.BenchmarkJoin"
+    assert compared["cause"]["commits_in_range"] == 1
+    status = _json(_status("--compare", "--format", "json"))
+    assert [c["verdict"] for c in status["compare"]] == ["slower"]
+    assert "BenchmarkJoin 2.87x" in _status("--compare").stdout
+    assert "compare" not in _json(_status("--format", "json"))

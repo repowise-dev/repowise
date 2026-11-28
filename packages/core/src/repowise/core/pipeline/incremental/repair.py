@@ -94,7 +94,11 @@ def resolve_repair_base(
 
     def _git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["git", "-C", str(repo_path), *args], capture_output=True, timeout=30, text=True
+            ["git", "-C", str(repo_path), *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+            text=True,
         )
 
     try:

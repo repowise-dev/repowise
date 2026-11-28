@@ -11,7 +11,7 @@ Everything Repowise knows about your repository, created at the repo root by
 ```
 .repowise/
 ├── wiki.db             # SQLite database: all pages, symbols, graph, git metadata, decisions
-├── lancedb/             # Vector search index (LanceDB)
+├── lancedb/             # Vector search index (LanceDB), written once an embedder is set
 ├── omissions/           # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml          # Provider, model, embedder, exclude patterns, distill/mcp/refactoring blocks
 ├── events.jsonl         # Typed events as CloudEvents JSON lines (the jsonl event sink)
@@ -451,6 +451,7 @@ decisions:
 | `sync` | `false` |  | Send this repo's decisions to and from its copy on repowise.dev on update. |
 | `session_start` | `false` |  | Open each agent session with the decisions relevant to its work. |
 | `upkeep_prompt` | `false` |  | After a commit, ask the agent to settle the decisions it touched. |
+| `stop_prompt` | `false` |  | When an agent that did real work stops without recording a decision, ask it once a session to record one or say there is none, committed or not. |
 | `update_mining` | unset |  | Let repowise update call a model to find decisions in new commits and PRs. Unset: off, unless the decisions block names a preset or lists sources, which keeps an older setup mining. |
 | `discovery.max_sessions` | `12` | 1-24 | Most sessions read in one discovery pass. |
 | `discovery.max_input_tokens` | `30000` | 2000-60000 | Most input tokens one discovery pass may send. |
@@ -954,10 +955,10 @@ Cycle / Split File plans behind `repowise health --refactoring-targets`,
 <!-- BEGIN GENERATED settings:refactoring (python scripts/gen_config_docs.py) -->
 | Key | Default | Values | What it does |
 |-----|---------|--------|--------------|
-| `enabled` | `true` |  | Work out refactoring plans in the health pass. |
 | `detectors.disabled` | `[]` |  | Refactoring detectors to silence, such as extract_class or split_file. |
 | `min_confidence` | unset | `low`, `medium`, `high` | Least confidence a refactoring plan needs to show. |
 | `llm.enabled` | `false` |  | Let a model write refactoring code when asked; indexing never calls it. |
+| `enabled` | `true` |  | Work out refactoring plans in the health pass. |
 <!-- END GENERATED settings:refactoring -->
 
 - Code generation uses chat's provider and model, and is the only part that
@@ -982,14 +983,80 @@ free; with a configured provider one model call can write its prose.
 | `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
 <!-- END GENERATED settings:report -->
 
+## The `wiki:` block
+
+Each time a page is rewritten, the version it replaces is kept as history (the
+web UI's version list and diff read it). Only the newest versions are kept per
+page; older ones are deleted on the same write.
+
+<!-- BEGIN GENERATED settings:wiki (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `page_versions_keep` | `10` | 1-100000 | Earlier versions kept per wiki page; older ones are deleted when the page is rewritten. |
+<!-- END GENERATED settings:wiki -->
+
+- The current page is never deleted; the cap counts earlier versions only.
+- A page no write touches is trimmed by `update`: each update that indexes a
+  commit checks whether any page is over the cap (milliseconds) and trims the
+  whole repository when one is. The first one after upgrading clears the old
+  history. Raising the cap deletes nothing.
+- A value repowise cannot use (not a whole number from 1 to 100000) trims
+  nothing until it is fixed; `repowise doctor` names it.
+- `wiki.db` does not shrink when versions go: SQLite reuses the freed space for
+  later writes before it grows the file. To get the disk back at once, run
+  `VACUUM` on `.repowise/wiki.db` with no `repowise` process open (it needs
+  free disk the size of the file). `repowise doctor` prints that command once
+  more than a quarter of the file is free space.
+
+## The `health:` and `performance:` blocks
+
+Switches for work you can turn off to save time, disk or memory. `repowise
+config list --area performance` and the web settings page show them in one
+Performance group, together with `wiki.page_versions_keep` and
+`refactoring.enabled`.
+
+<!-- BEGIN GENERATED settings:health (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `duplication.enabled` | `true` | Find duplicated code, which DRY violation findings, copied test assertion blocks and Extract Helper plans are built from. Off skips it in init and update and deletes its cache files under .repowise/. |
+<!-- END GENERATED settings:health -->
+
+<!-- BEGIN GENERATED settings:performance (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `warm_caches` | `true` | Build the MCP server's search caches right after an agent connects, so the first question is fast. Off leaves them to the first question that needs them. |
+<!-- END GENERATED settings:performance -->
+
+- `health.duplication.enabled: false` skips clone detection in `init` and
+  `update`, so what is built from clones goes with it: DRY violation and
+  duplicated assertion block findings, Extract Helper plans and the per-file
+  duplication share. The next update deletes `duplication_cache.pkl`,
+  `duplication_cache_delta.pkl` and `duplication_pairs.pkl` from `.repowise/`
+  (on a fresh index they are 14 to 24% of its size). The next `update` after
+  the change re-scores health without them; `get_health` says
+  `"duplication": "off: ..."` under `_meta.health_analysis` while it is off.
+  Turning it back on finds clones again on the next `update`.
+- `performance.warm_caches: false` stops the MCP server from building its
+  search caches right after an agent connects. The first `get_answer` or
+  `search_codebase` then builds what it reads (a few seconds on a large
+  index), and an idle session holds less memory until then. It applies to MCP
+  servers started after the change. The server also skips the warmup on its
+  own when the machine has less than 2 GB of free memory.
+
 ## The `contracts:` block
 
 Contracts inside one repository, off by default. When on, `init` and `update`
 read the repo's HTTP routes and client calls, gRPC services, sockets and
 message topics into `.repowise/contracts.json` and link each caller to the
 route it reaches, across the repo's services. An update re-reads them only when
-a commit or an uncommitted edit touches a file that can hold one. A workspace
-keeps its own contracts in `.repowise-workspace/contracts.json`.
+a commit or an uncommitted edit touches a file that can hold one. Each run
+prints one line: contracts found, caller-to-route links inside the repo
+(`contract_links`), and links to other repos known only by host
+(`service_links`). The MCP tools read the links: `get_context` on a route file
+or handler says where in the repo it is called from, and on a client file which
+routes it calls; `get_change_risk` names the callers a change leaves without
+their route. A workspace keeps its own contracts in
+`.repowise-workspace/contracts.json`.
 
 ```yaml
 contracts:
@@ -1218,6 +1285,33 @@ repowise init --provider ollama --model llama3.2
   same value where Repowise runs.
 
 ### LiteLLM (100+ providers)
+
+The `litellm` package ships as the `repowise[litellm]` extra (about 215 MB with
+what it pulls in), so the default install leaves it out. Picking `litellm` in
+the `repowise init` provider list, or running `repowise config set provider
+litellm` in a terminal, asks once and installs it the way repowise was
+installed:
+
+| Installed with | Command run |
+|---|---|
+| `uv tool install repowise` | `uv pip install --python <repowise's python> "litellm>=1.90.7,<2"` |
+| `pipx install repowise`, or pip in a virtualenv or conda env | `<python> -m pip install "litellm>=1.90.7,<2"`, with repowise's own interpreter |
+
+A source checkout, a system-managed Python, or an environment you cannot write
+to gets the command printed instead. So do `--yes` runs, the MCP server, and
+the web UI: they never install anything, and they name the command when the
+package is missing. `repowise doctor` reports a chosen provider whose package
+is missing, with the same command.
+
+`uv tool upgrade repowise` rebuilds the tool's environment from what it was
+installed with, so a package added in place is gone afterwards and the next
+run asks again. Installing the extra into the tool keeps it across upgrades:
+
+```bash
+uv tool install "repowise[litellm]"     # also switches an existing uv tool install
+pipx install "repowise[litellm]"
+pip install "repowise[litellm]"
+```
 
 ```bash
 export LITELLM_API_KEY="..."

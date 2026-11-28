@@ -309,3 +309,16 @@ def test_routes_round_trip_and_stale_route_meta_is_cleared() -> None:
 
     store = ContractStore(service_links=run_matching([], m.routes).service_links)
     assert len(ContractStore.from_dict(store.to_dict()).service_links) == 2
+
+
+def test_a_relative_fetch_the_gateway_serves_itself_is_not_routed_on() -> None:
+    contracts = [
+        _http("customers", "provider", "/owners/{param}"),
+        _http("gw", "provider", "/api/customer/owners/{param}"),
+        _http("gw", "consumer", "/api/customer/owners/{param}", file="Owner.js", client="fetch"),
+    ]
+    m = _gateway_map()
+    annotate_consumer_targets(contracts, {}, m)
+    state = run_matching(contracts, m.routes)
+    assert state.links == []
+    assert not [lk for lk in state.service_links if lk.strategy == LinkStrategy.HOST_ONLY]

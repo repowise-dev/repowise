@@ -59,7 +59,9 @@ from ...ingestion.extractors.visibility import (
 )
 from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
 from ...ingestion.languages.registry import REGISTRY
+from ...ingestion.models import TS_JS_LANGUAGES
 from ...ingestion.source_mask import can_mask, mask_source
+from ...ingestion.ts_declarations import declaration_stem
 from .constants import (
     _BARE_NAME_USE_LANGUAGES,
     _NON_CODE_LANGUAGES,
@@ -79,12 +81,27 @@ from .token_cache import scanned
 #: only under-suppress, which is the safe direction.
 IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
 
+#: Identifier shape for JavaScript / TypeScript family (.js, .ts, .jsx, .tsx, .mjs, .cjs, .svelte, .vue, .astro).
+#: Admits `$` anywhere in the identifier and allows length >= 1.
+JS_IDENTIFIER_RE = re.compile(rb"[A-Za-z_$][A-Za-z0-9_$]*")
+
 #: Shortest name this check can answer for. :data:`IDENTIFIER_RE` needs three
 #: characters, so a two-character name matches nowhere — including on its own
 #: declaration. Reading that as "the name appears nowhere" would turn the
 #: strongest verdict into the least reliable one, so a name this short is
 #: treated as a question we cannot ask rather than as an answer.
 MIN_ANSWERABLE_NAME_LEN = 3
+MIN_ANSWERABLE_NAME_LEN_JS = 1
+
+_JS_TS_EXTENSIONS: frozenset[str] = frozenset(
+    {".astro", ".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".svelte", ".ts", ".tsx", ".vue"}
+)
+
+
+def _is_js_ts(path: str | None) -> bool:
+    if not path:
+        return False
+    return PurePosixPath(path).suffix.lower() in _JS_TS_EXTENSIONS
 
 #: Where an unused internal lands when its own file could not be searched for
 #: it: the declaration's extent is unknown, or the name is one the scan cannot
@@ -122,9 +139,12 @@ _SPAN_UNKNOWN = _Verdict(_Answer.SPAN_UNKNOWN)
 _ABSENT = _Verdict(_Answer.ABSENT)
 
 
-def file_identifiers(blob: bytes) -> frozenset[bytes]:
-    """The distinct :data:`IDENTIFIER_RE` tokens of *blob*, scanned once per bytes."""
-    return scanned("identifiers", blob, lambda: IDENTIFIER_RE.findall(blob))
+def file_identifiers(blob: bytes, path: str = "") -> frozenset[bytes]:
+    """The distinct identifier tokens of *blob*, scanned once per bytes."""
+    is_js = _is_js_ts(path)
+    regex = JS_IDENTIFIER_RE if is_js else IDENTIFIER_RE
+    key = "js_identifiers" if is_js else "identifiers"
+    return scanned(key, blob, lambda: regex.findall(blob))
 
 
 def occurrence_files(
@@ -146,7 +166,7 @@ def occurrence_files(
     if not names:
         return found
     for path in source_map:
-        tokens = identifiers(path) if identifiers else file_identifiers(source_map[path])
+        tokens = identifiers(path) if identifiers else file_identifiers(source_map[path], path)
         # The intersection runs in C over the smaller of the two sets.
         for token in names.intersection(tokens):
             found.setdefault(token, set()).add(path)
@@ -190,15 +210,21 @@ def _uses_in_own_file(
     if blob is None or not spanned:
         return out
 
+    is_js = _is_js_ts(path)
+    regex = JS_IDENTIFIER_RE if is_js else IDENTIFIER_RE
+
     wanted: dict[bytes, list[DeadCodeFindingData]] = {}
     headers: dict[bytes, set[int]] = {}
     for finding in spanned:
-        token = searchable_token(finding.symbol_name)
+        token = searchable_token(finding.symbol_name, path=path)
+        if not token:
+            out[id(finding)] = _NOT_SEARCHABLE
+            continue
         wanted.setdefault(token, []).append(finding)
         headers.setdefault(token, set()).add(finding.start_line)
 
     for lineno, line in enumerate(blob.split(b"\n"), start=1):
-        for match in IDENTIFIER_RE.finditer(line):
+        for match in regex.finditer(line):
             token = match.group()
             for finding in wanted.get(token, ()):
                 if out[id(finding)].answer is _Answer.USED:
@@ -294,10 +320,14 @@ def _blank(match: re.Match[str]) -> str:
 _NOT_NEWLINE = re.compile(r"[^\n]")
 
 
-def searchable_token(name: str) -> bytes:
+def searchable_token(
+    name: str,
+    path: str | None = None,
+    language: str | None = None,
+) -> bytes:
     """The searchable form of *name*, or empty when the scan cannot find it.
 
-    The one rule is that the result must be something :data:`IDENTIFIER_RE`
+    The one rule is that the result must be something the identifier scan
     would actually match, because a token the scan cannot produce is absent
     from every file including the one that declares it — and reading that as
     "the name appears nowhere" would turn the strongest verdict into the least
@@ -307,12 +337,21 @@ def searchable_token(name: str) -> bytes:
       rather than failing and would search for ``caf`` on behalf of ``café``,
       letting an unrelated ``caf`` elsewhere read as a use;
     * a name carrying a character the identifier shape does not admit, such as
-      the ``$`` in a JVM or JavaScript synthetic name, which the scan would
-      only ever see as two shorter tokens.
+      the ``$`` in a JVM synthetic name, which the scan would only ever see as
+      two shorter tokens (JavaScript and TypeScript admit ``$``).
     """
     encoded = name.encode("ascii", "ignore")
     if encoded.decode("ascii") != name:
         return b""
+    is_js = (
+        _is_js_ts(path)
+        if path is not None
+        else (language in TS_JS_LANGUAGES if language is not None else False)
+    )
+    if is_js:
+        if len(encoded) < MIN_ANSWERABLE_NAME_LEN_JS or not JS_IDENTIFIER_RE.fullmatch(encoded):
+            return b""
+        return encoded
     if len(encoded) < MIN_ANSWERABLE_NAME_LEN or not IDENTIFIER_RE.fullmatch(encoded):
         return b""
     return encoded
@@ -321,7 +360,7 @@ def searchable_token(name: str) -> bytes:
 def _is_own_type_sibling(occurrence: str, declaring: str) -> bool:
     """True when *occurrence* is *declaring*'s own generated declaration file.
 
-    A ``.d.ts`` beside ``runtime.js`` restates that module's exports as types.
+    A ``.d.ts`` beside ``runtime.js`` (or ``.d.mts`` beside ``runtime.mjs``) restates that module's exports as types.
     It declares the same names a second time and calls none of them, so
     counting it as a use makes every symbol in a generated binding module look
     alive — measured as the single largest source of lost true positives on
@@ -330,9 +369,9 @@ def _is_own_type_sibling(occurrence: str, declaring: str) -> bool:
     Deliberately narrow: only the same directory and the same stem. A ``.d.ts``
     naming a symbol from *elsewhere* really is referring to it, and stays a use.
     """
-    if not occurrence.endswith(".d.ts"):
+    stem = declaration_stem(occurrence)
+    if stem is None:
         return False
-    stem = occurrence[: -len(".d.ts")]
     base = declaring.rsplit(".", 1)[0]
     return stem == base
 
@@ -374,7 +413,9 @@ def _verdicts(
     """
     # Built from the candidates alone, which is what keeps a whole-repo scan
     # affordable: the index only ever holds the names some finding asks about.
-    answerable = {searchable_token(f.symbol_name) for f in candidates} - {b""}
+    answerable = {
+        searchable_token(f.symbol_name, path=f.file_path) for f in candidates
+    } - {b""}
     occurrences = occurrence_files(source_map, answerable)
 
     out: dict[int, _Verdict] = {}
@@ -385,7 +426,7 @@ def _verdicts(
     same_file_only: dict[str, list[DeadCodeFindingData]] = {}
 
     for finding in candidates:
-        token = searchable_token(finding.symbol_name)
+        token = searchable_token(finding.symbol_name, path=finding.file_path)
         if not token:
             out[id(finding)] = _NOT_SEARCHABLE
             continue
@@ -548,7 +589,9 @@ def drop_internals_used_in_own_file(
         if verdict is not None:
             if verdict.answer is _Answer.USED:
                 continue
-            if verdict.answer is _Answer.SPAN_UNKNOWN or not searchable_token(finding.symbol_name):
+            if verdict.answer is _Answer.SPAN_UNKNOWN or not searchable_token(
+                finding.symbol_name, path=finding.file_path
+            ):
                 finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
                 finding.evidence.append(
                     f"'{finding.symbol_name}' could not be checked against the rest of "

@@ -38,6 +38,7 @@ from repowise.core.code_origin import code_origin
 
 from ..source_fingerprint import grammar_failed
 from ..source_reader import reads_working_tree
+from .budget_cut import collection_order
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
 from .rabin_karp import WindowHash, index_by_hash
 from .token_entry import tokenize_entry
@@ -290,7 +291,7 @@ def detect_clones(
     lim = limits or DuplicationLimits()
     diag = DuplicationDiagnostics()
     cache = _load_token_cache(cache_dir, window_tokens)
-    parsed_list = list(parsed_files)
+    parsed_list = collection_order(list(parsed_files))
 
     if cache is not None and splice:
         report = _splice_from_index(
