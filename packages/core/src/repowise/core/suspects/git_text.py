@@ -24,6 +24,7 @@ from pathlib import Path
 
 from repowise.core.analysis import git_cli
 from repowise.core.analysis.changed_lines import split_commit_patches
+from repowise.core.changelist import without_changelist_number
 
 MAX_DIFF_FILES = 100
 _BATCH = 100
@@ -184,7 +185,7 @@ def _read_change_texts(
     for rec in _log(repo, ["--format=%x00%H%n%b"], [s for s, _ in heads]).split("\x00"):
         sha, _, body = rec.partition("\n")
         if sha.strip():
-            out[sha.strip()] = (strip_person_trailers(body), ())
+            out[sha.strip()] = (without_changelist_number(strip_person_trailers(body)), ())
     small = [s for s, n in heads if n <= MAX_DIFF_FILES and s in out]
     for sha, diff in split_commit_patches(
         _log(repo, ["-m", "--first-parent", "-U0", "--format=%x00%H"], small)

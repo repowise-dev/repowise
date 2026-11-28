@@ -39,6 +39,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
+from repowise.core.changelist import without_changelist_number
 from repowise.core.git_sha import SHA_PREFIX_PATTERN
 from repowise.core.registry.plugins import SeamRegistry
 
@@ -240,7 +241,7 @@ def _revert_index(
             )
             for line in raw.splitlines():
                 sha, _, subject = line.partition(_FIELD)
-                subjects[sha.strip()] = subject
+                subjects[sha.strip()] = without_changelist_number(subject)
         return by_target, frozenset(reverted_at_head(links)), subjects
 
     return _once(("revert", repo_path, head, forge), build)

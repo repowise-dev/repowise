@@ -206,6 +206,7 @@ def _parse_per_file_log(
             subject=header["subject"],
             body=header["body"],
             credit=commit_credit(header),
+            changelist=header.get("changelist"),
         )
         commits.append(current)
         changed_paths = _add_own_churn(current, numstat_lines, known_paths)
@@ -730,6 +731,8 @@ def _significant_entry(
     pr_number = change_number(c.subject, raw_body, forge)
     if pr_number is not None:
         entry["pr_number"] = pr_number
+    if c.changelist:
+        entry["changelist"] = c.changelist
     if _body_carries_decision(c.subject, raw_body):
         body = _truncate_body(raw_body)
         if body:

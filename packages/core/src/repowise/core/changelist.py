@@ -32,6 +32,7 @@ __all__ = [
     "changelist_number",
     "commit_for_changelist",
     "resolve_revspec",
+    "split_changelist",
     "without_changelist_number",
 ]
 
@@ -63,6 +64,16 @@ def without_changelist_number(text: str, number: str | None = None) -> str:
     if number and text.startswith(f"{number} - "):
         text = text[len(number) + 3 :]
     return text
+
+
+def split_changelist(subject: str, body: str) -> tuple[str, str, str | None]:
+    """``(subject, body, changelist)``: the number read first, then the trailer cut from both.
+
+    Where a commit is parsed, so stored and prompted text never carries the
+    trailer while the change is still named by its changelist.
+    """
+    number = changelist_number(f"{subject}\n{body}")
+    return without_changelist_number(subject), without_changelist_number(body), number
 
 
 def commit_for_changelist(repo_path: str | Path, number: str) -> str | None:

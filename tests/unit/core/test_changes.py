@@ -209,6 +209,19 @@ def test_a_mirror_commit_is_named_by_its_perforce_changelist(tmp_path):
     assert git_p4.title == "Fix the loader (#5)"
     # p4-fusion leads the subject with the number the ref already shows.
     assert fusion.title == "Tune the cache"
+    assert "git-p4" not in git_p4.body
+
+
+def test_a_mirror_commit_an_unnamed_merge_brought_in_keeps_its_changelist(tmp_path):
+    r = _Repo(tmp_path / "repo")
+    r.commit("a.py", "a")
+    r.git("checkout", "-q", "-b", "up")
+    r.commit("b.py", f"Fix the loader\n\nWhy it changed.\n\n{_GIT_P4.format(n=77)}")
+    r.git("checkout", "-q", "main")
+    r.commit("c.py", "c")
+    r.merge("up", "Merge branch 'main' of github.com:x/y")
+    cl = {c.change_id: c for c in _changes(r)}["cl-77"]
+    assert (cl.title, cl.body) == ("Fix the loader", "Why it changed.")
 
 
 def test_title_skips_boilerplate_and_trailers():

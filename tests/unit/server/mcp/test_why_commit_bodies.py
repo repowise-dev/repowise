@@ -89,6 +89,18 @@ async def test_a_stored_body_is_served_without_git(tmp_path: Path) -> None:
     assert row["pr_number"] == 51
 
 
+async def test_an_indexed_mirror_body_serves_the_changelist_stored_beside_it(
+    tmp_path: Path,
+) -> None:
+    # The indexer cuts the trailer from the body and stores its number beside it.
+    entry = {"sha": "8a0b18fd", "message": "m", "body": _SQUASH_BODY, "changelist": "1234567"}
+    meta = SimpleNamespace(significant_commits_json=json.dumps([entry]))
+    result = _card_result({"sha": "8a0b18fd", "message": "m"})
+    await attach_body_excerpts(result, tmp_path, {"src/router.ts": meta}, result["query"])
+    row = result["target_context"]["src/router.ts"]["git_archaeology"]["file_commits"][0]
+    assert row["changelist"] == "1234567"
+
+
 async def test_no_body_and_no_clone_leaves_the_rows_unchanged(tmp_path: Path) -> None:
     result = _card_result({"sha": "8a0b18fd", "message": "feat(router): x"})
     before = json.dumps(result)
