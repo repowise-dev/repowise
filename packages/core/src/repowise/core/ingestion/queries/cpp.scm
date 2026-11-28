@@ -84,6 +84,28 @@
   )
 ) @symbol.def
 
+; Operator and destructor defined in place, in a class body or at namespace
+; scope: ``bool operator()(int x) const { }``, ``~Foo() { }``.
+(function_definition
+  declarator: (function_declarator
+    declarator: [
+      (operator_name)
+      (destructor_name)
+    ] @symbol.name
+    parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
+; Conversion operator defined in a class body: ``operator bool() const { }``.
+; The parser names it from the cast's type.
+(function_definition
+  declarator: (operator_cast
+    declarator: (abstract_function_declarator
+      parameters: (parameter_list) @symbol.params
+    )
+  ) @symbol.name
+) @symbol.def
+
 ; Qualified function definition: ReturnType ClassName::method(params) { }
 (function_definition
   declarator: (function_declarator
@@ -127,6 +149,7 @@
           (qualified_identifier name: (identifier) @symbol.name)
           (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
           (qualified_identifier name: (operator_name) @symbol.name)
+          (operator_name) @symbol.name
         ]
         parameters: (parameter_list) @symbol.params))
     (pointer_declarator
@@ -138,6 +161,7 @@
             (qualified_identifier name: (identifier) @symbol.name)
             (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
             (qualified_identifier name: (operator_name) @symbol.name)
+            (operator_name) @symbol.name
           ]
           parameters: (parameter_list) @symbol.params)))
     (reference_declarator
@@ -148,6 +172,7 @@
           (qualified_identifier name: (identifier) @symbol.name)
           (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
           (qualified_identifier name: (operator_name) @symbol.name)
+          (operator_name) @symbol.name
         ]
         parameters: (parameter_list) @symbol.params))
     (function_declarator

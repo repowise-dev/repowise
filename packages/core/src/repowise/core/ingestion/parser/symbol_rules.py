@@ -119,7 +119,49 @@ def _language_symbol_name(language: str, def_node: Node, name: str, src: str) ->
         # (`initWithName:age:`), which no single node holds, and a
         # category by the class it extends plus its own name.
         return _objc_symbol_name(def_node, name, src)
+    if language == "cpp":
+        return _cpp_conversion_operator_name(def_node, src) or name
     return name
+
+
+def _cpp_conversion_operator_name(def_node: Node, src: str) -> str | None:
+    """``operator bool`` for ``operator bool() const { }``; None for any other definition."""
+    declarator = def_node.child_by_field_name("declarator")
+    if declarator is None or declarator.type != "operator_cast":
+        return None
+    cast_type = declarator.child_by_field_name("type")
+    return f"operator {_node_text(cast_type, src)}" if cast_type is not None else None
+
+
+# Nodes between a class body and the member's ``@symbol.def`` node.
+_CPP_MEMBER_WRAPPERS = frozenset(
+    {
+        "template_declaration",
+        "friend_declaration",
+        "field_declaration",
+        "pointer_declarator",
+        "reference_declarator",
+    }
+)
+
+
+def cpp_local_type_member(def_node: Node, class_types: frozenset[str]) -> bool:
+    """Is *def_node* a class with a body, or a member declared in one's body?
+
+    A class declared inside a function is a type of its own: it and its
+    members are symbols, though the class sits below a callable.
+    """
+    if def_node.type in class_types:
+        return def_node.child_by_field_name("body") is not None
+    body = def_node.parent
+    while body is not None and body.type in _CPP_MEMBER_WRAPPERS:
+        body = body.parent
+    return (
+        body is not None
+        and body.type == "field_declaration_list"
+        and body.parent is not None
+        and body.parent.type in class_types
+    )
 
 
 # ``(language, node_type)`` whose "class" kind the body refines: Kotlin

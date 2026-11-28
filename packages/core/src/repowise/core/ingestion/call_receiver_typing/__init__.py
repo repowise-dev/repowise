@@ -54,7 +54,7 @@ from ..return_types import (
     signature_parameter_count,
     signature_parameter_range,
 )
-from ..symbol_identity import id_segment_name
+from ..symbol_identity import base_symbol_id, id_segment_name
 from ..type_names import (
     POINTER_LIKE_MEMBERS,
     bare_type_name,
@@ -616,8 +616,13 @@ class ReceiverTypingMixin(
             return None
 
         # The caller's own file first: a nested class here outranks a
-        # same-named one in a package sibling.
-        sym_id = self._file_methods.get(file_path, {}).get(key)
+        # same-named one in a package sibling, and a class declared in the
+        # calling function (named under it) outranks both.
+        file_methods = self._file_methods.get(file_path, {})
+        caller_scope = base_symbol_id(caller_id).removeprefix(f"{file_path}::")
+        sym_id = file_methods.get((f"{caller_scope}::{type_name}", call.target_name))
+        if sym_id is None:
+            sym_id = file_methods.get(key)
         if sym_id is not None:
             return sym_id, "same_file"
 
