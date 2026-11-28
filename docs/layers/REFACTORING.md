@@ -197,7 +197,8 @@ that kind passes a per-language review. When such a step follows another lead,
 the Fix first item leaves it out and says how many steps it held back; the full
 plan keeps them. Code only moves within a language family, so Java, Kotlin and
 Scala are separate. A callback is named after the call it is passed to. An
-Extract Method helper gets the placeholder name `extracted_helper`, since the
+Extract Method helper gets the placeholder name `extracted_helper` (`extractedHelper` or
+`ExtractedHelper` where the language's methods are camelCase or PascalCase), since the
 code rarely says what a block is for; the plan and its prompt ask you to rename
 it for what it returns or does when you apply it.
 
