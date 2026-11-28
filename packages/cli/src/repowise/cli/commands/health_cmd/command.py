@@ -824,7 +824,11 @@ def _recompute_report(
         community_label_map=file_community_labels(graph_builder),
         # Coverage folds in from whatever `repowise coverage add` (or index-time
         # ingest) persisted; ingestion lives solely in the `coverage` group.
-        coverage_map=_load_persisted_coverage_map(index_root) if index_root is not None else {},
+        coverage_map=(
+            _load_persisted_coverage_map(index_root, borrowed=not own_index)
+            if index_root is not None
+            else {}
+        ),
         duplication_cache_dir=Path(repo_path) / ".repowise" if own_index else None,
         repo_root=repo_path,
     )

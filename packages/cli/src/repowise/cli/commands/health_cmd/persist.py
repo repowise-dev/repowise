@@ -15,19 +15,20 @@ from typing import Any
 from repowise.cli.helpers import console, run_async
 
 
-def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
+def _load_persisted_coverage_map(repo_path: object, *, borrowed: bool = False) -> dict[str, dict]:
     """Build the analyzer ``coverage_map`` from persisted per-file coverage.
 
     Reads whatever ``repowise coverage add`` (or index-time ingest) stored in
     ``coverage_files`` so ``repowise health`` reflects it without a flag.
     Best-effort: no store / no repo row / no rows / any DB error yields an
-    empty map. A missing store is not created.
+    empty map. A missing store is not created, and a ``borrowed`` one (the
+    main checkout's, read from a linked worktree) is not changed either.
     """
     from repowise.cli.helpers import repo_index_session
     from repowise.core.persistence.crud import load_coverage_map
 
     async def _do() -> dict[str, dict]:
-        async with repo_index_session(Path(str(repo_path))) as opened:
+        async with repo_index_session(Path(str(repo_path)), reconcile=not borrowed) as opened:
             if opened is None:
                 return {}
             session, repo_id = opened

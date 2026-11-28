@@ -43,7 +43,9 @@ class StaleIndexError(click.ClickException):
 
 
 @contextlib.asynccontextmanager
-async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, str] | None]:
+async def repo_index_session(
+    root: Path, *, reconcile: bool = True
+) -> AsyncIterator[tuple[AsyncSession, str] | None]:
     """Open the repo-local store for reading, yielding ``(session, repo_id)`` or ``None``.
 
     A scoring or scanning command must never fail because the index is absent
@@ -52,6 +54,10 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
     reconcile costs a read command 0.3 s and writes to the store, so a current
     store skips it. A store still behind after it raises :class:`StaleIndexError`,
     since every answer read from it would be missing what it lacks.
+
+    ``reconcile=False`` never writes: a store behind the models yields ``None``.
+    For a store this checkout only borrows (a linked worktree reading its main
+    checkout's index), which must be read without being changed.
     """
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -73,6 +79,8 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
             engine = create_engine(url)
             stack.push_async_callback(engine.dispose)
             if await schema_behind(engine):
+                if not reconcile:
+                    raise LookupError("store behind the models, not reconciled")
                 await _facade.reconcile_schema_best_effort(url)
                 if await schema_behind(engine):
                     raise StaleIndexError

@@ -99,3 +99,21 @@ def test_a_checkout_with_its_own_index_still_saves(main):
     assert result.exit_code == 0, result.output
     assert "No index" not in result.output
     assert _health_rows(main) == 1
+
+
+def test_a_worktree_does_not_upgrade_the_main_checkouts_older_index(main):
+    """The main checkout's index is only borrowed: an older one is not upgraded from here."""
+    run_async(_build_index(main))
+    with sqlite3.connect(main / ".repowise" / "wiki.db") as conn:
+        conn.execute("drop table coverage_files")
+    worktree = main.parent / "wt"
+    _git(["worktree", "add", "-q", str(worktree), "-b", "feat"], main)
+
+    result = _invoke(worktree, "--recompute")
+
+    assert result.exit_code == 0, result.output
+    with sqlite3.connect(main / ".repowise" / "wiki.db") as conn:
+        tables = {
+            row[0] for row in conn.execute("select name from sqlite_master where type='table'")
+        }
+    assert "coverage_files" not in tables
