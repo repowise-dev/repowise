@@ -451,12 +451,16 @@ def _is_support_compound(filename: str) -> bool:
 
 
 def _is_test_dir(
-    segments: list[str], original: list[str], filename: str, language: str | None
+    segments: list[str],
+    original: list[str],
+    filename: str,
+    language: str | None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether any directory segment marks this path as sitting in a test tree."""
-    return _has_test_segment(segments, original, filename, language) or _has_test_layout(
-        segments, original, _conventions().dir_suffixes
-    )
+    return _has_test_segment(
+        segments, original, filename, language, package_root
+    ) or _has_test_layout(segments, original, _conventions().dir_suffixes)
 
 
 def _tree_segments(
@@ -513,7 +517,11 @@ def _router_root_end(segments: list[str], filename: str, ext: str, js_family: bo
 
 
 def _has_test_segment(
-    segments: list[str], original: list[str], filename: str, language: str | None
+    segments: list[str],
+    original: list[str],
+    filename: str,
+    language: str | None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether one directory's own name says it holds tests."""
     rules = _conventions()
@@ -533,14 +541,59 @@ def _has_test_segment(
         or _is_support_name(filename)
         or any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
     )
+    is_rust = filename.lower().endswith(".rs")
     return any(
-        _is_test_segment(seg, orig, lang_tokens, corroborated)
-        for seg, orig in zip(segments, original, strict=True)
+        _is_test_segment(
+            seg,
+            orig,
+            lang_tokens,
+            corroborated,
+            package_root=package_root,
+            dir_parts=original[: i + 1],
+            filename=filename if i == len(segments) - 1 else "",
+            rust_crate_src=is_rust and segments[i + 1 : i + 2] == ["src"],
+        )
+        for i, (seg, orig) in enumerate(zip(segments, original, strict=True))
     )
 
 
-def _is_test_segment(seg: str, orig: str, lang_tokens: frozenset[str], corroborated: bool) -> bool:
+def _is_tests_prefix_dir(seg: str) -> bool:
+    """Whether a compound directory segment begins with 'tests', e.g. tests-build, tests-integration.
+
+    Rust workspaces name test-harness crates ``tests-*`` with ``publish = false``.
+    Ceiling: a published crate whose name begins with ``tests`` (e.g. a testing framework library)
+    stays production via the package_root probe.
+    """
+    words = _words(seg)
+    return bool(words) and len(words) >= 2 and words[0] == "tests"
+
+
+def _is_tests_harness_dir(
+    seg: str,
+    orig: str,
+    dir_parts: list[str] | None,
+    filename: str,
+    rust_crate_src: bool,
+    package_root: PackageRootProbe | None,
+) -> bool:
+    if not (rust_crate_src and _is_tests_prefix_dir(seg)):
+        return False
+    return not _is_package_root(dir_parts or [orig], filename, package_root)
+
+
+def _is_test_segment(
+    seg: str,
+    orig: str,
+    lang_tokens: frozenset[str],
+    corroborated: bool,
+    package_root: PackageRootProbe | None = None,
+    dir_parts: list[str] | None = None,
+    filename: str = "",
+    rust_crate_src: bool = False,
+) -> bool:
     if _is_named_test_dir(seg):
+        return True
+    if _is_tests_harness_dir(seg, orig, dir_parts, filename, rust_crate_src, package_root):
         return True
     words = _words(seg)
     head = words[-1] if words else ""
@@ -682,7 +735,10 @@ def _classify_with_context(
     if (
         needs_test_dir
         and not _is_test_dir(
-            *_tree_segments(segments, original_segments, filename), filename, language
+            *_tree_segments(segments, original_segments, filename),
+            filename,
+            language,
+            package_root,
         )
         and not _dotnet_project_collects(path, filename, dotnet_projects)
     ):
@@ -814,7 +870,7 @@ def in_test_tree(path: str, language: str | None = None) -> bool:
     if not segments or _REPO_METADATA_DIR in segments:
         return False
     return any(_is_support_anywhere_dir(seg) for seg in segments) or _is_test_dir(
-        *_tree_segments(segments, original[:-1], original[-1]), "", language
+        *_tree_segments(segments, original[:-1], original[-1]), original[-1], language
     )
 
 

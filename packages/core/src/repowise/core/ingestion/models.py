@@ -813,6 +813,8 @@ class TypeReference:
         "generic_constraint",  # TS/JS
         "extends",
         "implements",  # TS heritage clauses (file-level type_use)
+        "mixin",  # Ruby ``include`` / ``extend`` / ``prepend``
+        "constant",  # Ruby: any other constant mention
     ] = "ctor_param"
 
 

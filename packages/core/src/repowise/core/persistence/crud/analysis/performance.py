@@ -1283,6 +1283,12 @@ async def measured_costs(
       next step yet, so these rows never lead or mint a hotspot; their
       ``verify`` is the next production window, never a benchmark (a local
       benchmark does not measure a production statement).
+    - ``routes``: the same for each production route workload's newest run
+      (``crud.route_costs``): one row per handler the route join named, by
+      request time; a row's ``share`` is of the window's stored request time
+      and its ``routes`` holds requests, total, mean and p95 ms, errors and
+      its routes. Each run counts the routes on no handler in
+      ``unattributed``. Listed, never leading, as statements are.
     - Each group carries ``total``: its ranked rows before the *limit* cut.
 
     Each run names its basis (workload class and name, commit, age, samples)
@@ -1304,23 +1310,24 @@ async def measured_costs(
     they name. Each row is ``evidence.action_row.action_row``'s JSON form.
     Stale evidence and code outside production are never rows.
     """
+    from ....evidence.action_row import route_facts, statement_facts
     from ....evidence.hotness import LEAD_CLASSES
     from ....ingestion.symbol_identity import file_of_symbol
-    from .evidence import newer_unranked, ranked_by_workload, statement_costs, step_findings
+    from .evidence import (
+        newer_unranked,
+        ranked_by_workload,
+        route_costs,
+        statement_costs,
+        step_findings,
+    )
 
     ranked = await ranked_by_workload(session, repository_id)
     if run_id is not None:
         ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
     if symbol_ids is not None:
         ranked = [(run, [r for r in rows if r.symbol_id in symbol_ids]) for run, rows in ranked]
-    statements = [
-        found._replace(
-            rows=[r for r in found.rows if symbol_ids is None or r.symbol_id in symbol_ids]
-        )
-        for found in await statement_costs(session, repository_id)
-        if run_id in (None, found.run.id)
-    ]
-    statements = [found for found in statements if found.rows]
+    statements = _window_runs(await statement_costs(session, repository_id), run_id, symbol_ids)
+    routes = _window_runs(await route_costs(session, repository_id), run_id, symbol_ids)
     benchmarks = await _benchmark_group(session, repository_id, limit, now, run_id)
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
     for run, rows in ranked:
@@ -1328,16 +1335,18 @@ async def measured_costs(
             groups["measured"].append((run, rows))
         elif run.workload_class == "unit_test":
             groups["measured_in_tests"].append((run, rows))
-    if not any(groups.values()) and not statements:
+    if not any(groups.values()) and not statements and not routes:
         return {"benchmarks": benchmarks} if benchmarks else None
     # ``limit=0`` keeps each group's runs and total with no rows.
     shown = {
         key: [(run, rows[: max(limit, 0)]) for run, rows in runs] for key, runs in groups.items()
     }
     statement_rows = [r for found in statements for r in found.rows[: max(limit, 0)]]
+    route_rows = [r for found in routes for r in found.rows[: max(limit, 0)]]
     ids = sorted(
         {r.symbol_id for runs in shown.values() for _, rows in runs for r in rows}
         | {r.symbol_id for r in statement_rows}
+        | {r.symbol_id for r in route_rows}
     )
     spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
     covered = await _static_causes_on(session, repository_id, set(ids), spans)
@@ -1382,9 +1391,22 @@ async def measured_costs(
         view["statements"] = {
             "runs": [_statement_run(found, at) for found in statements],
             "rows": [
-                _statement_row(r, by_run[r.run_id], spans, context, covered) for r in statement_rows
+                _window_row(
+                    r, by_run[r.run_id], spans, context, covered, statements=statement_facts(r)
+                )
+                for r in statement_rows
             ],
             "total": sum(len(found.rows) for found in statements),
+        }
+    if routes:
+        by_run = {found.run.id: found.run for found in routes}
+        view["routes"] = {
+            "runs": [_route_run(found, at) for found in routes],
+            "rows": [
+                _window_row(r, by_run[r.run_id], spans, context, covered, routes=route_facts(r))
+                for r in route_rows
+            ],
+            "total": sum(len(found.rows) for found in routes),
         }
     if benchmarks:
         view["benchmarks"] = benchmarks
@@ -1924,28 +1946,65 @@ def _statement_run(found: Any, at: datetime) -> dict[str, Any]:
     }
 
 
+def _route_run(found: Any, at: datetime) -> dict[str, Any]:
+    """A production route run's basis: workload, commit, age, its window, the
+    request time, requests and routes it stored and the routes on no handler
+    (``evidence.measured_fold.RouteRun``)."""
+    from ....evidence.status import production_window
+
+    run = found.run
+    return {
+        **_benchmark_run(run, at),
+        "window_start": _iso(run.window_start),
+        "window_end": _iso(run.window_end),
+        "total_ms": found.total_ms,
+        "requests": found.requests,
+        "routes": found.routes,
+        "unattributed": found.unattributed,
+        "window": production_window(run),
+    }
+
+
+def _window_runs(
+    found: list[Any], run_id: str | None, symbol_ids: Collection[str] | None
+) -> list[Any]:
+    """Production window runs (``StatementRun`` or ``RouteRun``) kept to
+    *run_id* and *symbol_ids* as :func:`measured_costs` reads them; a run
+    left naming no function is dropped."""
+    kept = [
+        f._replace(rows=[r for r in f.rows if symbol_ids is None or r.symbol_id in symbol_ids])
+        for f in found
+        if run_id in (None, f.run.id)
+    ]
+    return [f for f in kept if f.rows]
+
+
 def _iso(at: datetime | None) -> str | None:
     # SQLite hands back the stored UTC time without its zone.
     return at.replace(tzinfo=at.tzinfo or UTC).isoformat() if at is not None else None
 
 
-def _statement_row(
+def _window_row(
     cost: Any,
     run: Any,
     spans: dict[str, list[Any]],
     context: _FunctionContext,
     covered: dict[str, set[str]],
+    *,
+    statements: dict[str, Any] | None = None,
+    routes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One function's production statements (``evidence.measured_fold.StatementCost``)
-    as ``evidence.action_row`` builds it: no next step (no rule reads a
-    statement's cost yet), the next window as its verify, never a benchmark,
-    and no ``slower`` (comparisons measure profiles, not statements).
+    """One function's production statements (``evidence.measured_fold.StatementCost``,
+    with *statements*) or requests (``RouteCost``, with *routes*) as
+    ``evidence.action_row`` builds it: no next step (no rule reads a
+    window's cost yet), the next window as its verify, never a benchmark,
+    and no ``slower`` (comparisons measure profiles, not windows).
 
     Ceiling: the function is the one the join named when the run was stored;
     one renamed or removed since keeps its row with ``lines`` null (it did
-    issue the statements in that window). Upgrade path: re-join statement
-    rows on update, as profile rows get a freshness."""
-    from ....evidence.action_row import action_row, statement_facts
+    issue the statements or serve the requests in that window). Upgrade
+    path: re-join window rows on update, as profile rows get a freshness."""
+    from ....evidence.action_row import action_row
     from ....ingestion.symbol_identity import file_of_symbol
 
     symbol_id = cost.symbol_id
@@ -1961,7 +2020,8 @@ def _statement_row(
         tests=context.tests[symbol_id],
         history=context.history.get(symbol_id),
         static_causes=covered.get(symbol_id, ()),
-        statements=statement_facts(cost),
+        statements=statements,
+        routes=routes,
     ).as_dict()
 
 

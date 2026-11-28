@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-FrameLanguage = Literal["go", "python", "javascript", "java", "kotlin"]
+FrameLanguage = Literal["go", "python", "javascript", "rust", "java", "kotlin"]
 
 #: JVM frames: no file of their own, placed by class name (:func:`place_jvm_frames`).
 _JVM = frozenset({"java", "kotlin"})
@@ -146,21 +146,29 @@ def resolve_frames(
     the method name and class to agree with the innermost method at its line;
     with no line it joins by name (:func:`_name_join`): the one method of that
     name in that class, else the one whose parameter count (and types) match
-    the frame's, else ``ambiguous``. A frame is never put on one overload of
-    several by name alone.
+    the frame's, else ``ambiguous``. Rust needs the demangled name
+    (``crate::module::Type::method``, ``<Type as Trait>::method``; hash and
+    generic arguments cut) to agree with the innermost function at its line,
+    or with the function an attribute on its line (``#[instrument]``) sits on;
+    a Rust frame with no line joins by name only when the file defines one
+    ``fn`` of that name. A frame is never put on one overload of several by
+    name alone.
 
     Folding, when the frame's own function has no symbol: a Go closure
     (``Outer.func1``) whose start line lies inside ``Outer``; a Python frame
     whose qualified name runs through ``<locals>`` or ends in ``<lambda>``,
     ``<genexpr>`` or a comprehension, charged to the symbol its enclosing name
     matches; a JavaScript function that starts on a body line of an indexed
-    function. Module bodies (Python ``<module>``, the Go package initializer,
-    the CommonJS wrapper at 1:1, a JVM static initializer) resolve to the
-    file, and a Python frame on a decorator line resolves to the function it
-    decorates. A JVM lambda (``lambda$name$0``, Kotlin ``name$lambda$0``) and a
-    method of an anonymous class (``Outer$1``) fold into the method at their
-    line; compiler-made accessors and bridges (``access$000``, ``$default``,
-    ``$$Lambda``, ``$$`` proxies) are ``generated``.
+    function; a Rust closure or async body (``{{closure}}``, ``{closure#0}``,
+    ``{async_block#0}``) whose enclosing name matches, or one outside any
+    function into the file. Module bodies (Python ``<module>``, the Go package
+    initializer, the CommonJS wrapper at 1:1, a JVM static initializer)
+    resolve to the file, and a Python frame on a decorator line resolves to the
+    function it decorates. A JVM lambda (``lambda$name$0``, Kotlin
+    ``name$lambda$0``) and a method of an anonymous class (``Outer$1``) fold
+    into the method at their line; compiler-made accessors and bridges
+    (``access$000``, ``$default``, ``$$Lambda``, ``$$`` proxies) are
+    ``generated``.
     """
     paths = _PathMap(root, symbols_by_file, dirty_paths)
     reader = _read_once(read_lines) if read_lines is not None else None
@@ -283,10 +291,11 @@ def _resolve(
     rel = paths.relative(frame.path)
     if rel is None:
         return "outside_root"
-    if frame.language not in ("go", "python", "javascript", *_JVM):
+    if frame.language not in ("go", "python", "javascript", "rust", *_JVM):
         return "unsupported_language"
-    # A JVM frame without a line still has its class, method and parameters.
-    if frame.line < 1 and frame.language not in _JVM:
+    # A JVM frame without a line still has its class, method and parameters;
+    # a Rust one its demangled path (:func:`_rust_by_name`).
+    if frame.line < 1 and frame.language not in (*_JVM, "rust"):
         return "bad_line"
     indexed = paths.indexed(rel)
     if indexed is not None:
@@ -312,6 +321,8 @@ def _resolve(
         outcome = _go(frame, symbols)
     elif frame.language in _JVM:
         outcome = _jvm(frame, symbols, kotlin=rel.endswith(".kt"))
+    elif frame.language == "rust":
+        outcome = _rust(frame, symbols, lines)
     else:
         outcome = _python(frame, symbols, lines)
     return (rel, outcome) if isinstance(outcome, tuple) else outcome
@@ -434,6 +445,173 @@ def _decorated(
 def _qualname_tail(frame_name: str, qualified_name: str) -> bool:
     """Whether *frame_name* (``Flask.__init__``) ends *qualified_name* at a dot."""
     return qualified_name == frame_name or qualified_name.endswith("." + frame_name)
+
+
+# -- Rust ----------------------------------------------------------------------
+
+# rustc's legacy mangling ends a path in ``::h`` and 16 hex digits; v0 has no hash.
+_RUST_HASH_RE = re.compile(r"::h[0-9a-f]{16}$")
+# A closure, async block or async fn body: legacy ``{{closure}}``, v0 ``{closure#0}``.
+_RUST_ANONYMOUS_RE = re.compile(r"::\{\{?(?:closure|async_block|async_fn|async_gen)(?:#\d+)?\}\}?$")
+_RUST_QSELF_RE = re.compile(r"\s+as\s+")
+
+
+def _rust_path(name: str) -> tuple[list[str], list[str], bool]:
+    """A demangled Rust frame as ``(path segments, owner names, folded)``.
+
+    The hash and any closure or async suffixes are cut (``folded`` when there
+    were any), and generic arguments dropped. A qualified self
+    (``<T as Trait>::m``, ``<T>::m``) gives the segments of ``T`` then ``m``,
+    and owners ``T`` and ``Trait``: rust-analyzer-style indexes put a trait
+    impl's method under the type, a provided method under the trait.
+    """
+    name = _RUST_HASH_RE.sub("", name)
+    folded = False
+    while (m := _RUST_ANONYMOUS_RE.search(name)) is not None:
+        name, folded = name[: m.start()], True
+    owners: list[str] = []
+    if name.startswith("<"):
+        close = _rust_matching_angle(name)
+        if close < 0:
+            return [], [], folded
+        self_type, *trait = _rust_split_as(name[1:close])
+        name = self_type + name[close + 1 :]
+        owners = [p for p in (_rust_last(self_type), *map(_rust_last, trait)) if p]
+    segments = [s for s in _rust_drop_generics(name).split("::") if s]
+    if not owners and len(segments) >= 2:
+        owners = [segments[-2]]
+    return segments, owners, folded
+
+
+def _rust_angle_steps(text: str) -> list[int]:
+    """Angle-bracket depth after each character; the ``>`` of ``->`` does not close."""
+    depth, steps = 0, []
+    for i, ch in enumerate(text):
+        depth += (ch == "<") - (ch == ">" and text[i - 1 : i] != "-")
+        steps.append(depth)
+    return steps
+
+
+def _rust_split_as(qself: str) -> list[str]:
+    """``T as Trait`` split at its own ``as``, not one inside ``T``'s generic arguments."""
+    steps = _rust_angle_steps(qself)
+    for m in _RUST_QSELF_RE.finditer(qself):
+        if steps[m.start()] == 0:
+            return [qself[: m.start()], qself[m.end() :]]
+    return [qself]
+
+
+def _rust_matching_angle(text: str) -> int:
+    """The index of the ``>`` closing the ``<`` *text* opens with, or -1."""
+    return next((i for i, depth in enumerate(_rust_angle_steps(text)) if depth == 0), -1)
+
+
+def _rust_drop_generics(text: str) -> str:
+    steps = _rust_angle_steps(text)
+    return "".join(
+        ch for i, ch in enumerate(text) if steps[i] == 0 and (i == 0 or steps[i - 1] == 0)
+    )
+
+
+def _rust_last(path: str) -> str:
+    """The type a self type or trait path names: ``&mut dyn a::Tr<T>`` -> ``Tr``."""
+    name = _rust_drop_generics(path).strip().lstrip("&").removeprefix("mut ").removeprefix("dyn ")
+    return name.rsplit("::", 1)[-1].strip()
+
+
+def _rust_agrees(symbol: IndexedSymbol, segments: list[str], owners: list[str]) -> bool:
+    """Whether the frame's name is *symbol*'s: its name, and for a method its type or trait."""
+    if not segments or segments[-1] != symbol.name:
+        return False
+    if symbol.kind != "method" or len(segments) == 1:
+        return True
+    parts = symbol.qualified_name.split(".")
+    return len(parts) >= 2 and parts[-2] in owners
+
+
+def _rust_attributed(
+    line: int, symbols: Sequence[IndexedSymbol], lines: Callable[[], list[str] | None]
+) -> IndexedSymbol | None:
+    """The function an attribute on *line* applies to, or None.
+
+    A Rust span starts at ``fn``, below its attributes; code an attribute
+    macro writes (``#[instrument]``, ``#[tokio::main]``) runs on the
+    attribute's line. The line must read ``#[``, and only attributes,
+    comments or blank lines may stand between it and the nearest function
+    opening below. Read from the source, not the index: an index that lost a
+    function (two ``impl From<_> for T`` share one id) must not hand its
+    lines to the next one. The caller still checks the name.
+    """
+    below = [s for s in symbols if s.start_line > line and s.kind in _CALLABLE_KINDS]
+    text = lines() if below else None
+    if not below or text is None or line > len(text) or not text[line - 1].lstrip().startswith("#["):
+        return None
+    nearest = symbol_at(below, min(s.start_line for s in below))
+    if nearest is None or nearest.start_line > len(text) + 1:
+        return None
+    between = (t.strip() for t in text[line : nearest.start_line - 1])
+    if any(_RUST_ITEM_RE.match(t) or (t and not t.startswith(("#[", "//", ")", "]")) and not _RUST_ATTR_ARGS_RE.match(t)) for t in between):
+        return None
+    return nearest
+
+
+# A continuation line of a multi-line attribute's arguments: no item or block.
+_RUST_ATTR_ARGS_RE = re.compile(r"^[^{};]*$")
+# A line that opens an item: never part of an attribute.
+_RUST_ITEM_RE = re.compile(r"^(?:pub\b|fn\b|struct\b|enum\b|impl\b|trait\b|mod\b|use\b|const\b|static\b|type\b|unsafe\b|async\b|extern\b|macro_rules!)")
+_RUST_FN_RE = r"\bfn\s+{}\b"
+
+
+def _rust_by_name(
+    segments: list[str],
+    owners: list[str],
+    callables: Sequence[IndexedSymbol],
+    lines: Callable[[], list[str] | None],
+) -> IndexedSymbol | None:
+    """The one function a frame with no line names, or None.
+
+    pprof-rs writes line 0 for some inlined code. The frame joins only when
+    one indexed function of the file agrees with its name and the source
+    defines one ``fn`` of that name: an index that folded two
+    ``impl From<_> for T`` into one id never decides which ran.
+    """
+    found = [s for s in callables if _rust_agrees(s, segments, owners)]
+    if len(found) != 1 or (text := lines()) is None:
+        return None
+    pattern = re.compile(_RUST_FN_RE.format(re.escape(segments[-1])))
+    return found[0] if sum(len(pattern.findall(t)) for t in text) == 1 else None
+
+
+def _rust(
+    frame: ProfileFrame, symbols: Sequence[IndexedSymbol], lines: Callable[[], list[str] | None]
+) -> _Hit | SkipReason:
+    """A Rust frame by line and demangled name (pprof-rs writes no start line).
+
+    The innermost function or method at the line, or the function an
+    attribute on the line belongs to, must carry the frame's name (and for a
+    method its type or trait). A closure or async body folds into the function
+    around it; one outside any function folds into the file. A frame that names
+    no indexed function is never put on the file: derive and macro output on a
+    type's line is ``no_span``. A frame with no line joins by name only
+    (:func:`_rust_by_name`), else stays ``bad_line``.
+    """
+    if not frame.function:
+        return "no_second_signal" if frame.line >= 1 else "bad_line"
+    segments, owners, folded = _rust_path(frame.function)
+    callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+    if frame.line < 1:
+        named = _rust_by_name(segments, owners, callables, lines)
+        return (named, folded) if named is not None else "bad_line"
+    at_line = symbol_at(callables, frame.line)
+    if at_line is not None and _rust_agrees(at_line, segments, owners):
+        return (at_line, folded)
+    # An attribute on a fn nested in another lies on the outer fn's lines.
+    attributed = _rust_attributed(frame.line, symbols, lines)
+    if attributed is not None and _rust_agrees(attributed, segments, owners):
+        return (attributed, folded)
+    if at_line is None and attributed is None:
+        return (None, True) if folded else "no_span"
+    return "second_signal_mismatch"
 
 
 # -- JVM (Java, Kotlin) ----------------------------------------------------------

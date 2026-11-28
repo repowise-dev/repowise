@@ -422,7 +422,10 @@ migration.
   (missing, inline `data:`, remote, indexed, or with sources outside the
   checkout or in another scheme), a generated bundle stays a library frame,
   and any other bundle refuses the whole profile with an error naming that
-  bundle; so does a frame whose position the map does not cover. Generate
+  bundle. A frame at a position the map leaves unmapped (tsc's shebang line,
+  a helper the compiler wrote) is skipped as `not_indexed` and the rest of the
+  profile joins; a frame past the map's last line still refuses it, since that
+  map was built from another bundle. Generate
   external maps for every bundle the profile runs. Collapsed frames without
   columns need exactly one mapping segment starting at column zero on their
   generated line.
@@ -534,8 +537,21 @@ changed since. Every run listing names a production run's window and deploy
 as its rows' claim, `window`: "in production over 2026-10-30 to 2026-11-26,
 deployed commit unknown" (`evidence status`, the REST `status`, `runs` and
 `measured` routes, and `get_health`'s measured `runs`). A run of any other
-class has no `window` key. A route row is stored without a function until the
-route table joins it, and nothing reads route rows yet.
+class has no `window` key.
+
+A route row names the function that handles it. Every index stores the repo's
+routes (`http_routes`: method, path template and handler), and the join reads
+both templates in one form first: every parameter is the same whatever its
+syntax (`{repo_id}`, `{path:path}`, `:id`, `<int:id>`, `[id]`, a whole-segment
+`*` or `*name`), with case and a trailing slash ignored. It then needs the same
+method (a stored route that serves every method answers only when no route
+names the method) and the same template, never a pattern match of one against
+the other. A row names a handler only when every matching route names that one;
+otherwise it names none and `evidence add` counts why in `unlinked`:
+`ambiguous_route` (routes with different handlers match), `no_handler` (the
+route's handler is inline, so the index names none) or `unknown_route` (no
+stored route matches: a prefix the index could not see, a route another
+service serves). A route row is joined once, when it is stored.
 
 A statement row names the function that issues it. Every index stores the
 repo's statement sites (`statement_sites`): each PostgREST client call
@@ -580,6 +596,16 @@ listed, never leading: no rule reads a statement's cost into a next step yet,
 so they mint no measured hotspot and no Fix first item. A store with statement
 runs is never `no_runtime_data`; one whose newest windows name no function
 reads `not_ranked`.
+
+Route runs read back the same way, as the `routes` group: one row per handler
+the route join named, ranked by the request time of its routes, with `share` of
+the window's stored request time, `routes` (`requests`, `total_ms`, `mean_ms`
+per request, the slowest route's `p95_ms`, `errors`, and its `routes` as
+`METHOD template`, costliest first) and `verify` the next production window.
+The run's `unattributed` counts the routes on no handler as `unjoined`. Route
+rows never lead either, and a store with route runs is never
+`no_runtime_data`. The group is left out of every response when no route run
+names a handler, so those responses are unchanged.
 
 A Postgres database's statement statistics are one SELECT away, run by whoever
 may read the database, with no connector:
@@ -930,7 +956,7 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   suffix (a JVM frame, which names a class and no file, is placed on the one
   indexed file its package and class name spell). What does not join is counted by reason, and a value that was not
   measured is unknown, never zero.
-- A profile joins to code for Python, Go, JavaScript, Java and Kotlin frames.
+- A profile joins to code for Python, Go, JavaScript, Java, Kotlin and Rust frames.
   A JVM frame joins by its line to the method holding it, with the method name
   and class checked; without a line, by name only when one method fits.
   Compiler-made JVM frames (bridges, accessors, `$$Lambda`) count as generated
@@ -939,6 +965,10 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   their original source through a local external source map; a frame that
   names a TypeScript file directly is refused, and so is a Go binary built
   with `-trimpath`.
+  A Rust frame (pprof-rs) joins by its line and demangled name, with the
+  type checked for a method or trait impl; closures and async bodies charge
+  the function around them, and code an attribute macro such as
+  `#[instrument]` writes joins the function the attribute sits on.
 - A profile or query-count run where more than half the entries did not map is
   refused unless `--allow-partial`.
 - A profile of one process misses the processes it starts; profile each one and

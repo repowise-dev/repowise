@@ -56,8 +56,8 @@ class _Unit:
     #: False for a performance cause whose marker has not cleared the bar for
     #: leading (``opportunity_rank.may_lead``): listed, never first.
     may_lead: bool = True
-    #: A measured hotspot that may lead: its self share of the leading run that
-    #: measured it. The highest leads the queue (``build.measured_lead``).
+    #: A measured hotspot: its self share of the leading run that measured it.
+    #: The highest that may lead leads the queue (``build.measured_lead``).
     measured_share: float | None = None
 
 

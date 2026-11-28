@@ -21,13 +21,25 @@ def existing_vector_dim(lance_dir: Path) -> int | None:
     steady state never imports lancedb. A store written before that record
     existed is probed once and the answer recorded; the writer re-stamps it
     on its next write, so a stale record cannot outlive one.
+
+    A keyless run writes no store, only a marker (see
+    :func:`build_vector_store`). No table plus that marker answers the mock's
+    width, which is what a keyless run's table used to hold. "No table" rather
+    than "no directory": a real-embedder run that failed before its first
+    write leaves an empty directory, and the next run must still re-embed.
     """
-    if not lance_dir.exists():
-        return None
     from repowise.core.persistence.vector_store.lancedb_store import (
+        keyless_store_marked,
         read_recorded_vector_dim,
         record_vector_dim,
     )
+
+    if not (lance_dir / f"{_TABLE_NAME}.lance").is_dir() and keyless_store_marked(lance_dir):
+        from repowise.core.providers.embedding.base import MockEmbedder
+
+        return MockEmbedder.dimensions
+    if not lance_dir.exists():
+        return None
 
     recorded = read_recorded_vector_dim(lance_dir, _TABLE_NAME)
     if recorded is not None:
@@ -101,7 +113,7 @@ def _mock_would_clobber(lance_dir: Path, embedder: Any) -> bool:
     return existing is not None and existing != embedder.dimensions
 
 
-def build_vector_store(repo_path: Path, embedder: Any) -> Any | None:
+def build_vector_store(repo_path: Path, embedder: Any, *, summaries: bool = False) -> Any | None:
     """Build the repo-local vector store, preferring LanceDB.
 
     Uses LanceDB at ``.repowise/lancedb`` so previously-embedded pages and
@@ -111,10 +123,17 @@ def build_vector_store(repo_path: Path, embedder: Any) -> Any | None:
     embed rather than a run that only looked healthy.
 
     Returns ``None`` when handing back a store would destroy the existing one
-    (see :func:`_mock_would_clobber`). Every caller already treats ``None`` as
-    "embedding is off for this run"; full-text search is unaffected either way.
+    (see :func:`_mock_would_clobber`), and for the keyless embedder on a repo
+    with no table yet: nothing searches its vectors, and writing them cost a
+    lancedb import and a store on disk for no reader. Every caller already treats ``None`` as "embedding
+    is off for this run"; full-text search is unaffected either way.
+
+    *summaries* is for a run whose model generation reads earlier pages'
+    summaries back from the store (dependency context, and the overview's
+    corpus of pages the run did not rewrite). That reader needs no semantic
+    vectors, so it still gets a store when the embedder is keyless.
     """
-    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import is_semantic_embedder
 
     lance_dir = repo_path / ".repowise" / "lancedb"
     if _mock_would_clobber(lance_dir, embedder):
@@ -137,5 +156,19 @@ def build_vector_store(repo_path: Path, embedder: Any) -> Any | None:
             "Set an\nembedder key and run [cyan]repowise reindex[/cyan] to refresh it."
         )
         return None
+    has_table = (lance_dir / f"{_TABLE_NAME}.lance").is_dir()
+    if not summaries and not has_table and not is_semantic_embedder(embedder):
+        # The marker records what a keyless run's table used to tell later
+        # runs: these pages were embedded keyless, so the first real-embedder
+        # ``update`` re-embeds every page. A table an earlier run wrote is
+        # still kept current (retired pages leave it, ``doctor --repair`` can
+        # clean it, later model runs read its summaries), so only repos that
+        # have none skip LanceDB.
+        from repowise.core.persistence.vector_store.lancedb_store import mark_keyless_store
+
+        mark_keyless_store(lance_dir)
+        return None
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
     lance_dir.mkdir(parents=True, exist_ok=True)
     return LanceDBVectorStore(str(lance_dir), embedder=embedder)

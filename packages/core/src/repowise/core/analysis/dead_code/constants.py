@@ -86,23 +86,6 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/sitecustomize.py",
     "usercustomize.py",
     "*/usercustomize.py",
-    # Next.js / Remix / SvelteKit framework route files — loaded by the
-    # framework at runtime, never imported via module imports.
-    "*/page.tsx",
-    "*/page.ts",
-    "*/page.jsx",
-    "*/page.js",
-    "*/layout.tsx",
-    "*/layout.ts",
-    "*/route.tsx",
-    "*/route.ts",
-    "*/loading.tsx",
-    "*/error.tsx",
-    "*/not-found.tsx",
-    "*/template.tsx",
-    "*/default.tsx",
-    # Nuxt route pages
-    "*/pages/*.vue",
     # ---- Qt / QML ---------------------------------------------------
     # Instantiated by type name and loaded by the runtime (qrc, Loader,
     # qmlRegisterType), so a QML file never has a static importer.
@@ -638,62 +621,14 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/generated/*.tsx",
     "*/generated/*.js",
     "*/__generated__/*",
-    # More Next.js app router convention files. The ``*/foo.ts`` form requires
-    # the literal basename, so ``mymiddleware.ts`` is not exempt.
-    "*/instrumentation.ts",
-    "*/instrumentation-client.ts",
-    "*/middleware.ts",
-    "*/middleware.js",
-    # Next.js 16 renamed ``middleware`` to ``proxy``.
-    "*/proxy.ts",
-    "*/proxy.js",
-    "*/global-error.tsx",
-    "*/global-error.ts",
-    "*/forbidden.tsx",
-    "*/unauthorized.tsx",
-    "*/sitemap.ts",
-    "*/sitemap.tsx",
-    "*/robots.ts",
-    "*/robots.tsx",
-    "*/manifest.ts",
-    "*/manifest.tsx",
-    "*/icon.tsx",
-    "*/icon.ts",
-    "*/apple-icon.tsx",
-    "*/opengraph-image.tsx",
-    "*/opengraph-image.ts",
-    "*/twitter-image.tsx",
-    "*/twitter-image.ts",
-    # Repo-root variants (no leading directory) for monorepos where the
-    # app lives at root.
-    "instrumentation.ts",
-    "middleware.ts",
-    "proxy.ts",
-    "sitemap.ts",
-    "robots.ts",
-    # Remix root/entry files — invoked by the framework runtime.
+    # Remix / React Router entry files. Path-only on purpose: the name is the
+    # framework's alone, and a preview or sub-app is often run by a CLI whose
+    # dependency another workspace declares, so no package.json names it.
+    # Upgrade path: read app roots from ``react-router.config.*`` beside them.
     "*/entry.client.ts",
     "*/entry.client.tsx",
     "*/entry.server.ts",
     "*/entry.server.tsx",
-    "*/next-env.d.ts",
-    "next-env.d.ts",
-    # SvelteKit + Nuxt convention files.
-    "*/+page.svelte",
-    "*/+page.ts",
-    "*/+page.server.ts",
-    "*/+layout.svelte",
-    "*/+layout.ts",
-    "*/+layout.server.ts",
-    "*/+server.ts",
-    "*/+error.svelte",
-    # Astro file-based routes: every page under src/pages is a route, and a
-    # .ts/.js/.mjs file there is an endpoint (``robots.txt.ts``, ``api/[id].json.ts``).
-    "*src/pages/*.astro",
-    # shortcut: exempts src/pages/*.{ts,js,mjs} in every repo, not only Astro ones, and _-prefixed non-routes (fnmatch ``*`` crosses ``/``), gate on an Astro stack signal or filter in code if a repo reports hidden dead code.
-    "*src/pages/*.ts",
-    "*src/pages/*.js",
-    "*src/pages/*.mjs",
     # ---- JVM (Java + Kotlin) conventions ---------------------------------
     # Module / package metadata files, which declare no importable symbols.
     "*/module-info.java",
@@ -1128,6 +1063,18 @@ _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str, bool], ...] = (
 # carry, so a plain class's unused inner ``Config`` goes unreported too.
 _FRAMEWORK_INNER_CLASS_NAMES: dict[str, frozenset[str]] = {
     "python": frozenset({"Meta", "Config"}),
+}
+
+# Inner class names a framework reads only in a module that imports it, so the
+# name alone is not enough: Graphene's ``Mutation`` metaclass reads ``class
+# Arguments`` as the field's arguments, but ``Arguments`` is a common class
+# name elsewhere. Keyed by language, then inner name to the top-level packages
+# one of which the declaring file must import. Ceiling: a mutation module that
+# reaches Graphene only through a local base class, with no ``graphene``
+# import of its own, stays reported; reading the outer class's bases would
+# lift that.
+_IMPORT_GATED_INNER_CLASS_NAMES: dict[str, dict[str, frozenset[str]]] = {
+    "python": {"Arguments": frozenset({"graphene"})},
 }
 
 

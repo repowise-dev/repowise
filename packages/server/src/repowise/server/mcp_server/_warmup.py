@@ -13,7 +13,7 @@ in flight; :func:`~._graph_files.per_index` locks per cache, so that call
 waits on the warm build only when it reads the same cache, and then reuses
 it. From then on each call builds what it reads, as before. It is skipped when the machine
 is short of free memory, since every MCP server on the machine holds its own
-copy.
+copy, and when ``performance.warm_caches`` is off.
 """
 
 from __future__ import annotations
@@ -104,6 +104,11 @@ async def warm_index_caches() -> None:
     ctx = await _resolve_repo_context(None)
     if ctx.session_factory is None:
         return
+    # Started at a workspace root, the caches warmed are the default member's,
+    # so its config.yaml decides too.
+    if ctx.path is not None and _turned_off(ctx.path):
+        _log.info("repowise MCP: skipping cache warmup, performance.warm_caches is off")
+        return
     started = time.perf_counter()
     if await _build_caches(ctx):
         _log.info("repowise MCP: index caches warm in %.1fs", time.perf_counter() - started)
@@ -153,10 +158,31 @@ def _memory_needed() -> int:
     return max(MIN_FREE_MEMORY_BYTES, FREE_MEMORY_PER_STORE_BYTE * store)
 
 
+def _turned_off(repo_path: Any) -> bool:
+    """``performance.warm_caches: false`` in *repo_path*'s config.yaml.
+
+    An unreadable config warms as the default does: the warmup is an
+    optimisation, and a broken file is ``repowise doctor``'s to report.
+    """
+    if not repo_path:
+        return False
+    try:
+        from repowise.core.settings.writers import current
+
+        return current(repo_path, "performance.warm_caches").value is False
+    except (ValueError, OSError):  # RepoConfigError is a ValueError
+        return False
+
+
 def start() -> None:
-    """Start the warmup once per server, unless free memory is short."""
+    """Start the warmup once per server, unless turned off or free memory is short."""
     global _task, _call_seen
     if _task is not None:
+        return
+    from repowise.server.mcp_server import _state
+
+    if _turned_off(_state._repo_path):
+        _log.info("repowise MCP: skipping cache warmup, performance.warm_caches is off")
         return
     from repowise.core.procutils import available_memory_bytes
 

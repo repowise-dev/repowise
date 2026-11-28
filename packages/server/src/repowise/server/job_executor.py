@@ -577,7 +577,11 @@ def _resolve_llm_client(spec: _JobSpec) -> tuple[Any, str | None]:
             None,
         )
     except Exception as exc:
+        from repowise.core.extras import MissingExtraError
+
         logger.warning("no_provider_configured", error=str(exc))
+        if isinstance(exc, MissingExtraError):
+            return None, str(exc)  # already names the install command
         return None, f"no provider configured: {exc}"
 
 

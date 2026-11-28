@@ -63,3 +63,28 @@ class TestRubyImports:
         modules = [imp.module_path for imp in result.imports]
         assert "json" in modules
         assert "./helper" in modules
+
+
+def test_same_line_mention_keeps_the_mixin_origin() -> None:
+    """``Foo.setup; include Foo`` on one line: the mixin reference survives the dedup."""
+    from datetime import datetime
+
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import ASTParser
+
+    src = b"class Widget; Tracking.setup; include Tracking; end\n"
+    info = FileInfo(
+        path="app/models/widget.rb",
+        abs_path="app/models/widget.rb",
+        language="ruby",
+        size_bytes=len(src),
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    refs = ASTParser().parse_file(info, src).type_refs
+    origins = {r.origin for r in refs if r.type_name == "Tracking"}
+    assert origins == {"constant", "mixin"}

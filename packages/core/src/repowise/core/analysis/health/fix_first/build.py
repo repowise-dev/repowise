@@ -350,8 +350,26 @@ def measured_lead(ordered: list[_Unit]) -> list[_Unit]:
     the lead bar, carrying a next step a rule fired on, is the first thing to
     fix. A measured cost with a concrete step outranks every static estimate.
     One item moves; every other measured item keeps its place by value.
+
+    Measured items with no step (they may not lead) of one value band and
+    tier keep the places the order gave them, filled by the self share each
+    one's run measured, largest first, so file churn never puts a 4% function
+    above a 10% one. The band and tier order stays as :func:`order` set it.
     """
-    leads = [(u.measured_share, -i) for i, u in enumerate(ordered) if u.measured_share is not None]
+    stepless: dict[tuple[int, str], list[int]] = defaultdict(list)
+    for i, u in enumerate(ordered):
+        if u.measured_share is not None and not u.may_lead:
+            stepless[(u.value, u.tier)].append(i)
+    ordered = list(ordered)
+    for slots in stepless.values():
+        by_share = sorted((ordered[i] for i in slots), key=lambda u: -(u.measured_share or 0.0))
+        for i, unit in zip(slots, by_share, strict=True):
+            ordered[i] = unit
+    leads = [
+        (u.measured_share, -i)
+        for i, u in enumerate(ordered)
+        if u.measured_share is not None and u.may_lead
+    ]
     if not leads:
         return ordered
     at = -max(leads)[1]

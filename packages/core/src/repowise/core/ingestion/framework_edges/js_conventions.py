@@ -1,9 +1,9 @@
 """Files a JS framework loads by directory convention, anchored to the framework.
 
-A React Email preview under ``emails/``, a Next.js ``pages/`` route, a Remix
-``app/routes/`` module, a Nuxt page or plugin, a SvelteKit hook, an Astro page
-and an Expo Router screen are loaded by the framework from where they sit, so
-no file imports them. Each ``package.json`` that depends on one of these
+A React Email preview under ``emails/``, a Next.js ``pages/`` route or App
+Router segment file, a Remix ``app/routes/`` module, a Nuxt page or plugin, a
+SvelteKit hook, an Astro page, an Expo Router screen and a ``vite-plugin-pages``
+page are loaded by the framework from where they sit, so no file imports them. Each ``package.json`` that depends on one of these
 frameworks (:data:`~..framework_facts.JS_FRAMEWORKS`) gets its entry globs
 anchored to the framework's ``framework:`` node, relative to the manifest's
 directory, the way a TYPO3 or Laravel app's convention files are. Dead-code

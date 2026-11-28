@@ -40,8 +40,6 @@ interface RepositoryState {
 interface Repository {
   readonly rootUri: vscode.Uri;
   readonly state: RepositoryState;
-  /** `git diff ref1 ref2`, name+status list. Absent on older git extensions. */
-  diffBetween?(ref1: string, ref2: string): Promise<Change[]>;
 }
 
 interface GitAPI {
@@ -200,27 +198,6 @@ export async function getChangedFiles(
     staged: normalizePaths(repoRoot, repo.state.indexChanges),
     workingTree: normalizePaths(repoRoot, repo.state.workingTreeChanges),
   };
-}
-
-/**
- * Files that differ between `base` and the checked-out HEAD (the committed work
- * a push would carry), as repo-relative POSIX paths. Null when git is
- * unavailable, the git extension is too old to expose `diffBetween`, or `base`
- * cannot be resolved (e.g. never fetched); callers fall back to the working-tree
- * set. Never throws.
- */
-export async function getBranchChangedFiles(
-  repoRoot: string,
-  base: string,
-): Promise<string[] | null> {
-  const repo = await getRepository(repoRoot);
-  if (!repo?.diffBetween) return null;
-  try {
-    const changes = await repo.diffBetween(base, "HEAD");
-    return normalizePaths(repoRoot, changes);
-  } catch {
-    return null;
-  }
 }
 
 /**

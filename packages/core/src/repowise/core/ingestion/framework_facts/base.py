@@ -5,7 +5,7 @@ from __future__ import annotations
 import fnmatch
 import posixpath
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cache
 from typing import TYPE_CHECKING
@@ -33,6 +33,9 @@ class FrameworkFacts:
     #: Config files beside the ``package.json`` whose literals move where the
     #: framework looks (Nuxt ``srcDir``, SvelteKit ``kit.files``), first wins.
     config_files: tuple[str, ...] = ()
+    #: Files the runtime loads that a glob cannot name, as a predicate over the
+    #: path relative to the app root (the App Router's segment conventions).
+    entry_match: Callable[[str], bool] | None = None
 
     def matches(self, manifest: ComposerManifest) -> bool:
         if manifest.type in self.composer_types:
@@ -49,17 +52,22 @@ class FrameworkFacts:
         return next((manifest.configs[n] for n in self.config_files if n in manifest.configs), None)
 
     def entry_files(self, root: str, paths: Iterable[str]) -> list[str]:
-        """The members of *paths* that match an entry glob under *root*, sorted.
+        """The members of *paths* that match an entry glob or :attr:`entry_match` under *root*, sorted.
 
         The root is matched literally and only the part below it against the
         globs, so a directory named ``ext[old]`` is not read as a pattern.
         """
-        if not self.entry_globs:
+        if not self.entry_globs and self.entry_match is None:
             return []
         prefix = f"{root}/" if root else ""
-        pattern = _compiled(self.entry_globs)
+        cut = len(prefix)
+        pattern = _compiled(self.entry_globs) if self.entry_globs else None
+        match = self.entry_match
         return sorted(
-            p for p in paths if p.startswith(prefix) and pattern.match(p, len(prefix))
+            p
+            for p in paths
+            if p.startswith(prefix)
+            and ((pattern is not None and pattern.match(p, cut)) or (match is not None and match(p[cut:])))
         )
 
 

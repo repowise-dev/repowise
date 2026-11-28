@@ -118,11 +118,12 @@ def test_a_route_latency_file_reads_routes_and_skips_urls_by_reason() -> None:
     }
 
 
-def test_route_and_statement_rows_keep_no_function_until_their_join_exists() -> None:
+def test_a_route_row_with_no_stored_route_keeps_no_function() -> None:
     doc = parse_evidence(_fixture("route_latency.json").decode())
     assert entry_paths(doc) == set()
     joined = join_entries(doc, {}, {}, frozenset())
-    assert joined.matched == 2 and not joined.skipped and not joined.unlinked
+    assert joined.matched == 2 and not joined.skipped
+    assert joined.unlinked == {"unknown_route": 2}
     assert joined.rows[0] == {
         "method": "GET",
         "route": "/api/repos/:id",
