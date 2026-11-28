@@ -246,6 +246,8 @@ def _unknown_rows(config: Mapping[str, Any], settings: list[Setting]) -> list[Do
             options = sorted(k for k in known | blocks if not path.startswith(f"{k}."))
             near = get_close_matches(path, options, n=3, cutoff=0.8)
             hint = f"; did you mean {', '.join(near)}?" if near else ""
+            if not near and (path == "plugins" or path.startswith("plugins.")):
+                hint = "; no loaded plugin declares it (run 'repowise plugins')"
             detail = (
                 f"{path} in {_FILE} is not a setting repowise reads, so it does nothing{hint}"
             )
@@ -285,6 +287,9 @@ def settings_rows(ctx: CheckContext) -> list[DoctorCheck]:
     except RepoConfigError as exc:
         return [_check(NAME, False, f"{exc}; fix the file by hand", check_id="settings")]
     try:
+        from repowise.core.registry.plugins import load_plugins
+
+        load_plugins()  # an installed plugin's keys are settings, not typos
         settings = _file_settings()
         environ = dict(os.environ)
         rows, ctx.invalid_settings = _value_rows(settings, config, environ)

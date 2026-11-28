@@ -13,6 +13,12 @@ An area may also define ``resolve_setting(setting, config) -> Resolved`` when
 its values depend on each other (a decisions mode sets the defaults of the
 switches under it); the resolver defers to it for that area's settings. Such
 an area declares no env var, which the registry enforces.
+
+Plugins add settings to the ``plugins`` area at load time with
+:func:`register_settings` (:mod:`repowise.core.settings.plugins` builds them).
+They join the same tables under the same checks, so a surface that lists or
+resolves settings sees an installed plugin's once plugins have loaded, and a
+key for a plugin that is not installed stays unknown.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ __all__ = [
     "by_env",
     "family_members",
     "get",
+    "register_settings",
     "settings_in",
 ]
 
@@ -60,6 +67,7 @@ AREAS: tuple[str, ...] = (
     "indexing",
     "mcp",
     "performance",
+    "plugins",
     "providers",
     "report",
     "server",
@@ -68,6 +76,8 @@ AREAS: tuple[str, ...] = (
 _by_key: dict[str, Setting] | None = None
 _by_env: dict[str, Setting] = {}
 _modules: dict[str, ModuleType] = {}
+#: Settings plugins registered, in order; merged into every collection.
+_plugin_settings: list[Setting] = []
 #: Re-entrant, so an area that queries the registry while loading fails
 #: loudly on the missing table instead of deadlocking.
 _lock = threading.RLock()
@@ -96,22 +106,60 @@ def _collect() -> None:
         for setting in module.SETTINGS:
             if setting.area != area:
                 raise ValueError(f"{setting.key} is declared in {area} but says {setting.area}")
-            if setting.key in by_key:
-                raise ValueError(f"{setting.key} is registered twice")
-            by_key[setting.key] = setting
-            if setting.env is None:
-                continue
-            if own_resolver:
-                raise ValueError(
-                    f"{setting.key}: an area with its own resolve_setting cannot "
-                    "declare an env var; the resolver would never read it"
-                )
-            if setting.env.name in by_env:
-                raise ValueError(f"{setting.env.name} is registered twice")
-            by_env[setting.env.name] = setting
+            _add(setting, by_key, by_env, own_resolver=own_resolver)
+    for setting in _plugin_settings:
+        _add(setting, by_key, by_env, own_resolver=False)
     _modules.update(modules)
     _by_env.update(by_env)
     _by_key = by_key
+
+
+def _add(
+    setting: Setting,
+    by_key: dict[str, Setting],
+    by_env: dict[str, Setting],
+    *,
+    own_resolver: bool,
+) -> None:
+    """Put *setting* in the tables, or raise when its key or variable is taken."""
+    if setting.key in by_key:
+        raise ValueError(f"{setting.key} is registered twice")
+    if setting.env is not None:
+        if own_resolver:
+            raise ValueError(
+                f"{setting.key}: an area with its own resolve_setting cannot "
+                "declare an env var; the resolver would never read it"
+            )
+        if setting.env.name in by_env:
+            raise ValueError(f"{setting.env.name} is registered twice")
+        by_env[setting.env.name] = setting
+    by_key[setting.key] = setting
+
+
+def register_settings(*settings: Setting) -> None:
+    """Add a plugin's settings to the ``plugins`` area; call it from ``register()``.
+
+    Build each with :func:`repowise.core.settings.plugins.plugin_setting`. All
+    or none are added: a key or variable already registered raises
+    ``ValueError``, which marks the plugin failed. Each shows in
+    ``repowise plugins`` as ``setting:<key>`` against the plugin loading now.
+    """
+    from repowise.core.registry.plugins import note_registration
+
+    for setting in settings:
+        if setting.area != "plugins":
+            raise ValueError(f"{setting.key}: a plugin setting belongs to the plugins area")
+    with _lock:
+        # Validate against a copy so a clash leaves every table as it was.
+        tables = _load()
+        by_key, by_env = dict(tables), dict(_by_env)
+        for setting in settings:
+            _add(setting, by_key, by_env, own_resolver=False)
+        _plugin_settings.extend(settings)
+        tables.update(by_key)
+        _by_env.update(by_env)
+    for setting in settings:
+        note_registration("setting", setting.key)
 
 
 def all_settings(*, include_internal: bool = True) -> tuple[Setting, ...]:

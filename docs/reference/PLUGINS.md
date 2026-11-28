@@ -20,6 +20,7 @@ The plugin API is experimental. Read [Stability](#stability) before you publish.
 | Add an embedding provider | `register_embedder(name, factory)` | `embedder` |
 | Add or replace an implementation of a seam | `<seam registry>.register(name, impl)` | the seam name, for example `event-sink` |
 | Create and change your own tables | `storage_migrations.register(StorageMigration(...))` | `storage-migration` |
+| Declare settings and credentials | `register_settings(plugin_setting(...), ...)` | `setting` |
 
 Every row is listed in the [extension points catalog](#extension-points-catalog).
 
@@ -203,6 +204,40 @@ service or credentials.
 }
 ```
 
+Each plugin row also carries `configured` and `missing`: every required
+[setting](#settings-for-a-plugin) it declares that has no value, with the one
+command that sets it, so a person or an agent can finish its setup from the
+listing alone.
+
+## Settings for a plugin
+
+A plugin declares its settings with `plugin_setting` and adds them from
+`register()`. They join the settings registry in the `plugins` area, so
+`repowise config list`, `config explain`, `config set`, `repowise doctor` and
+the settings page show them like any other setting while the plugin is
+installed.
+
+```python
+from repowise.core.settings.plugins import plugin_setting, register_settings
+
+TEAM = plugin_setting("linear", "team", "str", None, "Linear team key to read issues from.")
+TOKEN = plugin_setting("linear", "token", "str", None, "Linear API key.", secret=True)
+
+
+def register():
+    register_settings(TEAM, TOKEN)
+```
+
+| Kind | Key | Where its value comes from |
+|------|-----|----------------------------|
+| Plain | `plugins.<plugin>.<name>` | `.repowise/config.yaml`, or `REPOWISE_PLUGIN_<PLUGIN>_<NAME>` when the file is unset |
+| Secret (`secret=True`) | `REPOWISE_PLUGIN_<PLUGIN>_<NAME>` | that environment variable only; listings show it as set, never its value |
+
+A setting with no default (`None`) is required. A key or variable another
+setting already holds raises `ValueError` and marks the plugin `failed`. A
+`plugins.<plugin>.*` key in `config.yaml` for a plugin that is not installed is
+an unknown key, reported by `config` and `doctor` like any other.
+
 ## When plugins load
 
 Plugins load once per process, the first time repowise needs them:
@@ -326,7 +361,7 @@ module in the last column and call `.register(name, impl)`, for example
 | `change-outcome` | `change_outcome_providers` | every | when a change record's outcomes are read | `OutcomeUnknownError` marks the outcome unknown; any other exception propagates, and in `repowise report` it marks the outcomes item unavailable | `packages/core/src/repowise/core/changes/outcomes.py` |
 | `change-metadata` | `change_metadata_sources` | one | when change records are stored, and by the `changes` report section | if a plugin source fails, repowise logs `change_metadata_failed` and stores the records with metadata from the built-in `git` source, marked `git`. If no implementation is registered under the configured name, it logs `changes_refresh_failed` and stores no new records. In the report, the `report-section` rule applies | `packages/core/src/repowise/core/changes/source.py` |
 | `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint, and any other exception (including from `sniff`) propagates; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages, not files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
-| `evidence-source` | `evidence_sources` | every; the host chooses which source to fetch, when, and with which credentials | when a host calls `run_fetch` (repowise itself schedules no fetch) | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
+| `evidence-source` | `evidence_sources` | every; a source that declares `settings` runs once they are set, any other only when its host calls it | `repowise sources sync`, the end of `repowise update`, or a host calling `run_fetch` | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
 | `document-extractors` | `document_extractors` | every; later extension claim wins | During traversal and source reads for otherwise unsupported extensions | indexing propagates with plugin name and original path; optional previews omit unavailable content | `packages/core/src/repowise/core/ingestion/document_extractors.py` |
@@ -439,8 +474,37 @@ entries is stored with no checkout root, while a batch of profile bytes is
 refused, since its frames are placed on the checkout's source. `fetch` is a plain iterable, so a source
 that waits on the network holds the caller's event loop while it reads; a
 server runs `run_fetch` in its own task or worker. `repowise plugins` lists
-each registered source under `evidence-source`; repowise has no command that
-fetches.
+each registered source under `evidence-source`.
+
+#### Syncing a source
+
+A source that sets `settings` to the [plugin settings](#settings-for-a-plugin)
+it reads (an empty tuple when it needs none) is run by repowise itself:
+
+```python
+class StatementSource:
+    name = "postgres-statements"
+    kinds = ("statement_stats",)
+    settings = (DATABASE, DSN)  # DSN declared with secret=True
+
+    def fetch(self, request: SourceRequest):
+        database = request.settings[DATABASE.key]
+        dsn = request.credentials[DSN.key]
+        ...
+```
+
+`repowise sources sync` runs every source whose required settings all have a
+value: plain values arrive in `request.settings` and secrets in
+`request.credentials`, both keyed by setting key (`credentials` is `None` when
+the source declares no secret). Batches go through `ingest_batch` and the
+cursor is kept per source in `.repowise/state.json`; secrets are read from the
+environment on each run and never written anywhere. Each source reports
+`stored`, `unavailable` (retry later), `refused` (its message is for the user),
+`failed` or `not_configured`, with the next command to run. `repowise update`
+runs the same sync for configured sources after its own work; a failing
+source prints one line and never fails the update, and with none configured
+the update is unchanged. A source with no `settings` attribute is left to a
+host that passes credentials of its own.
 
 ### Authenticator and authorizer
 

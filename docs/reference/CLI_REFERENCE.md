@@ -271,6 +271,8 @@ repowise update --full                 # leave nothing stale (fast index: upgrad
 - Index-only runs reuse stored layer names and node summaries (no LLM call). Docs mode saves pages as they finish; reruns skip them by prompt hash.
 - Failed best-effort steps (git metadata, decisions, dead code, ...) still exit 0, listed in the completion panel and `done` event's `degraded` array (`--progress json`); the next update retries.
 - Unindexed linked worktrees seed from the base checkout first ([WORKTREES.md](../scale/WORKTREES.md)).
+- After its own work, a single-repo update runs [`repowise sources sync`](#repowise-sources-sync) for each configured
+  plugin source. A failing source prints one line; the update still exits 0.
 
 **Flag notes**
 
@@ -1534,6 +1536,31 @@ writes nothing.
   `setup` again; no store is created. `coverage setup` prints the coverage part only. Takes
   `--path` and `--format`.
 
+### `repowise sources sync`
+
+Fetch from every source a plugin registers (an `evidence-source`) and store what it returns, the way
+`evidence add` stores a file. A source is configured once every setting it declares with no default has a
+value; each prints what it stored, or why not, ending with the one command to run next.
+
+```bash
+repowise sources sync                          # every configured source
+repowise sources sync --source postgres-statements --format json
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--source NAME` | Only this source. | every source |
+| `--path` | Repo path. | cwd |
+| `--format` | `table` or `json`. | `table` |
+
+- JSON: one row per source with `source`, `seam`, `state` (`stored`, `unavailable`, `refused`, `failed`,
+  `not_configured`), `batches`, `message`, `next_command` and `missing` (each unset setting with the command that
+  sets it).
+- Where each source stopped is kept in `.repowise/state.json` (`source_sync`); credentials never are.
+- Exits non-zero only when `--source` names an unknown source or one that did not store.
+- `repowise update` runs the same sync for configured sources after its own work. A failing source prints one line
+  and never fails the update; with none configured, update does exactly what it did before.
+
 ### `repowise perf measure -- <command>`
 
 Time a command and say whether a change made it faster or slower. Runs only the command typed
@@ -2556,7 +2583,9 @@ repowise telemetry disable               # or: enable
 ### `repowise plugins`
 
 List plugins from `repowise.plugins` entry points and `REPOWISE_PLUGINS`: loaded or why not, seams registered,
-implementation per seam. Plugin commands load only for an unknown command name or a command listing.
+implementation per seam. Plugin commands load only for an unknown command name or a command listing. Each plugin
+also says whether it is configured and, for each required setting it declares that has no value, the command that
+sets it (`configured` and `missing` in JSON).
 
 ```bash
 repowise plugins --format json

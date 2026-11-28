@@ -2642,6 +2642,16 @@ def run_update(
     repo_path = target.repo_path
     assert repo_path is not None  # single mode always sets repo_path
     run.repo_path = repo_path
+    outcome = _update_single_repo(opts, run)
+    if outcome in (UpdateOutcome.REGENERATED, UpdateOutcome.NOOP):
+        from repowise.cli.commands.sources_cmd import sync_after_update
+
+        sync_after_update(run.repo_path)
+    return outcome
+
+
+def _update_single_repo(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
+    """The single-repo update, from preparing the checkout to the outcome."""
     _prepare_repo(run.repo_path)
     if not opts.dry_run:
         # A moved or copied checkout still names its old path; adopt the store's

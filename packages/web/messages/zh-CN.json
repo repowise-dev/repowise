@@ -1359,6 +1359,7 @@
         "hooks": "智能体钩子",
         "indexing": "索引",
         "mcp": "MCP",
+        "plugins": "插件",
         "providers": "模型提供方",
         "server": "服务器"
       }

@@ -60,6 +60,8 @@ class SetupFacts:
     coverage_reports: tuple[FoundFile, ...] = ()
     runtime_stored: bool | None = None
     evidence_files: tuple[FoundFile, ...] = ()
+    #: Plugin sources whose settings are all set but that never synced, by name.
+    unsynced_sources: tuple[str, ...] | None = None
     background_records: int | None = None
     #: Settings ``config list --suggested`` names, by key; read once unlocked.
     suggested_settings: tuple[str, ...] | None = None
