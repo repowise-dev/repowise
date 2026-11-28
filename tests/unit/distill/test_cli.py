@@ -457,3 +457,82 @@ def test_distill_records_savings_ledger(repo_cwd: Path, fixtures_dir: Path) -> N
     summary = store.savings_summary()
     store.close()
     assert summary["per_filter"]["file_listing"]["events"] == 1
+
+
+def test_distill_json_filters_by_file_and_keeps_exit_code(repo_cwd: Path) -> None:
+    (repo_cwd / "a.py").touch()
+    (repo_cwd / "b.py").touch()
+    code = (
+        "import sys; "
+        "print('a.py:1: error: bad thing  [misc]'); "
+        "print('b.py:2: error: other thing  [misc]'); "
+        "sys.exit(1)"
+    )
+    result = CliRunner().invoke(
+        distill_command, ["--format", "json", "--file", "a.py", "--", *_py(code)]
+    )
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "errors"
+    assert [d["file"] for d in payload["diagnostics"]] == ["a.py"]
+
+
+def test_distill_json_from_a_subdir_of_a_nested_checkout(repo_cwd: Path, monkeypatch) -> None:
+    """Paths are relative to the checkout the tool ran in, not a parent's .repowise."""
+    sub = repo_cwd / "wt" / "sub"
+    sub.mkdir(parents=True)
+    (repo_cwd / "wt" / ".git").mkdir()
+    (sub / "a.py").touch()
+    (sub / "b.py").touch()
+    monkeypatch.chdir(sub)
+    code = "import sys; print('a.py:1: error: bad  [misc]'); print('b.py:2: error: x  [misc]'); sys.exit(1)"
+    for wanted in ("a.py", "sub/a.py"):  # cwd-relative, then repo-relative
+        result = CliRunner().invoke(
+            distill_command, ["--format", "json", "--file", wanted, "--", *_py(code)]
+        )
+        payload = json.loads(result.output)
+        assert payload["status"] == "errors", wanted
+        assert [d["file"] for d in payload["diagnostics"]] == ["sub/a.py"]
+
+
+def test_distill_json_file_elsewhere_is_clean_without_source(repo_cwd: Path) -> None:
+    (repo_cwd / "b.py").touch()
+    code = "import sys; print('b.py:2: error: x  [misc]'); sys.exit(1)"
+    result = CliRunner().invoke(
+        distill_command, ["--format", "json", "--file", "a.py", "--", *_py(code)]
+    )
+    payload = json.loads(result.output)
+    assert (payload["status"], payload["source"], payload["diagnostics"]) == ("clean", None, [])
+
+
+def test_distill_json_mixed_tools_top_level_source_follows_the_file(repo_cwd: Path) -> None:
+    (repo_cwd / "a.py").touch()
+    (repo_cwd / "b.ts").touch()
+    code = (
+        'import sys; print("b.ts(3,7): error TS2322: bad."); '
+        "print('a.py:1: error: bad  [misc]'); sys.exit(1)"
+    )
+    result = CliRunner().invoke(
+        distill_command, ["--format", "json", "--file", "b.ts", "--", *_py(code)]
+    )
+    payload = json.loads(result.output)
+    assert (payload["status"], payload["source"]) == ("errors", "tsc")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh")
+def test_distill_json_tool_that_cds_first_is_not_clean(repo_cwd: Path) -> None:
+    """Paths printed relative to a dir the command cd'd into cannot be placed: keep them."""
+    (repo_cwd / "x" / "src").mkdir(parents=True)
+    (repo_cwd / "x" / "src" / "app.ts").touch()
+    cmd = "cd x && echo 'src/app.ts(3,7): error TS2322: bad.' && exit 2"
+    result = CliRunner().invoke(
+        distill_command, ["--format", "json", "--file", "x/src/app.ts", "--", "sh", "-c", cmd]
+    )
+    assert result.exit_code == 2
+    assert json.loads(result.output)["status"] == "errors"
+
+
+def test_distill_file_without_json_is_a_usage_error(repo_cwd: Path) -> None:
+    result = CliRunner().invoke(distill_command, ["--file", "a.py", "--", *_py("pass")])
+    assert result.exit_code == 2
+    assert "--format json" in result.output

@@ -19,6 +19,7 @@ import statistics
 import pytest
 
 from repowise.core.distill.budget import estimate_tokens, savings_pct
+from repowise.core.distill.diagnostics import parse_diagnostics
 from repowise.core.distill.filters.base import is_error_line
 from repowise.core.distill.registry import filter_registry
 
@@ -420,6 +421,160 @@ def test_lint_unrecognized_raises() -> None:
         f.distill("random text\n" * 50, command="npm run lint")
 
 
+# -- distill --format json: structured diagnostics -------------------------------
+
+
+@pytest.mark.parametrize(
+    ("fixture", "count", "first", "source"),
+    [
+        ("tsc_errors.txt", 6, ("src/components/chat/chat-interface.tsx", 112, 18, "error", "TS2345"), "tsc"),
+        ("mypy_errors.txt", 8, ("packages/core/src/repowise/core/distill/markers.py", 31, None, "error", "assignment"), "mypy"),
+        ("eslint_fail.txt", 19, (None, 9, 5, "error", "react-hooks/rules-of-hooks"), "eslint"),
+        ("ruff_check_concise.txt", 671, (None, 14, 22, "warning", "TC003"), "concise"),
+        ("ruff_check_full.txt", 67, (None, 33, 1, "warning", "I001"), "ruff_full"),
+        ("clippy_warnings.txt", 15, ("src/walker.rs", 42, 9, "warning", "unused_variables"), "clippy"),
+        ("golangci_lint.txt", 24, ("internal/scan/walker.go", 42, 2, "warning", "ineffassign"), "golangci"),
+    ],
+)  # fmt: skip
+def test_parse_diagnostics_fixtures(load_fixture, fixture, count, first, source) -> None:
+    result = parse_diagnostics(load_fixture(fixture), 1)
+    assert result["status"] == "errors"
+    assert result["source"] == source
+    assert len(result["diagnostics"]) == count
+    d = result["diagnostics"][0]
+    file, line, col, severity, code = first
+    if file is not None:  # Windows-captured fixtures: only check the path is filled
+        assert d["file"] == file
+    assert d["file"]
+    assert (d["line"], d["col"], d["severity"], d["code"]) == (line, col, severity, code)
+
+
+@pytest.mark.parametrize(
+    ("output", "record"),
+    [
+        (
+            "Program.cs(10,5): error CS1002: ; expected [/src/app.csproj]",
+            ("Program.cs", 10, 5, "error", "CS1002", "msbuild"),
+        ),
+        (
+            "main.c:3:5: error: unknown type name 'foo' [-Wfoo]",
+            ("main.c", 3, 5, "error", "-Wfoo", "gnu"),
+        ),
+        (
+            "Main.java:7: error: ';' expected",
+            ("Main.java", 7, None, "error", None, "gnu"),
+        ),
+        (
+            "./main.go:12:2: undefined: x",
+            ("./main.go", 12, 2, "error", None, "gnu"),
+        ),
+        (
+            'app.py:4: error: Name "x" is not defined  [name-defined]',
+            ("app.py", 4, None, "error", "name-defined", "mypy"),
+        ),
+        (
+            "app/(auth)/page.tsx(3,7): error TS2322: Type 'string' is not assignable.",
+            ("app/(auth)/page.tsx", 3, 7, "error", "TS2322", "tsc"),
+        ),
+    ],
+)
+def test_parse_diagnostics_single_lines(output, record) -> None:
+    result = parse_diagnostics(output + "\n", 1)
+    assert result["status"] == "errors"
+    [d] = result["diagnostics"]
+    assert (d["file"], d["line"], d["col"], d["severity"], d["code"], d["source"]) == record
+
+
+def test_parse_diagnostics_windows_drive_path() -> None:
+    [d] = parse_diagnostics("C:\\src\\main.c:3:5: error: bad\n", 1)["diagnostics"]
+    assert (d["file"], d["line"], d["col"]) == ("C:\\src\\main.c", 3, 5)
+
+
+def test_parse_diagnostics_gcc_fatal_error_not_lost_beside_errors() -> None:
+    out = (
+        "main.c:3:5: error: unknown type name 'foo'\n"
+        "main.c:1:10: fatal error: missing.h: No such file or directory\n"
+    )
+    result = parse_diagnostics(out, 1)
+    assert result["source"] == "gnu"
+    assert [d["severity"] for d in result["diagnostics"]] == ["error", "error"]
+    assert "missing.h" in result["diagnostics"][1]["message"]
+
+
+def test_parse_diagnostics_dotnet_summary_duplicates_collapse() -> None:
+    line = "Program.cs(10,5): error CS1002: ; expected [/src/app.csproj]\n"
+    out = line + "\nBuild FAILED.\n\n" + line + "    0 Warning(s)\n    1 Error(s)\n"
+    [d] = parse_diagnostics(out, 1)["diagnostics"]
+    assert d["message"] == "; expected"
+
+
+def test_parse_diagnostics_gnu_note_attaches_to_previous() -> None:
+    out = "./a.go:1:1: undefined: x\n./a.go:1:1: note: declared here\n"
+    [d] = parse_diagnostics(out, 1)["diagnostics"]
+    assert "declared here" in d["message"]
+
+
+@pytest.mark.parametrize(
+    ("output", "exit_code", "status"),
+    [
+        ("", 0, "clean"),
+        ("bash: tsc: command not found\n", 127, "unavailable"),
+        ("bash: tsc: command not found\nhint: install typescript\n", 1, "unavailable"),
+        ("sh: 1: tsc: not found\n", 1, "unavailable"),
+        ("something went sideways\nno idea\n", 1, "unparsed"),
+        ("E   AssertionError: 'command not found' not in output\n", 1, "unparsed"),
+        # severity-less path:line lines that are not diagnostics
+        ("x.py:12: DeprecationWarning: old\n12:30:45: starting\nserver.go:42: listening\n", 0, "clean"),
+        ("x.py:3: note: Revealed type is 'int'\nSuccess: no issues found in 1 source file\n", 0, "clean"),
+    ],
+)  # fmt: skip
+def test_parse_diagnostics_status(output, exit_code, status) -> None:
+    result = parse_diagnostics(output, exit_code)
+    assert result["status"] == status
+    assert result["exit_code"] == exit_code
+    assert result["diagnostics"] == []
+    if status == "unavailable":
+        assert result["reason"] in ("bash: tsc: command not found", "sh: 1: tsc: not found")
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        (  # npm run check: tsc then eslint
+            "src/a.ts(3,7): error TS2322: Type 'string' is not assignable.\n"
+            "/repo/src/b.ts\n  9:5  error  Bad hook  react-hooks/rules-of-hooks\n",
+            [("/repo/src/b.ts", "eslint"), ("src/a.ts", "tsc")],
+        ),
+        (  # mypy then gcc, including a fatal error
+            "app.py:4: error: Name \"x\" is not defined  [name-defined]\n"
+            "main.c:3:5: error: unknown type name 'foo'\n"
+            "main.c:1:10: fatal error: missing.h: No such file or directory\n",
+            [("app.py", "mypy"), ("main.c", "gnu"), ("main.c", "gnu")],
+        ),
+        (  # ruff then mypy
+            "app.py:1:8: F401 [*] `os` imported but unused\n"
+            "app.py:4: error: Name \"x\" is not defined  [name-defined]\n",
+            [("app.py", "mypy"), ("app.py", "concise")],
+        ),
+        (  # tsc and eslint on the same line
+            "/repo/src/a.ts(3,7): error TS2322: Type 'string' is not assignable.\n"
+            "/repo/src/a.ts\n  3:7  error  Bad hook  react-hooks/rules-of-hooks\n",
+            [("/repo/src/a.ts", "eslint"), ("/repo/src/a.ts", "tsc")],
+        ),
+    ],
+)  # fmt: skip
+def test_parse_diagnostics_mixed_tools_keeps_both(output, expected) -> None:
+    result = parse_diagnostics(output, 1)
+    assert [(d["file"], d["source"]) for d in result["diagnostics"]] == expected
+
+
+def test_parse_diagnostics_records_beat_exit_127() -> None:
+    out = "src/a.ts(3,7): error TS2322: bad.\nsh: 1: missingtool: not found\n"
+    result = parse_diagnostics(out, 127)
+    assert result["status"] == "errors"
+    assert "reason" not in result
+
+
 # -- git family -------------------------------------------------------------------
 
 
@@ -661,3 +816,17 @@ def test_ls_long_keeps_every_entry_when_small(load_fixture) -> None:
     assert "more entries" not in distilled
     for name in entries:
         assert name in distilled
+
+
+def test_parse_diagnostics_rustc_abort_summary_is_not_a_record() -> None:
+    out = (
+        "error[E0308]: mismatched types\n"
+        " --> src/main.rs:2:18\n"
+        "  |\n"
+        '2 |     let x: i32 = "a";\n'
+        "  |                  ^^^ expected `i32`, found `&str`\n"
+        "\n"
+        "error: aborting due to 1 previous error\n"
+    )
+    [d] = parse_diagnostics(out, 1)["diagnostics"]
+    assert (d["file"], d["line"], d["source"]) == ("src/main.rs", 2, "clippy")

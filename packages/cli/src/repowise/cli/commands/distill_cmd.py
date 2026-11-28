@@ -22,6 +22,7 @@ command and be run as the program.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -53,8 +54,23 @@ from repowise.core.command_runner import UnrenderableCommandError, render_comman
         "syntax is run by a POSIX shell rather than cmd.exe."
     ),
 )
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="json: print compiler/type-checker/linter diagnostics as structured records.",
+)
+@click.option(
+    "--file",
+    "files",
+    multiple=True,
+    help="With --format json, keep only diagnostics for this file (repeatable).",
+)
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
-def distill_command(source: str, command: tuple[str, ...]) -> None:
+def distill_command(
+    source: str, fmt: str, files: tuple[str, ...], command: tuple[str, ...]
+) -> None:
     """Run COMMAND and print a distilled rendering of its output.
 
     Examples:
@@ -65,12 +81,16 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
 
         repowise distill npm run build
 
+        repowise distill --format json --file src/app.ts -- npx tsc --noEmit
+
     Noise (pass parades, progress spam, hint boilerplate) is dropped; errors,
     failures, and summaries always survive. Dropped content is stored in
     .repowise/ and referenced by an inline ``[repowise#<ref>: ...]`` marker —
     restore it with ``repowise expand <ref>``. On any filter problem the raw
     output is printed unchanged. The command's exit code is preserved.
     """
+    if files and fmt != "json":
+        raise click.UsageError("--file only applies with --format json")
     # Only a command handed over as ONE token carries shell syntax of its
     # own — that is the shape the hook wraps a chain or a pipeline in, and the
     # shape a user quotes deliberately. A multi-token argv is the same command
@@ -117,9 +137,47 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
     if proc.stderr:
         output = output + ("\n" if output and not output.endswith("\n") else "") + proc.stderr
 
+    if fmt == "json":
+        _echo_safely(json.dumps(_diagnostics_json(output, proc.returncode, files)))
+        sys.exit(proc.returncode)
+
     text = _distill_or_raw(output, command_str, proc.returncode, source)
     _echo_safely(text)
     sys.exit(proc.returncode)
+
+
+def _diagnostics_json(output: str, exit_code: int, files: tuple[str, ...]) -> dict:
+    """Structured diagnostics, paths repo-relative POSIX, filtered to *files*."""
+    from repowise.core.distill.diagnostics import parse_diagnostics
+    from repowise.core.fsutils import repo_relative
+    from repowise.core.git_hooks import git_root
+
+    cwd = Path.cwd()
+    # The checkout the tool ran in: a parent's .repowise (nested worktree) is the wrong root.
+    root = git_root(cwd) or cwd
+
+    def rel(path: str) -> str:
+        # cwd-relative if it exists there, else repo-relative if it exists there.
+        if not Path(path).exists() and (root / path).exists():
+            path = str(root / path)
+        return repo_relative(path, root, resolve=True) or path
+
+    result = parse_diagnostics(output, exit_code)
+    for d in result["diagnostics"]:
+        d["file"] = rel(d["file"])
+    if files:
+        wanted = {rel(f) for f in files}
+        # A path we cannot place (the tool ran after `cd x`) may be a wanted file: keep it.
+        diags = [
+            d
+            for d in result["diagnostics"]
+            if d["file"] in wanted or not (root / d["file"]).exists()
+        ]
+        result["diagnostics"], result["source"] = diags, diags[0]["source"] if diags else None
+        if result["status"] == "errors" and not diags:
+            # The asked-about files are clean even if others are not.
+            result["status"] = "clean"
+    return result
 
 
 #: Shells that read a POSIX command line from ``-c``. An allowlist rather

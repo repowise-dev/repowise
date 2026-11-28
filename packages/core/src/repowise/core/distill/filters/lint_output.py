@@ -47,11 +47,11 @@ _CLIPPY_SUMMARY_RE = re.compile(
     r"^(warning|error): .* generated \d+ warnings?|^error: could not compile"
 )
 
-_ARROW_RE = re.compile(r"^\s*-->\s(?P<file>.+?):(?P<line>\d+)(?::\d+)?\s*$")
+_ARROW_RE = re.compile(r"^\s*-->\s(?P<file>.+?):(?P<line>\d+)(?::(?P<col>\d+))?\s*$")
 
-# mypy: path:line: severity: message  [rule]
+# mypy output -- path:line: severity: message  [rule]
 _MYPY_RE = re.compile(
-    r"^(?P<file>.+?):(?P<line>\d+)(?::\d+)?:\s(?P<sev>error|warning|note):\s"
+    r"^(?P<file>.+?):(?P<line>\d+)(?::(?P<col>\d+))?:\s(?P<sev>error|warning|note):\s"
     r"(?P<msg>.+?)(?:\s+\[(?P<rule>[\w.-]+)\])?$"
 )
 
@@ -77,6 +77,9 @@ class _Diag:
     lines: list[str] = field(default_factory=list)
     fixable: bool = False
     file_header: str | None = None  # eslint: path line giving the rows context
+    file: str = ""
+    line: int | None = None
+    col: int | None = None
 
     @property
     def is_error(self) -> bool:
@@ -113,24 +116,24 @@ class LintOutputFilter(OutputFilter):
         return _render(lines, diags, trailing)
 
 
-def _detect_format(output: str) -> str | None:
+def _detect_format(output: str, min_hits: int = 2) -> str | None:
     lines = output.splitlines()[:400]
 
     def count(pattern: re.Pattern[str]) -> int:
         return sum(1 for ln in lines if pattern.match(ln))
 
-    if count(_ESLINT_ROW_RE) >= 2:
+    if count(_ESLINT_ROW_RE) >= min_hits:
         return "eslint"
     has_arrows = any(_ARROW_RE.match(ln) for ln in lines)
-    if has_arrows and count(_CLIPPY_BLOCK_RE) >= 2:
+    if has_arrows and count(_CLIPPY_BLOCK_RE) >= min_hits:
         return "clippy"
-    if has_arrows and count(_RUFF_BLOCK_RE) >= 2:
+    if has_arrows and count(_RUFF_BLOCK_RE) >= min_hits:
         return "ruff_full"
-    if count(_MYPY_RE) >= 2:
+    if count(_MYPY_RE) >= min_hits:
         return "mypy"
-    if count(_CONCISE_RE) >= 2:
+    if count(_CONCISE_RE) >= min_hits:
         return "concise"
-    if count(_GOLANGCI_RE) >= 2:
+    if count(_GOLANGCI_RE) >= min_hits:
         return "golangci"
     return None
 
@@ -153,6 +156,9 @@ def _parse_eslint(lines: list[str]) -> tuple[list[_Diag], list[str]]:
                     message=row.group("msg"),
                     lines=[line],
                     file_header=current_file,
+                    file=current_file,
+                    line=int(row.group("line")),
+                    col=int(row.group("col")),
                 )
             )
         elif _ESLINT_SUMMARY_RE.search(line.strip()):
@@ -177,6 +183,9 @@ def _parse_concise(lines: list[str]) -> tuple[list[_Diag], list[str]]:
                     message=m.group("msg"),
                     lines=[line],
                     fixable=bool(m.group("fix")),
+                    file=m.group("file"),
+                    line=int(m.group("line")),
+                    col=int(m.group("col")),
                 )
             )
         elif _SUMMARY_RE.match(line.strip()):
@@ -198,6 +207,9 @@ def _parse_golangci(lines: list[str]) -> tuple[list[_Diag], list[str]]:
                     severity="warning",
                     message=m.group("msg"),
                     lines=[line],
+                    file=m.group("file"),
+                    line=int(m.group("line")),
+                    col=int(m.group("col")),
                 )
             )
         elif _SUMMARY_RE.match(line.strip()):
@@ -226,6 +238,9 @@ def _parse_mypy(lines: list[str]) -> tuple[list[_Diag], list[str]]:
                     severity="error" if sev == "error" else "warning",
                     message=m.group("msg"),
                     lines=[line],
+                    file=m.group("file"),
+                    line=int(m.group("line")),
+                    col=int(m.group("col")) if m.group("col") else None,
                 )
             )
         elif _SUMMARY_RE.match(line.strip()):
@@ -263,6 +278,9 @@ def _parse_blocks(
         arrow = _ARROW_RE.match(line)
         if arrow and not open_diag.anchor:
             open_diag.anchor = f"{arrow.group('file')}:{arrow.group('line')}"
+            open_diag.file = arrow.group("file")
+            open_diag.line = int(arrow.group("line"))
+            open_diag.col = int(arrow.group("col")) if arrow.group("col") else None
         if clippy and not open_diag.rule.startswith("clippy::"):
             rule_m = _CLIPPY_RULE_RE.search(line)
             if rule_m:
