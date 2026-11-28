@@ -777,6 +777,30 @@ class TestGoFields:
         body = "func f() {\n\tcfg Config\n\treturn err\n}"
         assert declared_types(body, "go") == {}
 
+    def test_a_single_line_struct_field(self) -> None:
+        """``type C struct{ A *Api }`` types its field like a multi-line one."""
+        assert go_fields("type C struct{ parent *Command }") == {"parent": "Command"}
+        assert go_fields("type C struct{ cfg Config }") == {"cfg": "Config"}
+
+    def test_single_line_fields_separated_by_semicolons(self) -> None:
+        assert go_fields("type C struct{ a *Api; b *Bee }") == {"a": "Api", "b": "Bee"}
+
+    def test_single_line_fields_sharing_one_type(self) -> None:
+        assert go_fields("type C struct{ left, right *Node }") == {
+            "left": "Node",
+            "right": "Node",
+        }
+
+    def test_a_single_line_struct_field_keeps_its_tag(self) -> None:
+        assert go_fields('type C struct{ Cmd GitCmd `json:"cmd"` }') == {"Cmd": "GitCmd"}
+
+    def test_a_single_line_embedded_field(self) -> None:
+        assert go_fields("type C struct{ *Base }") == {"Base": "Base"}
+        assert go_fields("type C struct{ Logger }") == {"Logger": "Logger"}
+
+    def test_a_single_line_package_qualified_type_is_still_refused(self) -> None:
+        assert go_fields("type C struct{ fd *sftp.File }") == {}
+
 
 class TestKotlinTrailingLambda:
     """A trailing lambda is the call's last argument, not more expression (#3761)."""

@@ -179,7 +179,8 @@ _GO_SHORT_DECL = re.compile(
 # ``var x Foo`` / ``var x *Foo``: rare, but no pattern above reaches it.
 _GO_VAR_DECL = re.compile(rf"(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+\*?(?P<type>{_GO_TYPE})")
 
-# A struct field is the rest of its line: a type, its type arguments (two levels,
+# A struct field is the rest of its line, or up to the struct's closing ``}``
+# on a single line: a type, its type arguments (two levels,
 # the ``_TYPE`` ceiling) and a tag. A field is typed only as ``T`` or ``*T``, as
 # ``_GO_SHORT_DECL`` types a value: ``[]T``, ``map[K]T`` and ``chan T`` hold a
 # ``T`` but are not one. Exported fields are capitalised, so the name is too.
@@ -189,23 +190,27 @@ _GO_VAR_DECL = re.compile(rf"(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+\*?(?P<type>
 # Ceiling: a field typed from another repo package stays untyped until a hop
 # can follow a Go import to a package.
 _GO_FIELD_NAME = r"[A-Za-z_]\w*"
-_GO_FIELD_END = r"(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])?[ \t]*(?:`[^`\n]*`?)?[ \t]*$"
+_GO_FIELD_END = r"(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])?[ \t]*(?:`[^`\n]*`?)?[ \t]*(?:$|[;}])"
 
 # ``parent *Command``, and each name of ``a, b Foo``: a name opens the line or
-# follows a comma, and the lookahead leaves the next name unconsumed. Both field
-# shapes set ``member`` to their whole match, so they reach class scope whatever
-# closed them and never type a local: a body line such as ``return err`` matches
-# too, but lies in no struct. That holds while a Go struct span never contains a
-# function body; ``test_a_field_never_types_a_local`` guards it.
+# follows a comma, and the lookahead leaves the next name unconsumed. A field
+# may also open a single-line struct (``type C struct{ A *Api }``) or follow a
+# semicolon there, so a chain hop through it reads the field like a multi-line
+# one. Both field shapes set ``member`` to their whole match, so they reach
+# class scope whatever closed them and never type a local: a body line such as
+# ``return err`` matches too, but lies in no struct. That holds while a Go
+# struct span never contains a function body; ``test_a_field_never_types_a_local``
+# guards it.
 _GO_FIELD = re.compile(
-    rf"(?m)(?:^[ \t]*|,[ \t]*)(?P<member>(?P<name>{_GO_FIELD_NAME}))"
+    rf"(?m)(?:^[ \t]*|[,{{;][ \t]*)(?P<member>(?P<name>{_GO_FIELD_NAME}))"
     rf"(?=(?:[ \t]*,[ \t]*{_GO_FIELD_NAME})*[ \t]+\*?(?P<type>{_GO_FIELD_NAME}){_GO_FIELD_END})"
 )
 
 # An embedded ``Base`` or ``*Base`` is a field named ``Base``, the name
-# ``c.Base.Method()`` reads it by.
+# ``c.Base.Method()`` reads it by. It may sit in a single-line struct too
+# (``type C struct{ Base }``), like a named field.
 _GO_EMBEDDED_FIELD = re.compile(
-    rf"(?m)^[ \t]*\*?(?P<member>(?P<type>(?P<name>{_GO_FIELD_NAME}))){_GO_FIELD_END}"
+    rf"(?m)(?:^[ \t]*|[,{{;][ \t]*)\*?(?P<member>(?P<type>(?P<name>{_GO_FIELD_NAME}))){_GO_FIELD_END}"
 )
 
 # ``x := f(..)``, ``x, err := pkg.New(..)``: the head of a call whose return
