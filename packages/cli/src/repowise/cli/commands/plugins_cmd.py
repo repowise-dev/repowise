@@ -1,4 +1,4 @@
-"""``repowise plugins``: list loaded plugins and the implementation chosen per seam; ``check`` runs the seam contracts."""
+"""``repowise plugins``: list loaded plugins and each seam's implementation; ``check`` runs the seam contracts; ``new`` writes a plugin package."""
 
 from __future__ import annotations
 
@@ -351,3 +351,82 @@ def check_command(fmt: str) -> None:
                 console.print(f"  {escape(f.rule)}. Fix: {escape(f.fix)}")
     if failed:
         raise SystemExit(1)
+
+
+@plugins_command.command("new")
+@click.argument("seam")
+@click.option("--name", default=None, help="Plugin name: lowercase letters, digits, - and _.")
+@click.option(
+    "--dir",
+    "dest",
+    default=None,
+    type=click.Path(file_okay=False),
+    help="Directory to write into (default: ./repowise-<name>). Must be empty or absent.",
+)
+@format_option()
+def new_command(seam: str, name: str | None, dest: str | None, fmt: str) -> None:
+    """Write a plugin package for SEAM that installs and passes `repowise plugins check`.
+
+    The package holds the pyproject.toml with the entry point, a module with
+    register() and a working stub, a contract test, a README and an AGENTS.md
+    that tells a coding agent how to finish and verify it.
+    """
+    import os
+    from pathlib import Path
+
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+    from repowise.cli.output import emit_refusal
+    from repowise.cli.plugin_scaffold import NAME_PATTERN, SEAMS, dist_name, next_commands, scaffold
+
+    supported = ", ".join(sorted(SEAMS))
+    if seam not in SEAMS:
+        emit_refusal(
+            "unknown_seam",
+            f"repowise plugins new has no template for {seam!r}. Supported seams: {supported}.",
+            fmt,
+            remedy=f"Run `repowise plugins new <seam>` with one of: {supported}.",
+            supported=sorted(SEAMS),
+        )
+    name = name or SEAMS[seam].default_name
+    if not NAME_PATTERN.fullmatch(name):
+        emit_refusal(
+            "bad_name",
+            f"{name!r} is not a plugin name: use lowercase letters, digits, - and _.",
+            fmt,
+            remedy="Pass --name with a name such as `linear` or `my-tracker`.",
+        )
+    shown = dest or dist_name(name)
+    target = Path(shown).resolve()
+    try:
+        written = scaffold(seam, name, target)
+    except FileExistsError:
+        emit_refusal(
+            "dir_not_empty",
+            f"{shown} already exists and is not empty.",
+            fmt,
+            remedy="Pass --dir with a new directory, or remove that one.",
+        )
+        return
+    if " " in shown:
+        shown = f'"{shown}"'
+    commands = next_commands(seam, name, shown)
+    files = [os.path.relpath(p, target).replace(os.sep, "/") for p in written]
+    if fmt == "json":
+        emit_json(
+            {
+                "seam": seam,
+                "name": name,
+                "dir": str(target),
+                "files": files,
+                "next_commands": commands,
+            }
+        )
+        return
+    console.print(f"Wrote the {escape(seam)} plugin [bold]{escape(name)}[/bold] to {escape(str(target))}:")
+    for f in files:
+        console.print(f"  {escape(f)}")
+    console.print("AGENTS.md says how to finish the stub. Next:")
+    for c in commands:
+        console.print(f"  [cyan]{escape(c)}[/cyan]")

@@ -749,6 +749,7 @@ repowise distill pytest   # compact, errors-first, reversible command output
 repowise saved            # tokens and dollars saved by distillation
 repowise workspace add    # multi-repo workspace management
 repowise doctor           # check setup, API keys, index drift
+repowise plugins          # installed plugins; `plugins new <seam>` writes a starter plugin
 repowise publish          # put this repo on repowise.dev (indexed from GitHub; public repos free)
 repowise uninstall        # remove what repowise wrote, and say what it left
 ```
@@ -759,6 +760,26 @@ something not working: **[docs/start/TROUBLESHOOTING.md](docs/start/TROUBLESHOOT
 all docs: **[docs/README.md](docs/README.md)**
 
 </details>
+
+---
+
+## Extend it with plugins
+
+A repowise plugin is a Python package that feeds the engine what lives outside git:
+your issue tracker (a commit linked to a bug counts as a fix in defects, change risk
+and health), runtime evidence such as database statement statistics, your team
+directory, sign-in for `repowise serve`, or a report format. GitHub and GitLab issues
+are built in. For anything else, start from a package that already works:
+
+```bash
+repowise plugins new issue-source --name linear   # its AGENTS.md lets your coding agent finish it
+```
+
+The [plugin guide](docs/reference/PLUGINS.md) covers every extension point and lists
+[community plugins](docs/reference/PLUGINS.md#community-plugins). Find more under the
+`repowise-plugin` topic on GitHub or keyword on PyPI. These are different from the
+Claude Code plugin in the [Quickstart](docs/start/QUICKSTART.md#4-connect-your-agent),
+which adds slash commands and skills to your agent.
 
 ---
 
@@ -779,7 +800,7 @@ repository built by Repowise itself, re-indexed on every push:
 [refactoring backlog](https://repowise.dev/repo/repowise-dev/repowise/refactoring) you
 are welcome to pick from).
 
-Full guide, including how to add languages and LLM providers:
+Full guide, including how to add languages, LLM providers and plugins:
 [CONTRIBUTING.md](.github/CONTRIBUTING.md) · architecture:
 [docs/architecture/](docs/architecture/README.md)
 
