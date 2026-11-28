@@ -60,6 +60,10 @@ class ProviderSpec:
     needs_repo_cwd: bool = False
     #: Runs on this machine, so high concurrency can time out.
     local: bool = False
+    #: The embedder a run on this provider uses when none was named, so it
+    #: embeds through the same server instead of a hosted service guessed
+    #: from an exported key. Empty: the usual key detection decides.
+    local_embedder: str = ""
     #: Models named ``"<name>/..."`` cost nothing per token.
     zero_cost: bool = False
     #: Flood guard; ``None`` attaches no rate limiter.
@@ -251,6 +255,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         default_base_url="http://localhost:11434",
         keyless=True,
         local=True,
+        local_embedder="ollama",
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
         package="openai",
         autodetect_rank=3,
