@@ -244,13 +244,17 @@ class CppFieldOwners:
         trailing = _TRAILING_RETURN.match(header, index)
         return trailing.group("type") if trailing else written
 
-    def _cpp_returned_class_name(self, symbol: Symbol, path: str, name: str) -> str | None:
-        """*name* as a class *symbol*'s file can mean, or None when it names no class.
+    def _cpp_returned_class_name(self, symbol: Symbol, path: str, written: str) -> str | None:
+        """The class name *symbol*'s return type *written* means in its file, or None.
 
+        One plain name, read off a trailing return type for ``auto f() -> T``.
         A template parameter of *symbol* or its class is none. A file-scope
         alias is followed; one scoped to a class or namespace (a member
         ``typedef``) is refused, since a same-named class elsewhere is not it.
         """
+        name = self._cpp_written_return(symbol, path, written)
+        if not name.isidentifier():
+            return None
         lines = self._lines_of(path)
         owner = self._symbols_by_id.get(symbol.id.rpartition("::")[0])
         for declared in (symbol, owner):

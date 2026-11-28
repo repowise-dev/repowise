@@ -1807,15 +1807,11 @@ class ReceiverTypingMixin(
         """
         raw = declared_return_type(symbol.signature or "") or ""
         if symbol.language == "cpp":
-            raw = self._cpp_written_return(symbol, path, raw)
-        written = _awaited_type(raw, symbol.language) if awaited else raw
-        written = (written or "").rstrip("?")
+            written = self._cpp_returned_class_name(symbol, path, raw) or ""
+        else:
+            written = ((_awaited_type(raw, symbol.language) if awaited else raw) or "").rstrip("?")
         if not written.isidentifier() or self._csharp_type_parameter(symbol, path, written):
             return None
-        if symbol.language == "cpp":
-            written = self._cpp_returned_class_name(symbol, path, written) or ""
-            if not written:
-                return None
         found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
         return None if found is None else found.callee_id
 
