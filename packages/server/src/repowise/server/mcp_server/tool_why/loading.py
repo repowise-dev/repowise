@@ -19,8 +19,8 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     is_excluded,
 )
-from repowise.server.mcp_server._why_evidence import _decision_commits
 from repowise.server.mcp_server._query_shape import _WORD_CHAIN_RE, _identifier_shaped, path_tokens
+from repowise.server.mcp_server._why_evidence import _decision_commits
 from repowise.server.mcp_server.tool_why.caps import _DECISION_CORPUS_LIMIT
 
 

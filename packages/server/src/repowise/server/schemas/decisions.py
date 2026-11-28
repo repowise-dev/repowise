@@ -43,7 +43,7 @@ class DecisionLinkedIssue(BaseModel):
     """A tracker issue one of the decision's evidence commits links to."""
 
     key: str
-    type: str
+    type: str = ""
     status: str = ""
     title: str = ""
     url: str = ""
@@ -122,7 +122,8 @@ class DecisionRecordResponse(BaseModel):
     linked_issues: list[DecisionLinkedIssue] | None = None
 
     @model_serializer(mode="wrap")
-    def _omit_absent_issues(self, handler):  # no return annotation: keeps the schema
+    # No return annotation: one would change the generated OpenAPI schema.
+    def _omit_absent_issues(self, handler):
         data = handler(self)
         if self.linked_issues is None:
             data.pop("linked_issues", None)

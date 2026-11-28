@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import and_, delete, func, insert, or_, select
+from sqlalchemy import and_, delete, insert, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,8 +27,8 @@ __all__ = [
     "decision_issues",
     "fix_issue_quotes",
     "linked_defect_issues",
-    "record_linked_issues",
     "load_tracker_fixes",
+    "record_linked_issues",
     "store_issue_links",
 ]
 
@@ -251,7 +251,8 @@ async def commit_issues(
     if not wanted:
         return {}
     try:
-        rows = await _rows_on_prefixes(session, repository_id, sorted({c[:7] for c in wanted}))
+        async with session.begin_nested():
+            rows = await _rows_on_prefixes(session, repository_id, sorted(wanted))
     except SQLAlchemyError:
         return {}
     out: dict[str, list[dict[str, str]]] = {}
@@ -270,7 +271,10 @@ async def decision_issues(
     Each issue once, in the order its commits are listed. Display only: what
     a decision governs, its authority and its ranking never read this.
     """
-    shas = {d: [_sha_of(c) for c in commits] for d, commits in commits_by_decision.items()}
+    shas = {
+        d: [_sha_of(c) for c in commits] if isinstance(commits, list) else []
+        for d, commits in commits_by_decision.items()
+    }
     flat = [c for commits in shas.values() for c in commits]
     by_commit = await commit_issues(session, repository_id, flat)
     if not by_commit:
@@ -296,13 +300,19 @@ def _sha_of(value: object) -> str:
 async def _rows_on_prefixes(
     session: AsyncSession, repository_id: str, prefixes: list[str]
 ) -> list[tuple]:
+    # A range per prefix keeps the primary key in use: hex sorts below "g".
     rows: list[tuple] = []
     for chunk in _chunks(prefixes):
         result = await session.execute(
             select(*_ISSUE_COLUMNS)
             .where(
                 IssueLink.repository_id == repository_id,
-                func.substr(IssueLink.commit_sha, 1, 7).in_(chunk),
+                or_(
+                    *(
+                        and_(IssueLink.commit_sha >= p, IssueLink.commit_sha < p + "g")
+                        for p in chunk
+                    )
+                ),
             )
             .order_by(IssueLink.commit_sha, IssueLink.issue_key)
         )
@@ -327,15 +337,16 @@ async def change_issue_quotes(
     link touches the change, so a caller keeps its bare keys as they were.
     """
     listed = list(keys or [])
+    change_shas = {s for s in shas if s}
     try:
-        rows = await _change_rows(session, repository_id, listed, sorted(set(shas)))
+        async with session.begin_nested():
+            rows = await _change_rows(session, repository_id, listed, sorted(change_shas))
     except SQLAlchemyError:
         return None
     if not rows:
         return None
     on_change: dict[str, dict[str, str]] = {}
     anywhere: dict[str, dict[str, str]] = {}
-    change_shas = set(shas)
     for sha, key, kind, status, title, url in rows:
         target = on_change if sha in change_shas else anywhere
         target.setdefault(key, _issue(key, kind, status, title, url))

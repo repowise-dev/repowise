@@ -1039,9 +1039,19 @@ async def _load_decision(repo_path: Path, decision_id: str):
         if rec is None:
             return None, None, None, []
         grants = await latest_grant_times(session, rec.repository_id, [rec.id])
-        commits = json.loads(rec.evidence_commits_json or "[]")
-        issues = await decision_issues(session, rec.repository_id, {rec.id: commits})
+        issues = await decision_issues(
+            session, rec.repository_id, {rec.id: _evidence_commits(rec)}
+        )
         return rec, signed, grants.get(rec.id), issues.get(rec.id, [])
+
+
+def _evidence_commits(rec) -> list:
+    """The record's evidence commits, or none when the column does not parse."""
+    try:
+        commits = json.loads(rec.evidence_commits_json or "[]")
+    except ValueError:
+        return []
+    return commits if isinstance(commits, list) else []
 
 
 def _issue_lines(issues: list[dict[str, str]]) -> list[str]:

@@ -101,10 +101,12 @@ function LinkedIssues({ issues }: { issues: DecisionLinkedIssue[] }) {
               </a>
             ) : (
               <span className="font-mono">{issue.key}</span>
-            )}{" "}
-            <span className="text-[var(--color-text-tertiary)]">
-              ({[issue.type, issue.status].filter(Boolean).join(", ")})
-            </span>
+            )}
+            {issue.type || issue.status ? (
+              <span className="text-[var(--color-text-tertiary)]">
+                {` (${[issue.type, issue.status].filter(Boolean).join(", ")})`}
+              </span>
+            ) : null}
             {issue.title ? ` ${issue.title}` : null}
           </li>
         ))}

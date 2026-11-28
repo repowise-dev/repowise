@@ -1874,7 +1874,7 @@ export interface DecisionLineageResponse {
 /** A tracker issue one of the decision's evidence commits links to. */
 export interface DecisionLinkedIssue {
   key: string;
-  type: string;
+  type?: string;
   status?: string;
   title?: string;
   url?: string;
