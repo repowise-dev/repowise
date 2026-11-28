@@ -200,6 +200,8 @@ def test_a_go_package_qualified_handler_resolves_in_that_package_directory(
     (tmp_path / "cmd/main.go").write_text(
         'package main\n\nimport "example.com/app/internal/handlers"\n'
     )
+    (tmp_path / "internal/handlers").mkdir(parents=True)
+    (tmp_path / "internal/handlers/users.go").write_text("package handlers\n")
     index = _index(
         _sym("cmd/main.go", "main", 1, 40),
         _sym("internal/handlers/users.go", "ListUsers", 3, 9),
@@ -210,6 +212,31 @@ def test_a_go_package_qualified_handler_resolves_in_that_package_directory(
         [_provider("cmd/main.go", 12, framework="go", handler="handlers.ListUsers")], index
     )
     assert route.handler_symbol_id == "internal/handlers/users.go::ListUsers"
+
+
+def test_a_guessed_go_import_name_its_package_does_not_declare_binds_nothing(
+    tmp_path: Path,
+) -> None:
+    # ``…/api/v1`` is guessed as ``v1`` or ``api`` and claims ``api`` first, but
+    # its files say ``package v1``; ``billing/api`` never gets the name.
+    (tmp_path / "go.mod").write_text("module example.com/app\n")
+    (tmp_path / "cmd").mkdir()
+    (tmp_path / "cmd/main.go").write_text(
+        'package main\n\nimport (\n\t"example.com/app/api/v1"\n\t"example.com/app/billing/api"\n)\n'
+    )
+    for directory, package in (("api/v1", "v1"), ("billing/api", "api")):
+        (tmp_path / directory).mkdir(parents=True)
+        (tmp_path / directory / "handlers.go").write_text(f"package {package}\n")
+    index = _index(
+        _sym("cmd/main.go", "main", 1, 40),
+        _sym("api/v1/handlers.go", "Charge", 3, 9),
+        _sym("billing/api/handlers.go", "Charge", 3, 9),
+        root=tmp_path,
+    )
+    (route,) = routes_from_contracts(
+        [_provider("cmd/main.go", 12, framework="go", handler="api.Charge")], index
+    )
+    assert route.handler_symbol_id is None
 
 
 def test_an_unimported_go_package_qualifier_leaves_the_handler_unbound(tmp_path: Path) -> None:

@@ -218,7 +218,7 @@ def _resolve_named(
             package = posixpath.dirname(file_path)
             return _named_in(_in_directories(index, lambda d: d == package), name)
         if len(parts) == 2:
-            package = go_walk.imported_dir(file_path, parts[0]) if go_walk is not None else None
+            package = go_walk.package_named(file_path, parts[0]) if go_walk is not None else None
             if package is None:
                 return None
             return _named_in(_in_directories(index, lambda d: d == package), name)
@@ -278,6 +278,20 @@ class _GoIndexWalk:
                 package = posixpath.join(module_dir, rest) if module_dir else rest
                 return package if package in self._dirs else None
         return None
+
+    def package_named(self, file_path: str, local: str) -> str | None:
+        """The directory *file_path* imports as *local*, or ``None``.
+
+        An unaliased import's local name is guessed from its path, and more
+        than one import can claim the same guess (``api`` from ``…/api/v1``),
+        so a guessed name counts only once the directory's own package clause
+        says it, as :meth:`GoSelectorTypes.chain_type` requires.
+        """
+        package = self.imported_dir(file_path, local)
+        if package is None or local not in self._walk().facts(file_path).guessed_imports:
+            return package
+        names = {self._types.facts(f).package for f in self._dirs.get(package, ())}
+        return package if names == {local} else None
 
     def _method_of(self, package: str, type_name: str, method: str) -> IndexedSymbol | None:
         found = [
