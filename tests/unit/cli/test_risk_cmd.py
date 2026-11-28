@@ -321,6 +321,15 @@ def test_target_mode_refuses_ci_formats_and_the_gate(tmp_path: Path) -> None:
     assert "gates a change" in gate.output
 
 
+def test_digits_naming_no_changelist_or_commit_are_refused(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+    machine = _gate(repo, "7777777", "--format", "json")
+    assert machine.exit_code == 2, machine.output
+    payload = json.loads(machine.stdout)
+    assert payload["error"] == "change_unreadable"
+    assert "changelist 7777777" in machine.stdout
+
+
 def test_an_unknown_ref_reports_gits_message_not_the_exception(tmp_path: Path) -> None:
     repo = _ranked_repo(tmp_path)
 
