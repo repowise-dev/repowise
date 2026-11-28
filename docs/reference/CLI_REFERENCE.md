@@ -1558,7 +1558,7 @@ repowise sources sync --source postgres-statements --format json
   sets it).
 - Each source's cursor is saved under `source_sync` in `.repowise/state.json`. Credentials are never saved.
 - The built-in `forge` issue source (GitHub and GitLab issues) is always listed and runs once
-  `REPOWISE_PLUGIN_FORGE_TOKEN` is set. See [PLUGINS.md](PLUGINS_REFERENCE.md#issues-from-github-and-gitlab).
+  `REPOWISE_PLUGIN_FORGE_TOKEN` is set. See [the plugin reference](PLUGINS_REFERENCE.md#issues-from-github-and-gitlab).
 - Exits non-zero only when `--source` names an unknown source or one that did not store.
 - `repowise update` runs the same sync for configured sources after its own work. A failing source prints one line
   and never fails the update; with none configured, update does exactly what it did before.
@@ -2601,7 +2601,7 @@ repowise plugins new <seam> [--name NAME] [--dir PATH] [--format json]   # write
 | `--format` | `table` or `json`. | `table` |
 
 `check` prints a status for each registration and, for a failure, the rule that broke and how to fix it. It
-exits 1 if a check fails or a plugin fails to load. See the [plugin author guide](PLUGINS_REFERENCE.md#check-the-contracts).
+exits 1 if a check fails or a plugin fails to load. See the [plugin reference](PLUGINS_REFERENCE.md#check-the-contracts).
 
 `new` writes an installable plugin package for `issue-source`, `evidence-source` or `authorizer` into `--dir`
 (default `./repowise-<name>`, which must be empty or absent): a `pyproject.toml` with the entry point and the

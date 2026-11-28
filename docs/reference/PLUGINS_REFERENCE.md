@@ -802,7 +802,7 @@ Repowise deliberately does not retry plugin code in-process. Workers also check
 that the discovered extractor version matches the fingerprinted version. The
 existing worker memory cap (`REPOWISE_PARSE_WORKER_MEMORY_MB`, 2048 MiB by
 default; `0` disables it) is applied where the platform supports it, so these
-are best-effort resource bounds rather than a hard host-memory
+are best-effort resource bounds, not a hard host-memory
 guarantee. Because workers use `spawn`, the plugin must be importable there:
 install its entry point or make its module available through `REPOWISE_PLUGINS`
 and the worker's environment. A registration made only dynamically in the

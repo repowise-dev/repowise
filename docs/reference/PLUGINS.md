@@ -58,9 +58,9 @@ pip install repowise-linear
 repowise plugins
 ```
 
-Each plugin shows its status, such as `loaded` or `failed` with the error. A plugin that needs
-settings lists the missing ones with the command that sets each, so you or an
-agent can finish setup from the listing. Plain settings go in
+Each plugin shows its status, such as `loaded` or `failed` with the error. A
+plugin that needs settings lists the missing ones with the command that sets
+each, so you or an agent can finish setup from the listing. Plain settings go in
 `.repowise/config.yaml`. Secrets such as tokens come from the environment only
 and are never written down:
 
@@ -219,10 +219,11 @@ search GitHub for the `repowise-plugin` topic or PyPI for the
 ## Stability
 
 The plugin API is experimental and can change in a minor release; a breaking
-change bumps `PLUGIN_API_VERSION` and is named in [CHANGELOG.md](../CHANGELOG.md). Set
-`MIN_PLUGIN_API_VERSION` in your module to the oldest version your plugin works
-with, and see [the version policy](PLUGINS_REFERENCE.md#stability) for what
-counts as breaking.
+change bumps `PLUGIN_API_VERSION` and is named in
+[CHANGELOG.md](../CHANGELOG.md). Set `MIN_PLUGIN_API_VERSION` in your module to
+the oldest version your plugin works with, and see
+[the version policy](PLUGINS_REFERENCE.md#stability) for what counts as
+breaking.
 
 Need a seam that does not exist yet? See
 [Proposing a new seam](PLUGINS_REFERENCE.md#proposing-a-new-seam).
