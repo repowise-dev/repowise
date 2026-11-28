@@ -157,6 +157,7 @@ DISTINCT_TITLES = [
     ("Cache parsed files", "Cache parsed symbols"),  # too few words to judge
     ("Retry failed uploads in the worker", "Never retry failed uploads in the worker"),
     ("Keep one worker pool for indexing", "Keep two worker pool for indexing"),
+    ("Don't cache auth tokens in Redis", "Cache auth tokens in Redis"),
     (
         "Enable authentication for internal health endpoints",
         "Disable authentication for internal health endpoints",

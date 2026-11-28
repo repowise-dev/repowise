@@ -182,7 +182,25 @@ _MIN_CONTENT_WORDS = 3
 
 _WORD = re.compile(r"[a-z0-9_]+")
 
-_NEGATIONS = frozenset({"never", "no", "not", "without"})
+#: ``_WORD`` splits "don't" into "don" and "t", so a contraction counts by its stem.
+_NEGATIONS = frozenset(
+    {
+        "never",
+        "no",
+        "not",
+        "without",
+        "cannot",
+        "don",
+        "doesn",
+        "didn",
+        "isn",
+        "aren",
+        "wasn",
+        "won",
+        "shouldn",
+        "mustn",
+    }
+)
 
 #: Negation, contrast and quantity words are deliberately absent: "use A, not B"
 #: and "use B, not A", or "one worker" and "two workers", must not reduce to one
