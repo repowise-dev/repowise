@@ -409,15 +409,18 @@ def id_holders(symbols: Iterable[Symbol]) -> list[Symbol]:
 
     The others keep no row and no node of their own: a field or property beside
     a function of its name, a definition beside another of the same erasure, a
-    declaration beside its definition. An id a type forward declaration holds
-    keeps a graph node but no row.
+    declaration beside its definition. A type forward declaration never holds a
+    row, so a C prototype sharing its id (``int stat(...);`` beside
+    ``struct stat;``) keeps its own.
     """
     holders: dict[str, Symbol] = {}
     for sym in symbols:
+        if is_type_forward_declaration(vars(sym)):
+            continue
         held = holders.get(sym.id)
         if held is None or takes_shared_id(vars(held), sym):
             holders[sym.id] = sym
-    return [sym for sym in holders.values() if not is_type_forward_declaration(vars(sym))]
+    return list(holders.values())
 
 
 def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:

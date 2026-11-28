@@ -353,6 +353,13 @@ class TestTypeDeclarationIsNoSymbolOfItsFile:
         )["h.c"]
         assert {s.name for s in id_holders(parsed.symbols)} == {"handle", "real"}
 
+    def test_a_c_prototype_sharing_the_id_keeps_its_row(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.symbol_identity import id_holders
+
+        source = "int stat(const char *p);\nstruct stat;\n"
+        parsed = self._parse(tmp_path, {"f.c": source})["f.c"]
+        assert [(s.name, s.kind) for s in id_holders(parsed.symbols)] == [("stat", "function")]
+
     def test_the_file_page_leads_with_the_defined_class(self, tmp_path: Path) -> None:
         import networkx as nx
 
