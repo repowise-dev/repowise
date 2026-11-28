@@ -150,7 +150,12 @@ async def stored_tracker_fixes(repo_path: str | Path) -> frozenset[str]:
     root = Path(repo_path)
     if not has_db_store(root):
         return frozenset()
-    engine = create_engine(resolve_db_url(root))
+    url = resolve_db_url(root)
+    # A configured SQLite file that does not exist yet stays that way: opening
+    # it would create the store a dry run or a first index has not written.
+    if url.startswith("sqlite") and not Path(url.split(":///", 1)[-1]).is_file():
+        return frozenset()
+    engine = create_engine(url)
     try:
         from repowise.core.persistence.crud import get_repository_by_path
         from repowise.core.persistence.crud.issue_links import load_tracker_fixes
