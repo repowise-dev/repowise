@@ -220,6 +220,16 @@ def _admits(symbol: Symbol, argument_count: int | None) -> bool:
     return fewest <= argument_count and (most is None or argument_count <= most)
 
 
+def _takes_on_receiver(extension: Symbol, argument_count: int | None) -> bool:
+    """Could C# *extension* take *argument_count* arguments after its receiver fills ``this``?"""
+    # The range already reads ``this`` as optional; here it is always filled.
+    admitted = signature_parameter_range(extension.signature or "", "csharp")
+    if argument_count is None or admitted is None:
+        return True
+    fewest, most = admitted
+    return fewest <= argument_count and (most is None or argument_count < most)
+
+
 def _enclosing_id(symbol_id: str) -> str:
     """The id of the symbol enclosing *symbol_id*: a method's class."""
     # Our own ``path::Class::method`` ID separator, not a type qualifier.
@@ -1419,7 +1429,32 @@ class ReceiverTypingMixin(
         extension = self._extension_target(file_path, key, call.argument_count)
         if extension is None or self._symbols_by_id[extension[0]].language != language:
             return None
+        library = language == "csharp" and spelled.partition("`")[0] not in self._csharp_type_names
+        if library and not self._takes_library_extension(extension[0], call):
+            return None
         return self._extension_typed_call(caller_id, *extension, call.line)
+
+    def _takes_library_extension(self, sym_id: str, call: CallSite) -> bool:
+        """May a call on a library-typed receiver bind the repo extension *sym_id*?
+
+        The library type's own members and bases are out of sight, so the key
+        alone is weak evidence. It binds only when one repo extension of the
+        name takes the call's arity (the receiver fills ``this``), or when every
+        one that does is in *sym_id*'s overload set and the arguments pick a
+        single member of it. Anything else abstains.
+        """
+        takers = {
+            s.id
+            for s in self._csharp_extensions_named(call.target_name)
+            if _takes_on_receiver(s, call.argument_count)
+        }
+        rep = self._overload_rep.get(sym_id, sym_id)
+        if not takers or any(self._overload_rep.get(taker, taker) != rep for taker in takers):
+            return False
+        if len(takers) == 1:
+            return True
+        filled = self._csharp_receiver_filled(rep, call)
+        return len(self._deciding_overloads(rep, filled.argument_count, filled.argument_types)) == 1
 
     def _means_the_wrapper(
         self,
