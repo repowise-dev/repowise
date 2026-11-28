@@ -266,7 +266,8 @@ _BLOCKED_EXTENSIONS: frozenset[str] = frozenset(
         ".o",
         ".a",
         ".wasm",
-        # Unity non-code assets, skipped before binary sniffing.
+        # Engine and content-tool assets, skipped before binary sniffing.
+        # Unity's are YAML text the sniff would keep.
         ".meta",
         ".prefab",
         ".unity",
@@ -274,6 +275,27 @@ _BLOCKED_EXTENSIONS: frozenset[str] = frozenset(
         ".mat",
         ".anim",
         ".controller",
+        # Unreal packages, cooked containers and bulk data.
+        ".uasset",
+        ".umap",
+        ".upk",
+        ".udk",
+        ".ubulk",
+        ".uexp",
+        ".utoc",
+        ".ucas",
+        ".pak",
+        # Binary art, audio and video sources and middleware banks.
+        ".blend",
+        ".psd",
+        ".tga",
+        ".dds",
+        ".ktx",
+        ".wav",
+        ".bank",
+        ".bnk",
+        ".wem",
+        ".bk2",
     }
 )
 
