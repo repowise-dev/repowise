@@ -86,11 +86,12 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Python tests. Pull requests run Python 3.12 in three shards; pushes and the
-  # nightly run add 3.11 and 3.13 unsharded. The 3.12 shards measure coverage,
-  # and the "Python tests" job below combines it.
+  # nightly run add 3.11 and 3.13 in two shards each. Only the 3.12 shards
+  # measure coverage and upload reports, and the "Python tests" job below
+  # combines it.
   # ---------------------------------------------------------------------------
   test-python:
-    name: Python ${{ matrix.python }} tests${{ matrix.shard && format(' (shard {0})', matrix.shard) || '' }}
+    name: Python ${{ matrix.python }} tests (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.python == 'true'
@@ -102,7 +103,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python":"3.12","shard":"1/3"},{"python":"3.12","shard":"2/3"},{"python":"3.12","shard":"3/3"}]' || '[{"python":"3.11","shard":""},{"python":"3.12","shard":"1/3"},{"python":"3.12","shard":"2/3"},{"python":"3.12","shard":"3/3"},{"python":"3.13","shard":""}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python":"3.12","shard":"1/3"},{"python":"3.12","shard":"2/3"},{"python":"3.12","shard":"3/3"}]' || '[{"python":"3.11","shard":"1/2"},{"python":"3.11","shard":"2/2"},{"python":"3.12","shard":"1/3"},{"python":"3.12","shard":"2/3"},{"python":"3.12","shard":"3/3"},{"python":"3.13","shard":"1/2"},{"python":"3.13","shard":"2/2"}]') }}
 
     steps:
       - uses: actions/checkout@v7
@@ -146,7 +147,7 @@ jobs:
 
       # Seconds long, so the first shard takes it whole.
       - name: Run provider tests (no API keys required)
-        if: matrix.shard == '' || matrix.shard == '1/3'
+        if: startsWith(matrix.shard, '1/')
         run: uv run pytest tests/providers/ -v --tb=short
 
       # One worker per core. loadfile keeps each module on one worker, so a
@@ -156,8 +157,8 @@ jobs:
       # run with that test named. With restarts, loadfile hands the unfinished
       # tests of that file back, and the run can wait with every worker idle.
       - name: Run unit tests
-        if: matrix.shard == ''
-        run: uv run pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25
+        if: matrix.python != '3.12'
+        run: uv run pytest tests/unit/ --shard ${{ matrix.shard }} -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25
 
       # --shard (tests/conftest.py) keeps whole test files together, so
       # loadfile still holds, and packs them by tests/shard_weights.json.
@@ -169,14 +170,14 @@ jobs:
       # a JUnit report (xunit1 names each case's file) that refreshes the
       # shard weights.
       - name: Run unit tests with coverage
-        if: matrix.shard != ''
+        if: matrix.python == '3.12'
         env:
           COVERAGE_CORE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ctrace' || 'sysmon' }}
           COV_CONTEXT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '--cov-context=test' || '' }}
         run: uv run --with pytest-cov pytest tests/unit/ --shard ${{ matrix.shard }} -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages $COV_CONTEXT --cov-report= --junitxml=junit.xml -o junit_family=xunit1
 
       - name: Keep the coverage data
-        if: always() && matrix.shard != ''
+        if: always() && matrix.python == '3.12'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-data-${{ strategy.job-index }}
@@ -187,7 +188,7 @@ jobs:
           overwrite: true   # a re-run of the job uploads again
 
       - name: Keep the test report
-        if: always() && matrix.shard != ''
+        if: always() && matrix.python == '3.12'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
