@@ -24,6 +24,7 @@ import { GraphScopeBreadcrumb } from "./graph-scope-breadcrumb";
 import { traceToEdgeKeys, traceToFileTrace } from "./graph-flow-helpers";
 import { useGraphContextMenu } from "./use-graph-context-menu";
 import { useGraphSearch } from "./use-graph-search";
+import { useGraphFlowFocus } from "./use-graph-flow-focus";
 import { HUB_FOCUS_RATIO, useGraphSelection } from "./use-graph-selection";
 import { useCommunityFilter } from "./use-community-filter";
 import { useModuleFilter, filterGraphToModule } from "./use-module-filter";
@@ -943,63 +944,16 @@ export function GraphFlow(props: GraphFlowProps) {
     onModuleGroupsChange?.(moduleGroups);
   }, [moduleGroups, onModuleGroupsChange]);
 
-  // Flow index whose trace head has already been focused, so the deferred
-  // re-focus below fires at most once per selection and never re-steers the
-  // camera on later graph changes while the same flow stays active.
-  const flowFocusedRef = useRef<number | null>(null);
-  // Live graph handle for the focus timer (the effect below deliberately
-  // keeps displayGraph out of its deps).
-  const drawnGraphRef = useRef(displayGraph);
-  drawnGraphRef.current = displayGraph;
-
-  // Execution flow highlighting
-  useEffect(() => {
-    if (activeFlowIdx === null || !executionFlows) {
-      if (activeFlowIdx === null && showFlows) {
-        setHighlightedPath(new Set());
-        setHighlightedEdges(new Set());
-      }
-      return;
-    }
-    const flow = executionFlows.flows[activeFlowIdx];
-    if (!flow) return;
-    const fileTrace = traceToFileTrace(flow.trace);
-    setHighlightedPath(new Set(fileTrace));
-    setHighlightedEdges(traceToEdgeKeys(fileTrace));
-
-    clearTimeout(focusTimerRef.current);
-    focusTimerRef.current = setTimeout(() => {
-      focusTimerRef.current = undefined;
-      const firstNode = fileTrace[0];
-      if (!firstNode) return;
-      if (drawnGraphRef.current?.hasNode(firstNode)) {
-        flowFocusedRef.current = activeFlowIdx;
-        sigmaRef.current?.focusNode(firstNode);
-      }
-      // Node not loaded yet (module → full jump still fetching): the
-      // deferred-focus effect below picks it up once the graph gains it.
-    }, 800);
-    return () => clearTimeout(focusTimerRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFlowIdx, executionFlows]);
-
-  // Deferred flow focus: selecting a flow from the module overview kicks off
-  // the full-graph fetch, which can land after the 800ms timer above already
-  // fired against a graph without the trace head. Focus once when the graph
-  // gains the node; while the timer is still pending it stays the fast path.
-  useEffect(() => {
-    if (activeFlowIdx === null) {
-      flowFocusedRef.current = null;
-      return;
-    }
-    if (flowFocusedRef.current === activeFlowIdx) return;
-    if (focusTimerRef.current !== undefined) return;
-    const trace = executionFlows?.flows[activeFlowIdx]?.trace;
-    const firstNode = trace ? traceToFileTrace(trace)[0] : undefined;
-    if (!firstNode || !displayGraph?.hasNode(firstNode)) return;
-    flowFocusedRef.current = activeFlowIdx;
-    sigmaRef.current?.focusNode(firstNode);
-  }, [activeFlowIdx, executionFlows, displayGraph]);
+  const drawnGraphRef = useGraphFlowFocus({
+    activeFlowIdx,
+    executionFlows,
+    showFlows,
+    displayGraph,
+    sigmaRef,
+    focusTimerRef,
+    setHighlightedPath,
+    setHighlightedEdges,
+  });
 
   // ---- Handlers ----
 
