@@ -80,6 +80,23 @@ def test_if_block_marks_conditional_sources(tmp_path):
     assert "stub.cc" not in t.conditional_sources
 
 
+def test_a_name_declared_in_if_and_else_arms_is_one_target(tmp_path):
+    _write(tmp_path, "CMakeLists.txt", """
+        if(WIN32)
+          add_library(env STATIC env_windows.cc)
+        else()
+          add_library(env STATIC env_posix.cc)
+        endif()
+        target_link_libraries(env PRIVATE util)
+    """)
+    cm = cmake.parse_cmake_lists(tmp_path / "CMakeLists.txt", repo_root=tmp_path)
+    assert [t.name for t in cm.targets] == ["env"]
+    t = cm.targets[0]
+    assert t.sources == ["env_windows.cc", "env_posix.cc"]
+    assert t.conditional_sources == ["env_windows.cc", "env_posix.cc"]
+    assert t.link_deps == ["util"]
+
+
 def test_find_package_emits_external_record(tmp_path):
     cml = _write(tmp_path, "CMakeLists.txt", """
         find_package(Boost 1.74 REQUIRED)

@@ -10,6 +10,7 @@ import structlog
 from repowise.core.build_units.adapters import (
     Found,
     cargo,
+    cmake,
     dart,
     dotnet,
     elixir,
@@ -46,6 +47,7 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("swift", swift.units),
     ("pascal", pascal.units),
     ("elixir", elixir.units),
+    ("cmake", cmake.units),
 )
 
 
