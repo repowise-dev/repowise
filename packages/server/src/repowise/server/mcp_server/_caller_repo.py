@@ -10,10 +10,17 @@ import asyncio
 import logging
 import weakref
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from mcp.types import ClientCapabilities, RootsCapability
+from mcp.shared.message import ServerMessageMetadata
+from mcp.types import (
+    ClientCapabilities,
+    ListRootsRequest,
+    ListRootsResult,
+    RootsCapability,
+    ServerRequest,
+)
 
 _log = logging.getLogger("repowise.mcp")
 
@@ -23,7 +30,7 @@ _ROOTS_TIMEOUT_S = 2.0
 _session_aliases: weakref.WeakKeyDictionary[Any, str | None] = weakref.WeakKeyDictionary()
 
 
-async def session_alias(session: Any, registry: Any) -> str | None:
+async def session_alias(session: Any, request_id: Any, registry: Any) -> str | None:
     """The member alias the session's first mappable ``file://`` root names, else None."""
     try:
         return _session_aliases[session]
@@ -33,7 +40,14 @@ async def session_alias(session: Any, registry: Any) -> str | None:
     # A stateless HTTP session has no client params, so this is False there.
     if session.check_client_capability(ClientCapabilities(roots=RootsCapability())):
         try:
-            result = await asyncio.wait_for(session.list_roots(), _ROOTS_TIMEOUT_S)
+            # Tied to the tool call, so streamable HTTP sends it on that call's
+            # stream; session.list_roots() would need the client's optional GET stream.
+            ask = session.send_request(
+                ServerRequest(ListRootsRequest()),
+                ListRootsResult,
+                metadata=ServerMessageMetadata(related_request_id=request_id),
+            )
+            result = await asyncio.wait_for(ask, _ROOTS_TIMEOUT_S)
             alias = _first_member(result.roots, registry)
         except Exception:  # a client that can't answer keeps the configured default
             _log.debug("repowise MCP: could not read client roots", exc_info=True)
@@ -44,7 +58,7 @@ async def session_alias(session: Any, registry: Any) -> str | None:
 def _first_member(roots: Any, registry: Any) -> str | None:
     for root in roots:
         # The MCP schema makes every root a file:// URI.
-        path = url2pathname(unquote(urlparse(str(root.uri)).path))
+        path = url2pathname(urlparse(str(root.uri)).path)
         try:
             alias = registry.resolve_repo_param(path)
         except ValueError:

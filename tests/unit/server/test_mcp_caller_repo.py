@@ -32,7 +32,8 @@ class _Session:
     def check_client_capability(self, capability):
         return self.capable
 
-    async def list_roots(self):
+    async def send_request(self, request, result_type, metadata=None):
+        assert metadata.related_request_id == "req-1"
         self.calls += 1
         if self.fail == "hang":
             await asyncio.sleep(10)
@@ -59,8 +60,8 @@ def test_caller_alias_overrides_the_configured_default(registry):
 @pytest.mark.parametrize("sub", ["", "src"])
 async def test_a_root_in_a_member_names_it_once_per_session(registry, tmp_path, sub):
     session = _Session([tmp_path / "elsewhere", tmp_path / "frontend" / sub])
-    assert await _caller_repo.session_alias(session, registry) == "frontend"
-    assert await _caller_repo.session_alias(session, registry) == "frontend"
+    assert await _caller_repo.session_alias(session, "req-1", registry) == "frontend"
+    assert await _caller_repo.session_alias(session, "req-1", registry) == "frontend"
     assert session.calls == 1
 
 
@@ -76,14 +77,14 @@ async def test_a_root_in_a_member_names_it_once_per_session(registry, tmp_path, 
 )
 async def test_no_usable_root_keeps_the_default_and_is_cached(registry, session, monkeypatch):
     monkeypatch.setattr(_caller_repo, "_ROOTS_TIMEOUT_S", 0.05)
-    assert await _caller_repo.session_alias(session, registry) is None
-    assert await _caller_repo.session_alias(session, registry) is None
+    assert await _caller_repo.session_alias(session, "req-1", registry) is None
+    assert await _caller_repo.session_alias(session, "req-1", registry) is None
     assert session.calls == (1 if session.capable else 0)
 
 
-async def test_a_tool_call_without_repo_answers_about_the_callers_root(
-    registry, tmp_path, monkeypatch
-):
+@pytest.fixture
+def served(registry, monkeypatch):
+    """Call *tool* through an in-memory client whose roots are *roots*."""
     from mcp.shared.memory import create_connected_server_and_client_session
 
     from repowise.server.mcp_server import ensure_full_surface, mcp
@@ -96,17 +97,39 @@ async def test_a_tool_call_without_repo_answers_about_the_callers_root(
     monkeypatch.setattr(mcp._mcp_server, "lifespan", no_lifespan)
     monkeypatch.setattr(_state, "_registry", registry)
 
-    async def default_repo(roots) -> str:
+    async def call(tool, roots):
         async def list_roots(_ctx):
             return ListRootsResult(roots=[Root(uri=r.as_uri()) for r in roots])
 
         async with create_connected_server_and_client_session(
             mcp._mcp_server, list_roots_callback=list_roots if roots else None
         ) as client:
-            reply = await client.call_tool("list_repos", {})
-            assert not reply.isError, reply.content
-            return json.loads(reply.content[0].text)["default_repo"]
+            return await client.call_tool(tool, {})
 
-    assert await default_repo([tmp_path / "frontend" / "src"]) == "frontend"
-    assert await default_repo([]) == "backend"
+    return call
+
+
+async def _default_repo(served, roots) -> str:
+    reply = await served("list_repos", roots)
+    assert not reply.isError, reply.content
+    return json.loads(reply.content[0].text)["default_repo"]
+
+
+async def test_a_tool_call_without_repo_answers_about_the_callers_root(served, tmp_path):
+    assert await _default_repo(served, [tmp_path / "frontend" / "src"]) == "frontend"
+    assert await _default_repo(served, []) == "backend"
     assert caller_alias.get() is None
+
+
+@pytest.mark.parametrize(("scope", "denied"), [("backend", True), ("frontend", False)])
+async def test_a_scoped_credential_is_checked_against_the_callers_repo(
+    served, tmp_path, monkeypatch, scope, denied
+):
+    from repowise.server.auth import Principal
+    from repowise.server.mcp_server._server import _RepowiseMCP
+
+    principal = Principal("token:t", "token", frozenset({scope}), None)
+    monkeypatch.setattr(_RepowiseMCP, "_request_principal", lambda self: principal)
+    reply = await served("get_overview", [tmp_path / "frontend"])
+    refused = "outside this credential's scope" in reply.content[0].text
+    assert refused is denied, reply.content
