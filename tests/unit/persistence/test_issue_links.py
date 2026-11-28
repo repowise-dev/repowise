@@ -10,7 +10,6 @@ from sqlalchemy import select
 from repowise.core.issues import StoredLink
 from repowise.core.persistence.crud.issue_links import (
     fix_issue_quotes,
-    has_issue_links,
     load_tracker_fixes,
     store_issue_links,
 )
@@ -139,13 +138,28 @@ async def test_is_fix_adds_linked_bugs_and_never_drops_a_keyword_fix(async_sessi
 
 
 @pytest.mark.asyncio
-async def test_with_no_links_the_flags_are_left_alone(async_session):
+async def test_with_no_links_left_a_linked_flag_goes_and_the_rule_stays(async_session, monkeypatch):
     repo = await insert_repo(async_session)
-    # A flag no rule would set today: with nothing linked it is not touched.
-    async_session.add(_commit(repo.id, A, "Add export", True))
+    async_session.add_all(
+        [
+            _commit(repo.id, A, "Handle empty carts (ENG-1)", False),
+            _commit(repo.id, B, "fix crash on login", True),
+        ]
+    )
     await async_session.flush()
-
-    assert not await has_issue_links(async_session, repo.id)
+    await store_issue_links(async_session, repo.id, [_link(A, "ENG-1")], source="t")
     await reconcile_issue_fix_flags(async_session, repo.id)
 
-    assert (await async_session.execute(select(GitCommit.is_fix))).scalar_one() is True
+    # The last link goes: a full fetch that no longer finds it.
+    await store_issue_links(async_session, repo.id, [], source="t", covered_shas=[A, B])
+    await reconcile_issue_fix_flags(async_session, repo.id)
+    flags = {c.sha: c.is_fix for c in (await async_session.execute(select(GitCommit))).scalars()}
+    assert flags == {A: False, B: True}
+
+    # Rows that match the rule are never rewritten.
+    from repowise.core.persistence import crud
+
+    writes: list = []
+    monkeypatch.setattr(crud, "upsert_git_commits_bulk", lambda *a: writes.append(a))
+    await reconcile_issue_fix_flags(async_session, repo.id)
+    assert writes == []

@@ -41,10 +41,14 @@ async def persist_git(
     commit_rows = getattr(summary, "commit_rows", None)
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
+        from repowise.core.persistence.crud.issue_links import load_tracker_fixes
         from repowise.core.pipeline.incremental.commits import reconcile_issue_fix_flags
 
-        # A linked bug issue marks its commit a fix, as the update does.
-        await reconcile_issue_fix_flags(session, repo_id)
+        # A linked bug issue marks its commit a fix, as the update does. The rows
+        # were just written by the rule, so with no links there is nothing to do.
+        tracker_fixes = await load_tracker_fixes(session, repo_id)
+        if tracker_fixes:
+            await reconcile_issue_fix_flags(session, repo_id, tracker_fixes)
 
     commit_file_rows = getattr(summary, "commit_file_rows", None)
     if commit_file_rows:

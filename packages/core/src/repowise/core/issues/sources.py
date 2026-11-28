@@ -245,7 +245,7 @@ async def run_issue_fetch(
             links.append(link)
         resolved = resolve_links(links, request.commits)
     except Exception as exc:
-        outcome.status, outcome.error = _failure(exc)
+        outcome.status, outcome.error = _failure(exc, request.credentials)
         # What was read before the failure still stands, minus a link that broke a rule.
         resolved = _resolvable(links, request.commits)
     finally:
@@ -258,16 +258,21 @@ async def run_issue_fetch(
         if resolved or outcome.status == "ok":
             outcome.stored.append(await store(resolved, outcome.status == "ok"))
     except Exception as exc:
-        outcome.status, outcome.error = "failed", f"{type(exc).__name__}: {exc}"
+        # A database error quotes the values it was bound to, so only its type goes out.
+        outcome.status, outcome.error = "failed", f"storing the links failed ({type(exc).__name__})"
     return outcome
 
 
-def _failure(exc: BaseException) -> tuple[str, str]:
+def _failure(exc: BaseException, credentials: Any) -> tuple[str, str]:
     if isinstance(exc, SourceUnavailable):
         return "unavailable", str(exc) or "the tracker is unavailable"
     if isinstance(exc, SourceRefused):
         return "refused", str(exc) or "the tracker refused the request"
-    return "failed", f"{type(exc).__name__}: {exc}"
+    message = f"{type(exc).__name__}: {exc}"
+    # An HTTP client's error can quote the request it sent, token included.
+    if isinstance(credentials, str) and credentials and credentials in message:
+        message = message.replace(credentials, "***")
+    return "failed", message
 
 
 def _resolvable(links: list[IssueLink], commits: Sequence[IssueCommit]) -> list[StoredLink]:

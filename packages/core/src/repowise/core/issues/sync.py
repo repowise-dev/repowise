@@ -152,24 +152,18 @@ async def stored_tracker_fixes(repo_path: str | Path) -> frozenset[str]:
         return frozenset()
     engine = create_engine(resolve_db_url(root))
     try:
-        from sqlalchemy import select
-
+        from repowise.core.persistence.crud import get_repository_by_path
         from repowise.core.persistence.crud.issue_links import load_tracker_fixes
-        from repowise.core.persistence.models import Repository
 
         async with get_session(create_session_factory(engine)) as session:
-            paths = sorted({str(root), str(root.resolve())})
-            repo_id = (
-                await session.execute(
-                    select(Repository.id).where(Repository.local_path.in_(paths)).limit(1)
-                )
-            ).scalar_one_or_none()
-            if repo_id is None:
+            # The lookup every reader shares, so a moved checkout still finds its row.
+            repo = await get_repository_by_path(session, str(root))
+            if repo is None:
                 return frozenset()
-            return await load_tracker_fixes(session, repo_id)
+            return await load_tracker_fixes(session, repo.id)
     except Exception as exc:
         # An index older than the table, or a locked store: count by git alone.
-        logger.debug("stored_tracker_fixes_failed", error=str(exc))
+        logger.warning("stored_tracker_fixes_failed", error=type(exc).__name__)
         return frozenset()
     finally:
         await engine.dispose()

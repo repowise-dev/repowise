@@ -22,7 +22,6 @@ from ._shared import _BATCH_SIZE
 __all__ = [
     "LinkedIssue",
     "fix_issue_quotes",
-    "has_issue_links",
     "linked_defect_issues",
     "load_tracker_fixes",
     "store_issue_links",
@@ -39,13 +38,26 @@ async def store_issue_links(
 ) -> dict:
     """Store *links* from *source*; returns ``{stored, removed, defect_changed}``.
 
-    A (commit, issue) pair already stored is replaced. *covered_shas* names the
+    All or nothing: the writes run in a savepoint, so a failure leaves the
+    stored links as they were. A (commit, issue) pair already stored is
+    replaced, whichever source stored it. *covered_shas* names the
     commits a complete fetch asked about: this source's links on them that
     *links* no longer holds are removed. Leave it None for a partial fetch,
     which only adds. ``defect_changed`` lists the commits whose fix status
     moved (a bug or incident link came or went), the ones an index already
     holding them must re-walk.
     """
+    async with session.begin_nested():
+        return await _store(session, repository_id, links, source, covered_shas)
+
+
+async def _store(
+    session: AsyncSession,
+    repository_id: str,
+    links: Sequence[StoredLink],
+    source: str,
+    covered_shas: Iterable[str] | None,
+) -> dict:
     rows: dict[tuple[str, str], StoredLink] = {}
     for link in links:
         rows[(link.sha, link.key)] = link
@@ -110,14 +122,6 @@ async def load_tracker_fixes(session: AsyncSession, repository_id: str) -> froze
         .distinct()
     )
     return frozenset(result.scalars().all())
-
-
-async def has_issue_links(session: AsyncSession, repository_id: str) -> bool:
-    """Whether any link, of any type, is stored for the repository."""
-    result = await session.execute(
-        select(IssueLink.commit_sha).where(IssueLink.repository_id == repository_id).limit(1)
-    )
-    return result.first() is not None
 
 
 @dataclass(frozen=True)

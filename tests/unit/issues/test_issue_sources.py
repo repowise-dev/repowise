@@ -244,3 +244,10 @@ async def test_an_indexer_without_links_writes_what_it_always_did(tmp_path: Path
     )
     assert before[1] == after[1]
     assert before[0].fix_event_rows == after[0].fix_event_rows
+
+
+def test_a_token_an_http_error_quotes_never_reaches_the_outcome() -> None:
+    request = IssueRequest("r", commits=_COMMITS, credentials="tok-secret")
+    outcome, _ = _fetch(_Source([], RuntimeError("GET /issue?token=tok-secret: 500")), request)
+    assert outcome.status == "failed"
+    assert "tok-secret" not in outcome.error

@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from repowise.core.issues import StoredLink
 from repowise.core.persistence.crud.issue_links import store_issue_links
-from repowise.core.persistence.models import FixEvent, GitMetadata
+from repowise.core.persistence.models import FixEvent, GitMetadata, IssueLink
 from repowise.server.mcp_server.tool_change_risk import _prior_fixes_block
 from tests.unit.server.mcp.test_prior_fixes import _REPO_ID, _ctx_with_events
 
@@ -51,7 +51,16 @@ async def test_get_context_fix_history_quotes_the_linked_bug(setup_mcp, session,
     plain = (await get_context(["src/auth/service.py"]))["targets"]["src/auth/service.py"]
     assert "linked_issues" not in plain["fix_history"]
 
-    await store_issue_links(session, repo_id, [_LINK], source="t")
+    session.add(
+        IssueLink(
+            repository_id=repo_id,
+            commit_sha=_SHA,
+            issue_key="ENG-42",
+            source="t",
+            issue_type="bug",
+            title="Checkout fails on an empty cart",
+        )
+    )
     await session.flush()
     card = (await get_context(["src/auth/service.py"]))["targets"]["src/auth/service.py"]
 

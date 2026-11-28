@@ -214,18 +214,17 @@ async def reconcile_issue_fix_flags(
 
     ``is_fix`` is the benchmark keyword rule at capture time; a linked bug
     issue adds to it and never takes a keyword fix away. Re-derived from the
-    stored subject on every index and update, so a link that came, changed
-    type or went is reflected without a re-walk. A repository with no stored
-    links is left untouched. Failure-isolated like the other commit reconciles.
+    stored subject on every update, so a link that came, changed type or went
+    (the last one too) is reflected without a re-walk. With no links every row
+    already matches the rule that wrote it, so nothing is written.
+    Failure-isolated like the other commit reconciles.
     """
     from repowise.core.persistence.crud import get_commit_experience_inputs, upsert_git_commits_bulk
-    from repowise.core.persistence.crud.issue_links import has_issue_links, load_tracker_fixes
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
 
     try:
         if tracker_fixes is None:
             tracker_fixes = await load_tracker_fixes(session, repo_id)
-        if not tracker_fixes and not await has_issue_links(session, repo_id):
-            return
         updates = _issue_fix_updates(
             await get_commit_experience_inputs(session, repo_id), tracker_fixes
         )
