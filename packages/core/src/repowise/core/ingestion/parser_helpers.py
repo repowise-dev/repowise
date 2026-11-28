@@ -57,7 +57,7 @@ from .lang_helpers.type_heads import (
     _rust_head_type_identifier,
     _rust_shadowed_by_type_param,
 )
-from .models import CSHARP_INTEGER_CONSTANT, TS_JS_LANGUAGES
+from .models import CPP_NOT_VA_LIST, CSHARP_INTEGER_CONSTANT, TS_JS_LANGUAGES
 from .type_names import kotlin_extension_receiver
 
 log = structlog.get_logger(__name__)
@@ -599,14 +599,14 @@ _APEX_LITERAL_TYPES = {
 
 
 def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
-    """A call's argument expressions, for a language whose overloads read them (Java, Apex, Kotlin).
+    """A call's argument expressions, for a language whose overloads read them (Java, Apex, Kotlin, C++).
 
     Read from the argument list already in hand, the way ``_count_arguments``
     counts it.
     """
     if language == "kotlin":
         return _kotlin_positional_arguments(arg_nodes)
-    if language not in ("java", "apex", "csharp") or not arg_nodes:
+    if language not in ("java", "apex", "csharp", "cpp") or not arg_nodes:
         return []
     skip_types = frozenset({"(", ")", ","})
     arguments = [
@@ -683,14 +683,37 @@ def _kotlin_fraction_type(lowered: str) -> str | None:
     return "Double" if "." in lowered or "e" in lowered else None
 
 
+# C++ argument nodes whose value is never a ``va_list``.
+_CPP_NOT_VA_LIST_NODES = frozenset(
+    {
+        "string_literal",
+        "raw_string_literal",
+        "concatenated_string",
+        "char_literal",
+        "number_literal",
+        "true",
+        "false",
+        "nullptr",
+        "call_expression",
+    }
+)
+
+
 def _argument_literal_types(
     arguments: list[Node], src: str, language: str = "java"
 ) -> tuple[str | None, ...] | None:
     """The type of each literal argument, None where an argument is no literal.
 
     None overall when no argument is a literal. C# reports a lambda's and a
-    construction's shape instead (``_csharp_argument_shape``).
+    construction's shape instead (``_csharp_argument_shape``). C++ marks only
+    an argument that cannot be a ``va_list`` (``CPP_NOT_VA_LIST``).
     """
+    if language == "cpp":
+        marks = tuple(
+            CPP_NOT_VA_LIST if argument.type in _CPP_NOT_VA_LIST_NODES else None
+            for argument in arguments
+        )
+        return marks if any(marks) else None
     literal_type = {
         "apex": _apex_literal_type,
         "csharp": _csharp_argument_shape,
