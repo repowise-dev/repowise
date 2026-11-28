@@ -315,8 +315,9 @@ _CPP_KEYWORDS = (
 # Two levels of nesting: the same ceiling as ``_TYPE``.
 _CPP_TYPE = r"(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*(?:\s*<(?:[^<>]|<[^<>]*>)*>)?"
 
-# ``T name``, ``T* name``, ``T& name``, ``ns::T name``, ``W<T> name``, closed by
-# the same punctuation the C family requires plus ``{`` for brace init.
+# ``T name``, ``T* name``, ``T& name``, ``T* const name``, ``ns::T name``,
+# ``W<T> name``, closed by the same punctuation the C family requires plus
+# ``{`` for brace init.
 #
 # ``(`` is NOT a closer: ``Status doIt(int x);`` is a method declaration, the
 # commonest line in a header. ``Foo bar(args);`` is read by
@@ -324,8 +325,12 @@ _CPP_TYPE = r"(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*(?:\s*<(?:[^<>]|<[^<>]*>)*>)?
 # restart inside a type already read (``std::shared_ptr<Foo>& p``).
 _CPP_DECLARATION = re.compile(
     rf"(?<![\w.>:])(?!{_CPP_KEYWORDS}\b)(?P<type>{_CPP_TYPE})"
-    rf"(?:\s*[*&]{{1,2}}\s*|\s+)(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,){{]))"
+    rf"(?:\s*[*&]{{1,2}}\s*(?:const\s+)?|\s+)(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,){{]))"
 )
+
+# A later declarator of ``T a, *b = x;``, read from the ``,`` or ``=`` that
+# closed the one before it.
+_CPP_LATER_DECLARATOR = re.compile(r",\s*(?:[*&]{1,2}\s*(?:const\s+)?)?(?P<name>[a-z_]\w*)\s*")
 
 # ``Foo bar(args);``, a local constructed in place. The same spelling declares
 # a function (``Status doIt(int x);``, ``Foo bar(Baz);``), so
@@ -1334,11 +1339,7 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
                 continue
             raw = match.group("type")
             if raw not in resolved:
-                resolved[raw] = _usable_type_name(raw, language)
-                if resolved[raw][0] is None and (
-                    language in _MARKED_BUILTIN_LANGUAGES or _is_csharp_array(raw, language)
-                ):
-                    resolved[raw] = (_builtin_type_name(raw, language), False)
+                resolved[raw] = _declared_type_name(raw, language)
             type_name, unwrapped = resolved[raw]
             if type_name is None:
                 continue
@@ -1352,21 +1353,52 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
                 closer = ""
             if in_type_body is not None and not in_type_body(match.start()):
                 closer = ""
-            found.append(
-                Declaration(
-                    bisect_right(starts, match.start()),
-                    # Pascal is case-insensitive: its variable receivers arrive
-                    # folded too (languages/pascal_names.py).
-                    match.group("name").lower() if language == "pascal" else match.group("name"),
-                    type_name,
-                    closer,
-                    unwrapped,
-                    bool(groups.get("member")),
-                )
+            first = Declaration(
+                bisect_right(starts, match.start()),
+                # Pascal is case-insensitive: its variable receivers arrive
+                # folded too (languages/pascal_names.py).
+                match.group("name").lower() if language == "pascal" else match.group("name"),
+                type_name,
+                closer,
+                unwrapped,
+                bool(groups.get("member")),
             )
+            if pattern is _CPP_DECLARATION:
+                found.extend(_cpp_declarator_list(cleaned, match, first, starts))
+            else:
+                found.append(first)
 
     found.sort()
     return tuple(found)
+
+
+def _declared_type_name(raw: str, language: str) -> tuple[str | None, bool]:
+    """``_usable_type_name``, else the marked builtin a builtin-keeping language reads."""
+    usable = _usable_type_name(raw, language)
+    if usable[0] is None and (
+        language in _MARKED_BUILTIN_LANGUAGES or _is_csharp_array(raw, language)
+    ):
+        return _builtin_type_name(raw, language), False
+    return usable
+
+
+def _cpp_declarator_list(
+    cleaned: str, match: re.Match[str], first: Declaration, starts: list[int]
+) -> list[Declaration]:
+    """*first*, and each later declarator of its ``T a, *b;`` list, all closed by ``;``."""
+    later = _cpp_later_declarators(cleaned, match)
+    if not later:
+        return [first]
+    closer = ";" if first.closer == "," else first.closer
+    return [
+        first._replace(closer=closer),
+        *(
+            Declaration(
+                bisect_right(starts, at), name, first.type_name, closer and ";", first.unwrapped
+            )
+            for at, name in later
+        ),
+    ]
 
 
 def _builtin_type_name(raw: str, language: str) -> str | None:
@@ -1624,6 +1656,93 @@ def _top_level_arguments(text: str) -> list[str]:
             start = index + 1
     pieces.append(text[start:].strip())
     return pieces
+
+
+# How far an initializer is read for its end. A longer one (a lambda body)
+# drops the declarators after it, never the first one.
+_INITIALIZER_WINDOW = 400
+
+
+def _initializer_end(cleaned: str, index: int) -> int:
+    """Where the initializer starting at *index* ends: its top-level ``,`` or ``;``, else -1."""
+    depth = 0
+    for at in range(index, min(len(cleaned), index + _INITIALIZER_WINDOW)):
+        char = cleaned[at]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                return -1
+        elif char in ",;" and not depth:
+            return at
+        elif char in "\"'<":
+            # Strings are not blanked and template arguments not matched here,
+            # so a comma in either would split the list.
+            return -1
+    return -1
+
+
+# What may stand before the type of a declaration list: specifiers, or a
+# label. Anything else (``x = a * b, c;``, ``typedef``, ``friend``, a ``for``
+# head), or a statement head further back than the window, leaves the list
+# unread.
+_STATEMENT_HEAD_WINDOW = 200
+_CPP_LIST_PREFIX = re.compile(
+    r"\s*(?:(?:const|static|mutable|volatile|constexpr|inline|thread_local|extern|"
+    r"class|struct)\s+)*"
+)
+
+
+def _cpp_starts_statement(cleaned: str, start: int) -> bool:
+    """Is the type at *start* the head of its statement, past specifiers alone?"""
+    low = max(0, start - _STATEMENT_HEAD_WINDOW)
+    opened = max(cleaned.rfind(stop, low, start) for stop in ";{}:") + 1
+    if not opened and low:
+        return False
+    return _CPP_LIST_PREFIX.fullmatch(cleaned, opened, start) is not None
+
+
+_CPP_SPACED_STAR = re.compile(r"\s[*&]{1,2}\s")
+
+
+def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int, str]]:
+    """``(offset, name)`` of each declarator after the first of ``T a, *b = x, c;``.
+
+    Kept only when the list ends its statement at ``;``: anything else (a
+    parameter list, a template argument) gives none.
+    """
+    if not _cpp_opens_list(cleaned, match):
+        return []
+    at, later = match.end(), []
+    while True:
+        if cleaned.startswith("=", at):
+            at = _initializer_end(cleaned, at + 1)
+            if at < 0:
+                return []
+        if cleaned.startswith(";", at):
+            return later
+        declarator = _CPP_LATER_DECLARATOR.match(cleaned, at)
+        if declarator is None or not _closes_declarator(cleaned, declarator.end()):
+            return []
+        later.append((declarator.start("name"), declarator.group("name")))
+        at = declarator.end()
+
+
+def _closes_declarator(cleaned: str, at: int) -> bool:
+    """Does a ``,``, ``;`` or ``=`` (not ``==``) end a declarator at *at*?"""
+    return cleaned.startswith((",", ";", "="), at) and not cleaned.startswith("==", at)
+
+
+def _cpp_opens_list(cleaned: str, match: re.Match[str]) -> bool:
+    """Can the declaration *match* be the first of a list, at its statement's head?"""
+    at = match.end()
+    if not cleaned.startswith((",", "="), at) or cleaned.startswith("==", at):
+        return False
+    # ``a * b, c;`` multiplies: a declarator's star binds to one side.
+    if _CPP_SPACED_STAR.search(cleaned, match.end("type"), match.start("name")):
+        return False
+    return _cpp_starts_statement(cleaned, match.start())
 
 
 def _cpp_constructs_in_place(cleaned: str, match: re.Match[str]) -> bool:
