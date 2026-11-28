@@ -54,7 +54,7 @@ from ..return_types import (
     signature_parameter_count,
     signature_parameter_range,
 )
-from ..symbol_identity import base_symbol_id, id_segment_name
+from ..symbol_identity import base_symbol_id, id_segment_name, symbols_by_id
 from ..type_names import (
     POINTER_LIKE_MEMBERS,
     bare_type_name,
@@ -269,15 +269,22 @@ def go_named_containers(parsed: ParsedFile, text: str) -> dict[str, str]:
 
 
 def _type_symbols(symbols: Sequence[Symbol]) -> list[Symbol]:
-    """The types *symbols* declare, less an ``impl`` of a type declared beside it.
+    """The types *symbols* declare, less an ``impl`` or a forward declaration of one beside it.
 
     A Rust ``impl Foo`` shares ``Foo``'s id and adds methods, never a second
     type or a field, so the struct alone answers for the name and its span.
-    The parser already drops a Swift ``extension`` of a same-file type.
+    A C++ ``struct Builder;`` shares the id of the ``struct Builder {..}`` it
+    names and has no members, so the definition answers there too. The parser
+    already drops a Swift ``extension`` of a same-file type.
     """
-    declared = {s.id for s in symbols if s.kind in _TYPE_KINDS and s.kind != "impl"}
+    types = [s for s in symbols if s.kind in _TYPE_KINDS]
+    declared = {s.id for s in types if s.kind != "impl"}
+    defined = {s.id for s in types if s.kind != "impl" and not s.is_declaration}
     return [
-        s for s in symbols if s.kind in _TYPE_KINDS and (s.kind != "impl" or s.id not in declared)
+        s
+        for s in types
+        if (s.kind != "impl" or s.id not in declared)
+        and not (s.is_declaration and s.id in defined)
     ]
 
 
@@ -2073,7 +2080,8 @@ class ReceiverTypingMixin(
         spans = self._symbol_spans.get(file_path)
         if spans is None:
             parsed = self._parsed_files.get(file_path)
-            spans = {s.id: (s.start_line, s.end_line) for s in (parsed.symbols if parsed else ())}
+            held = symbols_by_id(parsed.symbols if parsed else ())
+            spans = {sym_id: (s.start_line, s.end_line) for sym_id, s in held.items()}
             _store_capped(self._symbol_spans, file_path, spans, _SOURCE_CACHE_FILES)
         return spans
 

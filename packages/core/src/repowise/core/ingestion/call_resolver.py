@@ -117,7 +117,13 @@ from .return_types import (
     signature_parameter_count,
     signature_parameters,
 )
-from .symbol_identity import id_segment_name, module_symbol_id, outer_scope, same_parameters
+from .symbol_identity import (
+    id_segment_name,
+    module_symbol_id,
+    outer_scope,
+    same_parameters,
+    symbols_by_id,
+)
 from .type_names import (
     bare_type_name,
     builtin_type_spelling,
@@ -452,9 +458,9 @@ class CallResolver(
         # Build variants (``f#cfg(unix)``, ``f#cfg(not(unix))``) are not chosen by
         # arguments: a call means every one, so an edge fans out to each.
         self._variant_siblings: dict[str, tuple[str, ...]] = {}
-        self._symbols_by_id = {
-            symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
-        }
+        self._symbols_by_id = symbols_by_id(
+            symbol for parsed in parsed_files.values() for symbol in parsed.symbols
+        )
         self._symbol_paths_by_id = {
             symbol.id: path
             for path, parsed in parsed_files.items()
