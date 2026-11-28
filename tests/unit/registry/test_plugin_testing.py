@@ -172,6 +172,35 @@ def test_check_plugin_passes_a_good_plugin_and_fails_a_broken_one(make_module):
         assert_plugin_passes(f"{bad}:register")
 
 
+def test_check_plugin_undoes_only_what_the_plugin_registered(make_module):
+    from repowise.core.registry.plugins import SeamRegistry
+
+    fresh = SeamRegistry(f"kit-fresh-{uuid.uuid4().hex[:6]}")
+    target = make_module(
+        f"""
+        from repowise.core.events.sinks import event_sinks
+        from repowise.core.registry.plugins import SeamRegistry
+
+        class Sink:
+            async def deliver(self, events, *, repo_root):
+                pass
+
+        def register():
+            # A seam the plugin does not register into keeps what it has.
+            SeamRegistry("{fresh.seam}")
+            event_sinks.register("jsonl", Sink(), default=True)
+            event_sinks.register("kit-new", Sink(), default=True)
+        """
+    )
+    before = event_sinks._impls["jsonl"]
+    fresh.register("builtin", object(), default=True)
+    check_plugin(f"{target}:register")
+    assert event_sinks._impls["jsonl"] is before
+    assert "kit-new" not in event_sinks.names
+    assert event_sinks.default == "jsonl"
+    assert fresh.default == "builtin"
+
+
 def test_check_plugin_reports_a_plugin_that_does_not_load(make_module):
     broken = make_module("def register():\n    raise RuntimeError('boom')\n")
     [check] = check_plugin(f"{broken}:register")

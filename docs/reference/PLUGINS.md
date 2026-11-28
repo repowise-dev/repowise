@@ -159,7 +159,9 @@ MIN_PLUGIN_API_VERSION = 1
 On a repowise whose `PLUGIN_API_VERSION` is lower, the plugin is `failed`
 with a message naming both versions and what to change (upgrade repowise, or
 install a plugin version built for the older API), and `register()` never
-runs. An exception raised from `register()` (or at import) also marks the
+runs. The check runs once the module imports, so keep imports of newer
+repowise APIs inside `register()`: an import that fails first is reported as
+that import error instead. An exception raised from `register()` (or at import) also marks the
 plugin `failed`. In both cases repowise records it and carries on without it.
 
 ## Check the contracts

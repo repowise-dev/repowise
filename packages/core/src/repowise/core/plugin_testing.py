@@ -113,8 +113,9 @@ def check_plugin(target: str) -> list[SeamCheck]:
     Returns one :class:`SeamCheck` per thing it registered, or a single
     ``load`` failure when it does not load (an import error, a raising
     ``register()``, or a ``MIN_PLUGIN_API_VERSION`` newer than this repowise).
-    Every seam is put back as it was afterwards, so a test run is not changed
-    by the check; commands, tools and hooks it registered stay registered.
+    Every seam implementation the plugin registered is undone afterwards, so
+    a test run is not changed by the check; built-in implementations imported
+    meanwhile stay, as do commands, tools and hooks it registered.
     """
     from repowise.core.registry import plugins
 
@@ -127,9 +128,28 @@ def check_plugin(target: str) -> list[SeamCheck]:
             plugins._load(record)
         return check_record(record)
     finally:
-        for name, registry in plugins.seams().items():
-            impls, owners, chosen = saved.get(name, ({}, {}, None))
-            registry._impls, registry._owners, registry._chosen = impls, owners, chosen
+        _undo_registrations(record, saved)
+
+
+def _undo_registrations(record: Any, saved: dict[str, tuple[dict, dict, Any]]) -> None:
+    from repowise.core.registry.plugins import seams
+
+    registries = seams()
+    for entry in record.seams:
+        kind, _, name = entry.partition(":")
+        registry = registries.get(kind)
+        if registry is None:
+            continue  # a registry kind such as cli-command
+        impls, owners, chosen = saved.get(kind, ({}, {}, registry._chosen))
+        if name in impls:
+            registry._impls[name] = impls[name]
+        else:
+            registry._impls.pop(name, None)
+        if name in owners:
+            registry._owners[name] = owners[name]
+        else:
+            registry._owners.pop(name, None)
+        registry._chosen = chosen if chosen in registry._impls else None
 
 
 def check_record(record: Any) -> list[SeamCheck]:
