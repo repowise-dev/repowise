@@ -154,3 +154,10 @@ def test_a_plan_stored_with_a_real_name_is_not_called_a_placeholder() -> None:
     detail["plan"]["suggested_name"] = "_read_config"
     (step,) = build_recipe(detail)["steps"]
     assert "placeholder: rename" not in step["text"]
+
+
+def test_a_pascal_case_placeholder_still_gets_the_rename_note() -> None:
+    detail = json.loads(json.dumps(_PLANS["extract_method_typed"]))
+    detail["plan"]["suggested_name"] = "ExtractedHelper2"
+    (step,) = build_recipe(detail)["steps"]
+    assert step["text"].endswith(RENAME_NOTE)
