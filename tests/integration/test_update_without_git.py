@@ -150,3 +150,23 @@ def test_docs_update_refreshes_a_plain_directory(plain_env: Path) -> None:
     assert "pkg/c.py" in _nodes(plain_env / ".repowise" / "wiki.db")
     after = json.loads(_baseline(plain_env).read_text(encoding="utf-8"))["files"]
     assert set(after) == set(before) | {"pkg/c.py"}
+
+
+def test_an_index_only_run_leaves_model_pages_their_change(plain_env: Path) -> None:
+    """Model pages still owe a change an index-only run indexed, as a lagging docs pointer would."""
+    r = CliRunner().invoke(
+        cli, ["init", str(plain_env), "--provider", "mock", "--yes"], catch_exceptions=False
+    )
+    assert r.exit_code == 0, r.output
+    _write(plain_env, "pkg/a.py", "def alpha2():\n    return 1\n")
+
+    assert _update(plain_env, "--index-only").exit_code == 0
+    # The lock is released at process exit; both runs share this process.
+    from repowise.core.update_lock import release_update_lock
+
+    release_update_lock(plain_env)
+    docs = _update(plain_env, "--provider", "mock")
+
+    assert docs.exit_code == 0, docs.output
+    assert "Already up to date" not in docs.output
+    assert "pkg/a.py" in docs.output

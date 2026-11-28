@@ -2190,6 +2190,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         full_git_summary=(run.full_git_summaries[0] if run.full_git_summaries else None),
         unchecked_repair=run.unchecked_repair,
         content_snapshot=run.content_snapshot,
+        content_docs_pending=pages.docs_mode == "llm" and not pages.docs_deferred,
         # Only a history-window change invalidates mined decisions.
         history_window_changed=config.git_changed,
         reconcile_full_scope=config.traversal_changed,
@@ -2511,8 +2512,9 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
             "the next update will re-cover it.[/yellow]"
         )
 
-    # Never write a null pointer: the next update would refuse to run.
-    if head:
+    # Never write a null pointer over a commit. A content-synced run that failed a
+    # step keeps its null pointer, so the next update diffs the same files again.
+    if head and not (run.content_snapshot is not None and docs.failed_steps):
         state["last_sync_commit"] = head
         state["last_docs_commit"] = head
     # The DB total; regeneration upserts existing pages.

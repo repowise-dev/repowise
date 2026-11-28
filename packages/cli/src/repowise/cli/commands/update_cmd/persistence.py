@@ -612,6 +612,7 @@ def _persist_index_only_update(
     timings: PhaseTimings | None = None,
     unchecked_repair: dict | None = None,
     content_snapshot: dict[str, str] | None = None,
+    content_docs_pending: bool = False,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
@@ -636,6 +637,11 @@ def _persist_index_only_update(
     DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
     state-file updates and console reporting stay here. Best-effort steps
     that fail land in ``degraded`` and surface in the completion panel.
+
+    ``content_snapshot`` is set on an index synced by file content (no commit
+    to diff from, see ``repowise.core.ingestion.content_baseline``).
+    ``content_docs_pending`` says model-written pages still owe this change, as
+    ``last_docs_commit`` lagging behind would in git mode.
     """
     from repowise.core.pipeline.incremental import persist_incremental_index
 
@@ -762,6 +768,12 @@ def _persist_index_only_update(
             "[yellow]Some data for this commit range was not persisted; "
             "the next update will re-cover it.[/yellow]"
         )
+    content_clean = not (failed_steps or prune_refusals or content_docs_pending)
+    if content_snapshot is not None and not content_clean:
+        # No repair marker can name a range without a commit: hold the null
+        # pointers and the old baseline so the next update diffs these files again.
+        new_state["last_sync_commit"] = state.get("last_sync_commit")
+        new_state["last_docs_commit"] = state.get("last_docs_commit")
     backfill_docs_pointer(new_state, state)
     if knowledge_graph_result is not None:
         try:
@@ -780,7 +792,7 @@ def _persist_index_only_update(
     save_state(repo_path, new_state)
     from repowise.core.ingestion.content_baseline import advance_baseline
 
-    advance_baseline(repo_path, head, content_snapshot, clean=not (failed_steps or prune_refusals))
+    advance_baseline(repo_path, head, content_snapshot, clean=content_clean)
     elapsed = time.monotonic() - start
     from repowise.core.index_scope import upgrade_command
 
