@@ -467,6 +467,7 @@ def _call_from_match(
         argument_count=argument_count,
         receiver_call=receiver_call,
         start_byte=target_nodes[0].start_byte,
+        name_at=(target_nodes[0].start_point[0] + 1, target_nodes[0].start_point[1]),
         argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
         scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else perl_scope,

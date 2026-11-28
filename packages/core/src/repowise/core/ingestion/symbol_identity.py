@@ -144,6 +144,18 @@ def outer_scope(scope: str) -> str:
     return scope.rpartition("::")[0]
 
 
+def scope_names(symbol_id: str) -> list[str]:
+    """The scopes that hold a symbol, outermost first, as its id names them.
+
+    ``A.java::Api::once::Runnable::run`` gives ``["Api", "once", "Runnable"]``,
+    and a top-level symbol gives ``[]``. A discriminator is dropped. An id
+    names only the direct parent of a nested type's member, so this is the
+    chain of that parent, not of every type around it.
+    """
+    scope = local_symbol_id(outer_scope(symbol_id))
+    return [id_segment_name(segment) for segment in scope.split(SYMBOL_SEP)] if scope else []
+
+
 def overload_sets(symbol_ids: Iterable[str]) -> dict[str, list[str]]:
     """``{base id: member ids}`` for every id that carries a discriminator."""
     sets: dict[str, list[str]] = defaultdict(list)
@@ -744,6 +756,7 @@ __all__ = [
     "overload_signature",
     "pair_overloads",
     "parameter_type_arity",
+    "scope_names",
     "split_python_property_mutators",
     "split_symbol_id",
     "symbol_discriminator",

@@ -417,6 +417,9 @@ class CallSite:
     argument_count: int | None  # number of arguments (None if unknown)
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
     start_byte: int = field(default=0, compare=False)  # 0-indexed start byte offset of the call node in the source file
+    # Where the called name sits (1-based line, byte column): a later line than
+    # ``line`` where the call starts with its receiver (``client\n    .get(id)``).
+    name_at: tuple[int, int] | None = field(default=None, compare=False)
     # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
     # ``receiver_name`` because that field routes to the member strategies,
     # and cpp has none -- a scoped call must stay on the free-call path. Java
@@ -658,6 +661,9 @@ DynamicKind = Literal["dynamic_uses", "dynamic_imports", "url_route"]
 # ``path::Name`` symbol node, which is why a consumer that keys on file paths
 # gets nothing usable out of them.
 CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
+
+# A type to a supertype it names, each end a type symbol the repository declares.
+HERITAGE_EDGE_TYPES: frozenset[str] = frozenset({"extends", "implements"})
 
 # Evidence from history rather than from code: two files move together in
 # commits, not one referencing the other. This is the one that bites, because

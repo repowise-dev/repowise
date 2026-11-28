@@ -8,12 +8,19 @@ from pathlib import Path
 import pytest
 
 from repowise.core.ingestion.external_systems.maven_model import load_maven_reactor
+from repowise.core.workspace.code_api_jvm import ModuleNeeds
 from repowise.core.workspace.cross_repo import CrossRepoOverlay, load_overlay, save_overlay
 from repowise.core.workspace.manifests import (
     CrossRepoPackageDep,
     CrossRepoPackageDiagnostic,
     detect_package_dependencies,
     detect_package_dependencies_with_diagnostics,
+    find_poms,
+)
+from repowise.core.workspace.maven_dependencies import (
+    depended_dirs,
+    depended_manifests,
+    module_dependencies,
 )
 
 
@@ -45,12 +52,14 @@ def _dependency(
     version: str = "1.0.0",
     scope: str = "",
     optional: bool = False,
+    type_: str = "",
 ) -> str:
     scope_xml = f"<scope>{scope}</scope>" if scope else ""
     optional_xml = "<optional>true</optional>" if optional else ""
+    type_xml = f"<type>{type_}</type>" if type_ else ""
     return f"""<dependency>
       <groupId>{group}</groupId><artifactId>{artifact}</artifactId>
-      <version>{version}</version>{scope_xml}{optional_xml}
+      <version>{version}</version>{scope_xml}{optional_xml}{type_xml}
     </dependency>"""
 
 
@@ -150,6 +159,50 @@ def test_inherited_dependency_management_resolves_version(tmp_path: Path) -> Non
     assert len(deps) == 1
     assert deps[0].requested_version == "2.1.0"
     assert deps[0].source_manifest == "app/pom.xml"
+
+
+@pytest.mark.parametrize(
+    ("scope", "linked"),
+    [("", False), ("<scope>compile</scope>", True)],
+    ids=["managed", "declared"],
+)
+def test_dependency_management_sets_the_scope_a_dependency_leaves_out(
+    tmp_path: Path, scope: str, linked: bool
+) -> None:
+    producer = tmp_path / "producer"
+    consumer = tmp_path / "consumer"
+    _write(producer, "pom.xml", _project("com.acme", "shared", "2.1.0"))
+    _write(
+        consumer,
+        "pom.xml",
+        """<project>
+  <groupId>com.acme</groupId><artifactId>consumer-parent</artifactId>
+  <version>1</version><packaging>pom</packaging>
+  <dependencyManagement><dependencies><dependency>
+    <groupId>com.acme</groupId><artifactId>shared</artifactId><version>2.1.0</version>
+    <scope>test</scope>
+  </dependency></dependencies></dependencyManagement>
+  <modules><module>app</module></modules>
+</project>""",
+    )
+    _write(
+        consumer,
+        "app/pom.xml",
+        f"""<project>
+  <parent><groupId>com.acme</groupId><artifactId>consumer-parent</artifactId>
+    <version>1</version><relativePath>../pom.xml</relativePath></parent>
+  <artifactId>app</artifactId>
+  <dependencies><dependency>
+    <groupId>com.acme</groupId><artifactId>shared</artifactId>{scope}
+  </dependency></dependencies>
+</project>""",
+    )
+
+    deps = detect_package_dependencies({"producer": producer, "consumer": consumer})
+
+    assert [(d.source_manifest, d.scope) for d in deps] == (
+        [("app/pom.xml", "compile")] if linked else []
+    )
 
 
 def test_parent_artifact_builtin_resolves_dependency_coordinate(tmp_path: Path) -> None:
@@ -364,6 +417,166 @@ def test_duplicate_producer_coordinate_is_ambiguous(tmp_path: Path) -> None:
     assert diagnostics[0].code == "ambiguous_coordinate"
     assert "first:pom.xml" in diagnostics[0].detail
     assert "second:pom.xml" in diagnostics[0].detail
+
+
+def _depended(**repos: Path) -> dict[str, frozenset[str]]:
+    return depended_manifests(
+        repos, {alias: sorted(path.rglob("pom.xml")) for alias, path in repos.items()}
+    )
+
+
+def _requires(*artifacts: str, extra: str = "") -> str:
+    """Dependencies on *artifacts*, each with the elements *extra*. A name `a:<extra>`
+    gives that one its own."""
+    deps = ""
+    for name in artifacts:
+        name, _, own = name.partition(":")
+        deps += (
+            f"<dependency><groupId>com.acme</groupId><artifactId>{name}</artifactId>"
+            f"<version>1</version>{own or extra}</dependency>"
+        )
+    return f"<dependencies>{deps}</dependencies>"
+
+
+@pytest.mark.parametrize(
+    ("extra", "depended"),
+    [
+        ("<scope>test</scope>", True),
+        ("<optional>true</optional>", True),
+        ("<type>war</type>", True),
+        ("<scope>system</scope>", False),
+    ],
+    ids=["test", "optional", "war", "system"],
+)
+def test_any_dependency_on_a_module_but_a_system_one_means_it_is_deployed(
+    tmp_path: Path, extra: str, depended: bool
+) -> None:
+    producer, consumer = tmp_path / "producer", tmp_path / "consumer"
+    _write(producer, "lib/pom.xml", _project("com.acme", "lib"))
+    _write(
+        consumer, "pom.xml", _project("com.acme", "app", dependencies=_requires("lib", extra=extra))
+    )
+
+    expected = {"producer": frozenset({"lib/pom.xml"})} if depended else {}
+    assert _depended(producer=producer, consumer=consumer) == expected
+
+
+def test_a_module_depended_on_brings_what_maven_gives_its_dependents(tmp_path: Path) -> None:
+    producer, consumer = tmp_path / "producer", tmp_path / "consumer"
+    needs = {
+        "lib": _requires("util", "starter:<type>pom</type>"),
+        "util": _requires("deep"),
+        "starter": "<packaging>pom</packaging>" + _requires("core"),
+    }
+    for name in ("lib", "util", "deep", "starter", "core", "sibling"):
+        pom = _project("com.acme", name, dependencies=needs.get(name, ""))
+        _write(producer, f"{name}/pom.xml", pom)
+    _write(consumer, "pom.xml", _project("com.acme", "app", dependencies=_requires("lib")))
+
+    modules = ("lib", "util", "deep", "starter", "core")
+    assert _depended(producer=producer, consumer=consumer) == {
+        "producer": frozenset(f"{name}/pom.xml" for name in modules)
+    }
+
+
+def _needs_chain(tmp_path: Path, extra: str) -> dict[str, frozenset[str]]:
+    """A consumer depends on lib; lib depends on util with *extra*; util on core."""
+    producer, consumer = tmp_path / "producer", tmp_path / "consumer"
+    lib = _project("com.acme", "lib", dependencies=_requires("util", extra=extra))
+    _write(producer, "lib/pom.xml", lib)
+    _write(producer, "util/pom.xml", _project("com.acme", "util", dependencies=_requires("core")))
+    _write(producer, "core/pom.xml", _project("com.acme", "core"))
+    _write(consumer, "pom.xml", _project("com.acme", "app", dependencies=_requires("lib")))
+    return _depended(producer=producer, consumer=consumer)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["<type>test-jar</type>", "<classifier>tests</classifier>"],
+    ids=["test-jar", "tests-classifier"],
+)
+def test_a_dependency_of_a_type_maven_hands_dependencies_on_for_is_counted_and_followed(
+    tmp_path: Path, extra: str
+) -> None:
+    assert _needs_chain(tmp_path, extra) == {
+        "producer": frozenset(f"{name}/pom.xml" for name in ("lib", "util", "core"))
+    }
+
+
+def test_a_dependency_of_a_type_no_maven_handler_gives_is_counted_and_not_followed(
+    tmp_path: Path,
+) -> None:
+    assert _needs_chain(tmp_path, "<type>bundle</type>") == {
+        "producer": frozenset(f"{name}/pom.xml" for name in ("lib", "util"))
+    }
+
+
+def test_a_dependency_inside_one_repository_names_no_module_that_is_deployed(
+    tmp_path: Path,
+) -> None:
+    lib, other = tmp_path / "lib", tmp_path / "other"
+    _write(lib, "api/pom.xml", _project("com.acme", "api", dependencies=_requires("util")))
+    _write(lib, "util/pom.xml", _project("com.acme", "util"))
+    _write(other, "pom.xml", _project("com.other", "other"))
+
+    assert _depended(lib=lib, other=other) == {}
+
+
+_BOOT = (
+    "<build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId>"
+    "</plugin></plugins></build>"
+)
+
+
+def _walk_stops_at_web(tmp_path: Path, build: str, edge: str = "") -> bool:
+    """Whether the walk from a dependency on `web` does not reach the `lib` that `web` needs."""
+    producer, consumer = tmp_path / "producer", tmp_path / "consumer"
+    web = _project("com.acme", "web", dependencies=build + _requires("lib"))
+    _write(producer, "web/pom.xml", web)
+    _write(producer, "lib/pom.xml", _project("com.acme", "lib"))
+    deps = _requires("web", extra=edge)
+    _write(consumer, "pom.xml", _project("com.acme", "app", dependencies=deps))
+
+    reached = _depended(producer=producer, consumer=consumer)["producer"]
+    return "lib/pom.xml" not in reached
+
+
+@pytest.mark.parametrize(
+    ("build", "edge", "stops"),
+    [
+        ("<packaging>war</packaging>", "", True),
+        (_BOOT, "", True),
+        (_BOOT, "<type>test-jar</type>", True),
+        ("<packaging>pom</packaging>" + _BOOT, "<type>pom</type>", False),
+        ("<properties><maven.deploy.skip>true</maven.deploy.skip></properties>", "", False),
+        ("<!--" + _BOOT + "-->", "", False),
+    ],
+    ids=["war", "boot", "boot-test-jar-edge", "pom", "skip", "comment"],
+)
+def test_the_walk_stops_at_a_module_that_stands_alone_only(
+    tmp_path: Path, build: str, edge: str, stops: bool
+) -> None:
+    assert _walk_stops_at_web(tmp_path, build, edge) is stops
+
+
+def test_the_dirs_depended_on_are_found_with_the_poms_the_package_step_reads(
+    tmp_path: Path,
+) -> None:
+    producer, consumer = tmp_path / "producer", tmp_path / "consumer"
+    modules = "<modules><module>lib</module><module>bin</module></modules>"  # of a reactor
+    _write(producer, "pom.xml", _project("com.acme", "root", dependencies=modules))
+    _write(producer, "lib/pom.xml", _project("com.acme", "lib"))
+    # The package step prunes a directory named `bin`, so its pom is no pom of the workspace.
+    _write(producer, "bin/pom.xml", _project("com.acme", "bin"))
+    _write(
+        consumer,
+        "pom.xml",
+        _project("com.acme", "app", dependencies=_requires("root", "lib", "bin")),
+    )
+
+    assert depended_dirs({"producer": producer, "consumer": consumer}) == {
+        "producer": frozenset({"", "lib"})
+    }
 
 
 @pytest.mark.parametrize(
@@ -742,3 +955,127 @@ def test_path_dependency_uses_separator_aware_repo_containment(tmp_path: Path) -
 
     assert len(deps) == 1
     assert deps[0].target_repo == "lib-old"
+
+
+def _reactor(repo: Path, group: str, modules: dict[str, str]) -> None:
+    """A root pom of *group* listing *modules*, and a pom for each with its dependencies."""
+    listed = "".join(f"<module>{name}</module>" for name in modules)
+    _write(repo, "pom.xml", _project(group, "root", dependencies=f"<modules>{listed}</modules>"))
+    for name, dependencies in modules.items():
+        body = f"<dependencies>{dependencies}</dependencies>" if dependencies else ""
+        _write(repo, f"{name}/pom.xml", _project(group, name, dependencies=body))
+        _write(repo, f"{name}/src/main/java/{name.capitalize()}.java", "class X {}\n")
+
+
+@pytest.fixture(scope="module")
+def needs_workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    """`app`, whose module `web` depends on modules of `lib`, of `other`, of its own reactor
+    and of `a` and `b`, which both produce `com.acme:twin`; and `loose`, with no root pom."""
+    root = tmp_path_factory.mktemp("needs")
+    repos = {name: root / name for name in ("app", "lib", "other", "loose", "a", "b")}
+    _reactor(
+        repos["app"],
+        "com.app",
+        {
+            "web": "".join(
+                (
+                    _dependency("com.lib", "client"),
+                    _dependency("com.lib", "fixtures", scope="test"),
+                    _dependency("com.lib", "native", scope="system"),
+                    _dependency("com.lib", "site", type_="war"),
+                    _dependency("com.app", "shared"),
+                    _dependency("com.acme", "twin"),
+                )
+            ),
+            "shared": _dependency("com.app", "tool"),
+            "tool": "",
+        },
+    )
+    _reactor(
+        repos["lib"],
+        "com.lib",
+        {
+            "client": "".join(
+                (
+                    _dependency("com.lib", "core"),
+                    _dependency("com.lib", "mock", scope="test"),
+                    _dependency("com.lib", "opt", optional=True),
+                    _dependency("com.other", "base", scope="runtime"),
+                )
+            ),
+            "site": _dependency("com.lib", "inner"),
+            **dict.fromkeys(("fixtures", "native", "core", "mock", "opt", "inner", "shared"), ""),
+        },
+    )
+    # A second com.app:shared: `web` names the one of its own reactor, which hands on `tool`.
+    _write(repos["lib"], "shared/pom.xml", _project("com.app", "shared"))
+    # `deep` depends back on `base`: the walk ends at a module it has walked.
+    _reactor(
+        repos["other"],
+        "com.other",
+        {"base": _dependency("com.other", "deep"), "deep": _dependency("com.other", "base")},
+    )
+    # No root pom: each module stands apart, and a file at the root is of none.
+    for name, dependencies in (("one", _dependency("com.lib", "client")), ("two", "")):
+        body = f"<dependencies>{dependencies}</dependencies>" if dependencies else ""
+        _write(repos["loose"], f"{name}/pom.xml", _project("com.loose", name, dependencies=body))
+        _write(repos["loose"], f"{name}/src/main/java/X.java", "class X {}\n")
+    _write(repos["a"], "pom.xml", _project("com.acme", "twin"))
+    _write(repos["b"], "pom.xml", _project("com.acme", "twin"))
+    return repos
+
+
+@pytest.mark.parametrize(
+    ("coordinate", "reached"),
+    [
+        ("com.lib:fixtures", True),
+        ("com.lib:native", False),
+        ("com.lib:site", True),
+        ("com.lib:inner", False),
+        ("com.lib:core", True),
+        ("com.lib:mock", False),
+        ("com.lib:opt", False),
+        ("com.other:base", True),
+        ("com.other:deep", True),
+        ("com.app:tool", True),
+        ("com.acme:twin", False),
+    ],
+    ids=[
+        "first-hop-any-scope",
+        "first-hop-not-system",
+        "first-hop-any-type",
+        "a-war-hands-nothing-on",
+        "hands-on-compile",
+        "hands-on-not-test",
+        "hands-on-not-optional",
+        "hands-on-runtime-in-another-repo",
+        "in-turn-through-a-cycle",
+        "own-reactor-first",
+        "two-producers-name-none",
+    ],
+)
+@pytest.mark.timeout(30)
+def test_module_dependencies_follow_what_maven_hands_on(
+    needs_workspace: dict[str, Path], coordinate: str, reached: bool
+) -> None:
+    poms = {alias: find_poms(path) for alias, path in needs_workspace.items()}
+    needs = module_dependencies(needs_workspace, poms, ["app"])
+
+    assert (coordinate in needs["app"]["web/pom.xml"]) is reached
+
+
+@pytest.mark.parametrize(
+    ("repo", "path", "needs_client"),
+    [
+        ("app", "web/src/main/java/Web.java", True),
+        ("app", "tool/src/main/java/Tool.java", False),
+        ("loose", "Root.java", True),
+    ],
+    ids=["owned-by-web", "owned-by-tool", "owned-by-none-takes-every-module"],
+)
+def test_the_needs_of_a_file_are_those_of_the_module_that_owns_it(
+    needs_workspace: dict[str, Path], repo: str, path: str, needs_client: bool
+) -> None:
+    needs = ModuleNeeds(needs_workspace, ["app", "loose"])
+
+    assert ("com.lib:client" in needs.of(repo, path)) is needs_client

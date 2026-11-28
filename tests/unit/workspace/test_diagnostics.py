@@ -272,6 +272,19 @@ def test_unresolved_calls_reach_the_diagnostics_from_the_extraction_stats():
     assert diag.http_consumer_coverage == 0.25
 
 
+def test_every_module_that_publishes_no_contract_counts_among_the_manifests():
+    stats = {
+        "lib": {
+            "code_published_packages": 1,
+            "code_unpublished_manifest": 1,
+            "code_unnamed_module": 1,
+            "code_module_without_sources": 1,
+        }
+    }
+    coverage = build_diagnostics([], [], stats).code_api
+    assert (coverage.manifests, coverage.published) == (4, 1)
+
+
 def test_unresolved_calls_counted_for_a_repo_with_no_contracts():
     """A repo where every call failed to resolve has no breakdown row, and is
     exactly the repo whose misses must not disappear."""

@@ -26,7 +26,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping
 from typing import NamedTuple
 
-from ..framework_routes import java_code, scan_code
+from ..framework_routes import java_code, match_paren, scan_code
 from ..language_data import get_builtin_types
 from ..type_names import (
     bare_type_name,
@@ -1298,6 +1298,21 @@ def _inside_ts_type(cleaned: str) -> Callable[[int], bool]:
     return inside
 
 
+# The head of a Java record, ``record Point<T>(``: each component in its
+# parentheses is a field of the record (JLS 8.10.3), though no closer of a
+# field ends it and the canonical constructor's span holds it.
+_JAVA_RECORD_HEAD = re.compile(r"\brecord\s+[A-Z]\w*\s*(?:<(?:[^<>]|<[^<>]*>)*>)?\s*\(")
+
+
+def _record_headers(cleaned: str) -> Callable[[int], bool]:
+    """Is an offset of Java *cleaned* inside the parentheses of a record's header?"""
+    spans = [
+        (head.end(), match_paren(cleaned, head.end() - 1))
+        for head in _JAVA_RECORD_HEAD.finditer(cleaned)
+    ]
+    return lambda offset: any(start <= offset < end for start, end in spans)
+
+
 def _declaration_text(text: str, language: str) -> str:
     """*text* as declarations are read from it: Java with its strings blanked too.
 
@@ -1325,6 +1340,7 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     inside_type = _inside_ts_type(cleaned) if language == "typescript" else None
     type_header = _TYPE_HEADERS.get(language)
     in_type_body = _in_type_body(cleaned, type_header) if type_header else None
+    in_record_header = _record_headers(cleaned) if language == "java" else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
             if inside_type is not None and inside_type(match.start()):
@@ -1361,7 +1377,8 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
                     type_name,
                     closer,
                     unwrapped,
-                    bool(groups.get("member")),
+                    bool(groups.get("member"))
+                    or (in_record_header is not None and in_record_header(match.start())),
                 )
             )
 

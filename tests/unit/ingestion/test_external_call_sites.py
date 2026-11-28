@@ -12,7 +12,13 @@ from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import parse_file
 
-_LANG = {".py": "python", ".ts": "typescript", ".js": "javascript"}
+_LANG = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".js": "javascript",
+    ".java": "java",
+    ".kt": "kotlin",
+}
 
 
 def _build(tmp_path: Path, files: dict[str, str]) -> GraphBuilder:
@@ -103,6 +109,152 @@ def test_each_proven_binding_form_is_recorded(
     assert _sites(_build(tmp_path, {rel: src})) == [expected]
 
 
+_JAVA_ORDERS = """\
+import com.acme.billing.BillingClient;
+import com.acme.billing.Api;
+import static com.acme.billing.Charges.refund;
+public class Orders {
+    private BillingClient billing;
+    public void place(String id, Api.Inner inner) {
+        billing.charge(id);
+        refund(id);
+        inner
+            .go();
+    }
+}
+"""
+
+
+def test_a_java_call_is_bound_by_its_declared_type_or_a_static_import(tmp_path: Path) -> None:
+    builder = _build(tmp_path, {"Orders.java": _JAVA_ORDERS})
+    # The number of arguments selects one of several overloads of the called name,
+    # and the name may sit on a later line than the call's receiver.
+    sites = [s for file_sites in builder.external_call_sites.values() for s in file_sites]
+    assert {s.line: (s.argument_count, s.name_line, s.name_column) for s in sites} == {
+        7: (1, 7, 16),
+        8: (1, 8, 8),
+        9: (0, 10, 13),
+    }
+    assert _sites(builder) == [
+        (
+            "Orders.java", 7, "Orders.java::Orders::place",
+            "com.acme.billing.BillingClient", "BillingClient.charge", "named",
+        ),
+        (
+            "Orders.java", 8, "Orders.java::Orders::place",
+            "com.acme.billing.Charges.refund", "Charges.refund", "named",
+        ),
+        (
+            "Orders.java", 9, "Orders.java::Orders::place",
+            "com.acme.billing.Api", "Api.Inner.go", "named",
+        ),
+    ]  # fmt: skip
+
+
+def test_a_type_the_one_on_demand_import_brings_in_binds_a_java_call(tmp_path: Path) -> None:
+    files = {
+        # Guards, each killed by mutate.sh: `ThreadLocal` is java.lang's, `Exception` a
+        # builtin the receiver typing marks, and `Packet` a class of the file's package.
+        # `sftp` is no name the import binds.
+        "com/shop/Transfer.java": (
+            "package com.shop;\nimport com.acme.sftp.*;\npublic class Transfer {\n"
+            "    private Channel channel;\n    private Packet packet;\n"
+            "    public void send(Sftp sftp, ThreadLocal<String> local) {\n"
+            "        channel.put(local.get());\n        sftp.open();\n        packet.seal();\n"
+            "    }\n    public void fail(Exception e) {\n        e.getMessage();\n    }\n}\n"
+        ),
+        "com/shop/Packet.java": "package com.shop;\npublic class Packet {}\n",
+        # A guard, killed by mutate.sh: two on-demand imports leave `Channel` open.
+        "Two.java": (
+            "import com.acme.sftp.*;\nimport com.acme.ftp.*;\npublic class Two {\n"
+            "    private Channel channel;\n    public void send() {\n        channel.put();\n"
+            "    }\n}\n"
+        ),
+    }
+    assert [(s[1], s[3], s[4]) for s in _sites(_build(tmp_path, files))] == [
+        (7, "com.acme.sftp.*", "Channel.put"),
+        (8, "com.acme.sftp.*", "Sftp.open"),
+    ]
+
+
+def test_a_kotlin_call_is_bound_by_a_declared_or_returned_type(tmp_path: Path) -> None:
+    files = {
+        "Provider.kt": (
+            "import com.acme.billing.BillingClient\n"
+            "interface Provider {\n    fun client(): BillingClient\n}\n"
+        ),
+        # `chargeTwice` may be an extension of BillingClient or a member of it.
+        "Orders.kt": (
+            "import com.acme.billing.BillingClient\nimport com.acme.billing.ext.chargeTwice\n"
+            "class Orders(private val billing: BillingClient, private val provider: Provider) {\n"
+            "    fun place(id: String) {\n        billing.charge(id)\n"
+            "        billing.chargeTwice(id)\n        provider.client().charge(id)\n"
+            "        provider.client().chargeTwice(id)\n"
+            "    }\n}\n"
+        ),
+    }
+    assert _sites(_build(tmp_path, files)) == [
+        (
+            "Orders.kt", line, "Orders.kt::Orders::place",
+            "com.acme.billing.BillingClient", "BillingClient.charge", "named",
+        )
+        for line in (5, 7)
+    ]  # fmt: skip
+
+
+def test_a_class_of_a_java_package_of_the_repo_is_repo_code_and_one_below_it_is_not(
+    tmp_path: Path,
+) -> None:
+    files = {
+        # DaggerAppComponent is generated at build time in com.me.di.
+        "com/me/di/AppComponent.java": "package com.me.di;\npublic interface AppComponent {}\n",
+        "com/me/App.java": (
+            "package com.me;\nimport com.me.di.DaggerAppComponent;\n"
+            "import static com.me.di.DaggerAppComponent.builder;\n"
+            "import com.me.billing.BillingClient;\npublic class App {\n"
+            "    public void start() {\n        DaggerAppComponent.create();\n        builder();\n"
+            "        BillingClient.create();\n    }\n}\n"
+        ),
+    }
+    assert [s[3] for s in _sites(_build(tmp_path, files))] == ["com.me.billing.BillingClient"]
+
+
+def test_a_java_static_import_binds_no_call_on_a_receiver(tmp_path: Path) -> None:
+    # Only a Kotlin extension is called on a receiver.
+    src = (
+        "import com.acme.billing.BillingClient;\nimport static com.acme.util.Util.charge;\n"
+        "public class Orders {\n    private BillingClient billing;\n"
+        "    public void place(String id) {\n        billing.charge(id);\n    }\n}\n"
+    )
+    assert [s[4] for s in _sites(_build(tmp_path, {"Orders.java": src}))] == [
+        "BillingClient.charge"
+    ]
+
+
+def test_a_field_an_ancestor_declares_is_typed_by_the_ancestors_import(tmp_path: Path) -> None:
+    files = {
+        "Base.java": (
+            "import com.acme.billing.BillingClient;\n"
+            "public class Base {\n    protected BillingClient billing;\n}\n"
+        ),
+        # A class of this file named like the type is not the type of Base's field.
+        "Orders.java": (
+            "public class Orders extends Base {\n"
+            "    public void place(String id) {\n        billing.charge(id);\n    }\n}\n"
+            "class BillingClient {}\n"
+        ),
+    }
+    assert [(s[0], s[3], s[4]) for s in _sites(_build(tmp_path, files))] == [
+        ("Orders.java", "com.acme.billing.BillingClient", "BillingClient.charge")
+    ]
+
+
+def test_a_python_annotation_does_not_bind_a_receiver(tmp_path: Path) -> None:
+    # A guard: only a type the compiler checks proves the package.
+    src = "from requests import Session\n\ndef f(s: Session):\n    s.get(1)\n"
+    assert _sites(_build(tmp_path, {"a.py": src})) == []
+
+
 def test_a_parameter_named_like_the_import_is_not_the_package(tmp_path: Path) -> None:
     src = "import requests\n\ndef f(requests):\n    requests.get(1)\n"
     assert _sites(_build(tmp_path, {"a.py": src})) == []
@@ -138,6 +290,25 @@ def test_a_repo_barrel_re_exporting_a_package_is_not_followed(tmp_path: Path) ->
 def test_a_chained_call_records_only_its_head(tmp_path: Path) -> None:
     src = "import requests\n\ndef f(x):\n    requests.Session().get(x)\n"
     assert [s[4] for s in _sites(_build(tmp_path, {"a.py": src}))] == ["Session"]
+
+
+def test_a_java_chain_is_bound_by_the_type_a_repo_method_returns(tmp_path: Path) -> None:
+    files = {
+        "Provider.java": (
+            "import com.acme.offers.Promotions;\n"
+            "public interface Provider {\n    Promotions promotions();\n}\n"
+        ),
+        # `first()` returns a type of the package, which names none here.
+        "Offers.java": (
+            "public class Offers {\n    private Provider provider;\n"
+            "    public void accept(String id) {\n        provider.promotions().accept(id);\n"
+            "        provider.promotions().first().take();\n    }\n}\n"
+        ),
+    }
+    assert [(s[1], s[3], s[4]) for s in _sites(_build(tmp_path, files))] == [
+        (4, "com.acme.offers.Promotions", "Promotions.accept"),
+        (5, "com.acme.offers.Promotions", "Promotions.first"),
+    ]
 
 
 def test_a_call_into_repo_code_is_an_edge_not_a_package_call(tmp_path: Path) -> None:
@@ -177,12 +348,14 @@ def test_a_full_build_has_no_scope(tmp_path: Path) -> None:
 
 def test_record_round_trips_and_package_roots() -> None:
     site = ExternalCallSite(
-        "a.py", 1, "a.py::f", "npm", "@s/p/sub", "@s/p", "external:@s/p/sub", "x", "y", "named"
-    )
+        "a.py", 1, "a.py::f", "npm", "@s/p/sub", "@s/p", "external:@s/p/sub", "x", "y", "named", 2,
+        2, 4,
+    )  # fmt: skip
     assert ExternalCallSite.from_dict(site.as_dict()) == site
     assert package_root("npm", "@s/p/sub") == "@s/p"
     assert package_root("npm", "lodash/merge") == "lodash"
     assert package_root("pypi", "os.path") == "os"
+    assert package_root("maven", "java.util.Map.Entry") == ""
 
 
 def test_a_path_alias_is_never_a_package(tmp_path: Path) -> None:

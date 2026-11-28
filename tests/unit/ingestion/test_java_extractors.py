@@ -132,9 +132,10 @@ class TestJavaWildcardImports:
         # is a sibling node. Extraction must restore it or the resolver's
         # package fan-out branch can never fire.
         src = b"package x;\nimport com.example.util.*;\npublic class App {}\n"
-        result = parser.parse_file(_file(), src)
-        modules = [imp.module_path for imp in result.imports]
-        assert "com.example.util.*" in modules
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.module_path == "com.example.util.*"
+        # The package's last name, `util`, is no name the import binds.
+        assert [b.local_name for b in imp.bindings] == ["*"]
 
     def test_static_wildcard_import_keeps_star(self, parser: ASTParser) -> None:
         src = b"package x;\nimport static com.example.Assertions.*;\npublic class App {}\n"

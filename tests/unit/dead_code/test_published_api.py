@@ -10,7 +10,7 @@ from repowise.core.analysis.dead_code.published_api import (
     BuildFacts,
     demote_published_api,
 )
-from repowise.core.analysis.published_packages import _python_package_dirs
+from repowise.core.analysis.published_packages import _python_package_dirs, jvm_published
 from repowise.core.ingestion.resolvers.dotnet.index import build_index
 
 
@@ -203,6 +203,28 @@ def test_a_maven_module_publishes_only_with_deploy_evidence(tmp_path: Path) -> N
     assert _demoted(
         tmp_path, "java", "lib/src/main/java/A.java", "app/src/main/java/B.java", "plain/src/main/java/C.java"
     ) == [True, False, False]
+
+
+def test_a_maven_module_another_repository_depends_on_publishes_unless_it_is_an_app(
+    tmp_path: Path,
+) -> None:
+    """The workspace names such modules; the scan of one repository names none."""
+    _write(
+        tmp_path,
+        {
+            "lib/pom.xml": "<project><artifactId>lib</artifactId></project>",
+            "web/pom.xml": "<project><artifactId>web</artifactId>"
+            "<packaging>war</packaging></project>",
+            "plain/pom.xml": "<project><artifactId>plain</artifactId></project>",
+        },
+    )
+    facts = BuildFacts(repo_root=tmp_path)
+    assert jvm_published(facts) == {"lib": None, "web": None, "plain": None}
+    assert jvm_published(facts, depended={"lib", "web"}) == {
+        "lib": "lib",
+        "web": None,
+        "plain": None,
+    }
 
 
 def test_a_gradle_module_publishes_through_its_root_build(tmp_path: Path) -> None:
