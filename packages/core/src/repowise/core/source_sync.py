@@ -22,6 +22,8 @@ A new fetching seam is one more entry in :func:`fetching_seams`.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -42,8 +44,8 @@ __all__ = [
     "unsynced_sources",
 ]
 
-#: ``state.json`` key holding ``{"<seam>:<name>": {cursor, last_state, last_run_at,
-#: last_stored_at}}``.
+#: ``state.json`` key holding ``{"<seam>:<name>": {cursor, settings_fp, last_state,
+#: last_run_at, last_stored_at}}``.
 LEDGER_KEY = "source_sync"
 
 
@@ -111,6 +113,16 @@ class PlannedSource:
     @property
     def ledger_id(self) -> str:
         return f"{self.seam.name}:{self.name}"
+
+    @property
+    def settings_fp(self) -> str:
+        """A short hash of the plain settings, so a changed one starts from no cursor.
+
+        Secrets are left out: they are never written down, even hashed, and a
+        rotated token still reads the same data.
+        """
+        text = json.dumps(self.settings, sort_keys=True, default=str)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
     @property
     def configured(self) -> bool:
@@ -255,26 +267,35 @@ def _ledger(state: Mapping[str, Any] | None) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def ledger_cursor(state: Mapping[str, Any] | None, ledger_id: str) -> str | None:
-    """The cursor *ledger_id*'s last sync kept, ``None`` before its first."""
-    entry = _ledger(state).get(ledger_id)
-    cursor = entry.get("cursor") if isinstance(entry, dict) else None
+def ledger_cursor(state: Mapping[str, Any] | None, planned: PlannedSource) -> str | None:
+    """The cursor *planned*'s last sync kept, ``None`` before its first.
+
+    Also ``None`` once its plain settings changed (another database, another
+    team): the cursor is the source's own position, which means nothing there.
+    """
+    entry = _ledger(state).get(planned.ledger_id)
+    if not isinstance(entry, dict) or entry.get("settings_fp") != planned.settings_fp:
+        return None
+    cursor = entry.get("cursor")
     return cursor if isinstance(cursor, str) else None
 
 
 def record_result(
-    state: dict[str, Any], ledger_id: str, result: Mapping[str, Any], cursor: str | None
+    state: dict[str, Any], planned: PlannedSource, result: Mapping[str, Any], cursor: str | None
 ) -> None:
-    """Keep *cursor* and how the sync ended for *ledger_id* in *state* (``state.json``)."""
+    """Keep *cursor* and how the sync ended for *planned* in *state* (``state.json``)."""
     ledger = state.get(LEDGER_KEY)
     if not isinstance(ledger, dict):
         ledger = state[LEDGER_KEY] = {}
-    entry = ledger.get(ledger_id) if isinstance(ledger.get(ledger_id), dict) else {}
+    entry = ledger.get(planned.ledger_id)
+    entry = entry if isinstance(entry, dict) else {}
     at = datetime.now(UTC).isoformat(timespec="seconds")
-    entry.update(cursor=cursor, last_state=result["state"], last_run_at=at)
+    entry.update(
+        cursor=cursor, settings_fp=planned.settings_fp, last_state=result["state"], last_run_at=at
+    )
     if result["state"] == "stored":
         entry["last_stored_at"] = at
-    ledger[ledger_id] = entry
+    ledger[planned.ledger_id] = entry
 
 
 def unsynced_sources(root: Path) -> tuple[str, ...]:

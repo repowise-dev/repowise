@@ -56,17 +56,19 @@ async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | N
             if not p.configured:
                 results.append(not_configured(p))
                 continue
-            cursor = ledger_cursor(load_state(repo_path), p.ledger_id)
+            cursor = ledger_cursor(load_state(repo_path), p)
             try:
                 async with get_session(factory) as session:
                     repo = await get_repository_by_path(session, str(repo_path))
-                    result, cursor = await sync_source(
+                    result, fetched = await sync_source(
                         p,
                         session=session,
                         repo=repo,
                         repo_path=repo_path,
                         cursor=cursor,
                     )
+                # Only now, with the batches committed, may the cursor move past them.
+                cursor = fetched
             except Exception as exc:  # one source must not cost the others
                 _log.warning("source %s failed: %s", p.ledger_id, type(exc).__name__)
                 result = {
@@ -81,7 +83,7 @@ async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | N
             # Read again just before the write: a fetch can take a while, and
             # this keeps whatever else wrote state.json meanwhile.
             state = load_state(repo_path)
-            record_result(state, p.ledger_id, result, cursor)
+            record_result(state, p, result, cursor)
             save_state(repo_path, state)
             results.append(result)
         return results

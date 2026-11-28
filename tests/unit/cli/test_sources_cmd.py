@@ -193,11 +193,18 @@ def test_a_source_failure_never_fails_the_update(installed, root, monkeypatch, c
 
 
 @pytest.mark.parametrize(
-    ("outcome", "syncs"),
-    [("regenerated", True), ("noop", True), ("deferred", False), ("dry_run", False)],
+    ("outcome", "dry_run", "syncs"),
+    [
+        ("regenerated", False, True),
+        ("noop", False, True),
+        ("deferred", False, False),
+        ("dry_run", True, False),
+        # An up-to-date repo under --dry-run ends in noop: a dry run still writes nothing.
+        ("noop", True, False),
+    ],
 )
 def test_update_runs_the_sync_after_its_own_work_only(
-    monkeypatch, tmp_path, outcome, syncs
+    monkeypatch, tmp_path, outcome, dry_run, syncs
 ) -> None:
     from types import SimpleNamespace
 
@@ -220,7 +227,7 @@ def test_update_runs_the_sync_after_its_own_work_only(
         since=None,
         reasoning=None,
         cascade_budget=None,
-        dry_run=False,
+        dry_run=dry_run,
         workspace=False,
         no_workspace=True,
         repo_alias=None,
@@ -272,3 +279,41 @@ def test_a_source_that_declares_no_settings_is_left_to_its_host(installed, root,
     sources_cmd.sync_after_update(root)
     assert capsys.readouterr().out == ""
     assert unsynced_sources(root) == ()
+
+
+def test_the_cursor_moves_only_once_the_batches_are_committed(installed, root, monkeypatch) -> None:
+    from contextlib import asynccontextmanager
+
+    from repowise.core import persistence
+
+    _configure(root, monkeypatch)
+    real = persistence.get_session
+    opened: list[int] = []
+
+    @asynccontextmanager
+    async def commit_fails_for_the_fetch(factory):
+        async with real(factory) as session:
+            yield session
+        opened.append(1)
+        if len(opened) == 2:  # the first session only checks the index
+            raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(persistence, "get_session", commit_fails_for_the_fetch)
+    _code, out = _sync(root)
+    assert out["sources"][0]["state"] == "failed"
+    assert _state(root)[LEDGER_KEY]["evidence-source:synctest"]["cursor"] is None
+
+
+def test_a_changed_setting_starts_from_no_cursor(installed, root, monkeypatch) -> None:
+    _configure(root, monkeypatch)
+    _sync(root)
+    assert installed.requests[-1].cursor is None
+    _sync(root)
+    assert installed.requests[-1].cursor == "2"
+    path = root / ".repowise" / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["plugins"]["synctest"]["db"] = "other"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    _code, out = _sync(root)
+    assert installed.requests[-1].cursor is None
+    assert out["sources"][0]["batches"] == 2
