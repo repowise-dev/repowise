@@ -199,12 +199,160 @@ SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.
         tables = {t for t, _verb in SqlStringsDialect()._tables_in(self.LITERAL)}
         assert "git_metadata" in tables
 
+    @pytest.mark.parametrize(
+        ("literal", "tables"),
+        [
+            # a name of a later CTE, read in the body of an earlier one, is a table
+            (
+                "WITH a AS (SELECT * FROM b), b AS (SELECT * FROM t) "
+                "SELECT * FROM a JOIN b ON 1 = 1",
+                {"b", "t"},
+            ),
+            # a CTE that reads its own name reads a table, unless it is recursive
+            ("WITH x AS (SELECT id FROM x) SELECT * FROM x", {"x"}),
+            (
+                "WITH RECURSIVE x AS (SELECT id FROM seed UNION ALL SELECT id + 1 FROM x) "
+                "SELECT * FROM x",
+                {"seed"},
+            ),
+            # under WITH RECURSIVE a body reads the later names too
+            (
+                "WITH RECURSIVE a AS (SELECT * FROM b), b AS (SELECT n FROM t) SELECT * FROM a",
+                {"t"},
+            ),
+            ("WITH a AS (SELECT id FROM t), b AS (SELECT id FROM a) SELECT * FROM b", {"t"}),
+            # the name is bound in the query the WITH serves, not outside it
+            (
+                "SELECT * FROM (WITH c AS (SELECT 1 FROM t1) SELECT * FROM c) q JOIN c ON 1 = 1",
+                {"c", "t1"},
+            ),
+        ],
+        ids=[
+            "later-cte",
+            "own-name",
+            "recursive",
+            "recursive-later",
+            "earlier-cte",
+            "outside-the-query",
+        ],
+    )
+    def test_a_name_is_bound_after_its_cte_and_not_in_the_body_of_it(
+        self, literal: str, tables: set[str]
+    ) -> None:
+        assert {t for t, _verb in SqlStringsDialect()._parse_tables(literal)} == tables
+
     def test_a_real_table_sharing_a_cte_name_elsewhere_is_unaffected(self) -> None:
         # Shadowing is per-statement: no CTE here, so ``ranked`` is a table.
         tables = {
             t for t, _verb in SqlStringsDialect()._tables_in("SELECT id FROM ranked")
         }
         assert "ranked" in tables
+
+
+class TestSqlCteAliasWhereTheLiteralDoesNotParse:
+    """The names a literal binds with WITH are no tables on the regex path either."""
+
+    # ``%s`` stands for a value the code puts in: the literal is a format string, which no grammar
+    # parses.
+    LITERAL = """
+with order_events as (
+    select id, created, 'Refund' as kind from event_log
+),
+refund as (
+    select id, created from refund_request where created > date '%s'
+),
+merged as (
+    select id, created from order_events union all select id, created from refund
+)
+select * from merged where id = %d order by created desc limit 10
+"""
+
+    def tables(self, literal: str) -> set[str]:
+        dialect = SqlStringsDialect()
+        assert dialect._parse_tables(literal) is None  # the regex path is the one under test
+        return {t for t, _verb in dialect._tables_in(literal)}
+
+    def test_the_names_a_with_clause_binds_are_not_tables(self) -> None:
+        assert self.tables(self.LITERAL) == {"event_log", "refund_request"}
+
+    def test_a_name_with_columns_or_after_recursive_is_bound_too(self) -> None:
+        literal = (
+            "with recursive tree(id, parent) as (select id, parent from node where id = %d) "
+            "select * from tree"
+        )
+        assert self.tables(literal) == {"node"}
+
+    def test_a_table_read_by_a_literal_with_no_with_is_a_table(self) -> None:
+        assert self.tables("select id from order_events where id = %d") == {"order_events"}
+
+    @pytest.mark.parametrize(
+        ("literal", "tables"),
+        [
+            # the body of a CTE reads its own name: a table, as on the parsed path
+            (
+                "with refund as (select id from refund where id = %d) select * from refund",
+                {"refund"},
+            ),
+            # a name read before the WITH, in an earlier statement, is a table
+            (
+                "select * from orders where id = %d; "
+                "with orders as (select 1) select * from orders",
+                {"orders"},
+            ),
+            # a name read outside the query the WITH serves is a table
+            (
+                "select * from (with c as (select 1 from t1 where id = %d) select * from c) q "
+                "join c on 1 = 1",
+                {"c", "t1"},
+            ),
+            # under WITH RECURSIVE a body reads the later names too
+            (
+                "with recursive a as (select * from b where id = %d), b as (select 1 as n) "
+                "select * from a",
+                set(),
+            ),
+        ],
+        ids=["own-name", "earlier-statement", "outside-the-query", "recursive-later"],
+    )
+    def test_a_name_is_bound_only_where_its_with_is_in_scope(
+        self, literal: str, tables: set[str]
+    ) -> None:
+        assert self.tables(literal) == tables
+
+    def test_the_target_of_a_write_is_a_table_though_a_with_binds_its_name(self) -> None:
+        literal = "with t as (select id from src where x = %s) update t set v = %s where id = %s"
+        assert self.tables(literal) == {"src", "t"}
+
+    def test_a_name_that_only_follows_a_comma_is_not_bound(self) -> None:
+        # The WITH list ends at the `)` that no comma follows: `b as (x)` of the select list binds
+        # nothing.
+        literal = (
+            "with a as (select id from node) "
+            "select 1 as one, b as (x) from refund_request where id = %d"
+        )
+        assert self.tables(literal) == {"node", "refund_request"}
+
+    def test_a_comment_between_two_named_subqueries_does_not_end_the_with_clause(self) -> None:
+        literal = (
+            "with first as (select id from node where id = %d), /* the second */ "
+            "second as (select id from first),\n"
+            "-- the third\nthird as (select id from second) select id from third"
+        )
+        assert self.tables(literal) == {"node"}
+
+    def test_a_comment_marker_in_a_string_is_no_comment(self) -> None:
+        literal = (
+            "with a as (select '--' as x, id from node where id = %d), "
+            "b as (select id from a) select id from b"
+        )
+        assert self.tables(literal) == {"node"}
+
+    def test_a_quoted_name_is_bound_in_each_way_a_dialect_quotes(self) -> None:
+        for quoted in ('"Ranked"', "`Ranked`", "[Ranked]"):
+            literal = (
+                f"with {quoted} as (select id from node where id = %d) select id from {quoted}"
+            )
+            assert self.tables(literal) == {"node"}, quoted
 
 
 class TestSqlProseRejection:
