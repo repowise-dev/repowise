@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 
-from repowise.core.agent_steer import AGENT_STEER
+from repowise.core.agent_steer import AGENT_STEER, AGENT_STEER_DEFERRED
+from repowise.core.ingestion.tech_stack import TechStackItem
 
 from .sections import DEFAULT_SECTIONS
 
@@ -25,13 +26,6 @@ def _render_tool_table(*, keyless: bool = False, listed: frozenset[str] | None =
     from .tool_table import render_tool_table
 
     return render_tool_table(keyless=keyless, listed=listed)
-
-
-@dataclass(frozen=True)
-class TechStackItem:
-    name: str
-    version: str | None
-    category: str  # "language" | "framework" | "database" | "infra"
 
 
 @dataclass(frozen=True)
@@ -165,10 +159,13 @@ class EditorFileData:
 
         return listed_default_tools(TOOL_TABLE_ROWS, client=client, override=self.mcp_tools)
 
-    @property
-    def steer(self) -> str:
-        """The call-first line the block leads with, whatever sections are on."""
-        return AGENT_STEER
+    def steer(self, client: str) -> str:
+        """The call-first line the block leads with, whatever sections are on.
+
+        ``claude`` (Claude Code defers tool schemas) gets the scoped MUST; a
+        client that loads schemas up front gets the plain call-first line.
+        """
+        return AGENT_STEER_DEFERRED if client == "claude" else AGENT_STEER
 
     @property
     def keyless(self) -> bool:
@@ -209,8 +206,16 @@ class EditorFileData:
     def upgrade_pending(self) -> bool:
         upgrade = self.index_scope.get("upgrade")
         status = upgrade.get("status") if isinstance(upgrade, dict) else None
-        # A keyless index gets its next command from the keyless bullet instead.
-        return status in ("pending", "resumable", "failed") and not self.keyless
+        if self.keyless:
+            # A keyless index gets its next command from the keyless bullet instead.
+            return False
+        if status == "pending":
+            # Every run without a model stores ``pending``; with no provider nothing
+            # takes it up (same rule as ``index_scope._upgrade_in_flight``), so a
+            # template index with semantic search on is finished, not pending.
+            provider = self.index_scope.get("provider")
+            return isinstance(provider, dict) and bool(provider.get("name"))
+        return status in ("resumable", "failed")
 
     @property
     def tool_table_md(self) -> str:
@@ -255,5 +260,5 @@ class WorkspaceEditorFileData:
 
     @property
     def steer(self) -> str:
-        """The call-first line, the same one each repo's own block leads with."""
-        return AGENT_STEER
+        """The call-first line, the same one each repo's own CLAUDE.md leads with."""
+        return AGENT_STEER_DEFERRED

@@ -5,11 +5,18 @@ crate it does not cover (a standalone crate, one in the workspace's
 ``exclude``, any crate in a repo with no root manifest) is found by the
 package-root scan, named by its ``[package]``, and its dependency tables are
 read with the resolver's own parser, against the crate's directory.
+
+A crate name taken twice keeps the first root in sorted order. The later
+root is left to the manifest fallback, and a path dependency pointing at
+it links that ``manifest:`` unit rather than the crate that kept the name.
+A path outside the repo links nothing.
 """
 
 from __future__ import annotations
 
-from repowise.core.build_units.adapters import Found
+import structlog
+
+from repowise.core.build_units.adapters import Found, linked_unit_id
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.package_roots import scan_package_manifests
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -19,6 +26,8 @@ from repowise.core.ingestion.resolvers.rust_workspace import (
     get_or_build_cargo_workspace_index,
 )
 from repowise.core.ingestion.workspace_members import read_toml_or_none
+
+log = structlog.get_logger(__name__)
 
 
 def _root(crate: CargoCrate) -> str:
@@ -30,24 +39,30 @@ def _norm(path: str | None) -> str | None:
     return "" if path == "." else path
 
 
-def _dep_ids(crate: CargoCrate, by_root: dict[str, str], ws_paths: dict[str, str]) -> set[str]:
-    """``cargo:<crate>`` for each path dependency that lands on an in-repo crate.
+def _dep_ids(
+    crate: CargoCrate,
+    by_root: dict[str, str],
+    ws_paths: dict[str, str],
+    dropped: set[str],
+) -> set[str]:
+    """The unit id for each path dependency that lands on an in-repo crate.
 
     A ``{ workspace = true }`` dependency's path is resolved against the
     member, not the workspace root, so it misses; the root's own
     ``[workspace.dependencies]`` entry of that name holds the right path. A
-    path outside the repo (None) links nothing, whatever its name.
+    path outside the repo (None) links nothing, whatever its name. A path at
+    a root that lost its name links that root's ``manifest:`` unit.
     """
     ids: set[str] = set()
     for dep in crate.dependencies:
         path = _norm(dep.path) if dep.is_path else None
         if path is None:
             continue
-        target = by_root.get(path)
+        target = linked_unit_id(path, by_root, dropped)
         if target is None and dep.name in ws_paths:
-            target = by_root.get(ws_paths[dep.name])
+            target = linked_unit_id(ws_paths[dep.name], by_root, dropped)
         if target is not None:
-            ids.add(f"cargo:{target}")
+            ids.add(target)
     return ids
 
 
@@ -116,13 +131,29 @@ def units(ctx: ResolverContext) -> Found:
         if name is not None and root not in covered:
             crates.append(_crate(ctx, root, name, data))
 
-    by_root = {_root(crate): crate.name for crate in crates}
+    # A name taken twice keeps its first root in sorted order. The later root
+    # is not claimed, so the fallback gives it a manifest unit and a path
+    # dependency on it does not resolve to the crate that kept the name.
+    by_root: dict[str, str] = {}
+    dropped: set[str] = set()
+    taken: set[str] = set()
+    kept: list[CargoCrate] = []
+    for crate in sorted(crates, key=_root):
+        root = _root(crate)
+        uid = f"cargo:{crate.name}"
+        if uid in taken:
+            log.warning("build_units_duplicate_id", unit_id=uid, root=root)
+            dropped.add(root)
+            continue
+        taken.add(uid)
+        by_root[root] = uid
+        kept.append(crate)
     ws_paths = {
         dep.name: path for dep in ws_deps if dep.is_path and (path := _norm(dep.path)) is not None
     }
     claims = [
-        (_unit(crate.name, _root(crate), _dep_ids(crate, by_root, ws_paths)), ())
-        for crate in crates
+        (_unit(crate.name, _root(crate), _dep_ids(crate, by_root, ws_paths, dropped)), ())
+        for crate in kept
     ]
     virtual = frozenset(_manifest(root) for root, data in manifests.items() if _package_name(data) is None)
     return Found(claims, virtual)

@@ -73,7 +73,16 @@ def embed_env(monkeypatch, tmp_path) -> dict:
         return state["answers"].pop(0)
 
     monkeypatch.setattr(_embedder.click, "prompt", fake_prompt)
+    # The menu is asked only on a terminal.
+    monkeypatch.setattr(_embedder.sys.stdin, "isatty", lambda: True, raising=False)
     return state
+
+
+def test_no_terminal_skips_the_embedder_menu(embed_env, monkeypatch) -> None:
+    monkeypatch.setattr(_embedder.sys.stdin, "isatty", lambda: False, raising=False)
+    _embedder._setup_embedder()
+    assert embed_env["prompts"] == []
+    assert "REPOWISE_EMBEDDER" not in _embedder.os.environ
 
 
 def _saved_global(tmp_path: Path) -> dict:

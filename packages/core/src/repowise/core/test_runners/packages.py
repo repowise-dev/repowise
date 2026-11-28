@@ -56,10 +56,14 @@ def is_js_test(test: str) -> bool:
 
 def quote_arg(path: str) -> str:
     """*path* as one shell argument."""
-    # Double quotes hold a space in sh, PowerShell and cmd alike. Ceiling: a
-    # path with ``"``, ``$`` or a backtick is left as is; upgrade by quoting
-    # per shell once a plan names its shell.
-    return f'"{path}"' if re.search(r"\s", path) and not re.search(r'["$`]', path) else path
+    # A path with ``$``, a backtick or ``"`` expands or breaks inside double
+    # quotes, so single-quote it; a space alone keeps the double quotes that
+    # sh, PowerShell and cmd all understand. Ceiling: a path that also holds
+    # ``'`` is left as is; upgrade by quoting per shell once a plan names its
+    # shell.
+    if re.search(r'["$`]', path):
+        return f"'{path}'" if "'" not in path else path
+    return f'"{path}"' if re.search(r"\s", path) else path
 
 
 def relative_to(path: str, owner: str) -> str:

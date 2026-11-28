@@ -550,7 +550,9 @@ class ChangeDetector:
             pr = pagerank
         else:
             try:
-                pr = nx.pagerank(code_graph)
+                from repowise.core.ingestion.graph._pagerank import pagerank as _pagerank
+
+                pr = _pagerank(code_graph)
             except Exception:
                 pr = {}
 

@@ -60,6 +60,7 @@ from ...ingestion.extractors.visibility import (
 from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
 from ...ingestion.languages.registry import REGISTRY
 from ...ingestion.source_mask import can_mask, mask_source
+from ...ingestion.ts_declarations import declaration_stem
 from .constants import (
     _BARE_NAME_USE_LANGUAGES,
     _NON_CODE_LANGUAGES,
@@ -321,7 +322,7 @@ def searchable_token(name: str) -> bytes:
 def _is_own_type_sibling(occurrence: str, declaring: str) -> bool:
     """True when *occurrence* is *declaring*'s own generated declaration file.
 
-    A ``.d.ts`` beside ``runtime.js`` restates that module's exports as types.
+    A ``.d.ts`` beside ``runtime.js`` (or ``.d.mts`` beside ``runtime.mjs``) restates that module's exports as types.
     It declares the same names a second time and calls none of them, so
     counting it as a use makes every symbol in a generated binding module look
     alive — measured as the single largest source of lost true positives on
@@ -330,9 +331,9 @@ def _is_own_type_sibling(occurrence: str, declaring: str) -> bool:
     Deliberately narrow: only the same directory and the same stem. A ``.d.ts``
     naming a symbol from *elsewhere* really is referring to it, and stays a use.
     """
-    if not occurrence.endswith(".d.ts"):
+    stem = declaration_stem(occurrence)
+    if stem is None:
         return False
-    stem = occurrence[: -len(".d.ts")]
     base = declaring.rsplit(".", 1)[0]
     return stem == base
 

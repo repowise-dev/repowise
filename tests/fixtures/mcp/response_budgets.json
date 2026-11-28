@@ -5,15 +5,18 @@
   "context_file": 2690,
   "context_dir": 695,
   "context_symbol": 1259,
+  "context_route_provider": 1111,
+  "context_route_client": 3217,
   "symbol": 4724,
   "search_identifier": 2970,
   "search_concept": 1906,
   "search_path": 256,
   "risk": 436,
+  "risk_since": 526,
   "change_risk": 1640,
   "change_risk_per_commit": 534,
   "why": 342,
   "why_targeted": 1657,
   "health": 2973,
-  "dead_code": 14386
+  "dead_code": 7989
 }

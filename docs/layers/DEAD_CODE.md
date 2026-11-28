@@ -31,7 +31,9 @@ Cleanup-candidate lines: 14 · findings by confidence: high 2, medium 1
 From an agent, `get_dead_code()` or `get_dead_code(tier="high", safe_only=True)`.
 In the dashboard, open the **Dead code** view of a repository.
 
-## What it finds
+## Reading the results
+
+### What it finds
 
 | Kind | Meaning | Shown by default |
 |------|---------|------------------|
@@ -43,9 +45,7 @@ In the dashboard, open the **Dead code** view of a repository.
 Methods, fields, properties and enum members are never reported as unused
 exports: they are reached through their container. `unused_internal` is
 withheld from the dashboard and default MCP responses because its precision is
-very low ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
-
-## Reading the results
+below the publishing bar ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
 
 ### Confidence
 
@@ -68,6 +68,13 @@ loader in the same directory, a path that looks like config or bootstrap code,
 an unused export's name written somewhere else in the repository, or a name that
 appears in a file Repowise could not index. Each cap adds a line to the
 finding's evidence saying why.
+
+Git age never lifts an unreachable file above `0.50` when its missing importer
+says little: production code of the same language writes the file's stem or
+module name (a test or a doc naming it does not count), or its language resolves some references to
+no file. That second case is every language without full import support plus
+PHP, Ruby and Swift; the list is in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#known-gaps).
 
 ### Tiers
 
@@ -99,6 +106,15 @@ export with strong evidence".
   range.
 - **Export only:** the symbol's own file uses it, so only the `export` is
   unneeded.
+- **Loaded by a JS framework's convention:** the file sits where a framework
+  its `package.json` depends on loads files from (React Email `emails/`,
+  Next.js `pages/`, App Router `page`, `layout`, `route` and metadata files,
+  `middleware`, `proxy` and `instrumentation`, Remix `app/routes/`, Nuxt pages, layouts, plugins,
+  middleware, `server/`, `@nuxtjs/i18n` locale files (its `langDir`) and
+  auto-imported `components/`, `composables/` and `utils/` under its `srcDir`,
+  SvelteKit hooks and routes where its `kit.files` puts them,
+  Astro `src/pages/`, Expo Router `app/`, `vite-plugin-pages` and
+  `unplugin-vue-router` `src/pages/`).
 - **Weak resolution for the language in this repository:** the language is
   unknown to the graph, its import support is not full, none of its call edges
   has a recorded resolution, or more than half of them are name matches.
@@ -108,8 +124,9 @@ export with strong evidence".
 Some files and symbols are never reported, because static reachability is the
 wrong tool for them. This covers entry points and programs (`__main__.py`,
 `main.go`, files with a shebang), build and CI files and anything they name by
-path, test files, generated code, vendored trees, framework routes such as
-Next.js `page.tsx`, and symbols registered by a framework decorator or
+path, test files, generated code, vendored trees, files a JS framework declared in
+a `package.json` loads from where they sit (the paths above, apart from Nuxt's auto-imported
+directories), and symbols registered by a framework decorator or
 annotation (pytest fixtures, Flask and FastAPI routes, Celery tasks, Spring
 stereotypes, and similar). Names that follow dynamic-dispatch conventions
 (`*Handler`, `*Plugin`, `register_*`, `on_*` and others) are treated as used.
@@ -122,33 +139,7 @@ repository has no dead code. The CLI prints how many findings were hidden below
 the floor. An index whose dead-code pass failed also reads as empty; pass
 `--min-confidence 0.0` to compute live.
 
-## Tuning and suppressing
-
-- **Confidence floor.** `--min-confidence` (CLI) or `min_confidence` (MCP).
-  The index stores findings at `0.4` and above, so the CLI answers from the
-  index at that floor or higher and computes a fresh analysis below it.
-- **Scope.** `--kind`, `--no-unreachable`, `--no-unused-exports`,
-  `--include-internals`, `--no-include-zombie-packages`. Passing `--kind`
-  overrides the individual toggles.
-- **Triage in the dashboard.** Each finding has a status: `open`,
-  `acknowledged`, `resolved` or `false_positive`. Set it per row or resolve in
-  bulk. A finding you have acted on stays out of the open list across later
-  `repowise update` runs; it is not re-opened.
-- **Excluding paths.** `.repowiseIgnore` files and `exclude_patterns` in
-  `.repowise/config.yaml` remove paths from indexing (see
-  [CONFIG.md](../reference/CONFIG.md)). An excluded file's own imports leave
-  the graph too, so a file only it imported can then surface as unreachable.
-- **In source.** A Java or Kotlin symbol annotated `@SuppressWarnings("unused")`
-  is treated as deliberately unused and is not reported. An unused export
-  marked deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or
-  `_COMPAT` name suffix) starts at `0.30`, below the default floor. An unused
-  internal keeps `0.65`, since a private symbol has no outside consumer.
-- **Turning the MCP tool off.** `mcp: {tools: ["-get_dead_code"]}` in
-  `.repowise/config.yaml`.
-
-There is no allowlist file for dead-code findings; use the dashboard status.
-
-## False positives and dynamic code
+### False positives and dynamic code
 
 When a file contains a runtime loader, Repowise assumes its neighbours in the
 same directory may be reached through it and caps their confidence at `0.40`.
@@ -158,6 +149,14 @@ dynamic `import(` and `require.context(`, `Class.forName(`, `ServiceLoader.load(
 `const_get(`, `plugin.Open(` and `//go:embed`, `NSClassFromString(`,
 `Activator.CreateInstance(`, and `dlopen(` / `LoadLibrary(` in C. Dynamic edges
 found by the language extractors count the same way.
+
+Two JavaScript and TypeScript loaders are read as imports instead. A Vite
+`import.meta.glob(...)` call gets an import edge to every indexed file its
+patterns match: relative patterns, `**` patterns, patterns rooted at an alias
+the repository's imports already use (tsconfig `paths`, Nuxt `~/`, SvelteKit
+`$lib`), and `!` patterns that remove files. Its `import:` option names the one
+export used. `new URL('./x', import.meta.url)` gets an edge to the file beside
+the caller.
 
 The cases where a finding is most likely wrong:
 
@@ -187,7 +186,7 @@ The cases where a finding is most likely wrong:
 The evidence list on each finding says which signals applied. Read it before
 deleting anything.
 
-## Workspaces
+### Workspaces
 
 In a workspace, a file dead inside its own repo may be the surface another repo
 depends on. The CLI, the dashboard and `get_dead_code` check each finding
@@ -217,11 +216,38 @@ the cut. The file page, Overview's attention list, Do next (web, `repowise next`
 are built per repo before the workspace pass, so they read stored values. See
 [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
+## Tuning and suppressing
+
+- **Confidence floor.** `--min-confidence` (CLI) or `min_confidence` (MCP).
+  The index stores findings at `0.4` and above, so the CLI answers from the
+  index at that floor or higher and computes a fresh analysis below it.
+- **Scope.** `--kind`, `--no-unreachable`, `--no-unused-exports`,
+  `--include-internals`, `--no-include-zombie-packages`. Passing `--kind`
+  overrides the individual toggles.
+- **Triage in the dashboard.** Each finding has a status: `open`,
+  `acknowledged`, `resolved` or `false_positive`. Set it per row or resolve in
+  bulk. A finding you have acted on stays out of the open list across later
+  `repowise update` runs; it is not re-opened.
+- **Excluding paths.** `.repowiseIgnore` files and `exclude_patterns` in
+  `.repowise/config.yaml` remove paths from indexing (see
+  [CONFIG.md](../reference/CONFIG.md)). An excluded file's own imports leave
+  the graph too, so a file only it imported can then surface as unreachable.
+- **In source.** A Java or Kotlin symbol annotated `@SuppressWarnings("unused")`
+  is treated as deliberately unused and is not reported. An unused export
+  marked deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or
+  `_COMPAT` name suffix) starts at `0.30`, below the default floor. An unused
+  internal keeps `0.65`, since a private symbol has no outside consumer.
+- **Turning the MCP tool off.** `mcp: {tools: ["-get_dead_code"]}` in
+  `.repowise/config.yaml`.
+
+There is no allowlist file for dead-code findings; use the dashboard status.
+
 ## Accuracy and limits
 
-- `unused_internal` precision is under 1% on 1,511 hand-labelled findings from
-  one TypeScript/Python monorepo, so it is withheld by default. Private symbols
-  used within their own file are often invisible to the graph.
+- `unused_internal` is withheld by default: its precision on held-out
+  repositories is below the publishing bar. Some uses of a private symbol
+  inside its own file (object shorthand, `typeof`, reads of a module-level
+  constant) still leave no edge in the graph.
 - Precision on whole unreachable files is well below the deletion-ready bar
   (build scripts, manifests and runtime loaders read files by path), so they
   are never marked `safe_to_delete`.
@@ -272,6 +298,7 @@ MCP parameters and response shape: [`get_dead_code` in MCP_TOOLS.md](../agent/MC
 
 ## See also
 
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
 - [architecture/dead-code.md](../architecture/dead-code.md): exemption lists,
   risk tokens, per-language rescues and confidence scoring internals.
 - [CODE_HEALTH.md](CODE_HEALTH.md): the health layer, built on the same graph

@@ -1,0 +1,20 @@
+{
+  "format": "repowise-evidence-v1",
+  "kind": "query_count",
+  "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "queries": [
+    {"scope": {"kind": "test", "id": "tests/test_app.py::test_build", "items": 10},
+     "site": {"path": "src/app.py", "function": "build", "line": 10},
+     "statement_fp": "0123456789abcdef", "count": 11, "identical_max": 10, "total_ms": 4.5},
+    {"scope": {"kind": "request", "id": "GET /users"},
+     "site": {"path": "src/app.py", "function": "Reader.read"},
+     "statement_fp": "fedcba9876543210", "count": 2},
+    {"scope": {"kind": "request", "id": "GET /users"},
+     "site": {"path": "src/app.py", "function": "build"},
+     "statement_fp": "SELECT * FROM users", "count": 2},
+    {"scope": {"kind": "job", "id": "x"}, "site": {"path": "src/app.py", "function": "build"},
+     "statement_fp": "0123456789abcdef", "count": 1},
+    {"scope": {"kind": "test", "id": "t"}, "site": {"path": "gen/pb.py", "function": "decode"},
+     "statement_fp": "0123456789abcdef", "count": 1}
+  ]
+}

@@ -28,6 +28,7 @@ import {
   Layers,
   Lightbulb,
   Link2,
+  ListChecks,
   MessageSquare,
   ScanSearch,
   Settings,
@@ -74,6 +75,7 @@ export const WORKSPACE_NAV: NavItem[] = [
   { label: "Contracts", labelKey: "contracts", href: "/workspace/contracts", icon: Link2 },
   { label: "Co-Changes", labelKey: "coChanges", href: "/workspace/co-changes", icon: GitMerge },
   { label: "Estate report", labelKey: "estateReport", href: "/workspace/estate", icon: FileText },
+  { label: "Setup", labelKey: "setup", href: "/workspace/setup", icon: ListChecks },
 ];
 
 export function repoNavGroups(repoId: string): NavGroup[] {

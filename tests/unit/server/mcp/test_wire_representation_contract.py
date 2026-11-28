@@ -40,8 +40,9 @@ The seam under test is ``FuncMetadata.convert_result``, which is what
 ``FastMCP.call_tool`` uses to build the ``CallToolResult``. It reads only the
 callable's signature, so these tests need no index, no fixture and no I/O.
 The registered callable hands it a ``CallToolResult`` already built by
-``wire_result`` (compact text, the same structured copy), which it validates
-against the output schema and passes through.
+``wire_result`` (compact text, the same structured copy), which it passes
+through. The server drops the derived output schema before listing a tool
+(``_slim_tool``), so these tests convert through the slimmed tool, as served.
 """
 
 from __future__ import annotations
@@ -50,7 +51,6 @@ import inspect
 import json
 
 import pytest
-from mcp.server.fastmcp.utilities.func_metadata import func_metadata
 from mcp.types import CallToolResult
 
 from repowise.core.registry import mcp_tool_registry
@@ -95,9 +95,13 @@ def _registered_callables():
 
 def _convert(fn):
     """Return ``(text_blocks, structured_or_None)`` exactly as the server would."""
-    from repowise.server.mcp_server import wire_result
+    from mcp.server.fastmcp.tools import Tool
 
-    result = func_metadata(fn).convert_result(wire_result(dict(SAMPLE_PAYLOAD)))
+    from repowise.server.mcp_server import _slim_tool, wire_result
+
+    tool = Tool.from_function(fn)
+    _slim_tool(tool)
+    result = tool.fn_metadata.convert_result(wire_result(dict(SAMPLE_PAYLOAD)))
     if isinstance(result, CallToolResult):
         return list(result.content), result.structuredContent
     if isinstance(result, tuple):
@@ -201,6 +205,16 @@ def test_declared_structured_annotations_do_not_reach_the_wire():
         "tool declaring a bare `dict` has stopped serving structuredContent "
         "entirely. That is a wire change for every client."
     )
+
+
+@pytest.mark.asyncio
+async def test_no_tool_advertises_an_output_schema():
+    """The derived schema says only "an object under result" and is re-sent every turn."""
+    from repowise.server.mcp_server import ensure_full_surface
+
+    listed = await ensure_full_surface().list_tools()
+    assert listed
+    assert not [t.name for t in listed if t.outputSchema is not None]
 
 
 def test_every_tool_serves_compact_text():

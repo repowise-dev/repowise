@@ -11,7 +11,7 @@ jobs run when, what each one checks, and how to reproduce a failure locally.
 | Python 3.12 tests (shard 1/3, shard 2/3, shard 3/3) | when Python-relevant files change | yes |
 | Python 3.11 tests, Python 3.13 tests | no | yes |
 | Python tests (summary) | always | always |
-| tree-sitter floor, Windows smoke test, Python lint (ruff), Documentation drift | when Python-relevant files change | yes |
+| tree-sitter floor, Footprint, Windows smoke test, Python lint (ruff), Documentation drift | when Python-relevant files change | yes |
 | Web UI lint + type check | when web files change | yes |
 | VS Code extension test | when VS Code files change | yes |
 | Repowise gates | always | no |
@@ -66,8 +66,7 @@ nightly run ignore it and run everything.
   `packages/api-client/`. Python tests read docs, the web and ui TypeScript
   contracts, plugins and `.github` files, so those count as Python-relevant.
 - **Web**: `packages/web`, `packages/ui`, `packages/types`,
-  `packages/api-client`, `packages/claude-mod`, `plugins/claude-code` and
-  `scripts/check-shared-imports.mjs`.
+  `packages/api-client` and `scripts/check-shared-imports.mjs`.
 - **VS Code**: `packages/vscode`, `packages/ui`, `packages/types` and
   `packages/api-client`.
 - **Shared**: `.github/workflows/ci.yml`, `package.json`, `package-lock.json`
@@ -82,10 +81,38 @@ pull request, push to `main` and nightly run, beside the full run, without
 skipping any.
 
 - `Repowise index (main)` builds the Repowise index on each push to `main`
-  (`repowise update --index-only` on the previous one) and caches the three
-  newest.
-- `Test selection (recorded only)` restores that index and runs
+  (`repowise update --index-only` on the previous one) and saves it twice.
+  Right after the build it saves `repowise-index-<sha>-early`, which carries
+  the per-test map it restored. It then waits for the three Python 3.12
+  shards (not 3.11 or 3.13), combines their `.coverage` data, adds the
+  per-test coverage map with `repowise coverage add` and saves
+  `repowise-index-<sha>-full`, also published as the run's
+  `repowise-index-full` artifact (zstd tar, kept 3 days). A shard with a
+  failing test still ran every test and counts; when a shard was cancelled,
+  wrote no report or coverage, or its report names a crashed worker or a
+  collection error, there is
+  no full save, since a map missing a shard's tests would leave them out of
+  every selection. It keeps the cache entries of the three newest commits, drops an early
+  entry once its full one exists, and keeps an early entry with no full one
+  while its job may still save it. It sets
+  `REPOWISE_COMMIT_HEALTH_BACKGROUND=0`: a detached commit-health drain still
+  writing `.repowise` makes the cache save fail.
+- On pushes to `main` the shards record which test ran which lines
+  (`--cov-context=test`, on the C tracer, since sysmon drops contexts). Pull
+  requests and the nightly run keep sysmon without contexts, so their wall
+  time does not change.
+- `Test selection (recorded only)` starts once the tests have run. It waits up
+  to 25 minutes for the base's `repowise-index-full` artifact, stopping early
+  once the base's index job has ended, and uses it. Otherwise it restores the
+  base's cached index (its early one), else the full artifact of the nearest
+  first-parent ancestor of the base (up to 10 back), else the newest cached
+  index. It then runs
   `repowise impacted-tests <base>...HEAD --format json --runner pytest --prioritize`.
+  The record's `index_cache` says which: `full`, `early`, `ancestor`, `older`
+  or `none`, and `map_commit` / `map_at_base` name the commit the per-test map
+  was measured at and whether it is the base (record version 3).
+  `scripts/impacted_tests_shadow_report.py` counts the runs whose map was at
+  the base.
 - `Test selection compared (recorded only)` reads the shards' JUnit reports
   and writes its job summary: selected test files out of those that ran, the
   test time the selection would have saved, every failing test the selection
@@ -106,6 +133,7 @@ checkout with `uv run repowise impacted-tests origin/main...HEAD`.
 |-----|---------|
 | Python tests | `uv run pytest tests/providers/ tests/unit/ -n auto --dist loadfile` |
 | tree-sitter floor | `uv pip install "tree-sitter==0.25.0"`, then `uv run --no-sync pytest tests/unit/ingestion/parser/test_query_compilation.py` |
+| Footprint | Install the default package (no extras) into a fresh venv, then run `scripts/check_footprint.py` with that venv's Python; the script's docstring has the commands |
 | Windows smoke test | `repowise init` and `repowise status` in a Windows shell with `PYTHONIOENCODING` and `PYTHONUTF8` unset |
 | Python lint (ruff) | `uv run ruff check .` |
 | Documentation drift | `uv run repowise doc-drift --check --baseline .github/doc-drift-baseline.json` |
@@ -125,5 +153,11 @@ checkout with `uv run repowise impacted-tests origin/main...HEAD`.
   downloads from scratch once.
 - Ruff runs as the standalone binary at the version `uv.lock` pins, with no
   project install. Run the same version locally with `uv run ruff check .`.
+- The Footprint job installs the default package, no extras, into a fresh
+  venv pinned to `uv.lock`, and fails when the install size or distribution
+  count passes its budget in `ci/footprint_budget.json`, or when the CLI, the
+  MCP server, `serve` or a Claude Code hook loads a module its entry forbids
+  (scipy, lancedb, pyarrow and the LLM SDKs among them). A budget rises only
+  by editing that file in the pull request that needs it.
 - The Apex and COBOL grammars, which download on first use, are staged once per
   job with retries and cached on `uv.lock`.

@@ -169,15 +169,18 @@ async def test_co_change_is_historical_only_and_mixed_evidence_stays_separate(
     dependent_paths = {row["file_path"] for row in card["dependents"]}
     consumer_paths = {row["consumer_file"] for row in card["consumers"]}
 
-    only = partners["docs/cochange-only.md"]
-    assert only["support"] == 7
+    # The heavier docs partner ranks below shipped code (code_origin docs_example).
+    assert "docs/cochange-only.md" not in partners
+    assert list(partners) == ["src/direct_0.py", "src/history_1.py", "src/history_2.py"]
+    only = partners["src/history_1.py"]
+    assert only["support"] == 5
     assert only["has_import_link"] is False
     assert only["file_path"] not in dependent_paths | consumer_paths
 
     mixed = partners["src/direct_0.py"]
     assert mixed["has_import_link"] is True
     assert card["co_change_partners_total"] == 6
-    assert card["co_change_partners_emitted"] == len(card["co_change_partners"]) == 5
+    assert card["co_change_partners_emitted"] == len(card["co_change_partners"]) == 3
     assert card["co_change_partners_truncated"] is True
     assert "src/excluded.py" not in partners
 

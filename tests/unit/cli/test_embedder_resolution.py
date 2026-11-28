@@ -93,6 +93,132 @@ def test_existing_vector_dim_is_none_when_unreadable(tmp_path: Path) -> None:
     assert providers.existing_vector_dim(tmp_path / "empty") is None
 
 
+# --- keyless runs write no store ---------------------------------------------
+
+
+def test_keyless_writes_no_store_and_leaves_the_mock_width_signal(tmp_path: Path) -> None:
+    """Nothing searches keyless vectors, so no LanceDB store is built for them.
+
+    The marker keeps what the mock-filled table used to say: these pages were
+    embedded keyless, so a later real pin re-embeds all of them.
+    """
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    (tmp_path / ".repowise").mkdir()
+    lance_dir = tmp_path / ".repowise" / "lancedb"
+
+    assert providers.build_vector_store(tmp_path, KeylessEmbedder()) is None
+    assert not lance_dir.exists()
+    assert providers.existing_vector_dim(lance_dir) == MockEmbedder.dimensions
+
+
+async def test_keyless_keeps_an_old_mock_table_current(tmp_path: Path) -> None:
+    """A table an earlier keyless run wrote is still maintained.
+
+    Retired pages must leave it and ``doctor --repair`` must be able to clean
+    it, so a repo that has one keeps getting its store.
+    """
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    await _seed_store(tmp_path, MockEmbedder())
+    lance_dir = tmp_path / ".repowise" / "lancedb"
+
+    store = providers.build_vector_store(tmp_path, KeylessEmbedder())
+    assert isinstance(store, LanceDBVectorStore)
+    assert providers.existing_vector_dim(lance_dir) == MockEmbedder.dimensions
+    assert not (tmp_path / ".repowise" / "lancedb.keyless").exists()
+
+
+def test_a_model_run_still_gets_a_keyless_store(tmp_path: Path) -> None:
+    """Model generation reads earlier summaries back, so it keeps its store."""
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    store = providers.build_vector_store(tmp_path, KeylessEmbedder(), summaries=True)
+
+    assert isinstance(store, LanceDBVectorStore)
+
+
+def test_marker_survives_an_empty_store_directory(tmp_path: Path) -> None:
+    """A real run that failed before its first write must not hide the backfill."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    (tmp_path / ".repowise").mkdir()
+    providers.build_vector_store(tmp_path, KeylessEmbedder())
+    (tmp_path / ".repowise" / "lancedb").mkdir()
+
+    assert providers.existing_vector_dim(tmp_path / ".repowise" / "lancedb") == 8
+
+
+async def test_keyless_never_touches_a_real_table(tmp_path: Path) -> None:
+    """A real index survives a keyless run, as before."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    await _seed_store(tmp_path, _WideEmbedder())
+
+    assert providers.build_vector_store(tmp_path, KeylessEmbedder()) is None
+    assert providers.existing_vector_dim(tmp_path / ".repowise" / "lancedb") == 1536
+    assert not (tmp_path / ".repowise" / "lancedb.keyless").exists()
+
+
+async def test_first_real_store_replaces_the_keyless_marker(tmp_path: Path) -> None:
+    """The first real-embedder run creates the store; its width is the answer from then on."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    (tmp_path / ".repowise").mkdir()
+    providers.build_vector_store(tmp_path, KeylessEmbedder())
+
+    await _seed_store(tmp_path, _WideEmbedder())
+
+    assert providers.existing_vector_dim(tmp_path / ".repowise" / "lancedb") == 1536
+
+
+def test_real_pin_after_a_keyless_run_proposes_a_re_embed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adding a key after a keyless index still re-embeds every page on ``update``."""
+    from repowise.cli.upgrade import _vector_dims
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    _write_config(tmp_path, embedder="mock")
+    providers.build_vector_store(tmp_path, KeylessEmbedder())
+    _write_config(tmp_path, embedder="openai")
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
+    )
+
+    assert _vector_dims(tmp_path) == (MockEmbedder.dimensions, 1536)
+
+
+def test_keyless_store_path_never_imports_lancedb(tmp_path: Path) -> None:
+    """The point of the skip: a keyless run never loads lancedb or pyarrow."""
+    import subprocess
+    import sys
+
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from repowise.cli.providers import build_vector_store, existing_vector_dim\n"
+        "from repowise.core.providers.embedding.base import KeylessEmbedder\n"
+        "repo = Path(sys.argv[1])\n"
+        "(repo / '.repowise').mkdir()\n"
+        "assert build_vector_store(repo, KeylessEmbedder()) is None\n"
+        "assert build_vector_store(repo, KeylessEmbedder()) is None\n"
+        "assert existing_vector_dim(repo / '.repowise' / 'lancedb') == 8\n"
+        "print(sorted(m for m in ('lancedb', 'pyarrow') if m in sys.modules))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    assert out.stdout.strip() == "[]", out.stderr
+
+
 # --- readers resolve from the pin, not the environment ----------------------
 
 
@@ -371,7 +497,7 @@ async def test_reindex_persists_its_resolved_embedder(
     # _reindex imports build_embedder from this module inside the function, so
     # the module attribute is the one that takes effect.
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -420,7 +546,7 @@ async def test_reindex_does_not_pin_an_embedder_that_wrote_nothing(
         "sqlalchemy.ext.asyncio.async_sessionmaker", lambda *a, **k: lambda: _Session()
     )
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -538,7 +664,7 @@ def test_mock_width_with_a_real_pin_proposes_a_re_embed(
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     _patch_stored_dim(monkeypatch, 8)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
 
     assert _vector_dims(tmp_path) == (8, 1536)
@@ -570,7 +696,7 @@ def test_two_real_widths_are_never_compared(
 
     monkeypatch.setattr(
         "repowise.cli.providers.embedders.build_embedder",
-        lambda _n, _p=None: _MisreportingEmbedder(),
+        lambda _n, _p=None, **_kw: _MisreportingEmbedder(),
     )
 
     assert _vector_dims(tmp_path) == (None, None)
@@ -635,7 +761,7 @@ def test_a_real_pin_still_reads_the_stored_table(
 
     monkeypatch.setattr("repowise.cli.providers.vector_store.existing_vector_dim", _spy)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
 
     assert _vector_dims(tmp_path) == (8, 1536)
@@ -1016,7 +1142,7 @@ async def test_an_unchanged_real_embedder_never_opens_lancedb(
     _write_config(tmp_path, embedder="openai")
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
     _forbid_lancedb(monkeypatch)
 
@@ -1035,7 +1161,7 @@ async def test_switching_to_a_real_embedder_still_proposes_the_re_embed(
     _write_config(tmp_path, embedder="openai")
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
     with monkeypatch.context() as m:
         _forbid_lancedb(m)
@@ -1304,3 +1430,24 @@ def test_workspace_member_env_ignored_for_workspace_plan_and_honored_for_member_
     # 2. Member repo update resolves directly from the member's own .env
     assert deterministic_embedder_name({}, repo_path=member) == "openrouter"
     assert resolve_embedder(None, repo_path=member) == "openrouter"
+
+
+def test_a_template_upgrade_builds_no_keyless_store(tmp_path: Path) -> None:
+    """``update --full`` rendering from templates reads no summaries back."""
+    from repowise.cli.commands.upgrade_flow import _upgrade_embedding
+
+    (tmp_path / ".repowise").mkdir()
+    _embedder, store, error = _upgrade_embedding(tmp_path, "mock", summaries=False)
+
+    assert store is None and error is None
+    assert not (tmp_path / ".repowise" / "lancedb").exists()
+
+
+def test_keyless_marks_an_empty_store_directory(tmp_path: Path) -> None:
+    """A directory a failed real run left behind holds no table, so it is marked too."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True)
+
+    assert providers.build_vector_store(tmp_path, KeylessEmbedder()) is None
+    assert (tmp_path / ".repowise" / "lancedb.keyless").is_file()

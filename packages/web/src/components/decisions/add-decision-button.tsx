@@ -3,7 +3,6 @@
 import * as React from "react";
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
-import { Plus } from "lucide-react";
 import { DecisionCreateForm } from "@repowise-dev/ui/decisions/decision-create-form";
 import {
   Dialog,
@@ -12,9 +11,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
-import { Button } from "@repowise-dev/ui/ui/button";
-import { DecisionAgentPrompts } from "@repowise-dev/ui/decisions/decision-agent-prompts";
-import { ADD_WITH_AGENT_LABEL } from "@repowise-dev/ui/decisions/decision-review-lanes";
+import {
+  DecisionAgentHero,
+  DecisionAgentPrompts,
+} from "@repowise-dev/ui/decisions/decision-agent-prompts";
+import { recordPromptKinds } from "@repowise-dev/ui/decisions/decision-review-lanes";
+import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
 import type {
   DecisionAgentPromptKind,
   DecisionCreateInput,
@@ -23,21 +25,25 @@ import type {
 import { createDecision, getDecisionAgentPrompt } from "@/lib/api/decisions";
 import { useTranslations } from "next-intl";
 
+const FOOT_LINK =
+  "rounded text-xs text-[var(--color-accent-primary)] underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
+
 /**
- * The host half of recording a decision: the entry point, the POST, and the
- * refresh. The form itself is shared, so hosted mounts the same fields behind
- * its own client. Beside it, the page's agent actions: check the background
- * records on the busiest files, move working agreements into CLAUDE.md, and
- * record what nobody wrote down. The server renders each prompt, the same
- * text `repowise decision discover` prints.
+ * The page's handoff: the discovery prompt the server rendered, the same text
+ * `repowise decision discover` prints, behind one copy button. Beside it the
+ * other two prompts (record what nobody wrote down, move working agreements
+ * into CLAUDE.md) and the manual path, a person recording one by hand. The
+ * form is shared, so hosted mounts the same fields behind its own client.
  */
-export function AddDecisionButton({ repoId }: { repoId: string }) {
+export function DecisionAgentPanel({ repoId }: { repoId: string }) {
   const t = useTranslations("decisions");
   const [open, setOpen] = React.useState(false);
   const router = useRouter();
-  const discover = useDecisionAgentPrompt(repoId, "discover");
+  const { data: discover, error } = useDecisionAgentPromptState(repoId, "discover");
   const agreements = useDecisionAgentPrompt(repoId, "agreements");
   const add = useDecisionAgentPrompt(repoId, "add");
+  // A server that predates the kind refuses it; the read then fails and no button shows.
+  const reviewAll = useDecisionAgentPrompt(repoId, "review_all");
 
   const handleSubmit = React.useCallback(
     async (input: DecisionCreateInput) => {
@@ -46,22 +52,61 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
     [repoId],
   );
 
+  // The server turns `discover` into `add` on a store with nothing to check,
+  // so the hero is then the add pass and the add link would repeat it.
+  const checking = discover?.kind === "discover";
+  const heading = discover
+    ? checking
+      ? t("hero.discoverHeading", { count: discover.count })
+      : t("hero.addHeading")
+    : undefined;
+  const description = discover
+    ? checking
+      ? t("hero.discoverDescription")
+      : t("hero.addDescription")
+    : undefined;
+
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2">
-      <DecisionAgentPrompts
-        discover={
-          discover?.kind === "discover"
-            ? { text: discover.text, label: t("agent.discover") }
-            : null
+    <>
+      <DecisionAgentHero
+        prompt={error ? null : discover}
+        {...(heading ? { heading } : {})}
+        {...(description ? { description } : {})}
+        copyLabel={t("hero.copy")}
+        copiedLabel={t("hero.copied")}
+        failedLabel={t("hero.copyFailed")}
+        reviewAll={reviewAll && { text: reviewAll.text, label: t("hero.reviewAll") }}
+        footnote={
+          <span>
+            {t.rich("hero.footnote", { code: (chunks) => <code>{chunks}</code> })}
+          </span>
         }
-        agreements={agreements ? { text: agreements.text, label: t("agent.agreements") } : null}
-        add={add ? { text: add.text, label: ADD_WITH_AGENT_LABEL } : null}
+        links={
+          <>
+            {checking && add?.text && (
+              <AiPromptButton variant="ghost" copyText={() => add.text} label={t("hero.recordMissed")} />
+            )}
+            {agreements?.text && (
+              <AiPromptButton
+                variant="ghost"
+                copyText={() => agreements.text}
+                label={t("agent.agreements")}
+              />
+            )}
+            <button type="button" className={FOOT_LINK} onClick={() => setOpen(true)}>
+              {t("hero.addByHand")}
+            </button>
+          </>
+        }
       />
-      {/* Quieter than the agent action beside it: agents record most decisions. */}
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        <Plus className="h-3.5 w-3.5" />
-        {t("add.trigger")}
-      </Button>
+      {/* No discover prompt (a failed read): the manual path stays reachable. */}
+      {error && (
+        <div className="flex justify-end">
+          <button type="button" className={FOOT_LINK} onClick={() => setOpen(true)}>
+            {t("add.trigger")}
+          </button>
+        </div>
+      )}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
@@ -81,49 +126,50 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
           />
         </DialogContent>
       </Dialog>
-    </div>
+    </>
+  );
+}
+
+/** The SWR key of one decision prompt, shared by every reader of it. */
+export function decisionPromptKey(
+  repoId: string,
+  kind: DecisionAgentPromptKind,
+  decisionId?: string,
+) {
+  return [`/api/repos/${repoId}/decisions/agent-prompt`, kind, decisionId ?? ""] as const;
+}
+
+function useDecisionAgentPromptState(
+  repoId: string,
+  kind: DecisionAgentPromptKind | null,
+  decisionId?: string,
+) {
+  // No retry loop on a failed read: a server that refuses the kind keeps
+  // refusing it. Focus revalidation still recovers from a passing failure.
+  return useSWR(
+    kind ? decisionPromptKey(repoId, kind, decisionId) : null,
+    () => getDecisionAgentPrompt(repoId, kind!, decisionId),
+    { shouldRetryOnError: false },
   );
 }
 
 /**
- * One decision prompt from the server. Keyed the way the review lanes key it,
- * so the Background lane and this row share one fetch. Revalidated on focus,
- * so after the agent's pass the copied list names what is still left. A failed
- * read shows no button rather than an error: the prompt is an extra, not the page.
+ * One decision prompt from the server. Revalidated on focus, so after the
+ * agent's pass the copied list names what is still left. A failed read shows
+ * no button rather than an error: the prompt is an extra, not the page.
  */
 export function useDecisionAgentPrompt(
   repoId: string,
   kind: DecisionAgentPromptKind | null,
   decisionId?: string,
 ) {
-  const { data } = useSWR(
-    kind ? [`/api/repos/${repoId}/decisions/agent-prompt`, kind, decisionId ?? ""] : null,
-    () => getDecisionAgentPrompt(repoId, kind!, decisionId),
-  );
-  return data;
-}
-
-type RecordPromptKind = "review" | "edit" | "veto" | "pin" | "unpin";
-
-/** The currencies of a decision that has left force. */
-const RETIRED_CURRENCIES: ReadonlySet<string> = new Set(["superseded", "dismissed", "stale"]);
-
-/**
- * Which prompts a record gets, in button order: a background record the check;
- * a decision in force change, veto, and pin or unpin; a retired or dismissed
- * one none, since it was settled and checking it again would undo that.
- */
-export function recordPromptKinds(
-  d: Pick<DecisionRecord, "currency" | "pinned" | "status">,
-): RecordPromptKind[] {
-  if (d.currency == null) return d.status === "proposed" ? ["review"] : [];
-  if (RETIRED_CURRENCIES.has(d.currency)) return [];
-  return ["edit", "veto", d.pinned ? "unpin" : "pin"];
+  return useDecisionAgentPromptState(repoId, kind, decisionId).data;
 }
 
 /**
- * One record's agent prompts, rendered by the server for its id. Each kind is
- * its own fetch, so the buttons appear as their prompts arrive.
+ * One record's agent prompts, rendered by the server for its id, for the
+ * record's drawer. Each kind is its own fetch, so the buttons appear as their
+ * prompts arrive.
  */
 export function DecisionRecordPrompts({
   repoId,
@@ -148,7 +194,7 @@ function RecordPrompt({
 }: {
   repoId: string;
   decisionId: string;
-  kind: RecordPromptKind;
+  kind: ReturnType<typeof recordPromptKinds>[number];
 }) {
   const t = useTranslations("decisions");
   const prompt = useDecisionAgentPrompt(repoId, kind, decisionId);

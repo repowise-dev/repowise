@@ -7,7 +7,7 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import Collection
+from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -135,8 +135,11 @@ _warned_ambiguous: set[str] = set()
 
 
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
-    """Resolve a repository by path, ID or name; with none, the served directory's."""
-    if repo:
+    """Resolve a repository by path, ID or name; with none, the served directory's.
+
+    ``.`` names the served directory, as it does in a shell.
+    """
+    if repo and Path(repo) != Path("."):
         # Try by path
         result = await session.execute(select(Repository).where(Repository.local_path == repo))
         obj = result.scalar_one_or_none()
@@ -179,7 +182,7 @@ async def _default_repo(session: AsyncSession) -> Repository:
     scoped = await _scoped_repo(session)
     if scoped is not None:
         return scoped
-    served = _state._repo_path
+    served = _state.served_path()
     if served:
         for key in dict.fromkeys((served, str(Path(served).resolve()))):
             obj = await get_repository_by_path(session, key)
@@ -244,11 +247,17 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
     In **workspace mode**: resolves the alias via the registry and returns
     the matching ``RepoContext``.
 
+    A caller that embeds the tools sets the context for the request
+    (:func:`_state.serving`); it is returned as is.
+
     Raises ``ValueError`` for ``repo="all"`` — callers must handle that
     case explicitly before calling this helper.
     """
     from repowise.core.workspace.registry import RepoContext
 
+    request = _state.request_context()
+    if request is not None:
+        return request
     registry = _state._registry
     if registry is None:
         # Single-repo mode — validate the repo param against the DB if given
@@ -302,7 +311,7 @@ async def _single_repo_checkout(repo: str) -> Any:
         try:
             await _get_repo(session, repo)
         except LookupError:
-            served = _state._repo_path
+            served = _state.served_path()
             matched = (
                 match_checkout(repo, served) if served and Path(repo).is_absolute() else None
             )
@@ -784,25 +793,62 @@ def read_repo_file_text(
     Source-coordinate readers must set ``allow_extracted=False``. Async callers
     allowing extraction must offload this synchronous reader.
 
-    Classification, containment and conversion belong to the core source reader;
-    this optional serving boundary translates extraction failures to unavailable.
+    Reads go through :func:`source_for`, so a request served with no source
+    reads nothing.
     """
+    source = source_for(repo_root)
+    return source.read(file_path, allow_extracted=allow_extracted) if source is not None else None
+
+
+#: The start of every field's reason on a request served with no source.
+NO_SOURCE_PREFIX = "no source on this server"
+#: A field that needs git history, on a request served without it.
+NO_GIT_REASON = "no git history on this server: run it in your checkout"
+
+
+def no_source_reason(path: str | None = None, start: int | None = None, end: int | None = None) -> str:
+    """The one reason a field gives when its request has no source to read."""
+    if not path:
+        return f"{NO_SOURCE_PREFIX}: read the files from your checkout"
+    where = path if start is None else f"{path}:{start}-{end if end is not None else start}"
+    return f"{NO_SOURCE_PREFIX}: read `{where}` from your checkout"
+
+
+def serves_no_source() -> bool:
+    """Whether this request is served from a context that declares no source."""
+    ctx = _state.request_context()
+    return ctx is not None and ctx.source is None
+
+
+def no_source_field(path: str | None = None, start: int | None = None, end: int | None = None) -> dict:
+    """``complete: false`` and the one reason, for a field its request has no source to fill."""
+    return {"complete": False, "reasons": [no_source_reason(path, start, end)]}
+
+
+def source_for(repo_root: Path | str | None) -> Any:
+    """The ``SourceView`` live reads under *repo_root* go through, or ``None``.
+
+    The request context's source when one is set (``None`` when that server has
+    no checkout), else the checkout on disk at *repo_root*.
+    """
+    ctx = _state.request_context()
+    if ctx is not None:
+        return ctx.source
     if repo_root is None:
         return None
-    from repowise.core.ingestion.document_extractors import DocumentExtractionError
-    from repowise.core.ingestion.source_reader import read_source
+    from repowise.core.ingestion.source_view import DiskSource
 
-    try:
-        source = read_source(Path(str(repo_root)), file_path, allow_extracted=allow_extracted)
-        if source is None:
-            return None
-        return source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    except (OSError, ValueError, DocumentExtractionError):
+    return DiskSource(repo_root)
+
+
+def _get_exclude_spec(repo_path: Path | str | None) -> Any:
+    """Compile the repo's exclusion rules into a PathSpec, or None.
+
+    None with no checkout: the rules live in its files, and the index already
+    left out what they excluded when it was built.
+    """
+    if repo_path is None:
         return None
-
-
-def _get_exclude_spec(repo_path: Path | str) -> Any:
-    """Compile the repo's exclusion rules into a PathSpec, or None."""
     from repowise.core.exclusion import build_exclude_spec
 
     return build_exclude_spec(repo_path)
@@ -856,6 +902,69 @@ def filter_path_list(paths: list | None, spec: Any) -> list:
     if not spec:
         return list(paths)
     return [p for p in paths if not is_excluded(p, spec)]
+
+
+def node_is_excluded(node_id: str | None, spec: Any) -> bool:
+    """True if the file a graph node id (file or ``path::Name``) names is excluded."""
+    from repowise.core.exclusion import node_is_excluded as _core_node_is_excluded
+
+    return _core_node_is_excluded(node_id, spec)
+
+
+def edge_is_excluded(source_id: str | None, target_id: str | None, spec: Any) -> bool:
+    """True if either end of a graph edge is excluded."""
+    from repowise.core.exclusion import edge_is_excluded as _core_edge_is_excluded
+
+    return _core_edge_is_excluded(source_id, target_id, spec)
+
+
+def _edge_endpoints(row: Any) -> tuple[str | None, str | None]:
+    return row.source_node_id, row.target_node_id
+
+
+def filter_edge_rows(
+    rows: Any, spec: Any, endpoints: Callable[[Any], Iterable[str | None]] = _edge_endpoints
+) -> list:
+    """Shape F: drop edge rows with an excluded endpoint.
+
+    *endpoints* names the node ids a row carries; the default reads
+    ``source_node_id`` and ``target_node_id``. A row is kept only when none of
+    them is excluded, so a hop through an excluded file never reaches a walk.
+    """
+    if not spec:
+        return list(rows)
+    # Edge lists repeat each node many times over (a full export reads ~400k
+    # rows over ~30k nodes), so each id's verdict is worked out once.
+    verdicts: dict[str | None, bool] = {}
+
+    def excluded(node_id: str | None) -> bool:
+        hit = verdicts.get(node_id)
+        if hit is None:
+            hit = verdicts[node_id] = node_is_excluded(node_id, spec)
+        return hit
+
+    return [r for r in rows if not any(excluded(n) for n in endpoints(r))]
+
+
+async def fetch_allowed_edges(
+    session: AsyncSession,
+    stmt: Any,
+    spec: Any,
+    *,
+    limit: int,
+    endpoints: Callable[[Any], Iterable[str | None]] = _edge_endpoints,
+    keep_excluded: bool = False,
+) -> list:
+    """Shape G: the first *limit* rows of an edge query with no excluded endpoint.
+
+    Delegates to :func:`repowise.core.exclusion.fetch_allowed_edges`, which
+    reads on in bounded pages so excluded rows never take an allowed row's place.
+    """
+    from repowise.core.exclusion import fetch_allowed_edges as _core_fetch_allowed_edges
+
+    return await _core_fetch_allowed_edges(
+        session, stmt, spec, limit=limit, endpoints=endpoints, keep_excluded=keep_excluded
+    )
 
 
 def filter_embedded_path_ids(ids: list, spec: Any) -> list:

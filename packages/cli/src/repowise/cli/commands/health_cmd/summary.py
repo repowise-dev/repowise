@@ -39,6 +39,22 @@ def _render_fix_first(loaded: tuple[Any, Any] | None) -> None:
         console.print(f"    {escape(item.why)}")
         if item.verify.command:
             console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
+        for line in _measure_lines(item.verify.measure):
+            console.print(line)
+
+
+def _measure_lines(measure: dict[str, Any] | None) -> list[str]:
+    """How a performance item is re-measured (``verify.measure``): the baseline
+    before the edit, the comparison after it, from the directory it runs in."""
+    from rich.markup import escape
+
+    if not measure:
+        return []
+    where = f" [dim](from {escape(measure.get('cwd') or 'the repository root')})[/dim]"
+    return [
+        f"    [dim]measure before:[/dim] {escape(measure['before'])}{where}",
+        f"    [dim]measure after:[/dim] {escape(measure['after'])}{where}",
+    ]
 
 
 def _render_performance_section(report: Any, coverage: Any, causes: Any | None) -> None:
@@ -84,17 +100,27 @@ def _render_performance_section(report: Any, coverage: Any, causes: Any | None) 
     )
 
 
-_MEASURED_GROUPS = (("measured", "Measured"), ("measured_in_tests", "Measured in tests"))
+_MEASURED_GROUPS = (
+    ("measured", "Measured"),
+    ("measured_in_tests", "Measured in tests"),
+    ("statements", "Production statements"),
+    ("routes", "Production routes"),
+)
 
 
 def _render_measured_costs(view: dict[str, Any] | None) -> None:
-    """What stored runs measured (``crud.measured_costs``), one block per run.
+    """What each workload's newest run measured (``crud.measured_costs``), one
+    block per run.
 
-    Each block opens with its basis and how much of the run production code
-    explains, so a ranked function is never read without its workload.
-    Silent without ranked evidence.
+    Each block opens with its basis and where the run's time went, so a ranked
+    function is never read without its workload. Each row is the compact text
+    form of ``evidence.action_row``: the next step first, then what drove it,
+    the measurement with owner and tests, and the one verify command. Silent
+    without ranked evidence.
     """
     from rich.markup import escape
+
+    from repowise.core.evidence.action_row import row_text
 
     if not view:
         return
@@ -102,63 +128,121 @@ def _render_measured_costs(view: dict[str, Any] | None) -> None:
         group = view.get(key)
         if not group:
             continue
+        basis = _WINDOW_BASIS.get(key, _run_basis)
         for run in group["runs"]:
-            console.print(f"\n[bold]{title}[/bold] [dim]({escape(_run_basis(run))})[/dim]")
+            console.print(f"\n[bold]{title}[/bold] [dim]({escape(basis(run))})[/dim]")
             rows = [r for r in group["rows"] if r["run_id"] == run["run_id"]]
             for row in rows:
-                console.print(f"  {row['rank']}. [cyan]{escape(row['symbol_id'])}[/cyan]")
-                console.print(f"     [dim]{escape(_row_facts(row))}[/dim]")
-    linked = view.get("on_static_findings") or []
-    if linked:
-        many = len(linked) != 1
-        console.print(
-            f"[dim]{len(linked)} measured function{'s' if many else ''} already "
-            f"{'carry' if many else 'carries'} a static cause, shown with that cause.[/dim]"
-        )
+                # An import row reads "<file> import time", not "<file>::<module>".
+                name = row["symbol_id"]
+                if row.get("label"):
+                    name = f"{row['file_path']} {row['label']}"
+                console.print(f"  {row['rank']}. [cyan]{escape(name)}[/cyan]")
+                for line in row_text(row):
+                    console.print(f"     [dim]{escape(line)}[/dim]")
+    _render_benchmarks(view.get("benchmarks"))
 
 
-def _pct(value: float | None) -> str:
-    return "?" if value is None else f"{value * 100:.0f}%"
+def _render_benchmarks(group: dict[str, Any] | None) -> None:
+    """Each benchmark, the function it measures and its numbers per operation.
+    A benchmark profile never ranks, so its results are what a benchmark says."""
+    from rich.markup import escape
+
+    if not group:
+        return
+    for run in group["runs"]:
+        commit = f" at {run['commit'][:7]}" if run.get("commit") else ""
+        basis = f'"{run["workload_name"]}"{commit}'
+        console.print(f"\n[bold]Benchmarks[/bold] [dim]({escape(basis)})[/dim]")
+        for row in (r for r in group["rows"] if r["run_id"] == run["run_id"]):
+            measures = f" -> [cyan]{escape(row['measures'])}[/cyan]" if row.get("measures") else ""
+            console.print(f"  {escape(row['benchmark'])}{measures}")
+            console.print(f"     [dim]{escape(_benchmark_numbers(row))}[/dim]")
+
+
+def _render_connect_line(freshness: dict[str, Any] | None) -> None:
+    """One line pointing at ``evidence setup`` when no runtime evidence is
+    stored, so the performance figures above read as code shape. Silent when
+    the store cannot say."""
+    from repowise.core.evidence.setup import EVIDENCE_SETUP
+
+    if not freshness or freshness["runtime"]["present"]:
+        return
+    console.print(
+        "\n[dim]No runtime evidence stored, so performance here is code shape only. "
+        f"Connect a real run: [bold]{EVIDENCE_SETUP}[/bold] prints the profile and "
+        "ingest commands.[/dim]"
+    )
+
+
+def _benchmark_numbers(row: dict[str, Any]) -> str:
+    """``1,234 ns/op, 11 allocs/op, 2,048 B/op``: what the tool gave."""
+    parts = []
+    if row.get("time") is not None:
+        time = row["time"]
+        shown = f"{time:,.0f}" if time >= 100 else f"{time:.3g}"
+        parts.append(f"{shown} {row.get('unit') or 'units'}/op")
+    if row.get("allocs_per_op") is not None:
+        parts.append(f"{row['allocs_per_op']:,.0f} allocs/op")
+    if row.get("bytes_per_op") is not None:
+        parts.append(f"{row['bytes_per_op']:,.0f} B/op")
+    return ", ".join(parts) or "no numbers stored"
 
 
 def _run_basis(run: dict[str, Any]) -> str:
-    """``entry_point "api" at abc1234, 3 days old: repo code explains 11% of 5,300 samples``."""
-    parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
-    if run.get("commit"):
-        parts.append(f"at {run['commit'][:7]}")
+    """``entry_point "api" at abc1234, 3 days old: repo code itself 47%, waits 30%,
+    libraries 12% of 5,300 samples``. A production run names its window and
+    deploy instead: ``"api" in production over 2026-10-30 to 2026-11-26,
+    deployed commit unknown, 1 day old: ...``."""
+    from repowise.core.evidence.status import split_words
+
+    window = run.get("window")
+    if window:
+        parts = [f'"{run["workload_name"]}" {window["claim"]}']
+    else:
+        parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
+        if run.get("commit"):
+            parts.append(f"at {run['commit'][:7]}")
     if run.get("age_days") is not None:
         parts.append(f"{run['age_days']} day{'s' if run['age_days'] != 1 else ''} old")
     basis = ", ".join(parts)
     samples = run.get("samples")
-    of = f" of {samples:,} samples" if samples else " of the run"
-    explained = f"repo code explains {_pct(run.get('explained_share'))}{of}"
-    if run.get("ordering_only"):
-        explained += "; traced, so the order counts and no share is given"
-    return f"{basis}: {explained}"
-
-
-def _row_facts(row: dict[str, Any]) -> str:
-    parts = []
-    if row.get("share") is not None:
-        interval = ""
-        if row.get("share_low") is not None and row.get("share_high") is not None:
-            interval = f" ({_pct(row['share_low'])} to {_pct(row['share_high'])})"
-        parts.append(f"{_pct(row['share'])} of the run{interval}")
-    if row.get("samples") is not None:
-        parts.append(f"{row['samples']:,} samples")
-    callers = row.get("callers_total")
-    if callers is not None:
-        parts.append(f"{callers} caller{'s' if callers != 1 else ''}")
-    if row.get("owner"):
-        parts.append(f"owner {row['owner']['name']}")
-    tests = row.get("tests")
-    if tests is None:
-        parts.append("tests not mapped")
-    elif tests:
-        parts.append(f"nearest test {tests[0]}")
+    split = split_words(run)
+    if split is None:
+        where = "time split unknown (stored before it was recorded; add the profile again)"
     else:
-        parts.append("no test reaches it")
-    return " · ".join(parts)
+        where = split + (f" of {samples:,} samples" if samples else " of the run")
+    if run.get("ordering_only"):
+        where += "; traced, so the order counts and no share is given"
+    return f"{basis}: {where}"
+
+
+def _statement_basis(run: dict[str, Any]) -> str:
+    """``production "orders-db" at abc1234 over 2026-11-01 to 2026-11-26: 1,234 ms
+    in 50 statements, 20% on no single function``."""
+    return _window_basis(run, f"{run['statements']:,} statements")
+
+
+def _route_basis(run: dict[str, Any]) -> str:
+    """``production "api" over 2026-11-01 to 2026-11-26: 9,876 ms in 1,200
+    requests to 12 routes, 5% on no single function``."""
+    return _window_basis(run, f"{run['requests']:,} requests to {run['routes']:,} routes")
+
+
+def _window_basis(run: dict[str, Any], what: str) -> str:
+    parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
+    if run.get("commit"):
+        parts.append(f"at {run['commit'][:7]}")
+    if run.get("window_start") and run.get("window_end"):
+        parts.append(f"over {run['window_start'][:10]} to {run['window_end'][:10]}")
+    where = f"{run['total_ms']:,.0f} ms in {what}"
+    off = sum(v["share"] or 0.0 for v in run["unattributed"].values())
+    if off:
+        where += f", {off * 100:.0f}% on no single function"
+    return f"{' '.join(parts)}: {where}"
+
+
+_WINDOW_BASIS = {"statements": _statement_basis, "routes": _route_basis}
 
 
 def _render_split_line(kpis: dict) -> None:

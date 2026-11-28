@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import FileSignals, file_signals
+from repowise.core.exclusion import build_exclude_spec
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import WikiSymbol
@@ -16,13 +17,19 @@ async def _load_file_signals(session: AsyncSession, repo_id: str, file_path: str
 
     Degree is read only when the file is a graph node so topology stays "no
     signal" for files absent from the graph, rather than reporting a spurious
-    zero. Shared by the drawer breakdown and the file-detail aggregate.
+    zero. Shared by the drawer breakdown and the file-detail aggregate. An
+    edge with an end in a file the repo rules exclude is not counted.
     """
     git_meta = await crud.get_git_metadata(session, repo_id, file_path)
     node = await crud.get_graph_node(session, repo_id, file_path)
+    repo = await crud.get_repository(session, repo_id) if node is not None else None
     degrees = (
         await crud.get_node_degree_counts(
-            session, repo_id, file_path, edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES)
+            session,
+            repo_id,
+            file_path,
+            edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
+            exclude_spec=build_exclude_spec(repo.local_path) if repo is not None else None,
         )
         if node is not None
         else None

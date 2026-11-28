@@ -141,6 +141,47 @@ class TestWorkspaceInitIndexOnly:
             assert (workspace_root / name / ".repowise" / "state.json").exists()
         assert (workspace_root / ".repowise-workspace.yaml").exists()
 
+    def test_index_is_settled_when_init_returns(self, runner, workspace_root, monkeypatch):
+        """Nothing writes a repo's store once init exits, so it can be archived at once."""
+        import sqlite3
+        import time
+
+        from repowise.core import spawn
+
+        # The product default, background drains on, and a budget too small for
+        # any commit: what is left used to go to a detached drain.
+        monkeypatch.setenv("REPOWISE_COMMIT_HEALTH_BACKGROUND", "1")
+        monkeypatch.setenv("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", "0.000001")
+        spawned: list[list[str]] = []
+        monkeypatch.setattr(spawn, "spawn_detached", lambda argv, *a, **k: spawned.append(argv))
+
+        result = runner.invoke(
+            cli, ["init", str(workspace_root), "--all", "--index-only"], catch_exceptions=False
+        )
+        assert result.exit_code == 0, result.output
+        assert not [argv for argv in spawned if any("commit_health" in a for a in argv)]
+
+        stores = [workspace_root / name / ".repowise" for name in ("alpha", "beta")]
+
+        def snapshot() -> dict[str, tuple[int, int]]:
+            return {
+                str(p): (p.stat().st_size, p.stat().st_mtime_ns)
+                for store in stores
+                for p in store.glob("wiki.db*")
+            }
+
+        before = snapshot()
+        time.sleep(1.5)
+        assert snapshot() == before
+        for store in stores:
+            wal = store / "wiki.db-wal"
+            assert not wal.exists() or wal.stat().st_size == 0
+            db = sqlite3.connect(f"file:{(store / 'wiki.db').as_posix()}?mode=ro", uri=True)
+            try:
+                assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            finally:
+                db.close()
+
 
 class TestInitDryRun:
     def test_exit_zero_shows_plan(self, runner, work_repo):
@@ -631,7 +672,7 @@ class TestDeleteWithConfiguredDb:
             catch_exceptions=False,
         )
 
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert f"No repository in the database matches {unknown.resolve()}" in result.output
         assert "Deleted" not in result.output
         assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 1
@@ -651,7 +692,7 @@ class TestDeleteWithConfiguredDb:
 
         (dest / ".repowise").mkdir()
         result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert "Database not found." in result.output
 
     def test_deletes_from_local_wiki_db_when_configured(
@@ -817,7 +858,7 @@ class TestUpdateWorkingTree:
         """One watcher-style update. Mirrors ``_watch_single_repo``'s trigger,
         lock release included — in-process repeat runs need it."""
         from repowise.cli.commands.update_cmd.command import run_update
-        from repowise.cli.commands.watch_cmd import _release_own_update_lock
+        from repowise.core.update_lock import release_own_update_lock
 
         try:
             return run_update(
@@ -836,7 +877,7 @@ class TestUpdateWorkingTree:
             )
         finally:
             if release_lock:
-                _release_own_update_lock(repo)
+                release_own_update_lock(repo)
 
     def _page_status(self, repo, path):
         import sqlite3

@@ -14,6 +14,9 @@ export interface ViewTab {
    *  glyph from one tab definition instead of hand-rolling their own toggle.
    *  Omit it and the tab is label-only. */
   icon?: React.ReactNode;
+  /** Trailing mark the host renders, e.g. the web app's "New" for a tab the
+   *  latest release highlighted. */
+  mark?: React.ReactNode;
 }
 
 export interface ViewTabsProps {
@@ -137,6 +140,7 @@ export function ViewTabs({
                   {tab.badge}
                 </span>
               )}
+              {tab.mark}
             </button>
           );
         })}

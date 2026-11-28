@@ -369,7 +369,9 @@ async def _run_upgrade(
     # 5. Generate the docs the fast index skipped, embedding as we go.
     cost_tracker = _upgrade_cost_tracker(sf, repo_id)
     provider._cost_tracker = cost_tracker
-    embedder, vector_store, embedding_error = _upgrade_embedding(repo_path, embedder_name)
+    embedder, vector_store, embedding_error = _upgrade_embedding(
+        repo_path, embedder_name, summaries=not getattr(config, "deterministic", False)
+    )
     generation_scope: dict[str, int | None] = {}
     generated_pages = await _generate_upgrade_pages(
         repo_path,
@@ -509,11 +511,14 @@ def _upgrade_cost_tracker(sf: Any, repo_id: Any) -> Any:
     return CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
 
 
-def _upgrade_embedding(repo_path: Path, embedder_name: str | None) -> tuple[Any, Any, str | None]:
+def _upgrade_embedding(
+    repo_path: Path, embedder_name: str | None, *, summaries: bool = True
+) -> tuple[Any, Any, str | None]:
     """The embedder and vector store pages are embedded into as they are generated.
 
     The store is the same LanceDB directory `init` and `update` write to; without
-    it the written wiki would be invisible to semantic search.
+    it the written wiki would be invisible to semantic search. *summaries* is
+    False for a template upgrade, which reads no summaries back from the store.
     """
     from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
@@ -522,7 +527,7 @@ def _upgrade_embedding(repo_path: Path, embedder_name: str | None) -> tuple[Any,
     embedding_error: str | None = None
     try:
         embedder = build_embedder(resolve_embedder(embedder_name, repo_path=repo_path), repo_path)
-        vector_store = build_vector_store(repo_path, embedder)
+        vector_store = build_vector_store(repo_path, embedder, summaries=summaries)
     except Exception as exc:
         embedding_error = str(exc)
         console.print(f"[yellow]Embedding skipped: {exc}[/yellow]")

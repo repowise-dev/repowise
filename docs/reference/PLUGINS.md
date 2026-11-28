@@ -39,6 +39,7 @@ Every row is listed in the [extension points catalog](#extension-points-catalog)
 | Internal API as an agent tool | `mcp-tool` | Gives agents a read-only tool that queries an internal service |
 | Team shortcut command | `cli-command` | Wraps a repowise workflow your team runs often in one command |
 | Phase timings | `pipeline-hook` | Records when each index phase starts and ends and sends the timings to your metrics system |
+| Database statement statistics | `evidence-source` | Reads a database's statement statistics on a schedule and stores them as production `statement_stats` runs |
 | Extract an unsupported document type | `document-extractors` | Converts a plugin-supported file type to Markdown for the existing ingestion path |
 
 ## Community plugins
@@ -281,7 +282,8 @@ module in the last column and call `.register(name, impl)`, for example
 | `report-renderer` | `report_renderers` | one, chosen by `repowise report assessment --format` | when a report is written | propagates | `packages/core/src/repowise/core/report/render.py` |
 | `change-outcome` | `change_outcome_providers` | every | when a change record's outcomes are read | `OutcomeUnknownError` marks the outcome unknown; any other exception propagates | `packages/core/src/repowise/core/changes/outcomes.py` |
 | `change-metadata` | `change_metadata_sources` | one | when change records are stored | propagates | `packages/core/src/repowise/core/changes/source.py` |
-| `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
+| `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages rather than files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
+| `evidence-source` | `evidence_sources` | every; the host chooses which source to fetch, when, and with which credentials | when a host calls `run_fetch` (repowise itself schedules no fetch) | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
 | `document-extractors` | `document_extractors` | every; later extension claim wins | During traversal and source reads for otherwise unsupported extensions | indexing propagates with plugin name and original path; optional previews omit unavailable content | `packages/core/src/repowise/core/ingestion/document_extractors.py` |
@@ -305,6 +307,97 @@ registry, for example `EventSink.deliver` in `events/sinks.py`, `Section` and
 Read that protocol before you write an implementation. The
 `chat-dataset` and `chat-view` seams have decorators,
 `register_dataset(...)` and `register_view_builder(...)`, in the same modules.
+
+### Writing an evidence source
+
+A `profile-format` turns a file someone hands over into a run. An
+`evidence-source` fetches: it reads a window of measurements from a service
+(a database's statement statistics, a continuous profiler), may need
+credentials only the host holds, and can return several runs per fetch.
+The protocol, `EvidenceSource`, is in
+`packages/core/src/repowise/core/evidence/sources.py`:
+
+```python
+from repowise.core.evidence.sources import SourceBatch, SourceRequest, evidence_sources
+
+
+class StatementSource:
+    name = "postgres-statements"
+    kinds = ("statement_stats",)
+
+    def fetch(self, request: SourceRequest):
+        rows, cursor = read_statements(request.credentials, after=request.cursor)
+        yield SourceBatch(
+            kind="statement_stats", workload="prod db", workload_class=None,
+            commit=None, environment="production",
+            entries=rows, document={"window": {"start": ..., "end": ...}},
+            next_cursor=cursor,
+        )
+
+
+def register():
+    evidence_sources.register(StatementSource.name, StatementSource())
+```
+
+| `SourceRequest` field | Meaning |
+|-----------------------|---------|
+| `repository_id`, `repository_name` | The repository the runs are for |
+| `since`, `until` | The window to read; `None` leaves the bound to the source |
+| `cursor` | What the last stored batch returned as `next_cursor`; `None` on the first fetch |
+| `settings` | Plain settings such as a database or service name. Never secrets |
+| `credentials` | The host's credentials object, passed through untouched and left out of `repr` |
+
+| `SourceBatch` field | Meaning |
+|---------------------|---------|
+| `kind`, `workload`, `workload_class`, `environment` | The run header, as `evidence add` takes it; with no `environment`, a production run reads as `production` and any other as `unknown` |
+| `commit` | The full commit SHA measured; `None` only for a production-only kind (`route_latency`, `statement_stats`) whose deployed commit is unknown |
+| `measured_at` | When the run was measured (for a window, its end) |
+| `entries` and `document` | `repowise-evidence-v1` entries of `kind`, and the document's other fields (`value_kind`, `unit`, totals, `tool`, `window`, `base_commit_sha`) |
+| `data` and `format` | Or a file's bytes in a registered `profile-format`, such as pprof bytes a profiler service returns; `value_kind` names the clock when the bytes do not. The bytes must read as a run of `kind` |
+| `next_cursor` | Where the next fetch resumes once this batch is stored; `None` keeps the cursor as it was |
+
+The rules a source follows, which the contract tests in
+`tests/unit/evidence/test_sources.py` check against a test double:
+
+- **Credentials stay with the host.** repowise passes `credentials` through
+  and never stores, logs or prints it. Do not copy it, or anything derived
+  from it, into a batch or an exception message.
+- **Cursor.** The cursor is opaque to repowise and only moves past a batch
+  once that batch is stored, so return batches oldest first, each with the
+  cursor that resumes after it. A batch that joins to no function is still
+  read (its result says `stored: false` and why), as a file is added once.
+  Fetching again from an old cursor is safe: a batch whose entries, header
+  and index are unchanged is the same run, and storing it again writes
+  nothing new.
+- **Commit.** A measured run names the full commit it measured, including a
+  `production` profile. Only a production-only kind whose deployed commit is
+  unknown leaves `commit` as `None`; it is stored as measured at an unknown
+  commit.
+- **Class.** A source is trusted by the host that installed it, so its
+  batches may carry `production` where the kind allows it. A production-only
+  kind (`route_latency`, `statement_stats`) needs no class. `evidence add
+  --class production` stays refused.
+- **Failure.** Raise `SourceUnavailable` when the far side is down, times out
+  or rate limits: the fetch stops, keeps what it stored and returns the
+  cursor to retry from. Raise `SourceRefused` when it refuses the credentials
+  or settings: the host shows its message to the user. Anything else fails
+  that fetch, as does a batch repowise refuses (a missing commit, a class
+  the kind does not take). A batch is stored whole or not at all, and the
+  batches stored before a failure stay: the host commits them together with
+  the cursor the fetch returns.
+
+A host runs a fetch with `run_fetch(source, request, store)`, where `store`
+stores one batch. Against a repowise index, `store` is
+`repowise.core.evidence.add.ingest_batch`, which reads the batch the way
+`evidence add` reads a file of the same entries, so the stored rows,
+hotness and payloads are the same. A host with no checkout (a server that
+keeps only the index) passes a `repo_path` that does not exist: a batch of
+entries is stored with no checkout root, while a batch of profile bytes is
+refused, since its frames are placed on the checkout's source. `fetch` is a plain iterable, so a source
+that waits on the network holds the caller's event loop while it reads; a
+server runs `run_fetch` in its own task or worker. `repowise plugins` lists
+each registered source under `evidence-source`; repowise has no command that
+fetches.
 
 ### Authenticator and authorizer
 

@@ -2,17 +2,15 @@ import { analyzeBlastRadius } from "@repowise-dev/api-client/blast-radius";
 import { getReviewerSuggestions } from "@repowise-dev/api-client/git";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
-import { CONFIG_SECTION } from "../constants";
 import { changeSignature } from "../shared/changeImpact";
 import type { ChangeImpactReport } from "../shared/webviewMessages";
 import type { RepowiseContext } from "./context";
-import { getBranchChangedFiles, getChangedFiles } from "./gitApi";
-import * as vscode from "vscode";
+import { getChangedFiles } from "./gitApi";
 
 /**
  * The one place the extension turns "what changed" into "what it touches". Both
- * the Change Risk panel and the ambient co-change nudge call this, so the blast
- * and reviewer analysis is computed once, cached, and shared.
+ * the ambient co-change nudge calls this, so the blast and reviewer analysis is
+ * computed once, cached, and shared.
  *
  * The network result depends only on the CHANGED FILE SET and the indexed
  * commit, never on file contents (blast radius is graph-derived). So it is
@@ -36,15 +34,6 @@ interface ImpactData {
 
 /** Shared across callers so two surfaces analyzing the same set fetch once. */
 const inFlight = new Map<string, Promise<ImpactData>>();
-
-/** Resolves the base ref for branch-scope diffing (matches the risk panel). */
-function resolveBase(ctx: RepowiseContext): string {
-  const configured = vscode.workspace
-    .getConfiguration(CONFIG_SECTION)
-    .get<string>("risk.baseBranch", "")
-    .trim();
-  return configured || ctx.repo?.default_branch || "main";
-}
 
 function emptyReport(
   scope: ChangeScope,
@@ -80,13 +69,10 @@ export async function analyzeChange(
   const files = await getChangedFiles(root);
   if (!files) return emptyReport(scope, true);
 
-  const working = dedupeSorted([...files.staged, ...files.workingTree]);
-  let changed = working;
-  if (scope === "branch") {
-    const branchFiles = await getBranchChangedFiles(root, resolveBase(ctx));
-    if (branchFiles) changed = dedupeSorted([...branchFiles, ...working]);
-  }
-  changed = changed.slice(0, MAX_CHANGED_FILES);
+  const changed = dedupeSorted([...files.staged, ...files.workingTree]).slice(
+    0,
+    MAX_CHANGED_FILES,
+  );
 
   if (changed.length === 0) {
     const clean = emptyReport(scope, false);

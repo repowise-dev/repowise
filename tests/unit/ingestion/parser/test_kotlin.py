@@ -62,3 +62,29 @@ class TestKotlinParser:
         helper = next((s for s in result.symbols if s.name == "helper"), None)
         assert helper is not None
         assert helper.visibility == "private"
+
+    def test_secondary_constructors_are_methods_of_their_class(self, parser: ASTParser) -> None:
+        source = (
+            b"class A(val a: Int) {\n"
+            b"    constructor() : this(1) {\n"
+            b"        helper()\n"
+            b"    }\n"
+            b"\n"
+            b"    private constructor(s: String, t: Int) : this(2)\n"
+            b"\n"
+            b"    fun helper() {}\n"
+            b"}\n"
+        )
+        result = parser.parse_file(_make_file_info("src/A.kt", "kotlin"), source)
+        ctors = [s for s in result.symbols if s.name == "A" and s.kind == "method"]
+        assert [(c.parent_name, c.start_line, c.visibility) for c in ctors] == [
+            ("A", 2, "public"),
+            ("A", 6, "private"),
+        ]
+        # Overloads keep distinct ids, and neither takes the class's id.
+        ids = {c.id for c in ctors}
+        assert len(ids) == 2
+        assert "src/A.kt::A" not in ids
+        # The call in the constructor body now has a caller symbol.
+        call = next(c for c in result.calls if c.target_name == "helper")
+        assert call.caller_symbol_id == ctors[0].id

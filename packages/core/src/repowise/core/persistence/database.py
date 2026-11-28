@@ -162,6 +162,8 @@ def _make_pragma_listener(busy_timeout_ms: int):
 __all__ = [
     "AsyncEngine",
     "AsyncSession",
+    "ReadOnlyStoreError",
+    "SchemaBehindError",
     "async_sessionmaker",
     "create_engine",
     "create_session_factory",
@@ -170,6 +172,8 @@ __all__ = [
     "get_repo_db_path",
     "get_session",
     "init_db",
+    "is_read_only",
+    "read_only_url",
     "refresh_planner_stats",
     "resolve_db_url",
     "schema_behind",
@@ -181,6 +185,8 @@ REPOWISE_DIRNAME = ".repowise"
 STATE_FILENAME = "state.json"
 #: Repo-local vector store directory.
 LANCEDB_DIRNAME = "lancedb"
+#: Sealed copies of the MCP server's per-index caches, one file per repo and cache.
+MCP_CACHE_DIRNAME = "mcp_cache"
 DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
 
 
@@ -264,6 +270,43 @@ def has_db_store(repo_path: str | Path | None = None) -> bool:
     if repo_path is None:
         return False
     return (Path(repo_path) / ".repowise" / "wiki.db").is_file()
+
+
+class SchemaBehindError(RuntimeError):
+    """A store an older repowise wrote, opened where it cannot be reconciled.
+
+    :func:`init_db` back-fills such a store in place; a read-only open cannot,
+    and every answer read from it would be missing what it lacks.
+    """
+
+    code = "schema_behind"
+
+
+class ReadOnlyStoreError(RuntimeError):
+    """``FullTextSearch.ensure_index`` was called on a store opened read-only.
+
+    ``init_db`` keeps its own contract there: a store already on the current
+    schema opens without a write, anything else fails on the write itself.
+    """
+
+    code = "read_only_store"
+
+
+def read_only_url(db_path: str | Path) -> str:
+    """The URL that opens the SQLite store at *db_path* read-only and immutable.
+
+    ``mode=ro`` makes every write raise "attempt to write a readonly
+    database". ``immutable=1`` tells SQLite the file cannot change while it is
+    open, so it takes no locks and never reads a ``-wal`` file: a store in WAL
+    mode must be checkpointed before it is served this way (see
+    :func:`repowise.core.workspace.registry.publishable`).
+    """
+    return f"sqlite+aiosqlite:///{Path(db_path).resolve().as_uri()}?mode=ro&immutable=1&uri=true"
+
+
+def is_read_only(engine: AsyncEngine) -> bool:
+    """Whether *engine* was opened read-only (``mode=ro``), as by :func:`read_only_url`."""
+    return engine.dialect.name == "sqlite" and engine.url.query.get("mode") == "ro"
 
 
 def _postgres_positive_int(env_name: str, default: int) -> int:
@@ -479,11 +522,18 @@ def _split_blame_line_shares(connection: object) -> int:
     return split_blame_line_shares(connection)  # type: ignore[arg-type]
 
 
+def _fill_static_costs(connection: object) -> int:
+    from repowise.core.persistence.crud.analysis.performance import fill_static_costs
+
+    return fill_static_costs(connection)
+
+
 #: One-time data fixes that must run when the reconciler adds a column, for
 #: rows the new column changes the meaning of. Alembic runs the same step in
 #: the column's migration for managed Postgres. Keyed ``table.column``.
 _DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
     "git_metadata.primary_owner_line_pct": _split_blame_line_shares,
+    "performance_opportunities.static_cost": _fill_static_costs,
 }
 
 

@@ -207,9 +207,11 @@ _GO_EMBEDDED_FIELD = re.compile(
 # ``x := f(..)``, ``x, err := pkg.New(..)``: the head of a call whose return
 # type names the local. Only the head is matched here; ``scan_call_assignments``
 # checks that the call is the whole right-hand side, not ``f().g()``.
+# Allows generic type arguments such as `New[T](..)` or `pkg.New[K, V](..)`.
+_GO_TYPE_ARGS = r"(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])?"
 _GO_CALL_DECL = re.compile(
     rf"(?<![\w.])(?P<name>{_GO_NAME})\s*(?:,\s*{_GO_NAME}\s*)*:="
-    r"[ \t]*(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
+    rf"[ \t]*(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*){_GO_TYPE_ARGS}\s*\("
 )
 
 # Kotlin annotates after the name, and `val x: Foo`, `var x: Foo`, parameters
@@ -1958,6 +1960,23 @@ def range_element_types(
             groups = match.groupdict()
             return element(groups.get("key")), element(groups.get("value"))
     return None
+
+
+def go_named_container(line: str, name: str) -> str | None:
+    """The container a Go declaration line of named type *name* stands for, if any.
+
+    ``type methodTrees []methodTree``, ``type Index = map[string]*Doc`` or the
+    same inside a ``type (...)`` block: a range over a ``methodTrees`` walks a
+    ``[]methodTree``. The line must be the type's own declaration (its
+    symbol's first line), so a struct field of the same shape is never read.
+    A generic type (``type Set[T any] []T``) or a named type over another
+    named type is no shape here: one level, spelled on the line, or nothing.
+    """
+    code = line.split("//", 1)[0].strip()
+    match = re.fullmatch(
+        rf"(?:type\s+)?{re.escape(name)}\s+(?:=\s*)?(?P<type>{_GO_CONTAINER})", code
+    )
+    return match.group("type") if match else None
 
 
 def clauses_in_span(

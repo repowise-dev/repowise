@@ -17,6 +17,11 @@ JVM source that view misses three real shapes:
   file's defined symbols.
 - **``main(String[])`` carriers.** A file declaring a ``public static void
   main(String[])`` is the JAR entry point.
+- **Same-package callables across modules.** A Kotlin top-level or extension
+  function is called from its package with no import, and a package split
+  over Gradle modules sits in several directories, so neither an import
+  edge nor the sibling rescue reaches the file. A resolved call into one of
+  its symbols from another file does.
 
 META-INF/services, JPMS ``provides ... with``, and Spring Boot autoconfig
 imports are *not* re-checked here — those are stamped as
@@ -34,6 +39,7 @@ from typing import Any
 
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.decorator_names import decorator_base
+from ..execution_graph import is_reliable_call_edge
 from .entry_shape import defines_main_function
 
 # Class-level annotation names (without the leading ``@``) that mark the
@@ -195,6 +201,25 @@ def _file_defines_entry_class(graph: Any, file_node: str) -> bool:
     return defines_main(graph, file_node)
 
 
+def _symbol_called_from_another_file(graph: Any, file_node: str) -> bool:
+    """True if a resolved call from another file lands on a symbol *file_node* defines.
+
+    The same-package scan links type names only, so a file holding only
+    top-level or extension functions has no file-level in-edge when its
+    callers live in another directory. The call resolver did resolve the call;
+    a weak origin (a repo-wide unique name) does not count.
+    """
+    for sym_id in graph.successors(file_node):
+        if graph.get_edge_data(file_node, sym_id, {}).get("edge_type") != "defines":
+            continue
+        for caller, _, data in graph.in_edges(sym_id, data=True):
+            if not is_reliable_call_edge(data.get("edge_type"), data.get("resolution_origin")):
+                continue
+            if graph.nodes.get(caller, {}).get("file_path", file_node) != file_node:
+                return True
+    return False
+
+
 def is_jvm_file_reachable(
     node: str,
     graph: Any,
@@ -220,6 +245,9 @@ def is_jvm_file_reachable(
         return True
 
     if _file_defines_entry_class(graph, node):
+        return True
+
+    if _symbol_called_from_another_file(graph, node):
         return True
 
     for sibling in package_files.get(_pkg_dir(node), ()):

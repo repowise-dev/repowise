@@ -32,6 +32,11 @@ Handle `$ARGUMENTS`:
 - "add" with no path → `repowise coverage add` (auto-discover common report paths)
 - Multiple paths → `repowise coverage add <a> <b>` (merged; hit wins)
 - "check" / "gate" / "patch coverage" → `repowise coverage check [REVSPEC]`
+- "setup" / "how do I collect coverage" → `repowise coverage setup` (prints the
+  test command with coverage per build unit and the exact `coverage add` line;
+  runs nothing)
+- "export" → `repowise coverage export` (writes the per-test map as a small
+  gzipped file)
 
 Useful flags on `add`: `--verbose` for ingestion debug logs; `--path <dir>`
 to point at a different repo; `--format <parser>` to force a parser instead

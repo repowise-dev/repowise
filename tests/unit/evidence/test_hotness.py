@@ -17,26 +17,31 @@ from repowise.core.evidence.hotness import (
 
 HEAD = "a" * 40
 OLD = "b" * 40
-RULES = HotnessRules(top_n=10, min_samples=30, lead_min_share=0.05, lead_min_lower_bound=0.02,
+RULES = HotnessRules(top_n=10, min_samples=30, lead_min_share=0.025, lead_min_lower_bound=0.02,
                      lead_min_runs=2)
 
 
-def _run(run_id: str = "r1", *, cls: str = "entry_point", commit: str = HEAD, total: float = 1000,
+def _run(run_id: str = "r1", *, cls: str = "entry_point", commit: str = HEAD, total: float | None = 1000,
          samples: int | None = None, unit: str = "samples", explained: float | None = 400,
-         day: int = 1) -> RunFacts:
+         day: int = 1, split: tuple[float, float, float] | None = None) -> RunFacts:
+    repo_self, waits, libraries = split or (None, None, None)
     return RunFacts(
         id=run_id, workload_name=f"w-{run_id}", workload_class=cls, value_kind="wall", unit=unit,
         commit_sha=commit, measured_at=datetime(2026, 11, day, tzinfo=UTC), total_value=total,
-        explained_value=explained, total_samples=samples,
+        explained_value=explained, total_samples=samples, repo_self_value=repo_self,
+        wait_value=waits, library_value=libraries,
     )
 
 
-def _cost(name: str, total: float, *, path: str = "src/m.py", digest: str | None = "d",
-          lineage: str | None = None, samples: int | None = None,
+def _cost(name: str, cost: float, *, total: float | None = None, path: str = "src/m.py",
+          digest: str | None = "d", lineage: str | None = None, samples: int | None = None,
           calls: int | None = None) -> CostFacts:
+    """A row whose self time (the cost) is *cost*; inclusive is twice that unless given."""
     return CostFacts(
-        symbol_id=f"{path}::{name}", lineage_id=lineage, body_digest=digest, total_value=total,
-        self_value=total / 2, total_samples=samples, call_count=calls,
+        symbol_id=f"{path}::{name}", lineage_id=lineage, body_digest=digest,
+        total_value=total if total is not None else cost * 2, self_value=cost,
+        total_samples=None if samples is None else samples * 2, call_count=calls,
+        self_samples=samples,
     )
 
 
@@ -55,7 +60,7 @@ def _derive(runs, costs, current=None, origins=None, head=HEAD, rules=RULES):
     ids = {c.symbol_id for rows in costs.values() for c in rows}
     current = current if current is not None else _current(*ids)
     origins = origins if origins is not None else _origins(*{i.split("::")[0] for i in ids})
-    rows = derive_hotness(runs, costs, current, origins, head_commit=head, rules=rules)
+    rows = derive_hotness(runs, costs, current, origins, head_commit=head, rules=rules).symbols
     return {r["symbol_id"]: r for r in rows}
 
 
@@ -84,10 +89,12 @@ def test_top_functions_with_enough_samples_are_ranked_else_measured() -> None:
 
 
 def test_the_row_carries_the_run_summary_and_an_interval() -> None:
-    row = _derive([_run()], {"r1": [_cost("f", 100)]})["src/m.py::f"]
-    assert row["explained_share"] == 0.4
+    run = _run(split=(470, 300, 120))
+    row = _derive([run], {"r1": [_cost("f", 100)]})["src/m.py::f"]
+    assert (row["repo_self_share"], row["wait_share"], row["library_share"]) == (0.47, 0.3, 0.12)
+    # Samples and the interval are the cost's: self, not inclusive.
     assert (row["samples"], row["run_samples"]) == (100, 1000)
-    assert row["total_share"] == 0.1
+    assert (row["self_share"], row["total_share"]) == (0.1, 0.2)
     assert row["share_low"] < 0.1 < row["share_high"]
     assert (row["workload_name"], row["workload_class"], row["run_id"]) == ("w-r1", "entry_point",
                                                                            "r1")
@@ -103,6 +110,54 @@ def test_a_time_unit_run_uses_its_counted_samples() -> None:
     assert row["share_low"] is not None
 
 
+def test_the_interval_brackets_the_time_share_when_samples_weigh_unequally() -> None:
+    # A sampler's samples carry unequal time: 3.6% of the time on 4% of the samples.
+    run = _run(unit="ms", total=10000.0, samples=50000)
+    row = _derive([run], {"r1": [_cost("f", 356.0, samples=2000)]})["src/m.py::f"]
+    assert row["self_share"] == 0.0356
+    assert row["share_low"] < row["self_share"] < row["share_high"]
+    # The counts' relative width is kept.
+    assert row["share_low"] > 0.0356 * 0.9
+    assert row["share_high"] < 0.0356 * 1.1
+
+
+def test_a_run_without_a_time_total_never_clears_the_share_rule() -> None:
+    run = _run(unit="ms", total=None, samples=1000)
+    row = _derive([run], {"r1": [_cost("f", 400.0, samples=400)]})["src/m.py::f"]
+    assert (row["tier"], row["self_share"]) == ("ranked", None)
+
+
+def test_a_function_under_the_sample_floor_takes_no_place() -> None:
+    # Costlier in time than "next" but too few samples: the places run 1, 2.
+    run = _run(unit="ms", total=10000.0, samples=10000)
+    costs = [_cost("top", 900.0, samples=900), _cost("thin", 500.0, samples=10),
+             _cost("next", 400.0, samples=400)]
+    rows = _derive([run], {"r1": costs})
+    assert [rows[f"src/m.py::{n}"]["rank"] for n in ("top", "thin", "next")] == [1, None, 2]
+    assert rows["src/m.py::thin"]["tier"] == "measured"
+
+
+def test_a_function_that_only_calls_things_ranks_below_the_one_doing_the_work() -> None:
+    # The entry function is on every stack (inclusive 95%) and costs nothing itself.
+    costs = [_cost("main", 1, total=950), _cost("dispatch", 2, total=900), _cost("scan", 120)]
+    rows = _derive([_run(unit="s", total=1000.0)], {"r1": costs})
+    assert [rows[f"src/m.py::{n}"]["rank"] for n in ("scan", "dispatch", "main")] == [1, 2, 3]
+    assert rows["src/m.py::main"]["total_share"] == 0.95
+
+
+def test_a_function_that_costs_nothing_itself_is_never_ranked() -> None:
+    # Fewer costly functions than the top: the pure callers still take no place.
+    costs = [_cost("leaf", 50, total=60), _cost("main", 0, total=100)]
+    rows = _derive([_run(unit="s", total=100.0)], {"r1": costs})
+    assert (rows["src/m.py::leaf"]["rank"], rows["src/m.py::leaf"]["tier"]) == (1, "ranked")
+    assert (rows["src/m.py::main"]["rank"], rows["src/m.py::main"]["tier"]) == (None, "measured")
+
+
+def test_a_stored_run_without_a_split_says_unknown() -> None:
+    row = _derive([_run()], {"r1": [_cost("f", 100)]})["src/m.py::f"]
+    assert row["repo_self_share"] is row["wait_share"] is row["library_share"] is None
+
+
 def test_an_uncounted_run_ranks_by_order_without_an_interval() -> None:
     run = _run(unit="s", total=10.0)
     rows = _derive([run], {"r1": [_cost("f", 6.0), _cost("g", 1.0)]})
@@ -112,29 +167,54 @@ def test_an_uncounted_run_ranks_by_order_without_an_interval() -> None:
 
 
 def test_a_big_share_in_a_class_that_may_lead_is_a_lead_candidate() -> None:
-    rows = _derive([_run()], {"r1": [_cost("big", 200), _cost("small", 40)]})
+    rows = _derive([_run(total=4000)], {"r1": [_cost("big", 200), _cost("small", 40)]})
     assert rows["src/m.py::big"]["tier"] == "lead_candidate"
-    # 4% of samples: ranked, not a lead.
+    # 1% of the run: ranked, not a lead.
     assert rows["src/m.py::small"]["tier"] == "ranked"
 
 
-def test_unit_test_evidence_is_never_a_lead_candidate() -> None:
-    runs = [_run("r1", cls="unit_test"), _run("r2", cls="unit_test")]
-    costs = {"r1": [_cost("big", 500)], "r2": [_cost("big", 500)]}
-    row = _derive(runs, costs)["src/m.py::big"]
-    assert row["tier"] == "ranked"
-    assert row["workload_class"] == "unit_test"
+def test_unit_test_evidence_clears_the_share_rule_but_never_the_runs_rule() -> None:
+    # Above the share bar: a measured cost, which readers keep apart as in tests.
+    big = _derive([_run("r1", cls="unit_test")], {"r1": [_cost("big", 500)]})["src/m.py::big"]
+    assert (big["tier"], big["workload_class"]) == ("lead_candidate", "unit_test")
+    # Under it, ranked in two test runs is not enough.
+    runs = [_run("r1", cls="unit_test", total=10000), _run("r2", cls="unit_test", total=10000)]
+    costs = {"r1": [_cost("f", 100)], "r2": [_cost("f", 100)]}
+    assert _derive(runs, costs)["src/m.py::f"]["tier"] == "ranked"
+
+
+def test_a_leading_run_stays_the_basis_over_a_stronger_test_run() -> None:
+    runs = [_run("r1", day=1, total=10000), _run("r2", cls="unit_test", day=2, total=10000)]
+    costs = {"r1": [_cost("f", 100)], "r2": [_cost("f", 5000)]}
+    row = _derive(runs, costs)["src/m.py::f"]
+    assert (row["run_id"], row["tier"]) == ("r1", "ranked")
 
 
 def test_ranked_in_two_runs_makes_a_lead_candidate() -> None:
-    runs = [_run("r1"), _run("r2", day=2)]
+    runs = [_run("r1", total=4000), _run("r2", day=2, total=4000)]
     costs = {"r1": [_cost("f", 40)], "r2": [_cost("f", 40)]}
     row = _derive(runs, costs)["src/m.py::f"]
     assert (row["tier"], row["run_count"]) == ("lead_candidate", 2)
     # The newest of the equal runs is the basis.
     assert row["run_id"] == "r2"
-    one = _derive([_run("r1")], {"r1": [_cost("f", 40)]})["src/m.py::f"]
+    one = _derive([_run("r1", total=4000)], {"r1": [_cost("f", 40)]})["src/m.py::f"]
     assert one["tier"] == "ranked"
+
+
+def test_a_benchmark_profile_never_ranks_leads_or_counts_toward_a_lead() -> None:
+    # A gin-shaped run: one micro-benchmark's target holds a quarter of the time.
+    bench = _run("r1", cls="benchmark", total=4000)
+    costs = {"r1": [_cost("getMapFromFormData", 1000), _cost("serve", 200)]}
+    hotness = derive_hotness(
+        [bench], costs, _current("src/m.py::getMapFromFormData", "src/m.py::serve"),
+        _origins("src/m.py"), head_commit=HEAD, rules=RULES,
+    )
+    assert (hotness.symbols, hotness.workloads) == ([], [])
+    # Ranked once by an entry point and once by a benchmark: one leading run, no lead.
+    runs = [_run("r1", total=10000), _run("r2", cls="benchmark", day=2, total=10000)]
+    costs = {"r1": [_cost("f", 100)], "r2": [_cost("f", 100)]}
+    row = _derive(runs, costs)["src/m.py::f"]
+    assert (row["tier"], row["run_id"], row["run_count"]) == ("ranked", "r1", 1)
 
 
 def test_a_tracer_run_orders_only() -> None:
@@ -190,7 +270,7 @@ def test_only_production_code_is_listed_and_the_rest_is_counted() -> None:
 
 
 def test_no_runs_no_rows() -> None:
-    assert derive_hotness([], {}, _current(), {}, head_commit=HEAD, rules=RULES) == []
+    assert derive_hotness([], {}, _current(), {}, head_commit=HEAD, rules=RULES).symbols == []
 
 
 def test_an_unknown_indexed_commit_lets_only_the_stored_body_decide() -> None:
@@ -204,3 +284,118 @@ def test_the_unlisted_count_from_ingest_wins_over_the_rows_kept() -> None:
     run = RunFacts(**{**_run().__dict__, "unlisted_symbols": 7})
     row = _derive([run], {"r1": [_cost("f", 300)]})["src/m.py::f"]
     assert row["run_unlisted"] == 7
+
+
+def _workloads(runs, costs):
+    ids = {c.symbol_id for rows in costs.values() for c in rows}
+    hotness = derive_hotness(runs, costs, _current(*ids), _origins("src/m.py"), head_commit=HEAD,
+                             rules=RULES)
+    return hotness.workloads
+
+
+def test_each_workload_lists_its_own_ranked_functions_from_its_newest_run() -> None:
+    # Two workloads rank the same function; one workload has a superseded run.
+    runs = [_run("init"), _run("update-old", day=1), _run("update", day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "update"}) if r.id.startswith("update")
+            else r for r in runs]
+    costs = {
+        "init": [_cost("parse", 200), _cost("walk", 100)],
+        "update-old": [_cost("parse", 300)],
+        "update": [_cost("parse", 50), _cost("scan", 400)],
+    }
+    got = [(w["run_id"], w["rank"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [
+        ("init", 1, "parse"), ("init", 2, "walk"), ("update", 1, "scan"), ("update", 2, "parse"),
+    ]
+    # The symbol view still keeps one basis row per function.
+    hotness = derive_hotness(runs, costs, _current(*{c.symbol_id for r in costs.values() for c in r}),
+                             _origins("src/m.py"), head_commit=HEAD, rules=RULES)
+    assert sorted(r["symbol_id"] for r in hotness.symbols) == [
+        "src/m.py::parse", "src/m.py::scan", "src/m.py::walk",
+    ]
+
+
+def test_a_workload_row_carries_its_cost_and_never_a_measured_row() -> None:
+    costs = {"r1": [_cost("f", 100, samples=100), _cost("thin", 5, samples=5),
+                    _cost("edited", 300, digest="old")]}
+    (row,) = _workloads([_run(commit=OLD)], {"r1": [costs["r1"][0]]})
+    assert row["freshness"] == "body_unchanged"
+    rows = {w["symbol_id"]: w for w in _workloads([_run()], costs)}
+    # Under the sample floor: measured, not listed.
+    assert "src/m.py::thin" not in rows
+    f = rows["src/m.py::f"]
+    assert (f["self_share"], f["total_share"], f["samples"], f["ordering_only"]) == (
+        0.1, 0.2, 100, False,
+    )
+    assert f["share_low"] < 0.1 < f["share_high"]
+
+
+def test_a_newer_run_that_ranks_nothing_leaves_the_one_before_it_listed() -> None:
+    # The newest run of the workload was measured at a commit the index has not
+    # reached: no stored body matches, so it ranks nothing. The run before it,
+    # at the indexed commit, is what the workload view lists.
+    runs = [_run("at-index", day=1), _run("ahead", commit=OLD, day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "init"}) for r in runs]
+    costs = {
+        "at-index": [_cost("parse", 200), _cost("walk", 100)],
+        "ahead": [_cost("parse", 300, digest=None)],
+    }
+    got = [(w["run_id"], w["rank"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [("at-index", 1, "parse"), ("at-index", 2, "walk")]
+
+
+def test_a_newer_run_that_ranks_lists_alone_as_before() -> None:
+    runs = [_run("old", day=1), _run("new", day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "init"}) for r in runs]
+    costs = {"old": [_cost("parse", 200)], "new": [_cost("walk", 100)]}
+    got = [(w["run_id"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [("new", "walk")]
+
+
+def test_commit_position_reads_ingest_order_within_the_runs_history() -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.evidence.hotness import commit_position
+
+    def run(commit: str, measured: int, ingested: int, *, kind: str = "profile",
+            workload: str = "init") -> SimpleNamespace:
+        return SimpleNamespace(
+            commit_sha=commit, kind=kind, workload_name=workload, environment="ci",
+            measured_at=datetime(2026, 11, measured, tzinfo=UTC),
+            ingested_at=datetime(2026, 11, ingested),  # SQLite drops the zone
+        )
+
+    anchor = run(HEAD, 2, 2)
+    assert commit_position(anchor, [anchor], HEAD) == "indexed"
+    # Measured before the index's run but added after it: ahead, as the runs list reads it.
+    late = run(OLD, 1, 3)
+    assert commit_position(late, [anchor, late], HEAD) == "ahead"
+    # Measured after but added before it: older.
+    early = run(OLD, 3, 1)
+    assert commit_position(early, [anchor, early], HEAD) == "older"
+    # A test run, or another workload, at the indexed commit never places a profile.
+    junit = run(HEAD, 4, 4, kind="test_timing")
+    other = run(HEAD, 4, 4, workload="serve")
+    assert commit_position(late, [junit, other, late], HEAD) == "other"
+    assert commit_position(late, [anchor, junit, late], HEAD) == "ahead"
+    # No indexed commit.
+    assert commit_position(late, [anchor, late], None) == "other"
+
+
+def test_inside_comes_from_the_basis_run_and_a_caller_gone_from_the_index_keeps_its_file() -> None:
+    import json
+    from dataclasses import replace
+
+    inside = '[{"kind": "own", "name": "(own code)", "share": 1.0}]'
+    drivers = json.dumps([
+        {"name": "main", "share": 0.6, "symbol": "src/app.py::main"},
+        {"name": "old", "share": 0.4, "symbol": "src/gone.py::old"},
+    ])
+    cost = replace(_cost("f", 100), inside_json=inside, drivers_json=drivers)
+    rows = _derive([_run()], {"r1": [cost]}, current=_current("src/m.py::f", "src/app.py::main"))
+    row = rows["src/m.py::f"]
+    assert row["inside_json"] == inside
+    assert json.loads(row["drivers_json"]) == [
+        {"name": "main", "share": 0.6, "symbol": "src/app.py::main"},
+        {"name": "old", "path": "src/gone.py", "share": 0.4},
+    ]

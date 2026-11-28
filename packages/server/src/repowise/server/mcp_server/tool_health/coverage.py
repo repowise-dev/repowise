@@ -74,7 +74,9 @@ def _attach_coverage_decay(payload: list[dict[str, Any]], rows: list[Any], repo_
     Absent, not zero, when the measurement cannot be placed in history: a zero
     would read as a freshness claim.
     """
-    if not rows:
+    from repowise.server.mcp_server import _state
+
+    if not rows or not _state.git_available():
         return
     first = rows[0]
     ref = measurement_ref(

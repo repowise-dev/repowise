@@ -42,3 +42,28 @@ def test_exact_paths_load_symbols_and_files_without_symbols(tmp_path) -> None:
 def test_fold_case_finds_a_path_spelled_in_another_case(tmp_path) -> None:
     symbols, _ = _load(tmp_path, ["pkg/app.py"], fold_case=True)
     assert set(symbols) == {"Pkg/App.py"}
+
+
+def test_ingest_knows_a_file_indexed_without_symbols(tmp_path) -> None:
+    # An import row's file may have no symbols (an ``__init__.py`` of imports):
+    # ingest must still know it, or the row is skipped as an unknown file.
+    from repowise.core.evidence.ingest import load_symbols
+
+    async def run():
+        engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}")
+        try:
+            await init_db(engine)
+            async with get_session(create_session_factory(engine)) as session:
+                session.add(Repository(id="r1", name="t", local_path=str(tmp_path), url=""))
+                await session.flush()
+                session.add(
+                    HealthFileMetric(
+                        repository_id="r1", file_path="pkg/empty.py", code_origin="production"
+                    )
+                )
+                await session.flush()
+                return await load_symbols(session, "r1", ["pkg/empty.py", "pkg/gone.py"])
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(run()) == {"pkg/empty.py": {}}

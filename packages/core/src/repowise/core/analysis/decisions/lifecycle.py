@@ -39,6 +39,9 @@ __all__ = [
     "NO_RATIONALE_BLOCKER",
     "PIN_ENDING_ACTIONS",
     "REVIEW_LANES",
+    "RULE_DRIFTED",
+    "RULE_HOLDS",
+    "RULE_UNKNOWN",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
     "UNRECORDED_ACCEPTER_KIND",
@@ -57,6 +60,7 @@ __all__ = [
     "record_evidence",
     "record_scope",
     "requirement",
+    "rule_drift_reason",
     "status_rank",
 ]
 
@@ -261,6 +265,24 @@ def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | Non
 #: stays an internal supporting fact and the product word is what is shown.
 NEEDS_REVIEW_STALENESS: float = 0.5
 
+#: :mod:`.rule_check`'s verdicts on whether a record's rule still holds in the
+#: code. ``unknown`` means the check could not tell, and the churn rule stands.
+RULE_HOLDS = "holds"
+RULE_DRIFTED = "drifted"
+RULE_UNKNOWN = "unknown"
+
+
+def rule_drift_reason(basis: str | None) -> str:
+    """What went away from a ``drifted`` record's rule, in words, from its stored basis."""
+    kind, _, what = (basis or "").partition(":")
+    if kind == "quote_gone":
+        return "the comment it came from was removed"
+    if kind == "symbol_gone":
+        return f"`{what}` no longer exists"
+    if kind == "literal_gone":
+        return f"`{what}` was removed from the code it names"
+    return basis or "its rule changed"
+
 #: Currencies that still bind future work. ``needs_review`` deliberately does:
 #: a decision whose code moved is a decision to re-read, not one to ignore.
 _GOVERNING: frozenset[str] = frozenset({"active", "needs_review"})
@@ -305,6 +327,7 @@ def effective_currency(
     staleness: float,
     repo_wide: bool = False,
     artifacts_gone: bool = False,
+    rule_check: str | None = None,
 ) -> str:
     """The currency to show for a decision stored at *stored*.
 
@@ -321,6 +344,11 @@ def effective_currency(
     *artifacts_gone* says every file and path the record names is absent at
     HEAD, renames followed: it describes code that no longer exists, so it is
     ``stale`` history. Never ``superseded``, which needs a successor.
+
+    *rule_check* is :mod:`.rule_check`'s reading of the rule itself, which
+    outranks file churn when it has one: ``holds`` is ``active`` however much
+    the files moved, ``drifted`` is ``needs_review`` however little. Anything
+    else (``unknown``, or ``None`` before the first check) keeps the churn rule.
     """
     if stored != "active":
         return stored if stored in DECISION_CURRENCIES else "active"
@@ -330,7 +358,9 @@ def effective_currency(
         return "uncheckable"
     if artifacts_gone:
         return "stale"
-    if staleness >= NEEDS_REVIEW_STALENESS:
+    if rule_check == RULE_HOLDS:
+        return "active"
+    if rule_check == RULE_DRIFTED or staleness >= NEEDS_REVIEW_STALENESS:
         return "needs_review"
     return "active"
 

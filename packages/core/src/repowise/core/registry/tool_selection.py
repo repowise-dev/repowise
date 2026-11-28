@@ -48,17 +48,17 @@ LEAN_TOOLS = frozenset(
 )
 LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 
-# A value of "core" enables the core profile: the four tools that answer a
-# question about the code, plus get_why for the same history-why reason as
-# lean (list_repos again joins in workspace mode). It is the default for
-# clients that load every schema up front, where the full default surface
-# costs about twice as many tokens per turn.
+# A value of "core" enables the core profile, five tools: the four read tools
+# (get_answer, get_context, get_symbol, search_codebase), plus get_why for the
+# same history-why reason as lean (list_repos again joins in workspace mode).
+# It is the default for clients that load every schema up front, where the
+# full default surface costs about twice as many tokens per turn.
 CORE = "core"
 CORE_TOOLS = frozenset({"get_answer", "get_context", "get_symbol", "search_codebase", "get_why"})
 
-# The tools ``mcp.always_load`` asks a schema-deferring host to load up front:
-# the core read tools an agent reaches for first. get_why stays deferred, as
-# history questions come later in a task, if at all.
+# The read tools: what ``mcp.always_load`` asks a schema-deferring host to load
+# up front, the four an agent reaches for first. That is core without get_why,
+# which stays deferred, as history questions come later in a task, if at all.
 ALWAYS_LOAD_TOOLS = CORE_TOOLS - {"get_why"}
 
 # A value of "standard" enables every ``default`` tool usable in this mode: the
@@ -152,7 +152,8 @@ def _resolve_name(
     return None
 
 
-def _is_delta(tokens: list[str]) -> bool:
+def is_delta(tokens: list[str]) -> bool:
+    """Whether every token adjusts a default (``+name``/``-name``) rather than naming a tool."""
     return all(t[0] in "+-" for t in tokens)
 
 
@@ -254,12 +255,35 @@ def resolve_enabled_tools(
     default_surface = {name for name in usable if catalog[name].default}
 
     profile, rest = split_profile(normalize_override(override))
-    if profile is None and rest and not _is_delta(rest):
+    if profile is None and rest and not is_delta(rest):
         return _allowlist(rest, catalog, usable, is_workspace=is_workspace)
     base = _profile_names(
         profile or default_profile(client), default_surface, usable, is_workspace=is_workspace
     )
     return _apply_deltas(base, rest, catalog, usable, is_workspace=is_workspace)
+
+
+def candidate_tools(
+    override: str | Sequence[str] | None, *, is_workspace: bool
+) -> frozenset[str] | None:
+    """Every tool name *override* could enable, read from the override alone.
+
+    :func:`resolve_enabled_tools` never returns a name outside this set,
+    whatever the catalog holds, so a server can import only these tools'
+    modules and resolve over that smaller catalog to the same surface. ``None``
+    when the answer reads each tool's ``default`` flag (no override, a bare
+    delta on the client's default, ``standard`` or ``all``): that needs the
+    whole catalog.
+    """
+    profile, rest = split_profile(normalize_override(override))
+    if profile is None and rest and not is_delta(rest):
+        return frozenset(rest)
+    if profile not in (CORE, LEAN):
+        return None
+    members = CORE_TOOLS if profile == CORE else LEAN_TOOLS
+    extras = LEAN_WORKSPACE_EXTRAS if is_workspace else frozenset()
+    added = {t[1:].strip() if t[0] in "+-" else t for t in rest if t[0] != "-"}
+    return frozenset(members | extras | added)
 
 
 def _never_called() -> None:
@@ -300,6 +324,7 @@ __all__ = [
     "AvailabilityFacts",
     "default_profile",
     "is_available",
+    "is_delta",
     "listed_default_tools",
     "normalize_override",
     "resolve_enabled_tools",

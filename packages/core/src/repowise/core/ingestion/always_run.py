@@ -246,17 +246,23 @@ def always_run_reason(path: str, text: str, own: OwnCode) -> str | None:
     """Why the test at *path* must run with every subset, or ``None``."""
     if path.endswith(_JVM):
         return _loads_spring_context(path, text)
-    if path.endswith(_PY):
-        lang = _PY_LANG
-    elif path.endswith(_JS):
-        lang = _JS_LANG
-    else:
+    if not path.endswith((_PY, *_JS)):
         return None
-    if _walks_source(text, lang, local_is_source=_beside_code(path)):
+    lang = _PY_LANG if path.endswith(_PY) else _JS_LANG
+    if walks_source_tree(path, text):
         return "it lists and reads files under a source directory"
     if command := _runs_own_code(text, lang, own, python=path.endswith(_PY)):
         return f"it runs {command} in a child process"
     return None
+
+
+def walks_source_tree(path: str, text: str) -> bool:
+    """Whether the Python, JavaScript or TypeScript file at *path* lists and reads files
+    under a source directory: a test, or a test helper a test imports to do it."""
+    if not path.endswith((_PY, *_JS)):
+        return False
+    lang = _PY_LANG if path.endswith(_PY) else _JS_LANG
+    return _walks_source(text, lang, local_is_source=_beside_code(path))
 
 
 def _loads_spring_context(path: str, text: str) -> str | None:

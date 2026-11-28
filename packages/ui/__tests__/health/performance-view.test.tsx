@@ -333,6 +333,94 @@ describe("PerformanceView states", () => {
     expect(screen.getByText(/read code shape, not latency/)).toBeTruthy();
   });
 
+  it("asks for runtime evidence instead of a clean result when none is connected", async () => {
+    const empty = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      scopes: { now: 0, production: 0, all: 0 },
+      summary: { ...page().summary, total: 0, repository_total: 0 },
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => empty })}
+        runtimeEvidence={{ connected: false, found: [".benchmarks/run.json"] }}
+      />,
+    );
+    expect(await screen.findByText("Add runtime evidence to rank by measured time")).toBeTruthy();
+    expect(screen.getByText(".benchmarks/run.json")).toBeTruthy();
+    expect(screen.queryByText(/No performance changes/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toContain("repowise evidence setup --format json");
+    expect(screen.getByText("repowise evidence setup")).toBeTruthy();
+  });
+
+  it("copies the host's connect prompt and hint in place of the local setup ones", async () => {
+    const empty = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      scopes: { now: 0, production: 0, all: 0 },
+      summary: { ...page().summary, total: 0, repository_total: 0 },
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => empty })}
+        runtimeEvidence={{ connected: false, found: null }}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+        connectEvidenceHint={<a href="/docs/evidence">Read the setup guide</a>}
+      />,
+    );
+    expect(await screen.findByText("Add runtime evidence to rank by measured time")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Read the setup guide" })).toBeTruthy();
+    expect(screen.queryByText("repowise evidence setup")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
+  });
+
+  it("copies the host's connect prompt from the row above a queue with causes", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter()}
+        runtimeEvidence={{ connected: false }}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+      />,
+    );
+    expect(await screen.findByText("Ranked by code shape.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
+  });
+
+  it("keeps the good state once runtime evidence is connected", async () => {
+    const empty = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      scopes: { now: 0, production: 0, all: 0 },
+      summary: { ...page().summary, total: 0, repository_total: 0 },
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => empty })}
+        runtimeEvidence={{ connected: true }}
+      />,
+    );
+    expect(await screen.findByText(/No performance changes worth making now/)).toBeTruthy();
+    expect(screen.queryByText("Add runtime evidence to rank by measured time")).toBeNull();
+  });
+
   it("names the scope of a good state and folds the left-out reasons into its sentence", async () => {
     const load = vi.fn(async () =>
       page({
@@ -745,6 +833,85 @@ describe("PerformanceView drawer", () => {
     await openFirstRow();
     fireEvent.click(await screen.findByRole("button", { name: /Read the raw observations/ }));
     expect(await screen.findByText(/does not page the remaining observations/)).toBeTruthy();
+  });
+});
+
+describe("PerformanceView measured hotspot drawer", () => {
+  it("shows the run as the evidence, never zero raw observations", async () => {
+    const measurement = 'Measured: rank 1 of repo code in entry_point "cli build" (12% self, 9-15%), 2d old';
+    const hotspot = opportunity({
+      opportunity_id: "perf2_hotspot",
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "src/a.py::build",
+      observations_total: 0,
+      evidence: [
+        {
+          finding_id: "",
+          file_path: "src/a.py",
+          biomarker_type: "measured_hotspot",
+          function_name: "build",
+          line_start: null,
+          line_end: null,
+          reason: measurement,
+          path: [],
+          provenance: "measured",
+        },
+      ],
+    });
+    const one = page({ items: [hotspot], total: 1, next_offset: null });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => one,
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions: undefined,
+        })}
+      />,
+    );
+    await openFirstRow();
+    expect(await screen.findByText("Runs that measured it")).toBeTruthy();
+    expect(screen.getByText(measurement)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Read the raw observations/ })).toBeNull();
+  });
+});
+
+describe("PerformanceView measured hotspot with no static finding", () => {
+  it("renders an evidence row whose finding_id is null", async () => {
+    const measurement = 'Measured: rank 2 of repo code in entry_point "cli serve" (8% self), 1d old';
+    const hotspot = opportunity({
+      opportunity_id: "perf2_hotspot_null",
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "src/b.py::serve",
+      observations_total: 0,
+      evidence: [
+        {
+          finding_id: null,
+          file_path: "src/b.py",
+          biomarker_type: "measured_hotspot",
+          function_name: "serve",
+          line_start: null,
+          line_end: null,
+          reason: measurement,
+          path: [],
+          provenance: "measured",
+        },
+      ],
+    });
+    const one = page({ items: [hotspot], total: 1, next_offset: null });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => one,
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions: undefined,
+        })}
+      />,
+    );
+    await openFirstRow();
+    expect(await screen.findByText("Runs that measured it")).toBeTruthy();
+    expect(screen.getByText(measurement)).toBeTruthy();
   });
 });
 
@@ -1306,5 +1473,16 @@ describe("performance drawer preview", () => {
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
     expect(await within(panel).findByRole("button", { name: `Preview: ${note}` })).toBeTruthy();
+  });
+});
+
+describe("PerformanceView summary rows", () => {
+  it("renders a queue row the summary view sends without its actionability reason", async () => {
+    const summaryRows = page();
+    summaryRows.items = summaryRows.items.map(({ actionability_reason: _reason, ...row }) => row);
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => summaryRows })} />);
+    expect((await rows()).length).toBe(summaryRows.items.length);
+    await openFirstRow();
+    expect(await screen.findByRole("dialog")).toBeTruthy();
   });
 });

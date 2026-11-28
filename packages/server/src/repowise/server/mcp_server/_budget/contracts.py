@@ -150,6 +150,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "fix_history",
             "branch_overlap",
             "cross_repo",
+            "in_repo_breaks",
+            "measured.functions[]",
+            "measured",
             "patch_coverage.files[]",
             "patch_coverage",
             "impacted_tests",
@@ -326,8 +329,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "churn_complexity[]",
             "untested_complexity[]",
             "doc_drift.findings[]",
-            "performance_measured.on_static_findings[]",
             "performance_measured.in_tests[]",
+            "performance_measured.benchmarks[]",
             "test_findings[]",
             "top_findings[]",
             "findings[]",
@@ -340,6 +343,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "refactoring_summary",
             "performance_opportunities[]",
             "performance_summary",
+            "performance_measured.routes[]",
+            "performance_measured.statements[]",
             "performance_measured.rows[]",
             "high_leverage_files[]",
             "secondary_rankings",
@@ -787,16 +792,14 @@ async def resolve_response_budget_repo_root(
         if repo == "all":
             from repowise.server.mcp_server import _state
 
-            return getattr(_state, "_workspace_root", None) or getattr(
-                _state, "_repo_path", None
-            )
+            return getattr(_state, "_workspace_root", None) or _state.served_path()
         from repowise.server.mcp_server._helpers import _resolve_repo_context
 
         return (await _resolve_repo_context(repo)).path
     except Exception:
         from repowise.server.mcp_server import _state
 
-        return getattr(_state, "_repo_path", None)
+        return _state.served_path()
 
 
 def _emergency_fit(
@@ -986,7 +989,7 @@ def enforce_response_budget(
     if repo_root is None:
         from repowise.server.mcp_server import _state
 
-        repo_root = getattr(_state, "_repo_path", None)
+        repo_root = _state.served_path()
 
     expanded = _call_uses_expansion(contract, signature, args, kwargs)
     declared = EXPANDED_RESPONSE_CHARS if expanded else DEFAULT_RESPONSE_CHARS

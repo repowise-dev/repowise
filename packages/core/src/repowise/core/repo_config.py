@@ -22,7 +22,8 @@ MANIFEST_BASENAME = "decisions.yaml"
 CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     "traversal": frozenset({"exclude_patterns"}),
     "git_history": frozenset({"commit_limit", "follow_renames"}),
-    "health": frozenset({"assertions", "coverage", "refactoring"}),
+    # ``health`` holds switches for parts of the health pass (duplication).
+    "health": frozenset({"assertions", "coverage", "health", "refactoring"}),
     "generation": frozenset(
         {
             "provider",
@@ -46,6 +47,9 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     # the server keeps the checkout current, not what the index holds.
     "state_only": frozenset(
         {
+            # Opt-in contract extraction keeps its own stamp in contracts.json;
+            # wiki.db does not depend on it.
+            "contracts",
             "distill",
             "editor_files",
             "editor_setup",
@@ -55,6 +59,10 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "hooks",
             "managed_checkout",
             "mcp",
+            # Read by a process when it starts (the MCP cache warmup).
+            "performance",
+            # Version history kept per page: trims old rows, never changes a page.
+            "wiki",
         }
     ),
 }
@@ -348,6 +356,37 @@ def changed_config_dependencies(previous: Any, current: dict[str, str]) -> set[s
     return {
         name for name in set(previous) | set(current) if previous.get(name) != current.get(name)
     }
+
+
+def carry_config_fingerprints(repo_path: Path | str, before: tuple[str, dict[str, str]]) -> None:
+    """Move state.json's config fingerprints past the caller's own config write.
+
+    *before* is ``(config_fingerprint, config_dependency_fingerprints)`` taken
+    ahead of that write. Only a fingerprint that still matched it moves, so a
+    real config change waiting for the next update is still seen.
+    """
+    from repowise.core.fsutils import atomic_write_text
+
+    state_path = get_repowise_dir(repo_path) / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(state, dict):
+        return
+    old_fp, old_deps = before
+    changed = False
+    if state.get("config_fingerprint") == old_fp:
+        state["config_fingerprint"] = config_fingerprint(repo_path)
+        changed = True
+    stored = state.get("config_dependency_fingerprints")
+    if isinstance(stored, dict):
+        for bucket, value in config_dependency_fingerprints(repo_path).items():
+            if stored.get(bucket) == old_deps.get(bucket) and value != old_deps.get(bucket):
+                stored[bucket] = value
+                changed = True
+    if changed:
+        atomic_write_text(state_path, json.dumps(state, indent=2))
 
 
 def _read_flat_scalar(text: str, key: str) -> str | None:

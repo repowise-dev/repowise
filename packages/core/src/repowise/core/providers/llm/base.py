@@ -228,6 +228,12 @@ class GeneratedResponse:
 #: evaluation time grows with every token kept.
 LOCAL_CONTEXT_WINDOW = 16_384
 
+#: The key sent to a local OpenAI-compatible server (LM Studio, vLLM, Ollama)
+#: when none is set. They ignore it; the SDK refuses an empty one. Kept here,
+#: not in the OpenAI provider, so code that only needs the constant does not
+#: import the openai SDK.
+LOCAL_SERVER_API_KEY = "not-needed"
+
 
 class BaseProvider(ABC):
     """Abstract base class that all LLM providers must implement.

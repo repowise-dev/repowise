@@ -34,7 +34,7 @@ class FindingsTreeProvider extends RepowiseTreeProvider {
 
   protected loadRoots(repoId: string): Promise<RepoTreeNode[]> {
     return Promise.resolve([
-      this.category("health", "Health", "pulse", true, () =>
+      this.category("health", "Code Health", "pulse", true, () =>
         this.health.rootsFor(repoId),
       ),
       this.category("hotspots", "Hotspots", "flame", false, () =>

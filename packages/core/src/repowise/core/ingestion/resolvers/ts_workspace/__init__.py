@@ -40,7 +40,6 @@ from .builds import (
 )
 from .exports import (
     _CONDITION_PRIORITY,
-    _DECLARATION_SUFFIXES,
     _build_exports_map,
     _flatten_export_value,
     _match_export_key,

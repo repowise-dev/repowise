@@ -7,6 +7,7 @@ from ..languages.receiver_types import (
     RangeScan,
     clauses_in_span,
     external_type_name,
+    go_named_container,
     range_element_types,
     scan_ranges,
     types_in_span,
@@ -65,6 +66,8 @@ class RangeVariableTypes:
             spelling, written_in = self._ranged_container(
                 file_path, language, clause, types, containers, caller_id
             )
+            if language == "go":
+                spelling, written_in = self._go_underlying_container(spelling, written_in)
             external = self._externally_bound_names(written_in)
             elements = range_element_types(spelling, language, external) or (None, None)
             for name, type_name in zip((clause.key, clause.value), elements, strict=True):
@@ -100,6 +103,9 @@ class RangeVariableTypes:
             return self._caller_field_container(file_path, caller_id, language, field)
         if not clause.member:
             spelling = containers.get(clause.head)
+            if language == "go" and spelling is None and clause.head not in containers:
+                # A Go value of a named type, which may name a container.
+                return types.get(clause.head), file_path
             if clause.head in types and not _is_its_own_container(
                 types[clause.head], spelling, language
             ):
@@ -116,7 +122,45 @@ class RangeVariableTypes:
             spelling = None if symbol is None else declared_return_type(symbol.signature or "")
             return spelling, class_file
         fields = self._container_fields_in(class_file, language).get(class_id, {})
+        if language == "go" and clause.member not in fields:
+            # A field of a named type, which may name a container.
+            fields = self._field_types_in(class_file, language).get(class_id, {})
         return fields.get(clause.member), class_file
+
+    def _go_underlying_container(
+        self, spelling: str | None, written_in: str
+    ) -> tuple[str | None, str]:
+        """The container a Go named type stands for, and the file that spells it.
+
+        ``engine.trees`` is a ``methodTrees``; ``type methodTrees []methodTree``
+        makes ranging over it yield a ``methodTree``. An unqualified type name
+        is declared in its own package, which in Go is the directory: the one
+        type of that name there answers, read off its declaration line
+        (``languages.receiver_types.go_named_container``). Any other spelling,
+        two types of the name, or a declaration that is no container shape
+        keeps *spelling* as it was, which yields nothing.
+        """
+        if not spelling or not spelling.isidentifier():
+            return spelling, written_in
+        package = written_in.rpartition("/")[0]
+        declared = [
+            symbol
+            for sym_id in self._global_symbols.get(spelling, ())
+            if (symbol := self._symbols_by_id.get(sym_id)) is not None
+            and (symbol.kind == "type_alias" or symbol.kind in _TYPE_KINDS)
+            and (path := self._symbol_paths_by_id.get(sym_id)) is not None
+            and path.rpartition("/")[0] == package
+            and symbol_id_language(self._parsed_files, sym_id) == "go"
+        ]
+        if len(declared) != 1 or declared[0].kind != "type_alias":
+            return spelling, written_in
+        alias = declared[0]
+        alias_file = self._symbol_paths_by_id[alias.id]
+        lines = self._text_of(alias_file).splitlines()
+        if not 0 < alias.start_line <= len(lines):
+            return spelling, written_in
+        underlying = go_named_container(lines[alias.start_line - 1], spelling)
+        return (underlying, alias_file) if underlying else (spelling, written_in)
 
     def _csharp_field_walked(
         self,

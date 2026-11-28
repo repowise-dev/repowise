@@ -41,6 +41,8 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     filter_dicts_by_key,
     filter_path_list,
+    no_source_field,
+    serves_no_source,
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
@@ -353,6 +355,9 @@ async def _file_importers_and_community(card: CardState, docs: dict[str, Any]) -
 
 
 async def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
+    if serves_no_source():
+        docs["file_preview"] = no_source_field(card.target)
+        return
     preview = await _file_preview_async(card.query.repo_root, card.target)
     if preview is not None:
         docs["file_preview"] = preview
@@ -490,7 +495,11 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
     # Opt in: get_symbol carries them by default; the card stays its default size.
     sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
     if card.wants("facts") and sym_node_id:
-        docs.update(await symbol_card_facts(card.session, card.repo_id, sym_node_id))
+        docs.update(
+            await symbol_card_facts(
+                card.session, card.repo_id, sym_node_id, card.query.exclude_spec
+            )
+        )
     # Candidates
     if len(sym_matches) > 1:
         docs["candidates"] = filter_dicts_by_key(

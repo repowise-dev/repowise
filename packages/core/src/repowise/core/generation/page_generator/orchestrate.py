@@ -321,11 +321,12 @@ class _GenerationRun:
         # Near-clone dedupe runs before scoring so clone losers never consume
         # scoring budget. Entry points are never dropped.
         parsed_files_for_selection = self.parsed_files
-        drop_paths = near_clone_paths(
-            code_files,
-            self.pagerank,
-            enabled=getattr(self.config, "dedupe_near_clones", True),
-        )
+        with timed(self.timings, "generation.setup.near_clones"):
+            drop_paths = near_clone_paths(
+                code_files,
+                self.pagerank,
+                enabled=getattr(self.config, "dedupe_near_clones", True),
+            )
         if drop_paths:
             log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
             code_files = [p for p in code_files if p.file_info.path not in drop_paths]
@@ -333,35 +334,36 @@ class _GenerationRun:
                 p for p in self.parsed_files if p.file_info.path not in drop_paths
             ]
 
-        try:
-            community_info_map = self.graph_builder.community_info() or {}
-        except Exception:
-            community_info_map = {}
-
         from ..selection import SelectionInputs, select_pages
 
-        kg_scores = _compute_kg_file_scores(self.kg_ctx)
+        with timed(self.timings, "generation.setup.selection"):
+            try:
+                community_info_map = self.graph_builder.community_info() or {}
+            except Exception:
+                community_info_map = {}
 
-        selection = select_pages(
-            SelectionInputs(
-                parsed_files=parsed_files_for_selection,
-                pagerank=self.pagerank,
-                betweenness=self.betweenness,
-                community=self.community,
-                community_info=community_info_map,
-                sccs=list(self.sccs),
-                git_meta_map=self.git_meta_map,
-                config=self.config,
-                kg_file_scores=kg_scores or None,
-                # Curated wiki modules: prefer the in-memory pipeline
-                # result (fresh); the artifact file is absent on first init
-                # and one run stale on update. Read only for the file -> layer
-                # map that steers concept grouping, so absence costs taste and
-                # never coverage.
-                kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
-                symbol_uses=self.graph_builder.symbol_uses(),
+            kg_scores = _compute_kg_file_scores(self.kg_ctx)
+
+            selection = select_pages(
+                SelectionInputs(
+                    parsed_files=parsed_files_for_selection,
+                    pagerank=self.pagerank,
+                    betweenness=self.betweenness,
+                    community=self.community,
+                    community_info=community_info_map,
+                    sccs=list(self.sccs),
+                    git_meta_map=self.git_meta_map,
+                    config=self.config,
+                    kg_file_scores=kg_scores or None,
+                    # Curated wiki modules: prefer the in-memory pipeline
+                    # result (fresh); the artifact file is absent on first init
+                    # and one run stale on update. Read only for the file ->
+                    # layer map that steers concept grouping, so absence costs
+                    # taste and never coverage.
+                    kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
+                    symbol_uses=self.graph_builder.symbol_uses(),
+                )
             )
-        )
 
         self.selection = selection
         self.gen.selection = selection
@@ -377,7 +379,8 @@ class _GenerationRun:
         # structure: the grouper decides what a page covers, the model decides
         # what to call it. Kept out of ``select_pages`` so the cost estimator
         # and scope resolution, which call it too, stay free of the model.
-        await self._name_concept_groups()
+        with timed(self.timings, "generation.setup.naming"):
+            await self._name_concept_groups()
 
         # Sort code_files for stable level-2 ordering: selected files first
         # (so dep summaries land in the store earliest), then by PageRank desc.
@@ -834,22 +837,41 @@ class _GenerationRun:
     # ------------------------------------------------------------------
 
     async def execute(self) -> list[GeneratedPage]:
+        # Each step of setup is also timed on its own, as
+        # ``generation.setup.<step>``, because setup is one figure that ranges
+        # from under a second to minutes between repos of the same size.
+        # The steps nest inside ``generation.setup``; never add them to it.
         with timed(self.timings, "generation.setup"):
             self._setup_job()
-            await self._seed_resume()
+            with timed(self.timings, "generation.setup.resume"):
+                await self._seed_resume()
             await self._compute_selection()
+            # The flow plans are memoised; computed here, under their own
+            # name, exactly when the total below would compute them anyway.
+            if self.only_page_ids is None and not getattr(self.config, "file_pages_only", False):
+                with timed(self.timings, "generation.setup.flow_plans"):
+                    self.flow_plans()
             self._announce_total()
-            self._compute_ia()
+            with timed(self.timings, "generation.setup.ia"):
+                self._compute_ia()
 
         all_pages: list[GeneratedPage] = []
 
+        # A level's inputs (file contexts for level 2, the overview's material
+        # for 6, the onboarding signals for 8) are built before its
+        # ``generation.level<N>`` span opens, so each build is timed on its own
+        # as ``generation.llm.build.level<N>``. The builds sit inside the
+        # model-backed ``generation.llm`` phase, beside the level spans and
+        # never overlapping them; never add them to either.
         # Levels 0 (api_contract) + 1 (symbol_spotlight) share no data
         # dependencies, so they run in one merged batch.
-        level01 = _levels.build_level01_coros(self)
+        with timed(self.timings, "generation.llm.build.level1"):
+            level01 = _levels.build_level01_coros(self)
         all_pages.extend(await self.run_level(level01, 1))
 
         # Level 2 (file_page) needs context assembly + topo ordering.
-        level2 = await _levels.build_level2_coros(self)
+        with timed(self.timings, "generation.llm.build.level2"):
+            level2 = await _levels.build_level2_coros(self)
         all_pages.extend(await self.run_level(level2, 2))
 
         # Levels 3 and up describe the repository rather than a file, and an
@@ -861,12 +883,16 @@ class _GenerationRun:
             return self._finalize(all_pages)
 
         # Level 3 (scc_page).
-        all_pages.extend(await self.run_level(_levels.build_level3_coros(self), 3))
+        with timed(self.timings, "generation.llm.build.level3"):
+            level3 = _levels.build_level3_coros(self)
+        all_pages.extend(await self.run_level(level3, 3))
 
         # Level 4 (module_page), in waves: a map page reads how the pages of
         # its parts open, so the parts are written first.
         for wave in _levels.module_waves(list(self.sel_module_groups)):
-            pages = await self.run_level(_levels.build_level4_coros(self, wave), 4)
+            with timed(self.timings, "generation.llm.build.level4"):
+                level4 = _levels.build_level4_coros(self, wave)
+            pages = await self.run_level(level4, 4)
             self.module_page_content.update(
                 {p.target_path: p.content for p in pages if STUB_FALLBACK_ERROR not in p.metadata}
             )
@@ -888,9 +914,11 @@ class _GenerationRun:
         # pages need only the module groups' names, which naming settled above.
         # The front page and How It Works are written from the walkthroughs,
         # so levels 6 (repo_overview) and 8 (onboarding) wait for them.
-        walkthroughs = await self.run_level(
-            _levels.build_flow_coros(self) + _levels.build_level7_coros(self), 5
-        )
+        with timed(self.timings, "generation.llm.build.level5"):
+            level5 = _levels.build_flow_coros(self)
+        with timed(self.timings, "generation.llm.build.level7"):
+            level7 = _levels.build_level7_coros(self)
+        walkthroughs = await self.run_level(level5 + level7, 5)
         all_pages.extend(walkthroughs)
         # Model-written walkthroughs only: a template stub's step list is not
         # a journey a reader can be told about.
@@ -899,8 +927,11 @@ class _GenerationRun:
             for p in walkthroughs
             if p.page_type == "flow_page" and p.provider_name != "template"
         }
-        final = await _levels.build_level6_coros(self) + await _levels.build_level8_coros(self)
-        final_pages = await self.run_level(final, 8)
+        with timed(self.timings, "generation.llm.build.level6"):
+            level6 = await _levels.build_level6_coros(self)
+        with timed(self.timings, "generation.llm.build.level8"):
+            level8 = await _levels.build_level8_coros(self)
+        final_pages = await self.run_level(level6 + level8, 8)
         # Tag promoted onboarding slots (repo_overview / architecture_diagram).
         self.gen._tag_promoted_pages(final_pages)
         all_pages.extend(final_pages)

@@ -115,9 +115,10 @@ def live_secret(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 done_when=done,
                 evidence_total=len(found),
                 fingerprint=fingerprint(len(found)),
+                # Location and kind only: the stored snippet keeps a masked
+                # value's first characters and the rest of its line.
                 details=tuple(
-                    ActionDetail(path=s.file_path, line=s.line, marker=s.kind, reason=s.snippet)
-                    for s in found
+                    ActionDetail(path=s.file_path, line=s.line, marker=s.kind) for s in found
                 ),
                 commands=(
                     ActionCommand.call(

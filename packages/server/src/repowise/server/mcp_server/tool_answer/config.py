@@ -64,6 +64,18 @@ _DEFINES_MAX_FILES = 20
 _SYNTH_FULL_SOURCE_LINES = _INLINE_BODY_MAX_LINES
 _SYNTH_FULL_BODY_MAX_SYMBOLS = 2
 
+# Kinds that wrap other definitions. Longer than _MATCHED_SYMBOL_SOURCE_LINES,
+# one is a file's worth of code, not a body: it gets none.
+_CONTAINER_KINDS = frozenset({"module", "namespace", "package"})
+
+# Implementation bodies behind the pages synthesis reads (tool_answer.grounding):
+# the symbol a flow page or spotlight is about, and the definition of a
+# declaration a header hit shows, the question-named definition of a file hit
+# the hydrator did not enrich. Prompt-only, read at _SYNTH_FULL_SOURCE_LINES;
+# the char budget holds the prompt's growth near 2k tokens.
+_GROUNDING_MAX_BODIES = 3
+_GROUNDING_CHAR_BUDGET = 8000
+
 # Answer-by-union: when a question names a symbol with N>=2 undisambiguated defs,
 # inline the union of their bodies rather than a pointer list that triggers a
 # drill-down. Bodies render greedily under this budget; the rest are listed
@@ -108,6 +120,18 @@ _DATA_SHAPE_ACCESS_WINDOW = 40  # lines below a binding to mine VAR key accesses
 _DATA_SHAPE_MIN_FIELDS = 2  # never answer from a single-field shape (too weak to trust)
 _DATA_SHAPE_MIN_IDENT_LEN = 6  # identifier must be specific, not a bare generic name
 _DATA_SHAPE_GREP_TIMEOUT_S = 6.0
+
+# The sentences a synthesis-less ``note`` is built from.
+_NO_SYNTHESIS_NOTE = "Synthesis is unavailable; local retrieval and source evidence remain usable."
+_RATIONALE_NOTE = (
+    " code_rationale carries rationale comments mined from the candidate "
+    "source — they may already answer the question."
+)
+_BODY_NOTE_TAIL = "answer from that rather than re-reading the file."
+_CUT_BODY_NOTE_TAIL = "answer from that, and Read a body's continuation where it was cut."
+_BODY_NOTE = (
+    " symbol_bodies carries the live body of the symbol(s) you named, so " + _BODY_NOTE_TAIL
+)
 
 # Classes first: "what does X do" / "which class inherits Y" resolve at class level.
 _KIND_PRIORITY = {"class": 0, "interface": 0, "function": 1, "method": 2}
@@ -372,7 +396,11 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     the question, and for no remarks on missing line numbers.
 # 33: each served body shows its line range, so answers cite lines; a prose
 #     line citation is not an asserted value.
-_ANSWER_SCHEMA_VERSION = 33
+# 34: a scoped answer names no file outside its scope: hits, flow paths and
+#     union definitions are filtered after every retrieval stage.
+# 35: the generic "start from / verify against the top file" hints are no
+#     longer stored; the projection writes one verify line naming path:line.
+_ANSWER_SCHEMA_VERSION = 35
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
@@ -459,14 +487,16 @@ _SYSTEM_PROMPT = (
     "You are a code-aware retrieval assistant. You are given a developer "
     "question plus excerpts from a project wiki — file summaries, symbol "
     "signatures with docstrings, and (for symbols whose name matches the "
-    "question) the actual source body. Answer thoroughly and concretely, "
+    "question) the actual source body, and under 'implementation' the code "
+    "a page or declaration describes. Answer thoroughly and concretely, "
     "citing source files by relative path inline like (path/to/file.py) "
     "and line numbers when you have them. Prefer a structured answer "
     "(headings / bullets / short code block citing the symbol) over a "
     "paragraph when the question asks about mechanism or architecture. "
     "Aim for 150–400 words — enough to cover the asked aspects without "
-    "padding. If a [question-match] symbol's source body is provided, "
-    "you have enough material to answer — ground in that body. Only "
+    "padding. If a [question-match] symbol's source body or an "
+    "implementation body is provided, you have enough material to answer "
+    "— ground in that body. Only "
     "hedge about having enough material (say 'inspect the source' / "
     "'the excerpts do not contain…') when there is genuinely no relevant "
     "signature, docstring, or source body in the excerpts. Never assert "

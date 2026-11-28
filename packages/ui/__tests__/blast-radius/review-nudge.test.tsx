@@ -37,4 +37,15 @@ describe("ReviewNudge", () => {
     render(<ReviewNudge data={branch(sha)} href={(c) => `/review?change=${c}`} />);
     expect(screen.getByRole("link", { name: /Review/ })).toHaveAttribute("href", `/review?change=branch:${sha}`);
   });
+
+  it("names the change in the link's label and counts its files", () => {
+    render(<ReviewNudge data={branch("feat/x")} href={(c) => `/review?change=${c}`} />);
+    expect(screen.getByRole("link", { name: "Review feat/x" })).toBeInTheDocument();
+    expect(screen.getByText("· 2 files")).toBeInTheDocument();
+  });
+
+  it("renders nothing with no change in progress", () => {
+    const { container } = render(<ReviewNudge data={{ working_tree_supported: true, default_id: null, changes: [] }} href={(c) => c} />);
+    expect(container).toBeEmptyDOMElement();
+  });
 });

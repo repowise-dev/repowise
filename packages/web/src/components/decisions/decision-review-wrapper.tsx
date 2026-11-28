@@ -1,15 +1,22 @@
 "use client";
 
 import * as React from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
+  DecisionRecordActions,
   DecisionReviewLanes,
+  type DecisionRecordPromptKind,
   type DecisionSection,
 } from "@repowise-dev/ui/decisions/decision-review-lanes";
+import { DecisionDigest } from "@repowise-dev/ui/decisions/decision-digest";
+import { OverviewSection } from "@repowise-dev/ui/overview";
+import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
 import type { DecisionLaneCounts, DecisionRecord } from "@repowise-dev/types/decisions";
 import {
+  getDecisionAgentPrompt,
+  getDecisionHealth,
   getDecisionLaneCounts,
   listDecisions,
   patchDecision,
@@ -21,9 +28,16 @@ import { DecisionRecordPrompts, useDecisionAgentPrompt } from "./add-decision-bu
 import { useTranslations } from "next-intl";
 import { formatNumber, stripMarkdown } from "@repowise-dev/ui/lib/format";
 
+/** Rows the digest's This week shows before pointing at the Recent section. */
+const RECENT_DIGEST_ROWS = 5;
+
 interface Props {
   repoId: string;
   pageSize?: number;
+  /** The server's lane-count read, so the badges have numbers on first paint. */
+  initialLaneCounts?: DecisionLaneCounts | undefined;
+  /** False on a store with no records: the digest and the list have nothing to show. */
+  hasRecords?: boolean;
 }
 
 /** Section badges from the lane counts. A count the server did not send stays unknown. */
@@ -38,47 +52,198 @@ function sectionCounts(counts: DecisionLaneCounts): Partial<Record<DecisionSecti
 }
 
 /**
- * The host half of the decisions sections: the per-section fetch, the writes,
- * and the refresh.
+ * Records per lane, under the one key every reader on the page shares.
+ *
+ * The lede and the tab badges both read this, and the review refresh
+ * revalidates every key under `/api/repos/{id}/decisions`, so after a write
+ * the headline and the In force badge move together.
+ */
+export function useDecisionLaneCounts(
+  repoId: string,
+  fallbackData?: DecisionLaneCounts | undefined,
+) {
+  return useSWR(
+    [`/api/repos/${repoId}/decisions/lane-counts`],
+    () => getDecisionLaneCounts(repoId),
+    fallbackData ? { fallbackData } : undefined,
+  );
+}
+
+/**
+ * The digest and the full record under one piece of state, so "Review 222" in
+ * the digest can open In force narrowed to the decisions whose code moved.
+ */
+export function DecisionsBoard({
+  repoId,
+  pageSize = 50,
+  initialLaneCounts,
+  hasRecords = true,
+}: Props) {
+  const t = useTranslations("decisions");
+  const tv = useTranslations("views.decisions");
+  // Opens on what is in force. Background records are context, not work, so
+  // the page never opens on them; the reader picks that section.
+  const [lane, setLane] = React.useState<DecisionSection>("in_force");
+  // In force narrowed to the `needs_review` lane: accepted, and the code they
+  // name changed since. The server serves that lane; this only asks for it.
+  const [movedOnly, setMovedOnly] = React.useState(false);
+  const listRef = React.useRef<HTMLDivElement>(null);
+  const add = useDecisionAgentPrompt(repoId, "add");
+
+  // One aggregate over the acceptance join, not four page fetches. The badges
+  // and the rows they label therefore come from the same question.
+  //
+  // Deliberately not /decisions/counts: that endpoint groups the status
+  // column, which is the projection rather than the authority, so its
+  // "active" would contradict the lane a reader then opened.
+  const { data: counts } = useDecisionLaneCounts(repoId, initialLaneCounts);
+  // The digest's ungoverned-hotspots row: churn hotspots no decision in force
+  // names. Under the decisions prefix so an accept that starts governing a
+  // hotspot drops it from the row without a reload. A failure only drops the
+  // row. Ceiling: the rollup also ships the stale and background lists this
+  // page never shows; upgrade path is a counts-only health read.
+  const { data: health } = useSWR(
+    hasRecords ? [`/api/repos/${repoId}/decisions/health`] : null,
+    () => getDecisionHealth(repoId),
+  );
+  const { data: recent } = useSWR(
+    hasRecords ? [`/api/repos/${repoId}/decisions`, "digest", "recent", RECENT_DIGEST_ROWS] : null,
+    () => listDecisions(repoId, { lane: "recent", include_proposed: true, limit: RECENT_DIGEST_ROWS }),
+  );
+
+  // A review moves a record between lanes and changes what the prompts list,
+  // so every decisions read on the page revalidates together: rows, badges,
+  // the digest and the discovery prompt.
+  const { mutate } = useSWRConfig();
+  const refresh = React.useCallback(
+    () =>
+      mutate(
+        (key) =>
+          Array.isArray(key) &&
+          typeof key[0] === "string" &&
+          key[0].startsWith(`/api/repos/${repoId}/decisions`),
+      ),
+    [mutate, repoId],
+  );
+  const writes = useReviewWrites(repoId, refresh);
+  const loadRecordPrompt = React.useCallback(
+    (d: DecisionRecord, kind: DecisionRecordPromptKind) =>
+      getDecisionAgentPrompt(repoId, kind, d.id).then((r) => r.text),
+    [repoId],
+  );
+
+  const showList = (next: DecisionSection, moved: boolean) => {
+    setLane(next);
+    setMovedOnly(moved);
+    listRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  if (!hasRecords) return null;
+
+  return (
+    <>
+      <DecisionDigest
+        needsReview={counts?.needs_review}
+        onReviewNeedsReview={() => showList("in_force", true)}
+        ungovernedHotspots={health?.ungoverned_hotspots}
+        ungovernedAction={
+          add?.text ? (
+            <AiPromptButton variant="ghost" copyText={() => add.text} label={t("hero.recordMissed")} />
+          ) : undefined
+        }
+        recent={recent}
+        recentTotal={counts?.recent}
+        onShowAllRecent={() => showList("recent", false)}
+        recentHref={(d) => `/repos/${repoId}/decisions/${d.id}`}
+        LinkComponent={Link}
+        renderRecentActions={(d) => (
+          <DecisionRecordActions
+            decision={d}
+            section="recent"
+            onPin={(rec, pinned) => void writes.review(rec, pinned ? "pin" : "unpin")}
+            onReaffirm={(rec) => void writes.review(rec, "reaffirm")}
+            loadRecordPrompt={loadRecordPrompt}
+            pending={writes.pending.has(d.id)}
+            href={`/repos/${repoId}/decisions/${d.id}`}
+            LinkComponent={Link}
+          />
+        )}
+      />
+      <div ref={listRef} className="scroll-mt-6">
+        <OverviewSection title={tv("reviewTitle")} description={tv("reviewDescription")}>
+          <DecisionReviewWrapper
+            repoId={repoId}
+            pageSize={pageSize}
+            lane={lane}
+            onLaneChange={(next) => {
+              setLane(next);
+              setMovedOnly(false);
+            }}
+            movedOnly={movedOnly && lane === "in_force"}
+            onClearMoved={() => setMovedOnly(false)}
+            counts={counts}
+            writes={writes}
+            loadRecordPrompt={loadRecordPrompt}
+          />
+        </OverviewSection>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The host half of the decisions sections: the per-section fetch, the paging
+ * and the wiring of the writes.
  *
  * The lane is a server query parameter rather than a client-side filter of a
  * loaded page. A live index carries 381 candidates against 122 accepted
  * records, so filtering a fifty-row window would show an empty Active lane on
  * a repository with a hundred rules in it.
  */
-export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
+function DecisionReviewWrapper({
+  repoId,
+  pageSize,
+  lane,
+  onLaneChange,
+  movedOnly,
+  onClearMoved,
+  counts,
+  writes,
+  loadRecordPrompt,
+}: {
+  repoId: string;
+  pageSize: number;
+  lane: DecisionSection;
+  onLaneChange: (lane: DecisionSection) => void;
+  movedOnly: boolean;
+  onClearMoved: () => void;
+  counts: DecisionLaneCounts | undefined;
+  writes: ReturnType<typeof useReviewWrites>;
+  loadRecordPrompt: (d: DecisionRecord, kind: DecisionRecordPromptKind) => Promise<string>;
+}) {
   const t = useTranslations("decisions");
-  // Opens on what is in force. Background records are context, not work, so
-  // the page never opens on them; the reader picks that section.
-  const [lane, setLane] = React.useState<DecisionSection>("in_force");
   const [page, setPage] = React.useState(0);
   const [source, setSource] = React.useState("all");
-  // The discovery pass, the same text `repowise decision discover` prints.
-  const discover = useDecisionAgentPrompt(repoId, "discover");
-
-  // One aggregate over the acceptance join, not four page fetches. The badges
-  // and the rows they label therefore come from the same question, and a lane
-  // holding more rows than a page can carry still reports a measured total.
-  //
-  // Deliberately not /decisions/counts: that endpoint groups the status
-  // column, which is the projection rather than the authority, so its
-  // "active" would contradict the lane a reader then opened.
-  const {
-    data: counts,
-    mutate: mutateCounts,
-  } = useSWR([`/api/repos/${repoId}/decisions/lane-counts`], () =>
-    getDecisionLaneCounts(repoId),
-  );
 
   // Background is ranked by `sort=review` (what is worth a look first; see
   // `review_queue_order` in core). In force comes pinned first, recent newest
   // first, both ordered by the server.
   const background = lane === "candidates";
+  const serverLane = movedOnly ? "needs_review" : lane;
+  // Either control invalidates the offset: page 3 of Background is not page 3
+  // of In force, and leaving it put lands the reader on an empty lane. Reset
+  // while rendering, so the old offset is never fetched for the new lane.
+  const [pagedLane, setPagedLane] = React.useState(serverLane);
+  if (pagedLane !== serverLane) {
+    setPagedLane(serverLane);
+    setPage(0);
+  }
+
   const { data, error, mutate, isLoading } = useSWR(
-    [`/api/repos/${repoId}/decisions`, "lane", lane, source, page, pageSize],
+    [`/api/repos/${repoId}/decisions`, "lane", serverLane, source, page, pageSize],
     () =>
       listDecisions(repoId, {
-        lane,
+        lane: serverLane,
         ...(source !== "all" ? { source } : {}),
         include_proposed: true,
         limit: pageSize,
@@ -87,30 +252,15 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       }),
   );
 
-  // A lane change invalidates the offset: page 3 of Candidates is not page 3
-  // of Active, and leaving it put lands the reader on an empty lane.
-  // Either control invalidates the offset: page 3 of Candidates is not page 3
-  // of Active, and leaving it put lands the reader on an empty lane.
-  const changeLane = React.useCallback((next: DecisionSection) => {
-    setLane(next);
-    setPage(0);
-  }, []);
-
   const changeSource = React.useCallback((next: string) => {
     setSource(next);
     setPage(0);
   }, []);
 
-  const refresh = React.useCallback(
-    () => Promise.all([mutate(), mutateCounts()]),
-    [mutate, mutateCounts],
-  );
-  const { pending, review, dismissMany } = useReviewWrites(repoId, refresh);
-
   const rows = data ?? [];
 
   // Reviewing the last row of a later page leaves that page empty. Step back
-  // instead of showing "Nothing in candidates" over a lane that still has rows.
+  // instead of showing "Nothing in background" over a lane that still has rows.
   React.useEffect(() => {
     if (page > 0 && data !== undefined && data.length === 0) {
       setPage((p) => Math.max(0, p - 1));
@@ -121,36 +271,55 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   // the lane count is the wrong denominator, so the range says what it loaded
   // and nothing more rather than "1-12 of 381".
   const badges = counts ? sectionCounts(counts) : undefined;
-  const total = source === "all" ? badges?.[lane] : undefined;
+  const laneTotal = movedOnly ? counts?.needs_review : badges?.[lane];
+  const total = source === "all" ? laneTotal : undefined;
   const first = page * pageSize + 1;
   const last = page * pageSize + rows.length;
-  const hasNext =
-    total !== undefined ? last < total : rows.length === pageSize;
+  const hasNext = total !== undefined ? last < total : rows.length === pageSize;
+  const { pending, review, dismissMany } = writes;
 
   return (
     <div className="space-y-4">
-    <DecisionReviewLanes
-      lane={lane}
-      onLaneChange={changeLane}
-      {...(background ? { order: "review" as const } : {})}
-      decisions={data}
-      {...(badges ? { counts: badges } : {})}
-      source={source}
-      onSourceChange={changeSource}
-      onAccept={(d, options) => void review(d, "accept", options?.reason)}
-      onDismiss={(d) => void review(d, "dismiss")}
-      onReaffirm={(d) => void review(d, "reaffirm")}
-      onPin={(d, pinned) => void review(d, pinned ? "pin" : "unpin")}
-      recordPrompts={(d) => <DecisionRecordPrompts repoId={repoId} decision={d} />}
-      onDismissMany={dismissMany}
-      {...(discover?.kind === "discover" ? { reviewPrompt: () => discover.text } : {})}
-      pendingIds={pending}
-      repoId={repoId}
-      LinkComponent={Link}
-      error={error}
-      isLoading={isLoading}
-      onRetry={() => void mutate()}
-    />
+      <DecisionReviewLanes
+        lane={lane}
+        onLaneChange={onLaneChange}
+        {...(background ? { order: "review" as const } : {})}
+        decisions={data}
+        {...(badges ? { counts: badges } : {})}
+        source={source}
+        onSourceChange={changeSource}
+        onAccept={(d, options) => void review(d, "accept", options?.reason)}
+        onDismiss={(d) => void review(d, "dismiss")}
+        onReaffirm={(d) => void review(d, "reaffirm")}
+        onPin={(d, pinned) => void review(d, pinned ? "pin" : "unpin")}
+        recordPrompts={(d) => <DecisionRecordPrompts repoId={repoId} decision={d} />}
+        loadRecordPrompt={loadRecordPrompt}
+        onDismissMany={dismissMany}
+        {...(movedOnly
+          ? {
+              filterNote: (
+                <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span>
+                    {t("board.movedOnly", { count: counts?.needs_review ?? rows.length })}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onClearMoved}
+                    className="rounded text-[var(--color-accent-primary)] underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+                  >
+                    {t("board.showAll")}
+                  </button>
+                </p>
+              ),
+            }
+          : {})}
+        pendingIds={pending}
+        repoId={repoId}
+        LinkComponent={Link}
+        error={error}
+        isLoading={isLoading}
+        onRetry={() => void mutate()}
+      />
 
       {/* Paged, because a live index carries 381 candidates against a 50-row
           window. The denominator is the lane's own measured count, so the
@@ -168,10 +337,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
             >
               {t("review.previous")}
             </PageButton>
-            <PageButton
-              onClick={() => setPage((p) => p + 1)}
-              disabled={!hasNext || isLoading}
-            >
+            <PageButton onClick={() => setPage((p) => p + 1)} disabled={!hasNext || isLoading}>
               {t("review.next")}
             </PageButton>
           </div>
@@ -180,7 +346,6 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
     </div>
   );
 }
-
 
 type ReviewVerb = "accept" | "dismiss" | "reaffirm" | "pin" | "unpin";
 
@@ -225,9 +390,9 @@ function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
           });
         }
         toast.success(t(DONE[verb]));
-        // Both, and in parallel: a review action moves a record between lanes,
-        // so refreshing the rows without the badges leaves every tab count
-        // contradicting the list under it.
+        // Rows and badges together: a review action moves a record between
+        // lanes, so refreshing the rows without the badges leaves every tab
+        // count contradicting the list under it.
         await refresh();
       } catch (err) {
         // The acceptance contract refuses a record with no reason, scope or

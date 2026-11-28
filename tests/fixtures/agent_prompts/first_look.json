@@ -1,0 +1,105 @@
+{
+  "perf_opportunities": [
+    {
+      "name": "static_with_prerequisite",
+      "repo_name": "acme/api",
+      "detail": {
+        "opportunity_id": "perf3_654f6a999cb547420447",
+        "file_path": "src/admin/dashboard.py",
+        "symbol": "usage_statistics",
+        "line": 192,
+        "marker_label": "List membership in loop",
+        "rationale": "The collection is proven list-backed; element hashability still requires validation.",
+        "steps": [
+          {"order": 1, "action": "Build a set from `test_user_ids` once before the loop and probe it", "file_path": "src/admin/dashboard.py", "line": 192}
+        ],
+        "effort": "S",
+        "confidence": "medium",
+        "measured": false,
+        "role": "request",
+        "prerequisite": "No test reaches `usage_statistics`; add a characterization test before the edit."
+      }
+    },
+    {
+      "name": "measured_no_steps",
+      "detail": {
+        "opportunity_id": "perf3_000000000000000000aa",
+        "file_path": "src/billing/sync.py",
+        "symbol": null,
+        "line": null,
+        "marker_label": "I/O in loop",
+        "rationale": "",
+        "steps": [],
+        "effort": "M",
+        "confidence": "high",
+        "measured": true,
+        "role": "unknown",
+        "prerequisite": null
+      }
+    }
+  ],
+  "items": [
+    {
+      "name": "import_cycle",
+      "repo_name": "acme/web",
+      "item": {
+        "id": "fl_1a2b3c4d5e6f",
+        "section": "hygiene",
+        "rule": "import_cycle",
+        "title_facts": {"files": 2},
+        "locations": [
+          {"path": "lib/api/client.ts", "line": null, "symbol": null},
+          {"path": "lib/services/cache.ts", "line": null, "symbol": null}
+        ],
+        "locations_total": 2,
+        "confidence": "high",
+        "basis": "inferred",
+        "severity": "plan",
+        "effort": "M"
+      }
+    },
+    {
+      "name": "capped_locations",
+      "item": {
+        "id": "fl_abcdefabcdef",
+        "section": "dead_code",
+        "rule": "unreachable_file",
+        "title_facts": {"lines": 429, "check_first": true, "kinds": ["path", "anchor"], "empty": ""},
+        "locations": [{"path": "src/old.py", "line": 3, "symbol": "Old"}],
+        "locations_total": 5,
+        "confidence": "medium",
+        "basis": "inferred",
+        "severity": "plan",
+        "effort": "S"
+      }
+    },
+    {
+      "name": "credentials_group",
+      "repo_name": "acme/web",
+      "item": {
+        "id": "fl_9c8b7a6d5e4f",
+        "section": "security",
+        "rule": "hardcoded_password",
+        "rules": ["hardcoded_password", "hardcoded_secret"],
+        "title_facts": {"kind": "hardcoded_password", "family": "credentials", "kinds": ["hardcoded_password", "hardcoded_secret"], "files": 2, "locations": 2},
+        "locations": [{"path": "scripts/seed_admin.py", "line": 27, "symbol": null}, {"path": "src/settings.py", "line": 4, "symbol": null}],
+        "locations_total": 2,
+        "confidence": "high",
+        "basis": "inferred",
+        "severity": "act_now",
+        "effort": "S"
+      }
+    }
+  ],
+  "reports": [
+    {
+      "name": "three_sections",
+      "repo_name": "acme/api",
+      "items": [
+        {"id": "fl_000000000001", "section": "security", "rule": "hardcoded_password", "locations": [{"path": "scripts/admin.py", "line": 27, "symbol": null}]},
+        {"id": "fl_000000000002", "section": "dead_code", "rule": "safe_to_delete", "locations": [{"path": "src/email_types.py", "line": null, "symbol": "EmailQueueItem"}]},
+        {"id": "fl_000000000003", "section": "decisions", "rule": "stale_decision", "locations": []}
+      ]
+    }
+  ]
+}

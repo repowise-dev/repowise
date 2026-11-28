@@ -12,18 +12,22 @@ The split keeps the cached prompt prefix small on multi-turn agent sessions:
 Optional ``include`` parameter widens the response:
   - include=["full_doc"]  -> full wiki markdown content, plus the page's agent
                             digest (questions, identifiers, git signals)
-  - include=["callers"]   → who calls this symbol (symbol targets only)
-  - include=["callees"]   → what this symbol calls (symbol targets only)
+  - include=["callers"]   → who calls this symbol (symbol targets only); on a
+                            route file or handler, its in-repo HTTP callers
+  - include=["callees"]   → what this symbol calls (symbol targets only); on a
+                            client file or function, the in-repo routes it calls
   - include=["references"]→ every live edit site of a symbol (definition,
                             imports, calls, other mentions) as line numbers
                             by kind per file, and whether the list is
                             complete (symbol targets only)
   - include=["references+"]→ the same, plus lines naming it in a comment,
                             docstring or sentence
-  - include=["ownership"] → primary owner, bus factor, contributor count; on a
+  - include=["ownership"] → primary owner, bus factor, contributor count, top
+                            committer all time and in 90 days; on a
                             component target, declared owners against recent
                             activity, with findings
-  - include=["last_change"]→ last commit date, and its author when stored
+  - include=["last_change"]→ last commit date, and its author when stored; on a
+                            symbol, the newest commit on its lines with its ref
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
   - include=["decisions"] → decisions governing the target, in three labelled
@@ -39,9 +43,14 @@ Optional ``include`` parameter widens the response:
   - include=["symbols"]   → every symbol in a file card, not the ranked top 15
   - include=["facts"]     → a symbol card's fact row (awaits, assigned fields,
                             complexity, resolved callers) and direct test links
-  - include=["changes"]   → recent Change Records touching a file target
+  - include=["changes"]   → recent Change Records touching a file target; on a
+                            symbol, the ones that edited its lines
+                            (``changes_scope: "symbol"``), or the file's with
+                            ``changes_scope: "file"`` and the reason
   - include=["suspects"]  → changes merged in the last 14 days ranked against the
-                            targets as a symptom, each with the signals that fired
+                            targets' files and the typed ``symptom`` text (the
+                            targets' path words without one), each with the
+                            signals that fired; a ``symptom`` alone adds it
   - include=["provenance"]→ a file's commits by source (agent, human-attested,
                             unknown) with coverage and the honest agent share
   - include=["files"]     → on a directory, every file under it (capped, with
@@ -86,6 +95,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
 from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._packages import is_package_target, package_cards
+from repowise.server.mcp_server._repo_contracts import attach_contract_lines
 from repowise.server.mcp_server._why_pointer import attach_why_pointer
 from repowise.server.mcp_server._workspace_routing import (
     needs_routing,
@@ -149,25 +159,24 @@ async def get_context(
     repo: str | None = None,
     symptom: str | None = None,
 ) -> dict:
-    """Triage card for files / modules / symbols — relationships, not source bytes.
+    """Triage card for files, modules or symbols: relationships, not source bytes.
 
     Returns summary, signatures with lines, hotspot, fix_history and
     decision titles; either risk cue means get_risk. Batch targets in one
     call. Whole file, body-elided and line-verified: include=["skeleton"]
     in ONE call, or Read it; do not call get_symbol per signature. Rename:
-    include=["references"] is the whole edit set when ``complete``. Which
+    include=["references"] is the whole edit set when `complete`. Which
     files in a directory lack tests: include=["files"] on it.
 
     Args:
-        targets: paths, "path::Symbol", "component:<name>",
-            "change:<id>" (pr-123 or a sha), "package:<name>".
-        include: callers | callees | references (+ adds comments) | skeleton | skeleton+
-            | files | symbols (all, not top 15) | decisions | full_doc
-            | ownership | last_change | metrics | community | health
-            | doc_drift | changes | provenance | suspects | facts.
+        targets: Paths, "path::Symbol", "component:<name>", "change:<pr-123 or sha>",
+            "package:<name>".
+        include: callers | callees | references | skeleton | files | symbols
+            | decisions | full_doc | ownership | last_change | health | doc_drift
+            | changes | suspects (pass symptom=).
         compact: False adds structure, imports, docstrings.
-        symptom: issue text or stack trace to rank ``suspects`` on.
-        repo: usually omitted.
+        symptom: Issue text or stack trace.
+        repo: Usually omitted.
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")
@@ -183,10 +192,9 @@ async def get_context(
     collector = OmissionCollector("get_context", repo_root=ctx.path)
     ignored: list[dict[str, Any]] = []
     include_set = _include_set(include, ignored)
-    if symptom and "suspects" not in include_set:
-        ignored.append(
-            {"argument": "symptom", "values": [symptom[:80]], "valid": ['include=["suspects"]']}
-        )
+    # A symptom has one reading: rank suspects on it.
+    if symptom and symptom.strip():
+        include_set.add("suspects")
     exclude_spec = _get_exclude_spec(ctx.path)
 
     import time as _time
@@ -235,6 +243,7 @@ async def get_context(
         await attach_why_pointer(response, ctx, targets)
     _attach_whole_files(response, results)
     _attach_cross_repo(response, ctx.alias)
+    await asyncio.to_thread(attach_contract_lines, response, ctx.path, include_set)
     drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)

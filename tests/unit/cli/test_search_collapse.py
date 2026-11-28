@@ -52,10 +52,6 @@ SYMBOL_HIT = {
     "start_line": 44,
     "end_line": 72,
     "signature": "def resolve_console_width(stream) -> int | None",
-    "qualified_name": "repowise.cli.output.resolve_console_width",
-    "language": "python",
-    "score": 18.0,
-    "next": "get_symbol",
 }
 
 FILE_HIT = {
@@ -64,7 +60,6 @@ FILE_HIT = {
     "title": "File: packages/cli/src/repowise/cli/helpers.py",
     "path": "packages/cli/src/repowise/cli/helpers.py",
     "score": 140.0,
-    "next": "get_context",
 }
 
 META = {
@@ -328,6 +323,12 @@ def test_a_symbol_hit_keeps_the_id_that_makes_it_followable():
     assert out["mode"] == "symbol"
 
 
+def test_a_symbol_hit_carries_no_score():
+    """The tool serves symbol rows ranked by order, without a score."""
+    row = project(SYMBOL_PAYLOAD, "resolve_console_width", multi=False)["results"][0]
+    assert set(row) == {"type", "name", "kind", "path", "line", "symbol_id"}
+
+
 def test_hybrid_rows_say_which_shape_they_are():
     """The old payload needed no ``type``: every row in a response was a page.
     A hybrid interleave mixes shapes, so without it a consumer cannot tell
@@ -558,13 +559,13 @@ def test_a_bracketed_snippet_is_not_eaten_by_rich(monkeypatch, repo):
 def test_symbol_mode_renders_the_symbol_table_not_the_page_table(monkeypatch, repo):
     result = _search(monkeypatch, ["resolve_console_width", "--mode", "symbol"], repo,
                      SYMBOL_PAYLOAD)
-    assert "Qualified Name" in result.output
-    assert "repowise.cli.output.resolve_console_width" in result.output
+    assert "Symbol ID" in result.output
+    assert "Snippet" not in result.output
 
 
 def test_hybrid_renders_both_shapes(monkeypatch, repo):
     result = _search(monkeypatch, ["where is it", "--mode", "hybrid"], repo, HYBRID_PAYLOAD)
-    assert "Qualified Name" in result.output, "the symbol group is missing"
+    assert "Symbol ID" in result.output, "the symbol group is missing"
     assert "Snippet" in result.output, "the page group is missing"
 
 
@@ -1060,6 +1061,7 @@ class _FakeChangeResult:
     risk = type("R", (), {"score": 4.2, "level": "moderate", "top_drivers": []})()
     percentile = None
     priority = None
+    riskignore_excludes: tuple = ()
     request_excludes: tuple = ()
     working_tree = False
     owned_excludes: tuple = ()

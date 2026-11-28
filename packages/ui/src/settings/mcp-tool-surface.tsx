@@ -6,11 +6,15 @@
  *
  * Presentational: the surface comes in as props and every change goes out as
  * the `mcp.tools` value to save, so the dashboard and any other host share it.
+ * The always-load switch is one registry setting (`mcp.always_load`): its help
+ * is the registry's description, the same words `repowise config explain` uses.
  */
 
 import * as React from "react";
 import { Switch } from "../ui/switch";
 import { SettingsRow, SettingsRows, type SaveState } from "./settings-primitives";
+import type { RegistrySetting } from "./settings-registry-types";
+import { formatNumber } from "../lib/format";
 
 export type McpToolProfileName = "core" | "lean" | "standard" | "all";
 
@@ -32,7 +36,12 @@ export interface McpToolSurfaceData {
   profile?: McpToolProfileName | null;
   profiles?: Partial<Record<McpToolProfileName, string[]>>;
   tools: McpToolSurfaceTool[];
+  /** The `repowise config` command that sets this surface. */
+  command?: string;
 }
+
+/** The registry key the always-load switch writes. */
+export const MCP_ALWAYS_LOAD_KEY = "mcp.always_load";
 
 export interface McpToolSurfaceLabels {
   profile: string;
@@ -46,6 +55,9 @@ export interface McpToolSurfaceLabels {
   workspaceOnly: string;
   coreBadge: string;
   tokens: (n: number) => string;
+  /** Before the CLI command that does the same as the control. */
+  sameAs: string;
+  alwaysLoad: string;
 }
 
 export const DEFAULT_MCP_TOOL_SURFACE_LABELS: McpToolSurfaceLabels = {
@@ -61,13 +73,15 @@ export const DEFAULT_MCP_TOOL_SURFACE_LABELS: McpToolSurfaceLabels = {
     `Claude Code loads tool schemas only when needed, so it lists ${standard} tools. ` +
     `Other clients load every schema each turn, so they list the ${core} core tools. ` +
     "Switches below add or remove tools for every client.",
-  summary: (on, tokens) => `${on} tools on, about ${tokens.toLocaleString()} schema tokens per turn on clients that load schemas up front.`,
+  summary: (on, tokens) => `${on} tools on, about ${formatNumber(tokens)} schema tokens per turn on clients that load schemas up front.`,
   summaryPerClient: (standard, others, tokens) =>
-    `Claude Code lists ${standard} tools. Other clients list ${others}, about ${tokens.toLocaleString()} schema tokens per turn.`,
+    `Claude Code lists ${standard} tools. Other clients list ${others}, about ${formatNumber(tokens)} schema tokens per turn.`,
   restart: "Applies when the MCP server next starts: restart it, or your agent.",
   workspaceOnly: "workspace only",
   coreBadge: "core",
   tokens: (n) => `~${n} tokens`,
+  sameAs: "Same as",
+  alwaysLoad: "Load the read tools up front",
 };
 
 /** The `mcp.tools` value for a profile plus the switches that differ from it. */
@@ -100,6 +114,53 @@ export interface McpToolSurfaceEditorProps {
   saveState?: SaveState;
   saveError?: string | null;
   labels?: Partial<McpToolSurfaceLabels>;
+  /** The `mcp.always_load` setting as the settings API lists it; no switch without it. */
+  alwaysLoad?: RegistrySetting | null;
+  onAlwaysLoadChange?: (on: boolean) => void;
+}
+
+function CommandLine({ prefix, command }: { prefix: string; command: string }) {
+  return (
+    <span className="mt-1 block">
+      {prefix}{" "}
+      <code className="break-all font-mono text-[11px] text-[var(--color-text-secondary)]">{command}</code>
+    </span>
+  );
+}
+
+/** The `mcp.always_load` switch: the registry's description, and the command that does the same. */
+function AlwaysLoadRow({
+  setting,
+  onChange,
+  labels,
+  saveState,
+  saveError,
+}: {
+  setting: RegistrySetting;
+  onChange?: ((on: boolean) => void) | undefined;
+  labels: McpToolSurfaceLabels;
+  saveState?: SaveState | undefined;
+  saveError?: string | null | undefined;
+}) {
+  const id = React.useId();
+  const on = setting.value === true;
+  const readOnly = !onChange || setting.writable === false || setting.locked === true;
+  return (
+    <SettingsRow
+      inline
+      label={labels.alwaysLoad}
+      htmlFor={id}
+      hint={
+        <>
+          {setting.description}
+          <CommandLine prefix={labels.sameAs} command={`repowise config set ${MCP_ALWAYS_LOAD_KEY} ${on}`} />
+        </>
+      }
+      {...(saveState ? { saveState, saveError: saveError ?? null } : {})}
+    >
+      <Switch id={id} checked={on} disabled={readOnly} onCheckedChange={(v) => onChange?.(v)} />
+    </SettingsRow>
+  );
 }
 
 export function McpToolSurfaceEditor({
@@ -112,6 +173,8 @@ export function McpToolSurfaceEditor({
   saveState,
   saveError,
   labels: overrides,
+  alwaysLoad,
+  onAlwaysLoadChange,
 }: McpToolSurfaceEditorProps) {
   const labels = { ...DEFAULT_MCP_TOOL_SURFACE_LABELS, ...overrides };
   const selectId = React.useId();
@@ -150,9 +213,18 @@ export function McpToolSurfaceEditor({
             ))}
           </select>
         </SettingsRow>
+        {alwaysLoad && (
+          <AlwaysLoadRow
+            setting={alwaysLoad}
+            onChange={onAlwaysLoadChange}
+            labels={labels}
+            {...(savedTool === MCP_ALWAYS_LOAD_KEY ? { saveState, saveError } : {})}
+          />
+        )}
       </SettingsRows>
       <p className="text-xs text-[var(--color-text-secondary)]">
         {profile ? labels.summary(on.length, tokens) : labels.summaryPerClient(on.length, upFront.length, tokens)}
+        {surface.command && <CommandLine prefix={labels.sameAs} command={surface.command} />}
       </p>
       <SettingsRows>
         {surface.tools.map((tool) => {

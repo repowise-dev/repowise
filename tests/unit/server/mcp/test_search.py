@@ -35,6 +35,16 @@ async def test_search_codebase(setup_mcp):
     assert len(result["results"]) >= 1
 
 
+def _federate_one_repo(monkeypatch):
+    """Keep ``repo="all"`` on the fan-out path over the one fixture repo, which
+    a single-repo server otherwise serves as a plain search."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_search import tool
+
+    monkeypatch.setattr(tool, "_state", SimpleNamespace(_registry=object()))
+
+
 def _mk_result(page_id, title, page_type, target_path, score):
     from repowise.core.persistence.search import SearchResult
 
@@ -408,23 +418,25 @@ class TestNoiseDemotion:
         # Only file pages classify as test pages, never decision/concept pages.
         assert not _is_test_page({"page_type": "decision_record", "target_path": ""})
 
-    def test_is_test_page_keeps_support_and_lookalikes_ranked(self):
-        """Demotion is tests only, and only real tests (#1103).
+    def test_is_test_page_follows_code_origin(self):
+        """Test code by ``code_origin``, support included; lookalikes stay (#1103).
 
         The substring token list this used to run on demoted every production
-        file whose path merely contained "test_", and demoted the fixtures a
-        "where are the shared fixtures" query is asking for.
+        file whose path merely contained "test_". A query that wants fixtures
+        or mocks names them, which ranks every test row naturally.
         """
-        from repowise.server.mcp_server.tool_search import _is_test_page
+        from repowise.server.mcp_server.tool_search import _is_test_page, _is_test_query
 
         def page(path: str) -> dict:
             return {"page_type": "file_page", "target_path": path}
 
-        # Test support keeps its rank: it is often the answer. Leading segments
-        # on purpose — the token list this replaced anchored on "/tests/", so a
-        # root-level path would pass for the wrong reason.
-        assert not _is_test_page(page("packages/core/tests/conftest.py"))
-        assert not _is_test_page(page("packages/core/tests/factories/user.py"))
+        # Test support is test code; a fixtures query is a test query.
+        assert _is_test_page(page("packages/core/tests/conftest.py"))
+        assert _is_test_page(page("test/mocks/router/router_filter_interface.h"))
+        assert _is_test_query("where are the shared fixtures")
+        assert _is_test_query("router filter mocks")
+        # A stored origin wins over the path.
+        assert not _is_test_page(page("tests/helpers.py"), {"tests/helpers.py": "production"})
         # Production code that merely spells "test".
         assert not _is_test_page(page("src/analysis/missing_test_signal.py"))
         assert not _is_test_page(page("src/latest/api.py"))
@@ -580,18 +592,12 @@ class TestClassifyHitKind:
         assert _classify_hit_kind("pyproject.toml", "file_page") == "config"
         assert _classify_hit_kind("docs/guide.md", "file_page") == "doc"
 
-    def test_kind_test_covers_support_unlike_the_demotion(self):
-        """``kind`` splits the repo in two, so a fixture lands on the test side.
-
-        Deliberately a different answer from ``_is_test_page``: nobody asking
-        for ``kind="implementation"`` wants a conftest back, but a fixture page
-        should still rank normally on an ordinary query.
-        """
-        from repowise.server.mcp_server.tool_search import _classify_hit_kind, _is_test_page
+    def test_kind_test_covers_support(self):
+        """``kind`` splits the repo in two, so a fixture lands on the test side."""
+        from repowise.server.mcp_server.tool_search import _classify_hit_kind
 
         for path in ("packages/core/tests/conftest.py", "packages/core/tests/factories/user.py"):
             assert _classify_hit_kind(path, "file_page") == "test"
-            assert not _is_test_page({"page_type": "file_page", "target_path": path})
         # Config beats test: a workflow named for tests is still a workflow.
         assert _classify_hit_kind(".github/workflows/tests.yml", "file_page") == "config"
         # Case-sensitive rules survive: the classifier must not see a lowercased
@@ -680,42 +686,48 @@ class TestDecisionDemotionAndRescue:
 
 
 class TestSymbolTestPenalty:
-    """The -5 a symbol takes for living in a test file (#1103)."""
+    """What a symbol in demoted code (test, generated, vendored) costs."""
 
     @staticmethod
-    def _score(path: str, language: str = "python", query: str = "build index") -> float:
+    def _score(query: str = "build index", **kw) -> float:
         from repowise.core.persistence.models import WikiSymbol
-        from repowise.server.mcp_server.tool_search_symbols import _score_symbol
+        from repowise.server.mcp_server.tool_search_symbols import _score_symbol, _tokens
 
         row = WikiSymbol(
-            name="build_index",
-            qualified_name="build_index",
-            file_path=path,
-            language=language,
+            name="build_index", qualified_name="build_index", file_path="a.py", language="python"
         )
-        # No graph node: symbol nodes never carry `is_test`, so the path rules
-        # are what decide here in practice.
-        return _score_symbol(row, None, {"build", "index"}, query)
+        return _score_symbol(row, None, _tokens(query), query.lower(), **kw)
 
-    def test_tests_are_penalised_and_support_is_not(self):
-        base = self._score("src/indexing/build.py")
-        assert self._score("packages/core/tests/test_build.py") == base - 5.0
-        # An exact match is left to the shared rank key, which puts kind first.
-        exact = self._score("src/indexing/build.py", query="build_index")
-        assert self._score("packages/core/tests/test_build.py", query="build_index") == exact
-        assert self._score("myapp/tests.py") == base - 5.0
-        # A fixture factory is often what the query was after.
-        assert self._score("packages/core/tests/conftest.py") == base
-        assert self._score("packages/core/tests/factories/user.py") == base
-        # Production code that merely spells "test".
-        assert self._score("src/analysis/missing_test_signal.py") == base
+    def test_demoted_code_ranks_below_its_tier_but_not_across_it(self):
+        fuzzy, exact = self._score(), self._score("build_index")
+        assert self._score(demoted=True) == fuzzy - 30.0
+        # Exact matches pay too, so production code of the same name leads...
+        assert self._score("build_index", demoted=True) == exact - 30.0
+        # ...but an exact demoted match still beats any fuzzy production one.
+        assert self._score("build_index", demoted=True) > fuzzy + 15.0
+        assert self._score(in_named_file=True) == fuzzy + 15.0
 
-    def test_language_decides_the_ambiguous_spec_dir(self):
-        base = self._score("src/indexing/build.py")
-        # RSpec for Ruby, a specifications folder for anything else — the same
-        # call the traverser made when it stamped the file's flag.
-        assert self._score("spec/models/user.rb", language="ruby") == base - 5.0
-        assert self._score("spec/openapi/users.py", language="python") == base
+    def test_demoted_origins_follow_the_query(self):
+        from repowise.server.mcp_server._origin_rank import demoted_origins
+
+        assert demoted_origins("how does routing work") == {"test", "generated", "vendored"}
+        assert "test" not in demoted_origins("where are the router mocks")
+        assert "test" not in demoted_origins("decodeHeaders in test/common/router/router_test.cc")
+        assert "generated" not in demoted_origins("where is the generated deepcopy code")
+        assert "generated" not in demoted_origins("zz_generated.deepcopy.go DeepCopyInto")
+        assert "vendored" not in demoted_origins("the vendored yaml parser")
+
+    def test_stored_origin_wins_over_the_path(self):
+        from repowise.server.mcp_server._origin_rank import is_demoted_path
+
+        demoted = frozenset({"test", "generated"})
+        assert is_demoted_path("test/mocks/router/mocks.h", demoted)
+        # Generated code is mostly known by its banner, which only the stored origin saw.
+        gen = "pkg/apis/v1/zz_generated.deepcopy.go"
+        assert is_demoted_path(gen, demoted, {gen: "generated"})
+        assert not is_demoted_path("src/router.cc", demoted)
+        assert not is_demoted_path("spec/openapi/users.py", demoted, {"spec/openapi/users.py": "production"})
+        assert is_demoted_path("lib/fake_clock.py", demoted, {"lib/fake_clock.py": "test"})
 
 
 def test_symbol_coverage_folds_plurals_on_both_sides():
@@ -793,7 +805,8 @@ class TestSymbolSearch:
         assert top["path"] == "src/auth/service.py"
         assert top["start_line"] == 10
         assert top["end_line"] == 100
-        assert top["next"] == "get_symbol"
+        # Ranking fields and the constant pointer stay internal.
+        assert not {"qualified_name", "language", "score", "next"} & set(top)
 
     @pytest.mark.asyncio
     async def test_auto_routes_bare_identifier_to_symbol(self, setup_mcp):
@@ -818,7 +831,7 @@ class TestSymbolSearch:
 
         result = await search_codebase("auth.service.AuthService.login", mode="symbol")
         assert result["results"][0]["symbol_id"] == "src/auth/service.py::login"
-        assert result["results"][0]["qualified_name"] == "auth.service.AuthService.login"
+        assert result["exact_match"] is True
 
     @pytest.mark.asyncio
     async def test_symbol_kind_filter(self, setup_mcp):
@@ -889,7 +902,7 @@ class TestPathSearch:
         assert "src/auth/service.py" in files
         top = result["results"][0]
         assert top["type"] == "file"
-        assert top["next"] == "get_context"
+        assert "next" not in top
 
     @pytest.mark.asyncio
     async def test_a_directory_name_lists_indexed_files_without_a_page(
@@ -910,9 +923,56 @@ class TestPathSearch:
         result = await search_codebase("filters_toml", mode="path")
         files = {r["path"] for r in result["results"]}
         assert files == {"src/filters_toml/infra.toml", "src/filters_toml/README.md"}
-        assert all(r["next"] == "get_context" for r in result["results"])
+        assert all(r["type"] == "file" for r in result["results"])
         globbed = await search_codebase("filters_toml *.toml", mode="path")
         assert "src/filters_toml/infra.toml" in {r["path"] for r in globbed["results"]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "src/auth/service.py|src/db/models.py",
+            "SERVICE.PY|Models.py",
+            "src/auth|src/db",
+            "(service|models)",
+        ],
+    )
+    async def test_alternation_searches_each_alternative(self, setup_mcp, query):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase(query, mode="path")
+        files = [r["path"] for r in result["results"]]
+        # One alternative's best file, then the other's.
+        assert files[0].startswith("src/auth/"), files
+        assert files[1] == "src/db/models.py", files
+        assert not any("_alternative" in r for r in result["results"])
+
+    @pytest.mark.asyncio
+    async def test_a_common_alternative_does_not_crowd_out_the_others(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        for i in range(6):
+            await _seed_page(f"file_page:pkg{i}/service.py", f"pkg{i}/service.py")
+        result = await search_codebase("service.py|models.py", mode="path", limit=3)
+        files = [r["path"] for r in result["results"]]
+        assert "src/db/models.py" in files[:2], files
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("query", ["go.mod", "src/missing.py"])
+    async def test_a_missing_file_name_is_not_sent_to_symbol_search(self, setup_mcp, query):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase(query, mode="path")
+        assert result["results"] == []
+        assert "identifier" not in result.get("grep_hint", "")
+
+    @pytest.mark.asyncio
+    async def test_a_missing_identifier_keeps_its_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("NoSuchConfigClass", mode="path")
+        assert result["results"] == []
+        assert 'mode="symbol"' in result["grep_hint"]
 
     @pytest.mark.asyncio
     async def test_auto_routes_path_shaped_query(self, setup_mcp):
@@ -1170,10 +1230,13 @@ class TestEmptyConceptRecoveryHint:
         assert "grep_hint" not in result
 
     @pytest.mark.asyncio
-    async def test_empty_federated_concept_query_carries_recovery_hint(self, setup_mcp):
+    async def test_empty_federated_concept_query_carries_recovery_hint(
+        self, setup_mcp, monkeypatch
+    ):
         from repowise.server.mcp_server import search_codebase
         from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
 
+        _federate_one_repo(monkeypatch)
         result = await search_codebase("zzqx flurbo wibble", mode="concept", repo="all")
         assert result["results"] == []
         assert result["hint"] == NO_HITS_RECOVERY_HINT
@@ -1321,6 +1384,19 @@ class TestExactMatchSignal:
         result = await search_codebase("AuthService", mode="symbol")
         assert result["exact_match"] is True
         assert "exactly matches" not in result.get("note", "")
+
+    @pytest.mark.asyncio
+    async def test_a_file_name_in_a_question_gets_no_symbol_verdict(self, setup_mcp):
+        # ``Go`` is indexed, and ``plugin.go`` still names a file, not ``Go``.
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_symbol("Go")
+        result = await search_codebase("plugin.go webhook dispatch flow")
+        assert result.get("mode") != "hybrid"
+        assert "exactly matches" not in result.get("note", "")
+        assert "exact_match" not in result
+        named = await search_codebase("service.py AuthService login flow")
+        assert named["exact_match"] is True
 
     @pytest.mark.asyncio
     async def test_fuzzy_only_sets_false_with_note(self, setup_mcp):
@@ -1796,10 +1872,10 @@ async def test_a_bare_name_search_leads_with_the_class_over_a_docs_constant(
     assert res["results"][0]["symbol_id"] == "src/gizmo/core.py::Gizmos"
 
 
-async def test_an_exact_test_class_outranks_an_exact_code_function(
+async def test_an_exact_code_function_outranks_an_exact_test_class(
     session, populated_db, setup_mcp
 ) -> None:
-    """For exact matches the shared key decides, and it ranks kind before test path."""
+    """Exact matches in test code rank below exact production matches, whatever the kind."""
     from repowise.core.persistence.models import WikiSymbol
     from repowise.server.mcp_server.tool_search import search_codebase
 
@@ -1816,9 +1892,12 @@ async def test_an_exact_test_class_outranks_an_exact_code_function(
 
     res = await search_codebase(query="Widgets", limit=5)
     assert [r["symbol_id"] for r in res["results"][:2]] == [
-        "tests/test_widget.py::Widgets",
         "src/widget/core.py::Widgets",
+        "tests/test_widget.py::Widgets",
     ]
+    # Asking about tests ranks them naturally again: the shared key puts kind first.
+    res = await search_codebase(query="Widgets tests", limit=5, mode="symbol")
+    assert res["results"][0]["symbol_id"] == "tests/test_widget.py::Widgets"
 
 
 def _add_symbols(session, rid, rows):
@@ -2058,9 +2137,10 @@ class TestPathlessPagesInCodeLocationModes:
         assert f"{file_page['page_type']}:{file_page['path']}" == "file_page:pkg/cmd/release/list.go"
 
     @pytest.mark.asyncio
-    async def test_federated_rows_carry_path(self, setup_mcp):
+    async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):
         from repowise.server.mcp_server import search_codebase
 
+        _federate_one_repo(monkeypatch)
         await self._seed()
         res = await search_codebase("listing releases in order", mode="concept", repo="all")
         by_type = {r["page_type"]: r for r in res["results"]}
@@ -2510,3 +2590,112 @@ def test_a_path_query_naming_one_directory_names_its_files_call():
     assert _named_directory("jsx", paths) == "src/jsx"
     assert _named_directory("url.ts", paths) is None
     assert _named_directory("src/*", paths) is None
+
+
+@pytest.mark.asyncio
+async def test_a_kind_filter_that_removes_a_named_symbol_says_so(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+
+    res = await search_codebase("AuthService", kind="test", mode="symbol")
+    assert not [r for r in res["results"] if r.get("type") == "symbol"]
+    assert "'AuthService' is indexed but not as kind=test" in res["note"]
+    assert "Recheck the spelling" not in res["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_limit_past_the_cap_is_cut_and_reported(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+    from repowise.server.mcp_server.tool_search.tool import MAX_LIMIT
+
+    res = await search_codebase("AuthService", limit=MAX_LIMIT + 80)
+    assert res["ignored_arguments"] == [
+        {"argument": "limit", "values": [MAX_LIMIT + 80], "clamped_to": MAX_LIMIT}
+    ]
+    assert "ignored_arguments" not in await search_codebase("AuthService", limit=MAX_LIMIT)
+
+
+@pytest.mark.asyncio
+async def test_repo_all_on_a_single_repo_server_searches_that_repo(setup_mcp):
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import search_codebase
+
+    await mcp_mod._vector_store.embed_and_upsert(
+        "file_page:src/auth/service.py",
+        "Auth Service — Main authentication service class",
+        {"title": "Auth Service", "page_type": "file_page", "target_path": "src/auth/service.py"},
+    )
+    every = await search_codebase("authentication service", repo="all")
+    one = await search_codebase("authentication service")
+    assert every["results"] == one["results"]
+    assert not [r for r in every["results"] if "repo" in r]
+
+
+def test_rows_beside_a_filtered_name_are_marked_as_other_symbols():
+    from repowise.server.mcp_server.tool_search.structured import _exact_match_note
+
+    filtered = ("kind=test", ["isLockStale"])
+    served = _exact_match_note(["isLockStale"], False, ["isLockStale"], 0, True, None, filtered)
+    assert "'isLockStale' is indexed but not as kind=test" in served
+    assert "fuzzy neighbours" in served
+    assert "No indexed symbol is named" not in served
+    empty = _exact_match_note(["isLockStale"], False, ["isLockStale"], 0, False, None, filtered)
+    assert "fuzzy neighbours" not in empty
+
+
+def test_a_name_served_from_the_spare_pool_is_not_called_filtered():
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_search.structured import _filtered_names
+
+    plan = SimpleNamespace(kind="test", symbol_kind=None, names={"isLockStale"})
+    row = {"name": "isLockStale"}
+    assert _filtered_names(plan, SimpleNamespace(symbols=[], spare=[row]), ["isLockStale"]) is None
+    hidden = _filtered_names(plan, SimpleNamespace(symbols=[], spare=[]), ["isLockStale"])
+    assert hidden == ("kind=test", ["isLockStale"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query", ["class RetryTransport", "class RetryTransport.", "def RetryTransport("]
+)
+async def test_a_declaration_query_looks_up_the_indexed_name(setup_mcp, query):
+    # Through the real name loader: the keyword is dropped and the name is looked up.
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("RetryTransport")
+
+    result = await search_codebase(query)
+    assert result.get("mode") == "symbol", result
+    assert result["results"][0]["name"] == "RetryTransport"
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_keyword_before_an_unindexed_word_stays_a_search(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("RetryTransport")
+
+    result = await search_codebase("class Unheardof")
+    assert result.get("mode") != "symbol"
+
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_keyword_before_an_indexed_plain_word_stays_a_search(setup_mcp):
+    # ``checking`` is indexed, but a plain lowercase word is never a lookup key,
+    # so "type checking" is prose, not a declaration.
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("checking")
+
+    result = await search_codebase("type checking")
+    assert result.get("mode") != "symbol"
+
+
+def test_a_symbol_in_a_file_the_query_names_is_matched_by_suffix():
+    from repowise.server.mcp_server.tool_search_symbols import _in_named_file
+
+    assert _in_named_file("source/common/router/router.cc", ["source/common/router/router.cc"])
+    assert _in_named_file("source/common/router/router.cc", ["router/router.cc"])
+    assert not _in_named_file("source/common/router/router.h", ["router/router.cc"])
+    assert not _in_named_file("src/myrouter.cc", ["router.cc"])

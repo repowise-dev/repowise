@@ -251,11 +251,18 @@ _CURRENCY_COLUMNS = (
     DecisionRecord.staleness_score,
     DecisionRecord.kind,
     DecisionRecord.artifacts_gone,
+    DecisionRecord.rule_check,
 )
 
 
 def _row_currency(
-    stored: str, files_json: Any, modules_json: Any, staleness: Any, kind: Any, gone: Any
+    stored: str,
+    files_json: Any,
+    modules_json: Any,
+    staleness: Any,
+    kind: Any,
+    gone: Any,
+    rule_check: Any,
 ) -> str:
     """:func:`effective_currency` over the :data:`_CURRENCY_COLUMNS` of one record."""
     fields = {"affected_files": files_json, "affected_modules": modules_json, "kind": kind}
@@ -265,6 +272,7 @@ def _row_currency(
         staleness=staleness or 0.0,
         repo_wide=is_repo_wide(fields),
         artifacts_gone=bool(gone),
+        rule_check=rule_check,
     )
 
 
@@ -1391,6 +1399,8 @@ async def list_candidates(
         func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
         DecisionRecord.confidence.desc(),
         DecisionRecord.created_at.desc(),
+        # Last, so the order is total and an offset pages it without skipping a record.
+        DecisionRecord.id,
     ).limit(limit).offset(offset)
     return [(rec, meta) for rec, meta in (await session.execute(q)).all()]
 

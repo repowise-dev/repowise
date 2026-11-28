@@ -244,6 +244,53 @@ def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
     assert result[0].callee_id.endswith("::Product::run")
 
 
+def _python_chain_edges(tmp_path: Path, use_source: str) -> set[tuple[int, str]]:
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "app").mkdir()
+    parsed = {}
+    parsed.update(
+        _parse(
+            tmp_path,
+            "tools/confirm.py",
+            "python",
+            "def resolve(key):\n    return key\n\n\nclass Job:\n    def start(self):\n        pass\n",
+        )
+    )
+    parsed.update(_parse(tmp_path, "app/run.py", "python", use_source))
+    imports = {"tools/confirm.py": set(), "app/run.py": {"tools/confirm.py"}}
+    resolver = CallResolver(parsed, imports, repo_path=str(tmp_path))
+    calls = parsed["app/run.py"].calls
+    return {(e.line, e.callee_id) for e in resolver.resolve_file("app/run.py", calls)}
+
+
+def test_python_chain_on_a_call_result_never_binds_a_module_function(tmp_path: Path) -> None:
+    edges = _python_chain_edges(
+        tmp_path,
+        "import json\nfrom pathlib import Path\n"
+        "root = Path(__file__).resolve()\n"
+        "data = json.loads('1').resolve()\n"
+        "name = str(root).resolve()\n",
+    )
+
+    assert edges == set()
+
+
+def test_python_chain_keeps_a_bare_name_method(tmp_path: Path) -> None:
+    edges = _python_chain_edges(tmp_path, "def make(x):\n    return x\n\nmake(1).start()\n")
+
+    assert edges == {(4, "app/run.py::make"), (4, "tools/confirm.py::Job::start")}
+
+
+def test_python_chain_on_a_repo_function_may_reach_a_module_function(tmp_path: Path) -> None:
+    # A lazy module accessor hands back a module, whose functions are its attributes.
+    edges = _python_chain_edges(
+        tmp_path,
+        "def _lazy():\n    from tools import confirm\n    return confirm\n\n_lazy().resolve(1)\n",
+    )
+
+    assert (5, "tools/confirm.py::resolve") in edges
+
+
 def _java_chain_call(parsed: dict[str, ParsedFile], path: str, outer: str):
     return next(
         c
@@ -417,8 +464,61 @@ def test_go_chain_on_an_external_return_type_refuses_the_bare_name(tmp_path: Pat
         "cmd/run.go", [call]
     )
 
+    # Without the lane only the inner call is known: a repo function, which may
+    # hand back a package, so the bare name stays.
     assert [edge.callee_id for edge in before] == ["logging/log.go::Err"]
     assert after == []
+
+
+_GO_ENGINE = (
+    'package web\n\nimport "net/http"\n\ntype Engine struct{}\n\n'
+    "func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {}\n"
+)
+
+
+def _go_web_chain(tmp_path: Path, caller: str, outer: str) -> list[str]:
+    """Callee ids of the chained call *outer* in ``web/use.go``, one package with ``Engine``."""
+    (tmp_path / "web").mkdir(exist_ok=True)
+    parsed = {}
+    parsed.update(_parse(tmp_path, "web/engine.go", "go", _GO_ENGINE))
+    parsed.update(_parse(tmp_path, "web/use.go", "go", caller))
+    call = next(c for c in parsed["web/use.go"].calls if c.target_name == outer and c.receiver_call)
+    resolver = CallResolver(parsed, {}, repo_path=str(tmp_path))
+    return [edge.callee_id for edge in resolver.resolve_file("web/use.go", [call])]
+
+
+def test_go_chain_on_a_library_call_is_not_a_repo_method(tmp_path: Path) -> None:
+    """``http.FileServer(fs).ServeHTTP(w, r)`` is the library handler's method, not the
+    package's one ``ServeHTTP``: a chain on a library call keeps no bare-name edge."""
+    caller = (
+        'package web\n\nimport "net/http"\n\n'
+        "func serve(fs http.FileSystem, w http.ResponseWriter, r *http.Request) {\n"
+        "\thttp.FileServer(fs).ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == []
+
+
+def test_go_chain_on_a_repo_function_value_keeps_the_bare_name(tmp_path: Path) -> None:
+    """``engine()`` calls a function value the package declares, so its result may be the
+    package's ``Engine`` and the bare name stays (the lane cannot type a variable)."""
+    caller = (
+        'package web\n\nimport (\n\t"net/http"\n\t"sync"\n)\n\n'
+        "var engine = sync.OnceValue(func() *Engine { return &Engine{} })\n\n"
+        "func serve(w http.ResponseWriter, r *http.Request) {\n\tengine().ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == ["web/engine.go::Engine::ServeHTTP"]
+
+
+def test_go_chain_on_a_variable_holding_a_library_function_is_not_a_repo_method(
+    tmp_path: Path,
+) -> None:
+    """``var h = http.NotFoundHandler``: ``h()`` returns the library's handler."""
+    caller = (
+        'package web\n\nimport "net/http"\n\n'
+        "var h = http.NotFoundHandler\n\n"
+        "func serve(w http.ResponseWriter, r *http.Request) {\n\th().ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == []
 
 
 def test_go_chain_on_a_repository_return_type_binds_its_method(tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ def _build_update_vector_store(
     degraded: list[str] | None = None,
     *,
     required: bool = False,
+    summaries: bool = False,
 ) -> Any | None:
     """Build the shared page/decision vector store for the update path.
 
@@ -34,13 +35,26 @@ def _build_update_vector_store(
     it. A failure is recorded in *degraded* (when given) so the run's degraded
     panel says why semantic dedup is off instead of silently skipping it
     (issue #1370).
+
+    *summaries*: page generation reads earlier summaries from this store, so a
+    keyless embedder still gets one (see ``build_vector_store``).
     """
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
+        from repowise.cli.providers.vector_store import _mock_would_clobber
+        from repowise.core.providers.embedding import is_semantic_embedder
 
         embedder = build_embedder(resolve_embedder(cfg.get("embedder"), repo_path=repo_path), repo_path)
-        store = build_vector_store(repo_path, embedder)
-        if required and store is None and (Path(repo_path) / ".repowise" / "lancedb").exists():
+        store = build_vector_store(repo_path, embedder, summaries=summaries)
+        # A keyless run gets no store by design, and a keyless-width store it
+        # leaves alone needs no refresh; a refused write into a real one does.
+        lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+        if (
+            required
+            and store is None
+            and lance_dir.exists()
+            and (is_semantic_embedder(embedder) or _mock_would_clobber(lance_dir, embedder))
+        ):
             raise RuntimeError(
                 "the configured embedder cannot safely refresh the existing vector index"
             )

@@ -8,11 +8,15 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.analysis.changed_lines import shallow_roots
+from repowise.core.author_identity import TRAILER_PERSON_RE, accountable_human
 
 from ._constants import _CODE_EXTENSIONS
+
+if TYPE_CHECKING:
+    from repowise.core.author_identity import IdentityResolver
 
 __all__ = [
     "_FIELD_SEP",
@@ -91,6 +95,20 @@ class _CommitRec:
     # The commit only moved this file (a rename row with 0/0 lines). It counts
     # as one of the file's commits but credits nobody with ownership.
     pure_move: bool = False
+    # The person ownership credits when a coding agent authored the commit
+    # (``author_identity.accountable_human``); None keeps the author.
+    credit: tuple[str, str] | None = None
+
+
+def commit_credit(header: dict) -> tuple[str, str] | None:
+    """:attr:`_CommitRec.credit` for one parsed commit header."""
+    return accountable_human(
+        header["author_name"],
+        header["author_email"],
+        header.get("committer_name"),
+        header.get("committer_email"),
+        header.get("body"),
+    )
 
 
 def _tz_offset_minutes(iso: str) -> int | None:
@@ -521,39 +539,52 @@ def _lifetime_churn(
     return _walk_churn(repo, rev)
 
 
-# ``Name <email>`` inside a ``Co-authored-by`` trailer value.
-_TRAILER_PERSON_RE = re.compile(r"^\s*(?P<name>[^<]*?)\s*<(?P<email>[^>]*)>\s*$")
-
-
-def count_people(repo: Any, rev: str) -> int:
-    """Humans who authored a non-merge commit reachable from *rev*.
+def repo_people(repo: Any, rev: str = "HEAD") -> IdentityResolver:
+    """The shared people resolver over every non-merge author reachable from *rev*.
 
     One ``git log --no-merges`` pass reads each commit's mailmap-applied author
-    and its ``Co-authored-by`` trailers, and the shared people resolver folds
-    one person's several names and emails into one (trailers are evidence
-    only). Automation is not counted.
+    and its ``Co-authored-by`` trailers (evidence only, see
+    :func:`~repowise.core.analysis.owners.people_resolver`). The indexer keys
+    every per-file author figure on it, so one person who commits under two
+    names or a real and a noreply email is one author on every file.
     """
     from repowise.core.analysis.owners import people_resolver
 
     out = repo.git.log(
         "--no-merges",
-        "--format=%aN%x00%aE%x00%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
+        "--format=%aN%x00%aE%x00%cN%x00%cE%x00"
+        "%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
         rev,
     )
     rows = []
     for line in out.splitlines():
-        name, _, rest = line.partition("\0")
-        email, _, trailers = rest.partition("\0")
-        co_authors = [
-            (m["name"], m["email"])
-            for value in trailers.split("\x1f")
-            if (m := _TRAILER_PERSON_RE.match(value))
-        ]
+        name, email, c_name, c_email, trailers = (line.split("\0") + [""] * 5)[:5]
+        values = [v for v in trailers.split("\x1f") if v]
+        co_authors = [(m["name"], m["email"]) for v in values if (m := TRAILER_PERSON_RE.match(v))]
         rows.append({"author_name": name, "author_email": email, "co_authors": co_authors})
-    return len(people_resolver(commit_rows=rows).people())
+        # The person a coding agent's commit is credited to (see
+        # :attr:`_CommitRec.credit`) is one of the repo's people, so their
+        # names and emails fold like any author's.
+        body = "\n".join(f"Co-authored-by: {v}" for v in values)
+        credit = accountable_human(name, email, c_name, c_email, body)
+        if credit:
+            rows.append({"author_name": credit[0], "author_email": credit[1]})
+    return people_resolver(commit_rows=rows)
 
 
-def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotals:
+def count_people(repo: Any, rev: str) -> int:
+    """Humans who authored a non-merge commit reachable from *rev*, or are
+    credited with one a coding agent authored (:func:`repo_people`).
+
+    The shared people resolver folds one person's several names and emails
+    into one. Automation is not counted.
+    """
+    return len(repo_people(repo, rev).people())
+
+
+def capture_repo_totals(
+    repo: Any, prior: RepoTotals | None = None, people: IdentityResolver | None = None
+) -> RepoTotals:
     """Whole-history stats for *repo* via a handful of cheap git calls.
 
     *prior* is the last capture's own return value, read back from storage. It
@@ -578,6 +609,9 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
       histories) use the earliest root.
     - one ``git log --no-merges`` over author names and emails — the
       all-time count of people (see :func:`count_people`).
+
+    *people* is a :func:`repo_people` resolver the caller already built over
+    the same history; passing it skips the author walk.
 
     Lifetime churn is the one exception: it walks the history, so it is capped
     (see :func:`_lifetime_churn`).
@@ -621,7 +655,9 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
         pass
 
     with contextlib.suppress(Exception):
-        totals.total_contributor_count = count_people(repo, rev)
+        totals.total_contributor_count = (
+            len(people.people()) if people is not None else count_people(repo, rev)
+        )
 
     totals.total_lines_added, totals.total_lines_deleted = _lifetime_churn(
         repo, totals.total_commit_count, rev, head_sha, prior

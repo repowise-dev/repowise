@@ -5,9 +5,9 @@ import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
 
 /** Whether a nav item's page is new, and its accessible name with the mark
  *  spelled out (the icon rail shows only a dot). */
-export function useNavNewMark(href: string, label: string) {
+export function useNavNewMark(href: string, label: string, exact?: boolean) {
   const t = useTranslations("shell");
-  const isNew = useIsNewSurface()(href);
+  const isNew = useIsNewSurface()(href, exact);
   return { isNew, ariaLabel: isNew ? `${label}, ${t("newMark")}` : label };
 }
 

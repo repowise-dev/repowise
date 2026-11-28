@@ -292,3 +292,10 @@ def test_e_does_not_ask_file_pages_a_workspace_would_ignore(screen: Any, monkeyp
     plan = screen.drive(EDIT, START)
     assert plan.sync is False
     assert plan.answers.index_only is True
+
+
+def test_the_screen_opens_on_the_default_primary(screen: Any, monkeypatch: Any) -> None:
+    monkeypatch.setattr(screen.module, "default_primary", lambda repos: "service-2")
+    plan = screen.drive(START)
+    assert plan.primary_alias == "service-2"
+    assert plan.primary_default == "service-2"

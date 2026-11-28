@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from pathlib import Path
 
 from .credentials import _string_end
 
@@ -142,3 +144,113 @@ def _match_starting_in(pattern: re.Pattern, line: str, kept: str) -> re.Match | 
         if start < len(kept) and not kept[start].isspace():
             return match
     return None
+
+
+# A Gradle signing block that names its keystore by a literal path, Kotlin DSL
+# (``storeFile = file("$rootDir/tools/debug.jks")``) or Groovy
+# (``storeFile file('debug.keystore')``).
+_GRADLE_STORE_FILE = re.compile(r"""\bstoreFile\s*=?\s*\(?\s*file\(\s*["']([^"']+)["']""")
+_GRADLE_DIR_VARS = re.compile(r"\$\{?(rootDir|projectDir)\b\}?/?")
+
+
+def _lower_committed_keystore_passwords(
+    findings: list[dict],
+    file_path: str,
+    lines: list[str],
+    code_lines: Callable[[], list[str]],
+    repo_root: str | None,
+) -> None:
+    """Lower a Gradle signing block's password when its keystore is committed to this repository.
+
+    A keystore checked in beside its password is public with it, so the
+    password guards nothing: a debug keystore, or the fallback one a project
+    ships so forks can build a release. *code_lines* gives the lines with
+    comments and strings blanked, so a brace in either does not move a block's
+    end. Without *repo_root* nothing is read from disk and nothing changes.
+    """
+    passwords = [f for f in findings if f["kind"] == "hardcoded_password"]
+    if not (passwords and repo_root and file_path.endswith((".gradle", ".gradle.kts"))):
+        return
+    root = Path(repo_root).resolve()
+    committed = _committed_keystore_lines(lines, code_lines(), root, (root / file_path).parent)
+    for finding in passwords:
+        if finding["line"] in committed:
+            finding["severity"] = "low"
+
+
+def _walk_braces(text: str, depth: int) -> tuple[int, int]:
+    """The brace depth after *text*, and the lowest it reached on the way."""
+    lowest = depth
+    for char in text:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            lowest = min(lowest, depth)
+    return depth, lowest
+
+
+def _committed_keystore_lines(
+    lines: list[str], code_lines: list[str], root: Path, project_dir: Path
+) -> set[int]:
+    """Lines inside a block whose ``storeFile`` names a committed keystore.
+
+    The block runs from the ``storeFile`` line to the brace that closes the
+    block holding it. A line holding that brace counts only when it also opened
+    the block, so ``} else { storePassword = ... }`` stays out. Ceiling: a
+    password written above its ``storeFile`` line is not covered.
+    """
+    committed: set[int] = set()
+    depth = 0
+    block = -1  # depth of the block a committed keystore opened; -1 when none is open
+    for lineno, (line, code) in enumerate(zip(lines, code_lines, strict=False), start=1):
+        opened = False
+        if match := _GRADLE_STORE_FILE.search(line):
+            depth = _walk_braces(code[: match.start()], depth)[0]
+            committed_file = _is_committed_file(match.group(1), root, project_dir)
+            block = depth if depth > 0 and committed_file else -1
+            code = code[match.start() :]
+            opened = block >= 0
+        inside = 0 <= block <= depth
+        depth, lowest = _walk_braces(code, depth)
+        if lowest < block:
+            block = -1
+            inside = opened
+        if inside:
+            committed.add(lineno)
+    return committed
+
+
+def _gradle_root(project_dir: Path, root: Path) -> Path:
+    """Gradle's ``rootDir``: the nearest folder up from *project_dir* holding a settings file.
+
+    A build can sit in a subfolder of the repository; *root* when none is found.
+    """
+    for folder in (project_dir, *project_dir.parents):
+        if (folder / "settings.gradle").is_file() or (folder / "settings.gradle.kts").is_file():
+            return folder
+        if folder == root:
+            break
+    return root
+
+
+def _is_committed_file(written: str, root: Path, project_dir: Path) -> bool:
+    """Whether the Gradle ``file(...)`` path *written* names a file inside *root* git keeps.
+
+    A keystore the root ``.gitignore`` leaves out is a developer's own release
+    key, however it got onto the disk.
+    """
+
+    def base(match: re.Match[str]) -> str:
+        return f"{_gradle_root(project_dir, root) if match.group(1) == 'rootDir' else project_dir}/"
+
+    path = _GRADLE_DIR_VARS.sub(base, written)
+    if "$" in path:
+        return False  # built from a property or an environment value
+    target = (project_dir / path).resolve()
+    if not (target.is_relative_to(root) and target.is_file()):
+        return False
+    # Imported here: ingestion imports the analysis packages.
+    from repowise.core.ingestion.traverser import load_gitignore_spec
+
+    return not load_gitignore_spec(root).match_file(target.relative_to(root).as_posix())

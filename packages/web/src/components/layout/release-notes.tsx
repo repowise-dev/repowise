@@ -52,8 +52,12 @@ export function ReleaseHeader({
   );
 }
 
-/** One release below its header: summary, the numbers, highlights, then
- *  every change. */
+/** Changes a section can hold and still open on its own; a longer one opens
+ *  on a click (a release's Added list runs to forty bullets). */
+const OPEN_UP_TO = 5;
+
+/** One release below its header, ordered for a scan: the highlights, the
+ *  summary, the numbers, then every change. */
 export function ReleaseNotes({
   entry,
   repoId,
@@ -72,18 +76,12 @@ export function ReleaseNotes({
   const sections = entry.sections.filter((s) => s.items.length > 0);
 
   return (
-    <article className={`space-y-10 ${ENTER}`} aria-labelledby={`release-${entry.version}`}>
-      {entry.summary && (
-        <div className="max-w-[68ch] text-[var(--color-text-secondary)] [text-wrap:pretty]">
-          <Markdown content={linkPullRequests(entry.summary)} density="narrow" fill />
-        </div>
-      )}
-      {entry.stats && <ReleaseNumbers stats={entry.stats} />}
+    <article className={`space-y-8 ${ENTER}`} aria-labelledby={`release-${entry.version}`}>
       {highlights.length > 0 && (
         <Block id={`highlights-${entry.version}`} title={t("highlightsTitle")}>
-          <ul className="grid gap-3 min-[561px]:grid-cols-2 min-[561px]:[&>li:last-child:nth-child(odd)]:col-span-2">
+          <ul className={`${MOMENT_CARD} divide-y divide-[var(--color-border-default)] overflow-hidden`}>
             {highlights.map((h, i) => (
-              <li key={h.id} className="flex">
+              <li key={h.id}>
                 <HighlightItem
                   highlight={h}
                   href={resolveHighlightHref(h.href, repoId)}
@@ -96,6 +94,14 @@ export function ReleaseNotes({
           </ul>
         </Block>
       )}
+      {entry.summary && (
+        // The summary is support for the highlights above it: caption-sized
+        // prose at a short measure, with air between its paragraphs.
+        <div className="max-w-[72ch] [&_p]:mb-3 [&_p]:leading-5 [&_p]:text-[var(--color-text-secondary)] [&_p:last-child]:mb-0 [&_p]:[text-wrap:pretty]">
+          <Markdown content={linkPullRequests(entry.summary)} density="compact" fill />
+        </div>
+      )}
+      {entry.stats && <ReleaseNumbers stats={entry.stats} />}
       {sections.length > 0 && (
         <Block id={`all-${entry.version}`} title={t("everything")}>
           <div className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
@@ -121,8 +127,8 @@ function Block({ id, title, children }: { id: string; title: string; children: R
   );
 }
 
-/** Every highlight is the same card, keyed by its series dot; one with a page
- *  opens it, one without says where it lives. */
+/** One highlight row, keyed by its series dot: title, blurb, and "Open" when
+ *  it has a page; one whose page needs a repository says so. */
 function HighlightItem({
   highlight: h,
   href,
@@ -139,27 +145,28 @@ function HighlightItem({
 }) {
   const t = useTranslations("shell.whatsNewModal");
   const body = (
-    <>
-      <p className={`${MOMENT_BODY} flex items-start gap-3 font-medium text-[var(--color-text-primary)]`}>
-        <span className="flex min-w-0 items-center gap-2">
-          <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: color }} />
-          {h.title}
-        </span>
+    <span className="min-w-0 flex-1">
+      <span className={`${MOMENT_BODY} flex items-center gap-2 font-medium text-[var(--color-text-primary)]`}>
+        <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: color }} />
+        <span className="min-w-0">{h.title}</span>
         {fresh && <NewMark />}
-      </p>
-      {h.blurb && <p className={`${MOMENT_CAPTION} mt-1 pl-3.5`}>{h.blurb}</p>}
-    </>
+      </span>
+      {h.blurb && <span className={`${MOMENT_CAPTION} mt-0.5 block pl-3.5`}>{h.blurb}</span>}
+      {!href && h.href && (
+        <span className="mt-1 block pl-3.5 text-xs text-[var(--color-text-tertiary)]">{t("inEachRepo")}</span>
+      )}
+    </span>
   );
-  const card = `${MOMENT_CARD} flex w-full flex-col p-4`;
+  const row = "flex items-start gap-4 px-4 py-3";
   if (href) {
     return (
       <Link
         href={href}
         onClick={onNavigate}
-        className={`${card} group no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]`}
+        className={`${row} group no-underline transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)]`}
       >
         {body}
-        <span className="mt-auto inline-flex items-center gap-1 pl-3.5 pt-3 text-xs font-medium text-[var(--color-text-primary)]">
+        <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-xs font-medium leading-5 text-[var(--color-text-primary)]">
           {t("open")}
           <ArrowRight
             aria-hidden
@@ -169,21 +176,21 @@ function HighlightItem({
       </Link>
     );
   }
-  return (
-    <div className={card}>
-      {body}
-      {h.href && <p className="mt-auto pl-3.5 pt-3 text-xs text-[var(--color-text-tertiary)]">{t("inEachRepo")}</p>}
-    </div>
-  );
+  return <div className={row}>{body}</div>;
 }
 
+/** A section of every change: a short one opens on its own, a long one on a
+ *  click. Bullets keep their bold lead-ins. */
 function ChangeSection({ name, items }: { name: string; items: string[] }) {
   const t = useTranslations("shell.whatsNewModal");
-  // Rendered only once opened: a release's Fixed list runs to a hundred bullets.
-  const [opened, setOpened] = useState(false);
+  const short = items.length <= OPEN_UP_TO;
+  // A long section renders only once opened: a Fixed list can run to a
+  // hundred bullets.
+  const [opened, setOpened] = useState(short);
   return (
     <details
       className="group/section"
+      open={short}
       onToggle={(e) => {
         if (e.currentTarget.open) setOpened(true);
       }}
@@ -207,8 +214,9 @@ function SectionBody({ items }: { items: string[] }) {
     () => items.map((i) => `- ${linkPullRequests(i)}`).join("\n"),
     [items],
   );
+  // Air between bullets: most are a bold lead-in plus two or three lines.
   return (
-    <div className="pb-3 pl-5 text-[var(--color-text-secondary)]">
+    <div className="max-w-[80ch] pb-4 pl-5 [&_li]:mb-2 [&_li]:leading-5 [&_li]:text-[var(--color-text-secondary)] [&_strong]:text-[var(--color-text-primary)]">
       <Markdown content={content} density="compact" fill />
     </div>
   );

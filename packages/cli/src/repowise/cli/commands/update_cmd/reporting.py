@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 import click
+from rich.markup import escape
 
 from repowise.cli.helpers import console
 from repowise.cli.ui import (
@@ -258,7 +259,11 @@ def _dead_code_counts(
     if changed_paths is not None:
         scope = set(changed_paths)
         findings = [f for f in findings if f.file_path in scope]
-    unreachable = sum(1 for f in findings if f.kind.value == "unreachable_file")
+    from repowise.core.analysis.dead_code.serving import headline_unreachable
+
+    # No stored origins in hand here: the path decides, as it does in init
+    # for a file without a health row.
+    unreachable = headline_unreachable(findings, {})
     unused = sum(1 for f in findings if f.kind.value == "unused_export")
     return unreachable, unused
 
@@ -419,6 +424,35 @@ def show_workspace_completion(
 
 #: An update slower than this is one a hosted index would have saved.
 _SLOW_UPDATE_SECONDS = 60
+
+
+def render_slower(repo_path: Any) -> None:
+    """One line when a workload's newest stored run is slower than its band of
+    earlier runs (``evidence.compare``), naming the commits that changed what it
+    ran; nothing otherwise. Best effort: an update never fails on it."""
+    from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.evidence.compare import comparison_line
+    from repowise.core.evidence.compare_history import load_comparisons
+
+    async def read() -> list[Any]:
+        async with repo_index_session(repo_path) as opened:
+            if opened is None:
+                return []
+            session, repo_id = opened
+            return await load_comparisons(session, repo_id, repo_path)
+
+    try:
+        slower = [c for c in run_async(read()) if c.verdict == "slower"]
+    except Exception:  # the update itself succeeded
+        return
+    if not slower:
+        return
+    more = (
+        f" ({len(slower) - 1} more workload(s): repowise evidence status --compare)"
+        if len(slower) > 1
+        else ""
+    )
+    console.print(f"[yellow]Slower: {escape(comparison_line(slower[0]))}{more}[/yellow]")
 
 
 def _slow_update_hint(elapsed: float) -> None:
