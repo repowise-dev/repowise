@@ -535,14 +535,21 @@ it is left to a host that calls `run_fetch` with its own credentials.
 
 ### Writing an issue source
 
-An `issue-source` links commits to a tracker's issues. A commit linked to a
-`bug` or `incident` issue counts as a fix even when its message reads
-otherwise (`Handle empty carts (ENG-42)`): in `prior_defect_count`, the fix
-events, `git_commits.is_fix`, `get_context` fix history, the change-risk
-`prior_fixes` block and the health markers built on them. A link only adds a
-fix; it never removes one the commit message names. The protocol,
-`IssueSource`, is in `packages/core/src/repowise/core/issues/sources.py`. A
-complete source:
+An `issue-source` tells repowise which tracker issue each commit belongs to.
+Use one when your team files bugs in a tracker and commit messages often do
+not say "fix". A commit like `Handle empty carts (ENG-42)` reads as a feature
+to repowise, but if ENG-42 is a Bug in your tracker, that commit is a fix.
+
+Once a source is installed and configured, a commit linked to a `bug` or
+`incident` issue counts as a fix everywhere repowise counts fixes:
+`prior_defect_count` and the health markers built on it, the fix events,
+`git_commits.is_fix`, and the fix history that `get_context` and
+`get_change_risk` show. Those fix histories also quote the issue, for example
+`ENG-42 (bug): Checkout fails on an empty cart`. A link can only add a fix. It
+never removes one that the commit message already names.
+
+Here is a complete source for a tracker with a JSON API. It declares its
+settings, so `repowise sources sync` and `repowise update` run it:
 
 ```python
 import json
@@ -552,18 +559,22 @@ import urllib.request
 from repowise.core.issues import (
     IssueLink, SourceRefused, SourceUnavailable, issue_sources, tracker_keys,
 )
+from repowise.core.settings.plugins import plugin_setting, register_settings
 
+URL = plugin_setting("mytracker", "url", "str", None, "Tracker base URL.")
+TOKEN = plugin_setting("mytracker", "token", "str", None, "Tracker API token.", secret=True)
 TYPES = {"Bug": "bug", "Incident": "incident", "Story": "feature", "Task": "task"}
 
 
 class TrackerIssues:
     name = "my-tracker"
+    settings = (URL, TOKEN)
 
     def fetch(self, request):
-        base = request.settings["url"]
+        base, token = request.settings[URL.key], request.credentials[TOKEN.key]
         for commit in request.commits:
             for key in tracker_keys(f"{commit.subject}\n{commit.body}"):
-                issue = self._issue(base, key, request.credentials)
+                issue = self._issue(base, key, token)
                 if issue is not None:
                     yield IssueLink(
                         key=key, type=TYPES.get(issue["type"], "other"), sha=commit.sha,
@@ -589,47 +600,62 @@ class TrackerIssues:
 
 
 def register():
+    register_settings(URL, TOKEN)
     issue_sources.register(TrackerIssues.name, TrackerIssues())
 ```
 
-| `IssueRequest` field | Meaning |
-|----------------------|---------|
-| `repository_id`, `repository_name` | The repository the commits belong to |
-| `commits` | Every commit of the defect window: `sha`, `subject`, `body`, and `change`, the PR or MR number the message says the commit is |
-| `settings` | Plain settings such as a tracker URL or project keys. Never secrets |
-| `credentials` | The host's credentials object, passed through untouched and left out of `repr` |
+Then configure it and sync:
 
-| `IssueLink` field | Meaning |
-|-------------------|---------|
-| `key` | The issue's key as the tracker shows it, up to 64 characters |
-| `type` | `bug`, `incident`, `feature`, `task` or `other`; map the tracker's own types onto these |
-| `sha` or `change` | The commit: one of the request's full shas, or a change number, which links every requested commit that carries it |
-| `status`, `title`, `url` | Shown where the link is quoted; titles past 200 characters are cut |
+```bash
+repowise config set plugins.mytracker.url https://tracker.example.com
+export REPOWISE_PLUGIN_MYTRACKER_TOKEN=...
+repowise sources sync
+```
+
+What a source gets, in `IssueRequest`:
+
+| Field | Meaning |
+|-------|---------|
+| `repository_id`, `repository_name` | The repository the commits belong to |
+| `commits` | Every commit in the defect window, each with `sha`, `subject`, `body` and `change` (the PR or MR number its message names, or `None`) |
+| `settings` | Plain setting values, keyed by setting key |
+| `credentials` | Secret values, keyed by setting key. Never printed or stored |
+
+What it returns, one `IssueLink` per commit and issue:
+
+| Field | Meaning |
+|-------|---------|
+| `key` | The issue key as the tracker shows it, up to 64 characters |
+| `type` | `bug`, `incident`, `feature`, `task` or `other`. Map the tracker's own types onto these |
+| `sha` or `change` | The commit: one of the request's full shas, or a change number, which links every requested commit with that number |
+| `title` | Quoted next to the key in fix history, cut at 80 characters there |
+| `status`, `url` | Stored with the link |
 | `basis` | How the commit names the issue, such as `message names ENG-42` or `PR #12 closes #40` |
 
-The rules a source follows, which the contract tests in
-`tests/unit/issues/test_issue_sources.py` check:
+A few rules, checked by `tests/unit/issues/test_issue_sources.py`:
 
-- **Keys are yours to read.** Tracker key formats differ, so the source finds
-  them. `tracker_keys(text, projects=None)` reads `ENG-42` keys (pass your
-  project keys to skip look-alikes) and `number_refs(text)` reads `#42`.
-- **Credentials stay with the host**, as for `evidence-source`: never in a
-  link or an exception message.
-- **Failure.** Raise `SourceUnavailable` when the tracker is down or rate
-  limits, `SourceRefused` when it refuses the credentials or settings; the
-  host shows the message as written. Any other exception, or a link with an
-  unknown type, a sha the request did not hold, or both or neither of `sha`
-  and `change`, fails the fetch. Links read before a failure are stored, and
-  only a complete fetch removes the links it no longer returns.
+- Each tracker writes keys its own way, so the source finds them.
+  `tracker_keys(text, projects=None)` finds `ENG-42` keys (pass your project
+  keys to skip look-alikes like `UTF-8`), and `number_refs(text)` finds `#42`.
+- Keep credentials out of links and exception messages. A secret that still
+  shows up in a failure message is printed as `***`.
+- Raise `SourceUnavailable` when the tracker is down or rate limits, and
+  `SourceRefused` when it rejects the token or settings. The user sees your
+  message as written. Any other exception fails the fetch, and so does a link
+  with an unknown type, a sha the request did not include, or both or neither
+  of `sha` and `change`.
+- Links read before a failure are kept. Only a fetch that finished removes
+  links the tracker no longer returns. When two sources return the same key
+  for the same commit, the later sync wins.
 
-`repowise.core.issues.sync.sync_issues(session, repository_id, repo_path,
-source, settings=..., credentials=...)` runs a source against a local index:
-it asks about the defect window's commits and stores the links. When a bug
-or incident link comes or goes on a commit the index already holds, the next
-`repowise update` reads git history again once so the counts match a fresh
-index. A host with no checkout fetches by itself and hands the links to
-`repowise.core.persistence.crud.issue_links.store_issue_links`; indexing and
-scoring only read stored links and never fetch.
+`repowise update` syncs issue sources before it reads git history, so a new
+commit is counted with its issue in the same update. When a sync adds or
+removes a bug link on a commit that is already indexed, the next update
+reads git history again once, so the counts match a fresh index.
+
+A host with no checkout can fetch links itself and store them with
+`repowise.core.persistence.crud.issue_links.store_issue_links`. Indexing and
+scoring only read stored links. They never fetch.
 
 ### Authenticator and authorizer
 

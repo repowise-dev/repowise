@@ -209,6 +209,10 @@ async def _backfill_git(
         # (Foundation 1 only wrote them on the full orchestrator index).
         if summary.commit_rows:
             await upsert_git_commits_bulk(session, repo_id, summary.commit_rows)
+            if tracker_fixes:
+                from repowise.core.pipeline.incremental import reconcile_issue_fix_flags
+
+                await reconcile_issue_fix_flags(session, repo_id, tracker_fixes)
         await clear_attribution_if_disabled(session, repo_id)
 
     console.print(

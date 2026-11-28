@@ -156,8 +156,13 @@ def test_the_documented_minimal_source_passes_the_contract(monkeypatch) -> None:
     namespace: dict = {}
     exec(compile(code, "PLUGINS.md", "exec"), namespace)
     source = namespace["TrackerIssues"]()
+    url, token = namespace["URL"], namespace["TOKEN"]
+    assert source.settings == (url, token)
     request = IssueRequest(
-        "r", commits=_COMMITS, settings={"url": "https://tracker.example"}, credentials="tok"
+        "r",
+        commits=_COMMITS,
+        settings={url.key: "https://tracker.example"},
+        credentials={token.key: "tok"},
     )
     outcome, handed = _fetch(source, request)
 
@@ -251,3 +256,18 @@ def test_a_token_an_http_error_quotes_never_reaches_the_outcome() -> None:
     outcome, _ = _fetch(_Source([], RuntimeError("GET /issue?token=tok-secret: 500")), request)
     assert outcome.status == "failed"
     assert "tok-secret" not in outcome.error
+
+
+def test_the_first_bad_link_stops_the_fetch() -> None:
+    good = IssueLink(key="ENG-42", type="bug", sha=A)
+    later = IssueLink(key="ENG-43", type="bug", sha=A)
+    outcome, handed = _fetch(_Source([good, None, later]))
+    assert outcome.status == "failed"
+    assert "got NoneType" in outcome.error
+    assert [[link.key for link in links] for links, _ in handed] == [["ENG-42"]]
+
+
+def test_a_secret_in_a_refusal_is_masked() -> None:
+    request = IssueRequest("r", commits=_COMMITS, credentials={"tok": "tok-secret"})
+    outcome, _ = _fetch(_Source([], SourceRefused("token tok-secret was revoked")), request)
+    assert outcome.error == "token *** was revoked"

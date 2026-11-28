@@ -16,7 +16,8 @@ rendered paths or the rename rows) and a fingerprint of the code that parses
 the log and names a fix: either changing discards every record, so the cache
 can only save time, never change a count. The commits a stored bug or incident
 issue names (``tracker_fixes``) join the key as a digest, since they decide
-which records carry a fix's prose and paths; with none the key is as it was.
+which records carry a fix's prose and paths. With no linked commits the key
+has no issue digest.
 
 Ceiling: shallow clones skip the cache, because a boundary commit's rows
 depend on where the clone is cut. Deepening the clone first lifts it.

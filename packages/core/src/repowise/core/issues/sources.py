@@ -180,33 +180,42 @@ def resolve_links(links: Iterable[IssueLink], commits: Sequence[IssueCommit]) ->
     Raises ``ValueError`` naming the first link that breaks a rule. A change
     no requested commit names resolves to nothing.
     """
-    known = {c.sha for c in commits}
-    by_change: dict[int, list[str]] = {}
-    for c in commits:
-        if c.change is not None:
-            by_change.setdefault(c.change, []).append(c.sha)
-    out: list[StoredLink] = []
-    for link in links:
-        shas = _link_shas(link, known, by_change)
+    index = _CommitIndex(commits)
+    return [stored for link in links for stored in index.resolve(link)]
+
+
+class _CommitIndex:
+    """The request's commits by sha and by change number, built once per fetch."""
+
+    def __init__(self, commits: Sequence[IssueCommit]) -> None:
+        self.known = {c.sha for c in commits}
+        self.by_change: dict[int, list[str]] = {}
+        for c in commits:
+            if c.change is not None:
+                self.by_change.setdefault(c.change, []).append(c.sha)
+
+    def resolve(self, link: IssueLink) -> list[StoredLink]:
+        if not isinstance(link, IssueLink):
+            raise ValueError(f"a source yields IssueLink objects, got {type(link).__name__}")
+        shas = _link_shas(link, self.known, self.by_change)
         kind = (link.type or "").lower()
         if kind not in ISSUE_TYPES:
             raise ValueError(f"link {link.key!r} has type {link.type!r}; use one of {ISSUE_TYPES}")
         key = (link.key or "").strip()
         if not key or len(key) > MAX_KEY:
             raise ValueError(f"an issue key must be 1 to {MAX_KEY} characters, got {link.key!r}")
-        for sha in shas:
-            out.append(
-                StoredLink(
-                    sha=sha,
-                    key=key,
-                    type=kind,
-                    status=(link.status or "")[:MAX_STATUS],
-                    title=(link.title or "").strip()[:MAX_TITLE],
-                    url=(link.url or "")[:MAX_URL],
-                    basis=(link.basis or "").strip()[:MAX_BASIS],
-                )
+        return [
+            StoredLink(
+                sha=sha,
+                key=key,
+                type=kind,
+                status=(link.status or "")[:MAX_STATUS],
+                title=(link.title or "").strip()[:MAX_TITLE],
+                url=(link.url or "")[:MAX_URL],
+                basis=(link.basis or "").strip()[:MAX_BASIS],
             )
-    return out
+            for sha in shas
+        ]
 
 
 def _link_shas(link: IssueLink, known: set[str], by_change: dict[int, list[str]]) -> list[str]:
@@ -237,17 +246,17 @@ async def run_issue_fetch(
     network holds this event loop, as ``evidence-source`` does.
     """
     outcome = FetchOutcome(status="ok", cursor=None)
-    links: list[IssueLink] = []
+    index = _CommitIndex(request.commits)
+    resolved: list[StoredLink] = []
     batches: Any = None
     try:
         batches = iter(source.fetch(request))
+        # Checked as each link arrives: the first bad one stops the fetch, and
+        # the links before it are stored as a partial fetch.
         for link in batches:
-            links.append(link)
-        resolved = resolve_links(links, request.commits)
+            resolved.extend(index.resolve(link))
     except Exception as exc:
         outcome.status, outcome.error = _failure(exc, request.credentials)
-        # What was read before the failure still stands, minus a link that broke a rule.
-        resolved = _resolvable(links, request.commits)
     finally:
         close = getattr(batches, "close", None)
         if close is not None:
@@ -265,24 +274,20 @@ async def run_issue_fetch(
 
 def _failure(exc: BaseException, credentials: Any) -> tuple[str, str]:
     if isinstance(exc, SourceUnavailable):
-        return "unavailable", str(exc) or "the tracker is unavailable"
-    if isinstance(exc, SourceRefused):
-        return "refused", str(exc) or "the tracker refused the request"
-    message = f"{type(exc).__name__}: {exc}"
+        status, message = "unavailable", str(exc) or "the tracker is unavailable"
+    elif isinstance(exc, SourceRefused):
+        status, message = "refused", str(exc) or "the tracker refused the request"
+    else:
+        status, message = "failed", f"{type(exc).__name__}: {exc}"
     # An HTTP client's error can quote the request it sent, token included.
-    if isinstance(credentials, str) and credentials and credentials in message:
-        message = message.replace(credentials, "***")
-    return "failed", message
+    for secret in _secret_texts(credentials):
+        message = message.replace(secret, "***")
+    return status, message
 
 
-def _resolvable(links: list[IssueLink], commits: Sequence[IssueCommit]) -> list[StoredLink]:
-    out: list[StoredLink] = []
-    for link in links:
-        try:
-            out.extend(resolve_links([link], commits))
-        except ValueError:
-            continue
-    return out
+def _secret_texts(credentials: Any) -> list[str]:
+    values = credentials.values() if isinstance(credentials, Mapping) else [credentials]
+    return [v for v in values if isinstance(v, str) and v]
 
 
 __all__ = [

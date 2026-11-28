@@ -14,6 +14,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -24,7 +25,7 @@ from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_VERSION_KEY,
 )
 from tests.unit.issues import tracker_double
-from tests.unit.issues.tracker_double import SECRET, TRACKER, FakeTracker
+from tests.unit.issues.tracker_double import SECRET, TOKEN, TRACKER, FakeTracker
 
 _LINKED = "Handle empty carts (ENG-42)"
 
@@ -89,7 +90,7 @@ def _sync(repo: Path):
         _with_session(
             repo,
             lambda session, repo_id: sync_issues(
-                session, repo_id, repo, FakeTracker(), credentials=SECRET
+                session, repo_id, repo, FakeTracker(), credentials={TOKEN.key: SECRET}
             ),
         )
     )
@@ -203,7 +204,7 @@ def test_a_refused_token_stores_nothing_and_says_why(tmp_path: Path) -> None:
         _with_session(
             repo,
             lambda session, repo_id: sync_issues(
-                session, repo_id, repo, FakeTracker(), credentials="wrong"
+                session, repo_id, repo, FakeTracker(), credentials={TOKEN.key: "wrong"}
             ),
         )
     )
@@ -213,19 +214,66 @@ def test_a_refused_token_stores_nothing_and_says_why(tmp_path: Path) -> None:
     assert _state(repo)[GIT_HISTORY_VERSION_KEY] == GIT_HISTORY_VERSION
 
 
-def test_the_double_loads_as_a_plugin(monkeypatch) -> None:
+@pytest.fixture
+def installed(monkeypatch):
+    """The fake tracker loaded as the only plugin, its token set; tables put back afterwards."""
     import importlib.metadata
 
     from repowise.core.issues import issue_sources
     from repowise.core.registry import plugins
+    from tests.unit.settings.plugin_double import _restore, _tables
 
-    monkeypatch.setenv(plugins.ENV_VAR, f"{tracker_double.__name__}:register")
-    monkeypatch.setattr(importlib.metadata, "entry_points", lambda **kw: [])
+    saved = _tables()
+    impls, owners = dict(issue_sources._impls), dict(issue_sources._owners)
+    eps = [
+        importlib.metadata.EntryPoint(
+            "faketracker", f"{tracker_double.__name__}:register", plugins.ENTRY_POINT_GROUP
+        )
+    ]
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda **kw: eps if kw.get("group") == plugins.ENTRY_POINT_GROUP else [],
+    )
+    monkeypatch.delenv(plugins.ENV_VAR, raising=False)
+    monkeypatch.setenv(TOKEN.env.name, SECRET)
     plugins.reset()
     try:
-        [record] = plugins.load_plugins()
-        assert record.status == "loaded", record.error
-        assert "issue-source:fake-tracker" in record.seams
-        assert isinstance(issue_sources.get("fake-tracker"), FakeTracker)
+        plugins.load_plugins()
+        yield
     finally:
         plugins.reset()
+        issue_sources._impls.clear()
+        issue_sources._impls.update(impls)
+        issue_sources._owners.clear()
+        issue_sources._owners.update(owners)
+        _restore(saved)
+
+
+def test_update_syncs_the_tracker_first_and_counts_a_new_linked_commit(tmp_path, installed):
+    repo, _ = _repo(tmp_path)
+    _index(repo)
+    TRACKER["ENG-7"] = ("incident", "Done", "Login loops after a password reset")
+    try:
+        new = _commit(repo, "other.py", "x = 2\n", "Retry the session read (ENG-7)")
+        result = _update(repo)
+    finally:
+        TRACKER.clear()
+    assert result.exit_code == 0, result.output
+    assert "issue-source fake-tracker: stored" in " ".join(result.output.split())
+    # Not indexed when the link was stored, so this update counted it without a re-walk.
+    assert _state(repo)[GIT_HISTORY_VERSION_KEY] == GIT_HISTORY_VERSION
+    after = _snapshot(repo)
+    assert after["meta"]["other.py"] == 1
+    assert (new, "other.py", "code_fix") in after["events"]
+    assert after["commits"][new][0] is True
+
+
+def test_the_double_loads_as_a_plugin(installed) -> None:
+    from repowise.core.issues import issue_sources
+    from repowise.core.registry import plugins
+
+    [record] = plugins.load_plugins()
+    assert record.status == "loaded", record.error
+    assert "issue-source:fake-tracker" in record.seams
+    assert isinstance(issue_sources.get("fake-tracker"), FakeTracker)

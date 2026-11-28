@@ -38,7 +38,7 @@ log = structlog.get_logger("repowise.server.mcp_server.tool_change_risk")
 #: Cap on the per-file prior-fix list, matching ``_IMPACTED_TESTS_LIMIT`` so both
 #: per-file blocks in this response stay the same size.
 _PRIOR_FIXES_LIMIT = 10
-#: Linked issues quoted per file row: enough to name the bugs, few enough to skim.
+#: At most three linked issues are quoted per file row.
 _LINKED_ISSUES_LIMIT = 3
 
 

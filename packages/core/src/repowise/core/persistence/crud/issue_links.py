@@ -174,19 +174,10 @@ async def fix_issue_quotes(
     if not wanted:
         return {}
     try:
-        events: list[tuple[str, str]] = []
-        for chunk in _chunks(wanted):
-            result = await session.execute(
-                select(FixEvent.file_path, FixEvent.fix_sha)
-                .where(
-                    FixEvent.repository_id == repository_id,
-                    FixEvent.file_path.in_(chunk),
-                    FixEvent.shape_kind == "code_fix",
-                )
-                .order_by(FixEvent.committed_at.desc())
-            )
-            events.extend(result.all())
-        linked = await linked_defect_issues(session, repository_id, (sha for _, sha in events))
+        # A savepoint, so a failed read (a store older than the table) leaves
+        # the caller's transaction usable on Postgres.
+        async with session.begin_nested():
+            events, linked = await _quoted_events(session, repository_id, wanted)
     except SQLAlchemyError:
         return {}
     out: dict[str, dict[str, str]] = {}
@@ -196,6 +187,26 @@ async def fix_issue_quotes(
             if len(quotes) < limit:
                 quotes.setdefault(issue.key, issue.quote())
     return {path: list(q.values()) for path, q in out.items() if q}
+
+
+async def _quoted_events(
+    session: AsyncSession, repository_id: str, wanted: list[str]
+) -> tuple[list[tuple[str, str]], dict[str, list[LinkedIssue]]]:
+    """Each file's counted fix events, newest first, and the defect issues they link to."""
+    events: list[tuple[str, str]] = []
+    for chunk in _chunks(wanted):
+        result = await session.execute(
+            select(FixEvent.file_path, FixEvent.fix_sha)
+            .where(
+                FixEvent.repository_id == repository_id,
+                FixEvent.file_path.in_(chunk),
+                FixEvent.shape_kind == "code_fix",
+            )
+            .order_by(FixEvent.committed_at.desc())
+        )
+        events.extend(result.all())
+    linked = await linked_defect_issues(session, repository_id, (sha for _, sha in events))
+    return events, linked
 
 
 async def _defect_shas(session: AsyncSession, repository_id: str, shas: set[str]) -> set[str]:

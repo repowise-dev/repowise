@@ -2654,10 +2654,12 @@ def run_update(
     repo_path = target.repo_path
     assert repo_path is not None  # single mode always sets repo_path
     run.repo_path = repo_path
+    from repowise.cli.commands.sources_cmd import sync_after_update
+
+    if not opts.dry_run:
+        sync_after_update(run.repo_path, before=True)
     outcome = _update_single_repo(opts, run)
     if not opts.dry_run and outcome in (UpdateOutcome.REGENERATED, UpdateOutcome.NOOP):
-        from repowise.cli.commands.sources_cmd import sync_after_update
-
         sync_after_update(run.repo_path)
     return outcome
 

@@ -243,8 +243,8 @@ Notes:
 - **`prior_defect`** counts non-merge fix commits in the trailing ~6 months, classified by
   the **same keyword rule the defect benchmark labels with** (`_constants.is_fix_commit`)
   and anchored to the index's `as_of` (the indexed commit's date), so a T0 checkout never
-  sees post-T0 fixes. A commit a stored `bug` or `incident` issue link names counts too
-  (an `issue-source` plugin; additive, so with no links the count is the rule's alone).
+  sees post-T0 fixes. The count also includes commits that an `issue-source` plugin
+  linked to a `bug` or `incident` issue.
   Its **neutral 1.0 weight is by design**: correlation ≈ +0.59 with
   `change_entropy` and +0.38 with churn, coefficient ≈ +0.02, Popt gain within noise. It
   ships for its **explanatory** value and catches a few files the others miss.
