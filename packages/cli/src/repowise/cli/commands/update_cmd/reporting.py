@@ -43,9 +43,12 @@ _CHANGED_FILE_PREVIEW = 10
 # ---------------------------------------------------------------------------
 
 
-def render_header(repo_path: Any, base_ref: str, head: str | None) -> None:
+def render_header(repo_path: Any, base_ref: str | None, head: str | None) -> None:
     """Compact single-repo update header: repo name + the diff range."""
     console.print(f"[bold]repowise update[/bold] [dim]·[/dim] {repo_path.name}")
+    if base_ref is None:
+        console.print("[dim]file contents since the last sync[/dim]")
+        return
     console.print(f"[dim]{base_ref[:8]}..{(head or 'HEAD')[:8]}[/dim]")
 
 

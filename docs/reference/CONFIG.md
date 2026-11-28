@@ -18,6 +18,7 @@ Everything Repowise knows about your repository, created at the repo root by
 ├── events.key           # Random key the owner digests in component snapshots are made with
 ├── health-rules.json    # Per-file code-health marker overrides
 ├── state.json           # Last sync commit, page counts, token usage
+├── content_baseline.json # File content fingerprints, kept only while the folder has no git commit
 ├── mcp.json             # MCP server configuration
 └── .env                 # API keys (gitignored automatically)
 ```

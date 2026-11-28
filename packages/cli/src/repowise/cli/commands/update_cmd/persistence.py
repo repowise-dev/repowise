@@ -576,6 +576,19 @@ async def _load_page_paths_and_hotspots(repo_path: Any) -> tuple[set[str], set[s
         await engine.dispose()
 
 
+def _hold_content_pointers(
+    new_state: dict, state: dict, content_snapshot: dict | None, *, clean: bool
+) -> None:
+    """Keep the null pointers of a content-synced run that left work behind.
+
+    No repair marker can name a range without a commit, so the old baseline and
+    the null pointers are what make the next update diff these files again.
+    """
+    if content_snapshot is not None and not clean:
+        new_state["last_sync_commit"] = state.get("last_sync_commit")
+        new_state["last_docs_commit"] = state.get("last_docs_commit")
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,
@@ -611,6 +624,8 @@ def _persist_index_only_update(
     stale_config_buckets: Collection[str] = (),
     timings: PhaseTimings | None = None,
     unchecked_repair: dict | None = None,
+    content_snapshot: dict[str, str] | None = None,
+    content_docs_pending: bool = False,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
@@ -635,6 +650,11 @@ def _persist_index_only_update(
     DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
     state-file updates and console reporting stay here. Best-effort steps
     that fail land in ``degraded`` and surface in the completion panel.
+
+    ``content_snapshot`` is set on an index synced by file content (no commit
+    to diff from, see ``repowise.core.ingestion.content_baseline``).
+    ``content_docs_pending`` says model-written pages still owe this change, as
+    ``last_docs_commit`` lagging behind would in git mode.
     """
     from repowise.core.pipeline.incremental import persist_incremental_index
 
@@ -761,6 +781,8 @@ def _persist_index_only_update(
             "[yellow]Some data for this commit range was not persisted; "
             "the next update will re-cover it.[/yellow]"
         )
+    content_clean = not (failed_steps or prune_refusals or content_docs_pending)
+    _hold_content_pointers(new_state, state, content_snapshot, clean=content_clean)
     backfill_docs_pointer(new_state, state)
     if knowledge_graph_result is not None:
         try:
@@ -777,6 +799,9 @@ def _persist_index_only_update(
     _stamp_scope(repo_path, new_state, failed_steps)
     stamp_file_page_scope(repo_path, new_state, parsed_files, graph_builder, git_meta_map)
     save_state(repo_path, new_state)
+    from repowise.core.ingestion.content_baseline import advance_baseline
+
+    advance_baseline(repo_path, head, content_snapshot, clean=content_clean)
     elapsed = time.monotonic() - start
     from repowise.core.index_scope import upgrade_command
 
