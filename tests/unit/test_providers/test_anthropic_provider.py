@@ -329,3 +329,15 @@ async def test_stream_chat_ends_with_the_calls_usage():
     events = [e async for e in provider.stream_chat([], [], "sys")]
 
     assert [(e.type, e.input_tokens, e.output_tokens) for e in events] == [("usage", 250, 80)]
+
+
+async def test_stream_chat_marks_the_system_prompt_cacheable():
+    provider = AnthropicProvider(api_key="sk-ant-test", model="claude-haiku-5-5")
+    provider._client = MagicMock()
+    provider._client.messages.stream = MagicMock(return_value=_finished_stream([]))
+
+    [e async for e in provider.stream_chat([], [], "sys")]
+
+    assert provider._client.messages.stream.call_args.kwargs["system"] == [
+        {"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}
+    ]

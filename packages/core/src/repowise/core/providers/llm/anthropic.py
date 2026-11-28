@@ -273,10 +273,17 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
         anthropic_tools = [_to_anthropic_tool(t) for t in tools]
         anthropic_messages = _to_anthropic_messages(messages)
 
+        # Tools and the system prompt are the same on every call of a tool loop,
+        # so a breakpoint on the system block lets later calls read them from cache.
+        system_param: Any = system_prompt
+        if system_prompt:
+            system_param = [
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+            ]
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "system": system_prompt,
+            "system": system_param,
             "messages": anthropic_messages,
             **temperature_kwargs(self._model, temperature),
         }
