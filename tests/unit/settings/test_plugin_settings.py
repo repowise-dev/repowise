@@ -161,3 +161,18 @@ def test_plugins_lists_what_each_plugin_still_needs(installed, tmp_path, monkeyp
     out = CliRunner().invoke(cli, ["plugins"])
     assert "not configured" not in out.output
     assert SECRET not in out.output
+
+
+def test_check_plugin_can_check_a_loaded_plugin_that_declares_settings(installed) -> None:
+    from repowise.core.plugin_testing import check_plugin
+    from repowise.core.settings.plugins import ENV_PREFIX
+
+    before = settings.all_settings()
+    checks = check_plugin("tests.unit.settings.plugin_double:register")
+    assert [c.status for c in checks if c.kind == "load"] == []
+    assert {c.kind for c in checks} >= {"setting", "evidence-source"}
+    # The loaded plugin's settings are still there, once each, and nothing else is.
+    assert settings.all_settings() == before
+    assert settings.get(DB.key) == DB
+    assert settings.by_env(TOKEN.env.name) == TOKEN
+    assert sum(s.key.startswith(("plugins.", ENV_PREFIX)) for s in before) == 3

@@ -24,6 +24,8 @@ key for a plugin that is not installed stays unknown.
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from importlib import import_module
 from types import ModuleType
@@ -43,6 +45,7 @@ __all__ = [
     "by_env",
     "family_members",
     "get",
+    "plugin_settings_set_aside",
     "register_settings",
     "settings_in",
 ]
@@ -161,6 +164,29 @@ def register_settings(*settings: Setting) -> None:
         _by_key, _by_env = by_key, by_env
     for setting in settings:
         note_registration("setting", setting.key)
+
+
+@contextmanager
+def plugin_settings_set_aside() -> Iterator[None]:
+    """Run a block with no plugin setting registered, then put the tables back.
+
+    For loading a plugin a second time to check it: its ``register_settings``
+    would otherwise find its own keys taken. Whatever the block registers is
+    dropped on exit.
+    """
+    global _by_key, _by_env
+    with _lock:
+        saved = (_load(), _by_env, list(_plugin_settings))
+        plugin_keys = {s.key for s in _plugin_settings}
+        _by_key = {k: s for k, s in saved[0].items() if k not in plugin_keys}
+        _by_env = {name: s for name, s in saved[1].items() if s.key not in plugin_keys}
+        _plugin_settings.clear()
+    try:
+        yield
+    finally:
+        with _lock:
+            _by_key, _by_env = saved[0], saved[1]
+            _plugin_settings[:] = saved[2]
 
 
 def all_settings(*, include_internal: bool = True) -> tuple[Setting, ...]:

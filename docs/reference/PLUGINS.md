@@ -167,6 +167,10 @@ import error instead of the version mismatch.
 An exception raised from `register()` (or at import) also marks the plugin
 `failed`. Either way, repowise records it and carries on without it.
 
+Each plugin row also says whether the plugin is `configured`. `missing` lists
+each required [setting](#settings-for-a-plugin) that has no value, with the
+command that sets it, so you or an agent can finish setup from the listing.
+
 ## Check the contracts
 
 ```bash
@@ -203,10 +207,6 @@ service or credentials.
   ]
 }
 ```
-
-Each plugin row also says whether the plugin is `configured`. `missing` lists
-each required [setting](#settings-for-a-plugin) that has no value, with the
-command that sets it, so you or an agent can finish setup from the listing.
 
 ## Settings for a plugin
 
