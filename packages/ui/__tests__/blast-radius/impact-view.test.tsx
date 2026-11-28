@@ -678,7 +678,7 @@ describe("the change review leads", () => {
   it("says the rank under the verdict, and runs the review's own tests first with their command", async () => {
     renderView(<ImpactView adapter={reviewed({ review: makeReview() })} />);
     expect(await screen.findByText("2 files changed, 2 tests to run.")).toBeInTheDocument();
-    expect(screen.getByText("Riskier than 82% of this repo's recent commits, by size and spread.")).toBeInTheDocument();
+    expect(screen.getByText("Larger than 82% of this repo's recent commits, by size and spread.")).toBeInTheDocument();
     // The priority is a word beside its dot, never the dot alone.
     expect(screen.getByText("Elevated")).toBeInTheDocument();
     expect(screen.getByText("pytest tests/test_a.py tests/test_b.py")).toBeInTheDocument();
@@ -706,7 +706,7 @@ describe("the change review leads", () => {
     renderView(<ImpactView adapter={reviewed({ review: null, review_unavailable: "The change could not be scored: no git." })} />);
     expect(await screen.findByText("Change risk and test selection: not measured")).toBeInTheDocument();
     expect(screen.getByText("(The change could not be scored: no git)")).toBeInTheDocument();
-    expect(screen.queryByText(/Riskier than/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Larger than/)).not.toBeInTheDocument();
   });
 });
 

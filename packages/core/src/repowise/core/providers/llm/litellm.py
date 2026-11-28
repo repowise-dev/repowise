@@ -70,6 +70,22 @@ _NON_TEXT_MODEL_MODES = {
 }
 
 
+def _import_litellm() -> Any:
+    """Import litellm, or raise naming the command that installs it here.
+
+    litellm ships as the ``repowise[litellm]`` extra, not in the default
+    install, and is imported only at call time because it is large.
+    """
+    try:
+        import litellm  # type: ignore[import-untyped]
+    except ImportError:
+        from repowise.core.extras import require
+
+        require("litellm", "The litellm provider")
+        raise  # installed but broken: the original error says why
+    return litellm
+
+
 def _litellm_reasoning_modes_from_metadata(metadata: object) -> tuple[ReasoningMode, ...]:
     """Map LiteLLM's model metadata to the exact portable effort choices."""
 
@@ -395,8 +411,7 @@ class LiteLLMProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
-        # Import litellm lazily — it's a large package and only needed at call time
-        import litellm  # type: ignore[import-untyped]
+        litellm = _import_litellm()
 
         # Suppress LiteLLM's verbose feedback/debug output
         litellm.set_verbose = False
@@ -482,7 +497,7 @@ class LiteLLMProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        import litellm  # type: ignore[import-untyped]
+        litellm = _import_litellm()
 
         litellm.set_verbose = False
         litellm.suppress_debug_info = True

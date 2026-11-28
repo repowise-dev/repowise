@@ -251,7 +251,9 @@ def get_provider(
 
     Raises:
         ValueError: If the provider name is not registered.
-        ImportError: If the provider's optional dependency is not installed.
+        ImportError: If the provider's optional dependency is not installed
+                     (``MissingExtraError`` naming the install command when it
+                     ships as a ``repowise[<extra>]``).
 
     Example:
         provider = get_provider(
@@ -278,6 +280,10 @@ def get_provider(
     if with_rate_limiter and spec.rate_limit is not None and "rate_limiter" not in kwargs:
         kwargs["rate_limiter"] = RateLimiter(rate_limit_config or spec.rate_limit)
 
+    if spec.extra:
+        from repowise.core.extras import require
+
+        require(spec.extra, f"The {name} provider")
     try:
         module = importlib.import_module(spec.module_path)
     except ImportError as exc:
@@ -291,6 +297,16 @@ def get_provider(
 
     cls: type[BaseProvider] = getattr(module, spec.class_name)
     return cls(**kwargs)
+
+
+def provider_missing_extra(name: str) -> str | None:
+    """The ``repowise[<extra>]`` *name* ships in when it is not installed here, else None."""
+    spec = PROVIDER_SPECS.get(name)
+    if spec is None or not spec.extra:
+        return None
+    from repowise.core.extras import is_installed
+
+    return None if is_installed(spec.extra) else spec.extra
 
 
 def list_providers() -> list[str]:

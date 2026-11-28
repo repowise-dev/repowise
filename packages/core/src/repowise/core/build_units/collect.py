@@ -23,7 +23,7 @@ from repowise.core.build_units.adapters import (
     python,
     swift,
 )
-from repowise.core.build_units.model import BuildUnit, BuildUnitIndex
+from repowise.core.build_units.model import BuildUnit, BuildUnitIndex, build_file_languages
 from repowise.core.ingestion.resolvers.context import ResolverContext
 
 log = structlog.get_logger(__name__)
@@ -66,6 +66,21 @@ def _add(
                 listed.setdefault(path, []).append(unit.id)
 
 
+def _keep_fallback(
+    fallback: list[tuple[BuildUnit, tuple[str, ...]]], units: dict[str, BuildUnit]
+) -> None:
+    """Add each *fallback* unit to *units* unless an adapter's package unit holds its root.
+
+    A unit declared in a build file holds no package root, so it never hides
+    a fallback; a fallback whose id a unit already names is kept regardless.
+    """
+    claimed = {u.root for u in units.values() if not build_file_languages(u)}
+    referenced = {dep for unit in units.values() for dep in unit.deps}
+    for unit, _files in fallback:
+        if unit.root not in claimed or unit.id in referenced:
+            units[unit.id] = unit
+
+
 def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
     """Every build unit of the repo *ctx* resolves, and the units owning each indexed file.
 
@@ -73,7 +88,10 @@ def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
     fails to build is skipped with one warning and named in
     ``failed_ecosystems``, and its roots are left to the manifest fallback.
     A unit id produced twice keeps the first by root. An unreferenced
-    fallback loses to a specific adapter's unit at the same root. A fallback
+    fallback loses to a specific adapter's unit at the same root, unless that
+    unit is declared in a build file (``build_file_languages``): a
+    ``CMakeLists.txt`` is no package manifest, so the adapter never decided
+    the root's package. A fallback
     whose id a collected unit already names is kept, so a path dependency on
     a dropped duplicate still links ``manifest:<root>`` when another adapter
     holds that directory. Only files in ``ctx.path_set`` get an owner.
@@ -99,11 +117,7 @@ def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
         log.warning("build_units_adapter_failed", ecosystem="manifest", error=str(exc))
         failed.add("manifest")
         fallback = []
-    claimed = {unit.root for unit in units.values()}
-    referenced = {dep for unit in units.values() for dep in unit.deps}
-    for unit, _files in fallback:
-        if unit.root not in claimed or unit.id in referenced:
-            units[unit.id] = unit
+    _keep_fallback(fallback, units)
 
     resolved = [
         replace(unit, deps=tuple(sorted({d for d in unit.deps if d in units and d != unit.id})))

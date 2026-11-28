@@ -3529,7 +3529,6 @@ dependencies = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "lancedb" },
-    { name = "litellm" },
     { name = "mcp" },
     { name = "networkx" },
     { name = "openai" },
@@ -3538,7 +3537,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rich" },
-    { name = "scipy" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlglot" },
     { name = "structlog" },
@@ -3576,6 +3574,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "build" },
+    { name = "litellm" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -3590,6 +3589,9 @@ dev = [
 graph-extra = [
     { name = "graspologic" },
 ]
+litellm = [
+    { name = "litellm" },
+]
 local-embed = [
     { name = "fastembed", marker = "python_full_version < '3.13'" },
 ]
@@ -3601,6 +3603,7 @@ postgres = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "litellm" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -3631,7 +3634,8 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "jinja2", specifier = ">=3.1,<4" },
     { name = "lancedb", specifier = ">=0.12,<1" },
-    { name = "litellm", specifier = ">=1.90.7,<2" },
+    { name = "litellm", marker = "extra == 'dev'", specifier = ">=1.90.7,<2" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.90.7,<2" },
     { name = "mcp", specifier = ">=1.30.0,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11,<2" },
     { name = "networkx", specifier = ">=3.3,<4" },
@@ -3649,7 +3653,6 @@ requires-dist = [
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21,<1" },
     { name = "rich", specifier = ">=13,<14" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6,<1" },
-    { name = "scipy", specifier = ">=1.11,<2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3" },
     { name = "sqlglot", specifier = ">=26,<28" },
     { name = "structlog", specifier = ">=24,<25" },
@@ -3685,11 +3688,12 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1" },
     { name = "watchdog", specifier = ">=4,<5" },
 ]
-provides-extras = ["postgres", "graph-extra", "local-embed", "dev"]
+provides-extras = ["litellm", "postgres", "graph-extra", "local-embed", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "litellm", specifier = ">=1.90.7,<2" },
     { name = "mypy", specifier = ">=1.11,<2" },
     { name = "pytest", specifier = ">=9.0.3,<10" },
     { name = "pytest-asyncio", specifier = ">=1.3,<2" },

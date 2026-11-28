@@ -69,6 +69,13 @@ an unused export's name written somewhere else in the repository, or a name that
 appears in a file Repowise could not index. Each cap adds a line to the
 finding's evidence saying why.
 
+Git age never lifts an unreachable file above `0.50` when its missing importer
+says little: production code of the same language writes the file's stem or
+module name (a test or a doc naming it does not count), or its language resolves some references to
+no file. That second case is every language without full import support plus
+PHP, Ruby and Swift; the list is in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#known-gaps).
+
 ### Tiers
 
 | Tier | Confidence | Meaning |
@@ -101,11 +108,13 @@ export with strong evidence".
   unneeded.
 - **Loaded by a JS framework's convention:** the file sits where a framework
   its `package.json` depends on loads files from (React Email `emails/`,
-  Next.js `pages/`, Remix `app/routes/`, Nuxt pages, layouts, plugins,
+  Next.js `pages/`, App Router `page`, `layout`, `route` and metadata files,
+  `middleware`, `proxy` and `instrumentation`, Remix `app/routes/`, Nuxt pages, layouts, plugins,
   middleware, `server/`, `@nuxtjs/i18n` locale files (its `langDir`) and
   auto-imported `components/`, `composables/` and `utils/` under its `srcDir`,
   SvelteKit hooks and routes where its `kit.files` puts them,
-  Astro `src/pages/`, Expo Router `app/`).
+  Astro `src/pages/`, Expo Router `app/`, `vite-plugin-pages` and
+  `unplugin-vue-router` `src/pages/`).
 - **Weak resolution for the language in this repository:** the language is
   unknown to the graph, its import support is not full, none of its call edges
   has a recorded resolution, or more than half of them are name matches.
@@ -115,9 +124,8 @@ export with strong evidence".
 Some files and symbols are never reported, because static reachability is the
 wrong tool for them. This covers entry points and programs (`__main__.py`,
 `main.go`, files with a shebang), build and CI files and anything they name by
-path, test files, generated code, vendored trees, framework routes such as
-Next.js `page.tsx`, files a JS framework declared in a `package.json` loads
-from where they sit (the paths above, apart from Nuxt's auto-imported
+path, test files, generated code, vendored trees, files a JS framework declared in
+a `package.json` loads from where they sit (the paths above, apart from Nuxt's auto-imported
 directories), and symbols registered by a framework decorator or
 annotation (pytest fixtures, Flask and FastAPI routes, Celery tasks, Spring
 stereotypes, and similar). Names that follow dynamic-dispatch conventions

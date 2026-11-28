@@ -14,7 +14,7 @@ Everything runs on your machine. Everything is free.
 
 ## Know before you push
 
-Click **Analyze Change Risk** in the Source Control view and get the full picture of your uncommitted work in seconds:
+Click **Review Change** in the Source Control view and get the full picture of your uncommitted work in seconds:
 
 - A benchmarked repo-relative review priority, with the supporting diff-shape score and exact factors that move it.
 - **The riskiest files in your change**, ranked, so you know where to focus your own review first.
@@ -25,7 +25,7 @@ Click **Analyze Change Risk** in the Source Control view and get the full pictur
 While you edit, a quiet status-bar hint appears if you are missing a file that usually travels with your change. It never pops up, never interrupts, and is one click to dismiss or turn off.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/change-risk-panel.png" alt="The Change Risk panel: an 8.8/10 score, downstream and missing-test chips, and the riskiest files in the change ranked by hotspot" width="90%" />
+  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/change-risk-panel.png" alt="The Review panel: an 8.8/10 score, downstream and missing-test chips, and the riskiest files in the change ranked by hotspot" width="90%" />
 </p>
 
 ## See health as you work
@@ -49,8 +49,8 @@ While you edit, a quiet status-bar hint appears if you are missing a file that u
 Full dashboards open right in an editor tab, no browser needed:
 
 - **Health overview**: where the risk concentrates, at a glance.
-- **Architecture map**: zoomable views of your system, from services down to components.
-- **Knowledge graph**: how everything connects, with search and path finding.
+- **Architecture map**: the dependency graph by community, by file or as an outline, with search and path finding.
+- **Knowledge graph**: one zoomable map of the system, from the whole repo down to layers, folders and files.
 - **Refactoring plans**: ranked, with the impact of each.
 - **Decision timeline**: the "why" behind your codebase, mined from its history.
 - **Docs browser**: always-current documentation for the file you are in.
@@ -65,7 +65,7 @@ Full dashboards open right in an editor tab, no browser needed:
 
 ## One install, two brains
 
-VS Code agent mode sees the Repowise tools automatically after install: no config, no copy-pasting JSON. For other editors and MCP clients, one command writes the config for your workspace. The signal you see in the gutter and the context your agent reasons with come from the same index, so you are never debugging two different opinions about your code.
+VS Code agent mode sees the Repowise MCP tools automatically after install: no config, no copy-pasting JSON. For other editors and MCP clients, one command writes the config for your workspace. The MCP server runs straight from the CLI, so your agent's tools work whether or not the local server is running. The signal you see in the gutter and the context your agent reasons with come from the same index, so you are never debugging two different opinions about your code.
 
 ## Quiet by design
 
@@ -75,22 +75,22 @@ Nothing polls, nothing scans in the background, and nothing interrupts you. Data
 
 1. Install the CLI: `uv tool install repowise` (or `pip install repowise`).
 2. Open your repository and run **Repowise: Set Up This Repository**, or follow the Get Started walkthrough.
-3. That's it. The extension finds your local server automatically, or offers to start one when you first need it.
+3. That's it. The extension finds your local server automatically, or asks once whether to start one. Click the status bar item to stop or restart it whenever you want its memory back; a server the extension started stops when you close the window.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | Repowise: Set Up This Repository | Build the index for this workspace |
-| Repowise: Analyze Change Risk | Score your change and see what it touches, what is missing, and who should review |
+| Repowise: Review Change | Score your change and see what it touches, what is missing, and who should review |
 | Repowise: Open Code Health | Open the health overview |
-| Repowise: Open Architecture | Open the architecture view |
-| Repowise: Open Knowledge Graph | Open the dependency graph |
+| Repowise: Open Architecture | Open the dependency graph |
+| Repowise: Open Knowledge Graph | Open the zoomable system map |
 | Repowise: Open Decisions | Browse mined architectural decisions |
 | Repowise: Open Docs for This File | Open the generated docs for the active file |
 | Repowise: Update Index | Sync the index with your latest commits |
 | Repowise: Configure MCP for this Workspace | Write `.vscode/mcp.json` for MCP clients |
-| Repowise: Start Server / Stop Server | Manage the local server |
+| Repowise: Start Server / Stop Server / Restart Server | Manage the local server (also from the status bar item) |
 | Repowise: Open Settings | Tune every surface from one panel |
 | Repowise: Check Setup | Diagnose install, keys, and index state |
 | Repowise: Show Log | Open the extension log |
@@ -102,7 +102,7 @@ The quickest way to tune Repowise is **Repowise: Open Settings**, a friendly pan
 | Setting | Default | Purpose |
 |---|---|---|
 | `repowise.server.autoStart` | `ask` | Start the local server automatically, ask first, or never |
-| `repowise.risk.baseBranch` | default branch | Base branch change risk is scored against |
+| `repowise.server.idleStopMinutes` | `0` | Stop a server the extension started after this many idle minutes; `0` keeps it running |
 | `repowise.hover.symbolDetail` | `true` | Callers, ownership, and decisions on symbol hover |
 | `repowise.changeIntel.cochangeNudge` | `true` | The quiet "usually change together" status-bar hint |
 | `repowise.changeIntel.cochangeMinScore` | `4` | How strong the history has to be before a related file is suggested |

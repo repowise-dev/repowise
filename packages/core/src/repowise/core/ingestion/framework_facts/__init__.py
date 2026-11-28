@@ -23,7 +23,7 @@ from .astro import ASTRO
 from .base import FrameworkFacts
 from .expo_router import EXPO_ROUTER
 from .js import JS_FRAMEWORKS, convention_load_reasons, js_frameworks
-from .next import NEXT_PAGES
+from .next import NEXT_APP, NEXT_PAGES
 from .npm import (
     NPM_DEP_FIELDS,
     NpmManifest,
@@ -44,6 +44,7 @@ from .presence import (
 from .react_email import REACT_EMAIL
 from .remix import REMIX
 from .sveltekit import SVELTE_CONFIGS, SVELTEKIT, KitFiles, kit_files, sveltekit_lib_dir
+from .vite_pages import VITE_PAGES
 
 __all__ = [
     "ANDROID",
@@ -54,6 +55,7 @@ __all__ = [
     "JS_FRAMEWORKS",
     "LARAVEL",
     "LWC",
+    "NEXT_APP",
     "NEXT_PAGES",
     "NPM_DEP_FIELDS",
     "NPM_STACK_NAMES",
@@ -68,6 +70,7 @@ __all__ = [
     "SVELTE_CONFIGS",
     "SYMFONY",
     "TYPO3",
+    "VITE_PAGES",
     "FrameworkFacts",
     "KitFiles",
     "NpmManifest",

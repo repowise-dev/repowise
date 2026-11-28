@@ -102,6 +102,7 @@ def routes_from_contracts(
     One row per (method, path, file, line), in file and line order.
     """
     rows: dict[tuple[str, str, str, int], Route] = {}
+    go_walk = _GoIndexWalk(index) if index is not None else None
     for c in contracts:
         if c.contract_type != "http" or c.role != "provider" or c.line is None:
             continue
@@ -113,7 +114,7 @@ def routes_from_contracts(
         expr = meta.get("handler")
         if expr is None and framework in _JS_ROUTERS and read_file is not None:
             expr = _js_handler_expression(read_file(c.file_path), c.line, str(path))
-        symbol_id = _handler_symbol(c, framework, expr, index)
+        symbol_id = _handler_symbol(c, framework, expr, index, go_walk)
         route = Route(
             method=str(method),
             path=str(path),
@@ -129,13 +130,23 @@ def routes_from_contracts(
 
 
 def _handler_symbol(
-    c: Contract, framework: str, expr: str | None, index: RepoIndex | None
+    c: Contract,
+    framework: str,
+    expr: str | None,
+    index: RepoIndex | None,
+    go_walk: _GoIndexWalk | None = None,
 ) -> str | None:
     """The symbol id serving route *c*, or None rather than a guess."""
     if index is None:
         return None
     bound = _symbol_by_id(index, c.symbol_id) if c.symbol_id else None
     if expr:
+        if framework == "go" and go_walk is not None:
+            # Asked first: a local named like a type (``EmailApi := api.Group.EmailTest``)
+            # is the method it holds, not the type its name matches.
+            method = go_walk.method_at(c.file_path, c.line, _QUALIFIER_RE.split(expr))
+            if method is not None:
+                return method.symbol_id
         # The contract may already have bound the name (index-backed dialects,
         # or a handler the repo names once); its line fallback lands elsewhere.
         if bound is not None and _names(bound, expr):
@@ -210,6 +221,69 @@ def _resolve_named(
     found = index.symbol_named(expr)
     # ``symbol_named`` returns a lone candidate whatever its qualifier says.
     return found if found is not None and _names(found, expr) else None
+
+
+class _GoIndexWalk:
+    """:class:`GoSelectorTypes` read through the stored symbols and the files on disk.
+
+    Built on the first Go route that asks. An import is followed into the
+    repository through its ``go.mod`` modules, so an aliased import
+    (``api "…/server/api/v1"``) reaches its directory.
+    """
+
+    def __init__(self, index: RepoIndex) -> None:
+        self._index = index
+        self._types: Any = None
+        self._modules: tuple[tuple[str, str], ...] | None = None
+        self._dirs: dict[str, list[str]] = {}
+
+    def _walk(self) -> Any:
+        if self._types is None:
+            from repowise.core.ingestion.languages.go_selector_types import GoSelectorTypes
+
+            for f in self._index.files():
+                if f.endswith(".go"):
+                    self._dirs.setdefault(posixpath.dirname(f), []).append(f)
+            self._types = GoSelectorTypes(
+                self._package_files, self._text, self._imported_dir, self._method_of
+            )
+        return self._types
+
+    def method_at(self, file_path: str, line: int, parts: list[str]) -> IndexedSymbol | None:
+        return self._walk().method_at(file_path, line, parts)
+
+    def _package_files(self, package: str) -> list[str]:
+        # A package variable or type is a stored symbol, so its file is listed.
+        return self._dirs.get(package, [])
+
+    def _text(self, rel_path: str) -> str:
+        return _read(self._index.repo_path / rel_path) or ""
+
+    def _imported_dir(self, file_path: str, local: str) -> str | None:
+        imported = self._walk().facts(file_path).imports.get(local)
+        if imported is None:
+            return None
+        if self._modules is None:
+            from repowise.core.ingestion.resolvers.go import read_go_modules
+
+            self._modules = read_go_modules(self._index.repo_path)
+        for module_dir, module in self._modules:  # longest module path first
+            if imported == module or imported.startswith(module + "/"):
+                rest = imported[len(module) :].strip("/")
+                package = posixpath.join(module_dir, rest) if module_dir else rest
+                return package if package in self._dirs else None
+        return None
+
+    def _method_of(self, package: str, type_name: str, method: str) -> IndexedSymbol | None:
+        found = [
+            sym
+            for f in self._dirs.get(package, ())
+            for sym in self._index.symbols_for_file(f)
+            if sym.name == method
+            and sym.kind == "method"
+            and _QUALIFIER_RE.split(sym.qualified_name)[-2:] == [type_name, method]
+        ]
+        return found[0] if len(found) == 1 else None
 
 
 def _in_directories(index: RepoIndex, keep: Any) -> Iterable[IndexedSymbol]:

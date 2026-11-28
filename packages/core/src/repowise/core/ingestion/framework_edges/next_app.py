@@ -3,16 +3,16 @@
 In the App Router, every file matching ``app/**/{page,layout,route,
 middleware,template,default,error,loading,not-found,global-error}.
 {ts,tsx,js,jsx}`` is loaded by the Next.js runtime via filesystem
-convention — never imported by any other source file. Phase 1's
-``_NEVER_FLAG_PATTERNS`` already exempts those files from
-``unreachable_file`` flagging, but they're still invisible to the
-import graph, so any module they consume (helpers, layout configs,
+convention — never imported by any other source file. ``js_conventions``
+anchors those files to ``framework:nextjs`` when a ``package.json`` depends
+on ``next`` (``framework_facts.NEXT_APP``), but nothing links them to what
+they consume, so any module they consume (helpers, layout configs,
 component libraries) reads as unreachable.
 
 This module emits ``framework`` edges from every recognised App-Router
 file to whatever it imports inside the repo, so the consumed modules
 inherit reachability through the router files (which themselves are
-exempt). The router files act as roots of an implicit framework
+anchored). The router files act as roots of an implicit framework
 subgraph the static parser can't see on its own.
 """
 

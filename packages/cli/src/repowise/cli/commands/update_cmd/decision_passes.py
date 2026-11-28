@@ -70,6 +70,8 @@ def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> 
             run.cfg,
             run.degraded,
             required=(run.config.traversal_changed or run.config.generation_changed),
+            # Model page generation reads earlier pages' summaries from it.
+            summaries=True,
         )
 
     # Before generation: evolved decisions queue their governed pages for this run.

@@ -69,47 +69,6 @@ def test_claude_plugin_manifest_paths() -> None:
     assert "[TODO" not in manifest_path.read_text(encoding="utf-8")
 
 
-def test_claude_plugin_lens_module() -> None:
-    hooks = _load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
-
-    # The engine takes exactly one module, relative to hooks.json.
-    assert hooks["modules"] == ["./lens/lens.js"]
-    bundle = PLUGIN_ROOT / "hooks" / "lens" / "lens.js"
-    assert bundle.is_file()
-    assert re.search(r"export\s*\{\s*register\s*\}", bundle.read_text(encoding="utf-8"))
-
-
-@pytest.mark.parametrize(
-    ("field", "default", "read_as"),
-    [
-        # On by default: the bundle treats only `false` as off.
-        ("lens_margin", True, "!== false"),
-        ("lens_squeeze", True, "!== false"),
-        ("lens_review", True, "!== false"),
-        ("lens_flow", True, "!== false"),
-        # Off by default: the map opens unasked only for someone who turned this on.
-        ("lens_pane_autoopen", False, "=== true"),
-        # Off by default: the map is quiet tiles; health colours are a button away.
-        ("lens_map_health", False, "=== true"),
-    ],
-)
-def test_claude_plugin_lens_toggles(field: str, default: bool, read_as: str) -> None:
-    config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
-
-    assert set(config[field]) == {"type", "title", "description", "default"}
-    assert config[field]["type"] == "boolean"
-    assert config[field]["default"] is default
-    assert "—" not in config[field]["description"]
-    bundle = (PLUGIN_ROOT / "hooks" / "lens" / "lens.js").read_text(encoding="utf-8")
-    assert f'options["{field}"] {read_as}' in bundle
-
-
-def test_claude_plugin_lens_toggles_are_all_tested() -> None:
-    config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
-
-    assert set(config) == {"lens_margin", "lens_squeeze", "lens_review", "lens_flow", "lens_pane_autoopen", "lens_map_health"}
-
-
 def test_claude_plugin_mcp_uses_repowise() -> None:
     config = _load_json(PLUGIN_ROOT / ".mcp.json")
 
@@ -135,6 +94,7 @@ def test_claude_plugin_hooks_match_installer() -> None:
     ]
     assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, command)]
     assert rows("PostToolUseFailure") == [(claude_config._FAILURE_MATCHER, command)]
+    assert rows("Stop") == [(None, claude_config._STOP_HOOK_COMMAND)]
     # The rewrite hook is on by default for a CLI install, so the plugin
     # ships it too, guarded the same way for a plugin installed without the CLI.
     assert rows("PreToolUse") == [
@@ -145,17 +105,19 @@ def test_claude_plugin_hooks_match_installer() -> None:
     # Every event the installer registers, and nothing else: a surface that
     # ships only to fresh CLI installs and not to the plugin is the failure
     # this guards, and it is invisible from either side alone.
-    assert set(hooks) == {"PostToolUse", "SessionStart", "PostToolUseFailure", "PreToolUse"}
+    assert set(hooks) == {
+        "PostToolUse", "SessionStart", "PostToolUseFailure", "PreToolUse", "Stop"
+    }
 
     commands = [
         hook["command"]
         for event, entries in hooks.items()
-        if event != "PreToolUse"
+        if event not in ("PreToolUse", "Stop")
         for entry in entries
         for hook in entry["hooks"]
         if entry.get("matcher") != claude_config._CAPTURE_MATCHER
     ]
-    assert commands == [command] * (len(hooks) - 1)
+    assert commands == [command] * (len(hooks) - 2)
 
 
 def _posix_bash() -> str | None:

@@ -69,12 +69,27 @@ JEST_SETUP = b"""<?xml version="1.0" encoding="UTF-8"?>
 </testsuite></testsuites>
 """
 
+# What ``cargo llvm-cov nextest --profile ci`` wrote (cargo-nextest 0.9.152): the
+# classname is the test binary (crate, or crate::integration-test), the name the
+# test's module path inside it.
+NEXTEST = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="3" skipped="0" failures="0" errors="0" uuid="540d67c4-0fa1-4997-a004-d185cec53707" timestamp="2026-11-27T19:48:04.591+05:30" time="0.012">
+    <testsuite name="nx" tests="2" skipped="0" errors="0" failures="0">
+        <testcase name="cart::tests::totals" classname="nx" timestamp="2026-11-27T19:48:04.591+05:30" time="0.006"/>
+        <testcase name="tests::adds" classname="nx" timestamp="2026-11-27T19:48:04.591+05:30" time="0.006"/>
+    </testsuite>
+    <testsuite name="nx::basic" tests="1" skipped="0" errors="0" failures="0">
+        <testcase name="integration" classname="nx::basic" timestamp="2026-11-27T19:48:04.597+05:30" time="0.006"/>
+    </testsuite>
+</testsuites>
+"""
+
 
 def _doc(data: bytes):
     return parse_evidence(json.dumps(junit.to_v1(data)))
 
 
-@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST])
+@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST, NEXTEST])
 def test_every_runner_shape_is_detected_as_junit(data: bytes) -> None:
     assert detect_profile_format(data) == "junit"
 
@@ -95,6 +110,21 @@ def test_pytest_cases_keep_their_classname_until_placed() -> None:
     ]
     # Class or module fixtures run inside the first test of each classname.
     assert [e["first_in_class"] for e in doc.entries] == [True, False, True, False]
+
+
+def test_nextest_cases_keep_their_binary_and_are_never_placed_by_it() -> None:
+    doc = _doc(NEXTEST)
+
+    assert doc.kind == "test_timing"
+    assert [(e["test_id"], e["outcome"], e["duration_s"]) for e in doc.entries] == [
+        ("nx::cart::tests::totals", "passed", 0.006),
+        ("nx::tests::adds", "passed", 0.006),
+        ("nx::basic::integration", "passed", 0.006),
+    ]
+    # The classname is a crate, not a module path: a file named like the crate
+    # never takes the crate's tests.
+    placed = place_test_entries(doc, ["src/nx.rs", "src/lib.rs", "src/cart.rs", "tests/basic.rs"])
+    assert [e.get("test_file") for e in placed.entries] == [None, None, None]
 
 
 def test_a_case_that_names_its_file_gets_a_path_id() -> None:

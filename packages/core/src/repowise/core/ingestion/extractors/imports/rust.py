@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath, PureWindowsPath
 
 from tree_sitter import Node
 
@@ -104,6 +105,31 @@ def _rust_statement(
     if stmt_node.type == "use_declaration":
         return _rust_use_imports(stmt_node, module_text, raw, src)
     if stmt_node.type == "macro_invocation":
+        name = stmt_node.child_by_field_name("macro")
+        if name is not None and node_text(name, src) in {"include", "include_str", "include_bytes"}:
+            args = [n for n in module_node.children[1:-1] if not n.is_extra]
+            if args and args[-1].type == ",":
+                args.pop()
+            if len(args) != 1 or args[0].type not in {"string_literal", "raw_string_literal"}:
+                return []
+            # A plain or raw literal has one string_content child. Don't
+            # guess the filename of a string containing escape sequences.
+            parts = args[0].named_children
+            if len(parts) != 1 or parts[0].type != "string_content":
+                return []
+            path = node_text(parts[0], src)
+            if PurePosixPath(path).is_absolute() or PureWindowsPath(path).anchor:
+                return []
+            return [
+                Import(
+                    raw_statement=raw,
+                    module_path=f"./{path}",
+                    imported_names=[],
+                    is_relative=True,
+                    resolved_file=None,
+                    bindings=[],
+                )
+            ]
         # Most top-level calls (``s! { struct ... }``) declare no module.
         return macro_mod_imports(module_node, raw) if "mod" in raw else []
     if stmt_node.type == "mod_item":

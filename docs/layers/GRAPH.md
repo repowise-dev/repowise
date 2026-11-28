@@ -122,7 +122,7 @@ void handle(UserRepo repo) {     // parameter declares the type
 | Fields of the enclosing class | `this.cache.evict(...)` | 4 |
 | Framework-retyped symbols | `@shared_task def add` makes `add` a `Task`, so `add.s()` is `Task::s` | 4 |
 | C# extension methods and Kotlin extension functions, via the type they extend or one of its ancestors | `items.Paged(10)`, `helper.logScreenView(name)` | 3 |
-| Dotted receivers typed hop by hop through declared fields | `this.a.b.m()` | 2 |
+| Dotted receivers typed hop by hop through declared fields, including Go package variables and the fields an embedded struct promotes | `this.a.b.m()`, `router.RouterGroupApp.System.InitBaseRouter()` | 2 |
 | The declared return type of an inner call | `repo.find(id).save()` | 4 |
 
 The families map onto the same scopes as the base origins (same file, same

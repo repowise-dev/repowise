@@ -2,10 +2,10 @@
 
 These frameworks load files by filesystem convention — Remix's
 ``routes/*.tsx`` with ``loader``/``action`` exports, SvelteKit's
-``+page.ts``/``+server.ts``, Astro's ``src/pages/*``. Phase 1's
-``_NEVER_FLAG_PATTERNS`` already exempts the convention files
-themselves; this module emits edges from each convention file to its
-intra-repo imports so consumed helpers (``~/utils/db``,
+``+page.ts``/``+server.ts``, Astro's ``src/pages/*``. The convention
+files themselves are anchored by ``js_conventions`` when a ``package.json``
+depends on the framework; this module emits edges from each convention file
+to its intra-repo imports so consumed helpers (``~/utils/db``,
 ``$lib/server/auth``) inherit reachability.
 """
 

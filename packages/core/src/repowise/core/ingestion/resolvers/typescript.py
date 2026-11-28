@@ -6,6 +6,7 @@ import posixpath
 from collections.abc import Iterable
 from pathlib import Path
 
+from ..tsconfig_resolver import source_names_of_written
 from .context import ResolverContext
 from .lwc import lwc_bundle_dir, resolve_lwc_module
 from .nuxt import resolve_nuxt_alias
@@ -110,18 +111,11 @@ def _resolve_relative(module_path: str, importer_path: str, ctx: ResolverContext
         candidate = base_posix + ext
         if candidate in ctx.path_set:
             return candidate
-    # Legacy fallback: ``.with_suffix``-style replacement only kicks
-    # in when the specifier already carries a fake extension that
-    # users intended to be stripped (``./foo.js`` resolving to
-    # ``./foo.ts`` under TS rewrite rules). Guarded so it never
-    # clobbers a real multi-dot stem (``foo.config``, ``site.meta``).
-    stem_dot = base_posix.rfind(".")
-    if stem_dot > base_posix.rfind("/"):
-        real_stem = base_posix[:stem_dot]
-        for ext in (".ts", ".tsx", ".mts", ".cts"):
-            candidate = real_stem + ext
-            if candidate in ctx.path_set:
-                return candidate
+    # An extension the compiler emits names the source file
+    # (``./foo.js`` is ``./foo.ts``): the one rule of the alias resolver.
+    for candidate in source_names_of_written(base_posix):
+        if candidate in ctx.path_set:
+            return candidate
     return None
 
 

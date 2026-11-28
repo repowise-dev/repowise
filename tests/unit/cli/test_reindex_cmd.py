@@ -435,6 +435,73 @@ async def test_an_explicit_mock_still_means_mock(monkeypatch, tmp_path: Path) ->
     await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
 
 
+async def test_an_explicit_mock_never_replaces_a_semantic_store(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """``--embedder mock`` over a store a real embedder built refuses before writing.
+
+    8-wide test vectors in a 1536-wide table make LanceDB drop the table, so a
+    reindex with the mock wiped every vector a paid embedder had written. It
+    now goes through the same guard as every other store path, and names the
+    one step that replaces the store on purpose.
+    """
+    from repowise.cli.providers.vector_store import existing_vector_dim
+    from repowise.core.persistence.vector_store.lancedb_store import record_vector_dim
+
+    db_url = await _seed_pages(tmp_path, {"a.py": "a"})
+    lance_dir = tmp_path / ".repowise" / "lancedb"
+    (lance_dir / "wiki_pages.lance").mkdir(parents=True)
+    record_vector_dim(lance_dir, "wiki_pages", 1536)
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(reindex_cmd, "get_db_url_for_repo", lambda _repo_path: db_url)
+
+    def no_store(*_a: object, **_k: object) -> None:
+        raise AssertionError("the semantic store was opened for mock writes")
+
+    monkeypatch.setattr("repowise.core.persistence.vector_store.LanceDBVectorStore", no_store)
+
+    with pytest.raises(click.ClickException) as refused:
+        await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
+
+    said = refused.value.message
+    assert "1536-wide" in said
+    assert str(lance_dir) in said
+    assert "delete that folder" in said
+    assert existing_vector_dim(lance_dir) == 1536
+
+
+async def test_an_explicit_mock_rebuilds_a_mock_store(monkeypatch, tmp_path: Path) -> None:
+    """A store already at the mock's width holds nothing to lose: mock still writes."""
+    from repowise.core.persistence.vector_store.lancedb_store import record_vector_dim
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    db_url = await _seed_pages(tmp_path, {"a.py": "a"})
+    lance_dir = tmp_path / ".repowise" / "lancedb"
+    (lance_dir / "wiki_pages.lance").mkdir(parents=True)
+    record_vector_dim(lance_dir, "wiki_pages", MockEmbedder.dimensions)
+
+    class _RecordingStore:
+        def __init__(self) -> None:
+            self.ids: list[str] = []
+
+        async def embed_batch(self, items: list[Any]) -> None:
+            self.ids.extend(item[0] for item in items)
+
+        async def close(self) -> None:
+            return None
+
+    store = _RecordingStore()
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(reindex_cmd, "get_db_url_for_repo", lambda _repo_path: db_url)
+    monkeypatch.setattr(
+        "repowise.core.persistence.vector_store.LanceDBVectorStore", lambda *a, **k: store
+    )
+
+    await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
+
+    assert store.ids == ["file_page:a.py"]
+
+
 async def _seed_pages(
     tmp_path: Path, pages: dict[str, str], *, tombstoned: tuple[str, ...] = ()
 ) -> str:
@@ -522,6 +589,7 @@ async def _switch_embedder(
     config: str,
     pages: dict[str, str] | None = None,
     pending_edit: str = "",
+    fail: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], Any]:
     """Reindex a stamped repo with *to*; return its config, state and config changes.
 
@@ -534,6 +602,8 @@ async def _switch_embedder(
     from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
 
     (tmp_path / ".repowise").mkdir()
+    # What a keyless run leaves in place of a store.
+    (tmp_path / ".repowise" / "lancedb.keyless").touch()
     (tmp_path / ".repowise" / "config.yaml").write_text(config, encoding="utf-8")
     old = load_config(tmp_path)["embedder"]
     save_state(
@@ -553,7 +623,8 @@ async def _switch_embedder(
 
     class _Store:
         async def embed_batch(self, items: list[Any]) -> None:
-            return None
+            if fail:
+                raise RuntimeError("embedder down")
 
         async def close(self) -> None:
             return None
@@ -588,6 +659,23 @@ async def test_a_clean_embedder_switch_leaves_nothing_for_update_to_rebuild(
     assert state["index_scope"]["provider"]["embedder"] == "openai"
     assert not changes.changed
     assert not changes.rebuild_required
+
+
+async def test_a_clean_switch_clears_the_keyless_marker(monkeypatch, tmp_path: Path) -> None:
+    """Once the wiki is re-embedded, ``update`` stops proposing the keyless backfill."""
+    await _switch_embedder(monkeypatch, tmp_path, "openai", config="embedder: mock\n")
+
+    assert not (tmp_path / ".repowise" / "lancedb.keyless").exists()
+
+
+async def test_a_failed_switch_keeps_the_keyless_marker(monkeypatch, tmp_path: Path) -> None:
+    """A run that embedded nothing leaves the marker, so the next ``update`` retries."""
+    with pytest.raises(click.Abort):
+        await _switch_embedder(
+            monkeypatch, tmp_path, "openai", config="embedder: mock\n", fail=True
+        )
+
+    assert (tmp_path / ".repowise" / "lancedb.keyless").is_file()
 
 
 async def test_a_partial_embedder_switch_still_asks_update_to_rebuild(

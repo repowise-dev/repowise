@@ -91,6 +91,7 @@ def changed_file_count(repo_path: str, sha: str) -> int | None:
                 "-z",
                 sha,
             ],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=30,
             check=True,

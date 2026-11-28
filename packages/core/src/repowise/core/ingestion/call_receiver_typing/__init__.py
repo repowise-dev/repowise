@@ -9,7 +9,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import NamedTuple, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from ..lang_helpers.anonymous_classes import is_anonymous_member
 from ..languages.receiver_types import (
@@ -338,6 +338,8 @@ class ReceiverTypingMixin(
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
         # {directory: its Go files}, built once on first use, as ``_type_ids``.
         self._go_files_by_dir: dict[str, tuple[str, ...]] | None = None
+        # Go selector chains through package variables (``GoSelectorTypes``).
+        self._go_selector_walk: Any = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._binding_positions: dict[str, tuple[tuple[int, int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from tree_sitter import Node
 
 from ..extractors import node_text
+from ..lang_helpers.type_heads import ruby_constant_origin
 from ..models import CallSite, FileInfo, Import, Symbol, TypeReference
 from ..parser_helpers import (
     TYPE_HEAD_EXTRACTORS,
@@ -231,11 +232,17 @@ def _extract_type_refs(
             if lang == "rust" and _rust_shadowed_by_type_param(type_node, head, src):
                 continue
             line = type_node.start_point[0] + 1
-            key = (head, line)
+            origin = (
+                ruby_constant_origin(type_node)
+                if lang == "ruby"
+                else _classify_param_origin(type_node)
+            )
+            # A Ruby origin decides whether the edge widens call scope, so
+            # ``Foo.setup; include Foo`` on one line keeps both references.
+            key = (head, line, origin) if lang == "ruby" else (head, line)
             if key in seen:
                 continue
             seen.add(key)
-            origin = _classify_param_origin(type_node)
             refs.append(TypeReference(type_name=head, line=line, origin=origin))
 
     return refs

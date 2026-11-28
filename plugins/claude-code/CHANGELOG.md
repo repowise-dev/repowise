@@ -2,6 +2,11 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Removed
+- Lens is no longer part of the plugin: the `hooks/lens/` mod, its `modules` entry in `hooks.json` and its six `lens_*` settings are gone. Its source moved to [repowise-dev/claude-lens](https://github.com/repowise-dev/claude-lens), an experimental project you can build and load yourself. The commands, skills, hooks and MCP server are unchanged.
+
 ## 0.62.0
 
 ### Added
@@ -149,8 +154,8 @@ All notable changes to the Repowise Claude Code plugin are documented here.
   `get_change_risk`, `get_why`, `get_answer`), and sends Claude nothing
   without a button press. Ask questions that do not start with "why" go to
   `get_answer`, which may use the model your repo configures. See
-  [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
-  [footprint](../../docs/agent/LENS.md#footprint).
+  [the Lens guide](https://github.com/repowise-dev/claude-lens/blob/main/docs/GUIDE.md) and its
+  [footprint](https://github.com/repowise-dev/claude-lens/blob/main/docs/GUIDE.md#footprint).
 
 ### Changed
 - The `code-health` skill leads a "what should I refactor?" answer with the

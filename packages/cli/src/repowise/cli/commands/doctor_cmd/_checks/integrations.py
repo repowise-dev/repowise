@@ -439,15 +439,9 @@ def _store_bytes_in_use(db_path: _DoctorPath) -> int:
     reuse rather than shrinking it, so the file size stays at its high-water
     mark. Measuring the file would report a pruned store as over cap forever.
     """
-    import sqlite3
+    from .context import sqlite_page_counts
 
-    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
-    try:
-        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        pages = conn.execute("PRAGMA page_count").fetchone()[0]
-        free = conn.execute("PRAGMA freelist_count").fetchone()[0]
-    finally:
-        conn.close()
+    page_size, pages, free = sqlite_page_counts(db_path)
     return (pages - free) * page_size
 
 

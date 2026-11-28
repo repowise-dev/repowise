@@ -2505,6 +2505,10 @@ repowise doctor --workspace --repair
   with `repowise update` when HEAD has moved on, or with `repowise update --since <ref>` when the commit is not in
   the repository's history. **Update lock** (`update-lock`) appears only when a live `repowise update` has held
   `.repowise/.update.lock` for more than 30 minutes, and says what `update` says about it; `status` shows it too.
+- **wiki.db free space** (`wiki-db-free-space`, also under `--quick`) appears only when more than a quarter of
+  `.repowise/wiki.db` is free pages (left by deletes; SQLite reuses them but never shrinks the file). It warns with
+  the one-line `VACUUM` to run as its fix. Doctor never runs it: a VACUUM rewrites the whole file, needs free disk the
+  size of the file, and blocks every other writer, so close MCP sessions, `serve` and any update first.
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.
@@ -2596,7 +2600,7 @@ repowise config reset mcp.tools           # back to the default
 
 | Subcommand | What it does |
 |------------|--------------|
-| `list` | Settings by area, with their values and where each came from. `--area` keeps one area (`account`, `attribution`, `decisions`, `distill`, `editor`, `events`, `evidence`, `generation`, `health`, `hooks`, `indexing`, `mcp`, `providers`, `report`, `server`); `--changed` keeps settings not at their default; `--suggested` keeps settings worth changing in this repository, with why and the command; `--all` adds debug and test settings. |
+| `list` | Settings by area, with their values and where each came from. `--area` keeps one area (`account`, `attribution`, `decisions`, `distill`, `editor`, `events`, `evidence`, `generation`, `health`, `hooks`, `indexing`, `mcp`, `performance`, `providers`, `report`, `server`); `--changed` keeps settings not at their default; `--suggested` keeps settings worth changing in this repository, with why and the command; `--all` adds debug and test settings. |
 | `explain KEY` | What one setting does, what it accepts, and how to change it. |
 | `get KEY` | One setting's value and where it came from. |
 | `set KEY VALUE` | Change one setting; prints what changed, its effect, and the undo command. `VALUE` is read as the setting's type: `true` or `false` for a switch, a number, `a,b` or `[a, b]` for a list (`[a, b]` when an item holds a comma). |

@@ -330,11 +330,12 @@ class DeadCodeAnalyzer:
         # pass already honours.
         whitelist = set(cfg.get("whitelist", [])) | self._unjudged_by_origin()
 
-        findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
-        # The settle passes rescan every file's text; an unchanged file's
-        # tokens come from the last run's cache in the index directory.
+        # The unreachable-file pass and the settle passes rescan every file's
+        # text; an unchanged file's tokens come from the last run's cache in
+        # the index directory.
         cache_dir = Path(self._repo_root) / ".repowise" if self._repo_root is not None else None
         with token_cache(cache_dir):
+            findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
             findings = self._settle(findings)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
