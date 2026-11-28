@@ -246,7 +246,11 @@ def test_is_raw_in_an_attribute_value_keeps_the_body_markup() -> None:
 
 
 def _scans_in_linear_time(
-    page: Callable[[int], bytes], n: int, factor: int = 4, rounds: int = 15
+    page: Callable[[int], bytes],
+    n: int,
+    factor: int = 4,
+    rounds: int = 15,
+    exponent: float = 1.5,
 ) -> None:
     # The scan is memoised per source; clear it so every run scans. A small page
     # scans in a few ms, so one scheduler stall on a loaded runner can land in
@@ -258,6 +262,7 @@ def _scans_in_linear_time(
         reset=_cached_scan.cache_clear,
         rounds=rounds,
         factor=factor,
+        exponent=exponent,
     )
 
 
@@ -276,7 +281,9 @@ def test_one_start_tag_page_scans_in_linear_time(page: Callable[[int], bytes], n
     # or past that step, so across a 16x input the scan reads about 13-30x
     # against a 64x bound, while quadratic growth would read 256x. Each side
     # takes 70 ms to 1 s here, so 5 rounds already ride out a stall.
-    _scans_in_linear_time(page, n, factor=16, rounds=5)
+    # CI has read 65x here for a linear scan (the step can land past 64k), so
+    # the bound is 16**1.75 = 128x, still half the 256x of quadratic growth.
+    _scans_in_linear_time(page, n, factor=16, rounds=5, exponent=1.75)
 
 
 def test_the_start_tag_guard_still_fails_a_quadratic_scan() -> None:
