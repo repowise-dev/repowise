@@ -22,6 +22,7 @@ from repowise.core.evidence.payloads import (
     measured_payload,
     runs_payload,
     status_payload,
+    view_ranks,
 )
 from repowise.core.evidence.suite_cost import DEFAULT_LIMIT, suite_costs
 from repowise.core.persistence import crud
@@ -89,7 +90,7 @@ async def get_measured(
     benchmark's result with the function it measures under ``benchmarks``."""
     await _repo(session, repo_id)
     view = await crud.measured_costs(session, repo_id, limit=limit, run_id=run_id)
-    status = "measured" if view is not None else await crud.measured_status(session, repo_id)
+    status = "measured" if view_ranks(view) else await crud.measured_status(session, repo_id)
     return measured_payload(view, status)
 
 

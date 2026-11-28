@@ -239,7 +239,25 @@ export function PerformanceView({
   if (!data) return null;
 
   const { summary, facets } = data;
-  if (summary.status === "unavailable") return <UnavailableQueue summary={summary} />;
+  if (summary.status === "unavailable") {
+    // No performance analysis leaves the queue empty, not the runtime
+    // evidence: what the stored runs measured still shows above the notice.
+    // With no queue there is no cause to open.
+    return (
+      <div className="space-y-8">
+        <RuntimeEvidenceSection
+          view={runtime}
+          adapter={adapter}
+          canOpenCause={false}
+          onPrompt={openPrompt}
+          connectPrompt={connectEvidencePrompt}
+          lowSignalPrompt={lowSignalPrompt}
+        />
+        <UnavailableQueue summary={summary} />
+        {promptModal}
+      </div>
+    );
+  }
 
   // A server that predates context scoping sends no repository_total, and
   // one that predates scopes no scope sizes; both fall back to the summary.

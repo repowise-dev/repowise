@@ -548,7 +548,12 @@ async def test_production_statements_list_compactly_beside_no_profile(setup_mcp,
 @pytest.mark.asyncio
 async def test_statements_on_no_single_function_read_not_ranked(setup_mcp, session, materialized):
     await _seed_statements(session, materialized, [(None, "ambiguous", 3, 150.0)])
-    assert await _measured() == {"basis": "unknown", "status": "not_ranked"}
+    block = await _measured()
+    # Nothing is ranked, and the window's run still says where its time went.
+    assert (block["basis"], block["status"]) == ("unknown", "not_ranked")
+    assert "statements" not in block and "statements_total" not in block
+    (run,) = block["runs"]
+    assert (run["run_id"], run["unattributed"]) == ("s1", {"ambiguous": 1.0})
 
 
 @pytest.mark.asyncio

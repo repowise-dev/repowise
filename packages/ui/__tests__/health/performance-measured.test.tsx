@@ -170,6 +170,53 @@ describe("PerformanceView runtime evidence", () => {
     expect(screen.queryByRole("list", { name: /^Measured in/ })).toBeNull();
   });
 
+  it("keeps a window whose statements joined no function, with its split and no list", async () => {
+    const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
+      const view = await statementsOnly(opts);
+      // What the route sends: nothing ranks, and the window still lists its run.
+      return {
+        ...view,
+        basis: "unknown" as const,
+        status: "not_ranked" as const,
+        statements: { ...view.statements!, rows: [], total: 0 },
+      };
+    });
+    render(
+      <PerformanceView adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })} />,
+    );
+    expect(
+      await screen.findByText("On no single function: 23.0% ambiguous · 6.0% unjoined."),
+    ).toBeTruthy();
+    expect(screen.getAllByText(PROD_CLAIM).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Production statements" })).toBeTruthy();
+    expect(screen.getByText("postgres:hosted · 42 statements · 1,854 ms stored")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: /^Statements in/ })).toBeNull();
+  });
+
+  it("shows runtime evidence on an index with no performance analysis", async () => {
+    const unanalyzed = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      summary: { status: "unavailable", total: 0, with_plan_total: 0 },
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: vi.fn(statementsOnly),
+          listEvidenceRuns: async () => RUNS,
+          getPerformanceOpportunities: async () => unanalyzed,
+        })}
+      />,
+    );
+    // The measured statements show, and the notice speaks for the empty queue only.
+    const list = await screen.findByRole("list", { name: "Statements in postgres:hosted" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.getByText("This index has not been analyzed for performance")).toBeTruthy();
+    expect(screen.queryByRole("radiogroup", { name: "Scope" })).toBeNull();
+  });
+
   it("names a production run's window on its run line and in the runs list", async () => {
     const window = { start: null, end: null, base_commit: null, claim: PROD_CLAIM };
     const evidence = evidenceAdapter();
