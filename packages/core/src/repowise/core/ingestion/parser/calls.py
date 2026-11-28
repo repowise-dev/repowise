@@ -479,6 +479,7 @@ def _call_from_match(
         spawned=language == "python" and is_fire_and_forget(site_node, src),
         program_call=language == "cobol" and site_node.type == "call_statement",
         bare_name_fallback=on_unnamed_object,
+        is_construction=site_node.type in config.construction_call_node_types,
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
 

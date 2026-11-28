@@ -1247,6 +1247,9 @@ class CallResolver(
         if invoked is not None:
             return invoked
         hit = self._resolve_free_call(file_path, call, caller_id)
+        if hit is not None and call.is_construction and not self._is_constructible(hit.callee_id):
+            # ``new X(..)`` builds a type, never calls a method X: ask the type tier.
+            return self._resolve_csharp_constructed_type(file_path, call, caller_id)
         if hit is not None and self._cpp_names_no_repo_member(file_path, call, hit.callee_id):
             return self._cpp_free_rival(file_path, call, caller_id)
         alias = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
@@ -1756,7 +1759,8 @@ class CallResolver(
         the file. ``_file_methods`` carries the class. A member call on its bare
         fallback has an explicit receiver, so the caller's class is not it.
         An anonymous class or enum-constant body (``Gson::FILTER::Filter``)
-        sees its own members first, then those of the class around it.
+        sees its own members first, then those of the class around it. A
+        construction (``new X()``) looks for a type, so it passes over methods.
         """
         parsed = self._parsed_files.get(file_path)
         if parsed is None or parsed.file_info.language not in _IMPLICIT_RECEIVER_LANGUAGES:
@@ -1767,13 +1771,15 @@ class CallResolver(
         caller_class = _extract_class_from_symbol_id(caller_id)
         while caller_class:
             own = methods.get((caller_class, call.target_name))
-            if own is not None:
+            if own is not None and (not call.is_construction or self._is_constructible(own)):
                 return own
             caller_class = outer_scope(caller_class)
         return None
 
-    def _partial_fragment_member(self, file_path: str, caller_id: str, name: str) -> str | None:
-        """The caller's class member *name* declared in another fragment of it.
+    def _partial_fragment_member(
+        self, file_path: str, caller_id: str, call: CallSite
+    ) -> str | None:
+        """The caller's class member *call* names, declared in another fragment of it.
 
         Every fragment of a C#/VB.NET ``partial`` type is one class scope, so a
         member (nested types included) that any fragment declares is visible by
@@ -1781,11 +1787,13 @@ class CallResolver(
         class, so a same-named member of an unrelated class never answers.
         Fragments are asked in path order; an overload set split across them
         binds to the first. A nested type answers with its constructor when it
-        declares one, as ``new X(..)`` does within a single file.
+        declares one, as ``new X(..)`` does within a single file; a construction
+        never answers with a method.
         """
         caller_class = _extract_class_from_symbol_id(caller_id)
         if not caller_class:
             return None
+        name = call.target_name
         for fragment in self._partial_fragments.get((file_path, caller_class), ()):
             if fragment == file_path:
                 continue
@@ -1795,11 +1803,8 @@ class CallResolver(
                 continue
             if self._symbols_by_id[sym_id].kind in _TYPE_KINDS:
                 return methods.get((name, name), sym_id)
-            # A call site does not record ``new``, so ``new FaultGenerator()``
-            # and a member method ``FaultGenerator()`` look alike. When the
-            # repo also declares a type of that name, the method is a guess.
-            if name in self._csharp_type_names:
-                return None
+            if call.is_construction and not self._is_constructible(sym_id):
+                continue
             return sym_id
         return None
 
@@ -1835,7 +1840,7 @@ class CallResolver(
         # overload in another fragment is no better evidence than that. Nor for a
         # member call on its bare fallback: its receiver is not the caller's class.
         if not call.receiver_name and target_name not in self._file_symbols.get(file_path, {}):
-            sym_id = self._partial_fragment_member(file_path, caller_id, target_name)
+            sym_id = self._partial_fragment_member(file_path, caller_id, call)
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
 
@@ -1953,9 +1958,11 @@ class CallResolver(
         else:
             table = self._file_symbols
         callee_id = table.get(file_path, {}).get(call.target_name)
+        if call.is_construction:
+            callee_id = self._constructed_in_file(file_path, call.target_name, callee_id)
         if callee_id is None:
             return False, None
-        if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
+        if own is not None and own != callee_id and self._flat_hit_is_stranger(call, callee_id):
             # Own class first: the flat hit is a stranger.
             if own_refused:
                 return True, None
@@ -2055,6 +2062,54 @@ class CallResolver(
             and _free_function_taking(self._symbols_by_id.get(sym_id), call)
             for sym_id in self._global_symbols.get(call.target_name, ())
         )
+
+    def _is_constructible(self, sym_id: str | None) -> bool:
+        """Is *sym_id* a type, a C# delegate or a constructor, what ``new X(..)`` reaches?"""
+        if sym_id is None:
+            return False
+        symbol = self._symbols_by_id[sym_id]
+        if symbol.kind in _TYPE_KINDS:
+            return True
+        if symbol.parent_name and id_segment_name(symbol.parent_name) == symbol.name:
+            return True  # a constructor
+        # Construction is marked only in C#, where a delegate is indexed as a function.
+        return symbol.language == "csharp" and symbol.kind == "function"
+
+    def _flat_hit_is_stranger(self, call: CallSite, callee_id: str) -> bool:
+        """Is the flat same-file hit no rival for the caller's own class member?
+
+        Another class's ordinary method (the flat index is last-wins), or, in
+        C#, which writes ``new`` for every construction, a type or constructor
+        reached by a plain call.
+        """
+        if _rivals_a_class_method(callee_id):
+            return True
+        return (
+            not call.is_construction
+            and self._symbols_by_id[callee_id].language == "csharp"
+            and self._is_constructible(callee_id)
+        )
+
+    def _constructed_in_file(self, file_path: str, name: str, hit: str | None) -> str | None:
+        """What ``new name(..)`` reaches in this file: *hit*, unless it is a method.
+
+        The flat index is last-wins, so a same-named method may hide the type:
+        then the type this file declares, by its constructor when it has one.
+        """
+        if self._is_constructible(hit):
+            return hit
+        parsed = self._parsed_files.get(file_path)
+        type_id = next(
+            (
+                s.id
+                for s in (parsed.symbols if parsed else ())
+                if s.name == name and s.kind in _TYPE_KINDS
+            ),
+            None,
+        )
+        if type_id is None:
+            return None
+        return self._file_methods.get(file_path, {}).get((name, name), type_id)
 
     def _is_anonymous_id(self, sym_id: str | None) -> bool:
         """Does *sym_id* name an anonymous class member?"""
@@ -2591,7 +2646,7 @@ class CallResolver(
             return None
         sym_id = self._file_methods.get(file_path, {}).get(
             (caller_class, call.target_name)
-        ) or self._partial_fragment_member(file_path, caller_id, call.target_name)
+        ) or self._partial_fragment_member(file_path, caller_id, call)
         if sym_id is None or self._refuses_recursion(sym_id, caller_id, call):
             return None
         # The caller itself is recursion, answered here so it never reaches an ancestor.
