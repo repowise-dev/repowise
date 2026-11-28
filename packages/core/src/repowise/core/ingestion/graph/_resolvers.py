@@ -858,19 +858,7 @@ class ResolveMixin:
                 (bare, bare_kinds),
                 (qualified, _QUALIFIED_REFERENCE_KINDS),
             )
-            # Both batches resolve before either writes, so a raise adds none of the file's edges.
-            resolved_batches = []
-            for sites, allowed_kinds in batches:
-                if not sites:
-                    continue
-                resolved = resolve_contained(
-                    self.resolve_failures, "references", path, resolver.resolve_file, path, sites
-                )
-                if resolved is None:
-                    resolved_batches = []
-                    break
-                resolved_batches.append((resolved, allowed_kinds))
-            for resolved, allowed_kinds in resolved_batches:
+            for resolved, allowed_kinds in self._resolve_reference_batches(resolver, path, batches):
                 for rc in resolved:
                     if rc.confidence < _MIN_REFERENCE_CONFIDENCE:
                         continue
@@ -880,6 +868,22 @@ class ResolveMixin:
                         continue
                     total += self._add_reference_edge(rc.caller_id, rc.callee_id, rc)
         log.info("Reference edges resolved", total=total)
+
+    def _resolve_reference_batches(
+        self, resolver: Any, path: str, batches: Iterable[tuple[list[CallSite], frozenset[str]]]
+    ) -> list[tuple[list[Any], frozenset[str]]]:
+        """Every batch resolved, or none: a raise in one adds none of the file's edges."""
+        out = []
+        for sites, allowed_kinds in batches:
+            if not sites:
+                continue
+            resolved = resolve_contained(
+                self.resolve_failures, "references", path, resolver.resolve_file, path, sites
+            )
+            if resolved is None:
+                return []
+            out.append((resolved, allowed_kinds))
+        return out
 
     def _add_reference_edge(
         self, source: str, target: str, rc: Any, hint_source: str | None = None

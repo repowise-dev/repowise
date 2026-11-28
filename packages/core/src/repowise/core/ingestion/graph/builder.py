@@ -55,6 +55,14 @@ from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
 
+def _clear_resolved_imports(parsed: ParsedFile) -> None:
+    """Undo what a raising import resolution may have written onto *parsed*."""
+    for imp in parsed.imports:
+        imp.resolved_file = None
+        for binding in imp.bindings:
+            binding.source_file = None
+
+
 def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
     """Fold one more import into an edge's ``type_only`` / ``deferred`` /
     ``guarded`` marks, by :func:`~repowise.core.ingestion.models.combine_load_kinds`
@@ -629,10 +637,7 @@ class GraphBuilder(
             )
             if resolved is None:
                 # Left out of ``import_resolutions``, so the next patch rebuilds in full.
-                for imp in parsed.imports:
-                    imp.resolved_file = None
-                    for binding in imp.bindings:
-                        binding.source_file = None
+                _clear_resolved_imports(parsed)
                 resolved = [()] * len(parsed.imports)
             else:
                 self.import_resolutions[path] = resolved
