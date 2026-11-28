@@ -114,8 +114,9 @@ def _emit_upkeep_prompt(policy: DecisionPolicy) -> None:
 def _emit_stop_prompt(policy: DecisionPolicy) -> None:
     if policy.stop_capture:
         console.print(
-            "  [dim]Stop prompt: on. A session that did real work and recorded no "
-            "decision is asked once, as it stops, to record one or say there is none.[/dim]"
+            "  [dim]Stop prompt: on. An agent that stops after real work and recorded no "
+            "decision is asked to record one or say there is none, again after more work, "
+            "up to three times a session.[/dim]"
         )
 
 
