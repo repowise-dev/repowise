@@ -322,7 +322,9 @@ async def list_changes(
     """A page of changes matching *where*, newest merged first, and the total
     that matched; ``limit=None`` returns every match."""
     clauses = _filters(repository_id, where or ChangeFilter())
-    total = (await session.execute(select(func.count()).select_from(Change).where(*clauses))).scalar_one()
+    total = (
+        await session.execute(select(func.count()).select_from(Change).where(*clauses))
+    ).scalar_one()
     rows = await session.execute(
         select(Change)
         .where(*clauses)
@@ -439,11 +441,15 @@ async def find_changes(
     with that forge ref (``#12``, ``!7``, as listings print it), else up to
     *limit* whose id starts with *ref* (a listed id, cut at
     :data:`LISTED_ID_CHARS`), else up to *limit* that landed a commit starting
-    with *ref* (7+ hex). More than one means a short ref is ambiguous.
+    with *ref* (7+ hex). Bare digits also match a Perforce changelist's id
+    (``cl-<n>``). More than one means a short ref is ambiguous.
     """
+    wanted = f"cl-{int(ref)}" if ref.isascii() and ref.isdigit() and len(ref) <= 10 else ref
     row = (
         await session.execute(
-            select(Change).where(Change.repository_id == repository_id, Change.change_id == ref)
+            select(Change).where(
+                Change.repository_id == repository_id, Change.change_id.in_((ref, wanted))
+            )
         )
     ).scalar_one_or_none()
     if row is not None:
@@ -507,9 +513,10 @@ async def get_commit_labels(
 
 async def get_category_inputs(
     session: AsyncSession, repository_id: str, limit: int = 1000
-) -> tuple[list[tuple[str, str, str | None]], list[tuple[str, str, str, str, str | None]]]:
+) -> tuple[list[tuple[str, str, str | None]], list[tuple[str, ...]]]:
     """``(sha, subject, category)`` per commit and, per change, ``(change_id,
-    title, category, files_json, labels_json)``: what its category is read from.
+    title, category, files_json, labels_json, head_sha, commit_shas_json)``:
+    what its category is read from.
 
     Newest *limit* of each, so the read stays bounded as the tables grow.
     """
@@ -521,7 +528,13 @@ async def get_category_inputs(
     )
     changes = await session.execute(
         select(
-            Change.change_id, Change.title, Change.category, Change.files_json, Change.labels_json
+            Change.change_id,
+            Change.title,
+            Change.category,
+            Change.files_json,
+            Change.labels_json,
+            Change.head_sha,
+            Change.commit_shas_json,
         )
         .where(Change.repository_id == repository_id)
         .order_by(Change.merged_at.desc().nulls_last())

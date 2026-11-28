@@ -18,6 +18,7 @@ import structlog
 from ...analysis.public_api import stamp_public_api
 from ...build_units import BuildUnitIndex
 from ...cancellation import check_cancelled
+from ...pipeline.progress import emit_warning
 from ..cohesion import (
     MODULE_DECLARATION_HINT,
     SAME_PACKAGE_HINT,
@@ -28,7 +29,8 @@ from ..external_calls import ExternalCallSite
 from ..languages.apex_namespace import spell_apex_names
 from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
-from ..models import Import, ParsedFile, Symbol, combine_load_kinds
+from ..models import Import, ParsedFile, combine_load_kinds
+from ..resolution_containment import Failure, failure_summary, resolve_contained
 from ..resolvers import ResolverContext
 from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
@@ -37,9 +39,9 @@ from ..resolvers.ruby_rails import get_or_build_rails_index
 from ..resolvers.typescript import detect_platform_files
 from ..symbol_identity import (
     MODULE_SYMBOL_NAME,
-    has_overload_identity,
     make_symbol_id,
     module_symbol_id,
+    takes_shared_id,
 )
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
@@ -53,22 +55,12 @@ from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
 
-_CALLABLE_KINDS = frozenset({"function", "method"})
-
-
-def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -> bool:
-    """Does the definition already holding *sym*'s id keep its node?
-
-    Where overloads get their own ids, two definitions still sharing one erase
-    to one signature: the first declared keeps the node, so its span does not
-    depend on how many follow it. A function sharing its id with a Kotlin
-    property takes the node: calls name it.
-    """
-    if existing is None or existing.get("is_declaration") is not False:
-        return False
-    if not has_overload_identity(sym.language):
-        return False
-    return not (sym.kind in _CALLABLE_KINDS and existing.get("kind") not in _CALLABLE_KINDS)
+def _clear_resolved_imports(parsed: ParsedFile) -> None:
+    """Undo what a raising import resolution may have written onto *parsed*."""
+    for imp in parsed.imports:
+        imp.resolved_file = None
+        for binding in imp.bindings:
+            binding.source_file = None
 
 
 def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
@@ -234,6 +226,8 @@ class GraphBuilder(
         # {path: the targets each of its imports resolved to, in order}. A
         # patch compares these to decide which files an edit re-routes.
         self.import_resolutions: dict[str, list[tuple[str, ...]]] = {}
+        # Files a resolution pass skipped this build (``resolution_containment``).
+        self.resolve_failures: list[Failure] = []
         # ``co_changes`` edges a refreshing patch set aside; see
         # ``restore_co_change_edges``.
         self._stashed_co_changes: list[tuple[str, str, dict[str, Any]]] = []
@@ -433,12 +427,7 @@ class GraphBuilder(
             # the one-line declaration overwrites a definition's span, kind and
             # ``is_declaration``, and every consumer that tells the two apart
             # then reads the header line as the whole symbol.
-            existing = self._graph.nodes.get(sym.id)
-            if sym.is_declaration:
-                if existing is not None and existing.get("is_declaration") is False:
-                    self._graph.add_edge(path, sym.id, edge_type="defines")
-                    continue
-            elif _first_definition_keeps_node(existing, sym):
+            if not takes_shared_id(self._graph.nodes.get(sym.id), sym):
                 self._graph.add_edge(path, sym.id, edge_type="defines")
                 continue
 
@@ -470,10 +459,14 @@ class GraphBuilder(
                 edge_type="defines",
             )
 
-            # HAS_METHOD edge: class/struct → method
+        # HAS_METHOD edge: class/struct → method
+        # Resolved in a second pass over the file's symbols so declaration order in
+        # the file (e.g. Go methods declared above structs, or Rust impl blocks) does
+        # not drop containment edges when the method precedes its container.
+        for sym in parsed.symbols:
             if sym.parent_name and sym.kind == "method":
                 parent_id = make_symbol_id(path, sym.parent_name)
-                if parent_id in self._graph:
+                if parent_id in self._graph and sym.id in self._graph:
                     self._graph.add_edge(
                         parent_id,
                         sym.id,
@@ -552,6 +545,7 @@ class GraphBuilder(
         self._invalidate_metric_caches()
         # Set again by the call pass; a build that stops before it writes none.
         self.external_call_sites, self.external_call_scope = None, None
+        self.resolve_failures = []
         self._qualify_python_symbols()
         # Apex and Pascal names are case-insensitive; every resolver keys on
         # the declared spelling.
@@ -632,16 +626,27 @@ class GraphBuilder(
             # repowise.core.ingestion.cohesion.
             _unit_fanout = _lang in UNIT_FANOUT_LANGUAGES
             _own_dir = PurePosixPath(path).parent.as_posix() if _unit_fanout else ""
-            resolved: list[tuple[str, ...]] = []
-            for imp in parsed.imports:
-                targets = resolve_import_targets(imp, path, _lang, ctx)
-                resolved.append(targets)
+            resolved = resolve_contained(
+                self.resolve_failures,
+                "imports",
+                path,
+                self._resolve_file_imports,
+                path,
+                parsed,
+                ctx,
+            )
+            if resolved is None:
+                # Left out of ``import_resolutions``, so the next patch rebuilds in full.
+                _clear_resolved_imports(parsed)
+                resolved = [()] * len(parsed.imports)
+            else:
+                self.import_resolutions[path] = resolved
+            for imp, targets in zip(parsed.imports, resolved, strict=True):
                 if targets:
                     imp.resolved_file = targets[0]
                 for target in targets:
                     file_imports.add(target)
                     self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)
-            self.import_resolutions[path] = resolved
             # Already resolved, and kept out of ``import_resolutions``, which
             # lines up with ``parsed.imports`` one for one.
             for imp in self._implicit_imports.get(path, ()):
@@ -681,10 +686,13 @@ class GraphBuilder(
         self._resolve_ruby_spec_mirrors(progress=progress, scope=scope_set)
 
         # --- C/C++ header ↔ implementation pairing ---
-        # foo.h -> foo.c (same stem, same dir): consumers including the
-        # header must be able to reach the implementation. Read off paths
-        # alone and cheap, so a patch re-derives the pairs its scope cleared.
-        self._resolve_cpp_header_pairs(progress=progress)
+        # foo.h -> foo.c (same stem, same dir or same build target): consumers
+        # including the header must be able to reach the implementation. Read
+        # off paths alone and cheap, so a patch re-derives the pairs its scope
+        # cleared.
+        self._resolve_cpp_header_pairs(
+            progress=progress, cpp_index=getattr(ctx, CPP_INDEX_KEY, None)
+        )
 
         # --- C# / VB.NET partial-class co-fragments ---
         # Fragments of one partial type across files are literally one
@@ -767,6 +775,12 @@ class GraphBuilder(
             log.warning("public_api_stamp_failed", error=str(exc))
 
         self._built = True
+        if summary := failure_summary(self.resolve_failures):
+            # Unrecorded, so the next update rebuilds in full instead of seeding the gap.
+            for _, path, _ in self.resolve_failures:
+                self.import_resolutions.pop(path, None)
+            log.warning("graph_build_files_skipped", failures=len(self.resolve_failures))
+            emit_warning(progress, summary)
 
         # Keep the resolver-built DotNetProjectIndex reachable after the
         # context goes out of scope: the dynamic-hints phase (XAML) needs
@@ -796,6 +810,13 @@ class GraphBuilder(
             edge_types=edge_counts,
         )
         return self._graph
+
+    def _resolve_file_imports(
+        self, path: str, parsed: ParsedFile, ctx: ResolverContext
+    ) -> list[tuple[str, ...]]:
+        """The targets of each of *parsed*'s imports, in order; writes nothing to the graph."""
+        language = parsed.file_info.language
+        return [resolve_import_targets(imp, path, language, ctx) for imp in parsed.imports]
 
     def _add_import_edge(
         self, path: str, target: str, imp: Any, unit_fanout: bool, own_dir: str
@@ -855,7 +876,7 @@ class GraphBuilder(
         )
         if progress:
             progress.on_phase_start("graph.type_refs", len(parsed))
-        type_use_counts = resolve_type_refs(parsed, ctx, self._graph)
+        type_use_counts = resolve_type_refs(parsed, ctx, self._graph, self.resolve_failures)
         for path in parsed:
             for _, target, data in self._graph.out_edges(path, data=True):
                 # Treat both real ``using`` imports and synthesised

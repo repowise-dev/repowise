@@ -14,16 +14,14 @@ repo-relative file path. Order, highest-fidelity first:
 5. **Stdlib filter** — angle-bracket system includes like ``<vector>``
    / ``<stdio.h>`` resolve to ``None`` (no edge emitted) so the graph
    isn't polluted with one external node per stdlib import.
-6. **Stem fallback** — last-ditch lookup against the global stem map.
+6. **Stem fallback** — last-ditch lookup against the global stem map; a
+   path-qualified include only lands on a file whose path ends with it.
 
-:func:`resolve_cpp_import_all` performs sibling fan-out: when the
-importer is a translation unit (``.cc`` / ``.cpp`` / ``.c``) and the
-include resolves to a header that belongs to one or more targets in
-the workspace index, the resolver also emits import targets for every
-other TU sharing those targets. That mirrors the JVM / Go same-package
-fan-out and rescues the leveldb-shape false positives where every
-public header reads as ``unreachable_file`` because the only ``.cc``
-that includes it is one file out of many in the same library target.
+An include names one file, so it resolves to one file. Build-target
+membership never becomes an import edge: an includer of one header does
+not depend on every other file of that header's target. Dead-code
+reachability reads target membership from stamps the C/C++ warmup puts
+on file nodes instead.
 """
 
 from __future__ import annotations
@@ -142,8 +140,68 @@ def _resolve_single(
         return candidate_rel
 
     # 6. Stem fallback (5 was system-include filter above)
-    stem = Path(module_path).stem.lower()
-    return ctx.stem_lookup(stem)
+    return _stem_fallback(module_path, importer_dir, ctx)
+
+
+def _dir_distance(a: str, b: str) -> int:
+    """Directory hops between two repo-relative directories."""
+    pa = a.split("/") if a else []
+    pb = b.split("/") if b else []
+    common = 0
+    for x, y in zip(pa, pb, strict=False):
+        if x != y:
+            break
+        common += 1
+    return len(pa) + len(pb) - 2 * common
+
+
+def _nearest_suffix_match(written: str, importer_dir: str, ctx: ResolverContext) -> str | None:
+    """The repo file whose path ends with *written*, nearest the importer."""
+    # Leading ``../`` segments already failed the importer-relative join.
+    parts = [p for p in written.split("/") if p not in ("", ".", "..")]
+    if not parts:
+        return None
+    candidates = ctx.stem_map.get(Path(parts[-1]).stem) or ()
+    suffix = "/" + "/".join(parts)
+    matches = [c for c in candidates if ("/" + c.lower()).endswith(suffix)]
+    # ``min`` keeps the stem map's order among equally near files.
+    return min(
+        matches,
+        key=lambda c: _dir_distance(posixpath.dirname(c), importer_dir),
+        default=None,
+    )
+
+
+def _stem_fallback(module_path: str, importer_dir: str, ctx: ResolverContext) -> str | None:
+    """The repo file *module_path* most plausibly names, by file stem alone.
+
+    An include with a directory part (``"storage/x.h"``) names a file whose
+    path ends with that written path; when several do, the one nearest the
+    importer wins, and when none does there is no edge: a same-named file
+    elsewhere is a different header. ``"../x.h"`` counts as path-qualified,
+    so it takes the nearest ``x.h``.
+
+    A bare name keeps the stem rules: the stem map holds every file of every
+    kind, so ``"Clump.hpp"`` also sees ``Clump.cpp``. The exact file name
+    wins; an include of a header otherwise takes only another header, never a
+    translation unit or a non-C file that happens to share the stem. An
+    include with no extension (``<format>``, ``<QString>``) names that exact
+    file or nothing in the repo.
+    """
+    # An angle include can still arrive wrapped (``<core/Logger.hpp>``).
+    written = posixpath.normpath(module_path.strip("<>").replace("\\", "/").lower())
+    if "/" in written:
+        return _nearest_suffix_match(written, importer_dir, ctx)
+    name = written
+    candidates = ctx.stem_map.get(Path(name).stem) or ()
+    for candidate in candidates:
+        if posixpath.basename(candidate).lower() == name:
+            return candidate
+    if "." not in name:
+        return None
+    if name.endswith(_HEADER_EXTS):
+        return next((c for c in candidates if c.lower().endswith(_HEADER_EXTS)), None)
+    return candidates[0] if candidates else None
 
 
 def resolve_cpp_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
@@ -166,62 +224,3 @@ def resolve_cpp_import(module_path: str, importer_path: str, ctx: ResolverContex
         if is_stdlib_include(module_path):
             system_form = True
     return _resolve_single(module_path, importer_path, ctx, system_form=system_form)
-
-
-def resolve_cpp_import_all(
-    module_path: str,
-    importer_path: str,
-    ctx: ResolverContext,
-) -> tuple[str, ...]:
-    """Resolve a ``#include`` and fan out across sibling TUs in shared targets.
-
-    Returns a tuple of resolved repo paths. The primary resolved file is
-    always first; sibling TUs follow. Used by :mod:`..graph.builder` so
-    the IMPORTS edges from a header propagate to every implementation
-    file in the same target — rescuing public-header-only entry points
-    from ``unreachable_file`` flags.
-    """
-    primary = resolve_cpp_import(module_path, importer_path, ctx)
-    if primary is None:
-        return ()
-
-    # Fan-out only makes sense when the import RESOLVES to a header and
-    # the importer is a TU — otherwise we'd be linking ``.cc`` → ``.cc``
-    # files that have no source-level relationship.
-    if not primary.lower().endswith(_HEADER_EXTS):
-        return (primary,)
-    importer_rel, _ = _normalise_importer(importer_path, ctx)
-    if not importer_rel.lower().endswith(_SOURCE_TU_EXTS):
-        return (primary,)
-
-    try:
-        from .cpp_workspace import get_or_build_cpp_index
-
-        cpp_index = get_or_build_cpp_index(ctx)
-    except Exception:
-        return (primary,)
-
-    owning_targets = cpp_index.file_to_targets.get(primary, ())
-    if not owning_targets:
-        return (primary,)
-
-    out: list[str] = [primary]
-    seen: set[str] = {primary, importer_rel}
-    for tid in owning_targets:
-        t = cpp_index.targets.get(tid)
-        if t is None:
-            continue
-        # Limit fan-out scope: only target a small set of siblings — a
-        # single-header library can otherwise pull in dozens of TUs and
-        # blow up the import-edge count. Cap at the target's first 32
-        # sources (stable order) which is enough for the rescue effect.
-        # Header-only targets (fmt-like: public headers, zero sources)
-        # fan out across the target's other headers instead — otherwise
-        # one included header leaves the rest of the library orphaned.
-        pool = t.sources or (t.public_headers + t.private_headers)
-        for src in pool[:32]:
-            if src in seen:
-                continue
-            seen.add(src)
-            out.append(src)
-    return tuple(out)

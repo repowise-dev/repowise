@@ -57,7 +57,7 @@ from .lang_helpers.type_heads import (
     _rust_head_type_identifier,
     _rust_shadowed_by_type_param,
 )
-from .models import CSHARP_INTEGER_CONSTANT, TS_JS_LANGUAGES
+from .models import CPP_NOT_VA_LIST, CSHARP_INTEGER_CONSTANT, TS_JS_LANGUAGES
 from .type_names import kotlin_extension_receiver
 
 log = structlog.get_logger(__name__)
@@ -359,7 +359,7 @@ def _is_import_guard_body(node: Node, child: Node, src: str) -> bool:
         clause
         for clause in node.children
         if clause.type == "except_clause"
-        and _catches_import_failure(clause.child_by_field_name("value"), src)
+        and any(_catches_import_failure(val, src) for val in clause.children_by_field_name("value"))
     ]
     return bool(handlers) and all(_handler_lets_the_module_go_on(h, src) for h in handlers)
 
@@ -528,6 +528,30 @@ def _csharp_type_parameter_count(def_node: Node) -> int | None:
     return 0
 
 
+# Nodes between a C++ declaration's ``@symbol.def`` node and the template head over it.
+_CPP_TEMPLATE_HEAD_WRAPPERS = frozenset(
+    {"function_declarator", "pointer_declarator", "reference_declarator", "declaration", "field_declaration"}
+)
+
+
+def _cpp_template_parameters(def_node: Node, src: str, language: str) -> str | None:
+    """``<typename U>``: the parameter list of the template head nearest a C++ *def_node*.
+
+    The nearest only: an out-of-line member template of a class template
+    writes the class's list too, which its in-class declaration does not.
+    """
+    if language != "cpp":
+        return None
+    node = def_node
+    while node.parent is not None and node.parent.type in _CPP_TEMPLATE_HEAD_WRAPPERS:
+        node = node.parent
+    head = node.parent
+    if head is None or head.type != "template_declaration":
+        return None
+    parameters = head.child_by_field_name("parameters")
+    return node_text(parameters, src) if parameters is not None else None
+
+
 def _kotlin_receiver_fields(def_node: Node, params: list[Node], language: str, name: str) -> dict:
     """``Symbol`` fields for the receiver a Kotlin extension function declares; {} otherwise.
 
@@ -599,14 +623,14 @@ _APEX_LITERAL_TYPES = {
 
 
 def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
-    """A call's argument expressions, for a language whose overloads read them (Java, Apex, Kotlin).
+    """A call's argument expressions, for a language whose overloads read them (Java, Apex, Kotlin, C++).
 
     Read from the argument list already in hand, the way ``_count_arguments``
     counts it.
     """
     if language == "kotlin":
         return _kotlin_positional_arguments(arg_nodes)
-    if language not in ("java", "apex", "csharp") or not arg_nodes:
+    if language not in ("java", "apex", "csharp", "cpp") or not arg_nodes:
         return []
     skip_types = frozenset({"(", ")", ","})
     arguments = [
@@ -683,14 +707,37 @@ def _kotlin_fraction_type(lowered: str) -> str | None:
     return "Double" if "." in lowered or "e" in lowered else None
 
 
+# C++ argument nodes whose value is never a ``va_list``.
+_CPP_NOT_VA_LIST_NODES = frozenset(
+    {
+        "string_literal",
+        "raw_string_literal",
+        "concatenated_string",
+        "char_literal",
+        "number_literal",
+        "true",
+        "false",
+        "nullptr",
+        "call_expression",
+    }
+)
+
+
 def _argument_literal_types(
     arguments: list[Node], src: str, language: str = "java"
 ) -> tuple[str | None, ...] | None:
     """The type of each literal argument, None where an argument is no literal.
 
     None overall when no argument is a literal. C# reports a lambda's and a
-    construction's shape instead (``_csharp_argument_shape``).
+    construction's shape instead (``_csharp_argument_shape``). C++ marks only
+    an argument that cannot be a ``va_list`` (``CPP_NOT_VA_LIST``).
     """
+    if language == "cpp":
+        marks = tuple(
+            CPP_NOT_VA_LIST if argument.type in _CPP_NOT_VA_LIST_NODES else None
+            for argument in arguments
+        )
+        return marks if any(marks) else None
     literal_type = {
         "apex": _apex_literal_type,
         "csharp": _csharp_argument_shape,

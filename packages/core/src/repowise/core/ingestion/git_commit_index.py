@@ -442,29 +442,63 @@ def _report(stats_sink: dict[str, int | bool] | None, *, succeeded: bool, commit
         stats_sink.update(succeeded=succeeded, commits=commits)
 
 
-def _depth_newer_than(repo: object, commit_limit: int, since_ts: int) -> int | None:
+def _depth_newer_than(
+    repo: object,
+    commit_limit: int,
+    since_ts: int,
+    *,
+    known_shas: frozenset[str] | set[str] | None = None,
+) -> int | None:
     """How deep in the window the commits newer than *since_ts* reach.
 
-    ``None`` when git fails. A ``%ct``-only pass is cheap next to the numstat
+    ``None`` when git fails. A ``%H %ct``-only pass is cheap next to the numstat
     walk, and both traverse the same revisions in the same order, so every
     commit past this depth is one the walk's ``ts <= since_ts`` check drops.
     """
+    fmt = "%H %ct" if known_shas is not None else "%ct"
     try:
-        stamps = repo.git.log(  # type: ignore[attr-defined]
-            f"-{commit_limit}", "--no-merges", "--format=%ct"
-        ).split()
+        lines = repo.git.log(  # type: ignore[attr-defined]
+            f"-{commit_limit}", "--no-merges", f"--format={fmt}"
+        ).splitlines()
     except Exception as exc:
         logger.warning("repo_commit_index_failed", error=str(exc))
         return None
     return max(
-        (position + 1 for position, stamp in enumerate(stamps) if _stamp_after(stamp, since_ts)),
+        (
+            position + 1
+            for position, line in enumerate(lines)
+            if _entry_needed(line, since_ts, known_shas)
+        ),
         default=0,
     )
 
 
-def _stamp_after(stamp: str, since_ts: int) -> bool:
+def _entry_needed(
+    entry: str,
+    since_ts: int,
+    known_shas: frozenset[str] | set[str] | None,
+) -> bool:
+    parts = entry.split()
+    if not parts:
+        return False
+    if len(parts) == 1:
+        return _stamp_after(parts[0], since_ts, allow_equal=known_shas is not None)
+    sha, stamp = parts[0], parts[1]
     try:
-        return int(stamp) > since_ts
+        val = int(stamp)
+    except ValueError:
+        return True
+    if val > since_ts:
+        return True
+    if val == since_ts:
+        return sha not in (known_shas if known_shas is not None else ())
+    return False
+
+
+def _stamp_after(stamp: str, since_ts: int, *, allow_equal: bool = False) -> bool:
+    try:
+        val = int(stamp)
+        return val >= since_ts if allow_equal else val > since_ts
     except ValueError:  # unparseable stamp: keep it in the window
         return True
 
@@ -648,6 +682,7 @@ class _FileBuckets:
                         is_merge=header["is_merge"],
                         subject=header["subject"],
                         body=header["body"],
+                        changelist=header.get("changelist"),
                         added=added,
                         deleted=deleted,
                         agent=prov.agent,
@@ -666,6 +701,7 @@ def load_commit_index(
     *,
     commit_sink: list[dict] | None = None,
     since_ts: int | None = None,
+    known_shas: set[str] | None = None,
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     cache_dir: Path | None = None,
@@ -727,7 +763,7 @@ def load_commit_index(
     # diffing commits whose fate is already known.
     depth = commit_limit
     if since_ts is not None:
-        newer = _depth_newer_than(repo, commit_limit, since_ts)
+        newer = _depth_newer_than(repo, commit_limit, since_ts, known_shas=known_shas)
         if newer is None:
             return {}
         depth = newer
@@ -759,7 +795,7 @@ def load_commit_index(
     labeler = _CommitLabeler(repo, depth, provenance_classifier, trace_index, commit_sink)
     buckets = _FileBuckets(indexable_files)
     commits_parsed = 0
-    for header, numstat_lines in _commits_after(records, since_ts):
+    for header, numstat_lines in _commits_after(records, since_ts, known_shas=known_shas):
         commits_parsed += 1
         # The full footprint (every file, not just the indexable subset): the
         # agent-trace overlap check and the commit sink both need it.
@@ -783,17 +819,33 @@ def load_commit_index(
     return buckets.records
 
 
-def _commits_after(records: list[str], since_ts: int | None) -> Iterator[tuple[dict, list[str]]]:
+def _commits_after(
+    records: list[str],
+    since_ts: int | None,
+    *,
+    known_shas: set[str] | None = None,
+) -> Iterator[tuple[dict, list[str]]]:
     """``(header, numstat_lines)`` of each parseable record newer than *since_ts*.
 
     Skips rather than stops at an older commit: the walk is newest first, but
-    commit times can be slightly out of order.
+    commit times can be slightly out of order. When *known_shas* is supplied,
+    commits occurring at *since_ts* whose shas are not in *known_shas* are
+    retained so same-second commits are not dropped (#6150).
     """
     from .git_indexer import _parse_commit_record
 
     for record in records:
         parsed = _parse_commit_record(record)
-        if parsed is not None and (since_ts is None or parsed[0]["ts"] > since_ts):
+        if parsed is None:
+            continue
+        ts = parsed[0]["ts"]
+        sha = parsed[0].get("sha")
+        if since_ts is None:
+            yield parsed
+        elif known_shas is not None:
+            if ts > since_ts or (ts == since_ts and sha not in known_shas):
+                yield parsed
+        elif ts > since_ts:
             yield parsed
 
 
@@ -913,9 +965,7 @@ class _RegionReader:
     a walk that stops early leaves at most that many reads unused.
     """
 
-    def __init__(
-        self, read: Callable[..., list[str]], regions: dict[int, tuple[int, str]]
-    ) -> None:
+    def __init__(self, read: Callable[..., list[str]], regions: dict[int, tuple[int, str]]) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
         self._ahead = max(1, min(_DEEP_READ_AHEAD, (os.cpu_count() or 1) // 2))
@@ -1156,9 +1206,7 @@ def load_sampled_commit_index(
     )
     underfilled = _underfilled(sample, indexable_files, per_file_limit)
     try:
-        while (
-            not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more()
-        ):
+        while not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more():
             if not walks.walk_next(sample, per_file_limit, underfilled):
                 break
             report(sample.global_commits + sample.deep_commits, total_commits)

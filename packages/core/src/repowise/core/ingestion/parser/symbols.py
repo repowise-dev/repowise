@@ -39,6 +39,7 @@ from ..languages.perl_packages import (
 from ..models import FileInfo, Symbol
 from ..parser_helpers import (
     _build_qualified_name,
+    _cpp_template_parameters,
     _csharp_type_parameter_count,
     _dedupe_objc_interface_symbols,
     _dedupe_pascal_interface_symbols,
@@ -80,6 +81,7 @@ from .symbol_rules import (
     _refine_symbol_kind,
     _refine_visibility,
     _symbol_end_line,
+    cpp_local_type_member,
 )
 
 _node_text = node_text
@@ -465,7 +467,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         qualified_name=_build_qualified_name(file_info.path, scope, name),
         kind=_method_or_kind(kind, parent_name, def_node, language),  # type: ignore[arg-type]
         signature=_normalize_newlines(
-            build_signature(node_type, name, params_text, def_node, src)
+            build_signature(node_type, name, params_text, def_node, src, language=language)
         ) or "",
         start_line=start_line,
         end_line=end_line,
@@ -485,6 +487,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         type_parameter_count=(
             _csharp_type_parameter_count(def_node) if language == "csharp" else None
         ),
+        template_parameters=_cpp_template_parameters(def_node, src, language),
         **_kotlin_receiver_fields(def_node, params_nodes, language, name),
         modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
     )
@@ -507,8 +510,13 @@ def _kind_and_end_line(
         src,
         file.cpp_exports.container_ids,
         # An anonymous class member is a method of its own class, even
-        # inside another method's body; ``_find_parent`` names it.
-        keep_nested=has_object_owner or in_anonymous_class(def_node, config.anonymous_class_types),
+        # inside another method's body; ``_find_parent`` names it. So is a
+        # member of a C++ class declared in a function body.
+        keep_nested=(
+            has_object_owner
+            or in_anonymous_class(def_node, config.anonymous_class_types)
+            or (language == "cpp" and cpp_local_type_member(def_node, config.parent_class_types))
+        ),
     )
     if kind is None:
         return None
@@ -605,14 +613,13 @@ def _resolve_parent_name(
     export_type_parents: dict[int, str],
 ) -> str | None:
     """The enclosing type or module name, trying each language's own shape."""
+    if language == "cpp":
+        export_parents = export_type_parents if no_export_type else None
+        return _cpp_parent_name(def_node, config, name_nodes, src, export_parents)
+
     parent_name = _find_parent(def_node, config, receiver_nodes, src)
     if parent_name is not None:
         return parent_name
-
-    if language == "cpp" and no_export_type:
-        parent_name = _cpp_export_macro_parent(def_node, export_type_parents)
-        if parent_name is not None:
-            return parent_name
 
     # Dart mixin_declaration exposes no ``name`` field, so
     # ``_find_parent``'s field lookup misses mixin members.
@@ -625,8 +632,8 @@ def _resolve_parent_name(
     if language == "fsharp":
         return _fsharp_parent_name(def_node, src)
 
-    # C/C++ out-of-line ``void Foo::method()`` names its class in the scope.
-    if language in ("cpp", "c") and name_nodes:
+    # C out-of-line ``void Foo::method()`` names its class in the scope.
+    if language == "c" and name_nodes:
         return _qualified_cpp_parent(name_nodes[0], src)
 
     # Pascal out-of-line ``function TFoo.Bar`` names its class in the header.
@@ -650,6 +657,72 @@ def _resolve_parent_name(
     if language == "perl" and name_nodes:
         return perl_sub_owner(def_node, _node_text(name_nodes[0], src))
     return None
+
+
+def _cpp_parent_name(
+    def_node: Node,
+    config: LanguageConfig,
+    name_nodes: list[Node],
+    src: str,
+    export_type_parents: dict[int, str] | None,
+) -> str | None:
+    """A C++ symbol's parent, by the first shape that names one.
+
+    A local class's scope, the enclosing class, an export-macro type, or the
+    class an out-of-line ``Foo::method`` names.
+    """
+    parent_name = _cpp_local_parent(def_node, config, src) or _nesting_parent(def_node, config, src)
+    if parent_name is None and export_type_parents is not None:
+        parent_name = _cpp_export_macro_parent(def_node, export_type_parents)
+    if parent_name is None and name_nodes:
+        parent_name = _qualified_cpp_parent(name_nodes[0], src)
+    return parent_name
+
+
+def _cpp_local_parent(def_node: Node, config: LanguageConfig, src: str) -> str | None:
+    """The parent of a class declared in a function body, or of a member of one.
+
+    It is the function's own id scope followed by every class between it and
+    *def_node* (``Plan::Compute::TopoSort``), so a local ``struct bytes`` never
+    shares an id with a namespace-scope ``bytes``. None when *def_node* is not
+    inside a local class (or is not one).
+    Ceiling: overloads of one function share the scope without their
+    discriminator, so same-named local classes in two overloads share ids.
+    """
+    classes: list[str] = []
+    child, node = def_node, def_node.parent
+    while node is not None:
+        if node.type in config.parent_class_types:
+            classes.append(_parent_type_name(node, src) or "")
+        elif node.type == "function_definition":
+            if not classes and def_node.type not in config.parent_class_types:
+                return None
+            # Only a class in the body is local. One the grammar recovered as
+            # a broken function's return type (an unexpanded macro before the
+            # next definition) is a namespace-scope class and keeps its own id.
+            body = node.child_by_field_name("body")
+            if body is None or body.id != child.id:
+                return None
+            owner = _cpp_function_scope(node, config, src)
+            return "::".join([owner, *reversed(classes)]) if owner else None
+        child, node = node, node.parent
+    return None
+
+
+def _cpp_function_scope(function: Node, config: LanguageConfig, src: str) -> str | None:
+    """``Class::name`` (or ``name``) of a C++ function definition, as its symbol id spells it."""
+    declarator = function.child_by_field_name("declarator")
+    while declarator is not None and declarator.type != "function_declarator":
+        declarator = declarator.child_by_field_name("declarator") or next(
+            iter(declarator.named_children), None
+        )
+    name = declarator.child_by_field_name("declarator") if declarator is not None else None
+    while name is not None and name.type == "qualified_identifier":
+        name = name.child_by_field_name("name")
+    if name is None:
+        return None
+    owner = _qualified_cpp_parent(name, src) or _nesting_parent(function, config, src)
+    return f"{owner}::{_node_text(name, src)}" if owner else _node_text(name, src)
 
 
 def _go_interface_owner(def_node: Node, src: str) -> str | None:

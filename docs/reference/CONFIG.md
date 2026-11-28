@@ -18,6 +18,7 @@ Everything Repowise knows about your repository, created at the repo root by
 ├── events.key           # Random key the owner digests in component snapshots are made with
 ├── health-rules.json    # Per-file code-health marker overrides
 ├── state.json           # Last sync commit, page counts, token usage
+├── content_baseline.json # File content fingerprints, kept only while the folder has no git commit
 ├── mcp.json             # MCP server configuration
 └── .env                 # API keys (gitignored automatically)
 ```
@@ -86,6 +87,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `commit_limit` | `5000` | >= 1 | How many of the newest commits are analysed. |  |
 | `follow_renames` | `false` |  | Follow files across renames in git history. |  |
 | `sql_dialect` | unset |  | SQL dialect for parsing .sql files (a sqlglot name such as postgres). |  |
+| `compile_commands` | unset |  | Where compile_commands.json is, for C and C++ include paths: the file or its folder, relative to the repo root or absolute. Unset: the repo root, then build/. |  |
 | `forges.hosts` | `{}` |  | Which forge a self-hosted git host is: host to github, gitlab, azure, bitbucket or generic. |  |
 | `editor_setup` | `true` |  | Let update keep agent and editor files current. init --no-editor-setup writes false, which leaves them alone. |  |
 | `changes.outcome_fix_days` | `30` | 1-365 | Days after a change in which fix commits to its files are counted. |  |
@@ -451,7 +453,7 @@ decisions:
 | `sync` | `false` |  | Send this repo's decisions to and from its copy on repowise.dev on update. |
 | `session_start` | `false` |  | Open each agent session with the decisions relevant to its work. |
 | `upkeep_prompt` | `false` |  | After a commit, ask the agent to settle the decisions it touched. |
-| `stop_prompt` | `false` |  | When an agent that did real work stops without recording a decision, ask it once a session to record one or say there is none, committed or not. |
+| `stop_prompt` | `false` |  | Ask an agent that stops after real work without recording a decision to record one or say there is none, committed or not; again after more work, up to three times a session. |
 | `update_mining` | unset |  | Let repowise update call a model to find decisions in new commits and PRs. Unset: off, unless the decisions block names a preset or lists sources, which keeps an older setup mining. |
 | `discovery.max_sessions` | `12` | 1-24 | Most sessions read in one discovery pass. |
 | `discovery.max_input_tokens` | `30000` | 2000-60000 | Most input tokens one discovery pass may send. |
@@ -946,6 +948,32 @@ never as zero. How evidence is collected and joined:
 | `lead_min_runs` | `2` | >= 2 | Independent runs, in workload classes that may lead, in which a function must be ranked to become a lead candidate without the share rule. |
 <!-- END GENERATED settings:evidence -->
 
+## The `plugins:` block
+
+Settings that installed plugins declare, one block per plugin. When
+`plugins.<plugin>.<name>` has no value in the file, repowise reads
+`REPOWISE_PLUGIN_<PLUGIN>_<NAME>`. Credentials are read from that variable
+only. `repowise config list --area plugins` shows what the installed plugins
+declare, and `repowise plugins` shows which required ones still need a value.
+See [Settings for a plugin](PLUGINS_REFERENCE.md#settings-for-a-plugin).
+
+```yaml
+plugins:
+  linear:
+    team: ENG
+```
+
+The built-in `forge` issue source is always listed. It reads GitHub or GitLab
+issues and runs only once `REPOWISE_PLUGIN_FORGE_TOKEN` is set (see
+[Issues from GitHub and GitLab](PLUGINS_REFERENCE.md#issues-from-github-and-gitlab)).
+
+<!-- BEGIN GENERATED settings:plugins (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does | Env var |
+|-----|---------|--------------|---------|
+| `forge.api_url` | `""` | API endpoint of a self-managed host: GitHub's GraphQL URL (https://ghe.example.com/api/graphql) or GitLab's API root (https://git.example.com/api/v4), https on the remote's host. Empty reads it from the remote. | `REPOWISE_PLUGIN_FORGE_API_URL` (when the file is unset) |
+| `forge.bug_labels` | `[bug, type: bug, type/bug, type::bug, kind/bug, incident]` | Labels that make an issue with no issue type a bug (incident for incident), matched without case. Any other issue is a feature, task or other by its type. | `REPOWISE_PLUGIN_FORGE_BUG_LABELS` (when the file is unset) |
+<!-- END GENERATED settings:plugins -->
+
 ## The `refactoring:` block
 
 Tunes the Extract Class / Extract Method / Extract Helper / Move Method / Break
@@ -1359,6 +1387,17 @@ model and base URL the same way; first match wins:
 
 - A model picked in the web UI is written to the repo's `config.yaml`, so the
   CLI uses it too.
+- A first index writes `provider` / `model` to the repo's `config.yaml` only
+  when they are not the default every repo shares (the global default, or
+  `REPOWISE_PROVIDER` / `REPOWISE_MODEL`): another provider or model named by
+  flag or picked at the prompt, or a provider found by its API key. A run on
+  the shared default writes neither, so the repo follows that default when it
+  changes. `state.json` records what each index ran on either way.
+- A repo indexed before this rule has the default of that day in its
+  `config.yaml`. While those lines still equal the current default they are
+  removed the next time the repo resolves a provider, once, and the repo
+  follows the default from then on. Lines that differ from it are kept as the
+  repo's own choice; delete them to follow the default.
 - A local OpenAI-compatible server such as LM Studio: `provider: openai` with
   `openai: {base_url: http://localhost:1234/v1}`. Loopback URLs need no key.
   Page material is sized for a 16384-token window, since the server does not
@@ -1670,6 +1709,19 @@ sandboxes and benchmark runs. Project files (`.repowise/mcp.json`,
 
 `REPOWISE_GITLAB_TOKEN` is read by `repowise ci-summary --gitlab-note`; set it
 as a masked CI/CD variable ([CI.md](../start/CI.md#gitlab)).
+
+### Issue links
+
+<!-- BEGIN GENERATED settings:env-plugins (python scripts/gen_config_docs.py) -->
+| Variable | Default | What it does | Config key |
+|----------|---------|--------------|------------|
+| `REPOWISE_PLUGIN_FORGE_TOKEN` | unset | GitHub or GitLab token that can read this repository's pull or merge requests and issues. Setting it turns on the built-in forge issue source. |  |
+| `REPOWISE_PLUGIN_FORGE_API_URL` | unset | API endpoint of a self-managed host: GitHub's GraphQL URL (https://ghe.example.com/api/graphql) or GitLab's API root (https://git.example.com/api/v4), https on the remote's host. Empty reads it from the remote. | `plugins.forge.api_url` (the file wins) |
+| `REPOWISE_PLUGIN_FORGE_BUG_LABELS` | `[bug, type: bug, type/bug, type::bug, kind/bug, incident]` | Labels that make an issue with no issue type a bug (incident for incident), matched without case. Any other issue is a feature, task or other by its type. | `plugins.forge.bug_labels` (the file wins) |
+<!-- END GENERATED settings:env-plugins -->
+
+The token is read from the environment only. Set it where `repowise update`
+runs, as a masked variable in CI.
 
 ### BLAS thread pool
 

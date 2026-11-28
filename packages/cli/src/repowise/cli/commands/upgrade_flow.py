@@ -180,13 +180,17 @@ async def _backfill_git(
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
     from repowise.core.persistence.stores.sql_job_store import SqlJobStore
 
+    async with get_session(sf) as session:
+        tracker_fixes = await load_tracker_fixes(session, repo_id)
     indexer = GitIndexer(
         repo_path,
         commit_limit=commit_limit,
         follow_renames=follow_renames,
         tier=GitIndexTier.FULL,
+        tracker_fixes=tracker_fixes,
     )
 
     async with get_session(sf) as session:
@@ -205,6 +209,10 @@ async def _backfill_git(
         # (Foundation 1 only wrote them on the full orchestrator index).
         if summary.commit_rows:
             await upsert_git_commits_bulk(session, repo_id, summary.commit_rows)
+            if tracker_fixes:
+                from repowise.core.pipeline.incremental import reconcile_issue_fix_flags
+
+                await reconcile_issue_fix_flags(session, repo_id, tracker_fixes)
         await clear_attribution_if_disabled(session, repo_id)
 
     console.print(
@@ -807,7 +815,9 @@ def upgrade_to_full(
     embedder_name = (
         _keyless_embedder_name(cfg, repo_path=repo_path)
         if keyless
-        else _upgrade_embedder_name(cfg, repo_path=repo_path)
+        else _upgrade_embedder_name(
+            cfg, repo_path=repo_path, provider=getattr(provider, "provider_name", None)
+        )
     )
 
     # The same single-flight lock as an incremental update: a concurrent
@@ -954,7 +964,9 @@ def _template_provider() -> Any:
     return TemplateProvider()
 
 
-def _upgrade_embedder_name(cfg: dict[str, Any], repo_path: Path | None = None) -> str | None:
+def _upgrade_embedder_name(
+    cfg: dict[str, Any], repo_path: Path | None = None, provider: str | None = None
+) -> str | None:
     """The embedder to write with: re-resolved when the index recorded the mock.
 
     Index-only promises no spend, so it records the mock embedder. The user is
@@ -963,7 +975,9 @@ def _upgrade_embedder_name(cfg: dict[str, Any], repo_path: Path | None = None) -
     """
     from repowise.cli.providers import model_run_embedder
 
-    embedder_name, stated, _replaced = model_run_embedder(cfg.get("embedder"), repo_path=repo_path)
+    embedder_name, stated, _replaced = model_run_embedder(
+        cfg.get("embedder"), repo_path=repo_path, provider=provider
+    )
     console.print(f"Embedder: [cyan]{stated}[/cyan].")
     return embedder_name
 

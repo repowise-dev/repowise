@@ -923,3 +923,69 @@ def test_the_per_test_map_hint_names_pytest_only_where_pytest_runs(
     (tmp_path / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
     python = CliRunner().invoke(cli, ["coverage", "status"])
     assert "No test-to-code map yet - record one with pytest --cov" in " ".join(python.output.split())
+
+
+def test_coverage_add_notes_empty_jacoco_report_by_relative_path_and_ingests_rest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"core/src/main/java/com/acme/App.java"})
+    empty_xml = tmp_path / "empty" / "target" / "site" / "jacoco" / "jacoco.xml"
+    empty_xml.parent.mkdir(parents=True)
+    empty_xml.write_text('<?xml version="1.0"?><report name="empty"/>', encoding="utf-8")
+
+    real_xml = tmp_path / "core" / "target" / "site" / "jacoco" / "jacoco.xml"
+    real_xml.parent.mkdir(parents=True)
+    real_xml.write_text(
+        '<?xml version="1.0"?><report name="core">'
+        '<package name="com/acme"><sourcefile name="App.java">'
+        '<line nr="1" mi="0" ci="1"/>'
+        "</sourcefile></package></report>",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "**/target/site/jacoco/jacoco.xml"])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert "empty/target/site/jacoco/jacoco.xml: measured no files, skipped" in output
+    assert "no coverage entries" not in output
+    assert [f.file_path for f in stored] == ["core/src/main/java/com/acme/App.java"]
+
+
+def test_coverage_add_when_only_empty_or_unrecognized_reports_stores_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"core/src/main/java/com/acme/App.java"})
+    empty_xml = tmp_path / "empty" / "target" / "site" / "jacoco" / "jacoco.xml"
+    empty_xml.parent.mkdir(parents=True)
+    empty_xml.write_text('<?xml version="1.0"?><report name="empty"/>', encoding="utf-8")
+    bad_report = tmp_path / "bad.xml"
+    bad_report.write_text("not a report", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["coverage", "add", str(empty_xml), str(bad_report)])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert stored == []
+    assert "empty/target/site/jacoco/jacoco.xml: measured no files, skipped" in output
+    assert "bad.xml: no coverage entries (detected=unknown)" in output
+    assert "Nothing was stored." in output
+
+
+def test_coverage_add_forced_format_on_mismatched_content_keeps_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+    bad_report = tmp_path / "mismatched.xml"
+    bad_report.write_text('<?xml version="1.0"?><report name="empty"/>', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["coverage", "add", "--format", "lcov", str(bad_report)]
+    )
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert stored == []
+    assert "mismatched.xml: no coverage entries (detected=lcov)" in output
+    assert "measured no files, skipped" not in output
+    assert "Nothing was stored." in output

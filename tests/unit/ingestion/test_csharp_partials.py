@@ -246,7 +246,7 @@ class TestPartialFragmentScope:
         # Polly's docs snippets: ``new FaultGenerator()`` builds the library
         # type while a sibling fragment declares a snippet method of that name.
         (tmp_path / "Chaos.Index.cs").write_text(
-            "namespace Snippets;\ninternal static partial class Chaos\n{\n"
+            "namespace Snippets;\nusing Lib;\ninternal static partial class Chaos\n{\n"
             "    public static void Use() { var g = new FaultGenerator(); }\n}\n"
         )
         (tmp_path / "Chaos.Fault.cs").write_text(
@@ -257,9 +257,98 @@ class TestPartialFragmentScope:
             "namespace Lib;\npublic sealed class FaultGenerator { }\n"
         )
         graph = _build(tmp_path)
-        assert "Chaos.Fault.cs::Chaos::FaultGenerator" not in _calls(
-            graph, "Chaos.Index.cs::Chaos::Use"
+        calls = _calls(graph, "Chaos.Index.cs::Chaos::Use")
+        assert "Chaos.Fault.cs::Chaos::FaultGenerator" not in calls
+        assert "FaultGenerator.cs::FaultGenerator" in calls
+
+    def test_same_file_construction_and_method_distinguished(self, tmp_path: Path) -> None:
+        (tmp_path / "Chaos.cs").write_text(
+            "namespace Snippets;\nusing Lib;\ninternal static class Chaos\n{\n"
+            "    public static void Use() {\n"
+            "        var g = new FaultGenerator();\n"
+            "        FaultGenerator();\n"
+            "    }\n"
+            "    public static void FaultGenerator() { }\n}\n"
         )
+        (tmp_path / "FaultGenerator.cs").write_text(
+            "namespace Lib;\npublic sealed class FaultGenerator { }\n"
+        )
+        graph = _build(tmp_path)
+        calls = _calls(graph, "Chaos.cs::Chaos::Use")
+        assert "FaultGenerator.cs::FaultGenerator" in calls
+        assert "Chaos.cs::Chaos::FaultGenerator" in calls
+
+    def test_same_file_type_and_method_distinguished(self, tmp_path: Path) -> None:
+        (tmp_path / "App.cs").write_text(
+            "namespace Snippets;\ninternal static class Chaos\n{\n"
+            "    public static void Use() {\n"
+            "        var g = new FaultGenerator();\n"
+            "        FaultGenerator();\n"
+            "    }\n"
+            "    public static void FaultGenerator() { }\n}\n"
+            "public class FaultGenerator { }\n"
+        )
+        graph = _build(tmp_path)
+        calls = _calls(graph, "App.cs::Chaos::Use")
+        assert "App.cs::FaultGenerator" in calls
+        assert "App.cs::Chaos::FaultGenerator" in calls
+
+    def test_plain_call_reaches_a_sibling_fragment_method_beside_a_type(
+        self, tmp_path: Path
+    ) -> None:
+        # Without ``new`` the call names the method, even when a type shares its name.
+        (tmp_path / "Chaos.Index.cs").write_text(
+            "namespace Snippets;\nusing Lib;\ninternal static partial class Chaos\n{\n"
+            "    public static void Use() { FaultGenerator(); }\n}\n"
+        )
+        (tmp_path / "Chaos.Fault.cs").write_text(
+            "namespace Snippets;\ninternal static partial class Chaos\n{\n"
+            "    public static void FaultGenerator() { }\n}\n"
+        )
+        (tmp_path / "FaultGenerator.cs").write_text(
+            "namespace Lib;\npublic sealed class FaultGenerator { }\n"
+        )
+        graph = _build(tmp_path)
+        assert _calls(graph, "Chaos.Index.cs::Chaos::Use") == {
+            "Chaos.Fault.cs::Chaos::FaultGenerator": "enclosing_class"
+        }
+
+    def test_construction_of_an_unindexed_type_is_not_bound_to_a_method(
+        self, tmp_path: Path
+    ) -> None:
+        # ``new StringBuilder()`` builds a library type; the same-named method is no target.
+        (tmp_path / "Text.cs").write_text(
+            "namespace App;\ninternal class Text\n{\n"
+            "    public void Use() { var b = new StringBuilder(); }\n"
+            "    public void StringBuilder() { }\n}\n"
+        )
+        graph = _build(tmp_path)
+        assert _calls(graph, "Text.cs::Text::Use") == {}
+
+    def test_construction_past_a_static_import_method_reaches_the_type(
+        self, tmp_path: Path
+    ) -> None:
+        # ``using static`` brings a method Widget in; ``new Widget()`` still means the type.
+        (tmp_path / "Caller.cs").write_text(
+            "namespace App;\nusing static Tools.Helper;\nusing Lib;\ninternal class Caller\n{\n"
+            "    public void Use() { var w = new Widget(); }\n}\n"
+        )
+        (tmp_path / "Helper.cs").write_text(
+            "namespace Tools;\npublic static class Helper\n{\n"
+            "    public static void Widget() { }\n}\n"
+        )
+        (tmp_path / "Widget.cs").write_text("namespace Lib;\npublic class Widget { }\n")
+        graph = _build(tmp_path)
+        assert set(_calls(graph, "Caller.cs::Caller::Use")) == {"Widget.cs::Widget"}
+
+    def test_delegate_construction_keeps_its_edge(self, tmp_path: Path) -> None:
+        (tmp_path / "U.cs").write_text(
+            "namespace App;\npublic delegate void Handler(int a);\ninternal class U\n{\n"
+            "    void M(int a) { }\n"
+            "    public void Run() { var h = new Handler(M); }\n}\n"
+        )
+        graph = _build(tmp_path)
+        assert "U.cs::Handler" in _calls(graph, "U.cs::U::Run")
 
     def test_partial_method_call_reaches_a_fragment(self, tmp_path: Path) -> None:
         # A partial method is declared in one fragment and implemented in

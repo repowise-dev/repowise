@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.evidence.setup import EVIDENCE_SETUP, SETUP_COMMAND, coverage_ingest_line
+from repowise.core.source_sync import sync_command
 
 from ..model import Action, ActionDetail, RuleOutcome, WhyFact, fingerprint
 from ..setup import AGENT_CALLS_UNLOCK, NAMED_FILES, SYNCED_COMMITS_UNLOCK, SetupFacts
@@ -135,7 +136,9 @@ def coverage_found(facts: SetupFacts) -> RuleOutcome:
         done_when="A coverage report is ingested.",
         command=command,
         marks=tuple(r.path for r in reports),
-        details=tuple(ActionDetail(r.path, reason=f"modified {_age(r.age_days)} ago") for r in named),
+        details=tuple(
+            ActionDetail(r.path, reason=f"modified {_age(r.age_days)} ago") for r in named
+        ),
     )
 
 
@@ -158,9 +161,7 @@ def evidence_found(facts: SetupFacts) -> RuleOutcome:
     return _step(
         rule,
         title=title,
-        impact=(
-            "Performance can then rank slow paths by measured time, not only by code shape."
-        ),
+        impact=("Performance can then rank slow paths by measured time, not only by code shape."),
         why=(WhyFact("found", ", ".join(sorted({f.kind for f in files}))),),
         surface="performance",
         done_when="A profile or benchmark run is ingested.",
@@ -173,6 +174,34 @@ def evidence_found(facts: SetupFacts) -> RuleOutcome:
                 cli=SETUP_COMMAND,
             ),
         ),
+    )
+
+
+def sources_unsynced(facts: SetupFacts) -> RuleOutcome:
+    rule = "sources_unsynced"
+    names = facts.unsynced_sources
+    if names is None:
+        return _unknown(rule, facts, "sources")
+    if not names:
+        return RuleOutcome(rule, "evaluated", "Every configured plugin source has synced.")
+    title = (
+        f"Sync the {code(names[0])} source"
+        if len(names) == 1
+        else f"Sync the {len(names)} plugin sources that are set up"
+    )
+    return _step(
+        rule,
+        title=title,
+        impact=(
+            "It is configured but has never synced. Run the sync, then "
+            "`repowise update` to count what it found; later updates sync it "
+            "on their own."
+        ),
+        why=(WhyFact("sources", ", ".join(names)),),
+        surface="setup",
+        done_when="Each configured source has synced once.",
+        command=sync_command(),
+        marks=names,
     )
 
 
@@ -314,6 +343,7 @@ SETUP_RULES: tuple[SetupRule, ...] = (
     sync_hook_missing,
     coverage_found,
     evidence_found,
+    sources_unsynced,
     decisions_unchecked,
     docs_model_ready,
     settings_suggested,

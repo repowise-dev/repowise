@@ -1,0 +1,334 @@
+{
+ "commits": [
+  {
+   "sha": "efefefefefefefefefefefefefefefefefefefef",
+   "subject": "chore",
+   "body": " release:Closes #13428.",
+   "change": null
+  },
+  {
+   "sha": "3434343434343434343434343434343434343434",
+   "subject": "fix(scss)",
+   "body": " keep negative interpolation:Fixes #12957, closes #13491.",
+   "change": null
+  },
+  {
+   "sha": "cc402faf81045099f969986f708d2bae1d816d10",
+   "subject": "fix(biome_package): support trailing '+' SPDX operator in trust checks (#13491)",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "71660779e6520d8d8e6aa5bf58f18830276cfbea",
+   "subject": "fix(cli): report formatting diagnostics in the JUnit reporter (#12865)",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "c199c75ada835390d18b5c7bfd8e258897e2c81e",
+   "subject": "fix(core): scanner dependencies (#13420)",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "4de11d24c5618dc1d79ba1236c9dd3568c2228dc",
+   "subject": "fix(svelte): each block parsing (#13418)",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "2c4a0f1aba1613d640723b932bc6753f60bce79b",
+   "subject": "chore(deps): fix advisories (#13364)",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "f50b26295e4e828c54a1376e4c0dd338a7bde43a",
+   "subject": "fix(type_inference): remove lowering override for Promise type (#13485)",
+   "body": "Co-authored-by: Claude <noreply@anthropic.com>",
+   "change": null
+  },
+  {
+   "sha": "1212121212121212121212121212121212121212",
+   "subject": "Revert \"fix",
+   "body": " x, fixes #13428\":",
+   "change": null
+  }
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { c0: object(oid: \"efefefefefefefefefefefefefefefefefefefef\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } }\nc1: object(oid: \"3434343434343434343434343434343434343434\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } }\nc2: object(oid: \"cc402faf81045099f969986f708d2bae1d816d10\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } }\nc3: object(oid: \"71660779e6520d8d8e6aa5bf58f18830276cfbea\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } }\nc4: object(oid: \"c199c75ada835390d18b5c7bfd8e258897e2c81e\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } }\nc5: object(oid: \"4de11d24c5618dc1d79ba1236c9dd3568c2228dc\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } }\nc6: object(oid: \"2c4a0f1aba1613d640723b932bc6753f60bce79b\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } }\nc7: object(oid: \"f50b26295e4e828c54a1376e4c0dd338a7bde43a\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } }\nc8: object(oid: \"1212121212121212121212121212121212121212\") { ... on Commit { associatedPullRequests(first: 5) { nodes { number merged mergeCommit { oid } } } } } } }",
+    "variables": {
+     "owner": "biomejs",
+     "name": "biome"
+    }
+   },
+   "status": 200,
+   "json": {
+    "data": {
+     "repository": {
+      "c0": null,
+      "c1": null,
+      "c2": {
+       "associatedPullRequests": {
+        "nodes": [
+         {
+          "number": 13491,
+          "merged": true,
+          "mergeCommit": {
+           "oid": "cc402faf81045099f969986f708d2bae1d816d10"
+          }
+         }
+        ]
+       }
+      },
+      "c3": {
+       "associatedPullRequests": {
+        "nodes": [
+         {
+          "number": 12865,
+          "merged": true,
+          "mergeCommit": {
+           "oid": "71660779e6520d8d8e6aa5bf58f18830276cfbea"
+          }
+         }
+        ]
+       }
+      },
+      "c4": {
+       "associatedPullRequests": {
+        "nodes": [
+         {
+          "number": 13420,
+          "merged": true,
+          "mergeCommit": {
+           "oid": "c199c75ada835390d18b5c7bfd8e258897e2c81e"
+          }
+         }
+        ]
+       }
+      },
+      "c5": {
+       "associatedPullRequests": {
+        "nodes": [
+         {
+          "number": 13418,
+          "merged": true,
+          "mergeCommit": {
+           "oid": "4de11d24c5618dc1d79ba1236c9dd3568c2228dc"
+          }
+         }
+        ]
+       }
+      },
+      "c6": {
+       "associatedPullRequests": {
+        "nodes": [
+         {
+          "number": 13364,
+          "merged": true,
+          "mergeCommit": {
+           "oid": "2c4a0f1aba1613d640723b932bc6753f60bce79b"
+          }
+         }
+        ]
+       }
+      },
+      "c7": {
+       "associatedPullRequests": {
+        "nodes": [
+         {
+          "number": 13485,
+          "merged": true,
+          "mergeCommit": {
+           "oid": "f50b26295e4e828c54a1376e4c0dd338a7bde43a"
+          }
+         }
+        ]
+       }
+      },
+      "c8": null
+     }
+    }
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { p0: pullRequest(number: 12865) { merged closingIssuesReferences(first: 10) { nodes { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } } }\np1: pullRequest(number: 13364) { merged closingIssuesReferences(first: 10) { nodes { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } } }\np2: pullRequest(number: 13418) { merged closingIssuesReferences(first: 10) { nodes { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } } }\np3: pullRequest(number: 13420) { merged closingIssuesReferences(first: 10) { nodes { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } } }\np4: pullRequest(number: 13485) { merged closingIssuesReferences(first: 10) { nodes { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } } }\np5: pullRequest(number: 13491) { merged closingIssuesReferences(first: 10) { nodes { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } } } } }",
+    "variables": {
+     "owner": "biomejs",
+     "name": "biome"
+    }
+   },
+   "status": 200,
+   "json": {
+    "data": {
+     "repository": {
+      "p0": {
+       "merged": true,
+       "closingIssuesReferences": {
+        "nodes": [
+         {
+          "number": 5172,
+          "title": "\ud83d\udcce Add testsuites for formatting issues in JUnit reporter",
+          "url": "https://github.com/biomejs/biome/issues/5172",
+          "state": "CLOSED",
+          "issueType": {
+           "name": "Task"
+          },
+          "repository": {
+           "nameWithOwner": "biomejs/biome"
+          },
+          "labels": {
+           "nodes": [
+            {
+             "name": "S-Help-wanted"
+            },
+            {
+             "name": "A-CLI"
+            },
+            {
+             "name": "S-Enhancement"
+            }
+           ]
+          }
+         }
+        ]
+       }
+      },
+      "p1": {
+       "merged": true,
+       "closingIssuesReferences": {
+        "nodes": []
+       }
+      },
+      "p2": {
+       "merged": true,
+       "closingIssuesReferences": {
+        "nodes": []
+       }
+      },
+      "p3": {
+       "merged": true,
+       "closingIssuesReferences": {
+        "nodes": []
+       }
+      },
+      "p4": {
+       "merged": true,
+       "closingIssuesReferences": {
+        "nodes": []
+       }
+      },
+      "p5": {
+       "merged": true,
+       "closingIssuesReferences": {
+        "nodes": [
+         {
+          "number": 13428,
+          "title": "noUntrustedLicenses reports valid SPDX \"<id>+\" license expressions such as \"Apache-2.0+\" and \"MPL-2.0+\" as untrusted",
+          "url": "https://github.com/biomejs/biome/issues/13428",
+          "state": "CLOSED",
+          "issueType": {
+           "name": "Bug"
+          },
+          "repository": {
+           "nameWithOwner": "biomejs/biome"
+          },
+          "labels": {
+           "nodes": [
+            {
+             "name": "A-Linter"
+            },
+            {
+             "name": "L-JavaScript"
+            },
+            {
+             "name": "S-Bug-confirmed"
+            }
+           ]
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { i0: issueOrPullRequest(number: 12957) { ... on Issue { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } }\ni1: issueOrPullRequest(number: 13428) { ... on Issue { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } }\ni2: issueOrPullRequest(number: 13491) { ... on Issue { \n  number title url state\n  issueType { name }\n  repository { nameWithOwner }\n  labels(first: 20) { nodes { name } }\n } } } }",
+    "variables": {
+     "owner": "biomejs",
+     "name": "biome"
+    }
+   },
+   "status": 200,
+   "json": {
+    "data": {
+     "repository": {
+      "i0": {
+       "number": 12957,
+       "title": "\ud83d\udc1b SCSS formatter inserts spaces into space-separated negative interpolations, changing the compiled CSS",
+       "url": "https://github.com/biomejs/biome/issues/12957",
+       "state": "CLOSED",
+       "issueType": {
+        "name": "Bug"
+       },
+       "repository": {
+        "nameWithOwner": "biomejs/biome"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "A-Formatter"
+         },
+         {
+          "name": "L-CSS"
+         },
+         {
+          "name": "S-Bug-confirmed"
+         }
+        ]
+       }
+      },
+      "i1": {
+       "number": 13428,
+       "title": "noUntrustedLicenses reports valid SPDX \"<id>+\" license expressions such as \"Apache-2.0+\" and \"MPL-2.0+\" as untrusted",
+       "url": "https://github.com/biomejs/biome/issues/13428",
+       "state": "CLOSED",
+       "issueType": {
+        "name": "Bug"
+       },
+       "repository": {
+        "nameWithOwner": "biomejs/biome"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "A-Linter"
+         },
+         {
+          "name": "L-JavaScript"
+         },
+         {
+          "name": "S-Bug-confirmed"
+         }
+        ]
+       }
+      },
+      "i2": {}
+     }
+    }
+   }
+  }
+ ]
+}

@@ -33,6 +33,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -56,6 +57,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -88,7 +90,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -108,7 +111,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -128,7 +132,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -148,7 +153,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -168,7 +174,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -188,7 +195,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -208,7 +216,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -228,7 +237,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -248,7 +258,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -268,7 +279,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -288,7 +300,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -308,7 +321,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -328,7 +342,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -348,7 +363,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -368,7 +384,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -388,7 +405,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -408,7 +426,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -431,7 +450,8 @@
         "argument_names": [
           "x",
           null
-        ]
+        ],
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -479,6 +499,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -502,6 +523,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -525,6 +547,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -548,6 +571,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -571,6 +595,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -594,6 +619,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -617,6 +643,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -640,6 +667,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -663,6 +691,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -686,6 +715,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -709,6 +739,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -732,6 +763,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -755,6 +787,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -778,6 +811,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -801,6 +835,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -860,6 +895,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -883,6 +919,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -906,6 +943,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],

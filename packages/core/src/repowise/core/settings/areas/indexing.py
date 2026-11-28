@@ -126,6 +126,13 @@ SETTINGS: tuple[Setting, ...] = (
         "SQL dialect for parsing .sql files (a sqlglot name such as postgres).",
     ),
     _s(
+        "compile_commands",
+        "str",
+        None,
+        "Where compile_commands.json is, for C and C++ include paths: the file or its "
+        "folder, relative to the repo root or absolute. Unset: the repo root, then build/.",
+    ),
+    _s(
         "forges.hosts",
         "mapping",
         {},
@@ -218,6 +225,13 @@ SETTINGS: tuple[Setting, ...] = (
         "Least characters of real prose a wiki page needs to be found by semantic "
         "search. Shorter pages stay readable, just not in that search. 0 is off.",
         minimum=0,
+    ),
+    _e(
+        "REPOWISE_STRICT_GRAPH",
+        "bool",
+        False,
+        "Re-raise a file's resolution error in graph build instead of skipping that file.",
+        internal=True,
     ),
     _e(
         "REPOWISE_KG_CURATION",

@@ -46,6 +46,7 @@ from repowise.core.analysis.decisions.semantic_match import (
     DEFAULT_DEDUP_TAU,
     find_related_decisions_many,
 )
+from repowise.core.ingestion.git_indexer._constants import whole_body
 
 logger = structlog.get_logger(__name__)
 
@@ -625,6 +626,7 @@ def commits_in_range(repo_path: Any, base_ref: str, head: str | None) -> set[str
                 f"{base_ref}..{head or 'HEAD'}",
             ],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=60,
         )
@@ -665,7 +667,7 @@ def update_evidence_by_file(
                 if (c.get("sha") or "")[:8] not in range_shas:
                     continue
                 msg = c.get("message") or ""
-                body = c.get("body") or ""
+                body = whole_body(c.get("body") or "")
                 if msg or body:
                     parts.append(f"{msg}\n{body}")
         if parts:

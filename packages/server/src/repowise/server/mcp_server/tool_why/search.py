@@ -63,6 +63,7 @@ from repowise.server.mcp_server.tool_why.ranking import (
     _collapse_restatements,
     _record_text,
     _score_keyword_matches,
+    record_scorer,
 )
 
 
@@ -136,13 +137,15 @@ def _focus_target_context(
     def relevant(row: Any) -> bool:
         return clears_floor(record_score(json.dumps(row, default=str)))
 
+    rule_score = record_scorer(query, all_decisions)
+
     for entry in target_context.values():
         if not isinstance(entry, dict):
             continue
 
         # ``governing_decisions`` is exempt: an accepted rule binds whatever the
         # question. A candidate binds nothing, so it must earn its place.
-        _expand_answering_rules(entry, by_id, record_score, served_ids)
+        _expand_answering_rules(entry, by_id, rule_score, served_ids)
         _keep_relevant(entry, "candidate_decisions", relevant, recall)
 
         # Only the origin's decision lane; the author and first commit are
@@ -159,7 +162,7 @@ def _focus_target_context(
 def _expand_answering_rules(
     entry: dict[str, Any],
     by_id: dict[str, Any],
-    record_score: Callable[[str], float],
+    rule_score: Callable[[Any], float],
     served_ids: Collection[str],
 ) -> None:
     """Quote the rules on a card that answer the question, and list them first.
@@ -175,7 +178,7 @@ def _expand_answering_rules(
         record = by_id.get(row.get("id")) if isinstance(row, dict) else None
         if record is None or row["id"] in served_ids:
             continue
-        if clears_floor(record_score(_record_text(record))):
+        if clears_floor(rule_score(record)):
             row["decision"] = _bounded_body(record)
             answering.append(row)
     if answering:

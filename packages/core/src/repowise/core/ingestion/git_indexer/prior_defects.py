@@ -30,11 +30,15 @@ returned so the delta is inspectable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import structlog
+
+from repowise.core.changelist import without_changelist_number
 
 from ._constants import PRIOR_DEFECT_WINDOW_DAYS, _truncate_body
 from .fix_rule import is_typed_fix_commit
@@ -50,7 +54,28 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["FixCommit", "FixWalk", "PriorDefects", "collect_fix_commits", "compute_prior_defects"]
+__all__ = [
+    "ISSUE_REPEAT",
+    "NO_TRACKER_FIXES",
+    "FixCommit",
+    "FixWalk",
+    "PriorDefects",
+    "TrackerFixes",
+    "collect_fix_commits",
+    "compute_prior_defects",
+    "issue_repeats",
+    "window_commits",
+]
+
+#: ``sha -> keys`` of the bug or incident issues a stored link names on each
+#: commit (``issue_links``): every commit here is a fix, whatever its subject.
+TrackerFixes = Mapping[str, frozenset[str]]
+NO_TRACKER_FIXES: TrackerFixes = MappingProxyType({})
+
+#: The ``fix_events`` shape of a commit-file pair whose issue an earlier fix
+#: of the same file already counts. Stored, so the evidence stays, but not
+#: ``code_fix``, so nothing counts it twice.
+ISSUE_REPEAT = "issue_repeat"
 
 # sha <US> committer-time <US> subject <US> body <STX>, one record per commit
 # (NUL-separated); --name-status then emits the touched paths on the lines that
@@ -110,6 +135,10 @@ class FixCommit:
     subject: str = ""
     body: str = ""
     history_paths: list[str] | None = None
+    #: Keys of the bug or incident issues linked to this commit; empty when none.
+    issues: frozenset[str] = frozenset()
+    #: False for a commit that is a fix only because an issue links to it.
+    rule_fix: bool = True
 
 
 @dataclass(frozen=True)
@@ -147,6 +176,7 @@ def collect_fix_commits(
     skip_shas: set[str] | None = None,
     shape_cache: FixShapeCache | None = None,
     walk_cache: FixWalkCache | None = None,
+    tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
 ) -> FixWalk:
     """Walk the trailing window's fix commits and open each one's diff.
 
@@ -167,6 +197,10 @@ def collect_fix_commits(
     *walk_cache* keeps each commit's log record between runs, so the walk reads
     only commits it has not seen; the result is the same either way.
 
+    *tracker_fixes* names commits a stored bug or incident issue links to
+    (``issue_links``): each is a fix whatever its subject says. Additive only,
+    so an empty set walks exactly what the git rule alone finds.
+
     Ceiling: the returned walk holds every fix commit's parsed patch, changed
     line text included, plus a byte-capped copy of its message, for as long as
     the caller keeps it. Bounded in practice
@@ -180,7 +214,7 @@ def collect_fix_commits(
     if rev_range is None:
         return FixWalk()
 
-    fixes = _walk_fix_commits(repo, rev_range, indexable_files, walk_cache)
+    fixes = _walk_fix_commits(repo, rev_range, indexable_files, walk_cache, tracker_fixes)
     if fixes is None:
         return FixWalk()
     # Taken before the skip, so an update and a full index at the same HEAD agree
@@ -209,15 +243,13 @@ def _with_shapes(
             {f.sha: (fresh[f.sha], f.ts) for f in fixes if f.sha in fresh}, oldest_ts=oldest_ts
         )
     return [
-        FixCommit(
-            sha=fix.sha,
-            ts=fix.ts,
-            paths=fix.paths,
+        replace(
+            fix,
             shape_kind=known.get(fix.sha) or fresh.get(fix.sha, "code_fix"),
             files=diffs.get(fix.sha, {}),
-            subject=fix.subject,
-            body=fix.body,
-            history_paths=fix.history_paths,
+            # Cached fix records may predate the cut.
+            subject=without_changelist_number(fix.subject),
+            body=without_changelist_number(fix.body),
         )
         for fix in fixes
     ]
@@ -232,6 +264,7 @@ def compute_prior_defects(
     walk: FixWalk | None = None,
     shape_cache: FixShapeCache | None = None,
     walk_cache: FixWalkCache | None = None,
+    tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
 ) -> PriorDefects:
     """Return per-file bug-fix counts over the trailing window.
 
@@ -253,22 +286,68 @@ def compute_prior_defects(
             window_days=window_days,
             shape_cache=shape_cache,
             walk_cache=walk_cache,
+            tracker_fixes=tracker_fixes,
         )
     if not walk.fixes:
         return PriorDefects()
 
+    raw_repeats = issue_repeats(walk.fixes, history=True)
+    code_fixes = [fix for fix in walk.fixes if fix.shape_kind == "code_fix"]
+    repeats = issue_repeats(code_fixes, history=True)
     raw_counts: dict[str, int] = {}
     counts: dict[str, int] = {}
     for fix in walk.fixes:
-        paths = fix.paths if fix.history_paths is None else fix.history_paths
-        for path in paths:
-            raw_counts[path] = raw_counts.get(path, 0) + 1
-        if fix.shape_kind != "code_fix":
-            continue
-        for path in paths:
-            counts[path] = counts.get(path, 0) + 1
+        for path in _history_paths(fix):
+            if (fix.sha, path) not in raw_repeats:
+                raw_counts[path] = raw_counts.get(path, 0) + 1
+    for fix in code_fixes:
+        for path in _history_paths(fix):
+            if (fix.sha, path) not in repeats:
+                counts[path] = counts.get(path, 0) + 1
 
     return PriorDefects(counts=counts, raw_counts=raw_counts)
+
+
+def _history_paths(fix: FixCommit) -> list[str]:
+    return fix.paths if fix.history_paths is None else fix.history_paths
+
+
+def issue_repeats(fixes: Iterable[FixCommit], *, history: bool) -> set[tuple[str, str]]:
+    """``(sha, path)`` pairs that only repeat an issue the file already counts.
+
+    A pull request's commits all link to the issue it closes, so without this
+    one bug would count once per commit on every file they share. A commit
+    the git rule names a fix always counts, as it does with no tracker; a
+    commit that is a fix only through its issues counts on a file unless every
+    one of its issues is already counted there, by a rule fix or by an older
+    commit. Oldest first, so a newer commit never takes the count from one an
+    update already stored. *fixes* is in walk order (newest first); *history*
+    keys paths as the counts do, else as the commit wrote them.
+    """
+    ordered = list(fixes)
+    if not any(fix.issues and not fix.rule_fix for fix in ordered):
+        return set()
+
+    def paths_of(fix: FixCommit) -> list[str]:
+        return _history_paths(fix) if history else fix.paths
+
+    counted = {
+        (key, path)
+        for fix in ordered
+        if fix.rule_fix
+        for path in paths_of(fix)
+        for key in fix.issues
+    }
+    repeats: set[tuple[str, str]] = set()
+    for fix in reversed(ordered):
+        if fix.rule_fix or not fix.issues:
+            continue
+        for path in paths_of(fix):
+            if all((key, path) in counted for key in fix.issues):
+                repeats.add((fix.sha, path))
+            else:
+                counted.update((key, path) for key in fix.issues)
+    return repeats
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +384,11 @@ def _resolve_rev_range(repo: Any, *, as_of_ts: float | None, window_days: int) -
 
 
 def _walk_fix_commits(
-    repo: Any, rev_range: str, indexable_files: set[str], cache: FixWalkCache | None = None
+    repo: Any,
+    rev_range: str,
+    indexable_files: set[str],
+    cache: FixWalkCache | None = None,
+    tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
 ) -> list[FixCommit] | None:
     """Subject-matched fix commits in *rev_range*, each with its indexable paths.
 
@@ -314,9 +397,9 @@ def _walk_fix_commits(
     reads only the commits it lacks (see :mod:`.fix_walk_cache`).
     """
     try:
-        read = _cached_read(repo, rev_range, cache) if cache is not None else None
+        read = _cached_read(repo, rev_range, cache, tracker_fixes) if cache is not None else None
         if read is None:
-            read = _read_commits(repo, rev_range)
+            read = _read_commits(repo, rev_range, tracker_fixes=tracker_fixes)
             if cache is not None:
                 cache.records.update(read[1])
     except Exception as exc:
@@ -344,6 +427,7 @@ def _walk_fix_commits(
                         subject=record["s"],
                         body=record["b"],
                         history_paths=history,
+                        **_linked(sha, record["s"], tracker_fixes),
                     )
                 )
         for path, renamed_from in rows:
@@ -352,12 +436,21 @@ def _walk_fix_commits(
     return fixes
 
 
-def _read_commits(repo: Any, *revisions: str) -> tuple[list[str], dict[str, Any]]:
+def _linked(sha: str, subject: str, tracker_fixes: TrackerFixes) -> dict[str, Any]:
+    """A fix commit's linked issues, and whether the git rule names it a fix too."""
+    issues = tracker_fixes.get(sha, frozenset())
+    return {"issues": issues, "rule_fix": not issues or is_typed_fix_commit(subject)}
+
+
+def _read_commits(
+    repo: Any, *revisions: str, tracker_fixes: TrackerFixes = NO_TRACKER_FIXES
+) -> tuple[list[str], dict[str, Any]]:
     """``(order, records)`` of the non-merge commits git logs for *revisions*.
 
     A fix commit's record is ``{"t", "s", "b", "r"}`` (time, byte-capped subject
     and body, ``[path, renamed_from]`` rows); any other commit's is its rename
-    rows alone, the only part of it the rename trail reads.
+    rows alone, the only part of it the rename trail reads. A commit is a fix
+    when the git rule names it or it is in *tracker_fixes*.
     """
     raw = repo.git.log(
         *revisions,
@@ -376,11 +469,12 @@ def _read_commits(repo: Any, *revisions: str) -> tuple[list[str], dict[str, Any]
         sha, committed, subject, body = fields
         rows = [list(entry) for entry in _record_paths(path_block)]
         order.append(sha)
-        if is_typed_fix_commit(subject):
+        if is_typed_fix_commit(subject) or sha in tracker_fixes:
             records[sha] = {
                 "t": _as_ts(committed),
-                "s": _truncate_body(subject.strip()),
-                "b": _truncate_body(body.strip()),
+                # Cut before the byte cap, which could leave half a trailer.
+                "s": _truncate_body(without_changelist_number(subject)),
+                "b": _truncate_body(without_changelist_number(body)),
                 "r": rows,
             }
         else:
@@ -389,26 +483,94 @@ def _read_commits(repo: Any, *revisions: str) -> tuple[list[str], dict[str, Any]
 
 
 def _cached_read(
-    repo: Any, rev_range: str, cache: FixWalkCache
+    repo: Any, rev_range: str, cache: FixWalkCache, tracker_fixes: TrackerFixes = NO_TRACKER_FIXES
 ) -> tuple[list[str], dict[str, Any]] | None:
     """*rev_range*'s order from git and its records from *cache*, reading only what it lacks.
 
-    ``None`` when so many commits are missing that one full walk is cheaper.
+    A long run of adjacent missing commits (a deeper window, or many new
+    commits) is read with one ranged walk of *rev_range*, as the commit window
+    cache does (:func:`..git_commit_index._patched`); the rest are read by sha.
+    ``None`` when one full walk is cheaper, or when a ranged walk's shas are not
+    exactly the run's.
     """
-    from ..git_commit_index import _MAX_PATCHED_COMMITS, _PATCH_CHUNK
+    from ..git_commit_index import (
+        _MAX_PATCHED_COMMITS,
+        _MAX_WALKED_RUNS,
+        _MIN_WALKED_RUN,
+        _PATCH_CHUNK,
+        _missing_runs,
+    )
 
     if not cache.records:
         return None
     order = repo.git.log(rev_range, "--no-merges", "--format=%H").split()
-    missing = [sha for sha in order if sha not in cache.records]
-    if len(missing) > _MAX_PATCHED_COMMITS:
+    runs = _missing_runs(order, cache.records)
+    long_runs = [(start, end) for start, end in runs if end - start >= _MIN_WALKED_RUN]
+    missing = [
+        sha for start, end in runs if end - start < _MIN_WALKED_RUN for sha in order[start:end]
+    ]
+    if len(missing) > _MAX_PATCHED_COMMITS or len(long_runs) > _MAX_WALKED_RUNS:
+        return None
+    if not _walk_runs(repo, rev_range, order, long_runs, cache.records, tracker_fixes):
         return None
     for start in range(0, len(missing), _PATCH_CHUNK):
-        _, fresh = _read_commits(repo, "--no-walk=unsorted", *missing[start : start + _PATCH_CHUNK])
+        _, fresh = _read_commits(
+            repo,
+            "--no-walk=unsorted",
+            *missing[start : start + _PATCH_CHUNK],
+            tracker_fixes=tracker_fixes,
+        )
         cache.records.update(fresh)
     if any(sha not in cache.records for sha in order):
         return None
     return order, cache.records
+
+
+def _walk_runs(
+    repo: Any,
+    rev_range: str,
+    order: list[str],
+    runs: list[tuple[int, int]],
+    records: dict[str, Any],
+    tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
+) -> bool:
+    """Read each run of *order* into *records* with one ranged walk; ``False`` on any mismatch.
+
+    ``--skip`` and ``-N`` count the commits left after ``--no-merges``, as *order* does.
+    """
+    for start, end in runs:
+        walked, fresh = _read_commits(
+            repo, rev_range, f"--skip={start}", f"-{end - start}", tracker_fixes=tracker_fixes
+        )
+        if walked != order[start:end]:
+            return False
+        records.update(fresh)
+    return True
+
+
+def window_commits(
+    repo: Any, *, as_of_ts: float | None, window_days: int = PRIOR_DEFECT_WINDOW_DAYS
+) -> list[tuple[str, str, str]]:
+    """``(sha, subject, body)`` of every non-merge commit the fix walk reads, newest first.
+
+    The commits an ``issue-source`` is asked about, so a link can only land on
+    a commit the defect window holds. Empty when HEAD or the log is unreadable.
+    """
+    rev_range = _resolve_rev_range(repo, as_of_ts=as_of_ts, window_days=window_days)
+    if rev_range is None:
+        return []
+    try:
+        raw = repo.git.log(rev_range, "--no-merges", f"--format={_PRIOR_LOG_FORMAT}")
+    except Exception as exc:
+        logger.debug("window_commits_failed", error=str(exc))
+        return []
+    out: list[tuple[str, str, str]] = []
+    for record in (raw or "").split(_RECORD_SEP):
+        record = record.strip("\n")
+        if record:
+            (sha, _, subject, body), _ = _split_record(record)
+            out.append((sha, subject.strip(), _truncate_body(body.strip())))
+    return out
 
 
 def _split_record(record: str) -> tuple[tuple[str, str, str, str], str]:

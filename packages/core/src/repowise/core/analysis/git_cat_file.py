@@ -85,6 +85,7 @@ def cat_file_batch(
                             chk = subprocess.run(
                                 ["git", "ls-files", "--stage", "--", path],
                                 cwd=repo_path,
+                                stdin=subprocess.DEVNULL,
                                 capture_output=True,
                                 timeout=5.0,
                                 text=True,
@@ -112,6 +113,7 @@ def cat_file_batch(
                                 ["git", "ls-tree", rev, "--", path],
                                 cwd=repo_path,
                                 capture_output=True,
+                                stdin=subprocess.DEVNULL,
                                 timeout=5.0,
                                 text=True,
                             )

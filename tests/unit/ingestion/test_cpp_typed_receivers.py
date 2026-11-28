@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
 
@@ -109,6 +111,114 @@ class TestSmartPointerReceivers:
         """``items.sendMessage()`` is not ``Peer::sendMessage`` on a vector."""
         _repo(tmp_path, "  std::vector<Peer> items;\n  return items.sendMessage(1);")
         assert not any(t.endswith("Peer::sendMessage") for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+
+_FACTORIES = (
+    "Peer* MakePeer(int n);\n"
+    "Stranger& TheStranger();\n"
+    "template <typename Stranger> Stranger Wrap(Stranger s) { return s; }\n"
+    "inline auto Trailing(int n) -> Peer* { return nullptr; }\n"
+    "inline auto Fresh() -> Peer* { return nullptr; }\n"
+    "inline auto Deduced(int n) { return Peer(); }\n"
+    "using PeerAlias = Peer;\n"
+    "inline auto Aliased(int n) -> PeerAlias* { return nullptr; }\n"
+)
+
+
+def _factory_repo(root: Path, caller_body: str) -> None:
+    """``_repo`` plus free functions whose return types differ in how they are written."""
+    _repo(root, caller_body, extra=_FACTORIES)
+    with (root / "lib" / "peer.cc").open("a") as source:
+        source.write("Peer* MakePeer(int n) { return nullptr; }\n")
+
+
+class TestLocalDeclarationForms:
+    """A local typed by how C++ writes it: built in place, walked by a range-for, or ``auto``."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "  Peer peer(1, 2);\n  return peer.sendMessage(1);",
+            "  for (Peer* peer : peers) peer->sendMessage(1);\n  return 0;",
+            "  for (const Peer& peer : peers) peer.sendMessage(1);\n  return 0;",
+            "  auto peer = new Peer(1, 2);\n  return peer->sendMessage(1);",
+            "  auto peer = Peer{};\n  return peer.sendMessage(1);",
+            "  auto peer = Peer();\n  return peer.sendMessage(1);",
+            "  auto peer = Peer(1, 2);\n  return peer.sendMessage(1);",
+            "  auto peer = std::unique_ptr<Peer>(new Peer);\n  return peer->sendMessage(1);",
+        ],
+    )
+    def test_a_constructed_local_binds_to_its_type(self, tmp_path: Path, body: str) -> None:
+        _repo(tmp_path, body)
+        targets = _call_targets(_build(tmp_path), "lib/caller.cc")
+        assert "lib/peer.cc::Peer::sendMessage" in targets
+        assert not any("Stranger" in t for t in targets)
+
+    def test_a_function_declaration_types_nothing(self, tmp_path: Path) -> None:
+        """``Peer peer(int);`` declares a function: the vexing parse."""
+        _repo(tmp_path, "  Peer peer(int);\n  return peer.sendMessage(1);")
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "  auto peer = MakePeer(1);\n  return peer->sendMessage(1);",
+            "  auto* peer = Trailing(1);\n  return peer->sendMessage(1);",
+            "  auto peer = Aliased(1);\n  return peer->sendMessage(1);",
+            "  auto peer = Fresh();\n  return peer->sendMessage(1);",
+        ],
+    )
+    def test_an_auto_local_takes_the_return_type_the_callee_declares(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """The header declaration carries no return type; its definition does."""
+        _factory_repo(tmp_path, body)
+        assert "lib/peer.cc::Peer::sendMessage" in _call_targets(_build(tmp_path), "lib/caller.cc")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # No definition writes what it returns.
+            "  auto& s = TheStranger();\n  return s.sendMessage(1);",
+            # A template parameter is no class, even one spelled like a class.
+            "  auto s = Wrap(1);\n  return s.sendMessage(1);",
+            # A deduced return type is not written at all.
+            "  auto peer = Deduced(1);\n  return peer.sendMessage(1);",
+        ],
+    )
+    def test_an_auto_local_with_no_written_return_type_binds_nothing(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        _factory_repo(tmp_path, body)
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+    def test_a_name_another_block_leaves_untyped_is_unanswerable(self, tmp_path: Path) -> None:
+        """The body is one scope: the second ``p`` is not the first block's ``Peer``."""
+        _factory_repo(
+            tmp_path,
+            "  { auto p = MakePeer(1); }\n  { auto p = Deduced(1); p->sendMessage(1); }\n"
+            "  return 0;",
+        )
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            # A member typedef is not the same-named class declared elsewhere.
+            "struct Other { struct Item { int sendMessage(int n) { return n; } }; };\n"
+            "struct Box { typedef Peer Item; Item get() { return Item(); } };\n",
+            # A template parameter list several lines long still names a parameter.
+            "struct Item { int sendMessage(int n) { return n; } };\n"
+            "template <typename Alloc,\n          typename Hash,\n          typename Eq,\n"
+            "          typename Item>\n"
+            "struct Box { Item get() { return Item(); } };\n",
+        ],
+    )
+    def test_a_return_type_that_names_no_class_binds_nothing(
+        self, tmp_path: Path, extra: str
+    ) -> None:
+        _repo(tmp_path, "  Box b;\n  auto s = b.get();\n  return s.sendMessage(1);", extra=extra)
+        assert not any("sendMessage" in t for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
 
 
 def _field_repo(root: Path, run_body: str) -> None:
@@ -298,3 +408,161 @@ class TestBodilessMemberNames:
             '#include "lib/buffer.h"\nvoid Run(buffer* out) {\n  out->flush();\n}\n'
         )
         assert _call_targets(_build(tmp_path), "lib/caller.cc") == {"lib/buffer.h::buffer::flush"}
+
+
+_VIEW = (
+    "#pragma once\nnamespace text {\n"
+    "template <typename Char> class basic_view {\n public:\n"
+    "  int size() const { return 0; }\n};\n"
+    "using view = basic_view<char>;\n}\n"
+)
+
+
+def _alias_repo(root: Path, files: dict[str, str]) -> None:
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+
+
+class TestAliasedReceivers:
+    """A receiver whose type is spelled through ``using``/``typedef`` binds the class it names."""
+
+    def test_a_namespace_alias_two_includes_away_binds_its_class_template(
+        self, tmp_path: Path
+    ) -> None:
+        _alias_repo(
+            tmp_path,
+            {
+                "lib/view.h": _VIEW,
+                "lib/mid.h": '#pragma once\n#include "view.h"\n',
+                "lib/use.h": '#pragma once\n#include "mid.h"\n'
+                "namespace text {\ninline int Count(view v) { return v.size(); }\n}\n",
+            },
+        )
+        assert _callees(_build(tmp_path), "lib/use.h::Count") == {"lib/view.h::basic_view::size"}
+
+    def test_a_member_alias_types_a_parameter_of_its_own_class(self, tmp_path: Path) -> None:
+        _alias_repo(
+            tmp_path,
+            {
+                "lib/acc.h": "#pragma once\nclass wide {\n public:\n  int high() const { return 1; }\n};\n"
+                "struct accessor {\n  using entry = wide;\n"
+                "  static int Top(const entry& e) { return e.high(); }\n};\n",
+            },
+        )
+        assert _callees(_build(tmp_path), "lib/acc.h::accessor::Top") == {"lib/acc.h::wide::high"}
+
+    def test_a_member_typedef_of_another_templates_member_typedef_reaches_the_class(
+        self, tmp_path: Path
+    ) -> None:
+        """``typedef Wrap<T*>::Type Entries;`` where ``Wrap<V>::Type`` is ``lib::Map<int, V>``."""
+        _alias_repo(
+            tmp_path,
+            {
+                "src/third_party/map.h": "#pragma once\nnamespace lib {\n"
+                "template <typename K, typename V> class Map {\n public:\n"
+                "  int find(const K& k) { return 0; }\n};\n}\n",
+                "src/wrap.h": '#pragma once\n#include "third_party/map.h"\n'
+                "template <typename V> struct Wrap {\n  typedef lib::Map<int, V> Type;\n};\n",
+                "src/log.h": '#pragma once\n#include "wrap.h"\nstruct Log {\n  void Look(int k);\n'
+                "  typedef Wrap<int*>::Type Entries;\n  Entries entries_;\n};\n",
+                "src/log.cc": '#include "log.h"\nvoid Log::Look(int k) { entries_.find(k); }\n',
+            },
+        )
+        assert _callees(_build(tmp_path), "src/log.cc::Log::Look") == {
+            "src/third_party/map.h::Map::find"
+        }
+
+    @pytest.mark.parametrize(
+        "files",
+        [
+            # The alias names a library type: the same-named repository class is not it.
+            {
+                "lib/view.h": "#pragma once\n#include <string_view>\n"
+                "namespace text {\nusing view = std::basic_string_view<char>;\n}\n"
+                "class basic_string_view {\n public:\n  int size() const { return 0; }\n};\n",
+            },
+            # Two repository classes carry the target's name.
+            {
+                "lib/view.h": _VIEW,
+                "lib/other.h": "#pragma once\nnamespace other {\n"
+                "template <typename Char> class basic_view {\n public:\n"
+                "  int size() const { return 1; }\n};\n}\n",
+            },
+            # Two reachable aliases of the name disagree.
+            {
+                "lib/view.h": _VIEW,
+                "lib/span.h": "#pragma once\nclass span {\n public:\n  int size() const { return 2; }\n};\n"
+                "namespace bytes {\nusing view = span;\n}\n",
+            },
+        ],
+    )
+    def test_an_alias_that_names_no_one_repository_class_types_nothing(
+        self, tmp_path: Path, files: dict[str, str]
+    ) -> None:
+        includes = "".join(f'#include "{name.removeprefix("lib/")}"\n' for name in files)
+        files["lib/use.h"] = (
+            "#pragma once\n" + includes + "inline int Count(text::view v) { return v.size(); }\n"
+        )
+        _alias_repo(tmp_path, files)
+        assert _callees(_build(tmp_path), "lib/use.h::Count") == set()
+
+    def test_a_member_alias_of_a_template_parameter_types_nothing(self, tmp_path: Path) -> None:
+        """``using item = Peer;`` where ``Peer`` is the class template's own parameter."""
+        _repo(tmp_path, "  return 0;")
+        (tmp_path / "lib" / "box.h").write_text(
+            '#pragma once\n#include "peer.h"\ntemplate <typename Peer> struct Box {\n'
+            "  using item = Peer;\n"
+            "  static int Send(const item& v) { return v.sendMessage(1); }\n};\n"
+        )
+        assert _callees(_build(tmp_path), "lib/box.h::Box::Send") == set()
+
+
+_PEER_H = "#pragma once\nclass Peer {\n public:\n  int send(int n) { return n; }\n};\n"
+
+
+@pytest.mark.parametrize(
+    ("alias_h", "caller"),
+    [
+        # A member alias of the class template's own parameter, reached as ``W<int>::type``.
+        (
+            "template <class T> struct W {\n  using type = T;\n};\nusing View = W<Peer>::type;\n",
+            "int Run(View* p) { return p->send(1); }\n",
+        ),
+        # A qualifier no repository file opens: a library's ``Peer``, not the repository's.
+        (
+            "namespace net {\nusing View = ext::Peer;\n}\n",
+            "int Run(net::View* p) { return p->send(1); }\n",
+        ),
+        # The caller's own template parameter shadows the alias.
+        ("using View = Peer;\n", "template <class View> int Run(View& p) { return p.send(1); }\n"),
+    ],
+)
+def test_an_alias_the_receiver_does_not_mean_types_nothing(
+    tmp_path: Path, alias_h: str, caller: str
+) -> None:
+    _alias_repo(
+        tmp_path,
+        {
+            "lib/peer.h": _PEER_H,
+            "lib/alias.h": '#pragma once\n#include "peer.h"\n' + alias_h,
+            "lib/mid.h": '#pragma once\n#include "alias.h"\n',
+            "lib/use.cc": '#include "mid.h"\n' + caller,
+        },
+    )
+    assert _callees(_build(tmp_path), "lib/use.cc::Run") == set()
+
+
+def test_a_qualifier_the_class_file_opens_still_binds(tmp_path: Path) -> None:
+    """The control for the qualifier rule: ``lib::Peer`` where ``peer.h`` opens ``lib``."""
+    _alias_repo(
+        tmp_path,
+        {
+            "lib/peer.h": "#pragma once\nnamespace lib {\n"
+            + _PEER_H.removeprefix("#pragma once\n")
+            + "}\n",
+            "lib/alias.h": '#pragma once\n#include "peer.h"\nusing View = lib::Peer;\n',
+            "lib/use.cc": '#include "alias.h"\nint Run(View* p) { return p->send(1); }\n',
+        },
+    )
+    assert _callees(_build(tmp_path), "lib/use.cc::Run") == {"lib/peer.h::Peer::send"}

@@ -1,9 +1,10 @@
-"""``repowise plugins`` — list loaded plugins and the implementation chosen per seam."""
+"""``repowise plugins``: list loaded plugins and each seam's implementation; ``check`` runs the seam contracts; ``new`` writes a plugin package."""
 
 from __future__ import annotations
 
 import importlib
 from dataclasses import asdict
+from pathlib import Path
 
 import click
 
@@ -18,6 +19,7 @@ BUILTIN_SEAM_MODULES = (
     "repowise.core.evidence.profile_formats",
     "repowise.core.evidence.sources",
     "repowise.core.ingestion.document_extractors",
+    "repowise.core.issues.sources",
     "repowise.core.inventory.advisories",
     "repowise.core.ownership.directory",
     "repowise.core.pipeline.index_persistence",
@@ -48,8 +50,6 @@ def _import_builtin_seams() -> None:
 
 def _applied_here() -> dict[tuple[str, str], str] | None:
     """Applied storage revisions in the store here, read without creating it; None without one."""
-    from pathlib import Path
-
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.cli.helpers import get_db_url_for_repo, run_async
@@ -107,66 +107,336 @@ def _plugin_rows(records: list) -> list[dict]:
     return rows
 
 
-@click.command("plugins")
-@format_option()
-def plugins_command(fmt: str) -> None:
-    """List loaded plugins and the implementation each seam uses."""
-    from rich.markup import escape
+def _settings_state(rows: list[dict], config: dict) -> None:
+    """Add ``configured``, ``missing``, ``settings`` and ``next_command`` to each row.
 
-    from repowise.cli.helpers import console
-    from repowise.core.registry.plugins import (
-        ENTRY_POINT_GROUP,
-        ENV_VAR,
-        PLUGIN_API_VERSION,
-        load_plugins,
-        seams,
-    )
+    ``missing`` is each unset required setting and its fix; ``settings`` is
+    every setting the plugin declares with whether it has a value, never the
+    value. A plugin with no settings is configured.
+    """
+    from repowise.core.settings import get
+    from repowise.core.settings.plugins import fix_command, is_set, source_values
+    from repowise.core.settings.resolve import resolve
+
+    for row in rows:
+        keys = [entry.split(":", 1)[1] for entry in row["seams"] if entry.startswith("setting:")]
+        declared = [get(k) for k in keys]
+        _plain, _secrets, missing = source_values(declared, config)
+        row["configured"] = not missing
+        row["missing"] = [{"key": s.key, "fix": fix_command(s)} for s in missing]
+        row["settings"] = [
+            {
+                "key": s.key,
+                "env": s.env.name if s.env else None,
+                "secret": s.secret,
+                "set": is_set(resolve(s, config).value),
+            }
+            for s in declared
+        ]
+        if row["status"] == "failed":
+            row["next_command"] = "repowise plugins check"
+        else:
+            row["next_command"] = row["missing"][0]["fix"] if missing else None
+
+
+def _versions() -> dict[str, str]:
+    """Each entry-point plugin's installed package version, by entry point name."""
+    from importlib.metadata import entry_points
+
+    from repowise.core.registry.plugins import ENTRY_POINT_GROUP
+
+    found: dict[str, str] = {}
+    try:
+        for ep in entry_points(group=ENTRY_POINT_GROUP):
+            dist = getattr(ep, "dist", None)
+            if dist is not None:
+                found[ep.name] = dist.version
+    except Exception:  # corrupt metadata: the listing still works without versions
+        pass
+    return found
+
+
+def _last_sync(entry: object) -> dict | None:
+    """A source's ledger entry as ``{at, state, stored_at, batches, message}``."""
+    if not isinstance(entry, dict) or not entry.get("last_run_at"):
+        return None
+    return {
+        "at": entry.get("last_run_at"),
+        "state": entry.get("last_state"),
+        "stored_at": entry.get("last_stored_at"),
+        "batches": entry.get("last_batches"),
+        "message": entry.get("last_message"),
+    }
+
+
+def _source_rows(rows: list[dict], config: dict) -> list[dict]:
+    """Every source on a fetching seam, with its plugin and how its last sync ended.
+
+    ``plugin`` is ``None`` for a source built into repowise.
+    """
+    from repowise.core.source_sync import LEDGER_KEY, not_configured, plan_sources, sync_command
+    from repowise.core.workspace.state import read_repo_state
+
+    root = Path.cwd()
+    ledger = read_repo_state(root).get(LEDGER_KEY)
+    ledger = ledger if isinstance(ledger, dict) else {}
+    owner = {seam: r["name"] for r in rows for seam in r["seams"]}
+    out = []
+    for p in plan_sources(config, root=root):
+        refusal = None if p.configured else not_configured(p)
+        out.append(
+            {
+                "source": p.name,
+                "seam": p.seam.name,
+                "plugin": owner.get(f"{p.seam.name}:{p.name}"),
+                "configured": p.configured,
+                "message": refusal["message"] if refusal else None,
+                "next_command": refusal["next_command"] if refusal else sync_command(p.name),
+                "last_sync": _last_sync(ledger.get(p.ledger_id)),
+            }
+        )
+    return out
+
+
+def _sources_or_none(rows: list[dict], config: dict) -> list[dict]:
+    """:func:`_source_rows`, or none when a source breaks the listing; the plugins still list."""
+    import logging
+
+    try:
+        return _source_rows(rows, config)
+    except Exception as exc:  # a broken source must not hide every plugin
+        logging.getLogger("repowise.plugins").warning("sources not listed: %s", type(exc).__name__)
+        return []
+
+
+def plugins_report() -> dict:
+    """What ``repowise plugins --format json`` prints, for the repository in the current directory."""
+    from repowise.core.ingestion.document_extractors import document_extractor_claims
+    from repowise.core.registry.plugins import PLUGIN_API_VERSION, load_plugins, seams
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
 
     _import_builtin_seams()
     rows = _plugin_rows(load_plugins())
-    from repowise.core.ingestion.document_extractors import document_extractor_claims
-
-    seam_rows = {
-        name: {"default": registry.default, "implementations": registry.names}
-        for name, registry in sorted(seams().items())
+    try:
+        config = load_repo_config(Path.cwd())
+    except RepoConfigError:
+        config = {}
+    versions = _versions()
+    for row in rows:
+        row["version"] = versions.get(row["name"]) if row["source"] == "entry point" else None
+    _settings_state(rows, config)
+    return {
+        "api_version": PLUGIN_API_VERSION,
+        "plugins": rows,
+        "sources": _sources_or_none(rows, config),
+        "seams": {
+            name: {"default": registry.default, "implementations": registry.names}
+            for name, registry in sorted(seams().items())
+        },
+        "document_extractors": document_extractor_claims(),
     }
-    extractor_claims = document_extractor_claims()
+
+
+@click.group("plugins", invoke_without_command=True)
+@format_option()
+@click.pass_context
+def plugins_command(ctx: click.Context, fmt: str) -> None:
+    """List loaded plugins and the implementation each seam uses."""
+    if ctx.invoked_subcommand is None:
+        _list_plugins(fmt)
+
+
+def _list_plugins(fmt: str) -> None:
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+    from repowise.core.registry.plugins import ENTRY_POINT_GROUP, ENV_VAR
+
+    report = plugins_report()
     if fmt == "json":
-        emit_json(
-            {
-                "api_version": PLUGIN_API_VERSION,
-                "plugins": rows,
-                "seams": seam_rows,
-                "document_extractors": extractor_claims,
-            }
-        )
+        emit_json(report)
         return
 
-    console.print(f"plugin API version {PLUGIN_API_VERSION}")
-    if not rows:
+    console.print(f"plugin API version {report['api_version']}")
+    if not report["plugins"]:
         console.print(
             f"No plugins loaded. Install one that declares a [bold]{ENTRY_POINT_GROUP}[/bold] "
             f"entry point, or list modules in [bold]{ENV_VAR}[/bold]."
         )
-    colors = {"loaded": "green", "failed": "red", "skipped": "yellow", "pending": "yellow"}
-    for r in rows:
-        color = colors.get(r["status"], "red")
-        status = f"[{color}]{r['status']}[/{color}]"
-        if r["error"]:
-            status += f": {escape(r['error'])}"
-        console.print(
-            f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}"
-        )
-        if r["seams"]:
-            console.print(f"  registered: {escape(', '.join(r['seams']))}")
-        if r["storage"]["applied"] or r["storage"]["pending"]:
-            applied = ", ".join(r["storage"]["applied"]) or "none"
-            pending = ", ".join(r["storage"]["pending"]) or "none"
-            console.print(escape(f"  storage: applied {applied}; pending {pending}"))
-    for name, row in seam_rows.items():
+    for r in report["plugins"]:
+        _print_plugin_row(r)
+    for src in report["sources"]:
+        _print_source_row(src)
+    for name, row in report["seams"].items():
         others = ", ".join(row["implementations"])
-        console.print(f"seam [bold]{escape(name)}[/bold]: {escape(str(row['default']))}  ({escape(others)})")
-    for extension, name in sorted(extractor_claims.items()):
         console.print(
-            f"document extractor [bold]{escape(extension)}[/bold]: {escape(name)}"
+            f"seam [bold]{escape(name)}[/bold]: {escape(str(row['default']))}  ({escape(others)})"
         )
+    for extension, name in sorted(report["document_extractors"].items()):
+        console.print(f"document extractor [bold]{escape(extension)}[/bold]: {escape(name)}")
+
+
+def _print_source_row(src: dict) -> None:
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+
+    last = src["last_sync"]
+    when = f"last sync {last['state']} at {last['at']}" if last else "never synced"
+    console.print(
+        f"source [bold]{escape(src['source'])}[/bold] ({escape(src['seam'])}): {escape(when)}. "
+        f"Next: [cyan]{escape(src['next_command'])}[/cyan]"
+    )
+
+
+def _print_plugin_row(r: dict) -> None:
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+
+    colors = {"loaded": "green", "failed": "red", "skipped": "yellow", "pending": "yellow"}
+    color = colors.get(r["status"], "red")
+    status = f"[{color}]{r['status']}[/{color}]"
+    if r["error"]:
+        status += f": {escape(r['error'])}"
+    console.print(
+        f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}"
+    )
+    if r["seams"]:
+        console.print(f"  registered: {escape(', '.join(r['seams']))}")
+    for m in r.get("missing", ()):
+        console.print(
+            f"  [yellow]not configured[/yellow]: {escape(m['key'])} is not set. "
+            f"Next: [cyan]{escape(m['fix'])}[/cyan]"
+        )
+    if r["storage"]["applied"] or r["storage"]["pending"]:
+        applied = ", ".join(r["storage"]["applied"]) or "none"
+        pending = ", ".join(r["storage"]["pending"]) or "none"
+        console.print(escape(f"  storage: applied {applied}; pending {pending}"))
+
+
+@plugins_command.command("check")
+@format_option()
+def check_command(fmt: str) -> None:
+    """Check every loaded plugin against the contract of each seam it registered.
+
+    Exits 1 when a plugin failed to load or an implementation breaks a contract.
+    """
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+    from repowise.core.plugin_testing import check_record
+    from repowise.core.registry.plugins import PLUGIN_API_VERSION, load_plugins
+
+    _import_builtin_seams()
+    checks = [c for record in load_plugins() for c in check_record(record)]
+    failed = any(c.status == "fail" for c in checks)
+    if fmt == "json":
+        emit_json(
+            {
+                "api_version": PLUGIN_API_VERSION,
+                "ok": not failed,
+                "checks": [asdict(c) for c in checks],
+            }
+        )
+    else:
+        if not checks:
+            console.print("No plugins loaded, nothing to check.")
+        colors = {"pass": "green", "fail": "red", "skipped": "dim"}
+        for c in checks:
+            color = colors[c.status]
+            console.print(
+                f"[{color}]{c.status}[/{color}]  {escape(c.plugin)}  {escape(c.kind)}:{escape(c.name)}"
+            )
+            for f in c.failures:
+                console.print(f"  {escape(f.rule)}. Fix: {escape(f.fix)}")
+    if failed:
+        raise SystemExit(1)
+
+
+@plugins_command.command("new")
+@click.argument("seam")
+@click.option("--name", default=None, help="Plugin name: lowercase letters, digits, - and _.")
+@click.option(
+    "--dir",
+    "dest",
+    default=None,
+    help="Directory to write into (default: ./repowise-<name>). Must be empty or absent.",
+)
+@format_option()
+def new_command(seam: str, name: str | None, dest: str | None, fmt: str) -> None:
+    """Write a plugin package for SEAM that installs and passes `repowise plugins check`.
+
+    The package holds the pyproject.toml with the entry point, a module with
+    register() and a working stub, a contract test, a README and an AGENTS.md
+    that tells a coding agent how to finish and verify it.
+    """
+    import os
+    from pathlib import Path
+
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+    from repowise.cli.output import emit_refusal
+    from repowise.cli.plugin_scaffold import SEAMS, dist_name, next_commands, scaffold, valid_name
+
+    supported = ", ".join(sorted(SEAMS))
+    if seam not in SEAMS:
+        emit_refusal(
+            "unknown_seam",
+            f"repowise plugins new has no template for {seam!r}. Supported seams: {supported}.",
+            fmt,
+            remedy=f"Run `repowise plugins new <seam>` with one of: {supported}.",
+            supported=sorted(SEAMS),
+        )
+    name = name or SEAMS[seam].default_name
+    if name.startswith(("repowise-", "repowise_")):
+        name = name[len("repowise-") :]
+    if not valid_name(name):
+        emit_refusal(
+            "bad_name",
+            f"{name!r} is not a plugin name: use lowercase letters, digits, - and _.",
+            fmt,
+            remedy="Pass --name with a name such as `linear` or `my-tracker`.",
+        )
+    shown = dest or dist_name(name)
+    target = Path(shown).resolve()
+    try:
+        written = scaffold(seam, name, target)
+    except FileExistsError:
+        emit_refusal(
+            "dir_not_empty",
+            f"{shown} already exists and is not an empty directory.",
+            fmt,
+            remedy="Pass --dir with a new directory, or remove that one.",
+        )
+    except OSError as exc:
+        emit_refusal(
+            "write_failed",
+            f"Could not write to {shown}: {exc.strerror or exc}.",
+            fmt,
+            remedy="Pass --dir with a directory you can write to.",
+        )
+    if " " in shown:
+        shown = f'"{shown}"'
+    commands = next_commands(seam, name, shown)
+    files = [os.path.relpath(p, target).replace(os.sep, "/") for p in written]
+    if fmt == "json":
+        emit_json(
+            {
+                "seam": seam,
+                "name": name,
+                "dir": str(target),
+                "files": files,
+                "next_commands": commands,
+            }
+        )
+        return
+    console.print(
+        f"Wrote the {escape(seam)} plugin [bold]{escape(name)}[/bold] to {escape(str(target))}:"
+    )
+    for f in files:
+        console.print(f"  {escape(f)}")
+    console.print("AGENTS.md says how to finish the stub. Next:")
+    for c in commands:
+        console.print(f"  [cyan]{escape(c)}[/cyan]")

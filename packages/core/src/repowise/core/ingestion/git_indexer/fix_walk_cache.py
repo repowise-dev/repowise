@@ -7,13 +7,17 @@ and ``git log -M --name-status`` over all of them costs minutes. A commit's
 commit here: for a fix, its time, prose and paths; for any other commit, only
 its rename rows, which are all the rename trail needs from it. The next walk
 asks git only for the range's order (``%H``, no diff), reads the commits the
-cache lacks with ``--no-walk``, and replays the same loop over the records in
-that order, so the result is the full walk's.
+cache lacks (a long run of them, such as a deeper window, with one ranged walk,
+the rest with ``--no-walk``), and replays the same loop over the records in that
+order, so the result is the full walk's.
 
 Keyed on :func:`..git_commit_index._record_context` (settings that change the
 rendered paths or the rename rows) and a fingerprint of the code that parses
 the log and names a fix: either changing discards every record, so the cache
-can only save time, never change a count.
+can only save time, never change a count. The commits a stored bug or incident
+issue names (``tracker_fixes``) join the key as a digest, since they decide
+which records carry a fix's prose and paths. With no linked commits the key
+has no issue digest.
 
 Ceiling: shallow clones skip the cache, because a boundary commit's rows
 depend on where the clone is cut. Deepening the clone first lifts it.
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Collection, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +47,10 @@ def _code_fingerprint() -> str:
     for module in (fix_rule, prior_defects, records, _constants):
         digest.update(Path(module.__file__).read_bytes())
     return digest.hexdigest()
+
+
+def _shas_digest(shas: Iterable[str]) -> str:
+    return hashlib.sha256(" ".join(sorted(shas)).encode()).hexdigest()
 
 
 def _rows_ok(rows: Any) -> bool:
@@ -76,10 +85,18 @@ class FixWalkCache:
         self.records = records
 
     @classmethod
-    def load(cls, cache_dir: Path | None, repo: Any, *, writable: bool = True) -> FixWalkCache | None:
+    def load(
+        cls,
+        cache_dir: Path | None,
+        repo: Any,
+        *,
+        writable: bool = True,
+        tracker_fixes: Collection[str] = frozenset(),
+    ) -> FixWalkCache | None:
         """The cache under *cache_dir*; ``None`` when this repository cannot use one.
 
-        ``writable=False`` reads it but leaves the file as it was.
+        ``writable=False`` reads it but leaves the file as it was. Pass the
+        same *tracker_fixes* the walk gets.
         """
         if cache_dir is None:
             return None
@@ -92,6 +109,8 @@ class FixWalkCache:
                 "context": _record_context(repo, repo.head.commit.hexsha),
                 "code": _code_fingerprint(),
             }
+            if tracker_fixes:
+                key["issues"] = _shas_digest(tracker_fixes)
         except Exception as exc:
             logger.debug("fix_walk_cache_key_failed", error=str(exc))
             return None

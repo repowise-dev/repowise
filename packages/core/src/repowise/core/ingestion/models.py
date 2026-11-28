@@ -80,6 +80,8 @@ LanguageTag = Literal[
     "sql",
     "openapi",
     "xaml",
+    # Delphi / FireMonkey / Lazarus forms: no symbols, read for the event handlers they bind.
+    "pascal_form",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
     # Salesforce Visualforce (.page/.component): markup that names its Apex controller.
@@ -264,6 +266,10 @@ class Symbol:
     # C# type declarations only: how many type parameters it declares, which is
     # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
     type_parameter_count: int | None = None
+    # C++ only: the ``template <...>`` parameter list written directly over
+    # the declaration (``<typename T, int N>``), else None. What tells
+    # same-signature SFINAE overloads apart.
+    template_parameters: str | None = None
     # Kotlin functions only: the bare type an extension dispatches on (``Byte``
     # for ``fun Byte.toHexString()``), None for a receiver that is its own type
     # parameter; and the receiver as the id spells it, nullable mark and type
@@ -392,6 +398,10 @@ STRING_LITERAL_RECEIVER = '""'
 #: numeric type its value fits, unlike an ``int`` value.
 CSHARP_INTEGER_CONSTANT = "int constant"
 
+#: A C++ argument that cannot be a ``va_list``: a literal, a call's result, or
+#: a name its caller declares with another type.
+CPP_NOT_VA_LIST = "not va_list"
+
 
 @dataclass
 class CallSite:
@@ -432,6 +442,9 @@ class CallSite:
     # Java and C#: each argument that is a bare name (``start``), else None; None overall
     # when no argument is one. The resolver reads its declared type.
     argument_names: tuple[str | None, ...] | None = None
+    # Syntax records an object construction (e.g. C# ``new Foo()``): bare-name
+    # resolution must not bind it to a same-named member method.
+    is_construction: bool = False
 
     @property
     def on_unnamed_object(self) -> bool:

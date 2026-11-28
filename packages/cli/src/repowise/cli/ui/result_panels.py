@@ -139,6 +139,7 @@ def build_contextual_next_steps(
     *,
     fast_mode: bool = False,
     setup: Any = None,
+    unsynced_sources: tuple[str, ...] = (),
 ) -> list[tuple[str, str]]:
     """The dashboard, then only what stops this index from being used.
 
@@ -150,21 +151,35 @@ def build_contextual_next_steps(
 
     1. nothing wired an MCP client, so no agent can reach any of this yet
        (``--no-editor-setup``, the CI shape, has no Connected line to say so);
-    2. the index is deliberately partial (fast).
+    2. the index is deliberately partial (fast);
+    3. a configured plugin source has never synced, so the index holds none
+       of its facts (``init`` makes no network call to fetch them).
 
-    Findings, decisions, settings and sync are not steps here: they wait as
-    rows in ``repowise next`` and the dashboard, ranked by the actions engine.
+    Findings, decisions and settings are not steps here: they wait as rows
+    in ``repowise next`` and the dashboard, ranked by the actions engine.
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
         candidates.append(
-            ("repowise agents add", "connect your coding agent: a checklist shows the ones installed")
+            (
+                "repowise agents add",
+                "connect your coding agent: a checklist shows the ones installed",
+            )
         )
     if fast_mode:
         from repowise.core.index_scope import FAST_TO_FULL_COMMAND
 
         candidates.append(
-            (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
+            (
+                FAST_TO_FULL_COMMAND,
+                "build documentation from code and the full git history (no key)",
+            )
+        )
+    if unsynced_sources:
+        from repowise.core.source_sync import sync_command
+
+        candidates.append(
+            (sync_command(), "fetch your configured sources, then repowise update to use them")
         )
     return [serve_step(gloss=SERVE_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
 

@@ -38,10 +38,12 @@ frame on its class's indexed file before symbols load (`place_jvm_frames`, from
 `load_jvm_source_paths`): the one `.java` or `.kt` file whose path ends in the
 package directories and the outermost class, or none, which leaves the frame
 outside the checkout. Bundled JavaScript goes through `source_maps.remap_profile`
-at the same place, after placement. A language whose frames name a type and not
-a file (C# in a `dotnet-trace` export) adds its own placement there; for C#,
-where namespaces need not follow directories, place by the indexed symbols'
-qualified names instead of by path.
+at the same place, after placement. C# frames from a `dotnet-trace` export
+(`Module!Namespace.Type+Nested.Method(params)`, which `parse_clr_frame` reads)
+are placed there too (`place_clr_frames`, from `load_clr_symbols`): namespaces
+need not follow directories, so the type's file is the one whose namespace and
+type symbols, nested by span, spell the frame's type. Another language whose
+frames name a type and not a file adds its own placement at the same place.
 
 ### What to change in `frame_resolver.py`
 
@@ -145,7 +147,7 @@ ones; a new reason also needs the list in
 | `no_span` | your join | no indexed function holds the line |
 | `ambiguous` | `_javascript`, `_name_join` | two indexed functions start on the line, or several fit the name and nothing picks one |
 | `no_second_signal` | your join | the frame lacks the field the join checks |
-| `no_source` | `_javascript` | the source line could not be read |
+| `no_source` | `_javascript`, `_pascal` | the source could not be read |
 | `second_signal_mismatch` | your join | the field disagrees with the symbol |
 
 ### Generated and vendored code
@@ -270,7 +272,7 @@ and assert each entry's `test_id` and `test_file` after `place_test_entries`.
   "Must not change" line.
 - Run the test files named above locally; CI runs the full suite on the PR.
 - Update `docs/`: the sentences naming the joined languages (Python, Go,
-  JavaScript, Java and Kotlin) in [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md#accuracy-and-limits)
+  JavaScript, Java, Kotlin, Rust, Pascal and C#) in [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md#accuracy-and-limits)
   and [LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md#runtime-evidence),
   and that page's table.
   The maintainers update the docs site.

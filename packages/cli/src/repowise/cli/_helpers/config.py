@@ -178,9 +178,16 @@ def save_config(
     reasoning: str | None = None,
     save_key: bool = True,
 ) -> None:
-    """Write provider/model/embedder (and optionally exclude_patterns) to ``.repowise/config.yaml``.
+    """Write the embedder (and optionally exclude_patterns) to ``.repowise/config.yaml``.
 
     Performs a round-trip load so existing keys are preserved.
+
+    ``provider`` / ``model`` are what the run used. They are written only when
+    they are the repo's own (``--provider`` / ``--model``, a pick at the
+    prompt, auto-detection): a run on the shared default (Settings, or
+    ``REPOWISE_PROVIDER``) writes neither, so the repo keeps following that
+    default when it changes instead of staying on the one in force the day it
+    was first indexed (#5709).
 
     ``embedding_model`` is persisted so ``repowise serve`` can rebuild the same
     embedder used at init time — without it the server silently falls back to a
@@ -193,14 +200,13 @@ def save_config(
     (single-repo init, workspace init, ``workspace add``). All three otherwise
     leave an indexed repo their MCP server cannot authenticate against.
     """
-    from repowise.core.providers.llm.resolve import apply_llm_selection
+    from repowise.core.providers.llm.resolve import record_index_selection
     from repowise.core.repo_config import save_repo_config
 
     ensure_repowise_dir(repo_path)
 
     # Round-trip: preserve any existing keys (e.g. exclude_patterns set via CLI).
-    # provider/model go through the writer the web UI uses too.
-    existing = apply_llm_selection(load_config_for_write(repo_path), provider, model)
+    existing = record_index_selection(load_config_for_write(repo_path), repo_path, provider, model)
     existing["embedder"] = embedder
     if embedding_model:
         existing["embedding_model"] = embedding_model

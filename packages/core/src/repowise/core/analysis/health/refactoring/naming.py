@@ -48,10 +48,12 @@ def split_words(label: str | None) -> list[str]:
 
 
 def join_identifier(words: list[str], convention: str) -> str:
-    """*words* rendered in *convention*: ``"snake_case"`` or ``"camelCase"``."""
+    """*words* rendered in ``"snake_case"``, ``"camelCase"`` or ``"PascalCase"``."""
     if not words:
         return ""
     if convention == "camelCase":
         head, *rest = words
         return head + "".join(w.capitalize() for w in rest)
+    if convention == "PascalCase":
+        return "".join(w.capitalize() for w in words)
     return "_".join(words)

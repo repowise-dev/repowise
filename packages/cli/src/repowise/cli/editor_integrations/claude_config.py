@@ -462,7 +462,7 @@ _CAPTURE_HOOK_COMMAND = (
     'printf "%s" "$input" | repowise-augment; fi;; esac'
 )
 
-#: The Stop entry: the opt-in once-a-session ask to record a decision
+#: The Stop entry: the opt-in ask, after real work, to record a decision
 #: (``decisions.stop_prompt``). Installed with the other hooks and silent until
 #: a repository turns the switch on; ``--decision-stop`` routes it past the
 #: augment package, so a stop in a repository without the switch pays one

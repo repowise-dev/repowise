@@ -111,7 +111,7 @@ fresh on every push, `repowise evidence setup --write` writes a CI file
 
 A service that already holds measurements (a database's statement statistics,
 a continuous profiler) connects through a plugin instead of a file:
-**[Writing an evidence source](../reference/PLUGINS.md#writing-an-evidence-source)**.
+**[Writing an evidence source](../reference/PLUGINS_REFERENCE.md#writing-an-evidence-source)**.
 Its runs are stored exactly as a file of the same entries would be.
 
 The rest of this page is the reference: the steps `setup` prints, every input
@@ -397,8 +397,9 @@ migration.
 | Format | Written by | What a frame carries |
 |---|---|---|
 | `speedscope` | pyinstrument through its API, as `setup` prints (sampled), `pyinstrument -r speedscope` (evented, no sample count), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
-| `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
+| `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, `perf record -e cpu-clock -g` converted with `perf_to_profile` and given its files and lines by `pprof -proto` with the binary (Free Pascal built with `-gw3`), any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it, or the `cpu-clock` / `task-clock` event value of a `perf_to_profile` profile; memory, block, mutex and hardware-counter profiles are refused |
 | `cpuprofile` | `node --cpu-prof`, as `setup` prints, or a CPU profile saved from a browser's developer tools (plain JavaScript) | function name, `file://` URL or path, and the function's start line and column. Frames join by file, line and column only, never by name: V8 names a function by its own name. `node:` modules and the runtime (`(program)`, `(garbage collector)`) sit outside the checkout, `node_modules` is a library, and both are charged to the calling repo function; `(idle)` is a wait. The weight is the time to the next sample, in microseconds, with one sample each; the clock is `wall` |
+| `speedscope` from `dotnet-trace` | `dotnet-trace collect --format speedscope -- <app>` | `Module!Namespace.Type+Nested.Method(params)` per frame, no file or line; the clock is `wall` (the sampler counts waiting threads too). Each frame goes on the indexed `.cs` file that declares its type, by namespace and type, not by directory |
 | `jfr` | `jfr print --events jdk.ExecutionSample --stack-depth 64 run.jfr > run.txt` of a JDK Flight Recorder run (`-XX:StartFlightRecording=filename=run.jfr,settings=profile`, through `JAVA_TOOL_OPTIONS` when the build pins surefire's `argLine`) | class, method, parameter types and executing line per frame, one sample per event; the clock is `cpu`. Frames name no file: each goes on its class's indexed `.java` or `.kt` file by package directories and class name. `jfr print --json` is not read (about 1 KB per frame) |
 | `collapsed` | `py-spy record --format raw --full-filenames`, async-profiler `-o collapsed` (with `lines` or `sig` for overloads), jfrconv, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line`. A JVM frame with no line joins by class and method when one method has the name, by parameter count and types from a `sig` descriptor among overloads, else `ambiguous` |
 | `pstats` | `python -m cProfile -o app.prof`, or any `pstats.Stats.dump_stats()` marshal file | function, file, line, and exact call count. Deterministic tracer: provides an ordering of functions only, never a share of the run (tracer overhead scales with call count). |
@@ -479,7 +480,7 @@ migration.
 
 | Format | Written by | What a test carries |
 |---|---|---|
-| `junit` | `pytest --junitxml=junit.xml`, Maven Surefire (`target/surefire-reports`) and Gradle (`build/test-results/test`) by default, Vitest `--reporter=junit`, jest with `jest-junit`, Mocha `--reporter xunit` | `classname`, `name`, `time` in seconds, and the outcome from a `failure`, `error` or `skipped` child; `file` when the runner writes it |
+| `junit` | `pytest --junitxml=junit.xml`, Maven Surefire (`target/surefire-reports`) and Gradle (`build/test-results/test`) by default, Vitest `--reporter=junit`, jest with `jest-junit`, Mocha `--reporter xunit`, RSpec with `rspec_junit_formatter`, PHPUnit or Pest `--log-junit junit.xml` | `classname`, `name`, `time` in seconds, and the outcome from a `failure`, `error` or `skipped` child; `file` when the runner writes it |
 
 | `go-test-json` | `go test -json` saved to a file (`> go-test.json`) | each top-level test's `pass`, `fail` or `skip` event with its `Elapsed` seconds; subtests are inside their parent's time and are not stored |
 
@@ -595,7 +596,8 @@ no statement is ever put on a function the join did not name. These rows are
 listed, never leading: no rule reads a statement's cost into a next step yet,
 so they mint no measured hotspot and no Fix first item. A store with statement
 runs is never `no_runtime_data`; one whose newest windows name no function
-reads `not_ranked`.
+reads `not_ranked`, and each such window still lists its run with no rows, so
+its `unattributed` split shows on the Performance tab, the REST route and MCP.
 
 Route runs read back the same way, as the `routes` group: one row per handler
 the route join named, ranked by the request time of its routes, with `share` of
@@ -711,24 +713,26 @@ is counted there as `unplaced`.
   never joins.
 - **Two signals.** The line must fall in an indexed function, and a second
   signal from the frame must agree: the qualified name for Python, the start
-  line for Go, the start line and column for JavaScript.
+  line for Go, the start line and column for JavaScript, the name in any case
+  for Object Pascal.
 - **Skip reasons, counted:** `outside_root` (stored as `outside_repo`),
   `unsupported_language`, `bad_line`, `dirty`, `generated`, `vendored`,
   `not_indexed`, `no_span`, `ambiguous`, `no_second_signal`, `no_source`,
   `second_signal_mismatch`.
 - **Nested code.** Lambdas, generator expressions and nested functions with no
   symbol of their own are charged to the enclosing function when the frame's
-  qualified name shows it.
+  qualified name shows it, and a Pascal nested routine when the enclosing
+  function's source declares it above the sampled line.
 - **Import time is a row.** Import-time code (Python `<module>`, Go package
-  `init`) resolves to its file. A Python module body is ranked with the
-  functions as the row `<path>::<module>` (no lines), shown as "import time":
+  `init`, a Pascal program, `initialization` or `finalization` block) resolves
+  to its file. A Python module body is ranked with the functions as the row `<path>::<module>` (no lines), shown as "import time":
   a module and the repo modules it imports in turn are one import, charged to
   the outermost one, with the libraries and standard-library modules they load
   named by package in `inside` (`sqlalchemy`, `json`). A module a function
   imports starts its own row, driven by that function; a library a function
   imports stays that function's cost. The row takes no next step: whether the
-  run needed the import is not in the profile. Go package `init` and the
-  CommonJS wrapper have no row yet; their self time is reported under
+  run needed the import is not in the profile. Go package `init`, the
+  CommonJS wrapper and Pascal blocks have no row yet; their self time is reported under
   `self_unattributed` as `module_body`, never dropped. An import row measured
   at another commit than the indexed one reads stale, as a module's top level
   has no stored body to compare.
@@ -770,7 +774,13 @@ is counted there as `unplaced`.
   database call above it. A database step says "N+1" only when a static
   `io_in_loop` finding in production code loops over the function or its main
   driver; a static finding on the function itself becomes the `why` when its
-  boundary agrees with the callee.
+  boundary agrees with the callee. In Python, a value built as a `setdefault`
+  default (`d.setdefault(key, Tracker())` builds one on every call, even when
+  the key is there) gets "build it only when the key is missing" when that
+  build holds at least half of the function's time, or, on the constructor's
+  own row, when the function building it drives at least half of its time; the
+  index reads that shape per function, so an index built before 0.63 learns it
+  on its next update.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
   `libraries` (a library frame runs below the innermost repo frame, or on a
   stack with no repo frame: a dependency, including Go's module cache, or the
@@ -954,9 +964,11 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
 - An entry joins exactly or not at all: a profile frame needs its line inside an
   indexed function and a second signal that agrees, and nothing is matched by path
   suffix (a JVM frame, which names a class and no file, is placed on the one
-  indexed file its package and class name spell). What does not join is counted by reason, and a value that was not
+  indexed file its package and class name spell; a .NET frame on the one
+  indexed `.cs` file whose namespaces and types spell its type). What does not join is counted by reason, and a value that was not
   measured is unknown, never zero.
-- A profile joins to code for Python, Go, JavaScript, Java, Kotlin and Rust frames.
+- A profile joins to code for Python, Go, JavaScript, Java, Kotlin, Rust, Object Pascal
+  and C# frames.
   A JVM frame joins by its line to the method holding it, with the method name
   and class checked; without a line, by name only when one method fits.
   Compiler-made JVM frames (bridges, accessors, `$$Lambda`) count as generated
@@ -969,6 +981,12 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   type checked for a method or trait impl; closures and async bodies charge
   the function around them, and code an attribute macro such as
   `#[instrument]` writes joins the function the attribute sits on.
+- A .NET frame from `dotnet-trace` carries no line: it joins by name to the
+  method of its type, an overload only by the parameter types the frame
+  writes. Lambdas, local functions and async or iterator state machines
+  charge the method they are written in. Top-level statements and a
+  constructor the compiler writes (field initializers only) have no symbol
+  and do not join, and neither do property accessors.
 - A profile or query-count run where more than half the entries did not map is
   refused unless `--allow-partial`.
 - A profile of one process misses the processes it starts; profile each one and
@@ -1037,7 +1055,7 @@ A service that holds measurements (a database's statement statistics, a
 continuous profiler) registers on the `evidence-source` seam instead: it
 fetches runs for a window from a cursor, with credentials the host keeps, and
 each run is stored exactly as a file of the same entries would be. See
-[Writing an evidence source](../reference/PLUGINS.md#writing-an-evidence-source).
+[Writing an evidence source](../reference/PLUGINS_REFERENCE.md#writing-an-evidence-source).
 
 Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 

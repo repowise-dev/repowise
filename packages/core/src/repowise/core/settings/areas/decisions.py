@@ -35,8 +35,9 @@ _SWITCHES: dict[str, str] = {
     "sync": "Send this repo's decisions to and from its copy on repowise.dev on update.",
     "session_start": "Open each agent session with the decisions relevant to its work.",
     "upkeep_prompt": "After a commit, ask the agent to settle the decisions it touched.",
-    "stop_prompt": "When an agent that did real work stops without recording a decision, "
-    "ask it once a session to record one or say there is none, committed or not.",
+    "stop_prompt": "Ask an agent that stops after real work without recording a decision to "
+    "record one or say there is none, committed or not; again after more work, up to three "
+    "times a session.",
 }
 
 _UPDATE_REASON = "update"

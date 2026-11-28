@@ -100,11 +100,13 @@ def _persist_initial_index_state(
 
     Mirrors what the CLI persists at the end of ``init``: a complete
     ``state.json`` (sync baseline, docs flags, run mode, store-format stamp,
-    config fingerprint) and a ``config.yaml`` recording the provider/model
-    and style the run used, so later CLI ``update`` runs and server jobs
-    resolve the same configuration.
+    config fingerprint) and a ``config.yaml`` recording the style the run
+    used, and its provider/model when they are the repo's own rather than
+    the shared default, so later CLI ``update`` runs and server jobs resolve
+    the same configuration.
     """
     from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+    from repowise.core.providers.llm.inherited_pin import PIN_REVIEWED_KEY
     from repowise.core.repo_config import config_fingerprint
 
     # config.yaml is written first: the fingerprint below covers it.
@@ -132,6 +134,8 @@ def _persist_initial_index_state(
     if llm_client is not None:
         state["provider"] = getattr(llm_client, "provider_name", "")
         state["model"] = getattr(llm_client, "model_name", "")
+    # Written by an index that records only a provider the repo chose.
+    state[PIN_REVIEWED_KEY] = True
     _stamp_store_format(state, repo_path)
     if health_rescored:
         _stamp_health_analyzer(state)
@@ -142,18 +146,23 @@ def _persist_initial_index_state(
 def _write_initial_repo_config(
     repo_path: Path, *, llm_client: Any, wiki_style: str, exclude_patterns: list[str]
 ) -> None:
-    """Record the provider/model, style and excludes the first index used.
+    """Record the style and excludes the first index used, and its own provider.
 
-    Values the repo's config.yaml already sets are kept; a write failure is
-    logged, not fatal.
+    The provider/model are recorded only when they are not the shared default
+    (the Settings default or ``REPOWISE_PROVIDER``): a repo that inherited
+    that default keeps following it when it changes. Values the repo's
+    config.yaml already sets are kept; a write failure is logged, not fatal.
     """
     from repowise.core.generation.styles import DEFAULT_STYLE
+    from repowise.core.providers.llm.resolve import record_index_selection
     from repowise.core.repo_config import load_repo_config, save_repo_config
 
     config = load_repo_config(repo_path)
-    if llm_client is not None:
-        config["provider"] = getattr(llm_client, "provider_name", "") or config.get("provider")
-        config["model"] = getattr(llm_client, "model_name", "") or config.get("model")
+    provider = getattr(llm_client, "provider_name", "") if llm_client is not None else ""
+    if provider:
+        record_index_selection(
+            config, repo_path, provider, getattr(llm_client, "model_name", "") or None
+        )
     if wiki_style and wiki_style != DEFAULT_STYLE and not config.get("wiki_style"):
         config["wiki_style"] = wiki_style
     if exclude_patterns and not config.get("exclude_patterns"):

@@ -33,10 +33,12 @@ if TYPE_CHECKING:
 
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-FrameLanguage = Literal["go", "python", "javascript", "rust", "java", "kotlin"]
+FrameLanguage = Literal["go", "python", "javascript", "rust", "java", "kotlin", "pascal", "csharp"]
 
 #: JVM frames: no file of their own, placed by class name (:func:`place_jvm_frames`).
 _JVM = frozenset({"java", "kotlin"})
+#: Frames that name a type and a method, not a line: a JVM frame, a .NET one (:func:`place_clr_frames`).
+_BY_NAME = frozenset({*_JVM, "csharp"})
 #: Source files a JVM class may be compiled from, as its frames are placed on them.
 JVM_SOURCE_SUFFIXES = (".java", ".kt")
 
@@ -52,7 +54,7 @@ SkipReason = Literal[
     "no_span",  # no indexed symbol holds (JavaScript: starts at) the line
     "ambiguous",  # several indexed functions fit and nothing in the frame picks one
     "no_second_signal",  # the frame lacks the field its language is checked on
-    "no_source",  # JavaScript: the start line could not be read to check the column
+    "no_source",  # JavaScript and Pascal: the source needed to check the frame could not be read
     "second_signal_mismatch",
 ]
 
@@ -69,14 +71,16 @@ _JS_HEAD_RE = re.compile(r"[\w$.\s=:*#\[\]\ufeff]*")
 class ProfileFrame:
     """One frame as the profiler wrote it.
 
-    *line* is 1-based: the executing line for Go, Python and the JVM, the
-    function's start line for JavaScript (V8 records no executing line); 0
+    *line* is 1-based: the executing line for Go, Python, Pascal and the JVM,
+    the function's start line for JavaScript (V8 records no executing line); 0
     when the profiler wrote none. *column* is the 1-based column V8 gives for
     a function's start. *start_line* is the function's start line where the
     format records it (Go ``s=``). *function* is the name the profiler gave:
     Python's ``co_qualname`` (or ``co_name``), Go's function name, V8's
-    ``functionName``, a JVM ``class.method`` with its parameter types or
-    descriptor when the profiler wrote them (:func:`parse_jvm_frame`).
+    ``functionName``, Pascal's DWARF name, a JVM ``class.method`` with its
+    parameter types or descriptor when the profiler wrote them
+    (:func:`parse_jvm_frame`), a .NET ``Module!Namespace.Type.Method(params)``
+    (:func:`parse_clr_frame`), which carries no line.
     """
 
     path: str
@@ -135,18 +139,23 @@ def resolve_frames(
     that differ from that commit. *origins* is the stored ``code_origin`` per
     file; a file without one falls back to :func:`path_origin`. *read_lines*
     returns a repo-relative file's lines from the checkout, for the JavaScript
-    checks and Python decorator lines; without it those frames are skipped.
+    checks, Python decorator lines and Pascal nested routines; without it those
+    frames are skipped.
 
     Second signals, after the span lookup: Go needs the index start line to
     equal the frame's ``start_line``; Python needs the frame's qualified name
     to be a dotted tail of the symbol's; JavaScript joins by position only:
     exactly one indexed function starts on the frame's line, and nothing but
     names, keywords, ``=`` and ``:`` stands before the frame's column, so it is
-    the first function the line can start. A JVM frame (Java, Kotlin) needs
+    the first function the line can start; Pascal needs the frame's name, in any
+    case, to be a dotted tail of the symbol's. A JVM frame (Java, Kotlin) needs
     the method name and class to agree with the innermost method at its line;
     with no line it joins by name (:func:`_name_join`): the one method of that
     name in that class, else the one whose parameter count (and types) match
-    the frame's, else ``ambiguous``. Rust needs the demangled name
+    the frame's, else ``ambiguous``. A C# frame (``dotnet-trace``) has no line
+    and always joins by name, the same way, its CLR parameter types read as
+    C# spells them (``int32`` as ``int``, ``System.String`` as ``string``).
+    Rust needs the demangled name
     (``crate::module::Type::method``, ``<Type as Trait>::method``; hash and
     generic arguments cut) to agree with the innermost function at its line,
     or with the function an attribute on its line (``#[instrument]``) sits on;
@@ -161,14 +170,18 @@ def resolve_frames(
     matches; a JavaScript function that starts on a body line of an indexed
     function; a Rust closure or async body (``{{closure}}``, ``{closure#0}``,
     ``{async_block#0}``) whose enclosing name matches, or one outside any
-    function into the file. Module bodies (Python ``<module>``, the Go package
-    initializer, the CommonJS wrapper at 1:1, a JVM static initializer)
-    resolve to the file, and a Python frame on a decorator line resolves to the
-    function it decorates. A JVM lambda (``lambda$name$0``, Kotlin
-    ``name$lambda$0``) and a method of an anonymous class (``Outer$1``) fold
+    function into the file; a Pascal nested routine declared inside the symbol
+    above the frame's line. Module bodies (Python ``<module>``, the Go package
+    initializer, the CommonJS wrapper at 1:1, a JVM static initializer, a
+    Pascal program or unit block) resolve to the file, and a Python frame on a
+    decorator line resolves to the function it decorates. A JVM lambda
+    (``lambda$name$0``, Kotlin ``name$lambda$0``) and a method of an anonymous class (``Outer$1``) fold
     into the method at their line; compiler-made accessors and bridges
     (``access$000``, ``$default``, ``$$Lambda``, ``$$`` proxies) are
-    ``generated``.
+    ``generated``. A C# lambda (``<Run>b__2_0``), local function
+    (``<Run>g__Local|2_0``) or iterator or async state machine
+    (``<Run>d__3.MoveNext``) folds into the method it is written in, by name;
+    a lambda in a static field initializer, into the file.
     """
     paths = _PathMap(root, symbols_by_file, dirty_paths)
     reader = _read_once(read_lines) if read_lines is not None else None
@@ -291,11 +304,11 @@ def _resolve(
     rel = paths.relative(frame.path)
     if rel is None:
         return "outside_root"
-    if frame.language not in ("go", "python", "javascript", "rust", *_JVM):
+    if frame.language not in ("go", "python", "javascript", "rust", "pascal", *_BY_NAME):
         return "unsupported_language"
-    # A JVM frame without a line still has its class, method and parameters;
+    # A JVM or .NET frame without a line still has its type, method and parameters;
     # a Rust one its demangled path (:func:`_rust_by_name`).
-    if frame.line < 1 and frame.language not in (*_JVM, "rust"):
+    if frame.line < 1 and frame.language not in (*_BY_NAME, "rust"):
         return "bad_line"
     indexed = paths.indexed(rel)
     if indexed is not None:
@@ -321,8 +334,12 @@ def _resolve(
         outcome = _go(frame, symbols)
     elif frame.language in _JVM:
         outcome = _jvm(frame, symbols, kotlin=rel.endswith(".kt"))
+    elif frame.language == "csharp":
+        outcome = _csharp(frame, symbols)
     elif frame.language == "rust":
         outcome = _rust(frame, symbols, lines)
+    elif frame.language == "pascal":
+        outcome = _pascal(frame, symbols, lines)
     else:
         outcome = _python(frame, symbols, lines)
     return (rel, outcome) if isinstance(outcome, tuple) else outcome
@@ -973,15 +990,15 @@ def _overloads(
 
     Empty when none has the frame's count; several when nothing tells them apart.
     """
-    from repowise.core.ingestion.symbol_identity import split_symbol_id
+    from repowise.core.ingestion.symbol_identity import overload_signature
 
-    payloads = {s.symbol_id: split_symbol_id(s.symbol_id)[1] or "" for s in found}
+    payloads = {s.symbol_id: overload_signature(s.symbol_id) or "" for s in found}
     # Narrow only when every member carries its count: an id without one is not an overload.
     if by_count and all(payloads[s.symbol_id][:1].isdigit() for s in found):
         found = [s for s in found if payloads[s.symbol_id].partition("(")[0] == str(len(params))]
         if len(found) <= 1:
             return list(found)
-    typed = [s for s in found if _id_types(s) == tuple(params)]
+    typed = [s for s in found if _same_types(_id_types(s), params)]
     return typed if len(typed) == 1 else list(found)
 
 
@@ -1000,18 +1017,18 @@ def _params_agree(
     when its types differ from *symbol*'s and equal a sibling overload's.
     An id with no count says nothing, and a frame with no parameters is not checked.
     """
-    from repowise.core.ingestion.symbol_identity import split_symbol_id
+    from repowise.core.ingestion.symbol_identity import overload_signature
 
-    payload = split_symbol_id(symbol.symbol_id)[1]
+    payload = overload_signature(symbol.symbol_id)
     if params is None or not payload or not payload[:1].isdigit():
         return True
     if not by_count:
         frame = tuple(params)
         return _id_types(symbol) in (None, frame) or not any(_id_types(s) == frame for s in siblings)
-    count, paren, types = payload.partition("(")
+    count, paren, _ = payload.partition("(")
     if int(count) != len(params):
         return False
-    return not paren or types == ",".join(params) + ")"
+    return not paren or _same_types(_id_types(symbol), params)
 
 
 #: Kotlin's names for the JVM types a frame spells (``Int`` is ``int``).
@@ -1025,16 +1042,399 @@ _KOTLIN_JVM_TYPES = {
 
 def _id_types(symbol: IndexedSymbol) -> tuple[str, ...] | None:
     """The parameter types *symbol*'s id spells, as a JVM frame spells them; None when it spells none."""
-    from repowise.core.ingestion.symbol_identity import split_symbol_id
+    from repowise.core.ingestion.symbol_identity import overload_signature
 
-    payload = split_symbol_id(symbol.symbol_id)[1] or ""
+    payload = overload_signature(symbol.symbol_id) or ""
     _, paren, types = payload.partition("(")
     if not paren:
         return None
     spelled = [t for t in types.removesuffix(")").split(",") if t]
     if symbol.file_path.endswith(".kt"):
         spelled = [_KOTLIN_JVM_TYPES.get(t.rstrip("?"), t.rstrip("?")) for t in spelled]
+    elif symbol.file_path.endswith(".cs"):
+        spelled = [_csharp_keyword(t) for t in spelled]
     return tuple(spelled)
+
+
+def _same_types(spelled: tuple[str, ...] | None, params: Sequence[str]) -> bool:
+    """Whether an id's parameter types are the frame's.
+
+    A C# id spells a generic type's arity (``Func`2``) only where two
+    overloads would otherwise share an id; elsewhere ``Func`` stands for any
+    arity, and a frame's ``Func`2`` matches it.
+    """
+    if spelled is None or len(spelled) != len(params):
+        return False
+    return all(
+        s == p or ("`" in p and "`" not in s and s == _CLR_ARITY_RE.sub("", p))
+        for s, p in zip(spelled, params, strict=True)
+    )
+
+
+# -- .NET (C#) -------------------------------------------------------------------
+
+# A managed frame as dotnet-trace (TraceEvent) names it:
+# ``Calc!Shop.Billing.Cart+Line.Price()``, ``Calc!Shop.Storage.Bag`1[System.Int32]..ctor()``,
+# ``Calc!Shop.Billing.Cart.Total(class System.String)``. The module before ``!``
+# keeps the names of other runtimes out; the parameters are always written.
+_CLR_FRAME_RE = re.compile(r"(?P<module>[^!\s()]+)!(?P<name>[^()!]+?)\((?P<params>[^()]*)\)")
+_CLR_ARITY_RE = re.compile(r"`\d+")
+# A generic instantiation, innermost first: ``Bag`1[System.Int32]``, ``Map`2[System.__Canon,System.Int32]``.
+_CLR_INSTANTIATION_RE = re.compile(r"\[[^\[\]]*\]")
+# Compiler-made members: a lambda ``<Sum>b__2_0``, a local function ``<Fill>g__Weigh|1_0``.
+_CLR_NESTED_METHOD_RE = re.compile(r"<(?P<enclosing>.+)>[a-z]__.*")
+# A compiler-made type: an iterator or async state machine ``<Run>d__3`` (an async
+# lambda's is ``<<Main>b__0_0>d``), a closure class ``<>c`` or ``<>c__DisplayClass2_0``.
+_CLR_STATE_MACHINE_RE = re.compile(r"<(?P<enclosing>.+)>d(?:__\d+)?")
+# The innermost ``<name>`` is the source method: a lambda inside a lambda is
+# ``<<Main>b__0_0>b__0_1``, and both were written in ``Main``.
+_CLR_INNERMOST_RE = re.compile(r"<(?P<enclosing>[^<>]+)>[a-z]__")
+
+
+def _clr_enclosing(name: str, fallback: str) -> str:
+    """The source method a compiler-made *name* was written in, else *fallback*."""
+    inner = _CLR_INNERMOST_RE.search(name)
+    return inner["enclosing"] if inner else fallback
+
+
+_CLR_PRIMITIVES = {
+    "void": "void", "bool": "bool", "char": "char", "string": "string", "object": "object",
+    "int8": "sbyte", "uint8": "byte", "unsigned int8": "byte",
+    "int16": "short", "uint16": "ushort", "unsigned int16": "ushort",
+    "int32": "int", "uint32": "uint", "unsigned int32": "uint",
+    "int64": "long", "uint64": "ulong", "unsigned int64": "ulong",
+    "float32": "float", "float64": "double", "native int": "nint", "native unsigned int": "nuint",
+}
+# The C# keyword for a BCL type, as a source parameter spells it more often than not.
+_CSHARP_KEYWORDS = {
+    "String": "string", "Object": "object", "Boolean": "bool", "Char": "char",
+    "SByte": "sbyte", "Byte": "byte", "Int16": "short", "UInt16": "ushort",
+    "Int32": "int", "UInt32": "uint", "Int64": "long", "UInt64": "ulong",
+    "Single": "float", "Double": "double", "Decimal": "decimal",
+    "IntPtr": "nint", "UIntPtr": "nuint", "Void": "void",
+}
+_CLR_TYPE_KINDS = frozenset({"class", "struct", "interface", "enum"})
+
+
+@dataclass(frozen=True)
+class ClrFrameName:
+    """A .NET frame's name, split: ``Shop.Billing`` / ``("Cart", "Line")`` / ``Price`` / ``()``."""
+
+    namespace: str
+    #: The declared types, outermost first, without generic arity or compiler-made types.
+    types: tuple[str, ...]
+    #: The method as the runtime names it: ``Total``, ``.ctor``, ``<Sum>b__2_0``, ``MoveNext``.
+    method: str
+    #: C# simple parameter types (``int``, ``string``, ``List`1``, ``int[]``); generic
+    #: parameters stay ``!0``/``!!0``, which no source spelling equals.
+    params: tuple[str, ...]
+    #: The method a lambda, local function or state machine was written in, or None.
+    enclosing: str | None = None
+    #: The method's owner is compiler-made: a closure class ``<>c__DisplayClass2_0`` or ``<>c``.
+    compiler_owner: bool = False
+
+    @property
+    def member_known(self) -> bool:
+        """Whether a source member can be named for this frame.
+
+        A static initializer (``.cctor``, or a lambda written in one) is no
+        member, and neither is the constructor of a compiler-made closure
+        class: it runs inside some method's body, and its name does not say which.
+        """
+        if ".cctor" in (self.method, self.enclosing):
+            return False
+        return not (self.compiler_owner and self.enclosing is None and self.method == ".ctor")
+
+    @property
+    def type_name(self) -> str:
+        """The type's full name as placement keys it: ``Shop.Billing.Cart+Line``."""
+        nested = "+".join(self.types)
+        return f"{self.namespace}.{nested}" if self.namespace else nested
+
+    @property
+    def wanted(self) -> str:
+        """The source method this frame ran in: a constructor is named after its type."""
+        method = self.enclosing or self.method
+        return self.types[-1] if method in (".ctor", ".cctor") else method
+
+
+def parse_clr_frame(text: str) -> ClrFrameName | None:
+    """*text* as a .NET frame name, or None when it is not one."""
+    m = _CLR_FRAME_RE.fullmatch(text.strip())
+    if m is None:
+        return None
+    name = m["name"]
+    while _CLR_INSTANTIATION_RE.search(name):
+        name = _CLR_INSTANTIATION_RE.sub("", name)
+    for ctor in ("..cctor", "..ctor"):
+        if name.endswith(ctor):
+            owner, method = name[: -len(ctor)], ctor[1:]
+            break
+    else:
+        cut = _clr_last_dot(name)
+        if cut < 1:
+            return None
+        owner, method = name[:cut], name[cut + 1 :]
+    segments = owner.split("+")
+    namespace, _, outer = segments[0].rpartition(".")
+    types: list[str] = []
+    enclosing = None
+    for segment in (outer, *segments[1:]):
+        if segment.startswith("<"):
+            machine = _CLR_STATE_MACHINE_RE.fullmatch(segment)
+            enclosing = _clr_enclosing(segment, machine["enclosing"]) if machine else enclosing
+        else:
+            types.append(_CLR_ARITY_RE.sub("", segment))
+    nested = _CLR_NESTED_METHOD_RE.fullmatch(method)
+    if nested is not None:
+        enclosing = _clr_enclosing(method, nested["enclosing"])
+    if not types or not method:
+        return None
+    params = tuple(_clr_param(p) for p in _clr_split_params(m["params"]))
+    return ClrFrameName(
+        namespace, tuple(types), _CLR_ARITY_RE.sub("", method), params, enclosing,
+        compiler_owner=segments[-1].startswith("<"),
+    )
+
+
+def _clr_last_dot(name: str) -> int:
+    """The ``.`` before the method: the last one outside ``<...>`` (``<.cctor>b__0_0`` holds one)."""
+    depth, cut = 0, -1
+    for i, ch in enumerate(name):
+        if ch == "<":
+            depth += 1
+        elif ch == ">" and depth:
+            depth -= 1
+        elif ch == "." and depth == 0:
+            cut = i
+    return cut
+
+
+def _clr_split_params(text: str) -> list[str]:
+    """Parameters split on the commas outside ``<...>`` and ``[...]``."""
+    out: list[str] = []
+    depth, start = 0, 0
+    for i, ch in enumerate(text):
+        if ch in "<[":
+            depth += 1
+        elif ch in ">]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append(text[start:i])
+            start = i + 1
+    out.append(text[start:])
+    return [p.strip() for p in out if p.strip()]
+
+
+def _clr_param(text: str) -> str:
+    """``class System.String[]`` -> ``string[]``, ``valuetype System.Nullable`1<int32>`` -> ``int?``."""
+    text = re.sub(r"^(?:class|valuetype)\s+", "", text.strip()).rstrip("&").strip()
+    marks = ""
+    while (m := re.search(r"(?:\[[^\[\]]*\]|\*)$", text)) is not None:
+        marks = ("*" if m[0] == "*" else "[]") + marks
+        text = text[: m.start()].rstrip()
+    args = ""
+    if text.endswith(">") and "<" in text:
+        text, _, args = text.partition("<")
+    if text in _CLR_PRIMITIVES:
+        return _CLR_PRIMITIVES[text] + marks
+    simple = text.rsplit(".", 1)[-1].rsplit("+", 1)[-1]
+    if simple == "Nullable`1" and args:
+        return _clr_param(args[:-1]) + "?" + marks
+    return _csharp_keyword(simple) + marks
+
+
+def _csharp_keyword(spelled: str) -> str:
+    """``Int32[]`` -> ``int[]``: a BCL type a C# id or frame spells, as its keyword."""
+    base = spelled.rstrip("[]*?")
+    return _CSHARP_KEYWORDS.get(base, base) + spelled[len(base) :]
+
+
+def place_clr_frames(
+    frames: Sequence[ProfileFrame], *, root: str, symbols_by_file: Mapping[str, Sequence[IndexedSymbol]]
+) -> tuple[ProfileFrame, ...]:
+    """*frames* with each .NET frame put on the indexed ``.cs`` file that declares its type.
+
+    A ``dotnet-trace`` export names types, not files, and a C# namespace need
+    not follow the directories, so the type's file is found from the index:
+    *symbols_by_file* holds each ``.cs`` file's namespaces, types and
+    callables (:func:`load_clr_symbols`). A type's full name is its enclosing
+    namespaces (block or file-scoped) and types, by span: ``Shop.Billing.Cart+Line``.
+    A partial type declared in several files goes to the one that declares
+    the frame's method; with none or several, or no such type (the
+    top-level statements' ``Program``), the frame keeps its path and stays
+    outside the checkout.
+    """
+    by_type = _clr_files_by_type(symbols_by_file)
+    base = posixpath.normpath(root.replace("\\", "/")).rstrip("/")
+    out: list[ProfileFrame] = []
+    for frame in frames:
+        name = parse_clr_frame(frame.function) if frame.language == "csharp" else None
+        if name is None or "/" in frame.path.replace("\\", "/"):
+            out.append(frame)
+            continue
+        file = _clr_type_file(name, by_type.get(name.type_name, []), symbols_by_file)
+        out.append(frame if file is None else replace(frame, path=f"{base}/{file}"))
+    return tuple(out)
+
+
+def _clr_files_by_type(symbols_by_file: Mapping[str, Sequence[IndexedSymbol]]) -> dict[str, list[str]]:
+    """Each type's full name to the checkout ``.cs`` files that declare it."""
+    by_type: dict[str, list[str]] = {}
+    for rel, symbols in symbols_by_file.items():
+        if rel.endswith(".cs") and path_origin(rel) not in ("vendored", "generated"):
+            for full in _clr_type_names(symbols):
+                by_type.setdefault(full, []).append(rel)
+    return by_type
+
+
+def _clr_type_file(
+    name: ClrFrameName, files: list[str], symbols_by_file: Mapping[str, Sequence[IndexedSymbol]]
+) -> str | None:
+    """The one file of *files* the frame belongs on: a partial type's goes by its method."""
+    if len(files) > 1 and not name.member_known:
+        # No member to look for: any file of a partial type would be a guess.
+        return None
+    if len(files) > 1:
+        files = [
+            rel for rel in files
+            if any(s.kind in _CALLABLE_KINDS and s.name == name.wanted and _id_parent(s) == name.types[-1]
+                   for s in symbols_by_file[rel])
+        ]
+    return files[0] if len(files) == 1 else None
+
+
+def _clr_type_names(symbols: Sequence[IndexedSymbol]) -> list[str]:
+    """The full names of the types *symbols* declare: ``Shop.Billing.Cart``, ``Shop.Billing.Cart+Line``."""
+    namespaces = [s for s in symbols if s.kind == "module"]
+    types = [s for s in symbols if s.kind in _CLR_TYPE_KINDS]
+    out = []
+    for t in types:
+        # A block namespace holds the type; a file-scoped one (``namespace X;``) ends before it.
+        spaces = [
+            m for m in namespaces
+            if (m.start_line <= t.start_line and t.end_line <= m.end_line)
+            or (m.start_line == m.end_line and m.end_line < t.start_line)
+        ]
+        spaces.sort(key=lambda s: (s.start_line, -s.end_line))
+        namespace = ".".join(m.name for m in spaces)
+        nested = "+".join([*_clr_outer_types(t, types), t.name])
+        out.append(f"{namespace}.{nested}" if namespace else nested)
+    return out
+
+
+def _clr_outer_types(t: IndexedSymbol, types: Sequence[IndexedSymbol]) -> list[str]:
+    """The names of the types *t* is nested in, outermost first.
+
+    Spans alone cannot tell ``class A { class B { } }`` from two sibling
+    types on one line, so each step must also be the parent the index
+    records in the qualified name (``<module>.A.B``: ``A`` holds ``B``),
+    which starts with the file's dotted path (``src/Cart.cs``: ``src.Cart``).
+    """
+    module = posixpath.splitext(t.file_path.replace("\\", "/"))[0].replace("/", ".") + "."
+    out: list[str] = []
+    cur = t
+    for _ in types:
+        qualified = cur.qualified_name
+        parts = qualified[len(module):].split(".") if qualified.startswith(module) else []
+        if len(parts) < 2:
+            break
+        holders = [
+            u for u in types
+            if u is not cur and u.name == parts[-2]
+            and u.start_line <= cur.start_line and cur.end_line <= u.end_line
+        ]
+        if not holders:
+            break
+        cur = max(holders, key=lambda s: (s.start_line, -s.end_line))
+        out.insert(0, cur.name)
+    return out
+
+
+async def load_clr_symbols(session: Any, repository_id: str) -> dict[str, list[IndexedSymbol]]:
+    """The indexed ``.cs`` files' namespaces, types and callables, for :func:`place_clr_frames`."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import WikiSymbol
+    from repowise.core.workspace.repo_index import IndexedSymbol
+
+    rows = await session.execute(
+        select(
+            WikiSymbol.symbol_id, WikiSymbol.name, WikiSymbol.qualified_name,
+            WikiSymbol.kind, WikiSymbol.file_path, WikiSymbol.start_line,
+            WikiSymbol.end_line,
+        ).where(
+            WikiSymbol.repository_id == repository_id,
+            WikiSymbol.file_path.like("%.cs"),
+            WikiSymbol.kind.in_(sorted({"module", *_CLR_TYPE_KINDS, *_CALLABLE_KINDS})),
+        )
+    )
+    symbols: dict[str, list[IndexedSymbol]] = {}
+    for r in rows:
+        symbols.setdefault(r.file_path, []).append(
+            IndexedSymbol(
+                symbol_id=r.symbol_id, name=r.name, qualified_name=r.qualified_name,
+                kind=r.kind, signature="", file_path=r.file_path,
+                start_line=r.start_line, end_line=r.end_line, visibility="",
+            )
+        )
+    return symbols
+
+
+def _csharp(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipReason:
+    """A .NET frame joined by name: it carries a type, a method and parameters, never a line.
+
+    The method must be a direct member of the frame's innermost type, and an
+    overload is picked by its parameters (:func:`_name_join`), never by name
+    alone. A lambda, local function or iterator/async state machine is
+    charged to the method it was written in. A static initializer
+    (``.cctor``, or a lambda in one) and a closure class's constructor name
+    no member (:attr:`ClrFrameName.member_known`): they go to the file.
+    """
+    name = parse_clr_frame(frame.function)
+    if name is None:
+        return "no_second_signal"
+    if not name.member_known:
+        return (None, True)
+    callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+    owner = name.types[-1]
+    if name.enclosing is None:
+        return _name_join(callables, owner=owner, name=name.wanted, params=name.params, by_count=True)
+    hit = _name_join(callables, owner=owner, name=name.wanted, params=None, by_count=True)
+    return (hit[0], True) if isinstance(hit, tuple) else hit
+
+
+# -- Pascal --------------------------------------------------------------------
+
+# The program's main block and a unit's initialization and finalization, as
+# FPC names them: ``$main``, ``$UNIT_$$_init$``, ``$UNIT_$$_finalize$``.
+_PAS_BLOCK_RE = re.compile(r"\$main|\$.+_\$\$_(?:init|finalize)\$")
+
+
+def _pascal(
+    frame: ProfileFrame,
+    symbols: Sequence[IndexedSymbol],
+    lines: Callable[[], list[str] | None],
+) -> _Hit | SkipReason:
+    # FPC records no start line, so the second signal is the name, and Pascal
+    # names have no case.
+    name = frame.function.casefold()
+    if not name:
+        return "no_second_signal"
+    symbol = symbol_at((s for s in symbols if s.kind in _CALLABLE_KINDS), frame.line)
+    if symbol is None:
+        return (None, False) if _PAS_BLOCK_RE.fullmatch(name) else "no_span"
+    if _qualname_tail(name, symbol.qualified_name.casefold()):
+        return (symbol, False)
+    # A nested routine has no symbol of its own and DWARF gives its bare name:
+    # only its declaration inside the symbol ties it to the symbol.
+    text = lines()
+    if text is None:
+        return "no_source"
+    declared = re.compile(rf"\s*(?:procedure|function)\s+{re.escape(name)}(?!\w)", re.IGNORECASE)
+    if any(declared.match(line) for line in text[symbol.start_line : frame.line]):
+        return (symbol, True)
+    return "second_signal_mismatch"
 
 
 # -- JavaScript ----------------------------------------------------------------
@@ -1178,6 +1578,7 @@ class _PathMap:
 
 __all__ = [
     "JVM_SOURCE_SUFFIXES",
+    "ClrFrameName",
     "FrameLanguage",
     "FrameResolution",
     "JvmFrameName",
@@ -1187,9 +1588,12 @@ __all__ = [
     "checkout_reader",
     "dirty_path_checker",
     "frame_paths",
+    "load_clr_symbols",
     "load_frame_symbols",
     "load_jvm_source_paths",
+    "parse_clr_frame",
     "parse_jvm_frame",
+    "place_clr_frames",
     "place_jvm_frames",
     "resolve_frames",
 ]

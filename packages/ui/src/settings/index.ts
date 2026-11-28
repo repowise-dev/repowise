@@ -11,3 +11,5 @@ export * from "./settings-registry-labels";
 export * from "./settings-registry-types";
 export * from "./setting-prompt";
 export * from "./time-zone-field";
+export * from "./plugins-panel";
+export * from "./plugins-panel-labels";

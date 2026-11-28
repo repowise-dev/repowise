@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 
 from tree_sitter import Node
@@ -37,10 +38,12 @@ from ..parser_helpers import (
     _fsharp_binding_has_params,
     _objc_is_macro_enum,
     _objc_symbol_name,
+    cpp_template_type_name,
 )
 from ..python_overload import is_python_overload as _is_python_overload
 
 _node_text = node_text
+_CPP_CLASS_HEADS = frozenset({"class_specifier", "struct_specifier"})
 
 
 _TS_OVERLOAD_SIGNATURES = frozenset({"function_signature", "method_signature"})
@@ -119,7 +122,81 @@ def _language_symbol_name(language: str, def_node: Node, name: str, src: str) ->
         # (`initWithName:age:`), which no single node holds, and a
         # category by the class it extends plus its own name.
         return _objc_symbol_name(def_node, name, src)
+    if language == "cpp":
+        if _is_cpp_member_macro_call(def_node, name, src):
+            return None
+        head = def_node.child_by_field_name("name")
+        if def_node.type in _CPP_CLASS_HEADS and head is not None and head.type == "template_type":
+            # Named as its members' parent is, so the two ids agree. One that
+            # spells the template's own parameters would take the primary's id.
+            special = cpp_template_type_name(head, src)
+            return special if "<" in special else None
+        return _cpp_conversion_operator_name(def_node, src) or name
     return name
+
+
+_ALL_CAPS_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def _is_cpp_member_macro_call(def_node: Node, name: str, src: str) -> bool:
+    """Is *def_node* a macro invoked in a class body, like ``REGISTER_CLASS(Foo, Base);``?
+
+    The grammar reads it as a typeless, bodiless member declaration, the shape
+    of a constructor. An ALL_CAPS name that is not the class's own is a macro.
+    """
+    if def_node.type != "declaration" or def_node.child_by_field_name("type") is not None:
+        return False
+    if not _ALL_CAPS_NAME.fullmatch(name):
+        return False
+    body = def_node.parent
+    if body is None or body.type != "field_declaration_list" or body.parent is None:
+        return False
+    class_name = body.parent.child_by_field_name("name")
+    if class_name is None:
+        return True
+    # ``template_type`` for a specialization ``class VEC<int>``.
+    base = class_name.child_by_field_name("name") or class_name
+    return _node_text(base, src) != name
+
+
+def _cpp_conversion_operator_name(def_node: Node, src: str) -> str | None:
+    """``operator bool`` for ``operator bool() const { }``; None for any other definition."""
+    declarator = def_node.child_by_field_name("declarator")
+    if declarator is None or declarator.type != "operator_cast":
+        return None
+    cast_type = declarator.child_by_field_name("type")
+    return f"operator {_node_text(cast_type, src)}" if cast_type is not None else None
+
+
+# Nodes between a class body and the member's ``@symbol.def`` node.
+_CPP_MEMBER_WRAPPERS = frozenset(
+    {
+        "template_declaration",
+        "friend_declaration",
+        "field_declaration",
+        "pointer_declarator",
+        "reference_declarator",
+    }
+)
+
+
+def cpp_local_type_member(def_node: Node, class_types: frozenset[str]) -> bool:
+    """Is *def_node* a class with a body, or a member declared in one's body?
+
+    A class declared inside a function is a type of its own: it and its
+    members are symbols, though the class sits below a callable.
+    """
+    if def_node.type in class_types:
+        return def_node.child_by_field_name("body") is not None
+    body = def_node.parent
+    while body is not None and body.type in _CPP_MEMBER_WRAPPERS:
+        body = body.parent
+    return (
+        body is not None
+        and body.type == "field_declaration_list"
+        and body.parent is not None
+        and body.parent.type in class_types
+    )
 
 
 # ``(language, node_type)`` whose "class" kind the body refines: Kotlin

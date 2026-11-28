@@ -167,7 +167,7 @@ class UnusedExportPass:
         # Roots include framework-instantiated files the runtime constructs.
         # Not ``is_file_reachable``: its barrel rescue is scoped to files, and an
         # unused symbol defined in a barrel should still be flagged.
-        # A JVM ``main`` launches its file the same way.
+        # A JVM or C# ``main`` launches its file the same way.
         if is_reachability_root(node_data) or defines_main(self.graph, str(node)):
             return None
         if node_data.get("is_test", False):
@@ -274,7 +274,7 @@ class UnusedExportPass:
             blob = self.ctx._source_map.get(path)
             if blob is None or _COMPUTED_ATTRIBUTE_RE.search(blob):
                 return None
-            tokens |= file_identifiers(blob)
+            tokens |= file_identifiers(blob, path)
         return frozenset(tokens)
 
     def _is_export_candidate(
@@ -549,5 +549,5 @@ def _namespace_rescues(file_ctx: _ExportFile, sym_name: str) -> bool:
     if not file_ctx.imported_as_namespace:
         return False
     tokens = file_ctx.namespace_tokens
-    token = searchable_token(sym_name)
+    token = searchable_token(sym_name, path=str(file_ctx.node))
     return tokens is None or not token or token in tokens

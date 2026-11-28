@@ -155,6 +155,35 @@ async def test_get_change_risk_bad_revspec_returns_error(tmp_path, monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_get_change_risk_reads_digits_as_a_perforce_changelist(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    trailer = '[git-p4: depot-paths = "//depot/main/": change = 1234567]'
+    _commit(repo, {"app.py": "value = 1\n"}, f"Add the app\n\n{trailer}")
+    _commit(repo, {"lib.py": "value = 2\n"}, "Add the lib")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    by_number = await module.get_change_risk(revspec="1234567", baseline=0)
+    imported = subprocess.run(
+        ["git", "rev-parse", "HEAD~1"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert by_number["ref"] == imported
+    assert [f["path"] for f in by_number["health_delta"]["files"]] == ["app.py"]
+
+    # Digits that name no changelist and no commit are refused, not read as a sha prefix.
+    refused = await module.get_change_risk(revspec="7777777", baseline=0)
+    assert "changelist 7777777" in refused["error"]
+    assert "score" not in refused
+
+
+@pytest.mark.asyncio
 async def test_get_change_risk_empty_diff_warns(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

@@ -244,7 +244,7 @@ def test_fix_walk_cache_reads_only_new_commits_and_matches_a_fresh_walk(
     monkeypatch.setattr(
         prior_defects,
         "_read_commits",
-        lambda r, *revs: reads.append(revs) or real_read(r, *revs),
+        lambda r, *revs, **kw: reads.append(revs) or real_read(r, *revs, **kw),
     )
     warm = walk(cached=True)
     assert reads == [("--no-walk=unsorted", *new)]
@@ -254,6 +254,86 @@ def test_fix_walk_cache_reads_only_new_commits_and_matches_a_fresh_walk(
     counts = prior_defects.compute_prior_defects(repo, files, as_of_ts=None, walk=warm)
     assert counts.counts["a2.py"] == 1
     assert counts == prior_defects.compute_prior_defects(repo, files, as_of_ts=None, walk=fresh)
+    repo.close()
+
+
+def _deep_fix_walk_repo(root: Path):
+    """``_build_repo`` plus a merged side branch and two commits on top."""
+    repo = _build_repo(root)
+    trunk = repo.active_branch.name
+    repo.git.checkout("-b", "side", "HEAD~2")
+    _commit(repo, root, {"b.py": "y = 2\n"}, "fix: b on a branch")
+    repo.git.checkout(trunk)
+    repo.git.merge("--no-ff", "--no-edit", "side")
+    _commit(repo, root, {"a.py": "x = 3\n"}, "fix: a again")
+    _commit(repo, root, {"c.py": "z = 3\n"}, "feat: more c")
+    return repo
+
+
+def _seed_newest(repo, cache_dir: Path, files: set[str], kept: int) -> list[str]:
+    """Leave a fix-walk cache holding only the newest *kept* commits; the walk's order."""
+    cache = FixWalkCache.load(cache_dir, repo)
+    prior_defects.collect_fix_commits(repo, files, as_of_ts=None, walk_cache=cache)
+    order = repo.git.log("HEAD", "--no-merges", "--format=%H").split()
+    cache.save(order[:kept])
+    return order
+
+
+def test_a_deeper_fix_walk_reads_only_the_missing_run_past_the_patch_cap(
+    tmp_path, monkeypatch
+) -> None:
+    """More missing commits than the by-sha cap, all below the cached ones, are
+    read with one ranged walk of the range (merges skipped), not a full walk."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = _deep_fix_walk_repo(root)
+    files = {"a.py", "b.py", "c.py", "test_a.py"}
+    order = _seed_newest(repo, tmp_path, files, kept=3)
+    monkeypatch.setattr(git_commit_index, "_MAX_PATCHED_COMMITS", 2)
+    monkeypatch.setattr(git_commit_index, "_MIN_WALKED_RUN", 3)
+
+    reads: list[tuple[str, ...]] = []
+    real_read = prior_defects._read_commits
+    monkeypatch.setattr(
+        prior_defects,
+        "_read_commits",
+        lambda r, *revs, **kw: reads.append(revs) or real_read(r, *revs, **kw),
+    )
+    warm = prior_defects.collect_fix_commits(
+        repo, files, as_of_ts=None, walk_cache=FixWalkCache.load(tmp_path, repo)
+    )
+    head = repo.head.commit.hexsha
+    assert reads == [(head, "--skip=3", f"-{len(order) - 3}")]
+    assert warm == prior_defects.collect_fix_commits(repo, files, as_of_ts=None)
+    assert len(FixWalkCache.load(tmp_path, repo).records) == len(order)
+    repo.close()
+
+
+def test_a_ranged_fix_walk_that_disagrees_with_the_order_walks_afresh(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = _deep_fix_walk_repo(root)
+    files = {"a.py", "b.py", "c.py", "test_a.py"}
+    _seed_newest(repo, tmp_path, files, kept=3)
+    monkeypatch.setattr(git_commit_index, "_MAX_PATCHED_COMMITS", 0)
+    monkeypatch.setattr(git_commit_index, "_MIN_WALKED_RUN", 2)
+    real_read = prior_defects._read_commits
+
+    def _off_by_one(r, *revs, **kw):
+        # The run's length, one commit further down: right size, wrong commits.
+        if len(revs) == 3 and revs[1].startswith("--skip="):
+            rev, skip, count = revs
+            return real_read(r, rev, f"--skip={int(skip.split('=')[1]) + 1}", count, **kw)
+        return real_read(r, *revs, **kw)
+
+    monkeypatch.setattr(prior_defects, "_read_commits", _off_by_one)
+    warm = prior_defects.collect_fix_commits(
+        repo, files, as_of_ts=None, walk_cache=FixWalkCache.load(tmp_path, repo)
+    )
+    monkeypatch.setattr(prior_defects, "_read_commits", real_read)
+    assert warm == prior_defects.collect_fix_commits(repo, files, as_of_ts=None)
     repo.close()
 
 

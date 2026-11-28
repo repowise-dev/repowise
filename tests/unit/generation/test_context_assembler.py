@@ -14,6 +14,7 @@ from repowise.core.generation.context_assembler import (
 )
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.ingestion.models import (
+    Import,
     ParsedFile,
 )
 
@@ -86,6 +87,32 @@ def test_assemble_file_page_returns_context(
     assert isinstance(ctx, FilePageContext)
     assert ctx.file_path == sample_parsed_file.file_info.path
     assert ctx.language == "python"
+
+
+def test_assemble_file_page_deduplicates_import_statements_before_truncating(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    imports = [
+        Import(
+            raw_statement=f"import module_{i}",
+            module_path=f"module_{i}",
+            imported_names=[f"module_{i}"],
+            is_relative=False,
+            resolved_file=None,
+        )
+        for i in range(30)
+    ]
+    imports.insert(0, dataclasses.replace(imports[0], module_path="alias"))
+    parsed = dataclasses.replace(sample_parsed_file, imports=imports)
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        parsed,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    assert ctx.imports == [f"import module_{i}" for i in range(30)]
 
 
 def test_assemble_file_page_does_not_retain_source(

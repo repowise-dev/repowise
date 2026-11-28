@@ -21,6 +21,7 @@ from repowise.core.analysis.decisions.review_queue import ReviewSignals, review_
 from repowise.core.persistence import crud, decision_graph
 from repowise.core.persistence.crud.decision_digest import recent_decisions
 from repowise.core.persistence.crud.decision_health import decision_hotspot_files
+from repowise.core.persistence.crud.issue_links import decision_issues
 from repowise.core.persistence.models import DecisionEvidence, DecisionRecord
 from repowise.core.sessions.deliveries import decision_deliveries
 from repowise.server.deps import get_db_session, verify_api_key
@@ -47,7 +48,11 @@ from repowise.server.schemas import (
     DecisionSourceState,
     DecisionStatusUpdate,
 )
-from repowise.server.schemas.decisions import DecisionAgentPromptResponse, EvidencePreview
+from repowise.server.schemas.decisions import (
+    DecisionAgentPromptResponse,
+    DecisionLinkedIssue,
+    EvidencePreview,
+)
 
 router = APIRouter(
     tags=["decisions"],
@@ -721,6 +726,9 @@ async def get_decision(
     rec = await _decision_in_repo(session, repo_id, decision_id)
     item = await _one_with_signature(session, repo_id, rec)
     await _attach_deliveries(session, repo_id, [item])
+    issues = await decision_issues(session, repo_id, {rec.id: item.evidence_commits})
+    if rec.id in issues:
+        item.linked_issues = [DecisionLinkedIssue(**i) for i in issues[rec.id]]
     return item
 
 

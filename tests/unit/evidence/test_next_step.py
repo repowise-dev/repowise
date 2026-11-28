@@ -11,7 +11,12 @@ from typing import Any
 
 import pytest
 
-from repowise.core.evidence.next_step import next_step, static_finding, verify_command
+from repowise.core.evidence.next_step import (
+    eager_default_fact,
+    next_step,
+    static_finding,
+    verify_command,
+)
 
 
 def _row(
@@ -974,3 +979,135 @@ def test_a_python_matcher_leaf_is_regex_time() -> None:
     )
     step = next_step(row, "python")
     assert step is not None and step.rule == "regex_match"
+
+
+# --- an eager setdefault default (F-A2-2) ------------------------------------
+
+_WRAP = "sqlite_utils/utils.py::TypeTracker::wrap"
+_WRAP_FACT = eager_default_fact(_WRAP, '[["ValueTracker", 445]]')
+# A CSV insert's column-type tracker, as the corpus row measured it.
+_WRAP_INSIDE = [
+    _c(
+        "sqlite_utils.utils.ValueTracker.__init__",
+        "repo",
+        0.7311,
+        ("sqlite_utils.utils.ValueTracker.get_tests", "repo", 0.2604),
+    ),
+    _c("sqlite_utils.utils.ValueTracker.evaluate", "repo", 0.1456),
+    _c("<genexpr>", "repo", 0.0672),
+]
+
+
+def test_a_dominant_build_as_a_setdefault_default_says_build_only_when_missing() -> None:
+    row = _row(_WRAP, _WRAP_INSIDE, [{"name": "<genexpr>", "share": 1.0}], "insert", "entry_point")
+    step = next_step(row, "python", [_WRAP_FACT])
+    assert step is not None and step.rule == "eager_default"
+    assert step.why.startswith("73% of it builds ValueTracker() (")
+    assert "on every call, even when the key is already there" in step.why
+    assert step.next.startswith(
+        "at sqlite_utils/utils.py:445, build the default only when the key is missing: with the "
+        "mapping and the key evaluated once, d[key] if key in d else "
+        "d.setdefault(key, ValueTracker(...))"
+    )
+    assert step.callee == "sqlite_utils.utils.ValueTracker.__init__" and step.share == 0.7311
+
+
+def test_the_constructor_row_names_the_driver_that_builds_it_eagerly() -> None:
+    row = _row(
+        "sqlite_utils/utils.py::ValueTracker::__init__",
+        [
+            _c("sqlite_utils.utils.ValueTracker.get_tests", "repo", 0.7239),
+            _c("(own code)", "own", 0.18),
+        ],
+        [{"name": "sqlite_utils.utils.TypeTracker.wrap", "share": 1.0, "symbol": _WRAP}],
+        "insert",
+        "entry_point",
+    )
+    step = next_step(row, "python", [_WRAP_FACT])
+    assert step is not None and step.rule == "eager_default"
+    assert step.why.startswith(
+        "TypeTracker.wrap, which drives 100% of its time, builds a ValueTracker"
+    )
+    assert step.next.startswith("at sqlite_utils/utils.py:445 in TypeTracker.wrap,")
+    # A plain function's own row is not read: only a constructor names what it builds.
+    factory = _row(
+        "pkg/m.py::make_tracker",
+        [_c("(own code)", "own", 1.0)],
+        [{"name": "wrap", "share": 0.9, "symbol": "pkg/m.py::wrap"}],
+    )
+    fact = eager_default_fact("pkg/m.py::wrap", '[["make_tracker", 9]]')
+    assert next_step(factory, "python", [fact]) is None
+
+
+@pytest.mark.parametrize(
+    ("inside", "drivers", "language", "facts"),
+    [
+        # The build holds less than half of the time.
+        (
+            [_c("sqlite_utils.utils.ValueTracker.__init__", "repo", 0.49), _c("x", "repo", 0.3)],
+            [],
+            "python",
+            [_WRAP_FACT],
+        ),
+        # The dominant callee is something else the function builds no default of.
+        ([_c("pkg.Other.__init__", "repo", 0.9)], [], "python", [_WRAP_FACT]),
+        # No fact: the walk found no eager default here.
+        (_WRAP_INSIDE, [], "python", []),
+        # Python only.
+        (_WRAP_INSIDE, [], "javascript", [_WRAP_FACT]),
+        # A call written with another module in front builds another class.
+        (
+            [_c("pkg.hot.Tracker.__init__", "repo", 0.9)],
+            [],
+            "python",
+            [eager_default_fact(_WRAP, '[["cheap.Tracker", 3]]')],
+        ),
+        # A wait or the framework spine never reads as a build.
+        ([_c("ValueTracker", "wait", 0.9)], [], "python", [_WRAP_FACT]),
+        ([_c("dispatch_request", "library", 0.9)], [], "python", [_WRAP_FACT]),
+    ],
+)
+def test_an_eager_default_stays_silent(inside, drivers, language, facts) -> None:
+    row = _row(_WRAP, inside, drivers, "insert", "entry_point")
+    step = next_step(row, language, facts)
+    assert step is None or step.rule != "eager_default"
+
+
+def test_the_constructor_row_stays_silent_on_a_minor_or_unrelated_driver() -> None:
+    init = "sqlite_utils/utils.py::ValueTracker::__init__"
+    inside = [_c("(own code)", "own", 1.0)]
+    minor = _row(
+        init, inside, [{"name": "wrap", "share": 0.4, "symbol": _WRAP}], "i", "entry_point"
+    )
+    assert next_step(minor, "python", [_WRAP_FACT]) is None
+    other = _row(
+        "pkg/m.py::Other::__init__", inside, [{"name": "w", "share": 1.0, "symbol": _WRAP}]
+    )
+    assert next_step(other, "python", [_WRAP_FACT]) is None
+    # The driver builds a Tracker from another module than this one.
+    fact = eager_default_fact(_WRAP, '[["cheap.ValueTracker", 445]]')
+    hot = _row(init, inside, [{"name": "w", "share": 1.0, "symbol": _WRAP}], "i", "entry_point")
+    assert next_step(hot, "python", [fact]) is None
+    same = eager_default_fact(_WRAP, '[["utils.ValueTracker", 445]]')
+    assert next_step(hot, "python", [same]).rule == "eager_default"
+    # A package's __init__.py is the package: pkg.Tracker() builds pkg/__init__.py's class.
+    pkg = _row(
+        "pkg/__init__.py::Tracker::__init__",
+        inside,
+        [{"name": "w", "share": 1.0, "symbol": _WRAP}],
+        "i",
+        "entry_point",
+    )
+    assert next_step(pkg, "python", [eager_default_fact(_WRAP, '[["pkg.Tracker", 5]]')])
+    other_pkg = eager_default_fact(_WRAP, '[["other.pkg.Tracker", 5]]')
+    assert next_step(pkg, "python", [other_pkg]) is None
+    # A unit test run never gets a step.
+    tests = _row(
+        init, inside, [{"name": "w", "share": 1.0, "symbol": _WRAP}], "pytest", "unit_test"
+    )
+    assert next_step(tests, "python", [_WRAP_FACT]) is None
+
+
+@pytest.mark.parametrize("stored", [None, "", "not json", "{}", "[]", '[["x"]]', "[[1, 2]]"])
+def test_an_unreadable_or_empty_eager_fact_is_no_fact(stored: str | None) -> None:
+    assert eager_default_fact(_WRAP, stored) is None

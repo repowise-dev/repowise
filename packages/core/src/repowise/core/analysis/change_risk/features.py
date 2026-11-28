@@ -20,6 +20,7 @@ import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from ...changelist import without_changelist_number
 from ...ingestion.git_indexer.fix_rule import is_typed_fix_commit
 from ..changed_lines import untracked_diffs
 
@@ -306,6 +307,7 @@ def extract_commit_features(
     """
     meta = _git(["show", "-s", "--format=%an%x00%s", sha], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
+    subject = without_changelist_number(subject)
     # -m --first-parent: on a merge, score the diff the merge brought onto the
     # first parent — the PR's content. Without it the answer depends on git's
     # combined-diff defaults, which can drop every file that matches a parent.
@@ -355,6 +357,7 @@ def extract_range_features(
     )
     meta = _git(["show", "-s", "--format=%an%x00%s", head], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
+    subject = without_changelist_number(subject)
     # Any fix commit in the range marks the change as a fix (informational).
     range_subjects = _git(["log", "--format=%s", f"{base}..{head}"], repo_path)
     is_fix = any(is_typed_fix_commit(s) for s in range_subjects.split("\n") if s)

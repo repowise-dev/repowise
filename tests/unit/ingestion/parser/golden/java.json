@@ -33,6 +33,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -58,6 +59,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -83,6 +85,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -108,6 +111,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -168,6 +172,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -191,6 +196,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -214,6 +220,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -270,6 +277,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -293,6 +301,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -316,6 +325,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -339,6 +349,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -362,6 +373,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -385,6 +397,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -408,6 +421,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -431,6 +445,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -454,6 +469,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -477,6 +493,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -622,7 +639,8 @@
         "argument_types": null,
         "argument_names": [
           "id"
-        ]
+        ],
+        "is_construction": false
       },
       {
         "target_name": "executeQuery",
@@ -641,7 +659,8 @@
         "argument_types": null,
         "argument_names": [
           "id"
-        ]
+        ],
+        "is_construction": false
       },
       {
         "target_name": "readString",
@@ -658,7 +677,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "of",
@@ -677,7 +697,8 @@
         "argument_types": null,
         "argument_names": [
           "p"
-        ]
+        ],
+        "is_construction": false
       },
       {
         "target_name": "compile",
@@ -696,7 +717,8 @@
         "argument_types": null,
         "argument_names": [
           "id"
-        ]
+        ],
+        "is_construction": false
       },
       {
         "target_name": "length",
@@ -713,7 +735,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "executeQuery",
@@ -732,7 +755,8 @@
         "argument_types": [
           "String"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "compile",
@@ -751,7 +775,8 @@
         "argument_types": [
           "String"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "matcher",
@@ -770,7 +795,8 @@
         "argument_types": null,
         "argument_names": [
           "id"
-        ]
+        ],
+        "is_construction": false
       },
       {
         "target_name": "matches",
@@ -791,7 +817,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],

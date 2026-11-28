@@ -33,6 +33,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -56,6 +57,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -79,6 +81,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -137,7 +140,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert",
@@ -154,7 +158,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert_includes",
@@ -171,7 +176,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert_equal",
@@ -188,7 +194,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert_operator",
@@ -205,7 +212,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert_equal",
@@ -222,7 +230,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "refute_nil",
@@ -239,7 +248,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [
@@ -300,6 +310,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -323,6 +334,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -346,6 +358,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -369,6 +382,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -392,6 +406,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -415,6 +430,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -438,6 +454,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -461,6 +478,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -484,6 +502,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -507,6 +526,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -530,6 +550,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -553,6 +574,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -576,6 +598,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -636,6 +659,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -659,6 +683,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -682,6 +707,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -705,6 +731,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -728,6 +755,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -751,6 +779,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -774,6 +803,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -797,6 +827,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -820,6 +851,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -843,6 +875,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -866,6 +899,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -904,7 +938,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "zero?",
@@ -921,7 +956,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -938,7 +974,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "map",
@@ -955,7 +992,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "odd?",
@@ -972,7 +1010,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -989,7 +1028,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -1063,6 +1103,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1086,6 +1127,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1109,6 +1151,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1132,6 +1175,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1155,6 +1199,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1178,6 +1223,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1201,6 +1247,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1224,6 +1271,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1247,6 +1295,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1270,6 +1319,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1293,6 +1343,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1316,6 +1367,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1385,7 +1437,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1402,7 +1455,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "map",
@@ -1419,7 +1473,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1436,7 +1491,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1453,7 +1509,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "glob",
@@ -1470,7 +1527,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "join",
@@ -1487,7 +1545,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1504,7 +1563,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1521,7 +1581,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "where",
@@ -1538,7 +1599,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1555,7 +1617,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1572,7 +1635,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1589,7 +1653,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1606,7 +1671,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "emit",
@@ -1623,7 +1689,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "new",
@@ -1640,7 +1707,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1657,7 +1725,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "new",
@@ -1674,7 +1743,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "match?",
@@ -1691,7 +1761,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "match?",
@@ -1708,7 +1779,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1725,7 +1797,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "new",
@@ -1742,7 +1815,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1759,7 +1833,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1776,7 +1851,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1793,7 +1869,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "synchronize",
@@ -1810,7 +1887,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "write",
@@ -1827,7 +1905,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1844,7 +1923,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "transform",
@@ -1861,7 +1941,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],

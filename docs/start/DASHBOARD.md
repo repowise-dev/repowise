@@ -342,6 +342,22 @@ that needs attention rises to the top. Setup also reopens the welcome tour.
 `/settings` globally (server connection, LLM provider and keys, webhook, MCP
 server config and tool toggles, display preferences).
 
+## Plugins
+
+`/repos/<id>/settings/plugins`
+
+**Answers:** which plugins are installed, are they set up, and when did each
+source last sync?
+
+Each plugin shows its state (ready, failed with the error, or not configured
+with the command that finishes setup) and the settings it declares. A secret
+shows only whether it is set. A plain setting links to its row under All
+settings, where you edit it. Each source a plugin or repowise itself fetches
+from shows its last sync and a Sync now button, which runs
+`repowise sources sync --source <name>` on the server. With no plugin
+installed, the page links the [plugin guide](../reference/PLUGINS.md) and shows
+`repowise plugins new <seam>`.
+
 ## Workspace views
 
 These appear only when repowise is running over a multi-repo workspace. See

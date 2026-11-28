@@ -106,3 +106,20 @@ async def test_template_concept_page_is_still_counted(session_factory, tmp_path)
     assert total == 4
     # The module page and the overview; the file page is structural.
     assert stubs == 2
+
+
+async def test_a_stale_model_free_page_is_not_pointed_at_generate_stale(session_factory, tmp_path):
+    """`generate` leaves it out of every plan, so its stale count must not ask for one (#6079)."""
+    repo_id = await _seed(
+        session_factory,
+        tmp_path,
+        ("onboarding:onboarding/active_landscape", "onboarding", "template", {"model_free": True}),
+        ("module_page:pkg", "module_page", "mock", None),
+    )
+    async with session_factory() as session:
+        await session.execute(update(Page).values(freshness_status="stale"))
+        await session.commit()
+
+    _, _, stale_ids = await _page_stats(session_factory, repo_id)
+
+    assert stale_ids == {"module_page:pkg"}

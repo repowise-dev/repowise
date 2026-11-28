@@ -306,6 +306,13 @@ Provider API keys, the database URL and the API token are listed in
 
 **"No previous sync found"**: run `repowise init` first.
 
+**A directory with no git commits**: `update` still works. With no commit to
+diff from, it compares each file's content with what the last run recorded in
+`.repowise/content_baseline.json`. The history-derived signals stay empty, as
+they are after `init`. Once the folder is committed to git, the next `update`
+records that commit and diffs commits from then on. An index built this way
+by an older version has no baseline yet; run `repowise init` once to record it.
+
 **"Already up to date"**: the index is already at the latest commit.
 
 **Hook doesn't fire**: make sure the hook file is executable:

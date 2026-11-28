@@ -126,7 +126,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--skip-tests` | No docs for test files. | off |
 | `--skip-infra` | No docs for infra (Dockerfiles, Makefiles, Terraform). | off |
 | `--include-submodules` | Include git submodules. | excluded |
-| `--coverage-report` | LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, Salesforce Apex JSON. Repeatable. Feeds code health only; every code file is documented regardless. | auto-discovered |
+| `--coverage-report` | LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, DelphiCodeCoverage XML, Salesforce Apex JSON. Repeatable. Feeds code health only; every code file is documented regardless. | auto-discovered |
 | `--commit-limit` | Newest commits read for file history and co-change. Above the commit count reads the full history. Saved. | `5000` |
 | `--follow-renames` | Track renames via `git log --follow` (slower, more accurate). Saved. | off |
 | `--resume` | Continue a previous run; see notes. | off |
@@ -271,6 +271,8 @@ repowise update --full                 # leave nothing stale (fast index: upgrad
 - Index-only runs reuse stored layer names and node summaries (no LLM call). Docs mode saves pages as they finish; reruns skip them by prompt hash.
 - Failed best-effort steps (git metadata, decisions, dead code, ...) still exit 0, listed in the completion panel and `done` event's `degraded` array (`--progress json`); the next update retries.
 - Unindexed linked worktrees seed from the base checkout first ([WORKTREES.md](../scale/WORKTREES.md)).
+- After updating a single repo, `update` runs [`repowise sources sync`](#repowise-sources-sync) for its configured
+  plugin sources. It prints one line for each source that fails and still exits 0.
 
 **Flag notes**
 
@@ -1250,7 +1252,7 @@ repowise coverage add .coverage                  # per-test map
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--path` | Repo path. | `add`: cwd / workspace primary; `status`: cwd |
-| `--format` | `add`: force a parser (`lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco`, `apex`). `status`: `table` or `json`. | `add`: auto-detect; `status`: `table` |
+| `--format` | `add`: force a parser (`lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco`, `apex`, `delphi-codecoverage`). `status`: `table` or `json`. | `add`: auto-detect; `status`: `table` |
 | `--strict` | `add`: also exit non-zero when some report files do not map. | off |
 | `--allow-partial` | `add`: store even when over half does not map; rows flagged partial. | off |
 | `--verbose` / `-v` | `add`: debug logs. | off |
@@ -1260,7 +1262,7 @@ repowise coverage add .coverage                  # per-test map
   `hooks.coverage_reingest`.
 - Over half unmapped: stores nothing, exits `1`, suggests a `coverage.strip_prefix` or `coverage.path_prefix`. `init` /
   `update` keep nothing from it, so their re-read clears an `--allow-partial` fragment.
-- Formats: LCOV, Cobertura, Clover, JaCoCo XML, Go coverprofile (`go test -coverprofile`), Salesforce Apex JSON. With no path, discovers
+- Formats: LCOV, Cobertura, Clover, JaCoCo XML, Go coverprofile (`go test -coverprofile`), DelphiCodeCoverage XML, Salesforce Apex JSON. With no path, discovers
   `coverage/lcov.info`, `.coverage`, `coverage.out`, `target/site/jacoco/jacoco.xml` and similar.
 - *Test-to-code map* (which test covers which lines: "which tests exercise this change"): from a context-recorded
   `.coverage` or per-test lcov; without contexts, per-file only. Separate from the per-file aggregate and `health`.
@@ -1534,6 +1536,33 @@ writes nothing.
   `setup` again; no store is created. `coverage setup` prints the coverage part only. Takes
   `--path` and `--format`.
 
+### `repowise sources sync`
+
+Fetch and store evidence from the sources plugins register (an `evidence-source`), the way `evidence add` stores a
+file. A source is configured when every setting it declares without a default has a value. For each source the
+command reports what it stored, or why it did not, then the next command to run.
+
+```bash
+repowise sources sync                          # every configured source
+repowise sources sync --source postgres-statements --format json
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--source NAME` | Only this source. | every source |
+| `--path` | Repo path. | cwd |
+| `--format` | `table` or `json`. | `table` |
+
+- JSON: one row per source with `source`, `seam`, `state` (`stored`, `unavailable`, `refused`, `failed`,
+  `not_configured`), `batches`, `message`, `next_command` and `missing` (each unset setting with the command that
+  sets it).
+- Each source's cursor is saved under `source_sync` in `.repowise/state.json`. Credentials are never saved.
+- The built-in `forge` issue source (GitHub and GitLab issues) is always listed and runs once
+  `REPOWISE_PLUGIN_FORGE_TOKEN` is set. See [the plugin reference](PLUGINS_REFERENCE.md#issues-from-github-and-gitlab).
+- Exits non-zero only when `--source` names an unknown source or one that did not store.
+- `repowise update` runs the same sync for configured sources after its own work. A failing source prints one line
+  and never fails the update; with none configured, update does exactly what it did before.
+
 ### `repowise perf measure -- <command>`
 
 Time a command and say whether a change made it faster or slower. Runs only the command typed
@@ -1679,12 +1708,12 @@ repowise changes list --needs-attention
 repowise changes show pr-123 --format in-toto
 ```
 
-A change is one first-parent commit, identified by its message's PR or MR number, then Gerrit `Change-Id`, then merge or
-commit sha. A merge lands its branch's commits; rebase merges give one change per commit.
+A change is one first-parent commit, identified by the Perforce changelist a git-p4 or p4-fusion mirror wrote into its
+message, then its PR or MR number, then Gerrit `Change-Id`, then merge or commit sha. A merge lands its branch's commits; rebase merges give one change per commit.
 
 | Flag | Subcommand | What it does | Default |
 |------|-----|--------------|---------|
-| `REF` | `show` | Id (`pr-123`) or any sha the change landed. | |
+| `REF` | `show` | Id (`pr-123`), a changelist number (`12345`) or any sha the change landed. | |
 | `--path` | all | Repo path. | cwd |
 | `--category` | `list` | Category (feature, fix, ...). | |
 | `--shape` | `list` | `merge`, `squash` or `commit`. | |
@@ -2556,17 +2585,31 @@ repowise telemetry disable               # or: enable
 ### `repowise plugins`
 
 List plugins from `repowise.plugins` entry points and `REPOWISE_PLUGINS`: loaded or why not, seams registered,
-implementation per seam. Plugin commands load only for an unknown command name or a command listing.
+implementation per seam. Plugin commands load only for an unknown command name or a command listing. Each plugin
+also says whether it is configured and, for each required setting it declares that has no value, the command that
+sets it (`configured` and `missing` in JSON). The JSON also lists each plugin's declared `settings` (set or not, never
+the value), its `next_command` and `version`, and every fetching source under `sources` with its `last_sync`.
 
 ```bash
 repowise plugins --format json
+repowise plugins check [--format json]   # each plugin's implementations against their seam contracts
+repowise plugins new <seam> [--name NAME] [--dir PATH] [--format json]   # write a starter plugin package
 ```
 
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--format` | `table` or `json`. | `table` |
 
-See the [plugin author guide](PLUGINS.md).
+`check` prints a status for each registration and, for a failure, the rule that broke and how to fix it. It
+exits 1 if a check fails or a plugin fails to load. See the [plugin reference](PLUGINS_REFERENCE.md#check-the-contracts).
+
+`new` writes an installable plugin package for `issue-source`, `evidence-source` or `authorizer` into `--dir`
+(default `./repowise-<name>`, which must be empty or absent): a `pyproject.toml` with the entry point and the
+`repowise-plugin` keyword, a module whose stub passes `check`, a contract test, a README and an `AGENTS.md` with the
+steps to finish, install, verify and configure it. `AGENTS.md` holds the seam's contract as the installed repowise
+defines it, and for a source it ends with `repowise update` and the command that shows the result. The command ends
+with the next three commands to run; `--format json` lists the files written and those commands. An unknown seam is
+refused with the supported list.
 
 ### `repowise attribution`
 

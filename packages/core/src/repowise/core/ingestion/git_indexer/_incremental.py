@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +20,7 @@ from ._constants import _DEFAULT_CO_CHANGE_COMMIT_LIMIT, _MAX_PARTNERS_PER_FILE
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .fix_shape_cache import FixShapeCache
 from .fix_walk_cache import FixWalkCache
-from .prior_defects import PriorDefects, compute_prior_defects
+from .prior_defects import PriorDefects, TrackerFixes, compute_prior_defects
 from .records import _CommitRec, _should_skip_index
 
 if TYPE_CHECKING:
@@ -44,6 +44,8 @@ class SignalPass:
     # Where run-to-run caches live; ``None`` keeps them in memory only.
     cache_dir: Path | None = None
     cache_writable: bool = False
+    # Commits a stored bug or incident issue names; the fix walk counts them.
+    tracker_fixes: TrackerFixes = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -125,7 +127,13 @@ def prior_defect_stage(
                 counted_paths,
                 as_of_ts=sp.as_of_ts,
                 shape_cache=shape_cache,
-                walk_cache=FixWalkCache.load(sp.cache_dir, sp.repo, writable=sp.cache_writable),
+                walk_cache=FixWalkCache.load(
+                    sp.cache_dir,
+                    sp.repo,
+                    writable=sp.cache_writable,
+                    tracker_fixes=sp.tracker_fixes,
+                ),
+                tracker_fixes=sp.tracker_fixes,
             )
             if sp.cache_writable:
                 shape_cache.save()

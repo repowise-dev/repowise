@@ -817,11 +817,31 @@ def run_warmups(
                 done(phase_name)
 
 
+def _stamp_header_only_target(graph: Any, tid: str, target: Any) -> None:
+    for hdr in (*target.public_headers, *target.private_headers):
+        if hdr in graph.nodes:
+            owners = graph.nodes[hdr].get("cpp_header_only_targets", ())
+            if tid not in owners:
+                graph.nodes[hdr]["cpp_header_only_targets"] = (*owners, tid)
+
+
 def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> None:
-    """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed."""
+    """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed.
+
+    Headers of a target with no sources (a header-only library) get the
+    target's id under ``cpp_header_only_targets`` instead: no TU compiles
+    them, so reachability reads the target as one unit.
+    """
     import re
 
     from repowise.core.fs_walk import glob_via
+
+    # Stamped from scratch on every build: a patch build seeds untouched nodes
+    # from the last snapshot with every attribute, and a file that left a
+    # target or project must lose what it had.
+    for _node, data in graph.nodes(data=True):
+        data.pop("build_listed", None)
+        data.pop("cpp_header_only_targets", None)
 
     repo_path = ctx.repo_path
     if repo_path is None:
@@ -829,10 +849,12 @@ def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> Non
     root = repo_path.resolve()
 
     # 1. CMake targets from cpp_workspace index (sources only; headers are not compiled TUs)
-    for target in getattr(index, "targets", {}).values():
+    for tid, target in getattr(index, "targets", {}).items():
         for src in getattr(target, "sources", ()):
             if src in graph.nodes:
                 graph.nodes[src]["build_listed"] = True
+        if not getattr(target, "sources", ()):
+            _stamp_header_only_target(graph, tid, target)
 
     # 2. MSBuild .vcxproj files (ClCompile only; ClInclude headers are not compiled TUs)
     item_re = re.compile(r"""<ClCompile\s+Include=["']([^"']+)["']""", re.IGNORECASE)

@@ -43,8 +43,7 @@ class CheckContext:
     page_count: int = 0
     state: dict = field(default_factory=dict)
     state_ok: bool = False
-    stale_counts: dict[str, int] = field(default_factory=dict)
-    stale_count: int = 0
+    stale_guidance: str = ""
     drift: StoreDrift = field(default_factory=StoreDrift)
     coord_drift_color: str = "white"
     coord_drift_pct: str = "N/A"

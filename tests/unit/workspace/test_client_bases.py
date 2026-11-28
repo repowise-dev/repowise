@@ -242,6 +242,21 @@ def test_a_wrappers_own_request_is_no_route(tmp_path: Path, definition: str) -> 
     assert "/api/v1" not in {p for _m, p in _paths(tmp_path, "src/w.ts", text)}
 
 
+def test_a_wrapper_that_appends_its_path_after_a_parameter_is_no_route(tmp_path: Path) -> None:
+    # The trailing hole follows ``${id}``, so it is still the wrapper's own parameter:
+    # the call must be left out, not read as ``/api/repos/{param}``.
+    text = (
+        "async function apiFetch(endpoint: string) {\n"
+        "  return fetch(`/api/repos/${id}${endpoint}`);\n"
+        "}\n"
+        "export function show(id: string, page: number) {\n"
+        "  const qs = `?page=${page}`;\n"
+        "  return fetch(`/api/files/${id}${qs}`);\n"
+        "}\n"
+    )
+    assert {p for _m, p in _paths(tmp_path, "src/w.ts", text)} == {"/api/files/{param}"}
+
+
 def test_a_trailing_hole_that_is_no_parameter_still_reads_its_path(tmp_path: Path) -> None:
     # A query string built in the body, a path parameter segment, a name some
     # other function takes, and a condition all keep their route.

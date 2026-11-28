@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core import git_refs
 from repowise.core.analysis.git_cli import _git, checkout_relative
+from repowise.core.changelist import without_changelist_number
 from repowise.core.forges import BaseForge, ForgeKind, all_forges, detect_forge, get_forge
 from repowise.core.git_sha import FULL_SHA_PATTERN, is_full_sha
 from repowise.core.persistence.models import GitCommit, GitCommitFile
@@ -533,6 +534,7 @@ def resolve_change_request(repo_path: str, change_id: str) -> ChangeCandidate:
     # The subject last: it is the one field that can hold a tab.
     tip = _git(["log", "-1", "--format=%an%x09%cI%x09%s", head_sha], cwd=repo_path, check=False)
     author, when, subject = [*tip.strip().split("\t", 2), "", ""][:3]
+    subject = without_changelist_number(subject)
     return ChangeCandidate(
         id=f"{prefix}:{number}@{base_sha}...{head_sha}",
         kind="change_request",

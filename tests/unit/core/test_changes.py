@@ -185,6 +185,45 @@ def test_identity_order_pr_then_change_id_then_merge_then_commit():
     assert change_identity("Add x", "", "c", False, "github")[:2] == ("commit", "c")
 
 
+_GIT_P4 = '[git-p4: depot-paths = "//depot/main/": change = {n}]'
+_P4_FUSION = '[p4-fusion: depot-paths = "//depot/main/": change = {n}]'
+
+
+def _mirror(tmp_path: Path) -> _Repo:
+    r = _Repo(tmp_path / "repo")
+    r.commit("a.py", f"Fix the loader (#5)\n\n{_GIT_P4.format(n=1234567)}")
+    r.commit("b.py", f"1234568 - Tune the cache\n{_P4_FUSION.format(n=1234568)}")
+    return r
+
+
+def test_a_mirror_commit_is_named_by_its_perforce_changelist(tmp_path):
+    by_id = {c.change_id: c for c in _changes(_mirror(tmp_path))}
+    assert set(by_id) == {"cl-1234567", "cl-1234568"}
+    git_p4, fusion = by_id["cl-1234567"], by_id["cl-1234568"]
+    assert (git_p4.identity_kind, git_p4.identity_value, git_p4.forge_ref) == (
+        "changelist",
+        "1234567",
+        "CL 1234567",
+    )
+    # The trailer outranks a PR-looking ref in a depot description.
+    assert git_p4.title == "Fix the loader (#5)"
+    # p4-fusion leads the subject with the number the ref already shows.
+    assert fusion.title == "Tune the cache"
+    assert "git-p4" not in git_p4.body
+
+
+def test_a_mirror_commit_an_unnamed_merge_brought_in_keeps_its_changelist(tmp_path):
+    r = _Repo(tmp_path / "repo")
+    r.commit("a.py", "a")
+    r.git("checkout", "-q", "-b", "up")
+    r.commit("b.py", f"Fix the loader\n\nWhy it changed.\n\n{_GIT_P4.format(n=77)}")
+    r.git("checkout", "-q", "main")
+    r.commit("c.py", "c")
+    r.merge("up", "Merge branch 'main' of github.com:x/y")
+    cl = {c.change_id: c for c in _changes(r)}["cl-77"]
+    assert (cl.title, cl.body) == ("Fix the loader", "Why it changed.")
+
+
 def test_title_skips_boilerplate_and_trailers():
     assert change_title("Merge pull request #1 from a/b", "Real title\n\nbody", True) == "Real title"
     assert change_title("Merge branch 'x' into 'main'", "See merge request g/p!3", True) == (
@@ -448,6 +487,25 @@ async def test_refresh_rebuilds_then_extends(tmp_path, history):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("_private_user_config")
+async def test_a_changelist_number_finds_its_change(tmp_path):
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    r = _mirror(tmp_path)
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        async with get_session(factory) as session:
+            assert await refresh_changes(session, repo_id, r.root, rebuild=True) == 2
+        async with get_session(factory) as session:
+            for ref in ("1234567", "cl-1234567", "CL 1234567"):
+                assert (await get_change(session, repo_id, ref)).change_id == "cl-1234567"
+            assert await get_change(session, repo_id, "7654321") is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
 async def test_attribution_off_stores_no_provenance(tmp_path, history):
     from repowise.core.persistence.crud import get_change
     from repowise.core.persistence.database import get_session
@@ -464,6 +522,33 @@ async def test_attribution_off_stores_no_provenance(tmp_path, history):
             assert (row.provenance, row.provenance_agent, row.provenance_known) == (None, None, None)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_failing_metadata_plugin_falls_back_to_git_and_still_stores_changes(
+    tmp_path, history, monkeypatch
+):
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    class Down:
+        def metadata(self, repo_path, changes):
+            raise ConnectionError("tracker unreachable")
+
+    change_metadata_sources.register("test-down", Down())
+    monkeypatch.setenv("REPOWISE_SEAM_CHANGE_METADATA", "test-down")
+    r, _ = history
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        async with get_session(factory) as session:
+            assert await refresh_changes(session, repo_id, r.root, rebuild=True) == 9
+        async with get_session(factory) as session:
+            row = await get_change(session, repo_id, "pr-7")
+            assert (row.metadata_source, row.approvals) == ("git", 1)
+    finally:
+        await engine.dispose()
+        change_metadata_sources._impls.pop("test-down", None)
 
 
 # ---------------------------------------------------------------------------

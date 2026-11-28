@@ -151,9 +151,7 @@ def show_completion(
     # A most-committed file is only worth naming when git analysis calls it a hotspot.
     hotspot = _top_hotspot(result) if _hotspots(result) else None
     stood_out = _stood_out(result, repo_path, hotspot)
-    documentation, spend = (
-        _template_pages(result) if effective_index_only else _model_pages(result)
-    )
+    documentation, spend = _template_pages(result) if effective_index_only else _model_pages(result)
     facts = FinishFacts(
         scope=scope,
         files=result.file_count,
@@ -168,7 +166,9 @@ def show_completion(
         pr_bot_url=pr_bot_link_once(),
         first_look=first_look,
     )
-    steps = build_contextual_next_steps(fast_mode=(run_mode == "fast"), setup=setup)
+    steps = build_contextual_next_steps(
+        fast_mode=(run_mode == "fast"), setup=setup, unsynced_sources=_unsynced(Path(repo_path))
+    )
     console.print()
     print_finish_panel(
         console,
@@ -193,6 +193,16 @@ def show_completion(
     if verbose:
         _show_generation_checks(result)
     return Completion(steps, stood_out, facts.first_prompt)
+
+
+def _unsynced(repo_path: Path) -> tuple[str, ...]:
+    """Configured sources that never synced; best effort, a closing panel never fails."""
+    from repowise.core.source_sync import unsynced_sources
+
+    try:
+        return unsynced_sources(repo_path)
+    except Exception:
+        return ()
 
 
 def _top_hotspot(result: Any) -> tuple[str, int] | None:

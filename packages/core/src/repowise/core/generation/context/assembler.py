@@ -27,6 +27,7 @@ from repowise.core.ingestion.package_roots import (
     scan_package_roots,
 )
 from repowise.core.ingestion.special_handlers import iter_docker_stages
+from repowise.core.ingestion.symbol_identity import is_type_forward_declaration
 from repowise.core.ingestion.symbol_use import is_test_caller, symbol_use, symbol_use_edges
 
 from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
@@ -364,9 +365,10 @@ class ContextAssembler:
         # Always include: path + language tag overhead
         used += self._estimate_tokens(path) + 5
 
-        # Separate public and private symbols
-        public_syms = [s for s in parsed.symbols if s.visibility == "public"]
-        private_syms = [s for s in parsed.symbols if s.visibility != "public"]
+        # Separate public and private symbols; ``class Env;`` is not one of them.
+        own_syms = [s for s in parsed.symbols if not is_type_forward_declaration(vars(s))]
+        public_syms = [s for s in own_syms if s.visibility == "public"]
+        private_syms = [s for s in own_syms if s.visibility != "public"]
 
         # Build symbol dicts — public first, then private (documented before
         # undocumented), each added only while the running budget allows.
@@ -384,7 +386,7 @@ class ContextAssembler:
         ]
 
         # Imports (truncate to _MAX_IMPORTS)
-        raw_imports = [imp.raw_statement for imp in parsed.imports]
+        raw_imports = list(dict.fromkeys(imp.raw_statement for imp in parsed.imports))
         import_list = raw_imports[:_MAX_IMPORTS]
         imports_text = "\n".join(import_list)
         imports_tokens = self._estimate_tokens(imports_text)

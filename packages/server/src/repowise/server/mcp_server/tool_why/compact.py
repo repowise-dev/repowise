@@ -223,8 +223,9 @@ def _commit_row(row: dict) -> dict[str, Any]:
     if row.get("date"):
         out["date"] = str(row["date"])[:10]
     out["message"] = row.get("message")
-    if row.get("pr_number"):
-        out["pr_number"] = row["pr_number"]
+    for key in ("pr_number", "changelist"):
+        if row.get(key):
+            out[key] = row[key]
     if row.get("body_excerpt"):
         out["body_excerpt"] = row["body_excerpt"]
     return out

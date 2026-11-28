@@ -33,6 +33,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -56,6 +57,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -82,7 +84,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -103,7 +106,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -120,7 +124,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -141,7 +146,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -158,7 +164,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -179,7 +186,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -196,7 +204,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -217,7 +226,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -234,7 +244,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -255,7 +266,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -272,7 +284,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -293,7 +306,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -310,7 +324,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -331,7 +346,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -348,7 +364,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -369,7 +386,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -386,7 +404,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -407,7 +426,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -424,7 +444,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -445,7 +466,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -462,7 +484,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -483,7 +506,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -500,7 +524,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -521,7 +546,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -538,7 +564,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -559,7 +586,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -576,7 +604,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -597,7 +626,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -614,7 +644,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -635,7 +666,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -652,7 +684,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -673,7 +706,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -690,7 +724,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -711,7 +746,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "expect",
@@ -728,7 +764,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "toBe",
@@ -749,7 +786,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -797,6 +835,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -820,6 +859,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -843,6 +883,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -866,6 +907,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -889,6 +931,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -912,6 +955,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -935,6 +979,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -958,6 +1003,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -981,6 +1027,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1004,6 +1051,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1027,6 +1075,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1053,7 +1102,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -1101,6 +1151,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1124,6 +1175,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1147,6 +1199,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1207,6 +1260,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1230,6 +1284,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1289,6 +1344,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1312,6 +1368,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1335,6 +1392,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1358,6 +1416,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1381,6 +1440,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1437,7 +1497,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "findMany",
@@ -1454,7 +1515,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "delete",
@@ -1471,7 +1533,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -1503,7 +1566,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "schema_refs": [],
@@ -1543,6 +1607,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1566,6 +1631,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1589,6 +1655,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1612,6 +1679,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1635,6 +1703,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1658,6 +1727,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1681,6 +1751,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1704,6 +1775,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1727,6 +1799,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1752,6 +1825,7 @@
         "is_exported_symbol": false,
         "is_declaration": true,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1775,6 +1849,7 @@
         "is_exported_symbol": false,
         "is_declaration": true,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1798,6 +1873,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1821,6 +1897,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1844,6 +1921,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1867,6 +1945,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1896,7 +1975,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "fn",
@@ -1913,7 +1993,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -1967,6 +2048,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1990,6 +2072,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2013,6 +2096,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2036,6 +2120,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2059,6 +2144,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2082,6 +2168,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2112,7 +2199,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -2160,6 +2248,7 @@
         "is_exported_symbol": false,
         "is_declaration": true,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2183,6 +2272,7 @@
         "is_exported_symbol": false,
         "is_declaration": true,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2206,6 +2296,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2229,6 +2320,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2252,6 +2344,7 @@
         "is_exported_symbol": false,
         "is_declaration": true,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2275,6 +2368,7 @@
         "is_exported_symbol": false,
         "is_declaration": true,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2298,6 +2392,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2321,6 +2416,7 @@
         "is_exported_symbol": false,
         "is_declaration": true,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2344,6 +2440,7 @@
         "is_exported_symbol": false,
         "is_declaration": true,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2367,6 +2464,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2390,6 +2488,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2413,6 +2512,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -2445,7 +2545,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],

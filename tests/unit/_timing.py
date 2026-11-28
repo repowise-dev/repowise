@@ -32,12 +32,15 @@ def assert_linear_growth(
     reset: Callable[[], object] | None = None,
     rounds: int = 5,
     factor: int = 4,
+    exponent: float = 1.5,
 ) -> None:
-    """Fail when ``run(large)`` costs ``factor ** 1.5`` times ``run(small)`` or more.
+    """Fail when ``run(large)`` costs ``factor ** exponent`` times ``run(small)`` or more.
 
     *large* should be about *factor* times *small*, and *small* big enough to
     take a few milliseconds. The bound sits midway, on a log scale, between
     linear (*factor*) and quadratic (*factor* squared): 8 for the default 4x.
+    Work with a cache step (see the module docstring) passes a higher
+    *exponent*, still well short of quadratic's 2.
     *reset* runs before every timed call, outside the timing: pass the
     ``cache_clear`` of a per-input memo so every run does the work.
     """
@@ -56,6 +59,6 @@ def assert_linear_growth(
         if enabled:
             gc.enable()
     ratio = best[1] / best[0]
-    assert ratio < factor**1.5, (
+    assert ratio < factor**exponent, (
         f"{factor}x input took {ratio:.2f}x as long ({best[1] * 1e3:.1f} ms vs {best[0] * 1e3:.1f} ms)"
     )

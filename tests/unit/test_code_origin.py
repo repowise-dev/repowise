@@ -102,6 +102,11 @@ _OWN_HEADER = (
         ("samples/hello/Program.cs", "docs_example"),
         ("tutorials/part1/app.js", "docs_example"),
         ("tutorial_01/app.py", "docs_example"),
+        ("sample-app/src/Main.kt", "docs_example"),
+        ("sample-apps/demo/App.tsx", "docs_example"),
+        ("test-app/src/Main.kt", "docs_example"),
+        ("playground/a.py", "docs_example"),
+        ("src/pkg/playground/a.py", "production"),
         ("scripts/release.py", "tooling"),
         (".github/scripts/label.js", "tooling"),
         # Browser scripts a served static tree ships are product code.
@@ -627,6 +632,164 @@ def test_bundled_and_extern_count_only_for_c_and_cpp() -> None:
     assert code_origin("extern/client.go") == "production"
     # Below the root, ``extern/`` is as often a library's own C API.
     assert code_origin("include/foo/extern/api.h") == "production"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "thirdparty/zstd/common/zstd_common.c",
+        "Engine/Source/ThirdParty/zlib/zlib-1.2.13/zlib.h",
+        "Engine/Plugins/Media/Foo/Source/ThirdParty/Bar/bar.h",
+        "Code/3rdParty/rapidxml/rapidxml.hpp",
+        "modules/text/third_party/icu/icu.cpp",
+    ],
+)
+def test_engine_third_party_trees_are_vendored_at_any_depth(path: str) -> None:
+    assert code_origin(path) == "vendored"
+
+
+def _library(root, path: str, license_dir: str | None) -> None:
+    (root / path).parent.mkdir(parents=True, exist_ok=True)
+    (root / path).write_text("int x;\n")
+    if license_dir is not None:
+        (root / license_dir).mkdir(parents=True, exist_ok=True)
+        (root / license_dir / "LICENSE.txt").write_text("MIT\n")
+
+
+@pytest.mark.parametrize(
+    ("path", "license_dir"),
+    [
+        (
+            "Plugins/Overlay/External/ImGui/v1.82/imgui/imgui.cpp",
+            "Plugins/Overlay/External/ImGui/v1.82/imgui",
+        ),
+        ("Engine/Core/External/TaskDeque/Deque.h", "Engine/Core/External/TaskDeque"),
+        ("Plugins/Hair/External/Code/src/Math/Color.h", "Plugins/Hair/External/Code"),
+        ("libs/extern/zstd/lib/zstd.c", "libs/extern/zstd"),
+        ("src/contrib/minizip/unzip.c", "src/contrib/minizip"),
+        ("contrib/boost/libs/core/x.hpp", "contrib/boost"),
+        ("libs/external/x/a.h", "libs/external/x"),
+    ],
+)
+def test_licensed_library_under_an_external_shelf_is_vendored(
+    tmp_path, path: str, license_dir: str
+) -> None:
+    _library(tmp_path, path, license_dir)
+    assert code_origin(path, repo_root=tmp_path) == "vendored"
+    # The path alone cannot see the license, so it keeps the path rules' answer.
+    assert code_origin(path) == "production"
+
+
+@pytest.mark.parametrize(
+    ("path", "license_dir"),
+    [
+        # A monorepo's own library directory carries no license of its own.
+        ("libs/external/x/a.h", None),
+        ("contrib/pg_stat_statements/pg_stat_statements.c", None),
+        # A file directly in the shelf is the repository's own glue.
+        ("a/b/External/Foo.cpp", "a/b/External"),
+        # The repository's license sits above the shelf, not in a library under it.
+        ("src/external/api/client.cpp", ""),
+        # Only C and C++ trees copy libraries in by hand like this.
+        ("src/external/sdk/client.py", "src/external/sdk"),
+        ("src/main/java/org/x/external/http/Sender.java", "src/main/java/org/x/external/http"),
+    ],
+)
+def test_external_shelf_without_a_licensed_library_stays_production(
+    tmp_path, path: str, license_dir: str | None
+) -> None:
+    _library(tmp_path, path, license_dir)
+    assert code_origin(path, repo_root=tmp_path) == "production"
+
+
+@pytest.mark.parametrize(
+    ("path", "marker"),
+    [
+        # A source file named like a license is the library's own code.
+        ("contrib/mymod/other.cpp", "contrib/mymod/license_check.cpp"),
+        ("libs/external/net/x.cpp", "libs/external/net/license.h"),
+        # A license above an inner shelf belongs to the outer module, not the library.
+        ("contrib/ours/external/lib/a.c", "contrib/ours/LICENSE"),
+    ],
+)
+def test_license_marker_must_be_a_license_under_the_innermost_shelf(
+    tmp_path, path: str, marker: str
+) -> None:
+    _library(tmp_path, path, None)
+    (tmp_path / marker).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / marker).write_text("x")
+    assert code_origin(path, repo_root=tmp_path) == "production"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "Source/Game/Public/MyActor.generated.h",
+        "Source/Game/Private/MyActor.gen.cpp",
+        "Intermediate/Build/Win64/UnrealEditor/Inc/Game/UHT/MyActor.gen.cpp",
+        "Plugins/Foo/Intermediate/Build/Win64/UE4Editor/Inc/Foo/Foo.init.gen.cpp",
+        "Intermediate/Build/Win64/UnrealEditor/Inc/Game/UHT/Game.init.cpp",
+        "src/moc_mainwindow.cpp",
+        "src/qrc_resources.cpp",
+        "src/mainwindow.moc",
+    ],
+)
+def test_unreal_and_qt_generator_output_is_generated(path: str) -> None:
+    assert code_origin(path) == "generated"
+    assert is_vendored_or_generated_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # uic's ``ui_<form>.h`` needs its banner: games keep hand-written ui_*.h.
+        "code/ui/ui_local.h",
+        "code/ui/ui_main.c",
+        "src/ui_mainwindow.h",
+        "src/moc_utils.py",
+        "src/intermediate/lower.cpp",
+    ],
+)
+def test_generator_like_names_stay_production(path: str) -> None:
+    assert code_origin(path) == "production"
+
+
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        (
+            "src/ui_mainwindow.h",
+            "/********************************************************************************\n"
+            "** Form generated from reading UI file 'mainwindow.ui'\n"
+            "**\n** Created by: Qt User Interface Compiler version 6.5.0\n",
+        ),
+        (
+            "src/moc/widget.cpp",
+            "/****************************************************************************\n"
+            "** Meta object code from reading C++ file 'widget.h'\n",
+        ),
+        (
+            "src/resources.cpp",
+            "/****************************************************************************\n"
+            "** Resource object code\n**\n** Created by: The Resource Compiler for Qt\n",
+        ),
+        (
+            "Source/Game/MyActor.cpp",
+            "/*===========================================================================\n"
+            "\tGenerated code exported from UnrealHeaderTool.\n"
+            "\tDO NOT modify this manually! Edit the corresponding .h files instead!\n",
+        ),
+    ],
+)
+def test_unreal_and_qt_banners_are_generated(path: str, text: str) -> None:
+    assert code_origin(path, text) == "generated"
+
+
+def test_qt_banner_wording_in_prose_stays_production() -> None:
+    text = "// This widget shows the form generated from reading UI file input.\nint x;\n"
+    assert code_origin("src/form_view.cpp", text) == "production"
+    banner = "/*****\n** Form generated from reading UI file 'a.ui'\n"
+    assert code_origin("src/form.py", banner) == "production"
 
 
 _RAGEL_C = (

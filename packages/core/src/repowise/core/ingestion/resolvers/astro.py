@@ -2,8 +2,7 @@
 
 Any ``/``-rooted value, a frontmatter import or a markup ref (an ``is:inline``
 script, an icon or stylesheet ``<link>``), is looked up under the nearest
-``public/`` above the page, which Astro serves at the web root, so a monorepo
-with several Astro apps needs no config lookup. A ``/src/...`` value is then
+``public/`` above the page, which Astro serves at the web root, when no Astro manifest is known. With a manifest, use its configured directories. A source-directory URL (``/src/...`` by default) is then
 tried under each folder above the page, as Vite serves it from the project
 root. Any ``/``-rooted miss is then tried through a tsconfig ``paths`` alias
 (``"/@/*"``). A final miss is no node at all: ``/favicon.svg`` names no parsed
@@ -21,9 +20,12 @@ from __future__ import annotations
 import posixpath
 from typing import TYPE_CHECKING
 
+from ..framework_facts.astro import ASTRO, astro_directory
+from ..framework_facts.npm import npm_manifests
 from .typescript import resolve_ts_js_import
 
 if TYPE_CHECKING:
+    from ..framework_facts.npm import NpmManifest
     from .context import ResolverContext
 
 
@@ -55,10 +57,12 @@ def _served_file(module_path: str, importer_path: str, ctx: ResolverContext) -> 
     """The file a ``/``-rooted URL names: under the nearest ``public/``, or a ``/src/`` path."""
     # A query string or fragment is cache-busting, not part of the filename.
     tail = module_path.split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    manifest = _astro_manifest(importer_path, ctx)
+    if manifest is not None:
+        return _configured_file(tail, manifest, ctx)
     # Vite resolves and serves a ``/src/...`` path from the project root, so any such
     # value (an import, a ``<script src>``, a ``<link href>``) is tried there after ``public/``.
-    # shortcut: a ``base``-prefixed URL (``/docs/favicon.svg``) or a custom
-    # ``publicDir`` or ``srcDir`` misses; read astro.config once a repo sets one.
+    # Without a known Astro manifest, retain the ancestor-based fallback.
     for root in ("public", "") if tail.startswith("src/") else ("public",):
         directory = posixpath.dirname(importer_path)
         while True:
@@ -68,4 +72,40 @@ def _served_file(module_path: str, importer_path: str, ctx: ResolverContext) -> 
             if not directory:
                 break
             directory = posixpath.dirname(directory)
+    return None
+
+
+def _astro_manifest(importer_path: str, ctx: ResolverContext) -> NpmManifest | None:
+    """Find the nearest Astro package, caching manifest discovery."""
+    if ctx.repo_path is None:
+        return None
+    manifests = getattr(ctx, "_astro_manifests", None)
+    if manifests is None:
+        manifests = sorted(
+            npm_manifests(ctx.repo_path, ctx.path_set),
+            key=lambda manifest: len(manifest.rel_dir),
+            reverse=True,
+        )
+        ctx._astro_manifests = manifests
+    for manifest in manifests:
+        root = manifest.rel_dir
+        if root and not importer_path.startswith(root + "/"):
+            continue
+        if ASTRO.matches_npm(manifest):
+            return manifest
+    return None
+
+
+def _configured_file(tail: str, manifest: NpmManifest, ctx: ResolverContext) -> str | None:
+    """Resolve public assets first, then project-root source URLs."""
+    root = manifest.rel_dir
+    public = astro_directory(manifest, "publicDir", "public")
+    src = astro_directory(manifest, "srcDir", "src")
+    candidate = posixpath.normpath(posixpath.join(root, public, tail))
+    if candidate in ctx.path_set:
+        return candidate
+    if src == "." or tail.startswith(("src/", src + "/")):
+        candidate = posixpath.normpath(posixpath.join(root, tail))
+        if candidate in ctx.path_set:
+            return candidate
     return None

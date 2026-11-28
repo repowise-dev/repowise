@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import RETIRED_STATUSES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.analysis.held_origins import counts_as_hotspot
 from repowise.core.attribution import attribution_enabled, file_share
 from repowise.core.generation.layers import is_fallback_layer
 from repowise.core.generation.page_selection import is_stale_status
@@ -29,6 +30,7 @@ from repowise.core.persistence.crud import (
     get_kg_layers,
     get_kg_tour_steps,
 )
+from repowise.core.persistence.crud.issue_links import fix_issue_quotes
 from repowise.core.persistence.crud.tombstoned_pages import announces_deletion
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -36,6 +38,7 @@ from repowise.core.persistence.models import (
     GitMetadata,
     GraphEdge,
     GraphNode,
+    HealthFileMetric,
     Page,
 )
 from repowise.server.mcp_server._budget import cap_collection
@@ -271,6 +274,7 @@ async def _triage_section(card: CardState) -> None:
             if card.resolved.target_type == "symbol":
                 # Counted per file: say so on a symbol card rather than pass it off as the symbol's.
                 fixes = {**fixes, "scope": "file"}
+            fixes = await _with_linked_issues(card, triage_path, fixes)
             card.data["fix_history"] = fixes
     # Governing decisions, opt-in only: the graph query is not worth its
     # latency on every card. Returns titles; get_why has the rationale.
@@ -278,14 +282,41 @@ async def _triage_section(card: CardState) -> None:
         await _governing_decision_titles(card, triage_path)
 
 
+async def _with_linked_issues(card: CardState, path: str, fixes: dict) -> dict:
+    """*fixes* plus the tracker issues behind them, when any bug or incident is linked."""
+    quotes = (await fix_issue_quotes(card.session, card.repo_id, [path])).get(path)
+    return {**fixes, "linked_issues": quotes} if quotes else fixes
+
+
 async def _directory_triage(card: CardState) -> None:
     """A directory has no hotspot bit or fix history of its own; it names how
     many files under it are hotspots, the cue to call get_risk on them."""
-    hotspots = sum(1 for r in await card.dir_rows() if r.is_hotspot)
+    flagged = [r.file_path for r in await card.dir_rows() if r.is_hotspot]
+    hotspots = await _shown_hotspots(card, flagged) if flagged else 0
     if hotspots:
         card.data["hotspot_files"] = hotspots
     if card.wants("decisions"):
         await _governing_decision_titles(card, card.dir_path or card.target)
+
+
+#: Paths per ``IN`` read, under SQLite's bound-parameter limit.
+_PATH_BATCH = 500
+
+
+async def _shown_hotspots(card: CardState, flagged: list[str]) -> int:
+    """How many of the *flagged* hotspot paths the hotspot list shows: those
+    whose stored origin is not held (a file with no health row counts)."""
+    h = HealthFileMetric
+    origins: dict[str, tuple[Any, Any]] = {}
+    for start in range(0, len(flagged), _PATH_BATCH):
+        res = await card.session.execute(
+            select(h.file_path, h.code_origin, h.is_test).where(
+                h.repository_id == card.repo_id,
+                h.file_path.in_(flagged[start : start + _PATH_BATCH]),
+            )
+        )
+        origins.update((path, (origin, is_test)) for path, origin, is_test in res.all())
+    return sum(1 for p in flagged if counts_as_hotspot(True, *origins.get(p, (None, None))))
 
 
 def _decisions_off(card: CardState) -> bool:

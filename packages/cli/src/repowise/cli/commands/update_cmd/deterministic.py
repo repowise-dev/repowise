@@ -684,7 +684,7 @@ async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
         await engine.dispose()
 
 
-# Repo-wide pages the cascade marks stale on any decay. Both are model-written.
+# Repo-wide pages the cascade marks stale on any decay. Both are model types.
 _REPO_WIDE_MODEL_TYPES = ("repo_overview", "onboarding")
 
 
@@ -693,30 +693,30 @@ def split_cascade_overflow(rows: list[Any], skipped_paths: list[str]) -> tuple[i
 
     ``rows`` are ``(page_type, target_path, metadata_json)``. Mirrors the
     ``none`` cascade the persist step applies: each file's page, the module,
-    flow and SCC pages that cover it, and the repo-wide pages.
+    flow and SCC pages that cover it, and the repo-wide pages. A model-free
+    page counts as structural (``is_model_written``).
     """
     import json
 
-    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+    from repowise.core.generation.models import is_model_written
 
     skipped = set(skipped_paths)
     model = structural = 0
     for page_type, target_path, meta_json in rows:
-        if page_type in _REPO_WIDE_MODEL_TYPES:
-            model += 1
-        elif page_type == "file_page":
+        if page_type == "file_page":
             structural += target_path in skipped
-        else:
+            continue
+        if page_type not in _REPO_WIDE_MODEL_TYPES:
             try:
                 meta = json.loads(meta_json or "{}")
             except (TypeError, ValueError):
                 continue
-            members = meta.get("file_paths") or meta.get("files") or []
-            if skipped.intersection(members):
-                if page_type in MODEL_WRITTEN_PAGE_TYPES:
-                    model += 1
-                else:
-                    structural += 1
+            if not skipped.intersection(meta.get("file_paths") or meta.get("files") or []):
+                continue
+        if is_model_written(page_type, meta_json):
+            model += 1
+        else:
+            structural += 1
     return model, structural
 
 
@@ -737,11 +737,16 @@ async def _load_cascade_overflow_split(
     try:
         from sqlalchemy import select as sa_select
 
+        from repowise.core.persistence.crud import get_repository_by_path
         from repowise.core.persistence.models import Page
 
         async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
             rows = await session.execute(
                 sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
+                    Page.repository_id == repo.id,
                     Page.page_type.in_(
                         [
                             "file_page",

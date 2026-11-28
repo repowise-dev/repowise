@@ -79,6 +79,7 @@ instead and need no bump; the row says when they do not.
 | Constant | File | What a bump triggers | When to bump |
 |---|---|---|---|
 | `_VERSION` | `core/pipeline/incremental/resolution_cache.py` | `resolved_imports.pkl` is discarded and imports are resolved again. Also keyed on the parser fingerprint | The cached resolution payload changes shape |
+| `_VERSION` | `core/ingestion/content_baseline.py` | `content_baseline.json` reads as missing, so `update` on a folder with no git commit asks for one `repowise init` | The baseline file changes shape |
 | `_CACHE_VERSION` | `core/ingestion/parse_cache.py` | `parse_cache.pkl` is discarded | The pickle's shape changes. Extraction changes bump `PARSER_SCHEMA_VERSION` instead |
 | `_CACHE_VERSION` | `core/analysis/health/walk_cache.py` | `health_walk_cache.pkl` is discarded and the health walk runs cold | The payload changes shape. Walker changes key on the fingerprint |
 | `_CACHE_VERSION` | `core/analysis/health/duplication/token_cache.py` | `duplication_cache.pkl` is discarded and files are re-tokenized | The payload changes shape. Tokenizer changes key on the fingerprint |
@@ -123,7 +124,7 @@ differently say so.
 | `SNAPSHOT_VERSION` | `core/perf_check.py` | Versions the saved exact-metric snapshots under `.repowise/perf/exact/` | The snapshot format changes |
 | `BASELINE_VERSION` | `core/perf_measure.py` | An older `.repowise/perf/<name>.json` baseline is refused rather than misread | A breaking change to the baseline format |
 | `_RECONCILE_LOGIC_VERSION` | `core/persistence/database.py` | Part of the schema reconcile stamp, so stores stamped by older code run the reconcile again | The reconcile learns a repair the model shape alone does not reveal |
-| `PLUGIN_API_VERSION` | `core/registry/plugins.py` | Tells plugins the registry or seam contract changed | A breaking change to any registry or seam contract |
+| `PLUGIN_API_VERSION` | `core/registry/plugins.py` | Tells plugins the registry or seam contract changed | A breaking change to any registry or seam contract (a plugin whose `MIN_PLUGIN_API_VERSION` is higher is marked failed) |
 | `SCHEMA_VERSION` | `core/report/model.py` | Versions the change report document | The document changes for an existing reader |
 | `SCHEMA_VERSION` | `core/report/first_look/model.py` | A reader refuses a first-look document newer than it knows | The document's shape changes |
 | `SCHEMA_VERSION` | `core/savings/contracts.py` | Versions each savings event payload | The event payload changes for an existing reader |

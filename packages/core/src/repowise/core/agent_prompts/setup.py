@@ -51,6 +51,7 @@ EVIDENCE_RULES = frozenset({"evidence_found", "runtime_missing", "runtime_stale"
 SETUP_STEP_RULES = EVIDENCE_RULES | {
     "sync_hook_missing",
     "coverage_found",
+    "sources_unsynced",
     "decisions_unchecked",
     "docs_model_ready",
     "settings_suggested",

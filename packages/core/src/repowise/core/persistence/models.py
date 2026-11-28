@@ -2442,6 +2442,10 @@ class FunctionFact(Base):
     # ``[[selector, hops], ...]``: ``[]`` when no test reaches the function,
     # NULL when no run has mapped it. Restamped every run, like the role.
     tests_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Values the body builds as an eager ``setdefault`` default, built on every
+    # call (``analysis.health.perf.eager_defaults``), as ``[[callee, line], ...]``;
+    # NULL when there are none or the walk did not look (only Python is read).
+    eager_defaults_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 
@@ -3636,6 +3640,36 @@ class PackageAdvisory(Base):
     source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source: Mapped[str | None] = mapped_column(Text, nullable=True)
     imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class IssueLink(Base):
+    """One commit linked to one tracker issue, as an ``issue-source`` returned it.
+
+    Written by :func:`~repowise.core.persistence.crud.issue_links.store_issue_links`,
+    from a ``repowise sources sync`` fetch or from links a host fetched itself.
+    A ``bug`` or ``incident`` link makes its commit a fix for the defect walk
+    (``prior_defects``), the fix events, ``git_commits.is_fix`` and the
+    surfaces that read them; ``basis`` says how the commit names the issue.
+    """
+
+    __tablename__ = "issue_links"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    commit_sha: Mapped[str] = mapped_column(String(40), primary_key=True)
+    issue_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: The registered source name that returned it.
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: ``bug``, ``incident``, ``feature``, ``task`` or ``other``.
+    issue_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
+    title: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    url: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    basis: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 

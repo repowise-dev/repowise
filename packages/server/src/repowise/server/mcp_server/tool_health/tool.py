@@ -132,8 +132,7 @@ __all__ = ["_ONLY_ALIASES", "get_health"]
         ),
         ToolRecipe(
             "health_performance_evidence",
-            'get_health(opportunity_id="perf...", '
-            'only=["performance_evidence"], cursor=0)',
+            'get_health(opportunity_id="perf...", only=["performance_evidence"], cursor=0)',
             ("get_health",),
         ),
     ),
@@ -248,10 +247,9 @@ async def get_health(
                 opportunity_id=opportunity_id,
             )
             _attach_semantics(detail, req)
+            await _cite_linked_issues(session, repository.id, detail)
             return _note_inapplicable_controls(detail, scope, counts)
-        data = await load_health_data(
-            session, repository, reference_repository, ctx.path, req
-        )
+        data = await load_health_data(session, repository, reference_repository, ctx.path, req)
         # The rest stays inside the session: the analysis meta queries it, and a
         # query on a closed session checks out a connection nothing returns.
         if data.pop.scoped:
@@ -264,6 +262,7 @@ async def get_health(
             result, mode_totals = build_dashboard(data, req, pager)
         add_optional_blocks(result, data, req, pager, str(ctx.path))
         result = _finish(result, data, req, pager, mode_totals)
+        await _cite_linked_issues(session, repository.id, result)
 
         # Targeted mode scopes the stale signal to the asked-about files.
         result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
@@ -287,6 +286,24 @@ async def get_health(
                 result["repo"] = routed_repo
             hint_misses(result, routes)
         return result
+
+
+async def _cite_linked_issues(session: Any, repo_id: str, result: dict[str, Any]) -> None:
+    """Quote the tracker issues behind each ``prior_defect`` finding the response lists."""
+    from repowise.core.persistence.crud.issue_links import cite_prior_defect_issues
+
+    await cite_prior_defect_issues(session, repo_id, _finding_rows(result))
+
+
+def _finding_rows(value: Any) -> list[dict[str, Any]]:
+    """Every finding row in *value*, at any depth: the blocks nest them differently."""
+    if isinstance(value, list):
+        return [row for item in value for row in _finding_rows(item)]
+    if not isinstance(value, dict):
+        return []
+    if "biomarker_type" in value:
+        return [value]
+    return [row for item in value.values() for row in _finding_rows(item)]
 
 
 def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:

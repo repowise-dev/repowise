@@ -1291,6 +1291,10 @@
       "display": {
         "title": "显示"
       },
+      "plugins": {
+        "title": "插件",
+        "description": "插件为 repowise 补充 git 之外的数据，比如问题跟踪器。这里列出每个插件的状态、设置和剩下要做的配置，以及每个数据源上次同步的情况。"
+      },
       "all": {
         "title": "全部设置",
         "description": "此仓库的所有 repowise 设置：当前值、来源和作用。修改会保存到 .repowise/config.yaml，与 repowise config set 写入的是同一个文件。"
@@ -1359,9 +1363,48 @@
         "hooks": "智能体钩子",
         "indexing": "索引",
         "mcp": "MCP",
+        "plugins": "插件",
         "providers": "模型提供方",
         "server": "服务器"
       }
+    },
+    "plugins": {
+      "loading": "正在加载插件...",
+      "loadFailed": "无法加载插件。",
+      "retry": "重试",
+      "sourcesTitle": "数据源",
+      "pluginsTitle": "已安装的插件",
+      "ready": "就绪",
+      "failed": "失败",
+      "notConfigured": "未配置",
+      "status": {
+        "skipped": "已跳过",
+        "pending": "待处理"
+      },
+      "settingsOf": "{plugin} 的设置",
+      "set": "已设置",
+      "notSet": "未设置",
+      "secretSet": "密钥，已设置",
+      "secretNotSet": "密钥，未设置",
+      "builtIn": "内置",
+      "fromPlugin": "来自 {plugin}",
+      "neverSynced": "从未同步",
+      "stored": "已存储 {batches} 批",
+      "syncStates": {
+        "unavailable": "不可用",
+        "refused": "被拒绝",
+        "failed": "失败"
+      },
+      "syncedAt": "{time}",
+      "syncing": "正在同步...",
+      "syncNow": "立即同步",
+      "syncNowAria": "立即同步 {source}",
+      "syncFailed": "同步没有启动。",
+      "emptyTitle": "尚未安装插件",
+      "emptyBody": "插件为 repowise 补充 git 之外的信息：问题跟踪器提供缺陷和决策，还有生产环境证据、团队目录和新的输出。",
+      "guide": "阅读插件指南",
+      "emptyBuild": "开始编写你自己的插件：",
+      "hostedIntegrations": "托管版 repowise.dev 提供现成的集成。"
     }
   },
   "repos": {

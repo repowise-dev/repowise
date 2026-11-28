@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import networkx as nx
 import pytest
 
+from repowise.core.build_units import BuildUnit
+from repowise.core.build_units import collect as collect_mod
+from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.adapters import cargo as cargo_adapter
+from repowise.core.build_units.adapters import cmake as cmake_adapter
 from repowise.core.build_units.adapters import dart as dart_adapter
 from repowise.core.build_units.adapters import dotnet as dotnet_adapter
 from repowise.core.build_units.adapters import go as go_adapter
@@ -261,6 +266,66 @@ def test_adapter_beats_fallback_and_nested_roots_deepest_wins(tmp_path):
     assert _owners(index, "rb/y.rb") == ["manifest:rb"]
 
 
+def _cmake_target(monkeypatch, root: str = "") -> None:
+    """Register a stand-in adapter declaring ``cmake:core`` at *root*, listing its ``c.cpp``."""
+    prefix = f"{root}/" if root else ""
+    unit = BuildUnit(
+        id="cmake:core", ecosystem="cmake", name="core", root=root,
+        manifest=f"{prefix}CMakeLists.txt", source="t",
+    )
+    monkeypatch.setattr(
+        collect_mod, "_ADAPTERS",
+        (*collect_mod._ADAPTERS, ("cmake", lambda ctx: Found([(unit, (f"{prefix}c.cpp",))]))),
+    )
+
+
+def test_build_file_unit_keeps_the_same_root_fallback(tmp_path, monkeypatch):
+    # #6141: a CMakeLists.txt is no package manifest, so the root Gemfile
+    # keeps its fallback unit and the Ruby files stay out of the C++ target.
+    _cmake_target(monkeypatch)
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "", "c.cpp": "", "util.h": "", "Gemfile": "", "lib/x.rb": "",
+    })
+    assert set(index.units) == {"cmake:core", "manifest:."}
+    assert _owners(index, "c.cpp") == ["cmake:core"]
+    assert _owners(index, "lib/x.rb") == ["manifest:."]
+    assert _owners(index, "CMakeLists.txt") == ["cmake:core", "manifest:."]
+    # The fallback is a package root, so like any two units at one root it
+    # shares the unlisted C/C++ files with the target (a gem's C extension).
+    assert _owners(index, "util.h") == ["cmake:core", "manifest:."]
+
+
+def test_build_file_unit_does_not_co_own_a_same_root_package(tmp_path, monkeypatch):
+    _cmake_target(monkeypatch)
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "", "c.cpp": "",
+        "pyproject.toml": "[project]\nname = 'pkg'\n", "pkg/__init__.py": "",
+    })
+    assert set(index.units) == {"cmake:core", "python:pkg"}
+    assert _owners(index, "pkg/__init__.py") == ["python:pkg"]
+    assert _owners(index, "c.cpp") == ["cmake:core"]
+
+
+def test_build_file_unit_nested_in_a_package_root(tmp_path, monkeypatch):
+    # A CMake extension inside a Python package: its C++ and build files are
+    # the target's, a Python file beside them walks up to the package.
+    _cmake_target(monkeypatch, root="pkg/native")
+    index = _collect(tmp_path, {
+        "pyproject.toml": "[project]\nname = 'pkg'\n",
+        "pkg/__init__.py": "",
+        "pkg/native/CMakeLists.txt": "",
+        "pkg/native/c.cpp": "",
+        "pkg/native/src/impl.cpp": "",
+        "pkg/native/cmake/flags.cmake": "",
+        "pkg/native/build.py": "",
+    })
+    assert set(index.units) == {"cmake:core", "python:pkg"}
+    for path in ("pkg/native/CMakeLists.txt", "pkg/native/src/impl.cpp", "pkg/native/cmake/flags.cmake"):
+        assert _owners(index, path) == ["cmake:core"], path
+    assert _owners(index, "pkg/native/build.py") == ["python:pkg"]
+    assert _owners(index, "pkg/__init__.py") == ["python:pkg"]
+
+
 def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
     def boom(_ctx):
         raise AssertionError("index built for an absent ecosystem")
@@ -269,6 +334,7 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
     monkeypatch.setattr(go_adapter, "get_or_build_go_index", boom)
     monkeypatch.setattr(python_adapter, "package_manifests", boom)
     monkeypatch.setattr(maven_adapter, "load_maven_reactor", boom)
+    monkeypatch.setattr(cmake_adapter, "get_or_build_cpp_index", boom)
     monkeypatch.setattr(dart_adapter, "package_manifests", boom)
     monkeypatch.setattr(swift_adapter, "package_manifests", boom)
     monkeypatch.setattr(php_adapter, "repo_composer_manifests", boom)
@@ -774,6 +840,280 @@ def test_maven_unparsed_or_unresolved_module_falls_back(tmp_path):
     assert _owners(index, "prop/src/main/java/P.java") == ["manifest:prop"]
 
 
+_CMAKE_FIXTURE = Path(__file__).parents[2] / "fixtures" / "cmake_build_units"
+
+
+def test_cmake_targets_link_deps_and_shared_library(tmp_path):
+    # Issue #5775's layout: An -> Bn -> Cn slices, A1-A3 sharing ACommon.
+    shutil.copytree(_CMAKE_FIXTURE, tmp_path, dirs_exist_ok=True)
+    index = collect_build_units(_ctx(tmp_path))
+    deps = _deps(index)
+
+    assert deps["cmake:ACommon"] == ()
+    assert deps["cmake:A1"] == ("cmake:ACommon", "cmake:B1")
+    assert deps["cmake:A2"] == ("cmake:ACommon", "cmake:B2")
+    assert deps["cmake:B1"] == ("cmake:C1",)
+    assert deps["cmake:C1"] == ()  # Threads::Threads is third-party
+    assert deps["cmake:app"] == ("cmake:A1", "cmake:A2", "cmake:A3")
+    assert "cmake:B1" not in deps["cmake:A2"]
+    assert _owners(index, "A/A2/src/a2_model.cpp") == ["cmake:A2"]
+    assert _owners(index, "A/ACommon/include/acommon/acommon.h") == ["cmake:ACommon"]
+    assert index.unit("cmake:A1").manifest == "A/A1/CMakeLists.txt"
+
+
+def test_cmake_targets_at_the_repo_root_own_only_their_sources(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "add_library(core src/core/a.cpp)\n"
+            "add_executable(tool src/tool/main.cpp)\n"
+            "target_link_libraries(tool PRIVATE core)\n"
+        ),
+        "src/core/a.cpp": "",
+        "src/tool/main.cpp": "",
+        "src/core/a.h": "",
+    })
+    assert index.unit("cmake:core").manifest == "CMakeLists.txt"
+    assert index.unit("cmake:core").root == ""
+    assert _deps(index)["cmake:tool"] == ("cmake:core",)
+    assert _owners(index, "src/core/a.cpp") == ["cmake:core"]
+    assert _owners(index, "src/tool/main.cpp") == ["cmake:tool"]
+    # A file no target lists falls to the root, which both targets share.
+    assert _owners(index, "src/core/a.h") == ["cmake:core", "cmake:tool"]
+
+
+def test_cmake_adapter_leaves_bazel_targets_out(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_library(core a.cpp)\n",
+        "a.cpp": "",
+        "MODULE.bazel": "",
+        "lib/BUILD": 'cc_library(name = "util", srcs = ["u.cc"])\n',
+        "lib/u.cc": "",
+    })
+    assert [u.id for u in index.units.values() if u.ecosystem == "cmake"] == ["cmake:core"]
+    assert _owners(index, "lib/u.cc") == ["cmake:core"]
+
+
+def test_cmake_headers_under_a_public_include_dir_outside_the_root(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_subdirectory(src/foo)\nadd_subdirectory(src/bar)\n",
+        "src/foo/CMakeLists.txt": (
+            "add_library(foo foo.cpp)\n"
+            "target_include_directories(foo PUBLIC ../../include)\n"
+        ),
+        "src/foo/foo.cpp": "",
+        "src/bar/CMakeLists.txt": "add_library(bar bar.cpp)\n",
+        "src/bar/bar.cpp": "",
+        "include/foo/foo.h": "",
+        "include/foo/detail/impl.hpp": "",
+        "include/README.md": "",
+    })
+    assert _owners(index, "include/foo/foo.h") == ["cmake:foo"]
+    assert _owners(index, "include/foo/detail/impl.hpp") == ["cmake:foo"]
+    assert _owners(index, "include/README.md") == []  # not a header
+
+
+def test_cmake_include_dir_two_targets_declare_gives_both_its_headers(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_subdirectory(src/foo)\nadd_subdirectory(src/bar)\n",
+        "src/foo/CMakeLists.txt": (
+            "add_library(foo foo.cpp)\n"
+            "target_include_directories(foo PUBLIC ../../include/)\n"
+        ),
+        "src/foo/foo.cpp": "",
+        "src/bar/CMakeLists.txt": (
+            "add_library(bar bar.cpp)\n"
+            "target_include_directories(bar INTERFACE ../../include)\n"
+        ),
+        "src/bar/bar.cpp": "",
+        "include/shared.h": "",
+    })
+    assert _owners(index, "include/shared.h") == ["cmake:bar", "cmake:foo"]
+    assert _owners(index, "src/foo/foo.cpp") == ["cmake:foo"]
+
+
+_CORE_AND_UTIL = {
+    "src/core/CMakeLists.txt": "add_library(core core.cpp)\ntarget_link_libraries(core PUBLIC util)\n",
+    "src/core/core.cpp": "",
+    "src/util/CMakeLists.txt": "add_library(util u.cpp)\n",
+    "src/util/u.cpp": "",
+    "src/fmt/CMakeLists.txt": "add_library(fmt f.cpp)\n",
+    "src/fmt/f.cpp": "",
+}
+
+
+_SUBDIRS = "add_subdirectory(src/core)\nadd_subdirectory(src/util)\nadd_subdirectory(src/fmt)\n"
+_EXTEND_CORE = "target_sources(core PRIVATE extra.cpp)\ntarget_link_libraries(core PRIVATE fmt)\n"
+
+
+@pytest.mark.parametrize(
+    ("files", "extra"),
+    [
+        # The stub's root "" sorts before "src/core".
+        ({"CMakeLists.txt": _SUBDIRS + _EXTEND_CORE, "extra.cpp": ""}, "extra.cpp"),
+        # The stub's root "tests" sorts after "src/core".
+        (
+            {
+                "CMakeLists.txt": _SUBDIRS + "add_subdirectory(tests)\n",
+                "tests/CMakeLists.txt": _EXTEND_CORE,
+                "tests/extra.cpp": "",
+            },
+            "tests/extra.cpp",
+        ),
+    ],
+    ids=["stub-sorts-first", "stub-sorts-last"],
+)
+def test_cmake_target_sources_from_another_file_merge_into_the_declared_target(
+    tmp_path, files, extra
+):
+    index = _collect(tmp_path, {**_CORE_AND_UTIL, **files})
+    core = index.unit("cmake:core")
+    assert (core.root, core.manifest) == ("src/core", "src/core/CMakeLists.txt")
+    assert core.deps == ("cmake:fmt", "cmake:util")
+    assert _owners(index, "src/core/core.cpp") == ["cmake:core"]
+    assert _owners(index, extra) == ["cmake:core"]
+
+
+def test_cmake_stub_without_a_declaring_file_gives_no_unit(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_library(core core.cpp)\ntarget_sources(ghost PRIVATE g.cpp)\n",
+        "core.cpp": "",
+        "g.cpp": "",
+    })
+    assert list(index.units) == ["cmake:core"]
+
+
+def test_cmake_duplicate_target_name_keeps_the_root_that_sorts_first(tmp_path):
+    index = _collect(tmp_path, {
+        "z/CMakeLists.txt": "add_library(core z.cpp)\n",
+        "z/z.cpp": "",
+        "a/b/CMakeLists.txt": "add_library(core ab.cpp)\n",
+        "a/b/ab.cpp": "",
+    })
+    # Not the shallower one: "a/b" sorts before "z".
+    assert index.unit("cmake:core").root == "a/b"
+
+
+def test_cmake_half_written_file_keeps_its_target_and_its_siblings(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_subdirectory(good)\nadd_subdirectory(bad)\n",
+        "good/CMakeLists.txt": "add_library(good g.cpp)\n",
+        "good/g.cpp": "",
+        # Unclosed calls: the tokenizer recovers what it can.
+        "bad/CMakeLists.txt": "add_library(bad b.cpp\n  target_link_libraries(\n",
+        "bad/b.cpp": "",
+    })
+    assert set(index.units) == {"cmake:bad", "cmake:good"}
+    assert _owners(index, "good/g.cpp") == ["cmake:good"]
+    assert _owners(index, "bad/b.cpp") == ["cmake:bad"]
+    assert index.failed_ecosystems == frozenset()
+
+
+def test_cmake_file_declaring_no_target_gives_no_unit(tmp_path):
+    index = _collect(tmp_path, {"CMakeLists.txt": "))((( $<\n", "a.cpp": ""})
+    assert list(index.units) == []
+    assert index.failed_ecosystems == frozenset()
+
+
+def test_cmake_deps_outside_the_repo_are_dropped(tmp_path):
+    outside = tmp_path / "outside"
+    _write(outside, {"CMakeLists.txt": "add_library(ext e.cpp)\n", "e.cpp": ""})
+    index = _collect(tmp_path / "repo", {
+        "CMakeLists.txt": (
+            "add_subdirectory(../outside outside)\n"
+            "add_executable(app main.cpp)\n"
+            "target_link_libraries(app PRIVATE ext fmt::fmt -lm)\n"
+        ),
+        "main.cpp": "",
+    })
+    assert list(index.units) == ["cmake:app"]
+    assert _deps(index)["cmake:app"] == ()
+
+
+def test_cmake_target_declared_in_if_and_else_arms_owns_both_arms(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "if(WIN32)\n  add_executable(tool win.cpp)\n"
+            "else()\n  add_executable(tool posix.cpp)\nendif()\n"
+            "target_link_libraries(tool PRIVATE core)\n"
+            "add_library(core c.cpp)\n"
+        ),
+        "win.cpp": "",
+        "posix.cpp": "",
+        "c.cpp": "",
+    })
+    assert _owners(index, "win.cpp") == ["cmake:tool"]
+    assert _owners(index, "posix.cpp") == ["cmake:tool"]
+    assert _deps(index)["cmake:tool"] == ("cmake:core",)
+
+
+def test_cmake_include_dir_with_a_colon_is_read_and_a_drive_path_is_not():
+    # In-memory: Windows cannot create a directory named ``a:b``.
+    headers = ["C/x.h", "third_party/a:b/include/x.h"]
+    assert cmake_adapter._headers_under(["third_party/a:b/include"], headers) == [
+        "third_party/a:b/include/x.h"
+    ]
+    assert cmake_adapter._headers_under(["C:/x", "C:"], headers) == []
+
+
+def test_cmake_consumer_include_dir_leaves_a_nested_library_its_headers(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "add_subdirectory(src/lib)\n"
+            "add_executable(app src/main.cpp)\n"
+            "target_include_directories(app PUBLIC src)\n"
+            "target_link_libraries(app PRIVATE lib)\n"
+        ),
+        "src/main.cpp": "",
+        "src/app.h": "",
+        "src/lib/CMakeLists.txt": "add_library(lib lib.cpp)\n",
+        "src/lib/lib.cpp": "",
+        "src/lib/lib.h": "",
+    })
+    assert _owners(index, "src/lib/lib.h") == ["cmake:lib"]
+    assert _owners(index, "src/app.h") == ["cmake:app"]
+
+
+def test_cmake_target_call_before_its_declaration_keeps_the_target(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "if(X)\n  target_include_directories(foo PUBLIC inc)\nendif()\n"
+            "add_library(foo a.cpp)\n"
+        ),
+        "a.cpp": "",
+    })
+    assert list(index.units) == ["cmake:foo"]
+    assert _owners(index, "a.cpp") == ["cmake:foo"]
+
+
+def test_cmake_root_target_keeps_the_root_fallback_unit(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_library(core c.cpp)\n",
+        "c.cpp": "",
+        "Gemfile": "",
+        "lib/x.rb": "",
+    })
+    assert set(index.units) == {"cmake:core", "manifest:."}
+    assert _owners(index, "c.cpp") == ["cmake:core"]
+    assert _owners(index, "lib/x.rb") == ["manifest:."]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the CMake parser reads add_library(<name> ALIAS <target>) as a library of its own",
+)
+def test_cmake_dep_on_an_alias_links_the_aliased_target(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "add_library(core c.cpp)\n"
+            "add_library(proj::core ALIAS core)\n"
+            "add_executable(app m.cpp)\n"
+            "target_link_libraries(app PRIVATE proj::core)\n"
+        ),
+        "c.cpp": "",
+        "m.cpp": "",
+    })
+    assert set(index.units) == {"cmake:app", "cmake:core"}
+    assert _deps(index)["cmake:app"] == ("cmake:core",)
 def test_dart_path_deps_and_dev_deps_linked(tmp_path):
     index = _collect(tmp_path, {
         "app/pubspec.yaml": (

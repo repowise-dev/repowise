@@ -107,15 +107,8 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     # leads or in ``unit_test``.
     slower = [comparison_line(c) for c in comparisons if c.verdict == "slower"]
     if view is None:
-        status = await unranked_reason(session, repository_id)
-        block: dict[str, Any] = {"basis": "unknown", "status": status}
-        command = unranked_command(status)
-        if command:
-            block["command"] = command
-        if slower:
-            block["slower"] = slower
-        return block
-    block = {"basis": "measured", "runs": []}
+        return await _unranked_block(session, repository_id, slower)
+    block: dict[str, Any] = {"basis": "measured", "runs": []}
     runs: dict[str, dict[str, Any]] = {}
     for group, key in (("measured", "rows"), ("measured_in_tests", "in_tests")):
         found = view.get(group)
@@ -135,11 +128,15 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
         if not found:
             continue
         rows = found["rows"] if cap else []
-        block[key] = [row_compact(row) for row in rows]
-        block[f"{key}_total"] = found["total"]
+        if found["total"]:
+            block[key] = [row_compact(row) for row in rows]
+            block[f"{key}_total"] = found["total"]
         shown = {row["run_id"] for row in rows}
+        named = {row["run_id"] for row in found["rows"]}
         for run in found["runs"]:
-            if run["run_id"] in shown:
+            # A statement window that joined no function still says where its
+            # time went (a route run is only listed when it names a handler).
+            if run["run_id"] in shown or run["run_id"] not in named:
                 runs.setdefault(run["run_id"], _window_run(run))
     benchmarks = view.get("benchmarks")
     if benchmarks:
@@ -151,7 +148,26 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
         for run in benchmarks["runs"]:
             if run["run_id"] in shown:
                 runs.setdefault(run["run_id"], _benchmark_run(run))
+    if not any(key in block for key in ("rows", "in_tests", "statements", "routes", "benchmarks")):
+        # Only windows that joined no function: nothing is ranked, so the
+        # status token stays, beside the runs that say where the time went.
+        return {
+            **await _unranked_block(session, repository_id, slower),
+            "runs": list(runs.values()),
+        }
     block["runs"] = list(runs.values())
+    if slower:
+        block["slower"] = slower
+    return block
+
+
+async def _unranked_block(session: Any, repository_id: str, slower: list[str]) -> dict[str, Any]:
+    """Why nothing is ranked, as one ``status`` token and the command that fixes it."""
+    status = await unranked_reason(session, repository_id)
+    block: dict[str, Any] = {"basis": "unknown", "status": status}
+    command = unranked_command(status)
+    if command:
+        block["command"] = command
     if slower:
         block["slower"] = slower
     return block

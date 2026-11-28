@@ -50,13 +50,15 @@ from ..models import STRING_LITERAL_RECEIVER, CallSite, NamedBinding, ParsedFile
 from ..resolved_call import ResolvedCall
 from ..return_types import (
     declared_return_type,
+    normalize_return_type,
     signature_parameter_count,
     signature_parameter_range,
 )
-from ..symbol_identity import id_segment_name
+from ..symbol_identity import base_symbol_id, id_segment_name, symbols_by_id
 from ..type_names import (
     POINTER_LIKE_MEMBERS,
     bare_type_name,
+    is_resolvable_type_name,
     type_qualifier,
 )
 
@@ -139,6 +141,7 @@ _NOT_A_TYPE = frozenset(
 # ``this``. Go has no such name: its receiver is a parameter, typed from the
 # body, and a ``pkg.Var`` head types nothing, so it cannot pass for ``s.field``.
 _CHAIN_SELF: dict[str, str | None] = {
+    "csharp": "this",
     "python": "self",
     "typescript": "this",
     "go": None,
@@ -266,15 +269,22 @@ def go_named_containers(parsed: ParsedFile, text: str) -> dict[str, str]:
 
 
 def _type_symbols(symbols: Sequence[Symbol]) -> list[Symbol]:
-    """The types *symbols* declare, less an ``impl`` of a type declared beside it.
+    """The types *symbols* declare, less an ``impl`` or a forward declaration of one beside it.
 
     A Rust ``impl Foo`` shares ``Foo``'s id and adds methods, never a second
     type or a field, so the struct alone answers for the name and its span.
-    The parser already drops a Swift ``extension`` of a same-file type.
+    A C++ ``struct Builder;`` shares the id of the ``struct Builder {..}`` it
+    names and has no members, so the definition answers there too. The parser
+    already drops a Swift ``extension`` of a same-file type.
     """
-    declared = {s.id for s in symbols if s.kind in _TYPE_KINDS and s.kind != "impl"}
+    types = [s for s in symbols if s.kind in _TYPE_KINDS]
+    declared = {s.id for s in types if s.kind != "impl"}
+    defined = {s.id for s in types if s.kind != "impl" and not s.is_declaration}
     return [
-        s for s in symbols if s.kind in _TYPE_KINDS and (s.kind != "impl" or s.id not in declared)
+        s
+        for s in types
+        if (s.kind != "impl" or s.id not in declared)
+        and not (s.is_declaration and s.id in defined)
     ]
 
 
@@ -480,16 +490,22 @@ class ReceiverTypingMixin(
         type_name: str,
     ) -> tuple[str, str] | None:
         """Read a C++ alias before asking which class declares the member."""
-        if self._language_of(file_path) == "cpp":
-            position = self._cpp_receiver_position(
-                file_path, caller_id, call.receiver_name or "", type_name
-            )
-            if position is None:
-                return None
-            type_name = self._cpp_aliased_type(file_path, type_name, position)
-            if type_name is None:
-                return None
-        return self._typed_receiver_class_target(file_path, call, caller_id, type_name)
+        if self._language_of(file_path) != "cpp":
+            return self._typed_receiver_class_target(file_path, call, caller_id, type_name)
+        position = self._cpp_receiver_position(
+            file_path, caller_id, call.receiver_name or "", type_name
+        )
+        if position is None:
+            return None
+        aliased = self._cpp_aliased_type(file_path, type_name, position)
+        found = None
+        if aliased is not None:
+            found = self._typed_receiver_class_target(file_path, call, caller_id, aliased)
+        if found is None and not self._declared_types_named(type_name):
+            expanded = self._cpp_alias_class(file_path, caller_id, type_name, position)
+            if expanded is not None:
+                found = self._typed_receiver_class_target(file_path, call, caller_id, expanded)
+        return found
 
     def _typed_receiver_class_target(
         self,
@@ -613,8 +629,13 @@ class ReceiverTypingMixin(
             return None
 
         # The caller's own file first: a nested class here outranks a
-        # same-named one in a package sibling.
-        sym_id = self._file_methods.get(file_path, {}).get(key)
+        # same-named one in a package sibling, and a class declared in the
+        # calling function (named under it) outranks both.
+        file_methods = self._file_methods.get(file_path, {})
+        caller_scope = base_symbol_id(caller_id).removeprefix(f"{file_path}::")
+        sym_id = file_methods.get((f"{caller_scope}::{type_name}", call.target_name))
+        if sym_id is None:
+            sym_id = file_methods.get(key)
         if sym_id is not None:
             return sym_id, "same_file"
 
@@ -1092,9 +1113,11 @@ class ReceiverTypingMixin(
             if symbol is None or symbol.kind not in _TYPE_KINDS:
                 return None
             return file_path, class_id, "same_file"
-        type_name, _, typing_file = self._receiver_type_and_scope(
+        type_name, scope, typing_file = self._receiver_type_and_scope(
             file_path, caller_id, language, head, line
         )
+        if self._csharp_qualified_head_field(file_path, caller_id, language, head, scope):
+            return None
         if type_name is not None and language == "python" and "::" in type_name:
             return self._located(file_path, type_name)  # typed from a call
         return None if type_name is None else self._class_named(typing_file, type_name, caller_id)
@@ -1109,6 +1132,8 @@ class ReceiverTypingMixin(
         declared return type.
         """
         class_file, class_id, tier = found
+        if language == "csharp" and self._csharp_qualified_field_type(class_id, field):
+            return None
         fields = self._field_types_in(class_file, language).get(class_id, {})
         if field in fields:
             type_name = fields[field]
@@ -1122,6 +1147,21 @@ class ReceiverTypingMixin(
         if hop is None:
             return None
         return hop[0], hop[1], max(tier, hop[2], key=_CHAIN_TIER_RANK.__getitem__)
+
+    def _csharp_qualified_head_field(
+        self, file_path: str, caller_id: str, language: str, head: str, scope: str | None
+    ) -> bool:
+        """Whether a chain's head is a C# field of the caller's class with a qualified type."""
+        if language != "csharp" or scope != "field":
+            return False
+        _, owner = self._field_owner(file_path, caller_id, language)
+        return self._csharp_qualified_field_type(owner, head)
+
+    def _csharp_qualified_field_type(self, class_id: str, field: str) -> bool:
+        """A qualified field type cannot be proved by a chain's bare-name lookup."""
+        symbol = self._symbols_by_id.get(f"{class_id}::{field}")
+        raw = declared_return_type(symbol.signature or "") if symbol is not None else None
+        return raw is not None and bool(type_qualifier(raw))
 
     def _dart_getter_type_id(self, class_file: str, class_id: str, name: str) -> str | None:
         """The class the Dart getter *name* of *class_id* is declared to return.
@@ -1579,6 +1619,9 @@ class ReceiverTypingMixin(
             )
         else:
             types = types_in_span(declarations, *span)
+            if language == "cpp" and None in types.values():
+                local = self._cpp_without_class_fields(file_path, declarations)
+                types = types_in_span(local, *span)
             if language in RANGE_LANGUAGES:
                 self._type_range_variables(file_path, language, span, types, caller_id)
 
@@ -1610,7 +1653,10 @@ class ReceiverTypingMixin(
 
         A Python or Rust name may be rebound (a Rust `let` shadows), so one the
         body also binds other than by a call assignment is skipped, and one
-        whose call assignments do not all yield a type is unanswerable.
+        whose call assignments do not all yield a type is unanswerable. So is
+        a C++ one: sibling blocks reuse a name, and the body is read as one
+        scope. A C++ free call that is no function call records a name (see
+        ``_cpp_call_assigned_type``).
         """
         assignments = self._call_assignments_for(file_path, language)
         sites = self._call_sites_for(file_path)
@@ -1622,14 +1668,17 @@ class ReceiverTypingMixin(
             if assignment.name in declared or assignment.name in rebound:
                 continue
             site = sites.get((assignment.line, assignment.receiver, assignment.target))
-            type_id = (
-                None
-                if site is None
-                else self._site_returned_type_id(file_path, site, assignment.awaited)
-            )
+            if language == "cpp":
+                type_id = self._cpp_call_assigned_type(
+                    file_path, site, assignment.target, assignment.receiver
+                )
+            elif site is None:
+                type_id = None
+            else:
+                type_id = self._site_returned_type_id(file_path, site, assignment.awaited)
             if type_id is not None:
                 record_type(types, assignment.name, type_id)
-            elif language in ("python", "rust"):
+            elif language in ("cpp", "python", "rust"):
                 types[assignment.name] = None
 
     def _add_destructured_locals(
@@ -1773,8 +1822,10 @@ class ReceiverTypingMixin(
         (``Result<T>``) or prefixed (``p.Foo``) return type types nothing.
         """
         raw = declared_return_type(symbol.signature or "") or ""
-        written = _awaited_type(raw, symbol.language) if awaited else raw
-        written = (written or "").rstrip("?")
+        if symbol.language == "cpp":
+            written = self._cpp_returned_class_name(symbol, path, raw) or ""
+        else:
+            written = ((_awaited_type(raw, symbol.language) if awaited else raw) or "").rstrip("?")
         if not written.isidentifier() or self._csharp_type_parameter(symbol, path, written):
             return None
         found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
@@ -1902,8 +1953,54 @@ class ReceiverTypingMixin(
             by_class = self._class_scope_types(
                 file_path, self._declarations_for(file_path, language), language
             )
+            if language == "csharp":
+                self._add_csharp_declared_fields(file_path, by_class)
             _store_capped(self._field_types, file_path, by_class, _SOURCE_CACHE_FILES)
         return by_class
+
+    def _add_csharp_declared_fields(
+        self, file_path: str, by_class: dict[str, dict[str, str | None]]
+    ) -> None:
+        """Read C# property and field types the AST kept, regardless of line layout."""
+        parsed = self._parsed_files.get(file_path)
+        symbols = parsed.symbols if parsed else ()
+        generic_scopes = tuple(f"{s.id}::" for s in symbols if s.type_parameter_count)
+        for symbol in symbols:
+            declared = self._csharp_declared_field_type(file_path, symbol, generic_scopes)
+            if declared is not None:
+                owner, type_name = declared
+                record_type(by_class.setdefault(owner, {}), symbol.name, type_name)
+
+    def _csharp_declared_field_type(
+        self, file_path: str, symbol: Symbol, generic_scopes: tuple[str, ...]
+    ) -> tuple[str, str] | None:
+        """The declaring class and usable type of an AST-backed C# field/property."""
+        owner = _enclosing_id(symbol.id)
+        owner_symbol = self._symbols_by_id.get(owner)
+        raw = declared_return_type(symbol.signature or "")
+        if symbol.kind != "variable" or raw is None or owner_symbol is None:
+            return None
+        if owner_symbol.kind not in _TYPE_KINDS or type_qualifier(raw):
+            return None
+        type_name = normalize_return_type(raw, "csharp")
+        if type_name is None or not self._csharp_nominal_field_type(
+            file_path, symbol.id, type_name, generic_scopes
+        ):
+            return None
+        return owner, type_name
+
+    def _csharp_nominal_field_type(
+        self, file_path: str, symbol_id: str, type_name: str, generic_scopes: tuple[str, ...]
+    ) -> bool:
+        """A resolvable name, or a proven same-file S/U outside generic scopes."""
+        if is_resolvable_type_name(type_name, "csharp"):
+            return True
+        return (
+            len(type_name) == 1
+            and type_name.isupper()
+            and self._only_type_in(file_path, type_name) is not None
+            and not any(symbol_id.startswith(scope) for scope in generic_scopes)
+        )
 
     def _class_scope_types(
         self, file_path: str, declarations: tuple[Declaration, ...], language: str
@@ -1989,7 +2086,8 @@ class ReceiverTypingMixin(
         spans = self._symbol_spans.get(file_path)
         if spans is None:
             parsed = self._parsed_files.get(file_path)
-            spans = {s.id: (s.start_line, s.end_line) for s in (parsed.symbols if parsed else ())}
+            held = symbols_by_id(parsed.symbols if parsed else ())
+            spans = {sym_id: (s.start_line, s.end_line) for sym_id, s in held.items()}
             _store_capped(self._symbol_spans, file_path, spans, _SOURCE_CACHE_FILES)
         return spans
 

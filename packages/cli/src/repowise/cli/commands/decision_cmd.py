@@ -981,7 +981,7 @@ def _print_decision_table(decisions: list, delivered=None) -> None:
 def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     """Show full details of a decision record."""
     repo_path = _resolve_decision_repo(path, fmt)
-    rec, signed, accepted_at = run_async(_load_decision(repo_path, decision_id))
+    rec, signed, accepted_at, issues = run_async(_load_decision(repo_path, decision_id))
     if rec is None:
         emit_refusal(
             "decision_not_found",
@@ -1002,9 +1002,12 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     delivered = run_async(_deliveries(repo_path, [rec.id]))
     if fmt == "json":
         payload = _decision_json(rec, signed, currency) | _delivery_json(delivered, rec.id)
+        if issues:
+            payload["linked_issues"] = issues
         emit_json({"query": decision_id, "decision": payload})
         return
     lines = _decision_header_lines(rec, signed, currency) + _decision_body_lines(rec)
+    lines.extend(_issue_lines(issues))
     shown_line = _delivery_line(delivered, rec.id)
     if shown_line:
         lines.insert(lines.index(""), shown_line)
@@ -1012,13 +1015,15 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
 
 
 async def _load_decision(repo_path: Path, decision_id: str):
-    """The record *decision_id* names, its signature and its last grant time.
+    """The record *decision_id* names, its signature, its last grant time and
+    the tracker issues its evidence commits link to.
 
-    ``(None, None, None)`` when nothing resolves.
+    ``(None, None, None, [])`` when nothing resolves.
     """
     from repowise.core.persistence import get_decision, get_session
     from repowise.core.persistence.crud.authority import is_pinned, latest_acceptance
     from repowise.core.persistence.crud.decision_staleness import latest_grant_times
+    from repowise.core.persistence.crud.issue_links import decision_issues
     from repowise.core.persistence.models import DecisionCandidateMeta
 
     async with _open_store(repo_path) as sf, get_session(sf) as session:
@@ -1032,9 +1037,37 @@ async def _load_decision(repo_path: Path, decision_id: str):
             # A candidate's dismissal is signed on its review row, not the log.
             signed = _describe_review(rec, await session.get(DecisionCandidateMeta, rec.id))
         if rec is None:
-            return None, None, None
+            return None, None, None, []
         grants = await latest_grant_times(session, rec.repository_id, [rec.id])
-        return rec, signed, grants.get(rec.id)
+        issues = await decision_issues(
+            session, rec.repository_id, {rec.id: _evidence_commits(rec)}
+        )
+        return rec, signed, grants.get(rec.id), issues.get(rec.id, [])
+
+
+def _evidence_commits(rec) -> list:
+    """The record's evidence commits, or none when the column does not parse."""
+    try:
+        commits = json.loads(rec.evidence_commits_json or "[]")
+    except ValueError:
+        return []
+    return commits if isinstance(commits, list) else []
+
+
+def _issue_lines(issues: list[dict[str, str]]) -> list[str]:
+    """``Linked issues:`` and one line per issue, or nothing without a stored link."""
+    if not issues:
+        return []
+    lines = ["[cyan]Linked issues:[/cyan]"]
+    for issue in issues:
+        facts = ", ".join(v for v in (issue.get("type"), issue.get("status")) if v)
+        text = f"  - {issue['key']} ({facts})"
+        if issue.get("title"):
+            text += f": {issue['title']}"
+        if issue.get("url"):
+            text += f"  {issue['url']}"
+        lines.append(escape(text))
+    return lines
 
 
 def _describe_review(rec, meta) -> dict[str, str] | None:

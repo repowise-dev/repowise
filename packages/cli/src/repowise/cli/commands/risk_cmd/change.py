@@ -5,7 +5,14 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 
-from repowise.cli.ci import CannotEvaluateError, cannot_evaluate, ci_notices, ci_revspec, repo_root
+from repowise.cli.ci import (
+    CannotEvaluateError,
+    cannot_evaluate,
+    ci_notices,
+    ci_revspec,
+    named_revspec,
+    repo_root,
+)
 from repowise.core.analysis.change_risk import ChangeRiskResult, score_live_change
 
 
@@ -29,13 +36,15 @@ def _resolve_subject(
     extensions: tuple[str, ...] = (),
 ) -> _Subject:
     """The change to score: *revspec*, else the CI change for a gate or CI format."""
-    if revspec is None and (fail_above is not None or fmt in ("markdown", "github")):
-        # A CI checkout of a pull request is a merge commit, so HEAD alone is
-        # the wrong subject: the change is what the branch did since the target.
-        try:
+    try:
+        if revspec is not None:
+            revspec = named_revspec(repo_path, revspec)
+        elif fail_above is not None or fmt in ("markdown", "github"):
+            # A CI checkout of a pull request is a merge commit, so HEAD alone is
+            # the wrong subject: the change is what the branch did since the target.
             revspec = ci_revspec(str(repo_root(repo_path)), None)
-        except CannotEvaluateError as exc:
-            cannot_evaluate(fmt, exc.code, str(exc))
+    except CannotEvaluateError as exc:
+        cannot_evaluate(fmt, exc.code, str(exc))
     return _Subject(repo_path, revspec, fmt, fail_above, extensions)
 
 

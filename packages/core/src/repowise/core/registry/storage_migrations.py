@@ -4,7 +4,7 @@
 after the core schema, in its own transaction under the writer lock. A changed
 checksum fails every open; a store that cannot take the write leaves the plugin
 ``pending`` until a later open applies the revision there or finds it applied.
-The contract for plugin authors is in ``docs/reference/PLUGINS.md`` under
+The contract for plugin authors is in ``docs/reference/PLUGINS_REFERENCE.md`` under
 "Storage revisions".
 """
 

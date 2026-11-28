@@ -54,6 +54,7 @@ def test_plan_renders_unpaged_files_past_the_budget(monkeypatch) -> None:
         state={},
         cfg={},
         head="h2",
+        sync_point="h2",
         affected=affected,
         # Added in this run and cut by the budget: the case the lookup is for.
         file_diffs=[SimpleNamespace(path="new.py", status="added")],
@@ -70,7 +71,10 @@ def test_plan_renders_unpaged_files_past_the_budget(monkeypatch) -> None:
 
 def _scope_run(file_pages: dict, **state) -> SimpleNamespace:
     return SimpleNamespace(
-        state={"index_scope": {"file_pages": file_pages}, **state}, cfg={}, head="h1"
+        state={"index_scope": {"file_pages": file_pages}, **state},
+        cfg={},
+        head="h1",
+        sync_point="h1",
     )
 
 

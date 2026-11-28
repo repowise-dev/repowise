@@ -1663,6 +1663,32 @@ class TestInheritedTypedReceiver:
         parents = {"Child.kt::Child": {"Base.kt::Base"}}
         assert self._targets(tmp_path, files, parents, language="kotlin") == []
 
+    def test_a_partial_csharp_type_of_the_same_name_does_not_break_a_kotlin_receiver(
+        self, tmp_path: Path
+    ) -> None:
+        """A partial type's identity still starts with a symbol id, not a fragment's path."""
+        partial = "namespace N\n{\n    public partial class Child\n    {\n    }\n}\n"
+        files = {
+            "Base.kt": ("kotlin", "open class Base {\n    fun get(i: Int): Any? = null\n}\n"),
+            "Child.kt": ("kotlin", "class Child : Base()\n"),
+            "Caller.kt": ("kotlin", "fun run(c: Child): Any? {\n    return c.get(0)\n}\n"),
+            "cs/Child.A.cs": ("csharp", partial),
+            "cs/Child.B.cs": ("csharp", partial),
+        }
+        parsed = _parse_all(tmp_path, files)
+        fragments = ("cs/Child.A.cs", "cs/Child.B.cs")
+        resolver = CallResolver(
+            parsed,
+            {k: set() for k in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={"Child.kt::Child": {"Base.kt::Base"}},
+            partial_fragments={(f, "Child"): fragments for f in fragments},
+        )
+        identities = {identity for _, identity, _ in resolver._declared_types_named("Child")}
+        assert identities == {("Child.kt::Child", "0"), ("cs/Child.A.cs::N::Child", "0")}
+        calls = parsed["Caller.kt"].calls
+        assert [rc.callee_id for rc in resolver.resolve_file("Caller.kt", calls)] == []
+
 
 class TestJavaUnnamedObjectCall:
     """``a.b.m()`` keeps only a bare site, which repo-wide uniqueness alone may bind."""

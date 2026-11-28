@@ -55,10 +55,11 @@ The first that applies:
 
 | Order | Source | Id |
 |---|---|---|
-| 1 | A PR or MR number the message names, read per forge (GitHub, GitLab, Bitbucket, Azure DevOps) | `pr-123` |
-| 2 | A Gerrit `Change-Id:` trailer | `change-I<40 hex>` |
-| 3 | The merge commit | `merge-<sha>` |
-| 4 | The commit | `commit-<sha>` |
+| 1 | The Perforce changelist a git-p4 or p4-fusion mirror writes into the message (`[git-p4: ... change = 12345]`); the ref reads `CL 12345` | `cl-12345` |
+| 2 | A PR or MR number the message names, read per forge (GitHub, GitLab, Bitbucket, Azure DevOps) | `pr-123` |
+| 3 | A Gerrit `Change-Id:` trailer | `change-I<40 hex>` |
+| 4 | The merge commit | `merge-<sha>` |
+| 5 | The commit | `commit-<sha>` |
 
 A number that appears twice (a PR cherry-picked onto the main line) gets a suffixed id,
 and the change that holds the plain id keeps it across runs.
@@ -115,6 +116,12 @@ Reviewers, approvals, labels and linked issues come through the
 `ChangeMetadataSource` seam. The default source, `git`, reads only what history
 holds: the `Approved-by:` trailers GitLab writes on merge commits, and the issues a
 message closes (`Fixes #12`). A field it cannot read is `null`, which means unknown.
+
+When an [issue source](../reference/PLUGINS_REFERENCE.md#writing-an-issue-source) has
+stored links, the change card in `get_context`, `repowise changes show` and the
+change page print each linked issue with what the tracker says, for example
+`#12 (bug, Closed): Login loops after logout`, and add issues stored on the
+change's commits, such as `ENG-42`. A key with nothing stored stays as it is.
 
 ### The record and its in-toto export
 

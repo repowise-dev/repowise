@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Any
 
 from repowise.core.analysis.decisions.lifecycle import status_rank
@@ -13,7 +13,7 @@ from repowise.server.mcp_server._why_evidence import (
 from repowise.server.mcp_server._why_relevance import (
     clears_floor,
     question_terms,
-    relevance,
+    record_relevance,
     term_idf,
 )
 
@@ -29,14 +29,13 @@ def _score_keyword_matches(
     ``_rank_keyword_matches``.
     """
     terms = question_terms(query)
-    texts = {id(d): _record_text(d) for d in all_decisions}
-    idf = term_idf(terms, list(texts.values()))
+    record_score = record_scorer(query, all_decisions)
 
     scored_decisions: list[tuple[float, float, int, Any]] = []
     for d in all_decisions:
         # Every record must clear the floor on what it says about the question;
         # naming a target only boosts the tie-break, never bypasses the floor.
-        score = relevance(texts[id(d)], idf)
+        score = record_score(d)
         if not clears_floor(score):
             continue
         scored_decisions.append(
@@ -49,6 +48,16 @@ def _score_keyword_matches(
         )
     scored_decisions.sort(key=lambda t: (t[0], t[1], t[2]))
     return [((t[0], t[1], t[2]), t[3]) for t in scored_decisions]
+
+
+def record_scorer(query: str, all_decisions: list) -> Callable[[Any], float]:
+    """A ``record -> relevance`` function for *query*, rarity from *all_decisions*.
+
+    The one judgement of whether a record answers a question, shared by the
+    ranked search lane and the rules a target card quotes as answering.
+    """
+    idf = term_idf(question_terms(query), [_record_text(d) for d in all_decisions])
+    return lambda d: record_relevance(_ruling_text(d), _record_text(d), idf)
 
 
 def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str]) -> list:
@@ -136,6 +145,15 @@ def _record_text(d: Any) -> str:
     Built from :func:`_weighted_fields` so the floor and tie-break see one text.
     """
     return " ".join(text for _, text in _weighted_fields(d))
+
+
+def _ruling_text(d: Any) -> str:
+    """What the record is about, for :func:`record_relevance`.
+
+    The title and decision say what it decided; the tags are the subjects it
+    was filed under. The other fields say how it got there.
+    """
+    return " ".join([d.title, d.decision, *json.loads(d.tags_json)]).lower()
 
 
 def _score_decision(

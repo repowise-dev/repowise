@@ -20,6 +20,7 @@ the protocol list are declared on the ``@interface``, and an
 """
 
 from ..spec import LanguageSpec
+from .c import BUILD_CONFIG_MANIFESTS
 
 SPEC = LanguageSpec(
     tag="objectivec",
@@ -28,13 +29,17 @@ SPEC = LanguageSpec(
     # globally, and a second claim on it would flip every C and C++ header in
     # every repo to this grammar. Objective-C headers are routed by content.
     extensions=frozenset({".m", ".mm"}),
+    # CMake and Bazel build Objective-C alongside C and C++, so a target
+    # declared in one of their build files owns the ``.m`` and ``.mm`` files
+    # under its root. Not ``manifest_files``: a build file marks no package.
+    build_config_manifests=BUILD_CONFIG_MANIFESTS,
     grammar_package="tree_sitter_objc",
     scm_file="objectivec.scm",
     heritage_node_types=frozenset({"class_interface"}),
-    # No dedicated resolver. ``#import "Foo.h"`` resolves through the generic
-    # stem map, which covers the near-universal one-class-per-file naming
-    # convention; a framework import (``<Foundation/Foundation.h>``) names no
-    # in-repo file and correctly resolves to nothing.
+    # ``#import`` / ``#include`` resolve through the C/C++ include resolver; a
+    # framework import (``<Foundation/Foundation.h>``) names no in-repo file
+    # and resolves to nothing. The grade stays ``none``: it gates dead-code
+    # confidence and the graph view, and raising it is a separate change.
     import_support="none",
     # main.m holds UIApplicationMain/NSApplicationMain.
     entry_point_patterns=("main.m",),

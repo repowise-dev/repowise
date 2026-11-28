@@ -79,6 +79,8 @@ _READ_GLOBS = (
     "*.gemspec", "phpstan*.neon", "phpstan*.neon.dist", "*.tf",
     "*.uid", "*.pro", "*.vcxproj", "*.rc", "*.cmake", "*.bzl",
     "*.dproj", "*.lpi", "*.dpr", "*.dpk", "*.lpr",
+    # response files a compile_commands.json entry names with ``@``
+    "*.rsp",
     "*.xml", "*.xaml", "*.axaml", "*.asax", "*.aspx", "*.ascx", "*.ashx", "*.asmx", "*.master",
     "*.imports", "*.properties", "*.flexipage", "*.quickaction", "*.tab",
 )
@@ -271,10 +273,7 @@ def _cmake_lists(_text: str, path: Path, root: Path) -> object:
 
     from repowise.core.ingestion.external_systems.cmake import parse_cmake_lists
 
-    view = json.dumps(asdict(parse_cmake_lists(path, repo_root=root)), sort_keys=True)
-    # The parse seeds PROJECT_SOURCE_DIR with the checkout's absolute path,
-    # which says nothing about the tree.
-    return view.replace(root.resolve().as_posix(), "<root>")
+    return json.dumps(asdict(parse_cmake_lists(path, repo_root=root)), sort_keys=True)
 
 
 _PROJECTORS: dict[str, Callable[[str, Path, Path], object]] = {

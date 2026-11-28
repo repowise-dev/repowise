@@ -277,11 +277,11 @@ async def _reworded_folds(
     for rec in keeper_order(settled, accepted):
         commits, text = duplicate_commits(rec), duplicate_text(rec)
         if can_fold_away(rec, accepted) and rec.id not in reviewed:
-            target = index.match(rec.source, commits, text)
+            target = index.match(rec.source, commits, text, rec.title)
             if target is not None:
                 folds[rec.id] = target
                 continue
-        index.add(rec.id, rec.source, commits, text)
+        index.add(rec.id, rec.source, commits, text, rec.title)
     return folds
 
 

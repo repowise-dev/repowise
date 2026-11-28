@@ -19,6 +19,11 @@ file-level import graph cannot see:
   relationship the resolver may miss when ``compile_commands.json`` is
   absent. If the directory has any live source file, internal headers
   alongside it are part of the same compilation unit.
+- **Header-only targets.** A CMake / Bazel target with headers and no
+  sources is one library however its headers spread over directories:
+  if something depends on one of its headers, the rest are live too. The
+  warmup stamps the target ids on those header nodes
+  (``cpp_header_only_targets``).
 - **Conditional-compile alternatives.** CMake ``option(WITH_OPENSSL)``
   selects one of ``crypto_openssl.cc`` / ``crypto_gnutls.cc`` at
   configure time. Whichever was *not* picked by the local configure
@@ -108,18 +113,51 @@ class CppPackageFiles(dict[str, list[str]]):
     Every importer-less file in a directory asks the same questions about its
     siblings (an entry point among them? one something depends on?), so
     answering them per file was quadratic in the directory's size: a
-    1,000-file directory cost a million in-edge scans.
+    1,000-file directory cost a million in-edge scans. Header-only targets
+    are grouped and read once the same way.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._facts: dict[str, _DirFacts] = {}
+        self.header_only_targets: dict[str, list[str]] = {}
+        self._target_importers: dict[str, frozenset[str]] = {}
 
     def dir_facts(self, graph: Any, directory: str) -> _DirFacts:
         facts = self._facts.get(directory)
         if facts is None:
             facts = self._facts[directory] = _read_dir_facts(graph, self.get(directory, ()))
         return facts
+
+    def header_target_has_other_importer(self, graph: Any, node: str) -> bool:
+        """Whether another header of a header-only target owning *node* has an importer.
+
+        Only an importer outside the target counts: two dead headers that
+        include each other do not keep the library alive.
+        """
+        for tid in graph.nodes.get(node, {}).get("cpp_header_only_targets", ()):
+            importers = self._target_importers.get(tid)
+            if importers is None:
+                members = frozenset(self.header_only_targets.get(tid, ()))
+                importers = frozenset(
+                    m for m in members if _has_importer_outside(graph, m, members)
+                )
+                self._target_importers[tid] = importers
+            if _has_other(importers, node):
+                return True
+        return False
+
+
+def _has_importer_outside(graph: Any, path: str, members: frozenset[str]) -> bool:
+    """:func:`has_dependency_importer`, counting no importer from *members*."""
+    from .file_reachability import _is_external_package, _is_structural_edge
+
+    return any(
+        source not in members
+        and not _is_external_package(source)
+        and _is_structural_edge(source, path, edge_data, graph)
+        for source, _target, edge_data in graph.in_edges(path, data=True)
+    )
 
 
 def _read_dir_facts(graph: Any, members: Iterable[str]) -> _DirFacts:
@@ -157,10 +195,12 @@ def build_cpp_package_files(graph: Any) -> CppPackageFiles:
     directory typically share a CMake / Bazel target.
     """
     packages = CppPackageFiles()
-    for node in graph.nodes():
+    for node, data in graph.nodes(data=True):
         s = str(node)
         if is_cpp_path(s):
             packages.setdefault(_dir(s), []).append(s)
+            for tid in data.get("cpp_header_only_targets", ()):
+                packages.header_only_targets.setdefault(tid, []).append(s)
     return packages
 
 
@@ -256,6 +296,8 @@ def is_cpp_file_reachable(
         return True
 
     if isinstance(package_files, CppPackageFiles):
+        if is_header and package_files.header_target_has_other_importer(graph, node):
+            return True
         facts = package_files.dir_facts(graph, _dir(node))
     else:
         facts = _read_dir_facts(graph, package_files.get(_dir(node), ()))

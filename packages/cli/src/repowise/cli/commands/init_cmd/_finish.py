@@ -370,6 +370,12 @@ def write_run_state(run: InitRun) -> None:
             save_key=opts.save_key,
         )
         _stamp_test_run(run)
+    from repowise.core.ingestion.content_baseline import drop_baseline, save_baseline
+
+    if run.content_snapshot is None:
+        drop_baseline(run.repo_path)
+    else:
+        save_baseline(run.repo_path, run.content_snapshot)
 
 
 def _stamp_test_run(run: InitRun) -> None:

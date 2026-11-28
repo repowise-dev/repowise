@@ -1,0 +1,425 @@
+{
+ "commits": [
+  {
+   "sha": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+   "subject": "chore",
+   "body": " release:Closes #8705.",
+   "change": null
+  },
+  {
+   "sha": "abababababababababababababababababababab",
+   "subject": "fix",
+   "body": " handle a missing token:Closes #8795 and fixes #8811.",
+   "change": null
+  },
+  {
+   "sha": "1ee9a8a297f00f827ee076fcb838f5d4d6291d6b",
+   "subject": "feat(artifact-registry): fetch and verify RPM repository signing keys (part 1/3)",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "5495c1cd9bde0c524276a142d104eb858e43eeec",
+   "subject": "docs(deploy-token): clarify group and token status",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "0cbbacce12e99d9a94dd8c897e4a582a9045266a",
+   "subject": "feat: add --job flag to extract job script in config compile",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "2f2d807d60b6ba9ebf87d30fc28be5de0286e707",
+   "subject": "test(cli): cover process exit codes",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "8ed1eface444768fb0a5fd5364f5a1cc8c332c1d",
+   "subject": "docs: align CONTRIBUTING.md with the merge request expectations",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "bd2fbc3fc4afb07bb34e66ab35123552c9f453b0",
+   "subject": "chore(deps): update module charm.land/bubbletea/v2 to v2.1.2",
+   "body": "",
+   "change": null
+  },
+  {
+   "sha": "5656565656565656565656565656565656565656",
+   "subject": "Revert \"fix",
+   "body": " x, closes #8795\":",
+   "change": null
+  }
+ ],
+ "exchanges": [
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli",
+   "body": null,
+   "status": 200,
+   "json": {
+    "id": 34675721,
+    "web_url": "https://gitlab.com/gitlab-org/cli"
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd/merge_requests?per_page=100",
+   "body": null,
+   "status": 404,
+   "json": {
+    "message": "404 Commit Not Found"
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/abababababababababababababababababababab/merge_requests?per_page=100",
+   "body": null,
+   "status": 404,
+   "json": {
+    "message": "404 Commit Not Found"
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/1ee9a8a297f00f827ee076fcb838f5d4d6291d6b/merge_requests?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 575829682,
+     "iid": 4582,
+     "project_id": 34675721,
+     "title": "feat(artifact-registry): fetch and verify RPM repository signing keys (part 1/3)",
+     "state": "merged",
+     "labels": [
+      "automation:quick-win-judged",
+      "backend",
+      "category:gitlab cli",
+      "devops::ai clients",
+      "feature::addition",
+      "group::developer clients",
+      "section::ai",
+      "type::feature",
+      "workflow::in dev"
+     ],
+     "merge_commit_sha": "9858866c61b13bfdcb0551b407fa558c4c868d8a",
+     "squash_commit_sha": "1ee9a8a297f00f827ee076fcb838f5d4d6291d6b",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/merge_requests/4582"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/0cbbacce12e99d9a94dd8c897e4a582a9045266a/merge_requests?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 572850316,
+     "iid": 4527,
+     "project_id": 34675721,
+     "title": "feat: add --job flag to extract job script in config compile",
+     "state": "merged",
+     "labels": [
+      "1st contribution",
+      "Community contribution",
+      "automation:ml",
+      "backend",
+      "devops::verify",
+      "documentation",
+      "feature::addition",
+      "group::pipeline authoring",
+      "linked-issue",
+      "section::ci",
+      "security-review::completed",
+      "tw::triaged",
+      "type::feature",
+      "workflow::ready for review"
+     ],
+     "merge_commit_sha": "59b4e5976b0378a4b3fcb61171dabf0548241c99",
+     "squash_commit_sha": "0cbbacce12e99d9a94dd8c897e4a582a9045266a",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/merge_requests/4527"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/bd2fbc3fc4afb07bb34e66ab35123552c9f453b0/merge_requests?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 575563840,
+     "iid": 4572,
+     "project_id": 34675721,
+     "title": "chore(deps): update module charm.land/bubbletea/v2 to v2.1.2",
+     "state": "merged",
+     "labels": [
+      "automation:bot-authored",
+      "category:gitlab cli",
+      "deps-risk::medium",
+      "devops::ai clients",
+      "gitlab-bot::category::project-rules",
+      "gitlab-bot::manual-approve",
+      "gitlab-bot::risk::medium",
+      "group::developer clients",
+      "maintenance::dependency",
+      "section::ai",
+      "type::maintenance"
+     ],
+     "merge_commit_sha": "09f1160e349c0bf3600256d44e3a44c023992b14",
+     "squash_commit_sha": null,
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/merge_requests/4572"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/2f2d807d60b6ba9ebf87d30fc28be5de0286e707/merge_requests?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 572495126,
+     "iid": 4519,
+     "project_id": 34675721,
+     "title": "test(cli): cover process exit codes",
+     "state": "merged",
+     "labels": [
+      "Community contribution",
+      "devops::ai clients",
+      "group::developer clients",
+      "linked-issue",
+      "section::ai",
+      "type::maintenance",
+      "workflow::ready for review"
+     ],
+     "merge_commit_sha": "9e41ab5529d34746700455bc07b3bc58a426fa2f",
+     "squash_commit_sha": "2f2d807d60b6ba9ebf87d30fc28be5de0286e707",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/merge_requests/4519"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/5656565656565656565656565656565656565656/merge_requests?per_page=100",
+   "body": null,
+   "status": 404,
+   "json": {
+    "message": "404 Commit Not Found"
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/5495c1cd9bde0c524276a142d104eb858e43eeec/merge_requests?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 575215483,
+     "iid": 4566,
+     "project_id": 34675721,
+     "title": "docs(deploy-token): clarify group and token status",
+     "state": "merged",
+     "labels": [
+      "Community contribution",
+      "automation:ml",
+      "backend",
+      "documentation",
+      "linked-issue",
+      "tw::triaged",
+      "type::bug",
+      "workflow::ready for review"
+     ],
+     "merge_commit_sha": "d72ec8f83e053c70f96493086df5d47bd1ac55cd",
+     "squash_commit_sha": "5495c1cd9bde0c524276a142d104eb858e43eeec",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/merge_requests/4566"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/repository/commits/8ed1eface444768fb0a5fd5364f5a1cc8c332c1d/merge_requests?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 575591714,
+     "iid": 4574,
+     "project_id": 34675721,
+     "title": "docs: align CONTRIBUTING.md with the merge request expectations",
+     "state": "merged",
+     "labels": [
+      "Technical Writing",
+      "category:gitlab cli",
+      "devops::ai clients",
+      "docs-risk::high",
+      "documentation",
+      "gitlab-bot::category::project-rules",
+      "gitlab-bot::manual-approve",
+      "gitlab-bot::risk::high",
+      "group::developer clients",
+      "maintenance::workflow",
+      "section::ai",
+      "type::maintenance"
+     ],
+     "merge_commit_sha": "ed7049f88a4fba55ed40f66f5d2cdb29d5e4e976",
+     "squash_commit_sha": "8ed1eface444768fb0a5fd5364f5a1cc8c332c1d",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/merge_requests/4574"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/merge_requests/4574/closes_issues?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": []
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/merge_requests/4572/closes_issues?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": []
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/merge_requests/4566/closes_issues?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 208592116,
+     "iid": 8705,
+     "project_id": 34675721,
+     "title": "Correct the deploy-token help text for GITLAB_GROUP, the --group placeholder, and revoked tokens",
+     "state": "closed",
+     "labels": [
+      "UX",
+      "automation:ml",
+      "automation:ux-missing-labels",
+      "bug::ux",
+      "documentation",
+      "type::bug",
+      "workflow::complete"
+     ],
+     "issue_type": "issue",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/work_items/8705"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/merge_requests/4527/closes_issues?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 183939397,
+     "iid": 8154,
+     "project_id": 34675721,
+     "title": "Ability to generate the script as seen by CI including the content of before/script/after blocks for a given job",
+     "state": "closed",
+     "labels": [
+      "automation:ml",
+      "backend",
+      "category:code review workflow",
+      "category:gitlab cli",
+      "devops::ai clients",
+      "feature::addition",
+      "group::developer clients",
+      "section::ai",
+      "type::feature",
+      "workflow::complete"
+     ],
+     "issue_type": "issue",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/work_items/8154"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/merge_requests/4519/closes_issues?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 161736676,
+     "iid": 7760,
+     "project_id": 34675721,
+     "title": "Add tests for \"fix: make SilentError exit with code 1 as documented\"",
+     "state": "closed",
+     "labels": [
+      "category:gitlab cli",
+      "devops::ai clients",
+      "group::developer clients",
+      "maintenance::test-gap",
+      "section::ai",
+      "tw::triaged",
+      "type::maintenance",
+      "workflow::complete"
+     ],
+     "issue_type": "issue",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/work_items/7760"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/merge_requests/4582/closes_issues?per_page=100",
+   "body": null,
+   "status": 200,
+   "json": []
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/issues?iids%5B%5D=8705&iids%5B%5D=8795&iids%5B%5D=8811&per_page=100",
+   "body": null,
+   "status": 200,
+   "json": [
+    {
+     "id": 211609752,
+     "iid": 8795,
+     "project_id": 34675721,
+     "title": "mr note resolve and reopen treat an all-digit discussion ID prefix as a note ID",
+     "state": "closed",
+     "labels": [
+      "bug::functional",
+      "category:gitlab cli",
+      "devops::ai clients",
+      "group::developer clients",
+      "section::ai",
+      "type::bug",
+      "workflow::complete"
+     ],
+     "issue_type": "issue",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/work_items/8795"
+    },
+    {
+     "id": 208592116,
+     "iid": 8705,
+     "project_id": 34675721,
+     "title": "Correct the deploy-token help text for GITLAB_GROUP, the --group placeholder, and revoked tokens",
+     "state": "closed",
+     "labels": [
+      "UX",
+      "automation:ml",
+      "automation:ux-missing-labels",
+      "bug::ux",
+      "documentation",
+      "type::bug",
+      "workflow::complete"
+     ],
+     "issue_type": "issue",
+     "web_url": "https://gitlab.com/gitlab-org/cli/-/work_items/8705"
+    }
+   ]
+  }
+ ]
+}

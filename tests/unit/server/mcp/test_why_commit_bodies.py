@@ -89,6 +89,18 @@ async def test_a_stored_body_is_served_without_git(tmp_path: Path) -> None:
     assert row["pr_number"] == 51
 
 
+async def test_an_indexed_mirror_body_serves_the_changelist_stored_beside_it(
+    tmp_path: Path,
+) -> None:
+    # The indexer cuts the trailer from the body and stores its number beside it.
+    entry = {"sha": "8a0b18fd", "message": "m", "body": _SQUASH_BODY, "changelist": "1234567"}
+    meta = SimpleNamespace(significant_commits_json=json.dumps([entry]))
+    result = _card_result({"sha": "8a0b18fd", "message": "m"})
+    await attach_body_excerpts(result, tmp_path, {"src/router.ts": meta}, result["query"])
+    row = result["target_context"]["src/router.ts"]["git_archaeology"]["file_commits"][0]
+    assert row["changelist"] == "1234567"
+
+
 async def test_no_body_and_no_clone_leaves_the_rows_unchanged(tmp_path: Path) -> None:
     result = _card_result({"sha": "8a0b18fd", "message": "feat(router): x"})
     before = json.dumps(result)
@@ -216,3 +228,36 @@ async def test_a_live_body_keeps_its_first_paragraph(tmp_path: Path) -> None:
     result = {"mode": "search", "git_archaeology": {"git_log": rows}}
     await attach_body_excerpts(result, tmp_path, {}, "why is the cache keyed by index state")
     assert rows[0]["body_excerpt"] == first
+
+
+async def test_a_mirror_commit_serves_its_changelist_and_not_the_trailer(tmp_path: Path) -> None:
+    trailer = '[git-p4: depot-paths = "//depot/router/": change = 1234567]'
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("x")
+    _git(tmp_path, "add", "a.txt")
+    _git(
+        tmp_path,
+        "-c", "user.name=t", "-c", "user.email=t@t",
+        "commit", "-q", "-m", "Throw during route registration", "-m", _SQUASH_BODY, "-m", trailer,
+    )
+    sha = _git(tmp_path, "rev-parse", "HEAD")[:12]
+    result = _card_result({"sha": sha, "message": "Throw during route registration"})
+    await attach_body_excerpts(result, tmp_path, {}, "why does the router change registration depot paths")
+    row = result["target_context"]["src/router.ts"]["git_archaeology"]["file_commits"][0]
+    assert row["changelist"] == "1234567"
+    assert "git-p4" not in row.get("body_excerpt", "")
+    compact_unanswered(result, {"query": result["query"]})
+    assert result["key_commits"][0]["changelist"] == "1234567"
+
+
+async def test_a_one_line_mirror_commit_still_serves_its_changelist(tmp_path: Path) -> None:
+    trailer = '[p4-fusion: depot-paths = "//depot/router/": change = 88]'
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("x")
+    _git(tmp_path, "add", "a.txt")
+    message = "88 - Throw during route registration" + chr(10) + trailer
+    _git(tmp_path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message)
+    sha = _git(tmp_path, "rev-parse", "HEAD")[:12]
+    result = {"mode": "search", "git_archaeology": {"git_log": [{"sha": sha, "message": "x"}]}}
+    await attach_body_excerpts(result, tmp_path, {}, "why")
+    assert result["git_archaeology"]["git_log"][0]["changelist"] == "88"

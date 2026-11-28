@@ -51,6 +51,7 @@ from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
 from .persist import (
+    _cite_linked_issues,
     _load_evidence_freshness,
     _load_fix_first,
     _load_measured_costs,
@@ -142,8 +143,7 @@ class _HealthGroup(click.Group):
     is_flag=True,
     default=False,
     help=(
-        "Print the refactoring queue the index stored, in the order MCP and the "
-        "web UI serve it."
+        "Print the refactoring queue the index stored, in the order MCP and the web UI serve it."
     ),
 )
 @click.option(
@@ -522,6 +522,20 @@ def _render_json(
     # Repository-wide, so a narrowed run leaves it out, as the table does.
     narrowed = bool(opts.file_filter or opts.module_filter)
     measured = None if narrowed else _load_measured_costs(repo_path)
+    finding_rows = [
+        {
+            "biomarker_type": f.biomarker_type,
+            "severity": str(f.severity),
+            "file_path": f.file_path,
+            "function_name": f.function_name,
+            "health_impact": f.health_impact,
+            "details": detail_map(f),
+            "reason": f.reason,
+            **({"withheld": True} if _withheld(f, excluded) else {}),
+        }
+        for f in findings
+    ]
+    _cite_linked_issues(repo_path, finding_rows)
     click.echo(
         json.dumps(
             {
@@ -541,19 +555,7 @@ def _render_json(
                 # Only with ranked runtime evidence (``crud.measured_costs``).
                 **({"measured_costs": measured} if measured else {}),
                 "metrics": [_json_metric(m, short_history) for m in metrics_sorted],
-                "findings": [
-                    {
-                        "biomarker_type": f.biomarker_type,
-                        "severity": str(f.severity),
-                        "file_path": f.file_path,
-                        "function_name": f.function_name,
-                        "health_impact": f.health_impact,
-                        "details": detail_map(f),
-                        "reason": f.reason,
-                        **({"withheld": True} if _withheld(f, excluded) else {}),
-                    }
-                    for f in findings
-                ],
+                "findings": finding_rows,
             },
             indent=2,
         )
@@ -807,12 +809,17 @@ def _recompute_report(
                 "[dim]No index here, so the analysis has no stored coverage and is "
                 "not saved. Run `repowise init` to keep it.[/dim]"
             )
+
     graph_builder, parsed_files = _parse_tree(repo_path)
     git_meta_map: dict = {}
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
+        from repowise.core.issues.sync import stored_tracker_fixes
 
-        _, metadata_list = run_async(GitIndexer(repo_path).index_repo(""))
+        tracker_fixes = run_async(stored_tracker_fixes(repo_path))
+        _, metadata_list = run_async(
+            GitIndexer(repo_path, tracker_fixes=tracker_fixes).index_repo("")
+        )
         git_meta_map = {m["file_path"]: m for m in metadata_list}
     except Exception:
         pass

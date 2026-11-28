@@ -1147,6 +1147,7 @@ class HealthAnalyzer:
                         **fc.stored_metrics(),
                         "body_digest": fc.body_digest,
                         "body_tokens": fc.body_tokens,
+                        "eager_defaults": fc.eager_defaults,
                     }
                 )
         return rows

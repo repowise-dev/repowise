@@ -259,6 +259,20 @@ def test_npm_workspace_members_get_their_own_stacks():
     assert (member.package_manager, member.requires) == ("npm", ("npm ci", "npm install --no-save jest-junit@16"))
 
 
+@pytest.mark.parametrize("lockfile", ["bun.lock", "bun.lockb"])
+def test_bun_workspace_members_inherit_the_root_lockfile(lockfile):
+    files = {
+        "package.json": _package({"test": "turbo run test"}, private=True, workspaces=["packages/*"]),
+        "packages/a/package.json": _package(
+            {"test": "vitest"}, devDependencies={"vitest": "^3"}
+        ),
+    }
+    found = detect_stacks([*files, lockfile], files)
+    member = next(stack for stack in found if stack.root == "packages/a")
+    assert member.package_manager == "bun"
+    assert member.requires[0] == "bun install --frozen-lockfile"
+
+
 MONOREPO = {
     "README.md": "# mono\n",
     "services/api/pyproject.toml": '[project]\nname = "api"\n',
@@ -1003,6 +1017,63 @@ def test_jest_junit_in_the_package_needs_no_install_and_the_root_no_prefix():
     assert (stack.requires, stack.prepare, stack.notes) == (("yarn install --frozen-lockfile",), (), ())
 
 
+def test_rspec_without_the_formatter_gem_writes_no_junit():
+    (stack,) = detect_stacks(*_load("ruby"))
+    # RSpec aborts on a formatter it cannot load, so the command gets no flag.
+    assert (stack.junit_report, stack.junit_flag) == ("", "")
+    assert stack.with_junit(stack.test) is None
+    # The formatter gem is missing from the fixture's Gemfile, so setup says so.
+    assert "rspec_junit_formatter" in stack.notes[-1]
+    assert stack.test == "bundle exec rspec"
+
+
+def test_rspec_with_the_formatter_gem_needs_no_note():
+    gemfile = (
+        'source "https://rubygems.org"\n'
+        'gem "rspec"\n'
+        'gem "rspec_junit_formatter"\n'
+        'gem "simplecov-cobertura"\n'
+    )
+    (stack,) = detect_stacks(["Gemfile", "spec/a_spec.rb"], {"Gemfile": gemfile})
+    assert (stack.junit_report, stack.junit_flag) == (
+        "junit.xml",
+        "--format progress --format RspecJunitFormatter --out junit.xml",
+    )
+    # One run writes coverage (through SimpleCov, in-process) and the timings report.
+    assert stack.with_junit(stack.test) == (
+        "bundle exec rspec --format progress --format RspecJunitFormatter --out junit.xml"
+    )
+    assert stack.notes == ()
+
+
+def test_minitest_and_rake_test_write_no_junit():
+    (stack,) = detect_stacks(*_load("ruby_cobertura"))
+    assert stack.runner == "rake test"
+    assert (stack.junit_report, stack.junit_flag) == ("", "")
+    assert stack.with_junit(stack.test) is None
+
+
+def test_phpunit_writes_junit():
+    (stack,) = detect_stacks(*_load("php"))
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--log-junit junit.xml")
+    assert stack.with_junit(stack.test) == (
+        "vendor/bin/phpunit --coverage-clover clover.xml --log-junit junit.xml"
+    )
+
+
+def test_pest_writes_junit_the_same_way():
+    composer = {"require": {"php": "^8.2"}, "require-dev": {"pestphp/pest": "^3"}}
+    (stack,) = detect_stacks(
+        ["composer.json", "composer.lock", "tests/ATest.php"],
+        {"composer.json": json.dumps(composer)},
+    )
+    assert stack.runner == "pest"
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--log-junit junit.xml")
+    assert stack.with_junit(stack.test) == (
+        "vendor/bin/pest --coverage-clover clover.xml --log-junit junit.xml"
+    )
+
+
 def test_other_runners_need_no_junit_environment():
     files = {"package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1", "@vitest/coverage-v8": "1"})}
     (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
@@ -1178,6 +1249,30 @@ def test_an_ignored_folder_git_tracks_a_file_in_lists_only_that_file(tmp_path):
                       "downloads/notes.txt": ""})
     assert sorted(p for p in stacks._listing(tmp_path) if p.startswith("downloads")) == ["downloads/.gitkeep"]
     assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
+
+
+def test_delphi_project_gets_a_stack_that_reads_codecoverage_reports():
+    paths = ["App.dproj", "App.dpr", "uMain.pas", "Tests/Tests.dproj", "Tests/Tests.dpr", "Tests/uMainTests.pas"]
+    (stack,) = detect_stacks(paths, {})
+    assert stack.language == "delphi"
+    assert stack.runner == "DelphiCodeCoverage"
+    assert stack.report_paths() == ("**/CodeCoverage_Summary.xml",)
+    assert stack.test == ""  # the build command is the project's own
+    assert "CodeCoverage.exe" in stack.notes[0]
+    assert "-xml -xmllines" in stack.notes[0]
+    assert "Tests/Tests.dpr" in stack.notes[0]
+
+
+def test_delphi_without_a_test_project_says_so():
+    (stack,) = detect_stacks(["App.dproj", "App.dpr", "uMain.pas"], {})
+    assert stack.language == "delphi"
+    assert stack.to_dict()["command"] is None
+    assert "no test project" in stack.to_dict()["reason"]
+
+
+def test_a_repository_without_delphi_projects_gets_no_delphi_stack():
+    stacks_found = detect_stacks(["go.mod", "main.go"], {"go.mod": "module x\n"})
+    assert all(s.language != "delphi" for s in stacks_found)
 
 
 # ---------------------------------------------------------------------------

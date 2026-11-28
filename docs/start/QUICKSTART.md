@@ -237,6 +237,7 @@ the main checkout: [Worktrees](../scale/WORKTREES.md).
 | What the health score measures | [Code Health](../layers/CODE_HEALTH.md) |
 | Gates and annotations on pull requests | [CI](CI.md) |
 | Every setting and environment variable | [Config](../reference/CONFIG.md) |
+| Feed in your issue tracker or another system | [Plugins](../reference/PLUGINS.md) |
 
 ## Troubleshooting
 

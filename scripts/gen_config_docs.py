@@ -97,6 +97,8 @@ _ENV_AREA_ORDER = (
     "evidence",
     "health",
     "performance",
+    # The built-in forge issue source's token; installed plugins are never loaded here.
+    "plugins",
     "report",
 )
 
@@ -125,6 +127,7 @@ BLOCKS: tuple[Block, ...] = (
     _block("agent_provenance"),
     _block("events"),
     _block("evidence"),
+    _block("plugins"),
     _block("refactoring"),
     _block("report"),
     _block("wiki"),

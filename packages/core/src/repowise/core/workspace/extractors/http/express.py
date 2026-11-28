@@ -53,7 +53,13 @@ from .express_handed import (
     served_prefix,
 )
 from .fastify import fastify_module
-from .mounts import add_mounts, compose_prefix, declare_module_mount
+from .mounts import (
+    add_mounts,
+    compose_prefix,
+    declare_module_mount,
+    declare_mount,
+    declared_mount,
+)
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -81,6 +87,9 @@ _DEFAULT_EXPORT_RE = re.compile(
 
 # Mount keys are ``express:<module>:<exported name>``.
 _NAMESPACE = "express"
+# A barrel's re-export: ``express-reexport:<module>:<exported name>`` names the
+# barrel key (``<barrel>:<member>``) the router is reachable through.
+_REEXPORT = f"{_NAMESPACE}-reexport:"
 # Routers nest a few levels deep in one file; a longer chain is a cycle.
 _MAX_DEPTH = 16
 
@@ -227,6 +236,18 @@ _NAMED_EXPORTS_RE = re.compile(
     r"|\b(?:module\.exports\s*=|export)\s*\{([^}]*)"
 )
 _IDENT_RE = re.compile(r"[\w$]+")
+# One export list, ``module.exports = { ... }`` or ``export { ... }``, with the
+# module an ``export { ... } from '<module>'`` re-exports from.
+_EXPORT_LIST_RE = re.compile(
+    r"""\b(?:module\.exports\s*=|export)\s*\{([^}]*)\}(?:\s*from\s*['"]([^'"]+)['"])?"""
+)
+# One entry of it: ``user``, ``user: admin`` (object key) or ``admin as user``.
+_EXPORT_PAIR_RE = re.compile(
+    r"(?P<key>[\w$]+)\s*:\s*(?P<value>[\w$]+)"
+    r"|(?P<name>[\w$]+)(?:\s+as\s+(?P<alias>[\w$]+))?"
+)
+# ``exports.user = admin;`` (a comparison such as ``exports.x == y`` aside).
+_EXPORTS_ASSIGN_RE = re.compile(r"\bexports\.([\w$]+)\s*=(?!=)\s*([\w$]+)\s*(?:;|$)", re.MULTILINE)
 
 
 def _named_export_re(var: str) -> re.Pattern[str]:
@@ -253,6 +274,16 @@ class ExpressDialect:
         "Router", "express", "Hono", "astify", "Koa", "koa", "Elysia",
         ".use(", ".use ", ".use\n", ".use\t",
     )  # fmt: skip
+    # The mount pass also reads a barrel that re-exports routers by name, which
+    # names no router or mount itself.
+    mount_requires = (
+        *requires,
+        "module.exports",
+        "exports.",
+        "export {",
+        "export{",
+        "export const",
+    )
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         """Each imported router this file mounts, keyed by its module and export.
@@ -277,6 +308,7 @@ class ExpressDialect:
             )
         if "require" in ctx.content or "import" in ctx.content:
             _handed_mounts(ctx, f, out)
+            _reexports(ctx, f, out)
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
@@ -329,6 +361,57 @@ def _handed_mounts(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
         add_mounts(out, declare_handed(module))
 
 
+def _reexports(ctx: ScanContext, f: _File, out: dict[str, str]) -> None:
+    """Record each router module this barrel re-exports by name.
+
+    ``const user = require('./user'); module.exports = { user }`` makes
+    ``routes.user`` in a mounting file the default router of ``./user``, so
+    that router serves wherever the barrel member is mounted. Kept apart from
+    the mount keys: a router also mounted directly keeps that mount.
+    """
+    for exported, (local, spec) in _exported_locals(f.content).items():
+        # ``export { router as user } from './user'`` names ./user's export directly.
+        bound = (spec, local) if spec is not None else f.imports.get(local)
+        if bound is None:
+            continue  # a router the barrel defines itself keeps its own key
+        module = resolve_module(ctx.rel_path, bound[0])
+        if module is None or module == f.module:
+            continue
+        add_mounts(out, declare_mount(_REEXPORT + _key(module, bound[1]), _key(f.module, exported)))
+
+
+def _exported_locals(content: str) -> dict[str, tuple[str, str | None]]:
+    """``exported name -> (local name, module spec)`` for the names the file exports by name.
+
+    ``module.exports = { user }`` and ``export { user }`` export ``user`` as
+    itself, ``module.exports = { user: admin }`` and ``export { admin as user }``
+    export the local ``admin`` as ``user``, and ``exports.user = admin`` the same.
+    The spec is None for those; ``export { router as user } from './user'`` names
+    ``router`` of ``./user``, not a local, so its spec is ``./user``. An entry
+    whose value is not a bare name (``{ user: makeRouter() }``) is left out.
+    """
+    out: dict[str, tuple[str, str | None]] = {}
+    for m in _EXPORT_LIST_RE.finditer(content):
+        out.update(_export_list_entries(m.group(1), m.group(2)))
+    for m in _EXPORTS_ASSIGN_RE.finditer(content):
+        out[m.group(1)] = (m.group(2), None)
+    return out
+
+
+def _export_list_entries(body: str, spec: str | None) -> dict[str, tuple[str, str | None]]:
+    """``exported name -> (local name, spec)`` for the entries of one export list *body*."""
+    out: dict[str, tuple[str, str | None]] = {}
+    for part in body.split(","):
+        pair = _EXPORT_PAIR_RE.fullmatch(part.strip())
+        if pair is None:
+            continue
+        if pair.group("key") is None:
+            out[pair.group("alias") or pair.group("name")] = (pair.group("name"), spec)
+        elif spec is None:  # ``key: value`` is an object literal, never a from-list
+            out[pair.group("key")] = (pair.group("value"), None)
+    return out
+
+
 def _mount_of(ctx: ScanContext, f: _File, var: str, offset: int) -> str:
     """The full prefix router *var* serves under, "" when unmounted.
 
@@ -357,5 +440,13 @@ def _mount_of(ctx: ScanContext, f: _File, var: str, offset: int) -> str:
             )
     mounted, outer = served_prefix(ctx.mounts, f.key(root))
     if not mounted:
-        _mounted, outer = served_prefix(ctx.mounts, _key(f.module, root))
+        mounted, outer = served_prefix(ctx.mounts, _key(f.module, root))
+    if not mounted:
+        # Mounted only as a member of a barrel that re-exports it, under either
+        # name the router is imported by, as for a direct mount above.
+        for key in dict.fromkeys((f.key(root), _key(f.module, root))):
+            _declared, barrel = declared_mount(ctx.mounts, _REEXPORT + key)
+            if barrel:
+                _mounted, outer = served_prefix(ctx.mounts, barrel)
+                break
     return compose_prefix(outer or "", within)

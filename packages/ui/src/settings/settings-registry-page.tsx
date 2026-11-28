@@ -41,6 +41,8 @@ export interface SettingsRegistryPageProps {
   /** A page that owns this setting's richer editor, if one does. */
   linkFor?: (setting: RegistrySetting) => RegistryLink | null;
   labels?: Partial<SettingsRegistryLabels>;
+  /** The search box's starting text, e.g. a setting key a link points at. */
+  initialQuery?: string;
 }
 
 function matches(setting: RegistrySetting, query: string): boolean {
@@ -61,10 +63,11 @@ export function SettingsRegistryPage({
   onReset,
   linkFor,
   labels: labelOverrides,
+  initialQuery = "",
 }: SettingsRegistryPageProps) {
   const labels = { ...DEFAULT_SETTINGS_REGISTRY_LABELS, ...labelOverrides };
   const areaTitles = { ...DEFAULT_SETTINGS_REGISTRY_LABELS.areaTitles, ...labelOverrides?.areaTitles };
-  const [query, setQuery] = React.useState("");
+  const [query, setQuery] = React.useState(initialQuery);
   const [changedOnly, setChangedOnly] = React.useState(false);
   const [showInternal, setShowInternal] = React.useState(false);
   // Writes answer with the new state of every setting they moved; it lays

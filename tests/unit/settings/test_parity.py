@@ -307,6 +307,8 @@ def test_every_dependency_key_is_registered():
     keys = {s.key for s in all_settings() if s.scope == "repo"}
     for bucket in CONFIG_DEPENDENCY_KEYS.values():
         for name in bucket:
+            if name == "plugins":
+                continue  # its keys come from installed plugins, none of them built in
             assert name in keys or any(k.startswith(f"{name}.") for k in keys), name
 
 

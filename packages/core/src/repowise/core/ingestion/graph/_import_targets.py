@@ -36,15 +36,6 @@ def resolve_import_targets(
         from ..resolvers.scala import resolve_scala_import_all
 
         return tuple(resolve_scala_import_all(imp.module_path, path, ctx))
-    if language in ("cpp", "c"):
-        # Fan-out across sibling TUs in the same CMake/Bazel target so a public
-        # header reached by one ``.cc`` is also marked imported by the other
-        # ``.cc`` files in the library — rescues every public-header symbol
-        # whose only declared import lives in one sibling without the
-        # workspace edge.
-        from ..resolvers.cpp import resolve_cpp_import_all
-
-        return tuple(resolve_cpp_import_all(imp.module_path, path, ctx))
     if language == "python":
         # ``from pkg import submodule`` must also edge into the submodule
         # file, not just ``pkg/__init__.py`` (#666).

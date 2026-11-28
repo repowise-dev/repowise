@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from datetime import datetime
 
@@ -244,29 +245,58 @@ def test_is_raw_in_an_attribute_value_keeps_the_body_markup() -> None:
     assert scan("astro", src).component_tags == (("Card", 2), ("Other", 4))
 
 
-def _scans_in_linear_time(page: Callable[[int], bytes], n: int, factor: int = 4) -> None:
-    # The scan is memoised per source; clear it so every run scans.
+def _scans_in_linear_time(
+    page: Callable[[int], bytes],
+    n: int,
+    factor: int = 4,
+    rounds: int = 15,
+    exponent: float = 1.5,
+) -> None:
+    # The scan is memoised per source; clear it so every run scans. A small page
+    # scans in a few ms, so one scheduler stall on a loaded runner can land in
+    # every one of 5 rounds; best of 15 rides it out.
     assert_linear_growth(
         lambda src: prepare_source("astro", src),
         page(n),
         page(factor * n),
         reset=_cached_scan.cache_clear,
+        rounds=rounds,
         factor=factor,
+        exponent=exponent,
     )
 
 
 @pytest.mark.parametrize(
     ("page", "n"),
     [
-        pytest.param(lambda n: b'<a "' * n, 8_000, id="unclosed-quote"),
-        pytest.param(lambda n: b"<b " * n + b"{{{", 11_000, id="unbalanced-brace"),
+        pytest.param(lambda n: b'<a "' * n, 64_000, id="unclosed-quote"),
+        pytest.param(lambda n: b"<b " * n + b"{{{", 64_000, id="unbalanced-brace"),
     ],
 )
 def test_one_start_tag_page_scans_in_linear_time(page: Callable[[int], bytes], n: int) -> None:
     # The whole page is one start tag, so the regex engine's backtrack stack holds
-    # a frame per byte (about 140 bytes each) and outgrows the CPU cache between
-    # sizes. Over a 16x input that 2-3x step stays far below quadratic growth.
-    _scans_in_linear_time(page, n, factor=16)
+    # a frame per byte (about 140 bytes each) and steps out of the CPU cache
+    # somewhere between 8k and 128k units, at a size that depends on the runner:
+    # a 2-3x step. Starting at 64k (about 9 MB of stack) puts the small side at
+    # or past that step, so across a 16x input the scan reads about 13-30x
+    # against a 64x bound, while quadratic growth would read 256x. Each side
+    # takes 70 ms to 1 s here, so 5 rounds already ride out a stall.
+    # CI has read 65x here for a linear scan (the step can land past 64k), so
+    # the bound is 16**1.75 = 128x, still half the 256x of quadratic growth.
+    _scans_in_linear_time(page, n, factor=16, rounds=5, exponent=1.75)
+
+
+def test_the_start_tag_guard_still_fails_a_quadratic_scan() -> None:
+    # Same factor and rounds as the default: a scan whose cost grows with the
+    # square of the page (about 256x over 16x) must not pass. A busy wait stands
+    # in for the scan; a sleep rounds 0.1 ms up to the OS timer tick on Windows.
+    def quadratic(src: bytes) -> None:
+        end = time.perf_counter() + len(src) ** 2 * 1e-10
+        while time.perf_counter() < end:
+            pass
+
+    with pytest.raises(AssertionError, match="16x input took"):
+        assert_linear_growth(quadratic, b"x" * 1_000, b"x" * 16_000, rounds=15, factor=16)
 
 
 @pytest.mark.parametrize(

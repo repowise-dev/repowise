@@ -826,7 +826,7 @@ EXPORT_API const struct S *find_s(int a) { return nullptr; }
 
         assert {"make_s", "find_s"} <= names
 
-    def test_still_drops_a_function_nested_in_a_real_function(self, parser: ASTParser) -> None:
+    def test_still_reads_a_real_function_as_a_function(self, parser: ASTParser) -> None:
         source = b"""MYLIB_API int outer() {
   struct Local { int f() { return 1; } };
   return Local().f();
@@ -835,7 +835,10 @@ EXPORT_API const struct S *find_s(int a) { return nullptr; }
         fi = _make_file_info("cpp_pkg/outer.cc", "cpp")
         result = parser.parse_file(fi, source)
 
-        assert [symbol.name for symbol in result.symbols if symbol.name == "f"] == []
+        # A class local to the function is named under it, not at namespace scope.
+        assert [(s.parent_name, s.kind) for s in result.symbols if s.name == "f"] == [
+            ("outer::Local", "method")
+        ]
 
     def test_preserves_conditional_export_macro_body_recovery(self, parser: ASTParser) -> None:
         fi = _make_file_info("cpp_pkg/conditional_options.hpp", "cpp")

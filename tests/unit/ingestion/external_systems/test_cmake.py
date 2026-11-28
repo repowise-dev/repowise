@@ -45,6 +45,41 @@ def test_add_library_with_target_sources_public(tmp_path):
     assert "lib/include" in t.include_dirs
 
 
+def test_directory_variables_resolve_to_the_subdirectory(tmp_path):
+    _write(tmp_path, "core/CMakeLists.txt", """
+        add_library(core STATIC ${CMAKE_CURRENT_SOURCE_DIR}/a.cpp)
+        target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_include_directories(core PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../shared)
+        target_include_directories(core PRIVATE "${PROJECT_SOURCE_DIR}/core/detail")
+        target_include_directories(core PRIVATE ${CMAKE_SOURCE_DIR}/third)
+        add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/sub)
+    """)
+    cm = cmake.parse_cmake_lists(tmp_path / "core/CMakeLists.txt", repo_root=tmp_path)
+    t = cm.targets[0]
+    assert t.sources == ["core/a.cpp"]
+    assert t.include_dirs == ["core", "shared"]
+    assert t.private_include_dirs == ["core/detail", "third"]
+    assert cm.subdirectories == ["core/sub"]
+
+
+def test_directory_variables_survive_a_root_with_a_space(tmp_path):
+    root = tmp_path / "my repo"
+    _write(root, "a/b/CMakeLists.txt", """
+        add_library(lib STATIC x.cpp)
+        target_include_directories(lib PUBLIC ${PROJECT_SOURCE_DIR}/include)
+    """)
+    cm = cmake.parse_cmake_lists(root / "a/b/CMakeLists.txt", repo_root=root)
+    assert cm.targets[0].include_dirs == ["include"]
+
+
+def test_a_drive_letter_path_counts_as_absolute():
+    root = "D:/work/repo"
+    assert cmake._resolve_repo_rel("core", "D:/work/repo/core/inc", repo_root_posix=root) == "core/inc"
+    assert cmake._resolve_repo_rel("core", "C:/sdk/include", repo_root_posix=root) == "C:/sdk/include"
+    assert cmake._resolve_repo_rel("core", "inc/../x", repo_root_posix=root) == "core/x"
+    assert cmake._resolve_repo_rel("core", "${SDK}/inc", repo_root_posix=root) == "${SDK}/inc"
+
+
 def test_add_subdirectory_reactor(tmp_path):
     _write(tmp_path, "CMakeLists.txt", """
         add_subdirectory(libfoo)
@@ -78,6 +113,23 @@ def test_if_block_marks_conditional_sources(tmp_path):
     assert "env_windows.cc" in t.conditional_sources
     assert "env_posix.cc" in t.conditional_sources
     assert "stub.cc" not in t.conditional_sources
+
+
+def test_a_name_declared_in_if_and_else_arms_is_one_target(tmp_path):
+    _write(tmp_path, "CMakeLists.txt", """
+        if(WIN32)
+          add_library(env STATIC env_windows.cc)
+        else()
+          add_library(env STATIC env_posix.cc)
+        endif()
+        target_link_libraries(env PRIVATE util)
+    """)
+    cm = cmake.parse_cmake_lists(tmp_path / "CMakeLists.txt", repo_root=tmp_path)
+    assert [t.name for t in cm.targets] == ["env"]
+    t = cm.targets[0]
+    assert t.sources == ["env_windows.cc", "env_posix.cc"]
+    assert t.conditional_sources == ["env_windows.cc", "env_posix.cc"]
+    assert t.link_deps == ["util"]
 
 
 def test_find_package_emits_external_record(tmp_path):

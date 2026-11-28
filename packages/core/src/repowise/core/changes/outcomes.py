@@ -33,12 +33,13 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
+from repowise.core.changelist import without_changelist_number
 from repowise.core.git_sha import SHA_PREFIX_PATTERN
 from repowise.core.registry.plugins import SeamRegistry
 
@@ -240,7 +241,7 @@ def _revert_index(
             )
             for line in raw.splitlines():
                 sha, _, subject = line.partition(_FIELD)
-                subjects[sha.strip()] = subject
+                subjects[sha.strip()] = without_changelist_number(subject)
         return by_target, frozenset(reverted_at_head(links)), subjects
 
     return _once(("revert", repo_path, head, forge), build)
@@ -438,6 +439,7 @@ def _fix_commits_touching(
     files: list[str],
     start: int,
     end: int,
+    tracker_fixes: Collection[str] = frozenset(),
 ) -> list[tuple[str, set[str]]]:
     """``(sha, paths)`` of fix commits with ``start < ts <= end`` touching *files*."""
     from repowise.core.ingestion.git_indexer._constants import is_fix_commit
@@ -468,7 +470,7 @@ def _fix_commits_touching(
             if len(parts) != 3 or not parts[1].isdigit():
                 continue
             sha, ts, subject = parts
-            if start < int(ts) <= end and is_fix_commit(subject):
+            if start < int(ts) <= end and (is_fix_commit(subject) or sha in tracker_fixes):
                 touched = wanted.intersection(names.splitlines())
                 if touched:
                     found.append((sha, touched))
@@ -476,12 +478,17 @@ def _fix_commits_touching(
 
 
 def file_fix_rate(
-    repo_path: Path | str, head: str, change: OutcomeTarget, days: int
+    repo_path: Path | str,
+    head: str,
+    change: OutcomeTarget,
+    days: int,
+    tracker_fixes: Collection[str] = frozenset(),
 ) -> dict[str, Any]:
     """How many of the change's files a later fix commit touched within *days*.
 
     A fix is a commit the fix category holds (``is_fix_commit``, the rule every
-    fix count uses) that descends from the change. Paths are matched as the
+    fix count uses), or one in *tracker_fixes* (a stored bug or incident issue
+    links to it), that descends from the change. Paths are matched as the
     change left them; a later rename is not followed. Raises
     :class:`OutcomeUnknownError` when there is nothing to count or git cannot answer.
 
@@ -500,7 +507,7 @@ def file_fix_rate(
     files = sorted(set(change.files))
     fixed: dict[str, list[str]] = {}
     commits: set[str] = set()
-    for sha, touched in _fix_commits_touching(repo_path, head, files, start, end):
+    for sha, touched in _fix_commits_touching(repo_path, head, files, start, end, tracker_fixes):
         if sha == change.head_sha or not refs.hist.is_ancestor(change.head_sha, sha):
             continue
         commits.add(sha)

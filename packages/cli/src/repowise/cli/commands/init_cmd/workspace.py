@@ -1208,7 +1208,9 @@ def _resolve_workspace_provider(
             # Re-resolve: interactive provider selection may just have set the
             # provider's API key in os.environ.
             answers.embedder_name_resolved = resolve_embedder(
-                answers.embedder_name, repo_path=primary_repo.path
+                answers.embedder_name,
+                repo_path=primary_repo.path,
+                provider=provider.provider_name,
             )
             console.print(
                 f"  Provider: [{VALUE}]{provider.provider_name}[/] / "

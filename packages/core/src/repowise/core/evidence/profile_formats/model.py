@@ -77,19 +77,26 @@ def frame_language(path: str, function: str = "") -> FrameLanguage:
     extension (a runtime frame such as ``<built-in>``). A frame with no such
     file whose *function* reads as a JVM ``class.method``
     (:func:`~repowise.core.frame_resolver.parse_jvm_frame`) is ``java``: a JVM
-    profile names classes, not files. Any language but the six
+    profile names classes, not files. One that reads as a .NET
+    ``Module!Namespace.Type.Method(args)``
+    (:func:`~repowise.core.frame_resolver.parse_clr_frame`), as ``dotnet-trace``
+    writes it, is ``csharp``. Any language but the eight
     :func:`~repowise.core.frame_resolver.resolve_frames` checks (Go, Python,
-    JavaScript, Java, Kotlin, Rust) is skipped there as ``unsupported_language``.
+    JavaScript, Java, Kotlin, Rust, Pascal, C#) is skipped there as
+    ``unsupported_language``.
     """
-    from repowise.core.frame_resolver import parse_jvm_frame
+    from repowise.core.frame_resolver import parse_clr_frame, parse_jvm_frame
 
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     dot = name.rfind(".")
     tag = REGISTRY.from_extension(name[dot:].lower()) if dot > 0 else "unknown"
     # Only a frame with no file of its own (empty, or a bare ``Cache.java``): an
     # extensionless script's ``App.run`` keeps its own language.
-    if tag == "unknown" and function and "/" not in path.replace("\\", "/") and parse_jvm_frame(function):
-        tag = "java"
+    if tag == "unknown" and function and "/" not in path.replace("\\", "/"):
+        if parse_clr_frame(function):
+            tag = "csharp"
+        elif parse_jvm_frame(function):
+            tag = "java"
     return cast("FrameLanguage", tag)
 
 

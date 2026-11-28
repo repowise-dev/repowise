@@ -11,7 +11,9 @@ reading of the title, so they decide first:
 2. **Forge label.** A label the metadata source read from the forge. The
    default ``git`` source reads none, so this applies only when a source fills
    ``labels``.
-3. **Title.** :func:`classify_commit_category`: the keyword fix rule, then a
+3. **Linked issue.** A bug or incident issue a stored tracker link names on
+   one of the change's commits makes it a fix, as it makes the commit one.
+4. **Title.** :func:`classify_commit_category`: the keyword fix rule, then a
    conventional-commit type, then keywords.
 
 A fragment type towncrier projects use for a kind we have no category for
@@ -37,6 +39,7 @@ from repowise.core.ingestion.git_indexer._constants import (
 
 SIGNAL_FRAGMENT = "changelog_fragment"
 SIGNAL_LABEL = "forge_label"
+SIGNAL_ISSUE = "linked_issue"
 SIGNAL_TITLE = "title"
 
 #: Directory names towncrier-style tools keep unreleased fragments in. Matched
@@ -165,8 +168,12 @@ def classify_change(
     title: str,
     files: Iterable[tuple[str, int, int]] = (),
     labels: Sequence[str] | None = None,
+    linked_bug: str | None = None,
 ) -> CategoryBasis:
     """The category of a change with *title*, *files* ``(path, added, deleted)`` and *labels*.
+
+    *linked_bug* is the key of a bug or incident issue linked to one of its
+    commits, if any.
 
     A fragment counts when the change writes it; a change that only deletes
     fragments is a release collecting them, not a change of that kind. When a
@@ -183,11 +190,14 @@ def classify_change(
     tagged = [(category, label) for label in labels or () if (category := label_category(label))]
     if hit := _first(tagged):
         return CategoryBasis(hit[0], SIGNAL_LABEL, hit[1])
+    if linked_bug:
+        return CategoryBasis("fix", SIGNAL_ISSUE, linked_bug)
     return CategoryBasis(classify_commit_category(title), SIGNAL_TITLE)
 
 
 __all__ = [
     "SIGNAL_FRAGMENT",
+    "SIGNAL_ISSUE",
     "SIGNAL_LABEL",
     "SIGNAL_TITLE",
     "CategoryBasis",

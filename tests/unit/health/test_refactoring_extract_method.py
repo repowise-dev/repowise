@@ -503,6 +503,38 @@ def _process_sources() -> dict[str, tuple[str, str]]:
         }
         """
     )
+    csharp = textwrap.dedent(
+        """
+        class Demo {
+            int Process(int[] records, int threshold) {
+                int errors = 0;
+                var results = new List<int>();
+                foreach (int r in records) {
+                    if (r < 0) {
+                        errors++;
+                        continue;
+                    }
+                    results.Add(r);
+                }
+                int total = 0;
+                int count = 0;
+                foreach (int v in results) {
+                    if (v > threshold) {
+                        total += v;
+                        count++;
+                    } else {
+                        total -= v;
+                    }
+                }
+                int average = 0;
+                if (count > 0) {
+                    average = total / count;
+                }
+                return average + errors;
+            }
+        }
+        """
+    )
     ts = textwrap.dedent(
         """
         function process(records: number[], threshold: number): number {
@@ -628,6 +660,7 @@ def _process_sources() -> dict[str, tuple[str, str]]:
     return {
         "python": ("py", py),
         "java": ("java", java),
+        "csharp": ("cs", csharp),
         "typescript": ("ts", ts),
         "go": ("go", go),
         "rust": ("rs", rust),
@@ -816,6 +849,7 @@ def test_plan_names_the_helper_with_a_placeholder():
         ("rust", "extracted_helper"),
         ("cpp", "extracted_helper"),
         ("java", "extractedHelper"),
+        ("csharp", "ExtractedHelper"),
         ("typescript", "extractedHelper"),
         ("go", "extractedHelper"),
     ],

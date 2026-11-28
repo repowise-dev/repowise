@@ -36,6 +36,12 @@ Silence is the default. No step when:
   what the C code is: a Go profile taken on Windows samples threads inside cgo
   while they wait, so that time is unknown, never a cost claim.
 
+A value built as an eager ``setdefault`` default (``d.setdefault(k, Tracker())``
+builds a Tracker on every call, even on a hit) is named only when the build
+holds :data:`DOMINANT` of the time: the function's own callee, or, on the
+constructor's own row, a driver holding that much of its time
+(:func:`eager_default_fact`, read on the walk; Python only).
+
 A database call says "batch" only when a static loop sits on the driver chain:
 an ``io_in_loop`` finding whose loop calls the function, or calls a driver
 that holds most of its time. A static finding on the function itself becomes
@@ -48,6 +54,7 @@ by whichever leads. Upgrade path: keep the top leaves per callee.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -73,6 +80,9 @@ DOMINANT = 0.5
 LEAF_LEADS = 0.5
 #: A second family worth naming beside the dominant one (a walk beside its stats).
 ALSO = 0.1
+#: The rule, and the fact kind, of a value built as an eager ``setdefault`` default.
+EAGER_DEFAULT = "eager_default"
+_CONSTRUCTORS = frozenset({"__init__", "__new__"})
 
 # --- the lexicon: last name segments, per family -----------------------------
 
@@ -534,6 +544,30 @@ def static_finding(
     }
 
 
+def eager_default_fact(symbol_id: str, eager_defaults_json: str | None) -> dict[str, Any] | None:
+    """A function's stored eager defaults (``function_facts.eager_defaults_json``)
+    in the shape :func:`next_step` reads beside the static findings; ``None``
+    when there are none or the value does not parse."""
+    try:
+        raw = json.loads(eager_defaults_json or "[]")
+    except ValueError:
+        return None
+    builds = [
+        (b[0], b[1])
+        for b in (raw if isinstance(raw, list) else ())
+        if isinstance(b, list) and len(b) == 2 and isinstance(b[0], str) and isinstance(b[1], int)
+    ]
+    if not builds:
+        return None
+    return {
+        "kind": EAGER_DEFAULT,
+        "symbol": symbol_id,
+        "file_path": file_of_symbol(symbol_id),
+        "function": symbol_id.rsplit("::", 1)[-1],
+        "builds": builds,
+    }
+
+
 def next_step(
     row: Mapping[str, Any],
     language: str,
@@ -555,6 +589,9 @@ def next_step(
         return None
     lang = _family(language)
     findings = list(findings)
+    eager = _eager_default(row, symbol, inside, lang, findings)
+    if eager is not None:
+        return eager
     own_static = [f for f in findings if _on(f, symbol)]
     picked = _dominant(inside, lang, own_static, symbol)
     if picked is None:
@@ -579,6 +616,127 @@ def next_step(
         share=round(share, 4),
         leaf=str(leaf["name"]) if leaf and family in _LEAF_RULES else None,
         static=static["kind"] if static else None,
+    )
+
+
+def _eager_default(
+    row: Mapping[str, Any],
+    symbol: str,
+    inside: Sequence[Mapping[str, Any]],
+    lang: str,
+    findings: Sequence[Mapping[str, Any]],
+) -> NextStep | None:
+    """The eager ``setdefault`` step: the function's own dominant callee is a
+    value it builds as one, or this row is that build and a driver holding
+    :data:`DOMINANT` of its time builds it so."""
+    facts = _eager_facts(findings) if lang == "python" else {}
+    found = _eager_build(symbol, row, inside, facts) if facts and symbol else None
+    if found is None:
+        return None
+    why, fact, (call, line), where, callee, share = found
+    return NextStep(
+        rule=EAGER_DEFAULT,
+        why=(
+            f"{why} as the default of setdefault on line {line}: the default is built before "
+            "the lookup, so one is built on every call, even when the key is already there"
+        ),
+        next=_eager_next(fact["file_path"], line, call, where),
+        verify=verify_command(row.get("workload_name"), row.get("workload_class")),
+        callee=callee,
+        share=round(share, 4),
+    )
+
+
+def _eager_facts(findings: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    """The eager default facts among *findings*, by function symbol id."""
+    return {f["symbol"]: f for f in findings if f.get("kind") == EAGER_DEFAULT and f.get("symbol")}
+
+
+def _eager_build(
+    symbol: str,
+    row: Mapping[str, Any],
+    inside: Sequence[Mapping[str, Any]],
+    facts: Mapping[str, Mapping[str, Any]],
+) -> tuple[Any, ...] | None:
+    return _own_eager_build(symbol, inside, facts) or _driver_eager_build(symbol, row, facts)
+
+
+def _own_eager_build(
+    symbol: str, inside: Sequence[Mapping[str, Any]], facts: Mapping[str, Mapping[str, Any]]
+) -> tuple[Any, ...] | None:
+    """A dominant callee of the function that is one of its own eager defaults."""
+    own = facts.get(symbol)
+    for callee in inside if own is not None else ():
+        share = float(callee.get("share") or 0.0)
+        if share < DOMINANT or callee.get("kind") in ("own", "wait"):
+            continue
+        name = str(callee.get("name") or "")
+        build = next((b for b in own["builds"] if _builds(name, b[0])), None)
+        if build is not None:
+            why = f"{_pct(share)} of it builds {build[0]}() ({_short(name)})"
+            return why, own, build, None, name, share
+    return None
+
+
+def _driver_eager_build(
+    symbol: str, row: Mapping[str, Any], facts: Mapping[str, Mapping[str, Any]]
+) -> tuple[Any, ...] | None:
+    """On a constructor's row, a driver holding :data:`DOMINANT` of its time that
+    builds its class as an eager default."""
+    if not _built_class(symbol):
+        return None
+    frame = _frame_of(symbol)
+    for driver in _items(row.get("drivers")):
+        share = float(driver.get("share") or 0.0)
+        fact = facts.get(str(driver.get("symbol") or ""))
+        if share < DOMINANT or fact is None:
+            continue
+        build = next((b for b in fact["builds"] if _builds(frame, b[0])), None)
+        if build is not None:
+            where = _fn(str(driver["symbol"]))
+            why = f"{where}, which drives {_pct(share)} of its time, builds a {build[0]}"
+            return why, fact, build, where, build[0], share
+    return None
+
+
+def _builds(callee: str, call: str) -> bool:
+    """Whether the profile's *callee* is the value *call* builds: the called
+    function itself, or the constructor of the class it names. A call written
+    with a module or class in front (``hot.Tracker``) must name the frame's
+    (``pkg.cheap.Tracker.__init__`` is no ``hot.Tracker()``); ``self`` and
+    ``cls`` name nothing a frame shows."""
+    segs = _short(callee).split(".")
+    if segs[-1] in _CONSTRUCTORS:
+        segs = segs[:-1]
+    want = call.split(".")
+    if want[0] in ("self", "cls"):
+        want = want[-1:]
+    return len(segs) >= len(want) and segs[-len(want) :] == want
+
+
+def _frame_of(symbol: str) -> str:
+    """A symbol id as a profile frame names it: ``pkg/hot.py::Tracker::__init__``
+    -> ``pkg.hot.Tracker.__init__`` (a package's ``__init__.py`` is the package)."""
+    path, _, rest = base_symbol_id(symbol).partition("::")
+    module = path.rsplit(".", 1)[0].split("/")
+    if module[-1] == "__init__":
+        module = module[:-1]
+    return ".".join([*module, *rest.split("::")])
+
+
+def _built_class(symbol: str) -> str:
+    """The class a constructor row builds (``m.py::Tracker::__init__``), else ``""``."""
+    parts = base_symbol_id(symbol).split("::")
+    return parts[-2] if len(parts) >= 3 and parts[-1] in _CONSTRUCTORS else ""
+
+
+def _eager_next(file_path: str, line: int, call: str, where: str | None) -> str:
+    at = f"at {file_path}:{line}" + (f" in {where}" if where else "")
+    return (
+        f"{at}, build the default only when the key is missing: with the mapping and the key "
+        f"evaluated once, d[key] if key in d else d.setdefault(key, {call}(...)) keeps the value "
+        f"a plain dict stores and returns; leave it eager only if building a {call} has a side "
+        "effect every call needs"
     )
 
 
@@ -1305,8 +1463,10 @@ _LEAF_RULES = frozenset({"filesystem", "template_reread", "template_include", "e
 
 __all__ = [
     "DOMINANT",
+    "EAGER_DEFAULT",
     "STEP_CLASSES",
     "NextStep",
+    "eager_default_fact",
     "next_step",
     "static_finding",
     "verify_command",

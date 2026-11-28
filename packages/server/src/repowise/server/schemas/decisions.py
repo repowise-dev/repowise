@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from repowise.core.analysis.decisions.lifecycle import DECISION_KINDS
 from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
@@ -37,6 +37,16 @@ class EvidencePreview(BaseModel):
     verification: str
     evidence_file: str | None = None
     evidence_line: int | None = None
+
+
+class DecisionLinkedIssue(BaseModel):
+    """A tracker issue one of the decision's evidence commits links to."""
+
+    key: str
+    type: str = ""
+    status: str = ""
+    title: str = ""
+    url: str = ""
 
 
 class DecisionRecordResponse(BaseModel):
@@ -107,6 +117,17 @@ class DecisionRecordResponse(BaseModel):
     # Null when no ledger could be read, never 0. List and detail only.
     delivered_count: int | None = None
     last_delivered_at: UTCDateTime | None = None
+    # Tracker issues the evidence commits link to, from ``issue_links``. Detail
+    # endpoint only, and sent only when one is stored.
+    linked_issues: list[DecisionLinkedIssue] | None = None
+
+    @model_serializer(mode="wrap")
+    # No return annotation: one would change the generated OpenAPI schema.
+    def _omit_absent_issues(self, handler):
+        data = handler(self)
+        if self.linked_issues is None:
+            data.pop("linked_issues", None)
+        return data
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:

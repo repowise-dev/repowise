@@ -7,6 +7,7 @@ per-test map. A ``repowise health`` run must not overwrite that data.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -156,6 +157,24 @@ def _load_measured_costs(repo_path: object) -> dict[str, Any] | None:
         return run_async(_do())
     except Exception:
         return None
+
+
+def _cite_linked_issues(repo_path: object, rows: list[dict[str, Any]]) -> None:
+    """Quote the tracker issues behind each ``prior_defect`` row, in place.
+
+    Best effort like the views beside it: a store that cannot answer leaves
+    the rows as they were.
+    """
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud.issue_links import cite_prior_defect_issues
+
+    async def _do() -> None:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is not None:
+                await cite_prior_defect_issues(*opened, rows)
+
+    with contextlib.suppress(Exception):
+        run_async(_do())
 
 
 def _load_evidence_freshness(repo_path: object) -> dict[str, Any] | None:

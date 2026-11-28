@@ -119,11 +119,7 @@ def fix_annotation(meta: Any, now: datetime | None = None) -> dict | None:
     last_fix_at = getattr(meta, "last_fix_at", None)
     if isinstance(last_fix_at, datetime):
         # Rows are stored naive-UTC; compare on the same footing.
-        ref = (
-            datetime.now(UTC)
-            if now is None
-            else (now if now.tzinfo else now.replace(tzinfo=UTC))
-        )
+        ref = datetime.now(UTC) if now is None else (now if now.tzinfo else now.replace(tzinfo=UTC))
         moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
         out["last_fix_days_ago"] = max(0, (ref - moment).days)
         if getattr(meta, "bug_magnet", False):
@@ -140,10 +136,14 @@ def _fix_clause(profile: dict | None) -> str:
     """
     if not profile or "last_fix_days_ago" not in profile:
         return ""
+    from repowise.core.persistence.crud.issue_links import quoted_keys
+
     n = profile["fix_count"]
     magnet = " (bug magnet)" if profile.get("bug_magnet") else ""
+    linked = quoted_keys(profile.get("linked_issues") or [])
+    issues = f" (linked {', '.join(linked)})" if linked else ""
     return (
-        f"{n} bug fix{'es' if n != 1 else ''} in {profile['window']}, "
+        f"{n} bug fix{'es' if n != 1 else ''} in {profile['window']}{issues}, "
         f"last {profile['last_fix_days_ago']}d before the indexed commit{magnet}, "
     )
 
