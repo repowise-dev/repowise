@@ -90,7 +90,17 @@ def _is_declaration(
 
 
 _FSHARP_BINDING_NODE_TYPES = ("function_declaration_left", "value_declaration_left")
-_DART_FUNCTION_NODE_TYPES = ("function_signature", "getter_signature", "setter_signature")
+_DART_CONSTRUCTOR_NODE_TYPES = (
+    "constructor_signature",
+    "factory_constructor_signature",
+    "constant_constructor_signature",
+)
+_DART_FUNCTION_NODE_TYPES = (
+    "function_signature",
+    "getter_signature",
+    "setter_signature",
+    *_DART_CONSTRUCTOR_NODE_TYPES,
+)
 
 
 def _is_fsharp_binding(language: str, node_type: str) -> bool:
@@ -119,6 +129,12 @@ def _language_symbol_name(language: str, def_node: Node, name: str, src: str) ->
         # (`initWithName:age:`), which no single node holds, and a
         # category by the class it extends plus its own name.
         return _objc_symbol_name(def_node, name, src)
+    if language == "dart" and def_node.type in _DART_CONSTRUCTOR_NODE_TYPES:
+        # ``A`` for the unnamed constructor, ``A.named`` for a named, factory or
+        # const one, so two constructors of one class never share a name.
+        return ".".join(
+            node_text(child, src) for child in def_node.children if child.type == "identifier"
+        )
     return name
 
 
