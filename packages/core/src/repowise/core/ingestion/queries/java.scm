@@ -83,13 +83,28 @@
 
 ; Static call on a member type: Outer.Inner.method(args). Only a path of
 ; capitalised names whose later segments hold a lower-case letter, so a
-; constant (``X.CONST.m()``) or a field path (``a.b.m()``) stays bare. The
-; resolver reads the whole path as a type, never its last segment alone.
+; constant (``X.CONST.m()``) is not read as a type. The resolver reads the
+; whole path as a type, never its last segment alone.
 (method_invocation
   object: (field_access) @call.receiver
   name: (identifier) @call.target
   arguments: (argument_list) @call.arguments
   (#match? @call.receiver "^[A-Z][A-Za-z0-9_]*(\\s*[.]\\s*[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*)+$")
+) @call.site
+
+; Field path: el.attributes.method(args), this.el.attributes.method(args).
+; Keep the complete path so the resolver types its head and walks each field.
+; The parser accepts only a plain path of names; calls, indexes and casts
+; inside it keep only the bare pattern's site. A single this.field receiver
+; retains the own-field pattern below, and Outer.this is not a field path.
+(method_invocation
+  object: (field_access
+    object: [(identifier) (field_access)]
+    field: (identifier)
+  ) @call.receiver
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+  (#match? @call.receiver "^[a-z_$]")
 ) @call.site
 
 ; Method call on the caller's own field: this.field.method(args).

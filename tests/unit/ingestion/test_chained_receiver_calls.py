@@ -64,6 +64,167 @@ def _chained(edges: list[tuple[str, str, float, str]]) -> list[tuple[str, str, f
     return [e for e in edges if e[3].startswith("receiver_chain_")]
 
 
+class TestJavaChainedFieldCalls:
+    @pytest.mark.parametrize(
+        ("field", "parameter", "local", "receiver"),
+        [
+            ("", "El el", "", "el.attributes"),
+            ("", "", "El el = new El();", "el.attributes"),
+            ("El el;", "", "", "el.attributes"),
+            ("El el;", "", "", "this.el.attributes"),
+            ("", "El el", "", "el . attributes"),
+        ],
+    )
+    def test_a_declared_head_and_each_field_type_the_receiver(
+        self, tmp_path: Path, field: str, parameter: str, local: str, receiver: str
+    ) -> None:
+        source = (
+            "class Attrs {\n  String get(String k) { return k; }\n}\n"
+            "class El {\n  Attrs attributes;\n}\n"
+            "class Other {\n  String get(String k) { return k; }\n}\n"
+            f"class U {{\n  {field}\n  String u({parameter}) {{\n"
+            f'    {local}\n    return {receiver}.get("x");\n  }}\n}}\n'
+        )
+        parsed = _parse_all(tmp_path, {"A.java": ("java", source)})
+        call = next(
+            c for c in parsed["A.java"].calls
+            if c.caller_symbol_id == "A.java::U::u" and c.target_name == "get"
+        )
+        assert call.receiver_name == "".join(receiver.split())
+        edges = _edges(tmp_path, {"A.java": ("java", source)})
+        assert [e for e in edges if e[0] == "A.java::U::u" and e[1].endswith("::get")] == [
+            ("A.java::U::u", "A.java::Attrs::get", 0.93, "receiver_chain_same_file")
+        ]
+
+    def test_each_hop_reads_the_imports_of_its_declaring_file(self, tmp_path: Path) -> None:
+        files = {
+            "use/U.java": (
+                "java",
+                "package use;\nimport model.El;\nclass U {\n"
+                '  String u(El el) { return el.attributes.get("x"); }\n}\n',
+            ),
+            "model/El.java": (
+                "java",
+                "package model;\nimport attrs.Attrs;\npublic class El {\n"
+                "  public Attrs attributes;\n}\n",
+            ),
+            "attrs/Attrs.java": (
+                "java",
+                "package attrs;\npublic class Attrs {\n"
+                "  public String get(String k) { return k; }\n}\n",
+            ),
+        }
+        links = {
+            "use/U.java": {"model.El": "model/El.java"},
+            "model/El.java": {"attrs.Attrs": "attrs/Attrs.java"},
+        }
+        edges = _edges(tmp_path, files, links)
+        assert [e for e in edges if e[0] == "use/U.java::U::u"] == [
+            ("use/U.java::U::u", "attrs/Attrs.java::Attrs::get", 0.88, "receiver_chain_import")
+        ]
+
+    def test_same_package_hops_resolve_without_imports(self, tmp_path: Path) -> None:
+        files = {
+            "p/U.java": (
+                "java",
+                'package p;\nclass U {\n  String u(El el) { return el.attributes.get("x"); }\n}\n',
+            ),
+            "p/El.java": (
+                "java",
+                "package p;\nclass El {\n  Attrs attributes;\n}\n",
+            ),
+            "p/Attrs.java": (
+                "java",
+                "package p;\nclass Attrs {\n  String get(String k) { return k; }\n}\n",
+            ),
+        }
+        edges = _edges(tmp_path, files)
+        assert [e for e in edges if e[0] == "p/U.java::U::u"] == [
+            ("p/U.java::U::u", "p/Attrs.java::Attrs::get", 0.88, "receiver_chain_import")
+        ]
+
+    def test_an_unresolved_qualified_type_does_not_fall_back_to_a_bare_class(
+        self, tmp_path: Path
+    ) -> None:
+        source = (
+            "class Attrs {\n  String get(String k) { return k; }\n}\n"
+            "class Outer {}\n"
+            "class El {\n  Outer.Attrs attributes;\n}\n"
+            "class U {\n"
+            '  String u(El el) { return el.attributes.get("x"); }\n}\n'
+        )
+        assert not _edges(tmp_path, {"A.java": ("java", source)})
+
+    @pytest.mark.parametrize("type_name", ["External", "T"])
+    def test_an_unknown_or_type_parameter_hop_does_not_bind_by_name(
+        self, tmp_path: Path, type_name: str
+    ) -> None:
+        source = (
+            "class Other {\n  String get(String k) { return k; }\n}\n"
+            f"class El<T> {{\n  {type_name} attributes;\n}}\n"
+            "class U {\n"
+            '  String u(El el) { return el.attributes.get("x"); }\n}\n'
+        )
+        edges = _edges(tmp_path, {"A.java": ("java", source)})
+        assert not [e for e in edges if e[0] == "A.java::U::u"]
+
+    def test_a_local_does_not_use_the_shadowed_field_type(self, tmp_path: Path) -> None:
+        source = (
+            "class Attrs {\n  String get(String k) { return k; }\n}\n"
+            "class El {\n  Attrs attributes;\n}\n"
+            "class U {\n  El el;\n  String u(External el) {\n"
+            '    return el.attributes.get("x");\n  }\n}\n'
+        )
+        assert not _edges(tmp_path, {"A.java": ("java", source)})
+
+    @pytest.mark.parametrize(
+        "owner",
+        [
+            "class U<T> {\n  String u(T el) { return el.attributes.get(\"x\"); }\n}\n",
+            "class El<T> {\n  T attributes;\n}\n"
+            "class U {\n  String u(El el) { return el.attributes.attributes.get(\"x\"); }\n}\n",
+            "class U<Item> {\n  String u(Item el) { return el.attributes.get(\"x\"); }\n}\n",
+            "class El<Attrs> {\n  Attrs attributes;\n}\n"
+            "class U {\n  String u(El el) { return el.attributes.get(\"x\"); }\n}\n",
+        ],
+        ids=["head", "field", "multi-letter-head", "multi-letter-field"],
+    )
+    def test_a_type_parameter_does_not_mean_a_same_named_class(
+        self, tmp_path: Path, owner: str
+    ) -> None:
+        source = (
+            "class Attrs {\n  String get(String k) { return k; }\n}\n"
+            "class T {\n  Attrs attributes;\n}\n"
+            "class Item {\n  Attrs attributes;\n}\n" + owner
+        )
+        assert not _edges(tmp_path, {"A.java": ("java", source)})
+
+    @pytest.mark.parametrize(
+        "receiver", ["make().el.attributes", "els[0].attributes", "((El) obj).attributes"]
+    )
+    def test_non_path_receivers_stay_bare(self, tmp_path: Path, receiver: str) -> None:
+        source = f'class U {{\n  String u() {{ return {receiver}.get("x"); }}\n}}\n'
+        parsed = _parse_all(tmp_path, {"A.java": ("java", source)})
+        calls = [c for c in parsed["A.java"].calls if c.target_name == "get"]
+        assert len(calls) == 1
+        assert calls[0].receiver_name is None
+        assert calls[0].receiver_call is None
+
+    def test_single_own_field_and_member_type_receivers_keep_their_shape(self, tmp_path: Path) -> None:
+        source = (
+            "class Attrs {\n  String get(String k) { return k; }\n}\n"
+            "class Outer {\n  static class Inner {\n"
+            "    static String get(String k) { return k; }\n  }\n}\n"
+            "class U {\n  Attrs attributes;\n  String u() {\n"
+            '    this.attributes.get("x");\n    return Outer.Inner.get("x");\n  }\n}\n'
+        )
+        parsed = _parse_all(tmp_path, {"A.java": ("java", source)})
+        assert [c.receiver_name for c in parsed["A.java"].calls] == ["attributes", "Outer.Inner"]
+        edges = _edges(tmp_path, {"A.java": ("java", source)})
+        assert {e[1] for e in edges} == {"A.java::Attrs::get", "A.java::Inner::get"}
+        assert not _chained(edges)
+
+
 # --- ts_chained_field_calls --------------------------------------------------
 
 _TS_USERS = (

@@ -164,6 +164,29 @@ class JavaTypeVisibility:
             return spelled
         return self._java_written_type(file_path, scope_id, spelled) or bare_type_name(spelled)
 
+    def _java_class_named(
+        self, file_path: str, scope_id: str, type_name: str
+    ) -> tuple[str, str, str] | None:
+        """``(file, class id, tier)`` for *type_name* as Java sees it from *scope_id*.
+
+        A member type, a qualified type, an import, a same-file class, a
+        same-package sibling, or a unique wildcard-imported class — never a
+        type parameter in scope, and never a bare-name fallback when a
+        qualifier names no repository type.
+        """
+        type_id = self._java_written_type(file_path, scope_id, type_name)
+        if type_id is not None:
+            return self._located(file_path, type_id)
+        if type_qualifier(type_name):
+            return None
+        bare = bare_type_name(type_name)
+        if not bare.isidentifier() or bare in self._java_type_parameters(file_path, scope_id):
+            return None
+        top_level = self._visible_top_level_type(file_path, bare)
+        if top_level is None or not self._accessible_type(top_level, file_path):
+            return None
+        return self._located(file_path, top_level)
+
     def _java_written_type(self, file_path: str, scope_id: str, spelled: str) -> str | None:
         """The type id a Java spelling names as a member type, written in *scope_id*.
 

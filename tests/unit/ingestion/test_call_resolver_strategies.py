@@ -1703,15 +1703,19 @@ class TestJavaUnnamedObjectCall:
         assert self._targets(tmp_path, f"{receiver}.m(1);") == []
 
     @pytest.mark.parametrize("name", ["only", "get", "isBlank"])
-    def test_a_repo_wide_unique_name_still_binds(self, tmp_path: Path, name: str) -> None:
+    def test_a_non_path_receiver_keeps_the_repo_wide_unique_fallback(
+        self, tmp_path: Path, name: str
+    ) -> None:
         other = f"package p;\npublic class Other {{\n    public void {name}() {{}}\n}}\n"
-        assert self._targets(tmp_path, f"a.b.{name}();", other) == [f"p/Other.java::Other::{name}"]
+        assert self._targets(tmp_path, f"arr[0].{name}();", other) == [
+            f"p/Other.java::Other::{name}"
+        ]
 
-    @pytest.mark.parametrize("body", ["a.b.contains(x);", "Map.class.isAssignableFrom(x);"])
+    @pytest.mark.parametrize("body", ["arr[0].contains(x);", "Map.class.isAssignableFrom(x);"])
     def test_a_unique_repo_method_named_like_a_jdk_one_does_not_bind(
         self, tmp_path: Path, body: str
     ) -> None:
-        """``a.b.contains(x)`` is a collection's ``contains`` far more often than the repo's one."""
+        """``arr[0].contains(x)`` is a collection's ``contains`` far more often than the repo's one."""
         name = body.split(".")[-1].split("(")[0]
         other = (
             f"package p;\npublic class Other {{\n"
@@ -1744,13 +1748,14 @@ class TestJavaUnnamedObjectCall:
         ("body", "flagged"),
         [
             ("a.b.m(1);", True),
+            ("arr[0].m(1);", True),
             ("m(1);", False),
             ("Use.this.m(1);", False),
             ("a.m(1);", True),
             ("this.m(1);", True),
             ("super.m(1);", True),
         ],
-        ids=["field-path", "bare", "qualified-this", "named-receiver", "this", "super"],
+        ids=["field-path", "indexed", "bare", "qualified-this", "named-receiver", "this", "super"],
     )
     def test_only_an_unnamed_object_is_flagged(
         self, tmp_path: Path, body: str, flagged: bool
@@ -1760,9 +1765,9 @@ class TestJavaUnnamedObjectCall:
         # A named receiver's bare twin is folded into it as ``bare_name_fallback``,
         # a fallback reading; only the receiver-less flag marks an unnamed object.
         assert call.bare_name_fallback is flagged
-        named = ("a.m(1);", "this.m(1);", "super.m(1);")
+        named = ("a.b.m(1);", "a.m(1);", "this.m(1);", "super.m(1);")
         assert (call.receiver_name is None) is (body not in named)
-        assert call.on_unnamed_object is (body == "a.b.m(1);")
+        assert call.on_unnamed_object is (body == "arr[0].m(1);")
 
 
 class TestJavaReceiverRecall:
@@ -2104,7 +2109,7 @@ class TestJavaQualifiedTypeReceiver:
         """Only ``A.Create`` declares ``onlyInA``; the last segment alone would bind it."""
         assert self._targets(tmp_path, "B.Create.onlyInA();", "import p.A;\nimport p.B;\n") == []
 
-    @pytest.mark.parametrize("receiver", ["X.CONST", "a.b", "X.inner"])
+    @pytest.mark.parametrize("receiver", ["X.CONST", "X.inner"])
     def test_a_path_that_is_not_a_member_type_stays_bare(
         self, tmp_path: Path, receiver: str
     ) -> None:
