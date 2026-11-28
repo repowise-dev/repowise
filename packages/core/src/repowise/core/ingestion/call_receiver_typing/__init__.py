@@ -1606,6 +1606,9 @@ class ReceiverTypingMixin(
             )
         else:
             types = types_in_span(declarations, *span)
+            if language == "cpp" and None in types.values():
+                local = self._cpp_without_class_fields(file_path, declarations)
+                types = types_in_span(local, *span)
             if language in RANGE_LANGUAGES:
                 self._type_range_variables(file_path, language, span, types, caller_id)
 

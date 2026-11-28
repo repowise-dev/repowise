@@ -7,6 +7,7 @@ from typing import NamedTuple
 
 from tree_sitter import Node, Parser, Query
 
+from ..languages.receiver_types import Declaration
 from ..models import CallSite, Symbol
 from ..type_names import bare_type_name, strip_type_arguments
 from ._shared import _FUNCTION_KINDS, _store_capped
@@ -54,6 +55,10 @@ class _CppBinding(NamedTuple):
 class _CppFacts(NamedTuple):
     aliases: tuple[_CppAlias, ...] = ()
     declarations: tuple[_CppBinding, ...] = ()
+
+
+# A file that declares no alias, left unparsed until its declarations are asked for.
+_UNPARSED = _CppFacts()
 
 
 class CppFieldOwners:
@@ -150,16 +155,37 @@ class CppFieldOwners:
             aliases[alias.name] = alias.target if alias.name not in aliases else None
         return aliases
 
-    def _cpp_type_facts(self, path: str) -> _CppFacts:
-        """Aliases and declaration positions, read once from syntax."""
+    def _cpp_type_facts(self, path: str, *, declarations: bool = False) -> _CppFacts:
+        """Aliases and declaration positions, read once from syntax.
+
+        A file with no alias is not parsed unless *declarations* asks for its
+        declarations.
+        """
         cached = self._cpp_type_aliases.get(path)
-        if cached is not None:
+        if cached is not None and not (declarations and cached is _UNPARSED):
             return cached
         text = self._text_of(path)
         # Most files declare no alias; skip their second parse.
-        facts = _cpp_facts_of(text) if "using" in text or "typedef" in text else _CppFacts()
+        wanted = declarations or "using" in text or "typedef" in text
+        facts = _cpp_facts_of(text) if wanted else _UNPARSED
         _store_capped(self._cpp_type_aliases, path, facts, _CPP_FACT_FILES)
         return facts
+
+    def _cpp_without_class_fields(
+        self, path: str, declarations: tuple[Declaration, ...]
+    ) -> tuple[Declaration, ...]:
+        """*declarations* less the fields a class declared inside a function body holds.
+
+        ``struct { Specs& specs; } handler{specs};`` in a function that takes
+        ``Specs2& specs`` declares a member of the local class, not a second
+        local, so it must not make the parameter's type ambiguous. A line that
+        also declares a local of the name keeps both: the text scan cannot tell
+        which of its two declarations is the field.
+        """
+        bindings = self._cpp_type_facts(path, declarations=True).declarations
+        fields = {(d.name, d.line) for d in bindings if d.field}
+        fields -= {(d.name, d.line) for d in bindings if not d.field}
+        return tuple(d for d in declarations if (d.name, d.line) not in fields)
 
     def _field_owner(self, file_path: str, caller_id: str, language: str) -> tuple[str, str]:
         """``(file, class id)`` whose fields *caller_id* reads by bare name.
