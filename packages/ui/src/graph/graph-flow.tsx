@@ -15,10 +15,6 @@ import { EmptyState } from "../shared/empty-state";
 import { type Signal } from "./context";
 import { type FileNodeData, type ModuleNodeData } from "./elk-layout";
 
-// Resting zoom when easing the camera onto a constellation hub. Looser than the
-// default file-node focus (0.15) so the hub *and* its surrounding cluster stay
-// visible instead of the disc filling the whole viewport.
-const HUB_FOCUS_RATIO = 0.45;
 // Below this node count file graphs build synchronously; at or above it we
 // build in chunks off the critical path (see sigmaGraph below).
 const ASYNC_BUILD_THRESHOLD = 1000;
@@ -28,6 +24,7 @@ import { GraphScopeBreadcrumb } from "./graph-scope-breadcrumb";
 import { traceToEdgeKeys, traceToFileTrace } from "./graph-flow-helpers";
 import { useGraphContextMenu } from "./use-graph-context-menu";
 import { useGraphSearch } from "./use-graph-search";
+import { HUB_FOCUS_RATIO, useGraphSelection } from "./use-graph-selection";
 import { useCommunityFilter } from "./use-community-filter";
 import { useModuleFilter, filterGraphToModule } from "./use-module-filter";
 import { useGraphKeyboardShortcuts } from "./use-graph-keyboard-shortcuts";
@@ -1029,41 +1026,6 @@ export function GraphFlow(props: GraphFlowProps) {
     [onNodeViewDocs, displayGraph, enterCommunity],
   );
 
-  // Unified grammar — SINGLE CLICK = select + inspect (never structural):
-  //   file/module → select (no expansion; drill-down moved to double-click)
-  //   hub         → select + focus + open the community panel (NO expand)
-  //   core        → no-op
-  // Clicking an already-selected node is a no-op (keeps it selected); the two
-  // pre-clicks Sigma fires before a double-click therefore can't churn the
-  // selection. Deselection happens via stage click or Esc.
-  const handleSigmaNodeClick = useCallback(
-    (nodeId: string, nodeType: string) => {
-      if (nodeType === "core") return;
-      if (selectedNodeId === nodeId) return;
-      if (nodeType === "hub" && displayGraph?.hasNode(nodeId)) {
-        const cid = displayGraph.getNodeAttribute(nodeId, "communityId");
-        // The "not grouped" disc is a list, not a community: it opens its panel
-        // without being selected, since selection dims everything it does not
-        // link to, which is everything.
-        if (cid === UNCLUSTERED_COMMUNITY_ID) {
-          setCommunityPanelId(cid);
-          return;
-        }
-        if (typeof cid === "number" && cid >= 0) {
-          setSelectedNodeId(nodeId);
-          sigmaRef.current?.focusNode(nodeId, HUB_FOCUS_RATIO);
-          openCommunityPanel(cid);
-          return;
-        }
-      }
-      setSelectedNodeId(nodeId);
-      // The community panel describes a hub; selecting a file replaces it in
-      // the rail rather than outranking the inspector forever.
-      setCommunityPanelId(null);
-    },
-    [selectedNodeId, displayGraph, openCommunityPanel],
-  );
-
   const handleSigmaNodeContextMenu = useCallback(
     (event: MouseEvent, nodeId: string, nodeType: string) => {
       setCtxMenu({
@@ -1187,37 +1149,31 @@ export function GraphFlow(props: GraphFlowProps) {
     });
   }, []);
 
-  // A rebuild can drop the selected node (module expanded into files) — clear
-  // the selection then, or the reducer dims the whole canvas around a ghost.
-  useEffect(() => {
-    if (selectedNodeId && displayGraph && !displayGraph.hasNode(selectedNodeId)) {
-      setSelectedNodeId(null);
-    }
-  }, [displayGraph, selectedNodeId]);
-
-  const initialNodeApplied = useRef(false);
-  useEffect(() => {
-    if (initialNodeApplied.current || !initialSelectedNode || !displayGraph) return;
-    if (displayGraph.hasNode(initialSelectedNode)) {
-      initialNodeApplied.current = true;
-      setSelectedNodeId(initialSelectedNode);
-      setTimeout(() => panToNode(initialSelectedNode), 300);
-    }
-  }, [initialSelectedNode, displayGraph, panToNode]);
-
-  const handleInspectNavigate = useCallback((nodeId: string) => {
-    setSelectedNodeId(nodeId);
-    panToNode(nodeId);
-  }, [panToNode]);
-
-  const handleInspectFindPath = useCallback(() => {
-    if (selectedNodeId) {
-      setPathFrom(selectedNodeId);
-      setShowPathFinder(true);
-      setShowFlows(false);
-      setActiveFlowIdx(null);
-    }
-  }, [selectedNodeId]);
+  // Ghost-selection reset, initial-node focus, canvas click, and inspector
+  // actions. Invoked here — after the view-mode reset above — so these effects
+  // keep their original order.
+  const {
+    handleSigmaNodeClick,
+    handleInspectNavigate,
+    handleInspectFindPath,
+    inspectedFile,
+    inspectedNode,
+  } = useGraphSelection({
+    selectedNodeId,
+    setSelectedNodeId,
+    displayGraph,
+    openCommunityPanel,
+    setCommunityPanelId,
+    sigmaRef,
+    initialSelectedNode,
+    panToNode,
+    setPathFrom,
+    setShowPathFinder,
+    setShowFlows,
+    setActiveFlowIdx,
+    effectiveNodeDataMap,
+    effectiveModuleDataMap,
+  });
 
   // Context menu actions
   const handleCtxViewDocs = useCallback(() => {
@@ -1331,13 +1287,6 @@ export function GraphFlow(props: GraphFlowProps) {
     !!displayGraph && displayGraph.order > 0 && (isDeadView || isHotView);
   const hasCanvasStatus =
     (isEgoActive && !!selectedNodeId) || (showOverlayCounts && !!overlayStats);
-
-  const inspectedFile = selectedNodeId
-    ? effectiveNodeDataMap.get(selectedNodeId)
-    : undefined;
-  const inspectedNode = selectedNodeId
-    ? (inspectedFile ?? effectiveModuleDataMap.get(selectedNodeId))
-    : undefined;
 
   // One rail, most-explicit intent first. Path finder and flows are opened by
   // hand, docs are asked for by name, a community panel follows a hub click,
