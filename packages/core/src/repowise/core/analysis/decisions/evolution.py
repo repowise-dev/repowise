@@ -46,6 +46,7 @@ from repowise.core.analysis.decisions.semantic_match import (
     DEFAULT_DEDUP_TAU,
     find_related_decisions_many,
 )
+from repowise.core.ingestion.git_indexer._constants import whole_body
 
 logger = structlog.get_logger(__name__)
 
@@ -666,7 +667,7 @@ def update_evidence_by_file(
                 if (c.get("sha") or "")[:8] not in range_shas:
                     continue
                 msg = c.get("message") or ""
-                body = c.get("body") or ""
+                body = whole_body(c.get("body") or "")
                 if msg or body:
                     parts.append(f"{msg}\n{body}")
         if parts:

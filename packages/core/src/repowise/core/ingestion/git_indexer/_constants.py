@@ -128,6 +128,43 @@ def _truncate_body(body: str) -> str:
     return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
 
 
+def body_was_cut(body: str) -> bool:
+    """Whether a stored *body* reached the byte ceiling, so its end is missing.
+
+    :func:`_truncate_body` drops at most three bytes of a split UTF-8
+    sequence, so a cut body keeps at least the ceiling less three bytes.
+    """
+    return len(body.encode("utf-8")) >= _MAX_COMMIT_BODY_BYTES - 3
+
+
+#: Where a cut body may end cleanly: after a sentence's closing mark (and any
+#: closing quote, bracket or emphasis), at a blank line, or before a list item.
+#: A lone newline is not one, so a hard-wrapped paragraph never ends at a wrap.
+#: A period that numbers a list item (``2.`` opening a line) or closes a
+#: dotted abbreviation (``e.g.``) is not a sentence end.
+_BODY_BREAK = re.compile(
+    r"(?<!\n\d)(?<!\n\d\d)(?<!^\d)(?<!^\d\d)(?<!\.\w)[.!?][\"')\]`*_]*(?=\s)"
+    r"|\n[ \t]*\r?\n"
+    r"|\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t])"
+)
+
+
+def whole_body(body: str) -> str:
+    """*body* without the partial sentence a cut at the byte ceiling left at its end.
+
+    The stored body is cut at a byte count, mid-sentence and often mid-word,
+    and the miners quote it verbatim, so a decision mined from that tail ended
+    mid-word. A body under the ceiling is returned unchanged, as is a cut body
+    with no clean end to fall back to. Applied where the body is read rather
+    than where it is stored, so existing indexes benefit and a stored body
+    still reads as cut by its length.
+    """
+    if not body or not body_was_cut(body):
+        return body
+    end = max((m.end() for m in _BODY_BREAK.finditer(body)), default=0)
+    return body[:end].rstrip() if end else body
+
+
 # Co-change pair extraction widens the window because individual files
 # may only co-change a handful of times in 500 commits. On low-churn repos
 # the 500-commit window produced 0 co-change pairs every run; 2000 commits
