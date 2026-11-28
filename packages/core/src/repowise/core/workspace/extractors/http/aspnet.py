@@ -36,7 +36,8 @@ if TYPE_CHECKING:
 
 # Read on the masked code just past a class's attribute block.
 _CLASS_DECL_RE = re.compile(
-    r"""\s*(?:(?:public|private|protected|internal|abstract|sealed|static|partial)\s+)*class\s+\w+""",
+    r"""\s*(?:(?:public|private|protected|internal|abstract|sealed|static|partial|unsafe|new|file)\s+)*"""
+    r"""(?:class|record|struct)\s+\w+""",
     re.IGNORECASE,
 )
 
@@ -45,10 +46,12 @@ _ROUTE_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Action-level HTTP verb: [HttpGet], [HttpPost("path")], [HttpGet, Route("path")], etc.
-# Anchored to attribute context: must immediately follow an opening bracket '[' or comma ','
+# Action-level HTTP verb: [HttpGet], [HttpPost("path", Name = "n")], [HttpGet, Route("path")].
+# Anchored to attribute context: must immediately follow an opening bracket '[' or comma ','.
+# Group 2 is the argument list's paren, group 3 a literal path argument.
 _ASPNET_VERB_ATTR_RE = re.compile(
-    r"""(?<=[\[,])\s*Http(Get|Post|Put|Delete|Patch)\b(?:\s*\(\s*(?:template\s*=\s*)?['"]([^'"]+)['"]\s*\))?""",
+    r"""(?<=[\[,])\s*Http(Get|Post|Put|Delete|Patch)\b"""
+    r"""(?:(\s*\()\s*(?:template\s*=\s*)?(?:['"]([^'"]*)['"])?)?""",
     re.IGNORECASE,
 )
 
@@ -136,7 +139,10 @@ class AspNetDialect:
             if block is None:
                 continue
             method = m.group(1).upper()
-            inline_path = m.group(2)
+            paren, inline_path = m.group(2), m.group(3)
+            if paren and inline_path is None:
+                # A constant or expression argument: the path is not readable here.
+                continue
             if inline_path is not None:
                 action_path = inline_path
             else:

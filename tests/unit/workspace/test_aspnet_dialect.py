@@ -237,3 +237,46 @@ public class HostController : ApiController
     contracts = _extract(content)
     assert "http::GET::/api/ping" in contracts
     assert len(contracts) == 1
+
+
+def test_verb_path_followed_by_a_named_argument_keeps_its_path():
+    content = """\
+[Route("api/r")]
+public class RController : ControllerBase
+{
+    [HttpGet("{id}", Name = "GetX")]
+    public X G(int id) { return null; }
+}
+"""
+    assert set(_extract(content)) == {"http::GET::/api/r/{param}"}
+
+
+def test_verb_with_a_constant_argument_is_skipped():
+    content = """\
+[Route("api/r")]
+public class RController : ControllerBase
+{
+    [HttpGet(Routes.X)]
+    public X G() { return null; }
+}
+"""
+    assert _extract(content) == {}
+
+
+def test_prefix_reaches_records_and_unsafe_classes():
+    content = """\
+[Route("api/a")]
+public unsafe class AController : ControllerBase
+{
+    [HttpGet("x")]
+    public X G() { return null; }
+}
+
+[Route("api/b")]
+public record BController
+{
+    [HttpGet("y")]
+    public X H() { return null; }
+}
+"""
+    assert set(_extract(content)) == {"http::GET::/api/a/x", "http::GET::/api/b/y"}
