@@ -321,6 +321,31 @@ class TestLRUEviction:
 
         await registry.close()
 
+    @pytest.mark.asyncio
+    async def test_configured_default_kept_while_a_caller_alias_is_bound(
+        self, tmp_path: Path
+    ) -> None:
+        from repowise.core.workspace.registry import caller_alias
+
+        names = ["default_repo", "other1", "other2"]
+        config = _make_workspace(tmp_path, names, default="default_repo")
+        for name in names:
+            await _seed_repo_db(tmp_path / name, name)
+        registry = RepoRegistry(tmp_path, config)
+        registry.MAX_LOADED = 1
+
+        await registry.get("default_repo")
+        token = caller_alias.set("other1")  # a session working in other1
+        try:
+            await registry.get("other1")
+            await registry.get("other2")
+        finally:
+            caller_alias.reset(token)
+        assert "default_repo" in registry._contexts
+        assert "other1" not in registry._contexts
+
+        await registry.close()
+
 
 # ---------------------------------------------------------------------------
 # Close

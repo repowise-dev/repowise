@@ -385,6 +385,10 @@ class RepoRegistry:
         caller = caller_alias.get()
         if caller is not None and self._ws_config.get_repo(caller) is not None:
             return caller
+        return self._configured_default()
+
+    def _configured_default(self) -> str:
+        """The configured default/primary repo, whichever session is calling."""
         primary = self._ws_config.get_primary()
         if primary:
             return primary.alias
@@ -499,7 +503,7 @@ class RepoRegistry:
             # Evict if at capacity.  The default repo is protected from eviction, so
             # only count non-default contexts against the cap — this prevents the
             # cap from being silently bypassed when the default is always loaded.
-            default_alias = self.get_default_alias()
+            default_alias = self._configured_default()
             evictable = [a for a in self._contexts if a != default_alias]
             if len(evictable) >= self.MAX_LOADED:
                 await self._evict_lru()
@@ -698,7 +702,7 @@ class RepoRegistry:
             return
         # Find the alias with the oldest access time
         # Never evict the default repo
-        default_alias = self.get_default_alias()
+        default_alias = self._configured_default()
         candidates = {a: t for a, t in self._access_order.items() if a != default_alias}
         if not candidates:
             return  # Only default loaded, can't evict
