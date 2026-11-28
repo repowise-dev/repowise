@@ -698,6 +698,20 @@ def _csharp_parameter_named(signature: str, name: str) -> str | None:
     return None
 
 
+_CPP_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+
+
+def _line_offset(raw: bytes, line: int) -> int:
+    """The offset *line* (1-based) starts at in *raw*, or its length past the last line."""
+    offset = 0
+    for _ in range(line - 1):
+        found = raw.find(b"\n", offset)
+        if found < 0:
+            return len(raw)
+        offset = found + 1
+    return offset
+
+
 @cache
 def _cpp_declarations_of(name: str) -> re.Pattern[str]:
     """``const T& name``, ``T const* name``, ``T name``: a C++ declaration of *name*, its const marked."""
@@ -795,8 +809,11 @@ class OverloadSelectionMixin:
         name = call.receiver_name
         if name in (None, "this"):
             return "const" in caller.modifiers
-        text = self._text_of(file_of_symbol(caller_id))
-        span = "\n".join(text.splitlines()[caller.start_line - 1 : call.line])
+        raw = self._raw_source(file_of_symbol(caller_id))
+        start = _line_offset(raw, caller.start_line)
+        # Up to the call itself, so a name redeclared later on its line is not read.
+        end = call.start_byte if call.start_byte > start else _line_offset(raw, call.line + 1)
+        span = _CPP_COMMENT.sub(" ", raw[start:end].decode("utf-8", "replace"))
         declared = list(_cpp_declarations_of(name).finditer(span))
         return bool(declared) and bool(declared[-1]["const"] or declared[-1]["const_after"])
 
