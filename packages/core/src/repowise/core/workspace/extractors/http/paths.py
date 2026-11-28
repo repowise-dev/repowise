@@ -171,9 +171,10 @@ def strip_leading_base_expr(path: str) -> tuple[str, str]:
 
 
 # A trailing interpolated suffix, e.g. ``/repos${qs}``. Anchored, and required
-# to follow an alphanumeric so a real parameter segment (``/users/${id}``) and a
-# separator-composed value (``/users/user-${id}``) are both left alone.
-_TRAILING_QUERY_EXPR_RE = re.compile(r"(?<=[A-Za-z0-9])(?:\$\{[^}]*\})+$")
+# to follow an alphanumeric, or the ``}`` of another hole (``/files/${p}${qs}``),
+# so a real parameter segment (``/users/${id}``) and a separator-composed value
+# (``/users/user-${id}``) are both left alone.
+_TRAILING_QUERY_EXPR_RE = re.compile(r"(?<=[A-Za-z0-9}])(?:\$\{[^}]*\})+$")
 
 
 def strip_trailing_query_expr(path: str) -> str:
@@ -182,7 +183,9 @@ def strip_trailing_query_expr(path: str) -> str:
     ``/snapshots/${id}/graph${q}`` becomes ``/snapshots/${id}/graph``. The
     expression holds ``?limit=...`` at run time, but the ``?`` is inside it, so
     :func:`normalize_http_path` cannot see it and the call normalizes to
-    ``/snapshots/{param}/graph{param}`` — a path no provider declares.
+    ``/snapshots/{param}/graph{param}`` — a path no provider declares. The same
+    goes for a hole that follows a path parameter: ``/files/${p}${qs}`` becomes
+    ``/files/${p}``, so the parameter is kept and only the trailing hole goes.
 
     Ceiling: the only signal available is that the expression is glued onto a
     complete segment, so an optional *path* suffix built the same way
@@ -200,8 +203,13 @@ _HOLE_NAME_RE = re.compile(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}")
 def trailing_glued_name(path: str) -> str | None:
     """The name of the one bare-name hole glued onto *path*'s last segment.
 
-    ``/api/v1${endpoint}`` gives ``endpoint``; a parameter segment
-    (``/users/${id}``), an expression hole, or two holes give None.
+    ``/api/v1${endpoint}`` gives ``endpoint``, and so does ``/repos/${id}${endpoint}``,
+    where the hole follows a parameter; a parameter segment (``/users/${id}``), an
+    expression hole, or two holes glued onto a segment give None.
+
+    Ceiling: a hole after a parameter is read the same way as one after a literal
+    segment, so a query string held in a function's first parameter (``list(qs)``
+    requesting `` `/users/${id}${qs}` ``) reads as a wrapper and the call is left out.
     """
     m = _TRAILING_QUERY_EXPR_RE.search(path)
     hole = _HOLE_NAME_RE.fullmatch(m.group()) if m else None
