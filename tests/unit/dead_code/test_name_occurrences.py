@@ -365,6 +365,28 @@ class TestScopeAndSafety:
 
         assert "could not be searched" in finding.evidence[-1]
 
+    def test_js_ts_admits_dollar_in_identifier_shape(self):
+        source = _src(
+            src__a_ts="export const currentUser$ = 1;\n",
+            src__b_ts="import { currentUser$ } from './a'; console.log(currentUser$);\n",
+        )
+        finding = _finding("currentUser$", file_path="src/a.ts")
+        clamp_unverified_absence([finding], source)
+
+        assert finding.confidence == RISK_CAP_CONFIDENCE
+        assert "src/b.ts" in finding.evidence[-1]
+
+    def test_js_ts_admits_two_character_identifier_shape(self):
+        source = _src(
+            src__a_ts="export const ws = 1;\n",
+            src__b_ts="import { ws } from './a'; console.log(ws);\n",
+        )
+        finding = _finding("ws", file_path="src/a.ts")
+        clamp_unverified_absence([finding], source)
+
+        assert finding.confidence == RISK_CAP_CONFIDENCE
+        assert "src/b.ts" in finding.evidence[-1]
+
     def test_a_file_outside_the_indexed_set_is_not_an_absence(self):
         # The scan cannot see the declaration it is standing on, so nothing
         # about this file was established either way.

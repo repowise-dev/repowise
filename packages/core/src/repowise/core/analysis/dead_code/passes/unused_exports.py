@@ -274,7 +274,7 @@ class UnusedExportPass:
             blob = self.ctx._source_map.get(path)
             if blob is None or _COMPUTED_ATTRIBUTE_RE.search(blob):
                 return None
-            tokens |= file_identifiers(blob)
+            tokens |= file_identifiers(blob, path)
         return frozenset(tokens)
 
     def _is_export_candidate(
@@ -549,5 +549,5 @@ def _namespace_rescues(file_ctx: _ExportFile, sym_name: str) -> bool:
     if not file_ctx.imported_as_namespace:
         return False
     tokens = file_ctx.namespace_tokens
-    token = searchable_token(sym_name)
+    token = searchable_token(sym_name, path=str(file_ctx.node))
     return tokens is None or not token or token in tokens
