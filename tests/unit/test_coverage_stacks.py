@@ -1003,16 +1003,11 @@ def test_jest_junit_in_the_package_needs_no_install_and_the_root_no_prefix():
     assert (stack.requires, stack.prepare, stack.notes) == (("yarn install --frozen-lockfile",), (), ())
 
 
-def test_rspec_writes_junit_through_rspec_junit_formatter():
+def test_rspec_without_the_formatter_gem_writes_no_junit():
     (stack,) = detect_stacks(*_load("ruby"))
-    assert (stack.junit_report, stack.junit_flag) == (
-        "junit.xml",
-        "--format progress --format RspecJunitFormatter --out junit.xml",
-    )
-    # One run writes coverage (through SimpleCov, in-process) and the timings report.
-    assert stack.with_junit(stack.test) == (
-        "bundle exec rspec --format progress --format RspecJunitFormatter --out junit.xml"
-    )
+    # RSpec aborts on a formatter it cannot load, so the command gets no flag.
+    assert (stack.junit_report, stack.junit_flag) == ("", "")
+    assert stack.with_junit(stack.test) is None
     # The formatter gem is missing from the fixture's Gemfile, so setup says so.
     assert "rspec_junit_formatter" in stack.notes[-1]
     assert stack.test == "bundle exec rspec"
@@ -1029,6 +1024,10 @@ def test_rspec_with_the_formatter_gem_needs_no_note():
     assert (stack.junit_report, stack.junit_flag) == (
         "junit.xml",
         "--format progress --format RspecJunitFormatter --out junit.xml",
+    )
+    # One run writes coverage (through SimpleCov, in-process) and the timings report.
+    assert stack.with_junit(stack.test) == (
+        "bundle exec rspec --format progress --format RspecJunitFormatter --out junit.xml"
     )
     assert stack.notes == ()
 

@@ -1379,13 +1379,17 @@ def _ruby(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
         test, runner = "bundle exec rake test", "rake test"
     if runner == "rspec":
         # Minitest and `rake test` stay without timings for now.
-        junit_report, junit_flag = "junit.xml", _RSPEC_JUNIT
-        if "rspec_junit_formatter" not in gemfile:
+        if "rspec_junit_formatter" in gemfile:
+            junit_report, junit_flag = "junit.xml", _RSPEC_JUNIT
+        else:
+            # Without the gem RSpec cannot load the formatter and aborts the run,
+            # so the command stays plain and only the note says how to add it.
+            junit_report = junit_flag = ""
             notes = (
                 *notes,
                 "RSpec writes test timings through `rspec_junit_formatter`, which the Gemfile "
                 'does not list. Add `gem "rspec_junit_formatter"` to the Gemfile\'s test group. '
-                "Until then the timings step finds no report and says so.",
+                "Until then the tests run without it and write no timings.",
             )
     else:
         junit_report = junit_flag = ""
@@ -1422,20 +1426,11 @@ def _php(files: dict[str, str]) -> Stack:
     version = found.group(0) if found else "8.3"
     runner = "pest" if "pestphp/pest" in dev else "phpunit"
     return Stack(
-        "php",
-        runner,
-        "composer",
-        "clover.xml",
-        setup=(
-            "- uses: shivammathur/setup-php@v2",
-            "  with:",
-            f'    php-version: "{version}"',
-            "    coverage: pcov",
-            "- run: composer install --no-interaction --no-progress",
-        ),
+        "php", runner, "composer", "clover.xml",
+        setup=("- uses: shivammathur/setup-php@v2", "  with:", f'    php-version: "{version}"',
+               "    coverage: pcov", "- run: composer install --no-interaction --no-progress"),
         test=f"vendor/bin/{runner} --coverage-clover clover.xml",
-        pattern=_PHPUNIT,
-        job_requires=re.compile(r"coverage:\s*['\"]?(pcov|xdebug)|XDEBUG_MODE"),
+        pattern=_PHPUNIT, job_requires=re.compile(r"coverage:\s*['\"]?(pcov|xdebug)|XDEBUG_MODE"),
         editor=_edit_phpunit,
         junit_report="junit.xml",
         junit_flag="--log-junit junit.xml",

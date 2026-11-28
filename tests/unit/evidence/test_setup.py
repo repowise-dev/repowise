@@ -257,7 +257,9 @@ def test_a_jest_unit_says_how_jest_junit_writes_its_timings(tmp_path: Path) -> N
 
 
 def test_ruby_and_php_units_say_how_their_tests_write_junit_timings(tmp_path: Path) -> None:
-    (tmp_path / "Gemfile").write_text('source "https://rubygems.org"\ngem "rspec"\n')
+    (tmp_path / "Gemfile").write_text(
+        'source "https://rubygems.org"\ngem "rspec"\ngem "rspec_junit_formatter"\n'
+    )
     (tmp_path / "Gemfile.lock").write_text("")
     (tmp_path / "spec").mkdir()
     (tmp_path / "spec" / "a_spec.rb").write_text(
@@ -293,9 +295,9 @@ def test_ruby_and_php_units_say_how_their_tests_write_junit_timings(tmp_path: Pa
         "ingest": 'repowise evidence add api/junit.xml --workload "api: phpunit tests" --class unit_test '
         "--commit " + "a" * 40,
     }
-    # The formatter gem is missing, so the Ruby unit says so; the coverage commands are untouched.
+    # The coverage command is untouched; the formatter gem is listed, so no note.
     (ruby,) = [unit for unit in plan["units"] if unit["root"] == ""]
-    assert "rspec_junit_formatter" in "\n".join(ruby["coverage"]["notes"])
+    assert "rspec_junit_formatter" not in "\n".join(ruby["coverage"]["notes"])
     assert ruby["coverage"]["command"] == "bundle exec rspec"
     # The loop's test step is that command: one run, coverage and timings, for the
     # first unit; the PHP unit's turn comes once the Ruby one is covered.
