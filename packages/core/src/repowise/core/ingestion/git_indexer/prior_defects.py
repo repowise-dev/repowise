@@ -419,7 +419,6 @@ def _walk_fix_commits(
             history = [renames.resolve(p) for p, _ in rows]
             history = [p for p in dict.fromkeys(history) if p in indexable_files]
             if history:
-                issues = tracker_fixes.get(sha, frozenset())
                 fixes.append(
                     FixCommit(
                         sha=sha,
@@ -428,14 +427,19 @@ def _walk_fix_commits(
                         subject=record["s"],
                         body=record["b"],
                         history_paths=history,
-                        issues=issues,
-                        rule_fix=not issues or is_typed_fix_commit(record["s"]),
+                        **_linked(sha, record["s"], tracker_fixes),
                     )
                 )
         for path, renamed_from in rows:
             if renamed_from:
                 renames.record(renamed_from, path)
     return fixes
+
+
+def _linked(sha: str, subject: str, tracker_fixes: TrackerFixes) -> dict[str, Any]:
+    """A fix commit's linked issues, and whether the git rule names it a fix too."""
+    issues = tracker_fixes.get(sha, frozenset())
+    return {"issues": issues, "rule_fix": not issues or is_typed_fix_commit(subject)}
 
 
 def _read_commits(
