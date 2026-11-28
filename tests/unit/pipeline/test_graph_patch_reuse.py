@@ -39,6 +39,40 @@ def test_a_warmup_two_languages_share_runs_once_per_context(monkeypatch: pytest.
     assert calls == [ctx, other]
 
 
+def test_run_warmups_logs_warning_and_closes_phase_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import structlog.testing
+
+    phases: list[tuple[str, str]] = []
+    progress = SimpleNamespace(
+        on_phase_start=lambda name, total: phases.append(("start", name)),
+        on_phase_done=lambda name: phases.append(("done", name)),
+    )
+
+    def failing_warmup(ctx: object) -> None:
+        raise RuntimeError("index exploded")
+
+    monkeypatch.setattr(
+        graph_warmups,
+        "_WARMUPS",
+        {"typescript": ("graph.ts_index", failing_warmup)},
+    )
+    parsed = {"a.ts": _parsed("typescript")}
+    ctx = SimpleNamespace()
+
+    with structlog.testing.capture_logs() as logs:
+        graph_warmups.run_warmups(parsed, ctx, progress=progress)
+
+    assert phases == [("start", "graph.ts_index"), ("done", "graph.ts_index")]
+    assert any(
+        entry.get("log_level") == "warning"
+        and entry.get("phase") == "graph.ts_index"
+        and "index exploded" in str(entry.get("error", ""))
+        for entry in logs
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "names", "stems", "expected"),
     [

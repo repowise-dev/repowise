@@ -809,8 +809,14 @@ def run_warmups(
         done_warmups.add(warmup)
         if progress is not None:
             progress.on_phase_start(phase_name, None)
-        with contextlib.suppress(Exception):  # warmup failures must not abort the build
+        try:
             warmup(ctx)
+        except Exception as exc:  # warmup failures must not abort the build
+            structlog.get_logger(__name__).warning(
+                "graph_warmup_failed",
+                phase=phase_name,
+                error=str(exc),
+            )
         if progress is not None:
             done = getattr(progress, "on_phase_done", None)
             if callable(done):
