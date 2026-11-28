@@ -203,9 +203,7 @@ def _sources_or_none(rows: list[dict], config: dict) -> list[dict]:
     try:
         return _source_rows(rows, config)
     except Exception as exc:  # a broken source must not hide every plugin
-        logging.getLogger("repowise.plugins").warning(
-            "sources not listed: %s", type(exc).__name__
-        )
+        logging.getLogger("repowise.plugins").warning("sources not listed: %s", type(exc).__name__)
         return []
 
 
@@ -269,11 +267,11 @@ def _list_plugins(fmt: str) -> None:
         _print_source_row(src)
     for name, row in report["seams"].items():
         others = ", ".join(row["implementations"])
-        console.print(f"seam [bold]{escape(name)}[/bold]: {escape(str(row['default']))}  ({escape(others)})")
-    for extension, name in sorted(report["document_extractors"].items()):
         console.print(
-            f"document extractor [bold]{escape(extension)}[/bold]: {escape(name)}"
+            f"seam [bold]{escape(name)}[/bold]: {escape(str(row['default']))}  ({escape(others)})"
         )
+    for extension, name in sorted(report["document_extractors"].items()):
+        console.print(f"document extractor [bold]{escape(extension)}[/bold]: {escape(name)}")
 
 
 def _print_source_row(src: dict) -> None:
@@ -299,7 +297,9 @@ def _print_plugin_row(r: dict) -> None:
     status = f"[{color}]{r['status']}[/{color}]"
     if r["error"]:
         status += f": {escape(r['error'])}"
-    console.print(f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}")
+    console.print(
+        f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}"
+    )
     if r["seams"]:
         console.print(f"  registered: {escape(', '.join(r['seams']))}")
     for m in r.get("missing", ()):
