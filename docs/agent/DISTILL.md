@@ -60,6 +60,25 @@ Dropped content goes to the omission store and is referenced inline:
 [repowise#a1b2c3d4e5f6: 230 lines omitted (~6.1k tokens); restore: repowise expand a1b2c3d4e5f6]
 ```
 
+#### Diagnostics as JSON: `--format json [--file PATH ...]`
+
+Before changing a file, an agent can ask for that file's compiler, type-checker or
+linter diagnostics as records rather than text. Repowise parses what the tool prints:
+tsc, MSBuild/dotnet, mypy, eslint, ruff, flake8, clippy/rustc, golangci-lint, and
+gcc/clang/javac/go `path:line[:col]:` lines. It does not run a compiler of its own.
+Paths come back repo-relative. `--file` (repeatable) keeps only those files, and if
+the only errors are in other files, `status` is `clean`. The exit code is the
+wrapped command's own, and nothing is written to the omission store.
+
+```
+$ repowise distill --format json --file src/app.ts -- npx tsc --noEmit
+{"status": "errors", "source": "tsc", "exit_code": 2, "diagnostics": [{"file": "src/app.ts", "line": 3, "col": 7, "severity": "error", "code": "TS2322", "source": "tsc", "message": "Type 'string' is not assignable to type 'number'."}]}
+```
+
+`status` is one of `clean`, `errors`, `unavailable` (the tool was not found,
+`reason` holds its last output line) or `unparsed` (non-zero exit with nothing
+recognized: read the raw output instead).
+
 ### 2. `repowise expand <ref>`: the reversal
 
 ```bash

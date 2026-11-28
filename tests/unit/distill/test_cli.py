@@ -333,9 +333,7 @@ def test_posix_dialect_runs_in_a_posix_shell(repo_cwd: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
-def test_posix_dialect_refuses_rather_than_falling_back_to_cmd(
-    repo_cwd: Path, monkeypatch
-) -> None:
+def test_posix_dialect_refuses_rather_than_falling_back_to_cmd(repo_cwd: Path, monkeypatch) -> None:
     """Breaking what the guard protects: with no POSIX shell it must not run.
 
     Falling back to the host shell is the exact bug this path exists to
@@ -457,3 +455,19 @@ def test_distill_records_savings_ledger(repo_cwd: Path, fixtures_dir: Path) -> N
     summary = store.savings_summary()
     store.close()
     assert summary["per_filter"]["file_listing"]["events"] == 1
+
+
+def test_distill_json_filters_by_file_and_keeps_exit_code(repo_cwd: Path) -> None:
+    code = (
+        "import sys; "
+        "print('a.py:1: error: bad thing  [misc]'); "
+        "print('b.py:2: error: other thing  [misc]'); "
+        "sys.exit(1)"
+    )
+    result = CliRunner().invoke(
+        distill_command, ["--format", "json", "--file", "a.py", "--", *_py(code)]
+    )
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "errors"
+    assert [d["file"] for d in payload["diagnostics"]] == ["a.py"]

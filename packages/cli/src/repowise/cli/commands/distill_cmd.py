@@ -22,6 +22,7 @@ command and be run as the program.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -53,8 +54,23 @@ from repowise.core.command_runner import UnrenderableCommandError, render_comman
         "syntax is run by a POSIX shell rather than cmd.exe."
     ),
 )
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="json: print compiler/type-checker/linter diagnostics as structured records.",
+)
+@click.option(
+    "--file",
+    "files",
+    multiple=True,
+    help="With --format json, keep only diagnostics for this file (repeatable).",
+)
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
-def distill_command(source: str, command: tuple[str, ...]) -> None:
+def distill_command(
+    source: str, fmt: str, files: tuple[str, ...], command: tuple[str, ...]
+) -> None:
     """Run COMMAND and print a distilled rendering of its output.
 
     Examples:
@@ -64,6 +80,8 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
         repowise distill pytest tests/unit -x
 
         repowise distill npm run build
+
+        repowise distill --format json --file src/app.ts -- npx tsc --noEmit
 
     Noise (pass parades, progress spam, hint boilerplate) is dropped; errors,
     failures, and summaries always survive. Dropped content is stored in
@@ -117,9 +135,38 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
     if proc.stderr:
         output = output + ("\n" if output and not output.endswith("\n") else "") + proc.stderr
 
+    if fmt == "json":
+        _echo_safely(json.dumps(_diagnostics_json(output, proc.returncode, files)))
+        sys.exit(proc.returncode)
+
     text = _distill_or_raw(output, command_str, proc.returncode, source)
     _echo_safely(text)
     sys.exit(proc.returncode)
+
+
+def _diagnostics_json(output: str, exit_code: int, files: tuple[str, ...]) -> dict:
+    """Structured diagnostics, paths repo-relative POSIX, filtered to *files*."""
+    from repowise.core.distill.diagnostics import parse_diagnostics
+
+    cwd = Path.cwd()
+    root = (find_repowise_repo_root() or cwd).resolve()
+
+    def rel(path: str) -> str:
+        try:
+            return (cwd / path).resolve().relative_to(root).as_posix()
+        except ValueError:
+            return path
+
+    result = parse_diagnostics(output, exit_code)
+    for d in result["diagnostics"]:
+        d["file"] = rel(d["file"])
+    if files:
+        wanted = {rel(f) for f in files}
+        result["diagnostics"] = [d for d in result["diagnostics"] if d["file"] in wanted]
+        if result["status"] == "errors" and not result["diagnostics"]:
+            # The asked-about files are clean even if others are not.
+            result["status"] = "clean"
+    return result
 
 
 #: Shells that read a POSIX command line from ``-c``. An allowlist rather

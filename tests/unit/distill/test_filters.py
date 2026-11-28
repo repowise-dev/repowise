@@ -19,6 +19,7 @@ import statistics
 import pytest
 
 from repowise.core.distill.budget import estimate_tokens, savings_pct
+from repowise.core.distill.diagnostics import parse_diagnostics
 from repowise.core.distill.filters.base import is_error_line
 from repowise.core.distill.registry import filter_registry
 
@@ -273,7 +274,7 @@ def test_go_error_heavy_test_strictly_bounded_to_20() -> None:
 def test_go_failure_diagnostic_survives_many_subsequent_logs() -> None:
     lines = [
         "=== RUN   TestPick",
-        "    pick_test.go:10: got \"alpha\" want \"beta\"",
+        '    pick_test.go:10: got "alpha" want "beta"',
     ]
     for i in range(30):
         lines.append(f"    pick_test.go:{20 + i}: debug output line {i}")
@@ -287,7 +288,7 @@ def test_go_failure_diagnostic_survives_many_subsequent_logs() -> None:
     f = filter_registry.get("test_output")
     distilled = f.distill(raw, command="go test -v ./...")
     assert "--- FAIL: TestPick (0.05s)" in distilled
-    assert "got \"alpha\" want \"beta\"" in distilled
+    assert 'got "alpha" want "beta"' in distilled
     assert "debug output line 29" in distilled
     assert "debug output line 15" not in distilled
 
@@ -418,6 +419,89 @@ def test_lint_unrecognized_raises() -> None:
     f = filter_registry.get("lint_output")
     with pytest.raises(ValueError, match="lint"):
         f.distill("random text\n" * 50, command="npm run lint")
+
+
+# -- distill --format json: structured diagnostics -------------------------------
+
+
+@pytest.mark.parametrize(
+    ("fixture", "count", "first", "source"),
+    [
+        ("tsc_errors.txt", 6, ("src/components/chat/chat-interface.tsx", 112, 18, "error", "TS2345"), "tsc"),
+        ("mypy_errors.txt", 8, ("packages/core/src/repowise/core/distill/markers.py", 31, None, "error", "assignment"), "mypy"),
+        ("eslint_fail.txt", 19, (None, 9, 5, "error", "react-hooks/rules-of-hooks"), "eslint"),
+        ("ruff_check_concise.txt", 671, (None, 14, 22, "warning", "TC003"), "concise"),
+        ("ruff_check_full.txt", 67, (None, 33, 1, "warning", "I001"), "ruff_full"),
+        ("clippy_warnings.txt", 15, ("src/walker.rs", 42, 9, "warning", "unused_variables"), "clippy"),
+        ("golangci_lint.txt", 24, ("internal/scan/walker.go", 42, 2, "warning", "ineffassign"), "golangci"),
+    ],
+)  # fmt: skip
+def test_parse_diagnostics_fixtures(load_fixture, fixture, count, first, source) -> None:
+    result = parse_diagnostics(load_fixture(fixture), 1)
+    assert result["status"] == "errors"
+    assert result["source"] == source
+    assert len(result["diagnostics"]) == count
+    d = result["diagnostics"][0]
+    file, line, col, severity, code = first
+    if file is not None:  # Windows-captured fixtures: only check the path is filled
+        assert d["file"] == file
+    assert d["file"]
+    assert (d["line"], d["col"], d["severity"], d["code"]) == (line, col, severity, code)
+
+
+@pytest.mark.parametrize(
+    ("output", "record"),
+    [
+        (
+            "Program.cs(10,5): error CS1002: ; expected [/src/app.csproj]",
+            ("Program.cs", 10, 5, "error", "CS1002", "msbuild"),
+        ),
+        (
+            "main.c:3:5: error: unknown type name 'foo' [-Wfoo]",
+            ("main.c", 3, 5, "error", "-Wfoo", "gnu"),
+        ),
+        (
+            "Main.java:7: error: ';' expected",
+            ("Main.java", 7, None, "error", None, "gnu"),
+        ),
+        (
+            "./main.go:12:2: undefined: x",
+            ("./main.go", 12, 2, "error", None, "gnu"),
+        ),
+        (
+            'app.py:4: error: Name "x" is not defined  [name-defined]',
+            ("app.py", 4, None, "error", "name-defined", "mypy"),
+        ),
+    ],
+)
+def test_parse_diagnostics_single_lines(output, record) -> None:
+    result = parse_diagnostics(output + "\n", 1)
+    assert result["status"] == "errors"
+    [d] = result["diagnostics"]
+    assert (d["file"], d["line"], d["col"], d["severity"], d["code"], d["source"]) == record
+
+
+def test_parse_diagnostics_gnu_note_attaches_to_previous() -> None:
+    out = "./a.go:1:1: undefined: x\n./a.go:1:1: note: declared here\n"
+    [d] = parse_diagnostics(out, 1)["diagnostics"]
+    assert "declared here" in d["message"]
+
+
+@pytest.mark.parametrize(
+    ("output", "exit_code", "status"),
+    [
+        ("", 0, "clean"),
+        ("bash: tsc: command not found\n", 127, "unavailable"),
+        ("something went sideways\nno idea\n", 1, "unparsed"),
+    ],
+)
+def test_parse_diagnostics_status(output, exit_code, status) -> None:
+    result = parse_diagnostics(output, exit_code)
+    assert result["status"] == status
+    assert result["exit_code"] == exit_code
+    assert result["diagnostics"] == []
+    if status == "unavailable":
+        assert result["reason"] == "bash: tsc: command not found"
 
 
 # -- git family -------------------------------------------------------------------
@@ -656,7 +740,9 @@ def test_a_flood_is_still_sampled() -> None:
 
 def test_ls_long_keeps_every_entry_when_small(load_fixture) -> None:
     raw, distilled = _distill(load_fixture, "ls_la.txt", "file_listing", "ls -la")
-    entries = [ln.split()[-1] for ln in raw.splitlines() if ln[:1] in "-dl" and len(ln.split()) >= 9]
+    entries = [
+        ln.split()[-1] for ln in raw.splitlines() if ln[:1] in "-dl" and len(ln.split()) >= 9
+    ]
     assert entries
     assert "more entries" not in distilled
     for name in entries:
