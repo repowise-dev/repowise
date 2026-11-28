@@ -179,6 +179,7 @@ async def bulk_upsert_decisions(
                 headline.get("source", ""),
                 headline.get("evidence_commits"),
                 headline.get("decision") or headline.get("source_quote") or "",
+                headline.get("title", ""),
             )
             if match_id is not None and match_id in id_to_rec:
                 rec = id_to_rec[match_id]
@@ -222,7 +223,9 @@ async def bulk_upsert_decisions(
             existing_by_norm[norm] = rec
             id_to_rec[rec.id] = rec
             if created and not split:
-                rewordings.add(rec.id, rec.source, duplicate_commits(rec), duplicate_text(rec))
+                rewordings.add(
+                    rec.id, rec.source, duplicate_commits(rec), duplicate_text(rec), rec.title
+                )
         # A rewording from the same lane is not new information: promoting it
         # would retitle the record on every update, accepted ones included.
         if not created and not reworded:
@@ -314,7 +317,7 @@ async def _rewording_index(
     index = RewordingIndex()
     for rec in keeper_order(records, accepted):
         if rec.id not in flagged:
-            index.add(rec.id, rec.source, duplicate_commits(rec), duplicate_text(rec))
+            index.add(rec.id, rec.source, duplicate_commits(rec), duplicate_text(rec), rec.title)
     return index
 
 

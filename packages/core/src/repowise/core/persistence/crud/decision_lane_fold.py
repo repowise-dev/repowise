@@ -12,7 +12,10 @@ Two folds, both keyed on a shared evidence commit:
 
 The commit alone is never enough, because one PR states several distinct
 decisions: the rewording fold also needs the decision text to match (one text
-opens the other, or their content words overlap almost entirely).
+opens the other, or their content words overlap almost entirely), or the
+titles to name the same choice (most of their content words shared). A re-mine
+often restates the decision from another part of the body while keeping the
+title close, so the title catches what the text rule misses.
 """
 
 from __future__ import annotations
@@ -281,6 +284,56 @@ def same_decision_text(a: str, b: str) -> bool:
     return jaccard(ca, cb) >= _MIN_WORD_OVERLAP
 
 
+#: Measured on the same-lane, same-commit pairs of a store of ~1.5k records
+#: (2026-11-28): at or above this, 69 of 69 title pairs named one decision;
+#: from 0.5 down sit two choices from one PR ("Exclude co-change edges from
+#: regeneration walks" against "... from decision centrality").
+_MIN_TITLE_OVERLAP_SAME_COMMIT = 0.6
+
+#: Number words a title can differ by alone: "one worker" and "two workers"
+#: share every other word and are still two rulings.
+_QUANTITIES = frozenset(
+    {"zero", "one", "two", "three", "four", "five", "single", "both", "all", "every", "only"}
+)
+
+
+#: Verbs that reverse a ruling while leaving the rest of the title alone:
+#: "Enable auth for health endpoints" and "Disable auth for health endpoints".
+#: A fixed list, so an opposite missing from it is not caught; extend it here.
+_OPPOSITES = (
+    ("add", "remove"),
+    ("allow", "block"),
+    ("allow", "deny"),
+    ("enable", "disable"),
+    ("include", "exclude"),
+    ("keep", "drop"),
+    ("keep", "remove"),
+    ("show", "hide"),
+    ("start", "stop"),
+)
+
+
+def _quantities(words: frozenset[str]) -> frozenset[str]:
+    return frozenset(w for w in words if w in _QUANTITIES or w.isdigit())
+
+
+def _opposed(a: frozenset[str], b: frozenset[str]) -> bool:
+    """Whether one title holds a word the other holds the opposite of, and not both."""
+    return any((x in a - b and y in b - a) or (y in a - b and x in b - a) for x, y in _OPPOSITES)
+
+
+def same_decision_title(a: str, b: str) -> bool:
+    """Whether titles *a* and *b*, mined from one commit, name the same choice."""
+    ca, cb = _content(_words(a)), _content(_words(b))
+    if min(len(ca), len(cb)) < _MIN_CONTENT_WORDS:
+        return False
+    if ca & _NEGATIONS != cb & _NEGATIONS or _quantities(ca) != _quantities(cb):
+        return False
+    if _opposed(ca, cb):
+        return False
+    return jaccard(ca, cb) >= _MIN_TITLE_OVERLAP_SAME_COMMIT
+
+
 class RewordingIndex:
     """Kept records by lane and evidence commit, matched against a reworded arrival.
 
@@ -292,24 +345,42 @@ class RewordingIndex:
     """
 
     def __init__(self) -> None:
-        self._by_commit: dict[str, list[tuple[int, str, str]]] = {}
+        self._by_commit: dict[str, list[tuple[int, str, str, str]]] = {}
         self._added = 0
 
-    def add(self, record_id: str, source: str, commits: Iterable[str] | None, text: str) -> None:
+    def add(
+        self,
+        record_id: str,
+        source: str,
+        commits: Iterable[str] | None,
+        text: str,
+        title: str = "",
+    ) -> None:
         if not text:
             return
+        entry = (self._added, record_id, text, title)
         for key in commit_keys(commits):
-            self._by_commit.setdefault(f"{source}:{key}", []).append((self._added, record_id, text))
+            self._by_commit.setdefault(f"{source}:{key}", []).append(entry)
         self._added += 1
 
-    def match(self, source: str, commits: Iterable[str] | None, text: str) -> str | None:
-        """The id of a kept record this one rewords, or ``None``."""
+    def match(
+        self, source: str, commits: Iterable[str] | None, text: str, title: str = ""
+    ) -> str | None:
+        """The id of a kept record this one rewords, or ``None``.
+
+        A text match wins over a title match: the text is the stronger
+        evidence, so an older record whose title merely sounds alike must not
+        take an arrival from the record that holds its sentence.
+        """
         if not text:
             return None
-        hits = [
-            (order, record_id)
+        kept = [
+            entry
             for key in commit_keys(commits)
-            for order, record_id, kept_text in self._by_commit.get(f"{source}:{key}", ())
-            if same_decision_text(text, kept_text)
+            for entry in self._by_commit.get(f"{source}:{key}", ())
+        ]
+        by_text = [(o, rid) for o, rid, kept_text, _ in kept if same_decision_text(text, kept_text)]
+        hits = by_text or [
+            (o, rid) for o, rid, _, kept_title in kept if same_decision_title(title, kept_title)
         ]
         return min(hits)[1] if hits else None
