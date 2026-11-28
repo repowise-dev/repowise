@@ -437,3 +437,9 @@ def test_derived_api_urls_are_always_https() -> None:
 def test_a_message_closing_a_whole_list_is_a_rollup() -> None:
     body = "Closes #1, closes #2, closes #3, closes #4, closes #5"
     assert closing_mentions(IssueCommit("a" * 40, "Merge dev", body), github.CLOSING_RE) == []
+
+
+def test_the_forge_source_meets_the_issue_source_contract() -> None:
+    from repowise.core.plugin_testing import check_implementation
+
+    assert check_implementation("issue-source", issue_sources.get("forge")) == []

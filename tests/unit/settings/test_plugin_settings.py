@@ -176,7 +176,8 @@ def test_check_plugin_can_check_a_loaded_plugin_that_declares_settings(installed
     assert settings.all_settings() == before
     assert settings.get(DB.key) == DB
     assert settings.by_env(TOKEN.env.name) == TOKEN
-    assert sum(s.key.startswith(("plugins.", ENV_PREFIX)) for s in before) == 3
+    # The plugin's 3, beside the built-in forge source's 3.
+    assert sum(s.key.startswith(("plugins.", ENV_PREFIX)) for s in before) == 6
 
 
 def test_plugins_json_lists_each_setting_and_source_without_values(
