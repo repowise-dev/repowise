@@ -126,6 +126,10 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         if len(first_line) > 160:
             first_line = first_line[:157] + "..."
         return first_line
+    if node_type == "init_declaration":
+        # Swift: no parameter-list node wraps an initialiser's parameters, so
+        # the list is read between its own parens: ``init?(x: Int = 0)``.
+        return _swift_init_signature(def_node, src)
     if node_type in ("lexical_declaration", "assignment_expression"):
         # Arrow function assigned to const/let, or a function assigned to a
         # property (``obj.f = (a) => ...``).
@@ -136,6 +140,22 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}{params_text}"
     # Fallback
     return f"{name}{params_text}"
+
+
+def _swift_init_signature(def_node: Node, src: str) -> str:
+    """``init``, its failable mark and its parameter list, as written."""
+    head = "init"
+    open_paren = close_paren = None
+    for child in def_node.children:
+        if child.type in ("?", "bang") and open_paren is None:
+            head += node_text(child, src)
+        elif child.type == "(" and open_paren is None:
+            open_paren = child
+        elif child.type == ")":
+            close_paren = child
+    if open_paren is None or close_paren is None:
+        return head
+    return head + src[open_paren.start_byte : close_paren.end_byte]
 
 
 def _kotlin_return(def_node: Node, src: str) -> str:

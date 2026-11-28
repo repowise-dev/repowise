@@ -114,3 +114,41 @@ class TestSwiftParser:
         result = parser.parse_file(fi, src)
         assert result.parse_errors == []
         assert "fire" in {s.name for s in result.symbols if s.parent_name == "Haptics"}
+
+    def test_initialisers_deinitialiser_and_typealias_are_symbols(self, parser: ASTParser) -> None:
+        src = (
+            b"struct S {\n"
+            b"    init() {}\n"
+            b"    private init?(x: Int = 0) { return nil }\n"
+            b"    init(_ y: Int, label z: [String: Int]) { setup() }\n"
+            b"    deinit {}\n"
+            b"    func setup() {}\n"
+            b"}\n"
+            b"public typealias Id = Int\n"
+        )
+        fi = _make_file_info("swift_pkg/S.swift", "swift")
+        result = parser.parse_file(fi, src)
+        assert result.parse_errors == []
+        members = {(s.name, s.start_line): s for s in result.symbols if s.parent_name == "S"}
+        inits = [members[("init", line)] for line in (2, 3, 4)]
+        assert all(s.kind == "method" for s in inits)
+        assert [s.id for s in inits] == [
+            "swift_pkg/S.swift::S::init#()",
+            "swift_pkg/S.swift::S::init#(x:)",
+            "swift_pkg/S.swift::S::init#(_:label:)",
+        ]
+        assert inits[1].signature == "init?(x: Int = 0)"
+        assert inits[1].visibility == "private"
+        assert members[("deinit", 5)].kind == "method"
+        alias = next(s for s in result.symbols if s.name == "Id")
+        assert (alias.kind, alias.visibility) == ("type_alias", "public")
+        # The call in an initialiser's body has that initialiser as its caller.
+        call = next(c for c in result.calls if c.target_name == "setup")
+        assert call.caller_symbol_id == inits[2].id
+
+    def test_a_single_initialiser_keeps_the_plain_id(self, parser: ASTParser) -> None:
+        src = b"class One {\n    init(a: Int) {}\n}\n"
+        fi = _make_file_info("swift_pkg/One.swift", "swift")
+        result = parser.parse_file(fi, src)
+        init = next(s for s in result.symbols if s.name == "init")
+        assert init.id == "swift_pkg/One.swift::One::init"
