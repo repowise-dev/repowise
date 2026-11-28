@@ -688,19 +688,26 @@ class TestCppOverloads:
         assert (floating, "w.h::format_float") in edges
         assert (integral, "w.h::format_float") not in edges
 
-    def test_a_declaration_stays_with_the_definition_of_its_head(self) -> None:
+    @pytest.mark.parametrize("owner", ["", "template <typename C>\n"])
+    def test_a_declaration_stays_with_the_definition_of_its_head(self, owner: str) -> None:
+        """A default is written on the declaration only; a class template's list leads its definition."""
+        scope = "S<C>" if owner else "S"
         source = (
-            "struct S {\n"
+            f"{owner}struct S {{\n"
             "  template <typename T, enable_if_t<is_a<T>::value, int> = 0> void f(T v);\n"
-            "  template <typename T, enable_if_t<!is_a<T>::value, int> = 0> void f(T v) {}\n"
+            "  template <typename T, enable_if_t<!is_a<T>::value, int> = 0> void f(T v);\n"
             "};\n"
-            "template <typename T, enable_if_t<is_a<T>::value, int> = 0>\nvoid S::f(T v) {}\n"
+            f"{owner}template <typename T, enable_if_t<is_a<T>::value, int>>\nvoid {scope}::f(T v) {{}}\n"
+            f"{owner}template <typename T, enable_if_t<!is_a<T>::value, int>>\nvoid {scope}::f(T v) {{}}\n"
         )
         by_id: dict[str, list[bool]] = {}
         for symbol in _parse("s.h", "cpp", source).symbols:
             by_id.setdefault(symbol.id, []).append(symbol.is_declaration)
-        assert sorted(by_id["s.h::S::f#1<T,enable_if_t<is_a<T>,int>=0>"]) == [False, True]
-        assert by_id["s.h::S::f#1<T,enable_if_t<!is_a<T>,int>=0>"] == [False]
+        methods = {i: flags for i, flags in by_id.items() if "::f" in i}
+        assert methods == {
+            "s.h::S::f#1<T,enable_if_t<is_a<T>,int>>": [True, False],
+            "s.h::S::f#1<T,enable_if_t<!is_a<T>,int>>": [True, False],
+        }
 
     def test_template_definitions_equal_in_head_take_an_ordinal(self) -> None:
         source = (
@@ -722,10 +729,10 @@ class TestCppOverloads:
         [
             (
                 "<typename T, typename std::enable_if<std::is_same<T, int>::value>::type* = nullptr>",
-                "<T,enable_if<is_same<T,int>>*=nullptr>",
+                "<T,enable_if<is_same<T,int>>*>",
             ),
             ("<class... Args, /* pack */ int N>", "<Args[],int N>"),
-            ("<typename T><typename U>", "<T><U>"),
+            ("<typename T = int, int N = (1 >= 0), bool B = x == y>", "<T,int N,bool B>"),
             ("<bool... B>", "<bool B[]>"),
             ("<typename T, EN(sizeof(T) == sizeof(a.b))>", "<T,EN(sizeof(T)==sizeof(a_b))>"),
         ],

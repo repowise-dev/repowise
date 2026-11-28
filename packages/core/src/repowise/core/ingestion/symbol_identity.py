@@ -522,7 +522,8 @@ def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Sym
     return out
 
 
-# How a C++ template head is compacted for an id: comments, ``typename`` and
+# How a C++ template head is compacted for an id: comments, defaults (written
+# on a declaration, never repeated on its definition), ``typename`` and
 # ``class`` go, a qualified name keeps its last segment (``std::is_same<T,
 # U>::value`` -> ``is_same<T,U>``), and a pack reads as the array erased types
 # spell (``typename... Args`` -> ``Args[]``), so no separator survives.
@@ -533,12 +534,40 @@ _HEAD_PACK = re.compile(r"\.\.\.\s*(\w*)")
 _HEAD_SPACE = re.compile(r"\s*([^\w\s])\s*")
 
 
+def _without_defaults(head: str) -> str:
+    """``<typename T = int, int N = 0>`` -> ``<typename T , int N >``: each top-level ``= ...`` cut.
+
+    A ``<``, ``>`` or ``=`` beside ``=`` (``>=``, ``==``) or after ``-`` is an
+    operator, neither a bracket nor a default.
+    """
+    out: list[str] = []
+    depth, skipping = 0, False
+    for index, char in enumerate(head):
+        around = head[index - 1 : index] + head[index + 1 : index + 2]
+        operator = char in "<>=" and ("=" in around or (char == ">" and around[:1] == "-"))
+        if operator:
+            pass
+        elif char in "<([{":
+            depth += 1
+        elif char in ">)]}":
+            depth -= 1
+            skipping = skipping and depth > 0
+        elif depth == 1 and char == ",":
+            skipping = False
+        elif depth == 1 and char == "=" and head[index - 1] not in "<>!":
+            skipping = True
+        if not skipping:
+            out.append(char)
+    return "".join(out)
+
+
 def template_head(symbol: Symbol) -> str:
     """``<typename T, FMT_ENABLE_IF(std::is_integral<T>::value)>`` -> ``<T,FMT_ENABLE_IF(is_integral<T>)>``."""
     text = symbol.template_parameters
     if not text:
         return ""
-    text = _HEAD_QUALIFIER.sub("", _HEAD_KEYWORD.sub(" ", _HEAD_COMMENT.sub(" ", text)))
+    text = _without_defaults(_HEAD_COMMENT.sub(" ", text))
+    text = _HEAD_QUALIFIER.sub("", _HEAD_KEYWORD.sub(" ", text))
     text = re.sub(r"[./#]", "_", _HEAD_PACK.sub(r" \1[]", text))
     return _HEAD_SPACE.sub(r"\1", " ".join(text.split()))
 

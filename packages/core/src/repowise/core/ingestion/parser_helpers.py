@@ -535,16 +535,19 @@ _CPP_TEMPLATE_HEAD_WRAPPERS = frozenset(
 
 
 def _cpp_template_parameters(def_node: Node, src: str) -> str | None:
-    """``<typename T><typename U>``: the template parameter lists over *def_node*, outermost first."""
+    """``<typename U>``: the parameter list of the template head nearest *def_node*.
+
+    The nearest only: an out-of-line member template of a class template
+    writes the class's list too, which its in-class declaration does not.
+    """
     node = def_node
     while node.parent is not None and node.parent.type in _CPP_TEMPLATE_HEAD_WRAPPERS:
         node = node.parent
-    lists: list[str] = []
-    while (node := node.parent) is not None and node.type == "template_declaration":
-        parameters = node.child_by_field_name("parameters")
-        if parameters is not None:
-            lists.append(node_text(parameters, src))
-    return "".join(reversed(lists)) or None
+    head = node.parent
+    if head is None or head.type != "template_declaration":
+        return None
+    parameters = head.child_by_field_name("parameters")
+    return node_text(parameters, src) if parameters is not None else None
 
 
 def _kotlin_receiver_fields(def_node: Node, params: list[Node], language: str, name: str) -> dict:
