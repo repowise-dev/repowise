@@ -135,8 +135,8 @@ def test_credentials_stay_out_of_a_printed_request() -> None:
 
 
 def test_the_documented_minimal_source_passes_the_contract(monkeypatch) -> None:
-    """The copy-paste example in docs/reference/PLUGINS.md runs as written."""
-    doc = (_REPO / "docs" / "reference" / "PLUGINS.md").read_text(encoding="utf-8")
+    """The copy-paste example in docs/reference/PLUGINS_REFERENCE.md runs as written."""
+    doc = (_REPO / "docs" / "reference" / "PLUGINS_REFERENCE.md").read_text(encoding="utf-8")
     section = doc.split("### Writing an issue source", 1)[1]
     code = section.split("```python", 1)[1].split("```", 1)[0]
 
@@ -154,7 +154,7 @@ def test_the_documented_minimal_source_passes_the_contract(monkeypatch) -> None:
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     namespace: dict = {}
-    exec(compile(code, "PLUGINS.md", "exec"), namespace)
+    exec(compile(code, "PLUGINS_REFERENCE.md", "exec"), namespace)
     source = namespace["TrackerIssues"]()
     url, token = namespace["URL"], namespace["TOKEN"]
     assert source.settings == (url, token)

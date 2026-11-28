@@ -29,7 +29,7 @@ curious; you don't need them to *use* repowise (start with
 | [chat.md](chat.md) | The Codebase Chat feature: schema, `ChatProvider` protocol, the tool catalog chat shares with the MCP server, SSE streaming, the agentic loop, and per-provider notes |
 | [structurizr-export.md](structurizr-export.md) | Exporting the architecture as Structurizr DSL: the two-file model, health and layer tags, and how to render it |
 | [editor-files.md](editor-files.md) | How `CLAUDE.md` / `AGENTS.md` generation works (no LLM: pure DB + filesystem derivation) and how to add a new editor file |
-| [pluggable-storage.md](pluggable-storage.md) | Plugins, seams and pluggable storage: the storage contracts, the registries, and how to add a new seam (plugin authors start at [PLUGINS.md](../reference/PLUGINS.md)) |
+| [pluggable-storage.md](pluggable-storage.md) | Plugins, seams and pluggable storage: the storage contracts, the registries, and how to add a new seam (plugin authors start at [PLUGINS.md](../reference/PLUGINS.md); contracts in [PLUGINS_REFERENCE.md](../reference/PLUGINS_REFERENCE.md)) |
 | [ci.md](ci.md) | How CI runs: every job, what it checks, when it runs, and how to reproduce it locally |
 | [retired-page-archive.md](retired-page-archive.md) | Transactional retirement, complete prose/version preservation, successor notes, native readers and archive retention |
 

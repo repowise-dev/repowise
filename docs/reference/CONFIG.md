@@ -955,7 +955,7 @@ Settings that installed plugins declare, one block per plugin. When
 `REPOWISE_PLUGIN_<PLUGIN>_<NAME>`. Credentials are read from that variable
 only. `repowise config list --area plugins` shows what the installed plugins
 declare, and `repowise plugins` shows which required ones still need a value.
-See [Settings for a plugin](PLUGINS.md#settings-for-a-plugin).
+See [Settings for a plugin](PLUGINS_REFERENCE.md#settings-for-a-plugin).
 
 ```yaml
 plugins:
@@ -965,7 +965,7 @@ plugins:
 
 The built-in `forge` issue source is always listed. It reads GitHub or GitLab
 issues and runs only once `REPOWISE_PLUGIN_FORGE_TOKEN` is set (see
-[Issues from GitHub and GitLab](PLUGINS.md#issues-from-github-and-gitlab)).
+[Issues from GitHub and GitLab](PLUGINS_REFERENCE.md#issues-from-github-and-gitlab)).
 
 <!-- BEGIN GENERATED settings:plugins (python scripts/gen_config_docs.py) -->
 | Key | Default | What it does | Env var |

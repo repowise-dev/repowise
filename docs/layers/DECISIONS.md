@@ -320,7 +320,7 @@ only that decisions are off. Full parameters:
 [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_why).
 
 `repowise decision list` and `show` report how often each decision reached an
-agent and when last. When an [issue source](../reference/PLUGINS.md#writing-an-issue-source)
+agent and when last. When an [issue source](../reference/PLUGINS_REFERENCE.md#writing-an-issue-source)
 has linked one of a decision's evidence commits to a tracker issue, `get_why`,
 `repowise decision show` and the decision page list that issue with its type,
 status, title and link. It is context for the reader: the issue never changes

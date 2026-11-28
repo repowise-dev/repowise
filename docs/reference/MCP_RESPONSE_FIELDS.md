@@ -309,7 +309,7 @@ One top-level block: `window` (`since`, `until`), `candidates` (changes merged i
 
 ### Change targets
 
-`change:<id>` (`pr-123` or a commit sha the change landed): `type: "change"`, `id`, `ref`, `title`, `merged_at`, `category`, `shape` (`merge`, `squash`, `commit`), `head_sha`, `commit_count`, `files_changed`, `lines_added`, `lines_deleted`, `files` (first 25, then `files_total` and an omission ref), `linked_issues` when messages close any or an [issue source](PLUGINS.md#writing-an-issue-source) linked one of its commits, `provenance`. An entry is the bare key (`#12`), or `"ENG-42 (bug, Done): title"` when the issue is stored; issues stored on the change's commits that no message names follow, up to 5.
+`change:<id>` (`pr-123` or a commit sha the change landed): `type: "change"`, `id`, `ref`, `title`, `merged_at`, `category`, `shape` (`merge`, `squash`, `commit`), `head_sha`, `commit_count`, `files_changed`, `lines_added`, `lines_deleted`, `files` (first 25, then `files_total` and an omission ref), `linked_issues` when messages close any or an [issue source](PLUGINS_REFERENCE.md#writing-an-issue-source) linked one of its commits, `provenance`. An entry is the bare key (`#12`), or `"ENG-42 (bug, Done): title"` when the issue is stored; issues stored on the change's commits that no message names follow, up to 5.
 
 - `provenance` is `{label, agent_commits, human_attested_commits, unknown_commits, coverage}`, or `{"unavailable": "attribution_off"}`, or `{"unavailable": "not_recorded"}` for a change stored with attribution off.
 - An unknown id returns `error` naming the id forms; an ambiguous short sha returns `error` with ids as `candidates`.
@@ -573,7 +573,7 @@ Present when coverage is stored. With a gate set and coverage measured at head, 
 ### fix_history
 
 - `is_fix` is a keyword rule on the subject, not the conventional-commit type.
-- `overlap` (needs an index), per file: `fix_count`, `overlapping_lines` (`approximate`: past ranges use their own parent, so read "this area was patched before"), `last_fix_days_ago`, `changed_lines`, `share_of_change`, and `linked_issues` (up to 3, `"ENG-42 (bug): title"`) when an [issue source](PLUGINS.md#writing-an-issue-source) linked a counted fix to a bug or incident.
+- `overlap` (needs an index), per file: `fix_count`, `overlapping_lines` (`approximate`: past ranges use their own parent, so read "this area was patched before"), `last_fix_days_ago`, `changed_lines`, `share_of_change`, and `linked_issues` (up to 3, `"ENG-42 (bug): title"`) when an [issue source](PLUGINS_REFERENCE.md#writing-an-issue-source) linked a counted fix to a bug or incident.
 - `concentration` names a file holding at least half the changed lines.
 - Never names the commit that introduced a bug; absent without fix history.
 
@@ -611,7 +611,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 | `alignment` | Path mode: `governing_count` (accepted records still binding), `active_count`, `deprecated_count`, `uncheckable_count`, `candidate_count` (the last four sum to the records naming the path); `score` from `active_count` |
 | `git_archaeology` | No decision governs the path; `git_log` keeps its 5 newest rows, rest via the omission marker |
 | `provenance`, `evidence_refs` | Self-contained evidence refs. Matching ids mean shared evidence, not corroboration |
-| `linked_issues` | Per decision row, when an [issue source](PLUGINS.md#writing-an-issue-source) linked one of its evidence commits: `key`, `type`, `status`, `title`, `url` (empty ones left out), up to 3, then `linked_issues_total`. Display only: it never changes authority, ranking or staleness |
+| `linked_issues` | Per decision row, when an [issue source](PLUGINS_REFERENCE.md#writing-an-issue-source) linked one of its evidence commits: `key`, `type`, `status`, `title`, `url` (empty ones left out), up to 3, then `linked_issues_total`. Display only: it never changes authority, ranking or staleness |
 
 - **A question no decision answers** (no top-level decision, no rule or candidate on a named file) gets a compact verdict: `reason`, at most 3 `code_rationale` rows (`path`, `lines`, `comment`), at most 2 `key_commits` (`sha`, `date`, `message`, `pr_number`; commits the question singled out first, then the file's key commits carrying its terms), and `more`, the `get_why(targets=[...])` call for the full file history. `repowise why --full` keeps the whole card.
 - `body_excerpt` on a commit row: up to 280 characters of the commit's body, the paragraph that best matches the question. On a squash or merge commit that body is usually the PR description, cited by `pr_number`. It comes from the indexed commit or the local clone, never the network, and the compact verdict carries one.

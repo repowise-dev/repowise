@@ -111,7 +111,7 @@ fresh on every push, `repowise evidence setup --write` writes a CI file
 
 A service that already holds measurements (a database's statement statistics,
 a continuous profiler) connects through a plugin instead of a file:
-**[Writing an evidence source](../reference/PLUGINS.md#writing-an-evidence-source)**.
+**[Writing an evidence source](../reference/PLUGINS_REFERENCE.md#writing-an-evidence-source)**.
 Its runs are stored exactly as a file of the same entries would be.
 
 The rest of this page is the reference: the steps `setup` prints, every input
@@ -1055,7 +1055,7 @@ A service that holds measurements (a database's statement statistics, a
 continuous profiler) registers on the `evidence-source` seam instead: it
 fetches runs for a window from a cursor, with credentials the host keeps, and
 each run is stored exactly as a file of the same entries would be. See
-[Writing an evidence source](../reference/PLUGINS.md#writing-an-evidence-source).
+[Writing an evidence source](../reference/PLUGINS_REFERENCE.md#writing-an-evidence-source).
 
 Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 
