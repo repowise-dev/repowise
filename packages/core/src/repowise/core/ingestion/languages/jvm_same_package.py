@@ -149,9 +149,16 @@ def resolve_jvm_same_package_refs(
         ref_units = {u.id for u in build_units.units_owning(referencing)}
         if not ref_units:
             return True
-        for unit in build_units.units_owning(declaring):
-            if transitive_deps(unit.id) & ref_units:
-                return False  # the declaring module is built on the referrer
+        dec_units = {u.id for u in build_units.units_owning(declaring)}
+        # Files sharing a build unit always link.
+        if ref_units & dec_units:
+            return True
+        for unit in dec_units:
+            for ref in transitive_deps(unit) & ref_units:
+                if unit not in transitive_deps(ref):
+                    # the declaring module is built on the referrer and the
+                    # referrer doesn't depend back on it
+                    return False
         return True
 
     def plan(path: str, text: str) -> FileScope | None:
@@ -191,14 +198,26 @@ def _transitive_deps_fn(
         return lambda unit_id: frozenset()
 
     def closure(unit_id: str) -> frozenset[str]:
-        done = closures.get(unit_id)
-        if done is not None:
-            return done
-        closures[unit_id] = frozenset()  # cycle guard
+        cached = closures.get(unit_id)
+        if cached is not None:
+            return cached
+        # Explicit stack; only *finished* closures are cached, so cycles
+        # never leave an incomplete closure behind.
+        reached: set[str] = set()
         unit = build_units.unit(unit_id)
-        reached = set(unit.deps) if unit else set()
-        for dep in tuple(reached):
-            reached |= closure(dep)
+        stack = list(unit.deps) if unit else []
+        while stack:
+            dep = stack.pop()
+            if dep in reached:
+                continue
+            reached.add(dep)
+            finished = closures.get(dep)
+            if finished is not None:
+                reached |= finished
+                continue
+            dep_unit = build_units.unit(dep)
+            if dep_unit:
+                stack.extend(dep_unit.deps)
         closures[unit_id] = frozenset(reached)
         return closures[unit_id]
 

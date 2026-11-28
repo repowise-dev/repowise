@@ -326,6 +326,55 @@ class TestSamePackageBuildUnits:
         assert graph.has_edge(self.APP, self.COMMON)
         assert not graph.has_edge(self.COMMON, self.APP)
 
+    def test_mutual_dependency_keeps_both_edges(self, tmp_path: Path) -> None:
+        # Two units that depend on each other (e.g. main vs test fixtures):
+        # the dependency is not one-way, so neither direction is vetoed.
+        common = BuildUnit(
+            id="gradle::common", ecosystem="gradle", name="common",
+            root="common", manifest="settings.gradle.kts", source="gradle",
+            deps=("gradle::app",),
+        )
+        app = BuildUnit(
+            id="gradle::app", ecosystem="gradle", name="app",
+            root="app", manifest="settings.gradle.kts", source="gradle",
+            deps=("gradle::common",),
+        )
+        units = BuildUnitIndex(
+            units={u.id: u for u in (app, common)},
+            file_owners={self.APP: ("gradle::app",), self.COMMON: ("gradle::common",)},
+        )
+        graph, index, texts = _setup(tmp_path, self.FILES)
+        added = resolve_jvm_same_package_refs(graph, index, texts, build_units=units)
+        assert added == 2
+        assert graph.has_edge(self.APP, self.COMMON)
+        assert graph.has_edge(self.COMMON, self.APP)
+
+    def test_shared_declaring_file_keeps_edge(self, tmp_path: Path) -> None:
+        # The declaring file is shared by common and app (e.g. overlapping
+        # source roots) and app depends on common: the edge inside common
+        # is real and must stay — the veto only applies to one-way deps.
+        app = BuildUnit(
+            id="gradle::app", ecosystem="gradle", name="app",
+            root="app", manifest="settings.gradle.kts", source="gradle",
+            deps=("gradle::common",),
+        )
+        common = BuildUnit(
+            id="gradle::common", ecosystem="gradle", name="common",
+            root="common", manifest="settings.gradle.kts", source="gradle",
+        )
+        units = BuildUnitIndex(
+            units={u.id: u for u in (app, common)},
+            file_owners={
+                self.APP: ("gradle::common",),
+                self.COMMON: ("gradle::common", "gradle::app"),
+            },
+        )
+        graph, index, texts = _setup(tmp_path, self.FILES)
+        added = resolve_jvm_same_package_refs(graph, index, texts, build_units=units)
+        assert added == 2
+        assert graph.has_edge(self.APP, self.COMMON)
+        assert graph.has_edge(self.COMMON, self.APP)
+
     def test_file_without_unit_keeps_edges(self, tmp_path: Path) -> None:
         # No file_owners rows: every candidate edge is kept, as before.
         units = BuildUnitIndex(
