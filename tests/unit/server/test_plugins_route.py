@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -78,8 +79,8 @@ class FakeCli:
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
-        self.release = asyncio.Event()
-        self.loop = asyncio.get_running_loop()
+        # A thread event: the fixture and the test may run on different loops.
+        self.release = threading.Event()
         self.sync_output = json.dumps({"repo": "r", "sources": []})
 
     def __call__(self, args: list[str], *, cwd: Path, timeout: float) -> setup_cli.CliRun:
@@ -87,7 +88,8 @@ class FakeCli:
         if args[:1] == ["plugins"]:
             return setup_cli.CliRun(0, json.dumps(_LISTING), "")
         # Runs in a worker thread: block until the test lets the sync finish.
-        asyncio.run_coroutine_threadsafe(self.release.wait(), self.loop).result(timeout=10)
+        if not self.release.wait(timeout=30):
+            raise TimeoutError("the test never released the sync")
         return setup_cli.CliRun(0, self.sync_output, "")
 
 
@@ -105,7 +107,7 @@ async def repo(client: AsyncClient, tmp_path: Path) -> dict:
 
 
 @pytest.fixture
-async def cli(monkeypatch: pytest.MonkeyPatch) -> FakeCli:
+def cli(monkeypatch: pytest.MonkeyPatch) -> FakeCli:
     fake = FakeCli()
     monkeypatch.setattr(setup_cli, "run_cli", fake)
     return fake
