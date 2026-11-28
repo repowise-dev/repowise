@@ -45,7 +45,7 @@ def test_warning_points_every_stale_page_at_update_full() -> None:
     out = _render(50, 2752, (122, 1235), "repowise update --full", "llm")
     assert "Cascade budget of 50 pages was reached. 2752 dependent files were skipped" in out
     assert "Run repowise update --full to refresh them" in out
-    assert "1235 structural pages (file / cycle), no model needed" in out
+    assert "1235 structural pages, no model needed" in out
     assert "122 pages written by a model, priced before they are rewritten" in out
     assert "generate --stale" not in out
     assert "--cascade-budget" not in out
@@ -190,7 +190,7 @@ def _update_output(
             "deterministic",
             False,
             True,
-            "4 structural pages (file / cycle), no model needed; 7 pages of the types a model "
+            "4 structural pages, no model needed; 7 pages of the types a model "
             "writes, rebuilt from code with no model calls.",
             id="template-wiki-no-provider",
         ),
@@ -199,7 +199,7 @@ def _update_output(
             "deterministic",
             False,
             False,
-            "4 structural pages (file / cycle); 7 pages of the types a model writes. "
+            "4 structural pages; 7 pages of the types a model writes. "
             "It writes the whole wiki with a model, and prices it first.",
             id="template-wiki-no-provider-docs-run",
         ),
@@ -207,7 +207,7 @@ def _update_output(
             "deterministic",
             True,
             True,
-            "4 structural pages (file / cycle); 7 pages of the types a model writes. "
+            "4 structural pages; 7 pages of the types a model writes. "
             "It writes the whole wiki with a model, and prices it first.",
             id="template-wiki-provider",
         ),
@@ -215,7 +215,7 @@ def _update_output(
             "llm",
             True,
             False,
-            "4 structural pages (file / cycle), no model needed; 7 pages written by a model, "
+            "4 structural pages, no model needed; 7 pages written by a model, "
             "priced before they are rewritten.",
             id="llm-wiki",
         ),
@@ -258,3 +258,9 @@ def test_renderer_notice_remedy_matches_the_wiki(
 ) -> None:
     out = _update_output(monkeypatch, tmp_path, docs_mode, "_widen_for_full_render")
     assert notice in out
+
+
+def test_split_counts_a_model_free_page_as_structural() -> None:
+    # Issue #6079: a model_free onboarding page is built from code on every run.
+    rows = [*_ROWS, ("onboarding", "how_it_works", '{"model_free": true}')]
+    assert split_cascade_overflow(rows, ["src/a.py", "src/b.py"]) == (3, 4)

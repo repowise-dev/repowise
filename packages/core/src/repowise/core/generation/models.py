@@ -678,6 +678,16 @@ def is_model_free(metadata_json: str | None) -> bool:
         return False
 
 
+def is_model_written(page_type: str, metadata_json: str | None) -> bool:
+    """Whether a model writes this stored page: its type is one, and it is not model-free.
+
+    Metadata is parsed only for ``MODEL_FREE_PAGE_TYPES``.
+    """
+    if page_type in MODEL_FREE_PAGE_TYPES:
+        return not is_model_free(metadata_json)
+    return page_type in MODEL_WRITTEN_PAGE_TYPES
+
+
 # Metadata key holding the provider error a page fell back to its stub over.
 # Present only on a stub the run substituted for a model page whose provider
 # call raised, which is not the same thing as a stub a deterministic run meant
