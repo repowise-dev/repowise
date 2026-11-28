@@ -54,7 +54,12 @@ from ..return_types import (
     signature_parameter_count,
     signature_parameter_range,
 )
-from ..symbol_identity import base_symbol_id, id_segment_name, symbols_by_id
+from ..symbol_identity import (
+    base_symbol_id,
+    id_segment_name,
+    is_type_forward_declaration,
+    symbols_by_id,
+)
 from ..type_names import (
     POINTER_LIKE_MEMBERS,
     bare_type_name,
@@ -229,9 +234,15 @@ def _enclosing_id(symbol_id: str) -> str:
 def _fields_by_class(
     declarations: tuple[Declaration, ...], symbols: Sequence[Symbol], language: str
 ) -> dict[str, dict[str, str | None]]:
+    # A forward declaration has no body, so it owns no field; read as a class
+    # span, ``class Pool* pool_;`` would own the field it is written in.
     return types_by_class(
         declarations,
-        {s.id: (s.start_line, s.end_line) for s in _type_symbols(symbols)},
+        {
+            s.id: (s.start_line, s.end_line)
+            for s in _type_symbols(symbols)
+            if not is_type_forward_declaration(vars(s))
+        },
         [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
         language,
     )
@@ -543,6 +554,8 @@ class ReceiverTypingMixin(
             promoted = self._go_embedded_method(file_path, bare, call.target_name)
             if promoted is not None and promoted[1] != caller_id:
                 return promoted[1], "import"
+        if found is None and self._language_of(file_path) == "cpp":
+            found = self._cpp_reached_method(file_path, call, caller_id, bare)
         if found is None and self._language_of(file_path) == "cpp":
             return self._cpp_base_class_target(call, caller_id, bare)
         return found
