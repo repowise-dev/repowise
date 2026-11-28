@@ -534,12 +534,14 @@ _CPP_TEMPLATE_HEAD_WRAPPERS = frozenset(
 )
 
 
-def _cpp_template_parameters(def_node: Node, src: str) -> str | None:
-    """``<typename U>``: the parameter list of the template head nearest *def_node*.
+def _cpp_template_parameters(def_node: Node, src: str, language: str) -> str | None:
+    """``<typename U>``: the parameter list of the template head nearest a C++ *def_node*.
 
     The nearest only: an out-of-line member template of a class template
     writes the class's list too, which its in-class declaration does not.
     """
+    if language != "cpp":
+        return None
     node = def_node
     while node.parent is not None and node.parent.type in _CPP_TEMPLATE_HEAD_WRAPPERS:
         node = node.parent

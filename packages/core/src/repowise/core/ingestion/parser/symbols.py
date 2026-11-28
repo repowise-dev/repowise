@@ -487,7 +487,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         type_parameter_count=(
             _csharp_type_parameter_count(def_node) if language == "csharp" else None
         ),
-        template_parameters=_cpp_template_parameters(def_node, src) if language == "cpp" else None,
+        template_parameters=_cpp_template_parameters(def_node, src, language),
         **_kotlin_receiver_fields(def_node, params_nodes, language, name),
         modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
     )

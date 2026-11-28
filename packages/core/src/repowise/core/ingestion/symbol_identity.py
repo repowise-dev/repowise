@@ -534,28 +534,26 @@ _HEAD_PACK = re.compile(r"\.\.\.\s*(\w*)")
 _HEAD_SPACE = re.compile(r"\s*([^\w\s])\s*")
 
 
-def _without_defaults(head: str) -> str:
-    """``<typename T = int, int N = 0>`` -> ``<typename T , int N >``: each top-level ``= ...`` cut.
+def _is_operator(head: str, index: int) -> bool:
+    """Is ``head[index]`` part of ``>=``, ``==``, ``->`` and the like, neither a bracket nor a default?"""
+    char, before, after = head[index], head[index - 1 : index], head[index + 1 : index + 2]
+    if char not in "<>=":
+        return False
+    return "=" in (before, after) or (char == "=" and before in ("<", ">", "!")) or (
+        char == ">" and before == "-"
+    )
 
-    A ``<``, ``>`` or ``=`` beside ``=`` (``>=``, ``==``) or after ``-`` is an
-    operator, neither a bracket nor a default.
-    """
+
+def _without_defaults(head: str) -> str:
+    """``<typename T = int, int N = 0>`` -> ``<typename T , int N >``: each top-level ``= ...`` cut."""
     out: list[str] = []
     depth, skipping = 0, False
     for index, char in enumerate(head):
-        around = head[index - 1 : index] + head[index + 1 : index + 2]
-        operator = char in "<>=" and ("=" in around or (char == ">" and around[:1] == "-"))
-        if operator:
-            pass
-        elif char in "<([{":
-            depth += 1
-        elif char in ">)]}":
-            depth -= 1
+        if not _is_operator(head, index):
+            depth += (char in "<([{") - (char in ">)]}")
+            if depth == 1 and char in ",=":
+                skipping = char == "="
             skipping = skipping and depth > 0
-        elif depth == 1 and char == ",":
-            skipping = False
-        elif depth == 1 and char == "=" and head[index - 1] not in "<>!":
-            skipping = True
         if not skipping:
             out.append(char)
     return "".join(out)
@@ -588,20 +586,26 @@ def _split_template_overloads(
             by_key[key].append(index)
     out = list(keyed)
     for key, indices in by_key.items():
-        heads = {index: template_head(keyed[index][0]) for index in indices}
-        defined = [index for index in indices if not keyed[index][0].is_declaration]
-        if len(defined) < 2:
-            continue
-        split = len({heads[index] for index in defined}) > 1
-        seen: Counter[str] = Counter()
-        for index in indices:
-            head = heads[index]
-            if head and index in defined:
-                seen[head] += 1
-            ordinal = f"~{seen[head]}" if head and index in defined and seen[head] > 1 else ""
-            if (split and head) or ordinal:
-                out[index] = (keyed[index][0], f"{key}{head if split else ''}{ordinal}")
+        for index, suffix in _template_suffixes([keyed[i][0] for i in indices]).items():
+            out[indices[index]] = (keyed[indices[index]][0], key + suffix)
     return out
+
+
+def _template_suffixes(members: list[Symbol]) -> dict[int, str]:
+    """``{position: suffix}`` for the *members* of one key that need a head or ordinal."""
+    heads = [template_head(member) for member in members]
+    defined = [i for i, member in enumerate(members) if not member.is_declaration]
+    if len(defined) < 2:
+        return {}
+    split = len({heads[i] for i in defined}) > 1
+    seen: Counter[str] = Counter(heads[i] for i in defined if heads[i])
+    ordinals: dict[int, str] = {}
+    for i in reversed(defined):
+        if heads[i]:
+            ordinals[i] = f"~{seen[heads[i]]}" if seen[heads[i]] > 1 else ""
+            seen[heads[i]] -= 1
+    suffixes = {i: (heads[i] if split else "") + ordinals.get(i, "") for i in range(len(members))}
+    return {i: suffix for i, suffix in suffixes.items() if suffix}
 
 
 def _split_by_generic_arity(
