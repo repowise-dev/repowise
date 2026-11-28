@@ -20,6 +20,7 @@ import { useGraphCommunityFamilies } from "../community-colors";
 import { CORE_NODE_ID, UNCLUSTERED_COMMUNITY_ID } from "./constellation-adapter";
 import { getOverviewMeta, type OverviewMeta } from "./files-overview";
 import { attachOverviewLayers, type OverviewFocus } from "./overview-layers";
+import { useSigmaFocusEffects } from "./use-sigma-focus-effects";
 
 // ---- Color helpers (kept minimal — avoid regex in hot paths) ----
 
@@ -812,43 +813,22 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     }
   });
 
-  // Sync interaction state refs (no color work here — that's in the graph effect)
-  useEffect(() => {
-    selectedRef.current = options.selectedNodeId;
-    highlightedPathRef.current = options.highlightedPath;
-    highlightedEdgesRef.current = options.highlightedEdges;
-    searchDimmedRef.current = options.searchDimmedNodes;
-    communityDimmedRef.current = options.communityDimmedNodes;
-    expandDimmedRef.current = options.expandDimmedNodes ?? null;
-    hiddenNodesRef.current = options.hiddenNodes;
-    applyFocusRef.current(false);
-    sigmaRef.current?.refresh();
-  }, [
-    options.selectedNodeId,
-    options.highlightedPath,
-    options.highlightedEdges,
-    options.searchDimmedNodes,
-    options.communityDimmedNodes,
-    options.expandDimmedNodes,
-    options.hiddenNodes,
-  ]);
-
-  // Pre-hide edges by type on the graphology graph (batch: 1 event instead of N)
-  useEffect(() => {
-    const graph = options.graph;
-    if (!graph || graph.size === 0) return;
-    const visibleTypes = options.visibleEdgeTypes;
-    graph.updateEachEdgeAttributes(
-      (_edge, attrs) => {
-        const shouldHide = visibleTypes ? !visibleTypes.has(attrs.edgeKind) : false;
-        if (attrs.hidden === shouldHide) return attrs;
-        return { ...attrs, hidden: shouldHide };
-      },
-      { attributes: ["hidden"] },
-    );
-    // The focused file's revealed edges follow the same toggles.
-    applyFocusRef.current(false);
-  }, [options.visibleEdgeTypes, options.graph]);
+  // First slice of #6565: the focus/highlight effects live in
+  // use-sigma-focus-effects.ts. Called here — the exact position those two
+  // effects occupied — so effect order and dependency arrays are unchanged.
+  // The refs are shared with the Sigma reducers below, which is why they are
+  // passed in rather than created inside the hook.
+  useSigmaFocusEffects(options, {
+    sigmaRef,
+    selectedRef,
+    highlightedPathRef,
+    highlightedEdgesRef,
+    searchDimmedRef,
+    communityDimmedRef,
+    expandDimmedRef,
+    hiddenNodesRef,
+    applyFocusRef,
+  });
 
   // Pre-apply node colors on the graphology graph (batch: 1 event instead of N)
   useEffect(() => {
