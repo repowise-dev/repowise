@@ -258,10 +258,10 @@ def test_adapter_beats_fallback_and_nested_roots_deepest_wins(tmp_path):
         "rb/sub/Gemfile": "",
         "rb/sub/x.rb": "",
     })
-    assert set(index.units) == {"manifest:rb", "manifest:rb/sub", "npm:a"}
-    assert index.unit("manifest:rb/sub").manifest == "rb/sub/Gemfile"
-    assert _owners(index, "rb/sub/x.rb") == ["manifest:rb/sub"]
-    assert _owners(index, "rb/y.rb") == ["manifest:rb"]
+    assert set(index.units) == {"npm:a", "ruby:a", "ruby:rb", "ruby:sub"}
+    assert index.unit("ruby:sub").manifest == "rb/sub/Gemfile"
+    assert _owners(index, "rb/sub/x.rb") == ["ruby:sub"]
+    assert _owners(index, "rb/y.rb") == ["ruby:rb"]
 
 
 def _cmake_target(monkeypatch, root: str = "") -> None:
@@ -336,6 +336,8 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
     monkeypatch.setattr(swift_adapter, "package_manifests", boom)
     monkeypatch.setattr(php_adapter, "repo_composer_manifests", boom)
     index = _collect(tmp_path, {
+        # A Gemfile wakes the ruby adapter, which builds no index: it reads
+        # path_set and the Gemfile itself.
         "pkg/Gemfile": "",
         "pkg/m.rb": "",
         # Manifests alone do not wake an adapter: there is no source for it to own.
@@ -345,8 +347,8 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
         "spm/Package.swift": _PACKAGE_SWIFT_LIB,
         "composer.json": '{"name": "acme/test"}',
     })
-    assert list(index.units) == ["manifest:.", "manifest:pkg", "manifest:spm"]
-    assert _owners(index, "pkg/m.rb") == ["manifest:pkg"]
+    assert list(index.units) == ["manifest:.", "manifest:spm", "ruby:pkg"]
+    assert _owners(index, "pkg/m.rb") == ["ruby:pkg"]
     assert index.failed_ecosystems == frozenset()
 
 
@@ -788,6 +790,121 @@ def test_python_path_source_to_a_dropped_duplicate_links_its_manifest(tmp_path):
     assert index.unit("python:app").deps == ("manifest:b/dup",)
     assert index.unit("python:web").deps == ("python:dup",)
     assert _owners(index, "b/dup/d.py") == ["manifest:b/dup"]
+
+
+def test_ruby_path_linked_gems(tmp_path):
+    index = _collect(tmp_path, {
+        "app/Gemfile": 'source "https://rubygems.org"\ngem "lib", path: "../lib"\n',
+        "app/app.rb": "",
+        "lib/lib.gemspec": (
+            'Gem::Specification.new do |spec|\n  spec.name = "lib"\nend\n'
+        ),
+        "lib/Gemfile": 'source "https://rubygems.org"\ngemspec\n',
+        "lib/lib.rb": "",
+    })
+    assert _deps(index) == {
+        "ruby:app": ("ruby:lib",),
+        "ruby:lib": (),
+    }
+    app = index.unit("ruby:app")
+    assert (app.name, app.root, app.manifest, app.source) == (
+        "app", "app", "app/Gemfile", "gemfile",
+    )
+    lib = index.unit("ruby:lib")
+    assert (lib.name, lib.root, lib.manifest, lib.source) == (
+        "lib", "lib", "lib/lib.gemspec", "gemspec",
+    )
+    assert _owners(index, "lib/lib.rb") == ["ruby:lib"]
+    assert [u.id for u in index.dependents("ruby:lib")] == ["ruby:app"]
+
+
+def test_ruby_path_dep_outside_the_repo_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "app/Gemfile": (
+            "gem 'lib', path: '../lib'\n"
+            "gem 'gone', :path => '../../elsewhere'\n"
+        ),
+        "lib/lib.gemspec": 'Gem::Specification.new "lib", "1.0" do |s|\nend\n',
+        "lib/lib.rb": "",
+    })
+    assert _deps(index) == {"ruby:app": ("ruby:lib",), "ruby:lib": ()}
+    assert index.unit("ruby:lib").name == "lib"
+
+
+def test_ruby_unreadable_gemfile_and_gemspec_fall_back(tmp_path):
+    _write(tmp_path, {
+        "good/good.gemspec": (
+            'Gem::Specification.new do |spec|\n  spec.name = "good"\nend\n'
+        ),
+        "good/g.rb": "",
+    })
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "bad.gemspec").write_bytes(
+        b'Gem::Specification.new do |spec|\n  spec.name = "caf\xe9"\nend\n'
+    )
+    (tmp_path / "bad" / "Gemfile").write_text("", encoding="utf-8")
+    (tmp_path / "bad" / "b.rb").write_text("", encoding="utf-8")
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "Gemfile").write_bytes(b'gem "x", path: "../go\xffod"\n')
+    (tmp_path / "broken" / "k.rb").write_text("", encoding="utf-8")
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"manifest:bad", "manifest:broken", "ruby:good"}
+
+
+def test_ruby_duplicate_gem_name_keeps_first_root(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/dup.gemspec": (
+            'Gem::Specification.new do |spec|\n  spec.name = "dup"\nend\n'
+        ),
+        "a/dup/Gemfile": 'source "https://rubygems.org"\ngemspec\n',
+        "a/dup/d.rb": "",
+        "b/dup/dup.gemspec": (
+            'Gem::Specification.new do |spec|\n  spec.name = "dup"\nend\n'
+        ),
+        "b/dup/Gemfile": 'source "https://rubygems.org"\ngemspec\n',
+        "b/dup/d.rb": "",
+        "app/Gemfile": 'gem "dup", path: "../a/dup"\ngem "dup", path: "../b/dup"\n',
+    })
+    assert index.unit("ruby:dup").root == "a/dup"
+    assert index.unit("ruby:app").deps == ("ruby:dup",)
+    assert _owners(index, "b/dup/d.rb") == ["manifest:b/dup"]
+
+
+def test_ruby_multiline_path_dep_links(tmp_path):
+    index = _collect(tmp_path, {
+        "app/Gemfile": (
+            'source "https://rubygems.org"\n'
+            'gem "lib",\n'
+            '  path: "../lib"\n'
+            'gem "gone",\n'
+            '  git: "https://example.com/gone.git"\n'
+        ),
+        "app/app.rb": "",
+        "lib/lib.gemspec": (
+            'Gem::Specification.new do |spec|\n  spec.name = "lib"\nend\n'
+        ),
+        "lib/lib.rb": "",
+    })
+    assert _deps(index) == {"ruby:app": ("ruby:lib",), "ruby:lib": ()}
+
+
+def test_ruby_interpolated_spec_name_falls_back_to_stem(tmp_path):
+    index = _collect(tmp_path, {
+        "lib/railsy.gemspec": (
+            'Gem::Specification.new do |spec|\n  spec.name = "rails_#{x}"\nend\n'
+        ),
+        "lib/lib.rb": "",
+    })
+    assert index.unit("ruby:railsy").name == "railsy"
+    assert index.unit("ruby:railsy").manifest == "lib/railsy.gemspec"
+
+
+def test_ruby_files_without_manifests_get_no_unit(tmp_path):
+    index = _collect(tmp_path, {
+        "lib/a.rb": "",
+        "Gemfile.lock": "GEM\n  specs:\n    rake (13.0.0)\n",
+    })
+    assert set(index.units) == set()
 
 
 def test_python_poetry_legacy_dev_dependencies(tmp_path):
@@ -2025,7 +2142,8 @@ def test_repo_without_pascal_never_builds_the_pascal_index(tmp_path, monkeypatch
 
     monkeypatch.setattr(pascal_adapter, "get_pascal_index", boom)
     index = _collect_pascal(tmp_path, {"pkg/Gemfile": "", "pkg/Stray.lpk": _lpk("Stray")})
-    assert list(index.units) == ["manifest:pkg"]
+    # The empty Gemfile is a Ruby root, not a manifest fallback.
+    assert list(index.units) == ["ruby:pkg"]
     assert index.failed_ecosystems == frozenset()
 
 
