@@ -434,6 +434,9 @@ class CallSite:
     # Java and C#: each argument that is a bare name (``start``), else None; None overall
     # when no argument is one. The resolver reads its declared type.
     argument_names: tuple[str | None, ...] | None = None
+    # Syntax records an object construction (e.g. C# ``new Foo()``): bare-name
+    # resolution must not bind it to a same-named member method.
+    is_construction: bool = False
 
     @property
     def on_unnamed_object(self) -> bool:

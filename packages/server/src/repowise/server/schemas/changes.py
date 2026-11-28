@@ -50,6 +50,7 @@ class ChangeForgeMetadata(BaseModel):
     reviewers: list[str] | None = None
     approvals: int | None = None
     labels: list[str] | None = None
+    #: A bare key, or `key (type, status): title` when a tracker link is stored.
     linked_issues: list[str] | None = None
 
 

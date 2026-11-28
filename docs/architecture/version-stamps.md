@@ -79,6 +79,7 @@ instead and need no bump; the row says when they do not.
 | Constant | File | What a bump triggers | When to bump |
 |---|---|---|---|
 | `_VERSION` | `core/pipeline/incremental/resolution_cache.py` | `resolved_imports.pkl` is discarded and imports are resolved again. Also keyed on the parser fingerprint | The cached resolution payload changes shape |
+| `_VERSION` | `core/ingestion/content_baseline.py` | `content_baseline.json` reads as missing, so `update` on a folder with no git commit asks for one `repowise init` | The baseline file changes shape |
 | `_CACHE_VERSION` | `core/ingestion/parse_cache.py` | `parse_cache.pkl` is discarded | The pickle's shape changes. Extraction changes bump `PARSER_SCHEMA_VERSION` instead |
 | `_CACHE_VERSION` | `core/analysis/health/walk_cache.py` | `health_walk_cache.pkl` is discarded and the health walk runs cold | The payload changes shape. Walker changes key on the fingerprint |
 | `_CACHE_VERSION` | `core/analysis/health/duplication/token_cache.py` | `duplication_cache.pkl` is discarded and files are re-tokenized | The payload changes shape. Tokenizer changes key on the fingerprint |

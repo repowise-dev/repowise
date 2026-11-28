@@ -282,5 +282,8 @@ def test_the_double_loads_as_a_plugin(installed) -> None:
 def test_repowise_plugins_lists_the_issue_source(installed) -> None:
     from repowise.cli.commands.plugins_cmd import plugins_report
 
-    [row] = [s for s in plugins_report()["sources"] if s["seam"] == "issue-source"]
+    rows = {s["source"]: s for s in plugins_report()["sources"] if s["seam"] == "issue-source"}
+    row = rows["fake-tracker"]
     assert (row["source"], row["plugin"], row["configured"]) == ("fake-tracker", "faketracker", True)
+    # The built-in forge source is listed beside it, with no plugin.
+    assert rows["forge"]["plugin"] is None

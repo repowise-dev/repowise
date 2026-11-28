@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from repowise.core.changelist import without_changelist_number
+
 from ._constants import PRIOR_DEFECT_WINDOW_DAYS, _truncate_body
 from .fix_rule import is_typed_fix_commit
 from .fix_shape import classify_fix_shape
@@ -227,8 +229,9 @@ def _with_shapes(
             paths=fix.paths,
             shape_kind=known.get(fix.sha) or fresh.get(fix.sha, "code_fix"),
             files=diffs.get(fix.sha, {}),
-            subject=fix.subject,
-            body=fix.body,
+            # Cached fix records may predate the cut.
+            subject=without_changelist_number(fix.subject),
+            body=without_changelist_number(fix.body),
             history_paths=fix.history_paths,
         )
         for fix in fixes
@@ -400,8 +403,9 @@ def _read_commits(
         if is_typed_fix_commit(subject) or sha in tracker_fixes:
             records[sha] = {
                 "t": _as_ts(committed),
-                "s": _truncate_body(subject.strip()),
-                "b": _truncate_body(body.strip()),
+                # Cut before the byte cap, which could leave half a trailer.
+                "s": _truncate_body(without_changelist_number(subject)),
+                "b": _truncate_body(without_changelist_number(body)),
                 "r": rows,
             }
         else:

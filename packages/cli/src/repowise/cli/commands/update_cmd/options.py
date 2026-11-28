@@ -53,9 +53,16 @@ class UpdateRun:
     state: dict = field(default_factory=dict)
     cfg: dict = field(default_factory=dict)
     index_only: bool = False
-    base_ref: str = field(init=False, repr=False)
+    # None when the index has no commit to diff from and diffs content instead.
+    base_ref: str | None = field(init=False, repr=False)
     defer_docs: bool = False
     head: str | None = None
+    # With no commit: the stored content baseline, the walk's snapshot now and
+    # the diffs between them (see ``repowise.core.ingestion.content_baseline``).
+    content_baseline: dict[str, str] | None = None
+    content_snapshot: dict[str, str] | None = None
+    content_diffs: list = field(default_factory=list)
+    content_digest: str | None = None
     # The repair marker this run could not check, so it keeps it (see
     # ``unchecked_repair_marker``).
     unchecked_repair: dict | None = None
@@ -110,6 +117,11 @@ class UpdateRun:
     knowledge_graph_result: Any = None
     # The graph kept its shape: the refresh patches only the changed files' nodes.
     knowledge_graph_shape_unchanged: bool = False
+
+    @property
+    def sync_point(self) -> str | None:
+        """What a once-per-commit stamp keys on: HEAD, or the content digest without one."""
+        return self.head or self.content_digest
 
     @property
     def full_generation(self) -> bool:

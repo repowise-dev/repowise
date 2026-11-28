@@ -513,6 +513,20 @@ def _annotate_origin(
             linked["evidence_refs"] = linked_refs
 
 
+#: Tracker issues a decision row lists; ``linked_issues_total`` counts the rest.
+LINKED_ISSUES_CAP = 3
+
+
+def _attach_linked_issues(row: dict[str, Any], record: Any) -> None:
+    """The issues the record's evidence commits link to, when any are stored."""
+    issues = getattr(record, "_why_linked_issues", None) or []
+    if not issues:
+        return
+    row["linked_issues"] = issues[:LINKED_ISSUES_CAP]
+    if len(issues) > LINKED_ISSUES_CAP:
+        row["linked_issues_total"] = len(issues)
+
+
 def annotate_response_evidence(
     result: dict[str, Any],
     repository: str,
@@ -539,6 +553,7 @@ def annotate_response_evidence(
         row["evidence_refs"] = decision_evidence_refs(
             record, repository, resolved_commits=resolved_commits
         )
+        _attach_linked_issues(row, record)
         for lineage in row.get("lineage") or []:
             if not isinstance(lineage, dict):
                 continue

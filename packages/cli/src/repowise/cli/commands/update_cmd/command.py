@@ -895,6 +895,10 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     )
     run.head = get_head_commit(repo_path)
 
+    # A present but null pointer: the index was built where there was no commit.
+    if base_ref is None and "last_sync_commit" in state:
+        _load_content_baseline(run)
+        return
     if base_ref is None:
         _raise_no_sync_base(run)
     run.base_ref = base_ref
@@ -910,6 +914,23 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
         run.unchecked_repair = unchecked_repair_marker(run.state, run.base_ref, None)
 
     _verify_sync_base(run)
+
+
+def _load_content_baseline(run: UpdateRun) -> None:
+    """Diff file contents against the stored baseline instead of a commit range."""
+    from repowise.core.ingestion.content_baseline import load_baseline
+
+    baseline = load_baseline(run.repo_path)
+    if baseline is None:
+        message = (
+            f"The index of {run.repo_path} was built without a git commit and has no "
+            "content baseline to diff against. Run 'repowise init' there once to record one."
+        )
+        if run.emitter is not None:
+            run.emitter.error(message)
+        raise reasoned_error(message, reason="no_sync_base")
+    run.base_ref = None
+    run.content_baseline = baseline
 
 
 def _verify_sync_base(run: UpdateRun) -> None:
@@ -1011,6 +1032,8 @@ def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
         include_submodules=bool(run.state.get("include_submodules", False)),
         include_nested_repos=bool(run.state.get("include_nested_repos", False)),
     )
+    if run.content_baseline is not None:
+        _collect_content_changes(run)
     if not opts.include_working_tree:
         return
     run.working_tree_diffs = detector.get_working_tree_changes()
@@ -1025,6 +1048,23 @@ def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
         console.print(
             f"[dim]Uncommitted changes: [bold]{len(run.working_tree_diffs)}[/bold] file(s)[/dim]"
         )
+
+
+def _collect_content_changes(run: UpdateRun) -> None:
+    """Snapshot the walk now and diff it against the stored content baseline."""
+    from repowise.core.ingestion.content_baseline import snapshot, snapshot_digest
+
+    with timed(run.timings, "detect_changes"):
+        run.content_snapshot = snapshot(
+            run.repo_path,
+            exclude_patterns=run.cfg.get("exclude_patterns"),
+            include_submodules=bool(run.state.get("include_submodules", False)),
+            include_nested_repos=bool(run.state.get("include_nested_repos", False)),
+        )
+        run.content_diffs = run.detector.get_content_changes(
+            run.content_baseline or {}, run.content_snapshot
+        )
+    run.content_digest = snapshot_digest(run.content_snapshot)
 
 
 def _repair_before_detection(opts: UpdateOptions, run: UpdateRun) -> None:
@@ -1050,8 +1090,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     # Current but for a config edit: the run that would otherwise take the
     # config-only path, which a parser change must also keep off.
     current_but_config = bool(
-        run.head
-        and run.head == run.base_ref
+        _at_sync_base(run)
         and (not run.renderer_changed or opts.defer_docs)
         and not run.wiki_rebuild
         and not run.working_tree_diffs
@@ -1080,6 +1119,17 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         run.fill_file_pages = _file_pages_to_fill(run, opts)
 
 
+def _at_sync_base(run: UpdateRun) -> bool:
+    """HEAD is the synced commit, or with no commit the files match the baseline.
+
+    A commit that appeared since a content-synced index is never current: the
+    run must go on to record it as ``last_sync_commit``.
+    """
+    if run.content_baseline is not None:
+        return run.head is None and not run.content_diffs
+    return bool(run.head and run.head == run.base_ref)
+
+
 def _keep_planned_pages_stale(opts: UpdateOptions, run: UpdateRun) -> None:
     """Stale pages a run at this commit left stale wait for the next commit.
 
@@ -1093,7 +1143,7 @@ def _keep_planned_pages_stale(opts: UpdateOptions, run: UpdateRun) -> None:
 
     if opts.cascade_budget == UNCAPPED_CASCADE:
         return
-    if run.state.get(STALE_PAGES_PLANNED_KEY) != run.head:
+    if run.state.get(STALE_PAGES_PLANNED_KEY) != run.sync_point:
         return
     run.stale_pages_planned = len(run.stale_db_paths) + len(run.stale_deterministic_ids)
     run.stale_db_paths, run.stale_deterministic_ids = [], set()
@@ -1108,7 +1158,7 @@ def _file_pages_to_fill(run: UpdateRun, opts: UpdateOptions) -> bool:
     omitted = _stored_file_pages(run).get("omitted")
     if not omitted or _file_page_cap_reached(run):
         return False
-    if run.state.get(FILE_PAGE_FILL_KEY) == run.head:
+    if run.state.get(FILE_PAGE_FILL_KEY) == run.sync_point:
         return False
     if not can_regenerate_pages(run, opts):
         return False
@@ -1275,12 +1325,15 @@ def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
     """The diffed files since the base, plus stale pages whose files are gone."""
     from repowise.core.ingestion.change_detector import merge_file_diffs
 
-    try:
-        with timed(run.timings, "detect_changes"):
-            changed = run.detector.get_changed_files(run.base_ref, run.head or "HEAD")
-    except Exception as exc:
-        release_update_lock(run.repo_path)
-        _raise_git_diff_failed(run, exc)
+    if run.content_baseline is not None:
+        changed = run.content_diffs
+    else:
+        try:
+            with timed(run.timings, "detect_changes"):
+                changed = run.detector.get_changed_files(run.base_ref, run.head or "HEAD")
+        except Exception as exc:
+            release_update_lock(run.repo_path)
+            _raise_git_diff_failed(run, exc)
     run.file_diffs = merge_file_diffs(changed, run.working_tree_diffs)
 
     # Loaded already when git is current; otherwise load now so old structural
@@ -1495,6 +1548,7 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     run.timings.stop("run")
     persisted["phase_timings"] = run.timings.totals
     save_state(repo_path, persisted)
+    _advance_content_baseline(run)
     # The server reads head_commit from the DB row, not state.json.
     stamp_head_commit(repo_path, head)
     # No git phase here, so backfill commit offsets directly.
@@ -1558,10 +1612,17 @@ def _config_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         run.timings.stop("run")
         updated_state["phase_timings"] = run.timings.totals
         save_state(repo_path, updated_state)
+    _advance_content_baseline(run)
     stamp_head_commit(repo_path, head)
     _finish_outcome(repo_path, opts.agents_md)
     consume_update_pending(repo_path, head)
     return _emit_done(run, UpdateOutcome.REGENERATED)
+
+
+def _advance_content_baseline(run: UpdateRun, *, clean: bool = True) -> None:
+    from repowise.core.ingestion.content_baseline import advance_baseline
+
+    advance_baseline(run.repo_path, run.head, run.content_snapshot, clean=clean)
 
 
 def _rebuild_index(run: UpdateRun) -> None:
@@ -1663,7 +1724,7 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     # Only when it could render stale pages: one without a model leaves them for
     # an update at this commit that has one.
     if can_regenerate_pages(run, opts):
-        run.state[STALE_PAGES_PLANNED_KEY] = run.head
+        run.state[STALE_PAGES_PLANNED_KEY] = run.sync_point
     # The builder's cached pagerank spares a full-graph pass.
     from .deterministic import load_stale_file_page_ages
 
@@ -1699,7 +1760,7 @@ def _unpaged_file_paths(run: UpdateRun) -> list[str]:
         run.repo_path, run.parsed_files, run.graph_builder, run.git_meta_map
     )
     # Recorded so an up-to-date run retries a fill once per commit, not forever.
-    run.state[FILE_PAGE_FILL_KEY] = run.head
+    run.state[FILE_PAGE_FILL_KEY] = run.sync_point
     if missing:
         console.print(f"Files with no page yet: [cyan]{len(missing)}[/cyan]")
     return missing
@@ -2140,6 +2201,8 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         force_full_rescore=config.health_changed,
         full_git_summary=(run.full_git_summaries[0] if run.full_git_summaries else None),
         unchecked_repair=run.unchecked_repair,
+        content_snapshot=run.content_snapshot,
+        content_docs_pending=pages.docs_mode == "llm" and not pages.docs_deferred,
         # Only a history-window change invalidates mined decisions.
         history_window_changed=config.git_changed,
         reconcile_full_scope=config.traversal_changed,
@@ -2461,8 +2524,9 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
             "the next update will re-cover it.[/yellow]"
         )
 
-    # Never write a null pointer: the next update would refuse to run.
-    if head:
+    # Never write a null pointer over a commit. A content-synced run that failed a
+    # step keeps its null pointer, so the next update diffs the same files again.
+    if head and not (run.content_snapshot is not None and docs.failed_steps):
         state["last_sync_commit"] = head
         state["last_docs_commit"] = head
     # The DB total; regeneration upserts existing pages.
@@ -2485,6 +2549,7 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
         if "Git persist" not in docs.failed_steps:
             state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     save_state(repo_path, state)
+    _advance_content_baseline(run, clean=not docs.failed_steps)
 
 
 def _export_knowledge_graph(run: UpdateRun) -> None:

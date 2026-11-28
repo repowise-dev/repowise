@@ -614,6 +614,16 @@ def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
     run = _prepare_single_repo(opts, repo_path, start)
     if run is None:
         return
+    if get_head_commit(repo_path) is None:
+        # Taken before indexing reads the files, so an edit during the run is
+        # detected by the next update rather than recorded as indexed.
+        from repowise.core.ingestion.content_baseline import snapshot
+
+        run.content_snapshot = snapshot(
+            repo_path,
+            exclude_patterns=run.exclude_patterns,
+            include_submodules=opts.include_submodules,
+        )
     index_repository(run)
     # Before anything is written for an agent: an index of nothing helps no one.
     if not opts.resume and not getattr(run.result, "file_count", 0):

@@ -699,7 +699,8 @@ haven't actually changed in a meaningful way.
 ### 6.1 Change Detection
 
 `ChangeDetector` uses GitPython to compute the diff between `last_sync_commit`
-and `HEAD`:
+and `HEAD`. A directory with no commit diffs content fingerprints against
+`.repowise/content_baseline.json` instead (`core/ingestion/content_baseline.py`):
 
 ```python
 changed_files = differ.get_changed_files(repo_path, since_commit="a1b2c3d")

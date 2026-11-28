@@ -7,7 +7,9 @@
  * adapters fill defaults before passing data to components.
  */
 
-import type { DecisionRecentInfo } from "./generated/http.js";
+import type { DecisionLinkedIssue, DecisionRecentInfo } from "./generated/http.js";
+
+export type { DecisionLinkedIssue };
 
 // ---------------------------------------------------------------------------
 // Shared vocabulary
@@ -343,6 +345,11 @@ export interface DecisionRecord {
   pinned?: boolean | null;
   /** How it came into force. Rows of the `recent` lane only. */
   recent?: DecisionRecentInfo | null;
+  /**
+   * Tracker issues the evidence commits link to, from a configured issue
+   * source. Detail endpoint only; absent when none is stored.
+   */
+  linked_issues?: DecisionLinkedIssue[] | null;
   /**
    * True when the stored decision text is blank and `decision` carries the
    * title fallback. Acceptance reads the stored text, so this is what predicts

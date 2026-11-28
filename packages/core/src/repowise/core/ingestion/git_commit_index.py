@@ -682,6 +682,7 @@ class _FileBuckets:
                         is_merge=header["is_merge"],
                         subject=header["subject"],
                         body=header["body"],
+                        changelist=header.get("changelist"),
                         added=added,
                         deleted=deleted,
                         agent=prov.agent,

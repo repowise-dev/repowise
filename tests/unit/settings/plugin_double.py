@@ -111,11 +111,16 @@ def installed(monkeypatch: pytest.MonkeyPatch) -> Iterator[SyncSource]:
 
 
 def _with_entry_points(monkeypatch: pytest.MonkeyPatch, eps: list[Any]) -> Iterator[None]:
+    from repowise.core.issues import issue_sources
+
     saved = _tables()
-    impls, owners = dict(evidence_sources._impls), dict(evidence_sources._owners)
-    # Only this test's plugins: a source an earlier load registered is gone too.
-    evidence_sources._impls.clear()
-    evidence_sources._owners.clear()
+    seams = (evidence_sources, issue_sources)
+    kept = [(dict(seam._impls), dict(seam._owners)) for seam in seams]
+    # Only this test's plugins: a source an earlier load registered, or the
+    # built-in forge issue source, is gone too.
+    for seam in seams:
+        seam._impls.clear()
+        seam._owners.clear()
     monkeypatch.setattr(
         importlib.metadata,
         "entry_points",
@@ -130,8 +135,9 @@ def _with_entry_points(monkeypatch: pytest.MonkeyPatch, eps: list[Any]) -> Itera
         yield None
     finally:
         plugins.reset()
-        evidence_sources._impls.clear()
-        evidence_sources._impls.update(impls)
-        evidence_sources._owners.clear()
-        evidence_sources._owners.update(owners)
+        for seam, (impls, owners) in zip(seams, kept, strict=True):
+            seam._impls.clear()
+            seam._impls.update(impls)
+            seam._owners.clear()
+            seam._owners.update(owners)
         _restore(saved)

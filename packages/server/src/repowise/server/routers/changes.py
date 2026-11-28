@@ -28,6 +28,7 @@ from repowise.core.changes.collect import (
 from repowise.core.changes.evidence import ChangeEvidence, item_line
 from repowise.core.changes.record import change_record
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.issue_links import record_linked_issues
 from repowise.core.persistence.database import get_session
 from repowise.core.suspects import Symptom
 from repowise.core.suspects.index import find_suspects
@@ -194,6 +195,7 @@ async def get_change(
     if row is None:
         raise HTTPException(status_code=404, detail="Change not found")
     record = change_record(row, attribution=attribution)
+    record["metadata"]["linked_issues"] = await record_linked_issues(session, repo_id, record)
     record["health"], record["touches_hotspot"] = await change_detail_health(
         session, repo_id, _inputs(row), await current_stamp(session, repo_id)
     )

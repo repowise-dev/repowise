@@ -1557,6 +1557,8 @@ repowise sources sync --source postgres-statements --format json
   `not_configured`), `batches`, `message`, `next_command` and `missing` (each unset setting with the command that
   sets it).
 - Each source's cursor is saved under `source_sync` in `.repowise/state.json`. Credentials are never saved.
+- The built-in `forge` issue source (GitHub and GitLab issues) is always listed and runs once
+  `REPOWISE_PLUGIN_FORGE_TOKEN` is set. See [PLUGINS.md](PLUGINS.md#issues-from-github-and-gitlab).
 - Exits non-zero only when `--source` names an unknown source or one that did not store.
 - `repowise update` runs the same sync for configured sources after its own work. A failing source prints one line
   and never fails the update; with none configured, update does exactly what it did before.

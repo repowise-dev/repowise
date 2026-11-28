@@ -33,6 +33,7 @@ from repowise.core.attribution import (
 )
 from repowise.core.changes.record import change_record
 from repowise.core.persistence.crud import find_changes
+from repowise.core.persistence.crud.issue_links import record_linked_issues
 from repowise.core.persistence.models import (
     Change,
     ChangeCommit,
@@ -135,7 +136,7 @@ async def change_cards(
         else:
             # Stored while attribution was off: no label to report.
             card["provenance"] = record["provenance"] or {"unavailable": "not_recorded"}
-        linked = record["metadata"]["linked_issues"]
+        linked = await record_linked_issues(session, repository.id, record)
         if linked:
             card["linked_issues"] = linked
         cards[target] = card

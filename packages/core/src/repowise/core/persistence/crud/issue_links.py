@@ -15,15 +15,20 @@ from sqlalchemy import and_, delete, insert, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...git_sha import is_full_sha, is_sha_prefix
 from ...issues.sources import DEFECT_TYPES, StoredLink
 from ..models import FixEvent, IssueLink, _now_utc
 from ._shared import _BATCH_SIZE
 
 __all__ = [
     "LinkedIssue",
+    "change_issue_quotes",
+    "commit_issues",
+    "decision_issues",
     "fix_issue_quotes",
     "linked_defect_issues",
     "load_tracker_fixes",
+    "record_linked_issues",
     "store_issue_links",
 ]
 
@@ -204,6 +209,181 @@ async def _quoted_events(
         events.extend(result.all())
     linked = await linked_defect_issues(session, repository_id, (sha for _, sha in events))
     return events, linked
+
+
+def _issue(key: str, kind: str, status: str, title: str, url: str) -> dict[str, str]:
+    """One linked issue as surfaces show it; empty fields left out."""
+    out = {"key": key, "type": kind, "status": status, "title": title, "url": url}
+    return {k: v for k, v in out.items() if v}
+
+
+def _issue_quote(issue: dict[str, str]) -> str:
+    """``ENG-42 (bug, Done): Checkout fails``: a stored issue in one string."""
+    facts = ", ".join(v for v in (issue.get("type"), issue.get("status")) if v)
+    head = f"{issue['key']} ({facts})" if facts else issue["key"]
+    title = issue.get("title", "")
+    if not title:
+        return head
+    return f"{head}: {title if len(title) <= 80 else title[:77] + '...'}"
+
+
+_ISSUE_COLUMNS = (
+    IssueLink.commit_sha,
+    IssueLink.issue_key,
+    IssueLink.issue_type,
+    IssueLink.status,
+    IssueLink.title,
+    IssueLink.url,
+)
+
+
+async def commit_issues(
+    session: AsyncSession, repository_id: str, commits: Iterable[str]
+) -> dict[str, list[dict[str, str]]]:
+    """``commit -> [{key, type, status, title, url}]`` for the stored links on *commits*.
+
+    A commit is a full sha or a prefix of 7 or more hex characters, as a
+    decision's evidence commits hold them; the result is keyed by the value
+    given. Empty for an index that predates the table.
+    """
+    wanted = {c.strip().lower() for c in commits if isinstance(c, str)}
+    wanted = {c for c in wanted if is_full_sha(c) or is_sha_prefix(c)}
+    if not wanted:
+        return {}
+    try:
+        async with session.begin_nested():
+            rows = await _rows_on_prefixes(session, repository_id, sorted(wanted))
+    except SQLAlchemyError:
+        return {}
+    out: dict[str, list[dict[str, str]]] = {}
+    for sha, key, kind, status, title, url in rows:
+        for commit in wanted:
+            if sha.startswith(commit):
+                out.setdefault(commit, []).append(_issue(key, kind, status, title, url))
+    return out
+
+
+async def decision_issues(
+    session: AsyncSession, repository_id: str, commits_by_decision: dict[str, list]
+) -> dict[str, list[dict[str, str]]]:
+    """``decision id -> [issue]``: the stored issues its evidence commits link to.
+
+    Each issue once, in the order its commits are listed. Display only: what
+    a decision governs, its authority and its ranking never read this.
+    """
+    shas = {
+        d: [_sha_of(c) for c in commits] if isinstance(commits, list) else []
+        for d, commits in commits_by_decision.items()
+    }
+    flat = [c for commits in shas.values() for c in commits]
+    by_commit = await commit_issues(session, repository_id, flat)
+    if not by_commit:
+        return {}
+    out: dict[str, list[dict[str, str]]] = {}
+    for decision_id, commits in shas.items():
+        issues: dict[str, dict[str, str]] = {}
+        for commit in commits:
+            for issue in by_commit.get(commit, ()):
+                issues.setdefault(issue["key"], issue)
+        if issues:
+            out[decision_id] = list(issues.values())
+    return out
+
+
+def _sha_of(value: object) -> str:
+    """An evidence commit as stored: a sha string, or a row naming one."""
+    if isinstance(value, dict):
+        value = value.get("commit") or value.get("sha") or ""
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+async def _rows_on_prefixes(
+    session: AsyncSession, repository_id: str, prefixes: list[str]
+) -> list[tuple]:
+    # A range per prefix keeps the primary key in use: hex sorts below "g".
+    rows: list[tuple] = []
+    for chunk in _chunks(prefixes):
+        result = await session.execute(
+            select(*_ISSUE_COLUMNS)
+            .where(
+                IssueLink.repository_id == repository_id,
+                or_(
+                    *(
+                        and_(IssueLink.commit_sha >= p, IssueLink.commit_sha < p + "g")
+                        for p in chunk
+                    )
+                ),
+            )
+            .order_by(IssueLink.commit_sha, IssueLink.issue_key)
+        )
+        rows.extend(result.all())
+    return rows
+
+
+async def change_issue_quotes(
+    session: AsyncSession,
+    repository_id: str,
+    keys: Sequence[str] | None,
+    shas: Iterable[str],
+    *,
+    limit: int = 5,
+) -> list[str] | None:
+    """A change's linked issues with what the tracker says about each.
+
+    *keys* are the bare keys the change metadata holds, kept in order; each
+    becomes ``key (type, status): title`` when a stored link names it, the
+    newest fetch winning. Issues stored on the change's *shas* that *keys*
+    does not hold follow, at most *limit* of them. ``None`` when no stored
+    link touches the change, so a caller keeps its bare keys as they were.
+    """
+    listed = list(keys or [])
+    change_shas = {s for s in shas if s}
+    try:
+        async with session.begin_nested():
+            rows = await _change_rows(session, repository_id, listed, sorted(change_shas))
+    except SQLAlchemyError:
+        return None
+    if not rows:
+        return None
+    on_change: dict[str, dict[str, str]] = {}
+    anywhere: dict[str, dict[str, str]] = {}
+    for sha, key, kind, status, title, url in rows:
+        target = on_change if sha in change_shas else anywhere
+        target.setdefault(key, _issue(key, kind, status, title, url))
+    found = {**anywhere, **on_change}
+    out = [_issue_quote(found[k]) if k in found else k for k in listed]
+    seen = set(listed)
+    extra = [k for k in on_change if k not in seen]
+    return out + [_issue_quote(on_change[k]) for k in extra[:limit]]
+
+
+async def record_linked_issues(
+    session: AsyncSession, repository_id: str, record: dict
+) -> list[str] | None:
+    """A Change Record's ``metadata.linked_issues`` with the stored tracker facts.
+
+    The bare keys as the record holds them when no stored link touches it.
+    """
+    keys = record["metadata"]["linked_issues"]
+    shas = [record["head_sha"], *record["commits"]]
+    quoted = await change_issue_quotes(session, repository_id, keys, shas)
+    return keys if quoted is None else quoted
+
+
+async def _change_rows(
+    session: AsyncSession, repository_id: str, keys: list[str], shas: list[str]
+) -> list[tuple]:
+    """Stored links on *shas* or naming *keys*, newest fetch first."""
+    rows: list[tuple] = []
+    for column, values in ((IssueLink.commit_sha, shas), (IssueLink.issue_key, keys)):
+        for chunk in _chunks(values):
+            result = await session.execute(
+                select(*_ISSUE_COLUMNS)
+                .where(IssueLink.repository_id == repository_id, column.in_(chunk))
+                .order_by(IssueLink.fetched_at.desc(), IssueLink.commit_sha, IssueLink.issue_key)
+            )
+            rows.extend(result.all())
+    return rows
 
 
 async def _defect_shas(session: AsyncSession, repository_id: str, shas: set[str]) -> set[str]:

@@ -18,7 +18,15 @@ from ..symbol_identity import module_symbol_id
 # Stamped on nodes by passes every build runs over every file (warmups,
 # always-run detection, C/C++ declaration pairing), so a seeded value could
 # only be stale.
-_REBUILT_NODE_ATTRS = frozenset({"package_export", "always_run_reason", "defined_by"})
+_REBUILT_NODE_ATTRS = frozenset(
+    {
+        "package_export",
+        "always_run_reason",
+        "defined_by",
+        "build_listed",
+        "cpp_header_only_targets",
+    }
+)
 # Stamped on a re-resolved file's own node by the type-reference pass, which
 # adds to whatever is there.
 _SCOPE_REBUILT_NODE_ATTRS = frozenset({"local_type_uses"})
