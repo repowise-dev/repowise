@@ -47,6 +47,21 @@ def test_split_windows_follows_argv_rules() -> None:
         (["cl", "/c", r"-IC:\a", "-I", r"C:\b"], [r"C:\a", r"C:\b"]),
         (["cl.exe", "/external:I", r"C:\ext", r"/external:IC:\ext2"], [r"C:\ext", r"C:\ext2"]),
         (["clang-cl.exe", "-imsvc", r"C:\sdk", r"-external:IC:\e"], [r"C:\sdk", r"C:\e"]),
+        (
+            ["clang-cl", "/clang:-Iclang_dir", "/Imsvc_dir", "/c", "a.cpp"],
+            ["clang_dir", "msvc_dir"],
+        ),
+        (
+            [
+                "clang-cl",
+                "/clang:-isystem",
+                "/clang:sys_dir",
+                "/clang:-idirafter/after",
+                "/c",
+                "a.cpp",
+            ],
+            ["sys_dir", "/after"],
+        ),
         # behind a compiler cache wrapper, and an unnamed driver with /c
         (["sccache.exe", r"C:\VS\cl.exe", r"/IC:\a"], [r"C:\a"]),
         ([r"C:\tools\wrapper.exe", "/c", r"/IC:\a"], [r"C:\a"]),
@@ -57,8 +72,13 @@ def test_msvc_include_options(tokens: list[str], expected: list[str]) -> None:
 
 
 def test_slash_paths_are_not_options_on_a_unix_command() -> None:
-    tokens = ["/usr/bin/c++", "-I/repo/inc", "-c", "/Include/x.cpp"]
+    tokens = ["/usr/bin/c++", "-I/repo/inc", "/clang:-I/nope", "-c", "/Include/x.cpp"]
     assert include_dirs_from_tokens(tokens) == ["/repo/inc"]
+
+
+def test_idirafter_separate_and_glued() -> None:
+    tokens = ["c++", "-idirafter", "after_dir", "-idirafter/glued", "-c", "a.cpp"]
+    assert include_dirs_from_tokens(tokens) == ["after_dir", "/glued"]
 
 
 def test_typical_cmake_linux_entry_is_unchanged() -> None:
@@ -230,6 +250,12 @@ def _entries(kind: str, core: Path, render: Path, main: Path, build: Path) -> li
     if kind == "windows_command_string":
         cmd = f"clang++ -I{core} -I {render} -c {main}"
         return [{"directory": str(build), "command": cmd, "file": str(main)}]
+    if kind == "idirafter":
+        args = ["c++", f"-idirafter{core}", "-idirafter", str(render), "-c", str(main)]
+        return [{"directory": str(build), "arguments": args, "file": str(main)}]
+    if kind == "clang_cl_passthrough":
+        args = ["clang-cl.exe", "/c", f"/clang:-I{core}", f"/I{render}", str(main)]
+        return [{"directory": str(build), "arguments": args, "file": str(main)}]
     raise AssertionError(kind)
 
 
@@ -243,6 +269,8 @@ def _entries(kind: str, core: Path, render: Path, main: Path, build: Path) -> li
         "relative_file_and_dirs",
         "relative_posix",
         "windows_command_string",
+        "idirafter",
+        "clang_cl_passthrough",
     ],
 )
 def test_database_forms_resolve_both_include_roots(tmp_path: Path, kind: str) -> None:
