@@ -2,7 +2,12 @@
 
 import { useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { PerformanceView, type PerformanceViewAdapter } from "@repowise-dev/ui/health";
+import {
+  PerformanceView,
+  writePerformanceFilters,
+  type PerformanceFilterState,
+  type PerformanceViewAdapter,
+} from "@repowise-dev/ui/health";
 import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getPerformanceOpportunities,
@@ -12,16 +17,31 @@ import {
 } from "@/lib/api/code-health";
 import { getRefactoringPlan, getRefactoringPlanPrompt } from "@/lib/api/refactoring";
 import { getFileContent } from "@/lib/api/files";
+import {
+  getEvidenceTests,
+  getMeasured,
+  getMeasuredFunctions,
+  listEvidenceRuns,
+} from "@/lib/api/runtime-evidence";
 import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
+import { useRuntimeEvidence } from "@/components/setup/use-setup-actions";
 
-/** The queue's own filter state, kept out of the page's `tab` and `lens`. */
-const FILTER_PARAM = "perf";
 /** Shared with the map, which uses the same name to pin a cause's files. */
 const OPPORTUNITY_PARAM = "opportunity";
+
+/**
+ * The URL as it is now, read at call time. Closing over `useSearchParams`
+ * would mint new callbacks on every URL change, and the queue's rows are
+ * memoized against them.
+ */
+function currentParams(): URLSearchParams {
+  return new URLSearchParams(window.location.search);
+}
 
 export function PerformanceTab({ repoId }: { repoId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const runtimeEvidence = useRuntimeEvidence(repoId);
   // Held stable across renders: the queue memoizes its rows against it, and a
   // fresh object every render would defeat that for twenty rows at a time.
   const adapter: PerformanceViewAdapter = useMemo(() => {
@@ -34,6 +54,10 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
         getPerformanceOpportunity(repoId, opportunityId, options),
       getPerformanceOpportunityFindings: (opportunityId, options) =>
         getPerformanceOpportunityFindings(repoId, opportunityId, options),
+      getMeasured: (options) => getMeasured(repoId, options),
+      listEvidenceRuns: () => listEvidenceRuns(repoId),
+      getMeasuredFunctions: (target) => getMeasuredFunctions(repoId, target),
+      getEvidenceTests: (options) => getEvidenceTests(repoId, options),
       getRefactoringPlan: (planId) => getRefactoringPlan(repoId, planId),
       getRefactoringPlanPrompt: async (planId, flavor) =>
         (await getRefactoringPlanPrompt(repoId, planId, { flavor })).text,
@@ -53,17 +77,17 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
     };
   }, [repoId, router]);
 
-  // A filtered queue is worth sharing and worth surviving a reload, so the
-  // serialized state rides in one parameter beside the page's own.
+  // Every view is a URL: the tab's state rides flat beside the page's own
+  // parameters (`ctx`, `sort`, `page`, `area`, ...), and a link minted with
+  // the older `perf` blob is still read and rewritten on the first change.
   const onFiltersChange = useCallback(
-    (search: string) => {
-      const sp = new URLSearchParams(searchParams.toString());
-      if (search) sp.set(FILTER_PARAM, search);
-      else sp.delete(FILTER_PARAM);
+    (_search: string, state: PerformanceFilterState) => {
+      const sp = currentParams();
+      writePerformanceFilters(state, sp);
       const qs = sp.toString();
       router.replace(qs ? `?${qs}` : "?", { scroll: false });
     },
-    [router, searchParams],
+    [router],
   );
 
   // The open cause rides in the URL beside the filters, so the link the map
@@ -71,22 +95,23 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
   // link worth sending to somebody.
   const onOpenOpportunityChange = useCallback(
     (opportunityId: string | null) => {
-      const sp = new URLSearchParams(searchParams.toString());
+      const sp = currentParams();
       if (opportunityId) sp.set(OPPORTUNITY_PARAM, opportunityId);
       else sp.delete(OPPORTUNITY_PARAM);
       const qs = sp.toString();
       router.replace(qs ? `?${qs}` : "?", { scroll: false });
     },
-    [router, searchParams],
+    [router],
   );
 
   return (
     <PerformanceView
       adapter={adapter}
-      initialFilters={searchParams.get(FILTER_PARAM) ?? undefined}
+      initialFilters={searchParams.toString()}
       onFiltersChange={onFiltersChange}
       openOpportunityId={searchParams.get(OPPORTUNITY_PARAM)}
       onOpenOpportunityChange={onOpenOpportunityChange}
+      runtimeEvidence={runtimeEvidence}
     />
   );
 }

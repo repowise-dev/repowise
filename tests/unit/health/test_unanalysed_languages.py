@@ -14,6 +14,7 @@ from repowise.core.analysis.health.complexity import FileComplexity, walk_file
 from repowise.core.analysis.health.complexity.languages import has_health_dialect
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
+from repowise.core.analysis.health.file_evaluator import FileEvaluator
 from repowise.core.analysis.health.grading import band_for, distribution, headline_band
 from repowise.core.analysis.health.models import HealthFileMetricData
 from repowise.core.analysis.health.ranking import worst_metric
@@ -62,9 +63,12 @@ def _evaluate(path: str, language: str, source: bytes, tmp_path) -> HealthFileMe
         ),
         symbols=[],
     )
-    metric, _, _ = HealthAnalyzer(graph=None)._evaluate_file(
-        pf, fcx, paired_tests=set(), package_roots=set(), disabled=[], dup_report=DuplicationReport()
-    )
+    metric, _, _ = FileEvaluator(
+        HealthAnalyzer(graph=None),
+        paired_tests=set(),
+        package_roots=set(),
+        dup_report=DuplicationReport(),
+    ).evaluate(pf, fcx)
     return metric
 
 

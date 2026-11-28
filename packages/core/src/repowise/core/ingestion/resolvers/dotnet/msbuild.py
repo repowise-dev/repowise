@@ -10,6 +10,7 @@ tolerates both SDK-style and legacy XML (``<Project ToolsVersion="...">``).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -68,13 +69,18 @@ class MSBuildProject:
     #: same as an explicit <IsPackable>false</IsPackable>.
     is_packable: bool | None = None
     generate_package_on_build: bool = False
-    #: A literal ``<IsTestProject>true</IsTestProject>`` outside any
-    #: ``Condition``, or the MSTest SDK, which sets it.
-    is_test_project: bool = False
+    #: Tri-state: True = explicitly set or MSTest SDK; False = explicitly set
+    #: false; None = not set by the project (the default).  Using None as the
+    #: default lets callers distinguish "explicitly opted out" from "silent",
+    #: so a referenced test package can be overridden by IsTestProject=false.
+    is_test_project: bool | None = None
     #: The ``package_references`` declared outside any ``Condition``: a shared
     #: build file that adds test packages only ``Condition="'$(IsTestProject)'
     #: == 'true'"`` does not make every project below it a test project.
     unconditional_package_references: set[str] = field(default_factory=set)
+    #: Literal ``<PropertyGroup>`` values outside any ``Condition``, keyed
+    #: lowercase as MSBuild compares them, for a shared build file's conditions.
+    properties: dict[str, str] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
@@ -107,7 +113,7 @@ def _bool(value: str | None) -> bool:
     return (value or "").strip().lower() in ("true", "enable", "1")
 
 
-def _tristate(value: str | None) -> bool | None:
+def tristate(value: str | None) -> bool | None:
     """None for anything that is not a literal boolean.
 
     ``<IsPackable>$(PublishLibraries)</IsPackable>`` is the normal way to
@@ -126,7 +132,7 @@ def _compile_items(include: str | None) -> list[str]:
     return [item for item in items if item and "*" not in item]
 
 
-def _conditioned(root: ET.Element) -> set[int]:
+def conditioned_ids(root: ET.Element) -> set[int]:
     """Ids of the elements a ``Condition`` applies to, itself or an ancestor's."""
     return {
         id(element)
@@ -134,6 +140,68 @@ def _conditioned(root: ET.Element) -> set[int]:
         if scope.get("Condition") is not None
         for element in scope.iter()
     }
+
+
+def _add_project_reference(project: MSBuildProject, elem: ET.Element) -> None:
+    include = elem.get("Include")
+    if include:
+        # ProjectReference paths use Windows-style backslashes by convention;
+        # normalise and resolve relative to the .csproj.
+        rel = include.replace("\\", "/")
+        project.project_references.append((project.project_dir / rel).resolve())
+
+
+def _add_package_reference(project: MSBuildProject, elem: ET.Element, conditioned: bool) -> None:
+    include, update = elem.get("Include"), elem.get("Update")
+    if pkg := include or update:
+        project.package_references.add(pkg.strip())
+        # An ``Update`` only changes a reference that exists, so it never makes a
+        # shared build file declare tests.
+        if include and not conditioned:
+            project.unconditional_package_references.add(pkg.strip())
+
+
+_PROPERTY_TAGS = frozenset(
+    {
+        "RootNamespace",
+        "AssemblyName",
+        "ImplicitUsings",
+        "PackageId",
+        "IsPackable",
+        "GeneratePackageOnBuild",
+        "IsTestProject",
+    }
+)
+
+
+def _apply_property(project: MSBuildProject, tag: str, elem: ET.Element, conditioned: bool) -> None:
+    """Read one literal project property into *project*; empty ones are skipped."""
+    if not elem.text:
+        return
+    text = elem.text.strip()
+    if tag == "RootNamespace":
+        project.root_namespace = text
+    elif tag == "AssemblyName":
+        project.assembly_name = text
+    elif tag == "PackageId":
+        project.package_id = text
+    elif tag == "ImplicitUsings":
+        project.implicit_usings = _bool(elem.text)
+    elif tag == "GeneratePackageOnBuild":
+        project.generate_package_on_build = _bool(elem.text)
+    elif tag == "IsPackable":
+        # Last literal wins; a conditional PropertyGroup is not evaluated.
+        if (packable := tristate(elem.text)) is not None:
+            project.is_packable = packable
+    elif tag == "IsTestProject" and not conditioned and (flag := tristate(elem.text)) is not None:
+        project.is_test_project = flag
+
+
+def _collect_properties(project: MSBuildProject, group: ET.Element, conditioned: set[int]) -> None:
+    """Literal ``<PropertyGroup>`` values outside any ``Condition``."""
+    for prop in group:
+        if prop.text and id(prop) not in conditioned:
+            project.properties[_local(prop.tag).lower()] = prop.text.strip()
 
 
 def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
@@ -146,53 +214,113 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
 
     project = MSBuildProject(path=csproj_path.resolve(), project_dir=csproj_path.parent.resolve())
     root = tree.getroot()
-    project.is_test_project = "mstest.sdk" in (root.get("Sdk") or "").lower()
-    conditioned = _conditioned(root)
+    project.is_test_project = True if "mstest.sdk" in (root.get("Sdk") or "").lower() else None
+    conditioned = conditioned_ids(root)
 
     for elem in root.iter():
         tag = _local(elem.tag)
 
-        if tag == "RootNamespace" and elem.text:
-            project.root_namespace = elem.text.strip()
-        elif tag == "AssemblyName" and elem.text:
-            project.assembly_name = elem.text.strip()
-        elif tag == "ImplicitUsings" and elem.text:
-            project.implicit_usings = _bool(elem.text)
-        elif tag == "PackageId" and elem.text:
-            project.package_id = elem.text.strip()
-        elif tag == "IsPackable" and elem.text:
-            # Last literal wins; a conditional PropertyGroup is not evaluated.
-            packable = _tristate(elem.text)
-            if packable is not None:
-                project.is_packable = packable
-        elif tag == "GeneratePackageOnBuild" and elem.text:
-            project.generate_package_on_build = _bool(elem.text)
-        elif tag == "IsTestProject" and elem.text and id(elem) not in conditioned:
-            project.is_test_project = _bool(elem.text)
+        if tag in _PROPERTY_TAGS:
+            _apply_property(project, tag, elem, id(elem) in conditioned)
         elif tag == "ProjectReference":
-            include = elem.get("Include")
-            if include:
-                # ProjectReference paths use Windows-style backslashes by
-                # convention; normalise and resolve relative to the .csproj.
-                rel = include.replace("\\", "/")
-                target = (project.project_dir / rel).resolve()
-                project.project_references.append(target)
+            _add_project_reference(project, elem)
         elif tag == "Compile":
             project.compile_includes.extend(_compile_items(elem.get("Include")))
         elif tag == "PackageReference":
-            pkg = elem.get("Include")
-            if pkg:
-                project.package_references.add(pkg.strip())
-                if id(elem) not in conditioned:
-                    project.unconditional_package_references.add(pkg.strip())
+            _add_package_reference(project, elem, id(elem) in conditioned)
         elif tag in ("Using", "Import"):
             # <Using Include="X"/> is the C# form, <Import Include="X"/> the VB
             # one; MSBuild's own <Import Project="..."/> carries no Include.
             ns = elem.get("Include")
             if ns:
                 project.project_usings.add(ns.strip())
+        elif tag == "PropertyGroup" and id(elem) not in conditioned:
+            _collect_properties(project, elem, conditioned)
 
     return project
+
+
+_SHARED_BUILD_FILES = ("Directory.Build.props", "Directory.Build.targets")
+
+# ``'$(Name)' == 'value'``, the one condition shape read; any other is unknown.
+_PROPERTY_CONDITION_RE = re.compile(r"^\s*'\$\((\w+)\)'\s*(==|!=)\s*'([^'$]*)'\s*$")
+
+
+def _condition_holds(condition: str, properties: dict[str, str]) -> bool:
+    """Whether *condition* holds for *properties*; False when that is unknown.
+
+    Unknown is any shape but a literal comparison, or a property the project
+    file does not set: it may come from the SDK or another imported file.
+    """
+    match = _PROPERTY_CONDITION_RE.match(condition)
+    if match is None or match.group(1).lower() not in properties:
+        return False
+    name, op, value = match.groups()
+    equal = properties[name.lower()].lower() == value.lower()
+    return equal if op == "==" else not equal
+
+
+# {shared build file: each ``<Using Include>`` item with the conditions over it}
+SharedUsings = dict[Path, tuple[tuple[str, tuple[str, ...]], ...]]
+
+
+def shared_build_usings(project: MSBuildProject, repo_root: Path, cache: SharedUsings) -> set[str]:
+    """``<Using Include>`` items the nearest ``Directory.Build.props`` and
+    ``.targets`` above *project* give it, each file read once per *cache*.
+
+    MSBuild imports only the nearest of each name. An item under a condition
+    counts when the condition compares a property the project file sets
+    literally (``'$(IncludeUsings)' == 'true'``); any other condition drops it.
+    Ceiling: a ``<Using Remove>`` and a nearest file importing its parent are
+    not read.
+    """
+    usings: set[str] = set()
+    for name in _SHARED_BUILD_FILES:
+        path = _nearest_above(project.project_dir, repo_root, name)
+        if path is None:
+            continue
+        if path not in cache:
+            cache[path] = _using_items(path)
+        for ns, conditions in cache[path]:
+            if all(_condition_holds(c, project.properties) for c in conditions):
+                usings.add(ns)
+    return usings
+
+
+def _using_items(path: Path) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Each ``<Using Include>`` (C#) or ``<Import Include>`` (VB) item in *path*,
+    with the ``Condition`` on it and on each element around it."""
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return ()
+    parents = {child: parent for parent in root.iter() for child in parent}
+    items = []
+    for elem in root.iter():
+        ns = elem.get("Include") if _local(elem.tag) in ("Using", "Import") else None
+        if not ns:
+            continue
+        conditions = []
+        node: ET.Element | None = elem
+        while node is not None:
+            if node.get("Condition") is not None:
+                conditions.append(node.get("Condition"))
+            node = parents.get(node)
+        items.append((ns.strip(), tuple(conditions)))
+    return tuple(items)
+
+
+def _nearest_above(start: Path, repo_root: Path, name: str) -> Path | None:
+    """The first *name* in *start* or a directory above it, up to *repo_root*."""
+    if not start.is_relative_to(repo_root):
+        return None
+    for directory in (start, *start.parents):
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+        if directory == repo_root:
+            return None
+    return None
 
 
 def _find_project_files(

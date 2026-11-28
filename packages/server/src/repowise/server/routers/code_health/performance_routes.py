@@ -8,13 +8,20 @@ drift apart about what the same opportunity is.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import label_previews
+from repowise.core.analysis.health.perf.actionability import MEASURED_HOTSPOT
 from repowise.core.analysis.health.perf.serving import parse_query
+from repowise.core.analysis.health.refactoring.serving import evidence_block
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+from repowise.core.persistence.crud import get_performance_opportunity, hotness_for_symbols
 from repowise.server.deps import get_db_session
+from repowise.server.mcp_server.tool_context.measured import symbol_line
 from repowise.server.services.performance_health import PerformanceHealthService
 
 from .._unverified import UnverifiedQuery
@@ -56,6 +63,37 @@ def _item(item: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in item.items() if key != "plan_reference"}
 
 
+async def _measurement(
+    session: AsyncSession, repo_id: str, biomarker_type: str | None, symbol_id: str | None
+) -> list[dict[str, Any]]:
+    """The evidence of a measured hotspot: the run that measured its function.
+
+    No static finding backs such a cause, so its stored observations are
+    empty. The run is the proof, read from the same ``symbol_hotness`` row the
+    measured table shows; no row (the run was dropped) reads as no evidence.
+    """
+    if biomarker_type != MEASURED_HOTSPOT or not symbol_id:
+        return []
+    row = (await hotness_for_symbols(session, repo_id, [symbol_id])).get(symbol_id)
+    if row is None:
+        return []
+    file_path = file_of_symbol(symbol_id)
+    return [
+        {
+            # No static finding: the wire type is a string, so empty, never null.
+            "finding_id": "",
+            "file_path": file_path,
+            "biomarker_type": MEASURED_HOTSPOT,
+            "function_name": symbol_id[len(file_path) + 2 :] or None,
+            "line_start": None,
+            "line_end": None,
+            "reason": f"Measured: {symbol_line(row, datetime.now(UTC))}",
+            "path": [],
+            "provenance": "measured",
+        }
+    ]
+
+
 @router.get("/api/repos/{repo_id}/health/performance-opportunities")
 async def list_performance_opportunities(
     repo_id: str,
@@ -72,8 +110,18 @@ async def list_performance_opportunities(
     proof: str | None = Query(
         None,
         description=(
-            "proven (the default) or unproven: causes whose loop nobody measured "
-            "to grow, kept out of the default queue and counted in its summary."
+            "proven (the default: the code or a run shows the cost), unproven (the "
+            "code does not show the loop size and nothing measured it) or "
+            "background_unproven; the last two are kept out of the default queue "
+            "and counted in its summary."
+        ),
+    ),
+    static_cost: str | None = Query(
+        None,
+        description=(
+            "What the code alone shows about the cost: grows_with_data, "
+            "grows_by_shape, per_call_reached, per_call_unreached, bounded or "
+            "size_unknown. Narrows the chosen scope; absent is every value."
         ),
     ),
     role: str | None = Query(
@@ -83,6 +131,22 @@ async def list_performance_opportunities(
             "tooling, test, unknown or all. Defaults to every role but startup, cli, "
             "tooling and test, whose loops run once per process."
         ),
+    ),
+    queue: bool = Query(
+        False,
+        description=(
+            "Keep to the default queue's stored verdict whatever state is chosen, "
+            "so a state picked inside 'worth doing now' stays inside it."
+        ),
+    ),
+    area: str | None = Query(
+        None, description="One area (a directory) at any depth; absent is the whole repository."
+    ),
+    area_depth: int | None = Query(
+        None,
+        ge=1,
+        le=32,
+        description="Group the area facet at this directory depth; absent chooses one.",
     ),
     view: str = Query("detail"),
     sort: str = Query("rank"),
@@ -109,18 +173,32 @@ async def list_performance_opportunities(
         confidence=confidence,
         actionability=actionability,
         proof=proof,
+        static_cost=static_cost,
         role=role,
         view=view,
         sort=sort,
         file_paths=_paths(file_paths),
         limit=limit,
         offset=offset,
+        queue=queue,
+        lift_defaults=True,
+        area=area,
     )
     page = await _service(session, repo_id, include_unverified=include_unverified).page(
-        query, evidence_per_item=_EVIDENCE_PER_ITEM, with_facets=True, with_summary=True
+        query,
+        evidence_per_item=_EVIDENCE_PER_ITEM,
+        with_facets=True,
+        with_summary=True,
+        # The tab acts on summary rows, so they carry fix, gain and effort.
+        row_decisions=True,
+        # Every count the tab shows sits inside the scope it asked for.
+        scoped_facets=True,
+        area_depth=area_depth,
     )
     return {
-        "items": [_item(item) for item in page.items],
+        "items": label_previews(
+            "performance", [_item(item) for item in page.items], kind="biomarker_type"
+        ),
         "total": page.total,
         "has_more": page.next_offset is not None,
         "next_offset": page.next_offset,
@@ -128,6 +206,8 @@ async def list_performance_opportunities(
         "summary": page.summary,
         "counts": page.counts,
         "gated": page.gated,
+        "scopes": page.scopes,
+        "areas": page.areas,
         **({"ignored_arguments": ignored} if ignored else {}),
     }
 
@@ -148,7 +228,14 @@ async def get_performance_opportunity_detail(
     detail = await _service(session, repo_id).detail(
         opportunity_id, evidence_limit=evidence_limit, evidence_offset=evidence_offset
     )
-    return _item(detail)
+    if detail.get("found") and not detail.get("evidence_total"):
+        measured = await _measurement(
+            session, repo_id, detail.get("biomarker_type"), detail.get("intervention_symbol")
+        )
+        if measured:
+            page = measured[evidence_offset : evidence_offset + evidence_limit]
+            detail.update(evidence_block(page, len(measured), evidence_offset))
+    return label_previews("performance", [_item(detail)], kind="biomarker_type")[0]
 
 
 @router.get("/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}/findings")
@@ -163,9 +250,16 @@ async def list_performance_opportunity_findings(
     items, total = await _service(session, repo_id).evidence(
         opportunity_id, limit=limit, offset=offset
     )
+    if total == 0:
+        row = await get_performance_opportunity(session, repo_id, opportunity_id)
+        if row is not None:
+            measured = await _measurement(
+                session, repo_id, row.biomarker_type, row.intervention_symbol
+            )
+            items, total = measured[offset : offset + limit], len(measured)
     emitted = offset + len(items)
     return {
-        "items": items,
+        "items": label_previews("performance", items, kind="biomarker_type"),
         "total": total,
         "has_more": emitted < total,
         "next_offset": emitted if emitted < total else None,

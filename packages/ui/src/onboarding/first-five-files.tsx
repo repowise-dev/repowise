@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Sparkles, ArrowUpRight, ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
+import { FilePath } from "../shared/file-path";
 
 export interface FirstFiveFile {
   file_path: string;
@@ -92,9 +93,7 @@ export function FirstFiveFiles({
               <li key={f.file_path}>
                 <Wrapper>
                   <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">{i + 1}</span>
-                  <p className="font-mono text-xs text-[var(--color-text-primary)] truncate min-w-0 flex-1">
-                    {f.file_path}
-                  </p>
+                  <FilePath path={f.file_path} fold className="flex-1 text-[var(--color-text-primary)]" />
                   {f.is_entry_point && <Badge variant="accent" className="h-4 text-[10px] shrink-0">entry</Badge>}
                   {f.has_doc && <Badge variant="outline" className="h-4 text-[10px] shrink-0">doc</Badge>}
                   {href && (

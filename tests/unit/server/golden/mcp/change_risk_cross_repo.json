@@ -1,0 +1,45 @@
+{
+  "consumers": [
+    {
+      "provider_file": "packages/types/src/order.ts",
+      "repo": "frontend",
+      "file": "src/api.ts",
+      "contract_id": "code::@acme/types::Order",
+      "contract_type": "code",
+      "match_type": "exact",
+      "provider_symbol_id": "packages/types/src/order.ts::Order"
+    },
+    {
+      "provider_file": "packages/types/src/order.ts",
+      "repo": "mobile",
+      "file": "app/order.ts",
+      "contract_id": "code::@acme/types::Order",
+      "contract_type": "code",
+      "match_type": "exact",
+      "provider_symbol_id": "packages/types/src/order.ts::Order"
+    }
+  ],
+  "consumers_truncated": 0,
+  "consumer_repos": [
+    "frontend",
+    "mobile"
+  ],
+  "breaking_changes": [
+    {
+      "contract_id": "code::@acme/types::Order",
+      "type": "code",
+      "kind": "removed_endpoint",
+      "severity": "breaking",
+      "detail": "code::@acme/types::Order was removed",
+      "provider_file": "packages/types/src/order.ts",
+      "impacted_repos": [
+        "frontend"
+      ],
+      "provider_symbol_id": "packages/types/src/order.ts::Order"
+    }
+  ],
+  "breaking_changes_truncated": 0,
+  "breaking_changes_available": true,
+  "breaking_changes_as_of": "2026-08-23T00:00:00+00:00",
+  "summary": "2 consumer link(s) in 2 other repo(s) touch the files this change edits; 1 provider incompatibility finding(s) and 0 comparison warning(s) have endpoint-exposed consumers."
+}

@@ -112,3 +112,88 @@ public partial class Vm {
         result = parser.parse_file(fi, b"def Save(): pass\n")
         # Nothing should have been added beyond the real ``Save``.
         assert [s.name for s in result.symbols] == ["Save"]
+
+
+class TestExtensionBlocks:
+    """C# 14 ``extension(...)`` blocks, which the grammar reads as a constructor."""
+
+    _SRC = b"""\
+public static class StringExtensions
+{
+    extension(string value)
+    {
+        public bool IsBlank()
+        {
+            return string.IsNullOrWhiteSpace(value);
+        }
+
+        public bool StartsWithAny(char first, char second) => value.Length > 0;
+
+        public static string Create(int count)
+        {
+            return new string('x', count);
+        }
+    }
+}
+"""
+
+    def _methods(self, parser: ASTParser, src: bytes) -> dict[str, object]:
+        result = parser.parse_file(_file("StringExtensions.cs"), src)
+        return {s.name: s for s in result.symbols if s.kind == "method"}
+
+    def test_block_members_become_extension_methods_of_the_holder(
+        self, parser: ASTParser
+    ) -> None:
+        methods = self._methods(parser, self._SRC)
+        assert "extension" not in methods
+        blank = methods["IsBlank"]
+        assert blank.parent_name == "StringExtensions"
+        assert blank.signature == "IsBlank(this string value) -> bool"
+        assert blank.visibility == "public"
+        assert "static" in blank.modifiers
+        assert methods["StartsWithAny"].signature == (
+            "StartsWithAny(this string value, char first, char second) -> bool"
+        )
+
+    def test_static_block_member_has_no_receiver(self, parser: ASTParser) -> None:
+        create = self._methods(parser, self._SRC)["Create"]
+        assert create.parent_name == "StringExtensions"
+        assert create.signature == "Create(int count) -> string"
+        assert "static" in create.modifiers
+
+    def test_classic_extension_method_is_unchanged(self, parser: ASTParser) -> None:
+        src = b"""\
+public static class ClassicExtensions
+{
+    public static bool IsShort(this string value) { return value.Length < 3; }
+}
+"""
+        methods = self._methods(parser, src)
+        assert set(methods) == {"IsShort"}
+        assert methods["IsShort"].signature == "IsShort(this string value) -> bool"
+
+    def test_a_block_that_does_not_parse_is_left_alone(self, parser: ASTParser) -> None:
+        # The grammar cannot read an extension property, so the block is left
+        # as the symbol pass found it.
+        src = b"""\
+public static class StringExtensions
+{
+    extension(string value)
+    {
+        public bool IsEmpty => value.Length == 0;
+    }
+}
+"""
+        assert set(self._methods(parser, src)) == {"extension"}
+
+    def test_a_real_constructor_is_kept(self, parser: ASTParser) -> None:
+        # Not a static class, so ``extension(...)`` here is a real constructor
+        # of a class named ``extension``.
+        src = b"""\
+public class extension
+{
+    public extension(int size) { }
+}
+"""
+        result = parser.parse_file(_file("Extension.cs"), src)
+        assert any(s.name == "extension" and s.kind == "method" for s in result.symbols)

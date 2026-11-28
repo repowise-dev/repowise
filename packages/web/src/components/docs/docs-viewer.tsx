@@ -20,6 +20,7 @@ import type { ReaderPersona } from "@repowise-dev/ui/docs/reader-persona";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import type { PageResponse, PageSummary } from "@/lib/api/types";
 import { useTranslations } from "next-intl";
+import { useDocsReaderCopy } from "./use-docs-copy";
 
 function PercentileBar({ value, label }: { value: number; label: string }) {
   const t = useTranslations("docs");
@@ -160,6 +161,9 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
     </div>
   );
 }
+
+/** Page types whose `target_path` is a file or a `file::symbol` id. */
+const SIGNAL_PAGE_TYPES = new Set(["file_page", "symbol_spotlight", "api_contract", "infra_page"]);
 
 /**
  * Consolidated "At a glance" signals for a file page — hotspot, ownership,
@@ -331,6 +335,7 @@ export function DocsViewer({
   missingPageId,
 }: DocsViewerProps) {
   const t = useTranslations("docs");
+  const readerCopy = useDocsReaderCopy();
   const buildPageHref = useCallback(
     (pageId: string) => docsPagePath(`/repos/${repoId}`, pageId),
     [repoId],
@@ -351,10 +356,11 @@ export function DocsViewer({
   );
 
   const targetPath = page?.target_path ?? "";
-  // Decided by page type, not path shape: a module page's target is a
-  // directory, which every row below would answer with nothing, and the
-  // reader already gives module pages their own history card.
-  const showSignals = !!targetPath && page?.page_type !== "module_page";
+  // Decided by page type, not path shape: only these target a file or a
+  // symbol. Any other target (the repo overview's repo name, a module's
+  // directory, a cycle id) is no file, so every row below asked the API for
+  // it and got a 404; module pages already have their own history card.
+  const showSignals = !!targetPath && SIGNAL_PAGE_TYPES.has(page?.page_type ?? "");
   // Security findings only make sense for real source files.
   const isFilePath =
     showSignals &&
@@ -376,16 +382,24 @@ export function DocsViewer({
       buildFileHref={buildFileHref}
       missingPageId={missingPageId}
       LinkComponent={Link}
-      upgradeSlot={
+      copy={readerCopy}
+      // The page's own model action sits in its metadata row, on the page
+      // types a model writes. Not passed as `upgradeSlot` as well: one action
+      // per page, not a second copy at the foot.
+      pageActionSlot={
         page && isModelWrittenType(page.page_type) ? (
           <PageGenerateButton
             page={page}
             repoId={repoId}
             onGenerated={onGenerated}
-            variant="inline"
           />
         ) : undefined
       }
+      freshnessHref={`/repos/${repoId}/docs/drift`}
+      freshnessLabels={{
+        stale: t("viewer.freshness.stale"),
+        outdated: t("viewer.freshness.outdated"),
+      }}
       versionHistorySlot={
         page ? (
           <VersionHistoryWrapper

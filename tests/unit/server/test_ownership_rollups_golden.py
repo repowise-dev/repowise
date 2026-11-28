@@ -249,7 +249,7 @@ async def test_ownership_rollups_match_the_golden(client: AsyncClient, session_f
         ),
     }
 
-    if os.environ.get("REPOWISE_REWRITE_GOLDEN"):
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
         GOLDEN.parent.mkdir(exist_ok=True)
         GOLDEN.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
         pytest.skip("golden rewritten")

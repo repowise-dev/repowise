@@ -81,7 +81,7 @@ def test_generate_leaves_both_stamps_on_one_commit(repo) -> None:
         path,
         {"last_sync_commit": _old},
         types.SimpleNamespace(provider_name="mock", model_name="m"),
-        types.SimpleNamespace(total_pages=1, remaining_template_pages=1),
+        types.SimpleNamespace(total_pages=1, remaining_template_pages=1, generated_pages=[]),
     )
     assert _state_commit(path) == new
     assert asyncio.run(_row_commit(path)) == new
@@ -98,7 +98,7 @@ def test_a_server_job_leaves_both_stamps_on_one_commit(repo) -> None:
 
 def test_a_write_that_keeps_the_sync_commit_leaves_the_row_alone(repo, monkeypatch) -> None:
     from repowise.cli.helpers import save_state
-    from repowise.core.workspace import update
+    from repowise.core.workspace.update import state as update
 
     path, old, _new = repo
     stamped: list[str] = []

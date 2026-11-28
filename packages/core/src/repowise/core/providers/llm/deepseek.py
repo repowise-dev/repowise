@@ -6,7 +6,7 @@ uses the openai Python SDK with a custom base_url, following the same pattern
 as OpenRouterProvider.
 
 Models:
-    - deepseek-v4-flash  — fast, economical (284B total / 13B active params) [default]
+    - deepseek-flash     — fast, economical (V4.1 Flash) [default]
     - deepseek-v4-pro    — highest quality, full reasoning
 """
 
@@ -19,6 +19,7 @@ from repowise.core.providers.llm.openai_compat import (
     OpenAICompatibleProvider,
     listed_model_options,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -91,7 +92,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
 
     Args:
         api_key:      DeepSeek API key. Falls back to DEEPSEEK_API_KEY env var.
-        model:        Model identifier. Defaults to deepseek-v4-flash.
+        model:        Model identifier. Defaults to the spec's default_model.
         base_url:     Override the DeepSeek API URL (rarely needed).
         rate_limiter: Optional RateLimiter instance.
         cost_tracker: Optional CostTracker instance for usage recording.
@@ -109,7 +110,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "deepseek-v4-flash",
+        model: str = PROVIDER_SPECS["deepseek"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,

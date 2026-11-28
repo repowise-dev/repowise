@@ -12,7 +12,7 @@ what makes them agree.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
@@ -30,9 +30,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
 from ....analysis.finding_registry import excluded_types
+from ...batches import chunked
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
 from ...sql import rule_predicate
 from .._shared import _BATCH_SIZE, _finding_file_path
+from ._notes import KEEP, next_note
 from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
@@ -127,7 +129,7 @@ def _refactoring_row_kwargs(
 def _scope_predicates(
     repository_id: str,
     *,
-    file_paths: list[str] | None,
+    file_paths: Sequence[str] | None,
     refactoring_type: str | None,
 ) -> list[Any]:
     predicates: list[Any] = [RefactoringSuggestion.repository_id == repository_id]
@@ -300,21 +302,23 @@ async def finalize_refactoring_suggestions(
     )
     public_ids = assign_public_ids(scoped)
 
-    stored_rows = list(
-        (
-            await session.execute(
-                select(RefactoringSuggestion).where(
-                    *_scope_predicates(
-                        repository_id,
-                        file_paths=file_paths,
-                        refactoring_type=refactoring_type,
+    stored_rows: list[RefactoringSuggestion] = []
+    for chunk in [None] if allowed is None else chunked(sorted(allowed)):
+        stored_rows.extend(
+            (
+                await session.execute(
+                    select(RefactoringSuggestion).where(
+                        *_scope_predicates(
+                            repository_id,
+                            file_paths=chunk,
+                            refactoring_type=refactoring_type,
+                        )
                     )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
     reusable = await _reusable_rows(
         session, repository_id, stored_rows, public_ids, REFACTORING_MODEL_VERSION
     )
@@ -415,8 +419,12 @@ async def update_refactoring_suggestion_status(
     status: str,
     *,
     reason: str = "user",
+    note: Any = KEEP,
 ) -> RefactoringSuggestion | None:
     """Transition one plan's lifecycle state. The single owner of that write.
+
+    *note* is a person's free-text why (``status_reason`` is the coded cause:
+    ``user`` or ``no_longer_detected``), kept as :func:`._notes.next_note` says.
 
     *suggestion_id* is the storage id or the content-derived public id, because
     the two surfaces that address a plan quote different strings. Returns
@@ -428,6 +436,7 @@ async def update_refactoring_suggestion_status(
     row = await get_refactoring_suggestion(session, repository_id, suggestion_id)
     if row is None:
         return None
+    row.status_note = next_note(row.status, status, row.status_note, note)
     row.status = status
     row.status_reason = reason
     row.status_changed_at = _now_utc()
@@ -474,13 +483,14 @@ def _registry_shown_plan() -> Any:
     )
 
 
-def shown_plan_predicate(*, include_unverified: bool = False) -> Any:
+def shown_plan_predicate(*, include_unverified: bool = False, file_holds: bool = True) -> Any:
     """Plans whose source biomarker the finding registry does not withhold, on
     files of a language no gate holds refactoring back on.
 
     Plans are persisted whatever the registry says; every surface that lists
     them filters here. A plan with no source biomarker (structural) is shown.
-    ``include_unverified`` opts into the gated languages.
+    ``include_unverified`` opts into the gated languages and the plans on test
+    files; ``file_holds=False`` keeps the test-file plans without that opt-in.
     """
     return and_(
         _registry_shown_plan(),
@@ -489,6 +499,7 @@ def shown_plan_predicate(*, include_unverified: bool = False) -> Any:
             RefactoringSuggestion.file_path,
             RefactoringSuggestion.refactoring_type,
             include_unverified=include_unverified,
+            file_holds=file_holds,
         ),
     )
 

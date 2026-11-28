@@ -64,7 +64,7 @@ def _write(root, rel, text):
 
 def _index(counts: dict[str, int]) -> _SymbolTextIndex:
     """Name postings carrying each word *counts* times, keyed as the index keys them."""
-    return _SymbolTextIndex((), (), (), {_stem(w): tuple(range(n)) for w, n in counts.items()})
+    return _SymbolTextIndex((), (), (), (), {_stem(w): tuple(range(n)) for w, n in counts.items()})
 
 
 def test_rarest_terms_keep_the_rare_word_over_the_long_one():
@@ -289,3 +289,234 @@ async def test_a_name_only_tests_write_does_not_anchor_a_fixture(tmp_path):
     )
     assert not homonyms["union"]
     assert not any(h.get("_anchor_symbols") for h in out)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "question"),
+    [
+        (
+            "IncompleteCategoryFormWithFields",
+            "How does IncompleteCategoryFormWithFields override url and affect validation?",
+        ),
+        ("DetailViewTest", "How does DetailViewTest resolve the template name?"),
+        ("test_named", "What does test_named depend on in its setup?"),
+    ],
+)
+async def test_a_test_class_the_question_names_anchors_its_file(tmp_path, name, question):
+    # The question writes the test's own name; nothing in production could be meant.
+    _write(tmp_path, "core/forms.py", "class Form:\n    pass\n")
+    _write(tmp_path, "tests/forms/tests.py", f"class {name}:\n    url = None\n")
+    row = _Sym(name, "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchor_symbol_hits(
+        _Session([row]),
+        "r",
+        {name},
+        [{"target_path": "core/forms.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question=question,
+    )
+    assert out[0]["target_path"] == "tests/forms/tests.py"
+
+
+@pytest.mark.asyncio
+async def test_a_test_class_sharing_a_production_name_does_not_anchor(tmp_path):
+    _write(tmp_path, "core/forms.py", "x = IncompleteCategoryForm()\n")
+    _write(tmp_path, "tests/forms/tests.py", "class IncompleteCategoryForm:\n    pass\n")
+    row = _Sym("IncompleteCategoryForm", "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchor_symbol_hits(
+        _Session([row]),
+        "r",
+        {"IncompleteCategoryForm"},
+        [{"target_path": "core/forms.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question="How does IncompleteCategoryForm validate a missing url?",
+    )
+    assert not any(h.get("_anchor_symbols") for h in out)
+
+
+@pytest.mark.asyncio
+async def test_a_named_production_def_keeps_the_lead_over_a_named_test(tmp_path):
+    # The test is an example of the mixin the question also names.
+    _write(tmp_path, "views/detail.py", "class SingleObjectMixin:\n    pass\n")
+    _write(tmp_path, "tests/test_detail.py", "class DetailViewTest:\n    pass\n")
+    rows = [
+        _Sym("SingleObjectMixin", "views/detail.py", 1, 2, kind="class"),
+        _Sym("DetailViewTest", "tests/test_detail.py", 1, 2, kind="class"),
+    ]
+    out, _ = await _anchor_symbol_hits(
+        _Session(rows),
+        "r",
+        {"SingleObjectMixin", "DetailViewTest"},
+        [{"target_path": "views/base.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question="How does DetailViewTest show SingleObjectMixin resolving the object?",
+    )
+    anchored = [h["target_path"] for h in out if h.get("_anchor_symbols")]
+    assert anchored == ["views/detail.py"]
+
+
+async def _anchored(tmp_path, rows, ids, question, hits=None):
+    out, homonyms = await _anchor_symbol_hits(
+        _Session(rows),
+        "r",
+        ids,
+        list(hits or [{"target_path": "views/base.py", "score": 3.0}]),
+        repo_root=tmp_path,
+        question=question,
+    )
+    return out, homonyms
+
+
+@pytest.mark.asyncio
+async def test_a_production_class_shaped_like_a_test_is_not_promoted_over_its_def(tmp_path):
+    # ``LoadTest`` is production code; the test of the same name never leads.
+    _write(tmp_path, "src/perf/load.py", "class LoadTest:\n    pass\n")
+    _write(tmp_path, "tests/test_load.py", "class LoadTest:\n    pass\n")
+    rows = [
+        _Sym("LoadTest", "src/perf/load.py", 1, 2, kind="class"),
+        _Sym("LoadTest", "tests/test_load.py", 1, 2, kind="class"),
+    ]
+    out, homonyms = await _anchored(
+        tmp_path, rows, {"LoadTest"}, "How does LoadTest schedule its workers?"
+    )
+    anchored = [h["target_path"] for h in out if h.get("_anchor_symbols")]
+    assert anchored == ["src/perf/load.py"]
+    assert not homonyms["union"]
+
+
+@pytest.mark.asyncio
+async def test_a_production_name_with_several_defs_still_outranks_a_named_test(tmp_path):
+    for path in ("views/detail.py", "views/list.py"):
+        _write(tmp_path, path, "class SingleObjectMixin:\n    pass\n")
+    _write(tmp_path, "tests/test_detail.py", "class DetailViewTest:\n    pass\n")
+    rows = [
+        _Sym("SingleObjectMixin", "views/detail.py", 1, 2, kind="class"),
+        _Sym("SingleObjectMixin", "views/list.py", 1, 2, kind="class"),
+        _Sym("DetailViewTest", "tests/test_detail.py", 1, 2, kind="class"),
+    ]
+    out, homonyms = await _anchored(
+        tmp_path,
+        rows,
+        {"SingleObjectMixin", "DetailViewTest"},
+        "How does DetailViewTest show SingleObjectMixin resolving the object?",
+    )
+    # Narrowed to one mixin by the file the question's words name, or a union of both.
+    anchored = {h["target_path"] for h in out if h.get("_anchor_symbols")}
+    union = {d["file_path"] for defs in homonyms["union"].values() for d in defs}
+    assert "tests/test_detail.py" not in anchored | union
+    assert anchored | union
+
+
+@pytest.mark.asyncio
+async def test_naming_a_test_beside_a_production_def_leaves_the_grade_unchanged(tmp_path):
+    # Retrieval and the anchored hits match the question without the test name,
+    # so the confidence a keyless answer is graded from cannot move.
+    from repowise.server.mcp_server.tool_answer.confidence import _retrieval_quality
+
+    _write(tmp_path, "views/detail.py", "class SingleObjectMixin:\n    pass\n")
+    _write(tmp_path, "tests/test_detail.py", "class DetailViewTest:\n    pass\n")
+    mixin = _Sym("SingleObjectMixin", "views/detail.py", 1, 2, kind="class")
+    test = _Sym("DetailViewTest", "tests/test_detail.py", 1, 2, kind="class")
+    hits = [{"target_path": "views/base.py", "score": 3.0, "_hybrid_rank": 0}]
+    with_test, _ = await _anchored(
+        tmp_path,
+        [mixin, test],
+        {"SingleObjectMixin", "DetailViewTest"},
+        "How does DetailViewTest show SingleObjectMixin resolving the object?",
+        hits,
+    )
+    without, _ = await _anchored(
+        tmp_path,
+        [mixin],
+        {"SingleObjectMixin"},
+        "How does the test show SingleObjectMixin resolving the object?",
+        hits,
+    )
+
+    def shape(out):
+        return [(h["target_path"], h.get("score")) for h in out]
+
+    assert shape(with_test) == shape(without)
+    question = "How does SingleObjectMixin resolve the object?"
+    assert _retrieval_quality(with_test, False, question) == _retrieval_quality(
+        without, False, question
+    )
+
+
+
+@pytest.mark.asyncio
+async def test_a_scan_that_stopped_short_does_not_vouch_for_a_test_class(tmp_path, monkeypatch):
+    # Unread files could hold a production use, so the class is not trusted on its name.
+    from repowise.server.mcp_server.tool_answer import symbols
+
+    monkeypatch.setattr(
+        symbols, "word_scan", lambda root, token: ([], False, ["time budget: scanned 1 of 9 files"])
+    )
+    _write(tmp_path, "core/forms.py", "class Form:\n    pass\n")
+    _write(tmp_path, "tests/forms/tests.py", "class IncompleteCategoryFormWithFields:\n    pass\n")
+    row = _Sym("IncompleteCategoryFormWithFields", "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchored(
+        tmp_path,
+        [row],
+        {"IncompleteCategoryFormWithFields"},
+        "How does IncompleteCategoryFormWithFields override url and affect validation?",
+        [{"target_path": "core/forms.py", "score": 3.0}],
+    )
+    assert not any(h.get("_anchor_symbols") for h in out)
+
+# --- a file the index left out on size --------------------------------------
+
+_BIG_VIEW = "App/Sources/Main/MainView.swift"
+
+
+def _oversized_view(root, needle: str) -> int:
+    """A Swift view past the 2 MB read cap, *needle* on one line; that line's number."""
+    filler = [f"        Text(\"row {i}\").padding()" for i in range(80_000)]
+    at = 60_000
+    filler[at - 1] = f'        Text("{needle}").font(.title)'
+    _write(root, _BIG_VIEW, "struct MainView: View {\n" + "\n".join(filler) + "\n}\n")
+    assert (root / _BIG_VIEW).stat().st_size > 2_000_000
+    return at + 1
+
+
+@pytest.mark.asyncio
+async def test_a_name_only_an_oversized_unindexed_file_writes_is_pointed_at(tmp_path):
+    line = _oversized_view(tmp_path, "sectionBanner4321")
+    _write(tmp_path, "App/Sources/Helper8.swift", "func helper8() -> Int { 8 }\n")
+    _, homonyms = await _anchor_symbol_hits(
+        _Session(),
+        "r",
+        {"sectionBanner4321"},
+        [{"target_path": "App/Sources/Helper8.swift", "score": 3.0}],
+        repo_root=tmp_path,
+        question="Which view renders sectionBanner4321 on the main screen?",
+    )
+    assert homonyms["unindexed_lines"] == [
+        {"path": _BIG_VIEW, "line": line, "text": 'Text("sectionBanner4321").font(.title)'}
+    ]
+    assert not homonyms["absent"] and not homonyms["not_searched"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_too_large_to_stream_is_named_as_not_searched(tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _line_hits
+    from repowise.server.mcp_server.tool_answer.answer import _with_scan_gaps
+
+    _oversized_view(tmp_path, "sectionBanner4321")
+    monkeypatch.setattr(_line_hits, "_MAX_STREAM_BYTES", 2_100_000)
+    _, homonyms = await _anchor_symbol_hits(
+        _Session(),
+        "r",
+        {"sectionBanner4321"},
+        [],
+        repo_root=tmp_path,
+        question="Which view renders sectionBanner4321 on the main screen?",
+    )
+    assert homonyms["not_searched"] == [f"skipped as too large: {_BIG_VIEW}"]
+    # The scan stopped short, so the name is not called absent.
+    assert not homonyms["absent"] and not homonyms["unindexed_lines"]
+    payload = _with_scan_gaps({"answer": "x"}, homonyms)
+    assert payload["not_searched"] == [f"skipped as too large: {_BIG_VIEW}"]
+    # Nothing to say adds no key.
+    assert _with_scan_gaps({"answer": "x"}, {"not_searched": []}) == {"answer": "x"}

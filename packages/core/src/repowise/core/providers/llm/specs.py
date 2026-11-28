@@ -49,18 +49,30 @@ class ProviderSpec:
     models: tuple[str, ...] = ()
     api_key_envs: tuple[str, ...] = ()
     base_url_envs: tuple[str, ...] = ()
+    #: Where the provider listens when no ``base_url_envs`` value is set, so a
+    #: missing variable is fine as long as something answers here.
+    default_base_url: str = ""
     #: Runs with no API key: out-of-band login, a local model, or a proxy.
     keyless: bool = False
+    #: Runs with no key when ``base_url`` is a local server (LM Studio, vLLM).
+    keyless_on_loopback: bool = False
     #: Shells out with the repo as its working directory.
     needs_repo_cwd: bool = False
     #: Runs on this machine, so high concurrency can time out.
     local: bool = False
+    #: The embedder a run on this provider uses when none was named, so it
+    #: embeds through the same server instead of a hosted service guessed
+    #: from an exported key. Empty: the usual key detection decides.
+    local_embedder: str = ""
     #: Models named ``"<name>/..."`` cost nothing per token.
     zero_cost: bool = False
     #: Flood guard; ``None`` attaches no rate limiter.
     rate_limit: RateLimitConfig | None = None
     #: Package named when the provider's module fails to import.
     package: str = ""
+    #: The ``repowise[<extra>]`` that ships ``package`` when it is not in the
+    #: default install; :mod:`repowise.core.extras` knows how to add it.
+    extra: str = ""
     #: Position in credential auto-detection; ``None`` never auto-detects.
     autodetect_rank: int | None = None
     #: The agent slug whose CLI this provider drives.
@@ -72,6 +84,12 @@ class ProviderSpec:
     note: str = ""
     #: Where to get a key (or the runtime) when the provider is not set up.
     signup_url: str = ""
+    #: ``auto`` leaves a thinking model at its own default effort, so ``low``
+    #: only trims thinking. Where this is False, ``low`` can switch thinking on
+    #: for a model that does not think by default.
+    low_effort_trims: bool = False
+    #: A model's reasoning modes are known only after listing the models.
+    lists_reasoning_modes: bool = False
 
     @property
     def module_path(self) -> str:
@@ -94,6 +112,10 @@ class ProviderSpec:
             return f"{identity.install_hint}, then: {identity.login_hint}"
         if not self.api_key_envs and self.signup_url:
             return self.signup_url
+        if self.extra:
+            from repowise.core.extras import plan_install
+
+            return plan_install(self.extra).command
         return f"pip install {self.package}" if self.package else ""
 
 
@@ -108,11 +130,13 @@ _LLM = "repowise.core.providers.llm"
 _SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         name="gemini",
+        low_effort_trims=True,
+        lists_reasoning_modes=True,
         picker_rank=0,
         impl=f"{_LLM}.gemini:GeminiProvider",
         label="Google Gemini",
         default_model="gemini-3.5-flash-lite",
-        models=("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"),
+        models=("gemini-3.5-flash-lite", "gemini-4-argon", "gemini-3.8-flash"),
         api_key_envs=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         base_url_envs=("GEMINI_BASE_URL",),
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=4_000_000),
@@ -127,7 +151,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         impl=f"{_LLM}.anthropic:AnthropicProvider",
         label="Anthropic",
         default_model="claude-haiku-5-5",
-        models=("claude-haiku-5-5", "claude-sonnet-4-6", "claude-opus-4-6"),
+        models=("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"),
         api_key_envs=("ANTHROPIC_API_KEY",),
         base_url_envs=("ANTHROPIC_BASE_URL",),
         rate_limit=RateLimitConfig(requests_per_minute=2_000, tokens_per_minute=1_600_000),
@@ -137,13 +161,15 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="openai",
+        low_effort_trims=True,
         picker_rank=1,
         impl=f"{_LLM}.openai:OpenAIProvider",
         label="OpenAI",
         default_model="gpt-5.6-luna",
-        models=("gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"),
+        models=("gpt-5.6-luna", "gpt-6-luna", "gpt-6-sol"),
         api_key_envs=("OPENAI_API_KEY",),
         base_url_envs=("OPENAI_BASE_URL",),
+        keyless_on_loopback=True,
         rate_limit=RateLimitConfig(requests_per_minute=5_000, tokens_per_minute=4_000_000),
         package="openai",
         autodetect_rank=1,
@@ -151,15 +177,15 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="openrouter",
-        picker_rank=10,
+        picker_rank=11,
         impl=f"{_LLM}.openrouter:OpenRouterProvider",
         label="OpenRouter",
         default_model="google/gemini-3.5-flash-lite",
         models=(
             "google/gemini-3.5-flash-lite",
+            "openai/gpt-6-luna",
             "openai/gpt-5.6-luna",
-            "anthropic/claude-haiku-4-5",
-            "anthropic/claude-sonnet-5",
+            "google/gemini-3.8-flash",
         ),
         api_key_envs=("OPENROUTER_API_KEY",),
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
@@ -172,8 +198,8 @@ _SPECS: tuple[ProviderSpec, ...] = (
         picker_rank=3,
         impl=f"{_LLM}.deepseek:DeepSeekProvider",
         label="DeepSeek",
-        default_model="deepseek-v4-flash",
-        models=("deepseek-v4-flash", "deepseek-v4-pro"),
+        default_model="deepseek-flash",
+        models=("deepseek-flash", "deepseek-v4-pro"),
         api_key_envs=("DEEPSEEK_API_KEY",),
         base_url_envs=("DEEPSEEK_BASE_URL",),
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
@@ -183,11 +209,12 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="kimi",
+        low_effort_trims=True,
         picker_rank=4,
         impl=f"{_LLM}.kimi:KimiProvider",
         label="Kimi",
         default_model="kimi-for-coding",
-        models=("kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.5", "kimi-k2.6"),
+        models=("kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6"),
         api_key_envs=("KIMI_API_KEY",),
         base_url_envs=("KIMI_BASE_URL",),
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
@@ -197,15 +224,16 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="edenai",
+        low_effort_trims=True,
         picker_rank=5,
         impl=f"{_LLM}.edenai:EdenAIProvider",
         label="Eden AI",
         default_model="mistral/mistral-small-latest",
         models=(
             "mistral/mistral-small-latest",
-            "openai/gpt-4o-mini",
-            "anthropic/claude-haiku-4-5",
-            "google/gemini-2.5-flash",
+            "openai/gpt-latest",
+            "anthropic/claude-sonnet-latest",
+            "vertex/gemini-flash-latest",
         ),
         api_key_envs=("EDENAI_API_KEY",),
         base_url_envs=("EDENAI_BASE_URL",),
@@ -218,14 +246,16 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="ollama",
-        picker_rank=9,
+        picker_rank=10,
         impl=f"{_LLM}.ollama:OllamaProvider",
         label="Ollama (Local)",
         default_model="qwen3.5:4b",
         models=("qwen3.5:4b", "qwen3.5:2b", "llama3.2", "qwen2.5-coder"),
         base_url_envs=("OLLAMA_BASE_URL",),
+        default_base_url="http://localhost:11434",
         keyless=True,
         local=True,
+        local_embedder="ollama",
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
         package="openai",
         autodetect_rank=3,
@@ -234,29 +264,30 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="litellm",
-        picker_rank=11,
+        picker_rank=12,
         impl=f"{_LLM}.litellm:LiteLLMProvider",
         label="LiteLLM",
-        default_model="groq/llama-3.1-70b-versatile",
-        models=("groq/llama-3.1-70b-versatile",),
+        default_model="groq/openai/gpt-oss-120b",
+        models=("groq/openai/gpt-oss-120b",),
         api_key_envs=("LITELLM_API_KEY",),
         base_url_envs=("LITELLM_BASE_URL", "LITELLM_API_BASE"),
         keyless=True,
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
         package="litellm",
+        extra="litellm",
         note="proxy in front of another provider",
         signup_url="https://docs.litellm.ai/docs/providers",
     ),
     ProviderSpec(
         name="claude_cli",
-        picker_rank=7,
+        picker_rank=6,
         impl=f"{_LLM}.claude_cli:ClaudeCliProvider",
         label="Claude Code (Local CLI)",
         default_model="claude_cli/claude-haiku-5-5",
         models=(
             "claude_cli/claude-haiku-5-5",
-            "claude_cli/claude-sonnet-4-6",
-            "claude_cli/claude-opus-4-6",
+            "claude_cli/claude-sonnet-5-5",
+            "claude_cli/claude-opus-5-5",
         ),
         keyless=True,
         # Not needs_repo_cwd: it runs in a scratch dir so the repo's CLAUDE.md
@@ -268,7 +299,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="codex_cli",
-        picker_rank=6,
+        picker_rank=7,
         impl=f"{_LLM}.codex_cli:CodexCliProvider",
         label="Codex (Local CLI)",
         default_model="codex_cli/default",
@@ -287,13 +318,31 @@ _SPECS: tuple[ProviderSpec, ...] = (
         impl=f"{_LLM}.opencode:OpenCodeProvider",
         label="OpenCode (Local CLI)",
         default_model="opencode/default",
-        models=("opencode/default", "opencode/openai/gpt-5", "opencode/deepseek/deepseek-v4-pro"),
+        models=(
+            "opencode/default",
+            "opencode/openai/gpt-6-luna",
+            "opencode/deepseek/deepseek-v4-pro",
+        ),
         keyless=True,
         needs_repo_cwd=True,
         local=True,
         zero_cost=True,
         agent="opencode",
         note="uses your opencode CLI setup",
+    ),
+    ProviderSpec(
+        name="copilot_cli",
+        picker_rank=9,
+        impl=f"{_LLM}.copilot_cli:CopilotCliProvider",
+        label="GitHub Copilot (Local CLI)",
+        default_model="copilot_cli/default",
+        models=("copilot_cli/default",),
+        keyless=True,
+        needs_repo_cwd=True,
+        local=True,
+        zero_cost=True,
+        agent="copilot",
+        note="uses your Copilot CLI login",
     ),
     ProviderSpec(
         name="mock",
@@ -310,3 +359,24 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {spec.name: spec for spec in _SPECS}
 ZERO_COST_MODEL_PREFIXES: tuple[str, ...] = tuple(
     f"{spec.name}/" for spec in _SPECS if spec.zero_cost
 )
+
+#: Every value :func:`provider_kind` returns. Fixed labels, safe for telemetry.
+PROVIDER_KINDS = frozenset({"none", "subscription_cli", "local", "api_key", "mock", "other"})
+
+
+def provider_kind(provider_name: str | None) -> str:
+    """How the named provider runs, as one fixed label from :data:`PROVIDER_KINDS`.
+
+    An agent CLI login (``subscription_cli``) before ``local``, since those
+    CLIs also run on this machine.
+    """
+    if not provider_name:
+        return "none"
+    spec = PROVIDER_SPECS.get(provider_name)
+    if spec is None:
+        return "other"
+    if spec.agent:
+        return "subscription_cli"
+    if spec.name == "mock":
+        return "mock"
+    return "local" if spec.local else "api_key"

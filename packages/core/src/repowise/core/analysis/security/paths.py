@@ -1,0 +1,78 @@
+"""Path and origin rules that lower a finding's severity or narrow it to secrets."""
+
+from __future__ import annotations
+
+from pathlib import PurePosixPath
+
+from repowise.core.ingestion.ts_declarations import is_declaration_file
+from repowise.core.support_paths import DOC_EXTENSIONS
+from repowise.core.test_paths import is_test_related_path
+
+from .patterns import SECRET_KINDS
+
+# Broader than ``is_test_related_path`` on purpose. That one asks whether a file
+# is a test and keeps bare ``fixtures/``, ``mocks/`` and ``spec/`` as production
+# outside a test tree; this asks whether a match there is probably fake, and a
+# ``high`` that is only probably real is not one to raise.
+_LOW_SEVERITY_PATH_TOKENS: frozenset[str] = frozenset(
+    {
+        "test",
+        "tests",
+        "__tests__",
+        "__test__",
+        "fixtures",
+        "__fixtures__",
+        "spec",
+        "specs",
+        "mock",
+        "mocks",
+        "__mocks__",
+        "example",
+        "examples",
+    }
+)
+
+
+def _is_low_severity_path(file_path: str, origin: str = "") -> bool:
+    """True when *file_path* is test material or under fixture, spec, mock, or example directories.
+
+    *origin* is the file's ``code_origin``; a test by origin is low wherever it sits.
+    """
+    if origin == "test":
+        return True
+    posix_path = file_path.replace("\\", "/")
+    parts = [p.lower() for p in PurePosixPath(posix_path).parts]
+    return any(p in _LOW_SEVERITY_PATH_TOKENS for p in parts) or is_test_related_path(posix_path)
+
+
+# Code that runs at build or release time, only in docs, or that a data folder
+# holds for the product to read by path: a sink there is not a shipped one.
+_NON_SHIPPING_ORIGINS = frozenset({"tooling", "docs_example", "data"})
+# A bundler's or generator's output, or a copied library: nobody here wrote its
+# calls, so only a secret it carries is news.
+_MACHINE_ORIGINS = frozenset({"generated", "vendored"})
+
+
+def _holds_no_written_code(file_path: str, origin: str) -> bool:
+    """Whether only secret kinds apply: machine output, or a TS declaration file, which never runs."""
+    return origin in _MACHINE_ORIGINS or is_declaration_file(file_path)
+
+
+def _is_low_for_path(kind: str, is_low_sev_file: bool, origin: str) -> bool:
+    """Test and fixture material never carries a shipped sink, whatever the kind.
+
+    Nor do scripts, tools, docs examples or a data folder's code, though a
+    secret there still leaks. A docs example or sample is the exception for a
+    hard-coded password: written to show the reader how to log in, it is a demo
+    value, while an API secret or a vendor key shape there is real.
+    """
+    return (
+        is_low_sev_file
+        or (origin in _NON_SHIPPING_ORIGINS and kind not in SECRET_KINDS)
+        or (origin == "docs_example" and kind == "hardcoded_password")
+    )
+
+
+# Prose is documentation, not executable code. Only secret kinds scan it,
+# because a key pasted into a README is still a leak.
+_PROSE_EXTENSIONS = tuple(DOC_EXTENSIONS)

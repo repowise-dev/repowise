@@ -98,9 +98,11 @@ def test_the_server_freshness_reads_the_same_commit(repo) -> None:
 
 def test_only_a_definite_ancestry_answer_is_cached(monkeypatch) -> None:
     from repowise.core import git_refs
-    from repowise.core.workspace import update
+    from repowise.core.workspace import state
+    from repowise.core.workspace.update import state as update
 
-    monkeypatch.setattr(update, "_ancestry_cache", {})
+    # ``_older_commit`` lives in ``workspace.state`` and reads the cache there.
+    monkeypatch.setattr(state, "_ancestry_cache", {})
     answers = iter([None, None, True])  # a timeout both ways, then git answers
     calls: list[tuple[str, str]] = []
 

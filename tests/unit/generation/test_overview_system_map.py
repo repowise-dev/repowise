@@ -33,11 +33,12 @@ def _map() -> SystemMap:
 
 
 _NAMED_REPLY = (
-    "## Project Summary\n\nDemo does things.\n\n## Architecture\n\nParts.\n\n"
+    "# demo: overview\n\nDemo does things.\n\n## Using it\n\n1. Run it.\n\n"
+    "## How the parts fit\n\nParts.\n\n"
     "```json\n"
     '{"caption": "Commands reach the engine.", '
-    '"nodes": [{"id": "n_core_engine_py", "label": "Processing engine", "role": "Does the work"}], '
-    '"edges": [{"from": "n_cli", "to": "n_core_engine_py", "verb": "drives"}]}\n'
+    '"nodes": [{"id": "n_core", "label": "Processing engine", "role": "Does the work"}], '
+    '"edges": [{"from": "n_cli", "to": "n_core", "verb": "drives"}]}\n'
     "```\n"
 )
 
@@ -87,31 +88,32 @@ async def _overview(
 async def test_model_written_overview_carries_the_map(model_gen, sample_repo_structure):
     page = await _overview(model_gen, sample_repo_structure, _map())
     assert "## System map" in page.content
-    assert 'n_cli -->|"imports"| n_core_engine_py' in page.content
+    assert 'n_cli -->|"imports"| n_core' in page.content
     prompt = model_gen._provider.calls[-1]["user_prompt"]
-    assert "### System map to name" in prompt and '"id": "n_core_engine_py"' in prompt
+    assert "### System map to name" in prompt and '"id": "n_core"' in prompt
 
 
 async def test_model_names_reach_the_map_and_the_block_does_not(naming_gen, sample_repo_structure):
     page = await _overview(naming_gen, sample_repo_structure, _map())
     assert "<b>Processing engine</b>" in page.content
-    assert 'n_cli -->|"drives"| n_core_engine_py' in page.content
+    assert 'n_cli -->|"drives"| n_core' in page.content
     assert "Commands reach the engine." in page.content
     assert "```json" not in page.content
-    assert page.content.index("## System map") < page.content.index("## Architecture")
+    sections = [page.content.index(h) for h in ("## Using it", "## System map", "## How the")]
+    assert sections == sorted(sections)
 
 
 async def test_deterministic_overview_carries_the_map(deterministic_gen, sample_repo_structure):
     page = await _overview(deterministic_gen, sample_repo_structure, _map())
     assert "```mermaid" in page.content
-    assert 'n_cli -->|"imports"| n_core_engine_py' in page.content
+    assert 'n_cli -->|"imports"| n_core' in page.content
 
 
 async def test_provider_outage_keeps_the_map(outage_gen, sample_repo_structure):
     """A provider outage costs the prose around the diagram, never the diagram."""
     page = await _overview(outage_gen, sample_repo_structure, _map())
     assert "```mermaid" in page.content
-    assert 'n_cli -->|"imports"| n_core_engine_py' in page.content
+    assert 'n_cli -->|"imports"| n_core' in page.content
 
 
 async def test_one_map_per_page(model_gen, sample_repo_structure):
@@ -175,7 +177,7 @@ async def test_a_reused_overview_keeps_its_names_and_recompiles_the_map(
     )
     page = await _overview(reused, sample_repo_structure, _map())
     assert provider.call_count == 0
-    assert 'n_cli -->|"drives"| n_core_engine_py' in page.content
+    assert 'n_cli -->|"drives"| n_core' in page.content
     assert "<b>Processing engine</b>" in page.content
     assert page.content.count("```mermaid") == 1
 

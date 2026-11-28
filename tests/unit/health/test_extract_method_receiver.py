@@ -514,3 +514,55 @@ def test_typescript_static_method_this_is_the_class():
         "typescript", "class A { static m() { return this; } }", frozenset({"method_definition"})
     )
     assert get_defuse_dialect("typescript").receiver(node, get_language_map("typescript")).bound is False
+
+
+def test_java_bare_field_writes_are_not_passed_as_params() -> None:
+    # Issue 3824 case 2: fields written without this are receiver state, not params
+    src = b"""
+    class Counter {
+      private int total;
+      private int seen;
+
+      void add(int[] values, int limit) {
+        total = 0;
+        for (int v : values) {
+          if (v > limit) {
+            continue;
+          }
+          seen++;
+        }
+        if (total > limit) {
+          if (seen > 2) {
+            total = limit;
+          } else {
+            total = total + seen;
+          }
+        }
+        if (total < 0) {
+          total = 0;
+        }
+        System.out.println(total);
+      }
+    }
+    """
+    res = analyze_file("Counter.java", "java", src, flagged_only=False)
+    fn = res.functions[0]
+    lmap = get_language_map("java")
+    dialect = get_defuse_dialect("java")
+    receiver = dialect.receiver(fn.fn_node, lmap)
+    extractions = find_extractions(fn, lmap, receiver=receiver)
+    assert extractions
+    for x in extractions:
+        assert "total" not in x.params
+        assert "seen" not in x.params
+        assert x.uses_receiver is True
+
+    from repowise.core.analysis.health.dataflow.stages import find_stages
+
+    plan = find_stages(fn, lmap, receiver=receiver)
+    if plan.stages:
+        for s in plan.stages:
+            assert "total" not in s.params
+            assert "seen" not in s.params
+            assert s.uses_receiver is True
+

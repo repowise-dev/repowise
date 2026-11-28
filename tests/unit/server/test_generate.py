@@ -154,6 +154,19 @@ async def test_generate_endpoint_rejects_structural_page_id(client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_generate_endpoint_rejects_model_free_page_id(client: AsyncClient) -> None:
+    """A model-free onboarding page is built from code, so naming it is a 400, not an empty plan."""
+    repo = await create_test_repo(client)
+    landscape = "onboarding:onboarding/active_landscape"
+    resp = await client.post(
+        f"/api/repos/{repo['id']}/generate",
+        json={"selection": {"kind": "page_ids", "page_ids": [landscape, "onboarding:x"]}},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"].endswith(landscape)
+
+
+@pytest.mark.asyncio
 async def test_generate_endpoint_ranked_selection(client: AsyncClient, app) -> None:
     """A ranked coverage selection is carried into the job config."""
     repo = await create_test_repo(client)
@@ -241,6 +254,27 @@ async def test_generate_estimate_no_pages(client: AsyncClient) -> None:
     assert body["total_pages"] == 0
     assert body["estimate"] is None
     assert body["provider"]["error"] is not None
+
+
+@pytest.mark.asyncio
+async def test_generate_estimate_prices_a_provider_override(client: AsyncClient) -> None:
+    """``?provider=`` prices a provider the repo has not chosen yet."""
+    repo = await create_test_repo(client)
+    llm = SimpleNamespace(provider_name="anthropic", model_name="claude-haiku-4-5")
+    with patch(
+        "repowise.server.provider_config.get_chat_provider_instance", return_value=llm
+    ) as build:
+        resp = await client.post(
+            f"/api/repos/{repo['id']}/generate/estimate?provider=anthropic",
+            json={"selection": {"kind": "unwritten"}},
+        )
+    assert resp.status_code == 200, resp.text
+    assert build.call_args.kwargs["provider_override"] == "anthropic"
+    assert resp.json()["provider"] == {
+        "name": "anthropic",
+        "model": "claude-haiku-4-5",
+        "error": None,
+    }
 
 
 # ---------------------------------------------------------------------------

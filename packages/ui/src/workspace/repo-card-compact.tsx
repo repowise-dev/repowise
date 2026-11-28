@@ -1,6 +1,7 @@
 import { ChevronRight, Trash2 } from "lucide-react";
 import { Card, CardContent } from "../ui/card";
 import { Badge } from "../ui/badge";
+import { formatNumber } from "../lib/format";
 
 // Slim variant of RepoCard for callers that don't have RepoStats / GitSummary
 // per member yet (e.g. multi-repo workspace overviews where member detail
@@ -45,7 +46,7 @@ export function RepoCardCompact({
             </div>
             {(fileCount != null || isPublic != null) && (
               <p className="mt-1 text-xs text-[var(--color-text-tertiary)] truncate">
-                {fileCount != null ? `${fileCount.toLocaleString()} files` : "—"}
+                {fileCount != null ? `${formatNumber(fileCount)} files` : "—"}
                 {isPublic != null ? ` · ${isPublic ? "Public" : "Private"}` : ""}
               </p>
             )}

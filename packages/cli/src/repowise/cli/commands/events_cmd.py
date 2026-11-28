@@ -15,6 +15,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.ci import ci_notices
 from repowise.cli.helpers import console, repo_index_session, resolve_command_target, run_async
 from repowise.cli.output import emit_json, format_option
 
@@ -38,22 +39,14 @@ def _parse_since(value: str | None) -> datetime | None:
 
 async def _read(root: Path, since: datetime | None, kinds: tuple[str, ...], limit: int):
     """``(events, snapshot runs stored)``, or ``None`` without an index."""
-    from sqlalchemy import func, select
-
-    from repowise.core.events.store import GAP_STAMP, list_events
-    from repowise.core.persistence.models import SnapshotRun
+    from repowise.core.events.store import list_events, snapshot_run_count
 
     async with repo_index_session(root) as opened:
         if opened is None:
             return None
         session, repo_id = opened
         events = await list_events(session, repo_id, since=since, kinds=kinds, limit=limit)
-        runs = await session.scalar(
-            select(func.count()).where(
-                SnapshotRun.repository_id == repo_id, ~SnapshotRun.stamp.startswith(GAP_STAMP)
-            )
-        )
-        return events, int(runs or 0)
+        return events, await snapshot_run_count(session, repo_id)
 
 
 @click.command("events")
@@ -61,21 +54,38 @@ async def _read(root: Path, since: datetime | None, kinds: tuple[str, ...], limi
 @click.option("--since", default=None, help="Only events from then on: 7d, 12h or an ISO date.")
 @click.option("--kind", "kinds", multiple=True, help="Only this kind (repeatable).")
 @click.option("--limit", default=200, show_default=True, type=click.IntRange(1, 10000))
+@click.option("--repo", "repo_alias", default=None, help="In workspace mode, target one repo.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
 @format_option(choices=("table", "json", "jsonl"))
 def events_command(
-    repo: str | None, since: str | None, kinds: tuple[str, ...], limit: int, fmt: str
+    repo: str | None,
+    since: str | None,
+    kinds: tuple[str, ...],
+    limit: int,
+    repo_alias: str | None,
+    no_workspace: bool,
+    fmt: str,
 ) -> None:
-    """List typed events (new hotspot, bus factor drop, ...) oldest first."""
+    """List typed events (new hotspot, bus factor drop, ...) oldest first.
+
+    Events belong to one repo: from a workspace root this reads the primary
+    repo; pass --repo <alias> for another.
+    """
     from repowise.core.events.model import KINDS, to_cloudevent
 
     unknown = [k for k in kinds if k not in KINDS]
     if unknown:
         raise click.BadParameter(f"unknown kind(s) {unknown}; known: {sorted(KINDS)}")
-    target = resolve_command_target(path=repo, no_workspace_flag=True)
-    assert target.repo_path is not None
-    read = run_async(_read(Path(target.repo_path).resolve(), _parse_since(since), kinds, limit))
+    target = resolve_command_target(
+        path=repo, no_workspace_flag=no_workspace, repo_alias=repo_alias
+    )
+    root = target.narrow(ci_notices(fmt), command="events").resolve()
+    read = run_async(_read(root, _parse_since(since), kinds, limit))
     if read is None:
-        console.print("No index found. Run `repowise init` first.")
+        if fmt in ("json", "jsonl"):
+            emit_json({"error": "No index found. Run `repowise init` first."})
+        else:
+            console.print("No index found. Run `repowise init` first.")
         raise SystemExit(1)
     events, runs = read
     if fmt == "json":
@@ -89,16 +99,10 @@ def events_command(
     from rich.table import Table
 
     if not events:
+        from repowise.core.events.store import empty_events_reason
+
         # An empty list is only news once two runs could be compared.
-        if runs < 2:
-            console.print(
-                f"No events yet: {runs} component snapshot(s) stored. Events are what "
-                "moved between two index runs in a row, so they start after the next "
-                "`repowise update` on a new commit."
-            )
-        else:
-            scope = " match these filters" if since or kinds else ""
-            console.print(f"No events{scope} across {runs} stored component snapshots.")
+        console.print(empty_events_reason(runs, filtered=bool(since or kinds))[1])
         return
     table = Table("When", "Kind", "Component", "Severity", "Evidence")
     for e in events:

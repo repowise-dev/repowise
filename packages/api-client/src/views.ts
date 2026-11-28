@@ -11,6 +11,8 @@
 
 import {
   VIEW_LIMITS,
+  VIEW_SCHEMA_VERSION,
+  VIEW_SCHEMA_VERSIONS,
   type ViewKind,
   type ViewPart,
   type ViewPartsByKind,
@@ -93,16 +95,42 @@ export function validateViewParts(input: unknown): ViewListValidation {
   return errors.length ? { ok: false, errors } : { ok: true, views };
 }
 
+const TABLE_FIELDS = ["id", "title", "summary", "source", "basis", "coverage", "stale", "as_of"];
+const TABLE_DATA = ["columns", "rows", "total_rows", "truncated"];
+
+/**
+ * A chart or table this client cannot check as sent (a newer chart type or
+ * field) kept as its data table, so newer parts degrade instead of vanishing.
+ * Null when even the table does not hold.
+ */
+export function asDataTable(input: unknown): ViewPart | null {
+  if (!isRec(input) || (input.kind !== "chart" && input.kind !== "table")) return null;
+  const data = input.kind === "chart" ? input.data : input;
+  if (!isRec(data)) return null;
+  const known = (VIEW_SCHEMA_VERSIONS as readonly unknown[]).includes(input.schema_version);
+  const table: Record<string, unknown> = {
+    schema_version: known ? input.schema_version : VIEW_SCHEMA_VERSION,
+    kind: "table",
+  };
+  for (const key of TABLE_FIELDS) if (Object.hasOwn(input, key)) table[key] = input[key];
+  for (const key of TABLE_DATA) if (Object.hasOwn(data, key)) table[key] = data[key];
+  const result = validateViewPart(table);
+  return result.ok ? result.view : null;
+}
+
 /**
  * Keeps what a renderer can show from an untrusted list: the valid parts among
- * the first `VIEW_LIMITS.parts`, the first part for each id, and only the
- * parts whose references all resolve to a kept data part.
+ * the first `VIEW_LIMITS.parts` (a chart it cannot draw as its table), the
+ * first part for each id, and only the parts whose references all resolve to
+ * a kept data part.
  */
 export function parseViewParts(input: unknown): ViewPart[] {
   if (!Array.isArray(input)) return [];
   const seen = new Set<string>();
   const kept = input.slice(0, VIEW_LIMITS.parts).flatMap((item) => {
-    const result = validateViewPart(item);
+    const checked = validateViewPart(item);
+    const degraded = checked.ok ? null : asDataTable(item);
+    const result: ViewValidation = degraded ? { ok: true, view: degraded } : checked;
     if (!result.ok || seen.has(result.view.id)) return [];
     seen.add(result.view.id);
     return [result.view];

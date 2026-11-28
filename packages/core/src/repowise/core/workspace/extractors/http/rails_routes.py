@@ -1,0 +1,564 @@
+"""Rails (Ruby) HTTP provider dialect — ``config/routes.rb``.
+
+Reads routes declared via ``resources``/``resource`` (with ``only`` and
+``except`` options), ``namespace``, ``scope``, ``member``, ``collection``,
+direct verb helpers (``get``, ``post``, etc.), and ``match ... via:``.
+"""
+
+from __future__ import annotations
+
+import posixpath
+import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from ..langs import RUBY
+from .dialect import build_provider_contract
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.contracts import Contract
+
+    from ..base import ScanContext
+
+_PLURAL_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("index", ("GET",), ""),
+    ("new", ("GET",), "/new"),
+    ("create", ("POST",), ""),
+    ("show", ("GET",), "/:id"),
+    ("edit", ("GET",), "/:id/edit"),
+    ("update", ("PUT", "PATCH"), "/:id"),
+    ("destroy", ("DELETE",), "/:id"),
+)
+
+_SINGULAR_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("new", ("GET",), "/new"),
+    ("create", ("POST",), ""),
+    ("show", ("GET",), ""),
+    ("edit", ("GET",), "/edit"),
+    ("update", ("PUT", "PATCH"), ""),
+    ("destroy", ("DELETE",), ""),
+)
+
+_NAMESPACE_RE = re.compile(r"\bnamespace\s+(?::(\w+)|\"([^\"]+)\"|'([^']+)')")
+_SCOPE_RE = re.compile(
+    r"\bscope\s+(?:path:\s*[\"']([^\"']+)[\"']|(?::(\w+)|\"([^\"]+)\"|'([^']+)'))"
+)
+_RESOURCES_RE = re.compile(r"\b(resources|resource)\s+([^\n]+)")
+_DIRECT_RE = re.compile(r"\b(get|post|put|patch|delete)\s+(?:[\"']([^\"']+)[\"']|:(\w+))")
+_ROOT_RE = re.compile(r"\broot\b")
+_MATCH_RE = re.compile(
+    r"\bmatch\s+[\"']([^\"']+)[\"'][^\n]*?(?:via:\s*|:via\s*=>\s*)(?:\[([^\]]*)\]|%i\[([^\]]*)\]|:(\w+))"
+)
+_DO_BLOCK_RE = re.compile(r"\bdo(?:\s*\|[^|]*\|)?\s*$")
+_CONCERN_DEF_RE = re.compile(
+    r"\bconcern\s+(?::(\w+)|[\"']([^\"']+)[\"'])\s+do(?:\s*\|[^|]*\|)?\s*$"
+)
+_CONCERNS_CALL_RE = re.compile(
+    r"^\s*concerns?\s+(?:%[iw]\[([^\]]*)\]|\[([^\]]*)\]|(.+))$"
+)
+_CONCERNS_OPT_RE = re.compile(
+    r"concerns?:\s*(?:%[iw]\[([^\]]*)\]|\[([^\]]*)\]|:(\w+)|[\"']([^\"']+)[\"'])"
+)
+_DRAW_CALL_RE = re.compile(
+    r"^\s*draw\s*(?:\(\s*(?::(\w+)|['\"]([^'\"]+)['\"])\s*\)|(?::(\w+)|['\"]([^'\"]+)['\"]))"
+)
+
+
+@dataclass
+class _Scope:
+    kind: str
+    prefix: str = ""
+    resource: str = ""
+    singular: bool = False
+
+
+def _parse_options(text: str) -> tuple[set[str] | None, set[str]]:
+    only_m = re.search(
+        r"only:\s*(?:\[([^\]]*)\]|%i\[([^\]]*)\]|:(\w+)|\"(\w+)\"|'(\w+)')", text
+    )
+    except_m = re.search(
+        r"except:\s*(?:\[([^\]]*)\]|%i\[([^\]]*)\]|:(\w+)|\"(\w+)\"|'(\w+)')", text
+    )
+    only: set[str] | None = None
+    if only_m:
+        raw = next(g for g in only_m.groups() if g is not None)
+        only = set(re.findall(r"\w+", raw))
+    excluded: set[str] = set()
+    if except_m:
+        raw = next(g for g in except_m.groups() if g is not None)
+        excluded = set(re.findall(r"\w+", raw))
+    return only, excluded
+
+
+def _current_base(stack: list[_Scope]) -> str:
+    parts: list[str] = []
+    for s in stack:
+        if s.prefix:
+            parts.append(s.prefix.strip("/"))
+        elif s.resource:
+            parts.append(s.resource.strip("/"))
+            if not s.singular:
+                parts.append(":id")
+    return "/" + "/".join(parts) if parts else ""
+
+
+def _read_statements(lines: list[str], ctx: ScanContext) -> list[tuple[int, str]]:
+    """Join continued lines and filter empty/comment-only lines."""
+    statements: list[tuple[int, str]] = []
+    buf = ""
+    start_line = 1
+    for line_no, mask_line in enumerate(lines, 1):
+        line = mask_line.strip()
+        if not line or ctx.comment_only_line(line_no):
+            continue
+        if not buf:
+            start_line = line_no
+            buf = line
+        else:
+            buf += " " + line
+        if not buf.endswith(","):
+            statements.append((start_line, buf))
+            buf = ""
+    if buf:
+        statements.append((start_line, buf))
+    return statements
+
+
+def _strip_inline_end(raw: str) -> tuple[str, bool]:
+    clean = raw
+    has_inline_end = False
+    if "; end" in clean:
+        clean = clean.split("; end")[0].strip()
+        has_inline_end = True
+    elif re.search(r"\s+end$", clean):
+        clean = re.sub(r"\s+end$", "", clean).strip()
+        has_inline_end = True
+    return clean, has_inline_end
+
+
+def _pop_if_enclosing(
+    has_inline_end: bool, had_do: bool, stack: list[_Scope]
+) -> None:
+    if has_inline_end and not had_do and stack:
+        stack.pop()
+
+
+def _match_scope(line: str) -> _Scope | None:
+    if "routes.draw" in line:
+        return _Scope(kind="drawer")
+
+    m = _NAMESPACE_RE.search(line)
+    if m:
+        ns = next(g for g in m.groups() if g is not None)
+        return _Scope(kind="namespace", prefix=f"/{ns}")
+
+    m = _SCOPE_RE.search(line)
+    if m:
+        sc = next(g for g in m.groups() if g is not None)
+        prefix = f"/{sc.strip('/')}" if sc else ""
+        return _Scope(kind="scope", prefix=prefix)
+
+    if re.search(r"\bmember\b", line):
+        return _Scope(kind="member")
+
+    if re.search(r"\bcollection\b", line):
+        return _Scope(kind="collection")
+
+    return None
+
+
+def _handle_scope(line: str, push_block: bool, stack: list[_Scope]) -> bool:
+    scope = _match_scope(line)
+    if scope is None:
+        return False
+    if push_block:
+        stack.append(scope)
+    return True
+
+
+def _build_action_contracts(
+    res_path: str,
+    verbs: tuple[str, ...],
+    line_no: int,
+    ctx: ScanContext,
+) -> list[Contract]:
+    contracts: list[Contract] = []
+    for v in verbs:
+        c = build_provider_contract(
+            ctx,
+            method=v,
+            path_raw=res_path,
+            framework="rails",
+            line=line_no,
+        )
+        if c is not None:
+            contracts.append(c)
+    return contracts
+
+
+def _expand_actions(
+    actions: tuple[tuple[str, tuple[str, ...], str], ...],
+    res_names: list[str],
+    base: str,
+    filter_opts: tuple[set[str] | None, set[str]],
+    line_no: int,
+    ctx: ScanContext,
+) -> list[Contract]:
+    only, excluded = filter_opts
+    out: list[Contract] = []
+    for name in res_names:
+        for act_name, verbs, suffix in actions:
+            if (only is not None and act_name not in only) or act_name in excluded:
+                continue
+            res_path = f"{base}/{name}{suffix}"
+            out.extend(_build_action_contracts(res_path, verbs, line_no, ctx))
+    return out
+
+
+def _parse_concerns(text: str) -> list[str]:
+    m = _CONCERNS_OPT_RE.search(text)
+    if not m:
+        return []
+    raw = next(g for g in m.groups() if g is not None)
+    return re.findall(r"\w+", raw)
+
+
+def _apply_resource_concerns(
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+    res_concerns: list[str],
+    res_names: list[str],
+    stack: list[_Scope],
+    is_singular: bool,
+    ctx: ScanContext,
+) -> list[Contract]:
+    out: list[Contract] = []
+    for name in res_names:
+        c_stack = [*stack, _Scope(kind="resource", resource=name, singular=is_singular)]
+        for c_name in res_concerns:
+            if c_name in concerns:
+                c_ctx, c_stmts = concerns[c_name]
+                out.extend(_extract_statements(c_stmts, c_stack, c_ctx, concerns))
+    return out
+
+
+def _handle_resources(
+    line: str,
+    line_no: int,
+    push_block: bool,
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+) -> list[Contract] | None:
+    m = _RESOURCES_RE.search(line)
+    if not m:
+        return None
+
+    kind = m.group(1)
+    rest = m.group(2)
+    first_arg = rest.split(",")[0]
+    names = re.findall(r":(\w+)|[\"']([^\"']+)[\"']", first_arg)
+    res_names = [g[0] or g[1] for g in names]
+    filter_opts = _parse_options(rest)
+    is_singular = kind == "resource"
+    actions = _SINGULAR_ACTIONS if is_singular else _PLURAL_ACTIONS
+
+    base = _current_base(stack)
+    out = _expand_actions(actions, res_names, base, filter_opts, line_no, ctx)
+    res_concerns = _parse_concerns(rest)
+    if res_concerns:
+        out.extend(_apply_resource_concerns(concerns, res_concerns, res_names, stack, is_singular, ctx))
+    if push_block:
+        for name in res_names:
+            stack.append(_Scope(kind="resource", resource=name, singular=is_singular))
+    return out
+
+
+def _handle_match(
+    line: str,
+    line_no: int,
+    ctx: ScanContext,
+) -> list[Contract] | None:
+    m = _MATCH_RE.search(line)
+    if not m:
+        return None
+
+    path = m.group(1)
+    v_list = next(g for g in m.groups()[1:] if g is not None)
+    verbs = (
+        ["GET", "POST", "PUT", "PATCH", "DELETE"]
+        if v_list == "all"
+        else [v.upper() for v in re.findall(r"\w+", v_list)]
+    )
+
+    out: list[Contract] = []
+    for v in verbs:
+        c = build_provider_contract(
+            ctx,
+            method=v,
+            path_raw=path,
+            framework="rails",
+            line=line_no,
+        )
+        if c is not None:
+            out.append(c)
+    return out
+
+
+def _direct_verb_path(line: str, p: str, stack: list[_Scope]) -> str:
+    prefixes = "".join(s.prefix for s in stack if s.prefix)
+    if p.startswith("/"):
+        return f"{prefixes}{p}"
+
+    res = next((s for s in reversed(stack) if s.resource), None)
+    if res is None:
+        return f"{_current_base(stack)}/{p}"
+
+    in_coll = any(s.kind == "collection" for s in stack) or "on: :collection" in line
+    id_part = "" if in_coll or res.singular else "/:id"
+    return f"{prefixes}/{res.resource}{id_part}/{p}"
+
+
+def _handle_direct_verb(
+    line: str,
+    line_no: int,
+    push_block: bool,
+    stack: list[_Scope],
+    ctx: ScanContext,
+) -> list[Contract] | None:
+    m = _DIRECT_RE.search(line)
+    if not m:
+        return None
+
+    verb = m.group(1).upper()
+    p = m.group(2) or m.group(3)
+    full = _direct_verb_path(line, p, stack)
+
+    out: list[Contract] = []
+    c = build_provider_contract(
+        ctx,
+        method=verb,
+        path_raw=full,
+        framework="rails",
+        line=line_no,
+    )
+    if c is not None:
+        out.append(c)
+    if push_block:
+        stack.append(_Scope(kind="other"))
+    return out
+
+
+def _handle_root(
+    line_no: int,
+    stack: list[_Scope],
+    ctx: ScanContext,
+) -> list[Contract]:
+    base = _current_base(stack) or "/"
+    c = build_provider_contract(
+        ctx,
+        method="GET",
+        path_raw=base,
+        framework="rails",
+        line=line_no,
+    )
+    return [c] if c is not None else []
+
+
+def _process_statement(
+    line: str,
+    line_no: int,
+    push_block: bool,
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, list[tuple[int, str]]],
+) -> list[Contract] | None:
+    if _handle_scope(line, push_block, stack):
+        return []
+
+    res_contracts = _handle_resources(line, line_no, push_block, stack, ctx, concerns)
+    if res_contracts is not None:
+        return res_contracts
+
+    if _ROOT_RE.search(line):
+        return _handle_root(line_no, stack, ctx)
+
+    match_contracts = _handle_match(line, line_no, ctx)
+    if match_contracts is not None:
+        return match_contracts
+
+    return _handle_direct_verb(line, line_no, push_block, stack, ctx)
+
+
+def _handle_draw(
+    name: str,
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+) -> list[Contract]:
+    if ctx.repo_root is None:
+        return []
+    norm_name = posixpath.normpath(name)
+    if norm_name.startswith("..") or norm_name.startswith("/"):
+        return []
+    child_rel = posixpath.normpath(f"config/routes/{norm_name}.rb")
+    if not child_rel.startswith("config/routes/"):
+        return []
+    child_file = ctx.repo_root / child_rel
+    if not child_file.is_file():
+        alt_rel = posixpath.normpath(
+            posixpath.join(posixpath.dirname(ctx.rel_path), "routes", f"{norm_name}.rb")
+        )
+        if not alt_rel.startswith("config/routes/"):
+            return []
+        child_file = ctx.repo_root / alt_rel
+        if not child_file.is_file():
+            return []
+        child_rel = alt_rel
+    child_content = child_file.read_text(encoding="utf-8")
+    from ..base import ScanContext as ScanCtx
+
+    child_ctx = ScanCtx(
+        ctx.repo_alias,
+        child_rel,
+        ".rb",
+        child_content,
+        ctx.mounts,
+        ctx.index,
+        ctx.repo_root,
+    )
+    mask = child_ctx._mask()
+    lines = (mask if mask is not None else child_content).splitlines()
+    statements = _read_statements(lines, child_ctx)
+    return _extract_statements(statements, list(stack), child_ctx, concerns)
+
+
+def _collect_concern_body(
+    statements: list[tuple[int, str]],
+    start_idx: int,
+) -> tuple[list[tuple[int, str]], int]:
+    depth = 1
+    body: list[tuple[int, str]] = []
+    idx = start_idx
+    while idx < len(statements):
+        line_no, raw = statements[idx]
+        idx += 1
+        if raw.startswith("end"):
+            depth -= 1
+            if depth == 0:
+                break
+            body.append((line_no, raw))
+            continue
+        line, has_inline_end = _strip_inline_end(raw)
+        had_do = bool(_DO_BLOCK_RE.search(line))
+        if had_do and not has_inline_end:
+            depth += 1
+        elif has_inline_end and not had_do:
+            depth -= 1
+            if depth == 0:
+                break
+        body.append((line_no, raw))
+    return body, idx
+
+
+def _collect_concerns(
+    statements: list[tuple[int, str]],
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+    ctx: ScanContext,
+) -> list[tuple[int, str]]:
+    remaining: list[tuple[int, str]] = []
+    i = 0
+    while i < len(statements):
+        line_no, raw = statements[i]
+        concern_def = _CONCERN_DEF_RE.search(raw)
+        if concern_def:
+            name = next(g for g in concern_def.groups() if g is not None)
+            body, i = _collect_concern_body(statements, i + 1)
+            concerns[name] = (ctx, body)
+        else:
+            remaining.append((line_no, raw))
+            i += 1
+    return remaining
+
+
+def _handle_draw_or_concerns(
+    line: str,
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+) -> list[Contract] | None:
+    draw_match = _DRAW_CALL_RE.search(line)
+    if draw_match:
+        d_name = next(g for g in draw_match.groups() if g is not None)
+        return _handle_draw(d_name, stack, ctx, concerns)
+    concerns_call = _CONCERNS_CALL_RE.search(line)
+    if concerns_call:
+        raw_c = next(g for g in concerns_call.groups() if g is not None)
+        out: list[Contract] = []
+        for c_name in re.findall(r"\w+", raw_c):
+            if c_name in concerns:
+                c_ctx, c_stmts = concerns[c_name]
+                out.extend(_extract_statements(c_stmts, list(stack), c_ctx, concerns))
+        return out
+    return None
+
+
+def _handle_statement_end(raw: str, stack: list[_Scope]) -> bool:
+    if raw.startswith("end"):
+        if stack:
+            stack.pop()
+        return True
+    return False
+
+
+def _extract_statements(
+    statements: list[tuple[int, str]],
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+) -> list[Contract]:
+    out: list[Contract] = []
+    remaining = _collect_concerns(statements, concerns, ctx)
+
+    for line_no, raw in remaining:
+        if _handle_statement_end(raw, stack):
+            continue
+
+        line, has_inline_end = _strip_inline_end(raw)
+        if not line:
+            _pop_if_enclosing(has_inline_end, False, stack)
+            continue
+
+        had_do = bool(_DO_BLOCK_RE.search(line))
+        push_block = had_do and not has_inline_end
+
+        special = _handle_draw_or_concerns(line, stack, ctx, concerns)
+        if special is not None:
+            out.extend(special)
+            _pop_if_enclosing(has_inline_end, had_do, stack)
+            continue
+
+        contracts = _process_statement(line, line_no, push_block, stack, ctx, concerns)
+        if contracts is not None:
+            out.extend(contracts)
+        elif push_block:
+            stack.append(_Scope(kind="other"))
+
+        _pop_if_enclosing(has_inline_end, had_do, stack)
+
+    return out
+
+
+class RailsRoutesDialect:
+    name = "rails"
+    extensions = RUBY
+    requires = ("routes.draw",)
+
+    def extract(self, ctx: ScanContext) -> list[Contract]:
+        mask = ctx._mask()
+        code = mask if mask is not None else ctx.content
+        lines = code.splitlines()
+
+        stack: list[_Scope] = []
+        statements = _read_statements(lines, ctx)
+        concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]] = {}
+        return _extract_statements(statements, stack, ctx, concerns)

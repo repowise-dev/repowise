@@ -4,6 +4,7 @@
  * the hosted frontend and the bot read the same shapes); this module re-exports
  * them for back-compat and keeps only the fetch functions.
  */
+import { holdParams } from "./areas";
 import type {
   ChurnComplexityResponse,
   HealthFilesQuery,
@@ -134,7 +135,11 @@ export async function getPerformanceOpportunities(
       confidence: opts.confidence,
       actionability: opts.actionability,
       proof: opts.proof,
+      static_cost: opts.static_cost,
       role: opts.role,
+      queue: opts.queue || undefined,
+      area: opts.area,
+      area_depth: opts.area_depth,
       view: opts.view,
       sort: opts.sort,
       file_paths: opts.file_paths?.length ? opts.file_paths.join(",") : undefined,
@@ -183,6 +188,10 @@ export async function getHealthMap(
     active: opts.active?.length ? opts.active.join(",") : undefined,
     scope: opts.scope,
     counts: opts.counts,
+    include_held: opts.include_held || undefined,
+    q: opts.q?.trim() || undefined,
+    area: opts.area || undefined,
+    ...holdParams(opts),
   });
 }
 

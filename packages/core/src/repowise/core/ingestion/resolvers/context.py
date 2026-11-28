@@ -42,6 +42,10 @@ class ResolverContext:
     go_module_path: str | None = None
     go_modules: tuple[tuple[str, str], ...] = ()  # (module_dir_posix, module_path), longest-first
     has_sfc_files: bool = False  # any .vue/.svelte/.astro present in path_set
+    # Any ``<name>.<ios|android|native|web>.<ts|tsx|...>`` file in path_set:
+    # Metro (React Native) picks one of these over ``<name>.<ext>``. False keeps
+    # TS/JS resolution byte-identical to a repo that has no such files.
+    has_platform_files: bool = False
     parsed_files: dict | None = None  # for Rust crate root detection
     # ``{file_info.path: raw source bytes}`` the pipeline already read, same
     # keys as *parsed_files*. Warmups that scan file text use it in place of
@@ -51,6 +55,8 @@ class ResolverContext:
     # Where pytest collects (``pytest_roots.PytestRoots``), from the traverser's
     # config pass. None when the caller did not walk the repo: collection unknown.
     pytest_roots: Any | None = field(default=None, repr=False)
+    # Per-file framework scan results (``framework_edges.scan_cache.ScanCache``).
+    framework_scans: Any | None = field(default=None, repr=False)
     # Lazy per-language indexes are stashed via getattr/setattr (e.g.
     # ``_php_psr4_map``, ``_composer_manifests``, ``_ts_workspace_map``,
     # ``_kotlin_index``, ``_ruby_rails_index``, ``_swift_targets``,

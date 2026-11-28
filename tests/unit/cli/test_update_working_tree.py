@@ -205,6 +205,7 @@ def test_working_tree_only_update_skips_history_phases_until_the_commit(
 ) -> None:
     from repowise.cli.helpers import load_state, save_state
     from repowise.core.pipeline import incremental as core_incremental
+    from repowise.core.pipeline.incremental import persist_index
 
     repo = _make_git_repo(tmp_path)
     _index_full(repo)
@@ -214,14 +215,16 @@ def test_working_tree_only_update_skips_history_phases_until_the_commit(
 
     analysis = _spy(monkeypatch, update_command_mod, "_run_partial_analysis")
     drift = _spy(monkeypatch, update_command_mod, "_run_doc_drift_partial")
+    # Both lookup sites: the package and the core writer's own reference.
     commits = _spy(monkeypatch, core_incremental, "persist_incremental_commits")
+    commits_core = _spy(monkeypatch, persist_index, "persist_incremental_commits")
 
     (repo / "a.py").write_text(_EDITED_A)
     (repo / "b.py").write_text(_EDITED_B)
     result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace", "--working-tree"])
     assert result.exit_code == 0, result.output
 
-    assert (analysis, drift, commits) == ([], [], [])
+    assert (analysis, drift, commits + commits_core) == ([], [], [])
     history_phases = {"persist.commits", "persist.health", "analysis.health", "rescore"}
     assert not history_phases & _phase_rows(repo)
     view = asyncio.run(_store_view(repo))
@@ -235,7 +238,7 @@ def test_working_tree_only_update_skips_history_phases_until_the_commit(
     result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace"])
     assert result.exit_code == 0, result.output
 
-    assert analysis and drift and commits
+    assert analysis and drift and commits + commits_core
     # Each label is real: the commit's update records every one of them.
     assert history_phases <= _phase_rows(repo)
     assert load_state(repo)["last_sync_commit"] == _git(repo, "rev-parse", "HEAD")

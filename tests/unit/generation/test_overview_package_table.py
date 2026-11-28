@@ -279,24 +279,6 @@ def test_deterministic_page_carries_the_table(sample_config, structure, parsed_f
     assert "`packages/core`" in out
 
 
-def test_prompt_asks_for_a_role_clause_per_package(sample_config, structure, parsed_files):
-    """The role is the one thing on this page no template can derive: it is a
-    judgement about what a directory is for. The model is asked for it in
-    prose, and the table stays a table of facts."""
-    from repowise.core.generation.page_generator import PageGenerator
-    from repowise.core.providers.llm.mock import MockProvider
-
-    assembler = ContextAssembler(sample_config)
-    gen = PageGenerator(MockProvider(), assembler, sample_config)
-    ctx = assembler.assemble_repo_overview(structure, {}, [], {}, parsed_files=parsed_files)
-    prompt = gen._render("repo_overview.j2", ctx=ctx, repo_git_summary=None)
-
-    assert "role" in prompt.lower()
-    # and it must tell the model the table is already there, or it writes a
-    # second one and the reader gets the packages twice.
-    assert "already" in prompt.lower()
-
-
 async def test_generator_embeds_the_table_on_the_deterministic_page(structure, parsed_files):
     """Through `generate_repo_overview`, not the helpers. The helpers were
     right before this was wired up and the page still had no table."""

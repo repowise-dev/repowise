@@ -2,7 +2,8 @@ import { Landmark, Lightbulb } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { EmptyState } from "../shared/empty-state";
-import { formatRelativeTime, stripMarkdown } from "../lib/format";
+import { stripMarkdown } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 /** Structural slice of a decision record — anything with these fields renders
  *  (full DecisionRecord rows and the overview-summary slim slice both fit). */
@@ -95,7 +96,7 @@ export function DecisionsTimeline({ decisions, repoId, linkPrefix }: DecisionsTi
                     </Badge>
                   </div>
                   <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                    {d.created_at ? formatRelativeTime(d.created_at) : ""}
+                    {d.created_at ? <RelativeTime date={d.created_at} /> : ""}
                     {d.source && ` · ${d.source.replace("_", " ")}`}
                   </span>
                 </div>

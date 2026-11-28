@@ -13,10 +13,115 @@ import json
 import re
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 INDEX_SCOPE_VERSION = 1
+
+#: The one command that takes an Index only repo to full git history and
+#: documentation. It needs no key: without a model the documentation is built
+#: from code.
+FAST_TO_FULL_COMMAND = "repowise update --full"
+
+
+def fast_to_full_command(repo_alias: str | None = None) -> str:
+    """:data:`FAST_TO_FULL_COMMAND`, aimed at one workspace repo when *repo_alias* is set."""
+    return f"repowise update --repo {repo_alias} --full" if repo_alias else FAST_TO_FULL_COMMAND
+
+
+#: The command that has a model write the documentation of an index that has
+#: pages. An Index only repo has none yet, so it takes FAST_TO_FULL_COMMAND.
+MODEL_COMMAND = "repowise generate"
+
+
+def upgrade_command(scope: Mapping[str, Any] | None) -> str | None:
+    """The fast-to-full command when *scope* is Index only (no documentation), else None."""
+    if not isinstance(scope, Mapping):
+        return None
+    provenance = scope.get("content_provenance")
+    # A fast run whose state predates the docs stamp is Index only too.
+    if provenance == "none" or (provenance == "unknown" and scope.get("run_mode") == "fast"):
+        return FAST_TO_FULL_COMMAND
+    return None
+
+
+def model_command(scope: Mapping[str, Any] | None) -> str:
+    """The command that has a model write *scope*'s documentation, for its mode."""
+    return upgrade_command(scope) or MODEL_COMMAND
+
+
+#: What the upgrade line names when no agent CLI on a paid plan is signed in.
+NO_FREE_ROUTE = "a provider key or a local model"
+
+
+@dataclass(frozen=True)
+class FreeRoute:
+    """A signed-in agent CLI billed to a plan quota: adding a model with no new spend.
+
+    Found by ``repowise.core.providers.llm.subscription.detect_free_route``.
+    *provider* is the ``--provider`` value, *cli_name* what the user calls it,
+    *minutes* the estimated run time when the caller knows the page count.
+    """
+
+    provider: str
+    cli_name: str
+    minutes: int | None = None
+
+    def uses(self, *, timed: bool = True) -> str:
+        """``uses your Claude Code sign-in and plan quota, about 5 minutes``."""
+        text = f"uses your {self.cli_name} sign-in and plan quota"
+        if timed and self.minutes:
+            unit = "minute" if self.minutes == 1 else "minutes"
+            text += f", about {self.minutes} {unit}"
+        return text
+
+
+def answers_upgrade_line(
+    scope: Mapping[str, Any] | None, route: FreeRoute | None = None
+) -> str | None:
+    """How an index with no model-written prose gets answers and docs; None once it has them.
+
+    The one wording the MCP server, ``status`` and ``doctor`` share, as a
+    whole sentence. With
+    *route* it names the signed-in CLI and its plan quota, else it falls back
+    to :data:`NO_FREE_ROUTE`. The server resolves its provider at start, hence
+    the restart.
+    """
+    fast = upgrade_command(scope)
+    if fast is None and not (
+        isinstance(scope, Mapping) and scope.get("content_provenance") == "template"
+    ):
+        return None
+    command = fast or MODEL_COMMAND
+    if route is not None:
+        return (
+            f"For answers and docs, run `{command} --provider {route.provider}`; "
+            f"it {route.uses()}. Then restart the MCP server."
+        )
+    no_reindex = "" if fast else " (no re-index)"
+    return (
+        f"For answers and docs, run `{command}`{no_reindex} with {NO_FREE_ROUTE}, "
+        "then restart the MCP server."
+    )
+
+
+def answers_key_line(route: FreeRoute | None = None) -> str:
+    """For an index a model already wrote, served with no model: what answers need."""
+    if route is not None:
+        return (
+            f"Answers need a model: `repowise config set provider {route.provider}` "
+            f"{route.uses(timed=False)}. Then restart the MCP server."
+        )
+    return (
+        f"Answers need a model: set {NO_FREE_ROUTE} "
+        "(`repowise config set provider`), then restart the MCP server."
+    )
+
+
+def upgrade_line(scope: Mapping[str, Any] | None, route: FreeRoute | None = None) -> str:
+    """The line for any keyless index: the docs upgrade, else what answers need."""
+    return answers_upgrade_line(scope, route) or answers_key_line(route)
 
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and
@@ -121,6 +226,41 @@ def _dropped_files(value: Any) -> dict[str, Any] | None:
     }
 
 
+def is_legacy_init_notice(message: str) -> bool:
+    """Return True if *message* is an informational notice from an older init run.
+
+    Before v0.56.0 (#3272), progress tips and file size-skips were emitted with
+    warning weight and persisted into ``state["degraded"]``. #3272 reclassified
+    them as notices so new init runs never persist them, but legacy indexes
+    and subsequent updates carried them forward (#4224).
+    """
+    stripped = message.strip()
+    return (
+        stripped.startswith("Graph build can take several minutes")
+        or stripped.startswith("Not indexed: ")
+        or stripped == "...and more source files skipped on size"
+    )
+
+
+def prune_legacy_degraded_notices(messages: list[str]) -> list[str]:
+    """Filter out legacy informational notices from a degraded messages list."""
+    return [msg for msg in messages if not is_legacy_init_notice(str(msg))]
+
+
+def clean_legacy_degraded_state(state: dict[str, Any]) -> None:
+    """Prune legacy informational init notices from ``state`` in place (#4224)."""
+    if "degraded" in state and isinstance(state["degraded"], list):
+        pruned = prune_legacy_degraded_notices(state["degraded"])
+        if pruned:
+            state["degraded"] = pruned
+        else:
+            state.pop("degraded", None)
+    if "index_scope" in state and isinstance(state["index_scope"], dict):
+        analysis = state["index_scope"].get("analysis")
+        if isinstance(analysis, dict) and isinstance(analysis.get("unavailable"), list):
+            analysis["unavailable"] = prune_legacy_degraded_notices(analysis["unavailable"])
+
+
 def resolve_index_scope(
     state: Mapping[str, Any] | None,
     config: Mapping[str, Any] | None = None,
@@ -161,6 +301,8 @@ def resolve_index_scope(
     degraded = state.get("degraded", [])
     if isinstance(unavailable, list) and isinstance(degraded, list):
         unavailable = [*unavailable, *degraded]
+    if isinstance(unavailable, list):
+        unavailable = prune_legacy_degraded_notices(unavailable)
     skipped = analysis.get("skipped", [])
     return {
         "version": INDEX_SCOPE_VERSION,
@@ -176,6 +318,8 @@ def resolve_index_scope(
             else None
         ),
         "dropped_files": _dropped_files(scope.get("dropped_files")),
+        # ``init --test-run``: the model wrote documentation for a sample of files.
+        "test_run": scope.get("test_run") if isinstance(scope.get("test_run"), bool) else None,
         "file_pages": {
             "configured_cap": configured_cap,
             "effective_cap": _number(pages.get("effective_cap")),
@@ -219,11 +363,9 @@ def resolve_index_scope(
     }
 
 
-#: What a routine response says instead of the whole canonical scope. The full
-#: object is roughly 900 characters, which on a small ``get_symbol`` response
-#: was about a third of everything the agent received — paid for on every call
-#: to answer a question almost none of them asked.
-COMPACT_INDEX_SCOPE_PROJECTION = "compact"
+#: The env value that asks for the whole canonical scope on routine responses.
+#: A routine response otherwise carries the compact digest: the full object is
+#: roughly 900 characters, about a third of a small ``get_symbol`` reply.
 CANONICAL_INDEX_SCOPE_PROJECTION = "full"
 
 #: Degraded-analysis entries the compact scope names; the count stays exact and
@@ -368,15 +510,16 @@ def index_scope_fingerprint(scope: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-def compact_index_scope(
-    scope: Mapping[str, Any] | None, *, full_hint: str = "get_overview()"
-) -> dict[str, Any] | None:
+def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """The routine-response projection of a canonical scope.
 
     Keeps what changes how an answer should be read — the run mode, where the
-    prose came from, how much git there is, and whether the index is whole —
-    plus a fingerprint identifying the full object and the call that returns
-    it. Everything else is a diagnostic, and a diagnostic that rides on every
+    prose came from, how much git there is, and whether the index is whole.
+    The version, projection name and fingerprint stay on the whole object: they
+    are the same on every response of a session, and an agent acts on none of
+    them. The call that returns the whole object
+    (``get_overview(include=["scope"])``) is documented, not repeated on every
+    response: agents did not follow it. Everything else is a diagnostic, and a diagnostic that rides on every
     response is a tax, not a disclosure.
 
     The one exception is ``degraded_analyses``, carried only when non-empty:
@@ -387,14 +530,10 @@ def compact_index_scope(
     if not isinstance(scope, Mapping):
         return None
     compact: dict[str, Any] = {
-        "version": scope.get("version", INDEX_SCOPE_VERSION),
-        "projection": COMPACT_INDEX_SCOPE_PROJECTION,
         "run_mode": scope.get("run_mode", "unknown"),
         "content_provenance": scope.get("content_provenance", "unknown"),
         "git_tier": scope.get("git_tier", "unknown"),
         "status": _scope_status(scope),
-        "fingerprint": index_scope_fingerprint(scope),
-        "full": full_hint,
     }
     unavailable = _section(scope, "analysis").get("unavailable")
     if unavailable:
@@ -407,6 +546,10 @@ def compact_index_scope(
             compact["degraded_analyses_total"] = len(unavailable)
             compact["degraded_analyses_emitted"] = len(shown)
             compact["degraded_analyses_reduced_reason"] = "compact_projection"
+    # Only an Index only repo carries it, so no other response grows.
+    command = upgrade_command(scope)
+    if command:
+        compact["upgrade_command"] = command
     return compact
 
 
@@ -430,9 +573,16 @@ def file_page_scope(
     *, configured_cap: int | None, eligible: int, generated_pages: list[Any] | None
 ) -> dict[str, int | None]:
     """Build configured/effective/achieved file-page figures for one run."""
+    generated = sum(1 for page in (generated_pages or []) if page.page_type == "file_page")
+    return file_page_counts(configured_cap=configured_cap, eligible=eligible, generated=generated)
+
+
+def file_page_counts(
+    *, configured_cap: int | None, eligible: int, generated: int
+) -> dict[str, int | None]:
+    """The file-page figures from counts, for a run that holds no page list."""
     from repowise.core.generation.selection import auto_file_page_cap
 
-    generated = sum(1 for page in (generated_pages or []) if page.page_type == "file_page")
     effective = configured_cap
     if configured_cap is None:
         effective = auto_file_page_cap(eligible)

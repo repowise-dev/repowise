@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useMemo, useState, type ReactNode, type ComponentType } from "react";
+import { useEffect, useMemo, useState, type ReactNode, type ComponentType } from "react";
 import { RefreshCw, Trash2, AlertTriangle, Zap, MoreHorizontal } from "lucide-react";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -12,7 +12,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from "../ui/dialog";
-import { formatNumber, formatCost, formatRelativeTime } from "../lib/format";
+import { formatNumber, formatCost } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 // Weighted average per-page token heuristics from cost_estimator.py _TOKEN_HEURISTICS
 const AVG_INPUT_TOKENS_PER_PAGE = 3500;
@@ -48,7 +49,7 @@ export const DEFAULT_QUICK_ACTIONS: QuickActionDef[] = [
   {
     key: "sync",
     label: "Sync",
-    description: "Update everything â€” only affected pages regenerated",
+    description: "Update everything — only affected pages regenerated",
     icon: Zap,
     destructive: false,
     needsConfirm: true,
@@ -84,7 +85,7 @@ export interface QuickActionsProps {
   actions?: QuickActionDef[];
   /** Bag of mutation callbacks; the shell calls the matching key. */
   onAction: (key: QuickActionKey) => Promise<void> | void;
-  /** Disabled / loading flag for a specific action. Optional â€” if omitted the
+  /** Disabled / loading flag for a specific action. Optional — if omitted the
    *  shell tracks its own optimistic loading state. */
   loadingKey?: QuickActionKey | null;
   /** ISO datetimes for the timestamp footer. */
@@ -95,7 +96,7 @@ export interface QuickActionsProps {
   modelName?: string;
   /** The model's rates from the server; without them no estimate is shown. */
   costPer1k?: CostPer1k | null;
-  /** When provided, replaces the buttons with the given node â€” typically a
+  /** When provided, replaces the buttons with the given node — typically a
    *  rendered job-progress widget. Wrapper decides what to pass. */
   activeJobSlot?: ReactNode;
   /**
@@ -108,6 +109,11 @@ export interface QuickActionsProps {
    * the same weight made the destructive one as easy to hit as the safe one.
    */
   variant?: "row" | "header";
+  /** Open an action as if its button were clicked, confirm step included (a
+   *  retry after a failure). The shell calls `onConfirmRequestHandled` once
+   *  it has, so the host can clear the request. */
+  confirmRequest?: QuickActionKey | null;
+  onConfirmRequestHandled?: () => void;
 }
 
 export function QuickActions({
@@ -121,11 +127,22 @@ export function QuickActions({
   costPer1k,
   activeJobSlot,
   variant = "row",
+  confirmRequest,
+  onConfirmRequestHandled,
 }: QuickActionsProps) {
   const [internalLoading, setInternalLoading] = useState<QuickActionKey | null>(null);
   const [pendingAction, setPendingAction] = useState<QuickActionDef | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const loading = loadingKey !== undefined ? loadingKey : internalLoading;
+
+  useEffect(() => {
+    if (!confirmRequest) return;
+    const action = actions.find((a) => a.key === confirmRequest);
+    onConfirmRequestHandled?.();
+    if (action) handleClick(action);
+    // Fires per request; `handleClick` is recreated every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmRequest]);
 
   const estimate = useMemo(() => {
     if (!pendingAction || pendingAction.key === "dead-code" || pageCount <= 0 || !costPer1k) {
@@ -155,6 +172,12 @@ export function QuickActions({
   }
 
   if (activeJobSlot) {
+    // In the header the panel sits in a slot that does not shrink, beside the
+    // repo identity. Unbounded, it took the width of its longest log line and
+    // squeezed the repo name down to one character per line.
+    if (variant === "header") {
+      return <div className="w-full min-w-0 sm:w-80 lg:w-96">{activeJobSlot}</div>;
+    }
     return <div className="mb-2">{activeJobSlot}</div>;
   }
 
@@ -216,7 +239,7 @@ export function QuickActions({
           {estimate && estimate.cost === 0 && (
             <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] p-3">
               <p className="text-xs text-[var(--color-success)] text-center">
-                No API cost â€” running locally via Ollama
+                No API cost — running locally via Ollama
               </p>
             </div>
           )}
@@ -339,13 +362,13 @@ export function QuickActions({
           <span className="text-xs text-[var(--color-text-tertiary)]">
             Last synced{" "}
             <span className="text-[var(--color-text-secondary)]">
-              {lastSyncAt ? formatRelativeTime(lastSyncAt) : "never"}
+              {lastSyncAt ? <RelativeTime date={lastSyncAt} /> : "never"}
             </span>
           </span>
           <span className="text-xs text-[var(--color-text-tertiary)]">
             Last re-indexed{" "}
             <span className="text-[var(--color-text-secondary)]">
-              {lastResyncAt ? formatRelativeTime(lastResyncAt) : "never"}
+              {lastResyncAt ? <RelativeTime date={lastResyncAt} /> : "never"}
             </span>
           </span>
         </div>

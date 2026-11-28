@@ -10,6 +10,7 @@ the LLM to:
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any
 
 import structlog
@@ -197,6 +198,7 @@ async def _enrich_layers(
                 "id": layer.get("id", ""),
                 "heuristic_label": layer["name"],
                 "file_count": len(file_paths),
+                "folders": _folder_breakdown(file_paths),
                 "top_files": top_files,
             })
 
@@ -258,6 +260,22 @@ def _dedupe_layer_names(layers: list[dict]) -> None:
         seen.add(name.casefold())
 
 
+_FOLDER_DEPTH = 2
+_TOP_FOLDERS = 5
+
+
+def _folder_breakdown(file_paths: list[str]) -> list[tuple[str, int]]:
+    """``(folder, file count)`` for a layer's largest folders, two segments deep.
+
+    The top files are ranked by PageRank, so a layer that is mostly one area
+    but headed by another reads as the head; the counts show the majority.
+    """
+    counts = Counter(
+        "/".join(p.split("/")[:-1][:_FOLDER_DEPTH]) or "(root)" for p in file_paths
+    )
+    return counts.most_common(_TOP_FOLDERS)
+
+
 def _build_layer_naming_prompt(
     batch_context: list[dict],
     tech_stack: list[dict],
@@ -292,6 +310,11 @@ def _build_layer_naming_prompt(
         lines.append(f"\n--- Community \"{ctx['id']}\" ---")
         lines.append(f"Heuristic label: {ctx['heuristic_label']}")
         lines.append(f"File count: {ctx['file_count']}")
+        folders = ctx.get("folders") or []
+        if folders:
+            shown = ", ".join(f"{folder} {n}" for folder, n in folders)
+            rest = ctx["file_count"] - sum(n for _, n in folders)
+            lines.append(f"Files by folder: {shown}" + (f", other folders {rest}" if rest else ""))
         lines.append(f"Top files: {', '.join(ctx['top_files'][:10])}")
 
     lines.append("")
@@ -456,25 +479,34 @@ def build_deterministic_tour(
 # ---------------------------------------------------------------------------
 
 
+# A file's own page outranks another page on the same target: an API contract
+# page is the only page an API file gets, but never beats a file page.
+_FILE_PAGE_TYPES = frozenset({"file_page", "infra_page"})
+
+
 def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
     """Populate node summaries from generated wiki pages (zero LLM cost)."""
-    page_summaries: dict[str, str] = {}
+    page_summaries: dict[str, tuple[bool, str]] = {}
     for p in generated_pages:
         summary = getattr(p, "summary", None) or ""
         target = getattr(p, "target_path", None) or ""
-        if summary and target:
-            page_summaries[target] = summary
+        if not (summary and target):
+            continue
+        own = getattr(p, "page_type", None) in _FILE_PAGE_TYPES
+        if own or not page_summaries.get(target, (False, ""))[0]:
+            page_summaries[target] = (own, summary)
 
     for node in kg_result.nodes:
         # Any file-level node (any presentation type — file/config/service/
-        # pipeline/schema/document). Only fill empties: a page summary is the
-        # richest source, and the deterministic curation floor is applied
-        # *after* this backfill so it never blocks a real page summary.
+        # pipeline/schema/document). A page written this run is the richest and
+        # newest source, so it replaces what the node holds: the floor an
+        # index-only init or update already applied, or a summary carried
+        # from an older page.
         if not str(node.get("id", "")).startswith("file:"):
             continue
         path = node.get("filePath") or file_path_of(node["id"]) or node["id"]
-        if path in page_summaries and not node.get("summary"):
-            node["summary"] = page_summaries[path]
+        if path in page_summaries:
+            node["summary"] = page_summaries[path][1]
 
 
 # ---------------------------------------------------------------------------

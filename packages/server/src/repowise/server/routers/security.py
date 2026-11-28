@@ -8,11 +8,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.security_scan import source_lines
+from repowise.core.analysis.security_scan import shown_snippet, source_lines
 from repowise.core.persistence.models import Repository, SecurityFinding
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import SecurityFindingResponse, SecuritySummaryResponse
 from repowise.server.services.analysis_ran_at import security_scanned_at
+from repowise.server.services.security_classes import path_classes, security_class_counts
 from repowise.server.services.security_lines import check_finding_line
 
 router = APIRouter(
@@ -61,6 +62,7 @@ async def list_security_findings(
     # on a cold cache. If that ever bites, verify at scan time and persist the
     # outcome instead of re-deriving it per request.
     file_cache: dict[str, list[str] | None] = {}
+    classes = await path_classes(session, repo_id, (row.file_path for row in rows))
 
     responses = []
     for row in rows:
@@ -76,13 +78,14 @@ async def list_security_findings(
                 file_path=row.file_path,
                 kind=row.kind,
                 severity=row.severity,
-                snippet=row.snippet,
+                snippet=shown_snippet(row.kind, row.snippet),
                 detected_at=row.detected_at,
                 line_number=check.line_number,
                 line_verified=check.verified,
                 commit_sha=row.commit_sha or None,
                 commit_at=row.commit_at,
                 found_in_history=bool(row.commit_sha),
+                path_class=classes[row.file_path],
             )
         )
     return responses
@@ -93,8 +96,12 @@ async def security_summary(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),
 ) -> SecuritySummaryResponse:
-    """When the pattern scan last ran; ``scanned_at`` is null when unknown."""
-    return SecuritySummaryResponse(scanned_at=await security_scanned_at(session, repo_id))
+    """When the pattern scan last ran (null when unknown), and every stored
+    finding counted by shipped source, tests and docs."""
+    return SecuritySummaryResponse(
+        scanned_at=await security_scanned_at(session, repo_id),
+        **await security_class_counts(session, repo_id),
+    )
 
 
 async def _repo_root(session: AsyncSession, repo_id: str) -> Path | None:

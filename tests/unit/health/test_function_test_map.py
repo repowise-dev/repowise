@@ -116,10 +116,10 @@ def test_the_analyzer_maps_tests_over_the_whole_graph() -> None:
         graph.add_node(symbol, node_type="symbol", name=symbol.rsplit("::", 1)[-1], file_path=path)
         graph.add_edge(path, symbol, edge_type="defines")
     graph.add_edge(f"{T}::test_parse", "core.py::parse", edge_type="calls")
-    assert HealthAnalyzer(graph)._function_tests() == {
+    assert HealthAnalyzer(graph).test_index.function_tests() == {
         "core.py::parse": (MappedTest(f"{T}::test_parse", 1),)
     }
-    assert HealthAnalyzer(None)._function_tests() is None
+    assert HealthAnalyzer(None).test_index.function_tests() is None
 
 
 @pytest.fixture
@@ -195,6 +195,69 @@ async def test_tests_are_stamped_on_every_row_and_read_back_nearest_first(store)
     assert await tests_in_files(session, repo, ["a.py"]) == {"a.py::f": near, "a.py::g": near[1:]}
 
 
+async def test_tests_in_files_constrains_graph_nodes_by_repository(store) -> None:
+    """tests_in_files supplies the repository predicate on graph_nodes so the composite index is used."""
+    from sqlalchemy import event
+
+    from repowise.core.analysis.function_test_map import MappedTest, encode_tests
+    from repowise.core.persistence import upsert_repository
+    from repowise.core.persistence.crud.analysis.function_facts import tests_in_files
+    from repowise.core.persistence.models import FunctionFact, GraphNode
+
+    session, repo = store
+    target_tests = (MappedTest("tests/test_target.py::test_f", 1),)
+    other_tests = (MappedTest("tests/test_other.py::test_other_repo_only", 1),)
+
+    session.add(
+        GraphNode(repository_id=repo, node_id="x.py::f", node_type="symbol", file_path="x.py")
+    )
+    session.add(
+        FunctionFact(
+            repository_id=repo, symbol_id="x.py::f", tests_json=encode_tests(target_tests)
+        )
+    )
+    other = await upsert_repository(session, name="other_repo", local_path="/tmp/other")
+    session.add(
+        GraphNode(repository_id=other.id, node_id="x.py::f", node_type="symbol", file_path="x.py")
+    )
+    session.add(
+        FunctionFact(
+            repository_id=other.id, symbol_id="x.py::f", tests_json=encode_tests(other_tests)
+        )
+    )
+    # A symbol belonging only to the other repo at the same file path must not leak into results.
+    session.add(
+        GraphNode(
+            repository_id=other.id, node_id="x.py::other_f", node_type="symbol", file_path="x.py"
+        )
+    )
+    session.add(
+        FunctionFact(
+            repository_id=other.id,
+            symbol_id="x.py::other_f",
+            tests_json=encode_tests(other_tests),
+        )
+    )
+    await session.flush()
+
+    queries: list[str] = []
+    engine = session.bind.sync_engine
+
+    def record_query(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_query)
+    try:
+        results = await tests_in_files(session, repo, ["x.py"])
+    finally:
+        event.remove(engine, "before_cursor_execute", record_query)
+
+    assert results == {"x.py::f": target_tests}
+    assert other_tests[0] not in results.get("x.py::f", ())
+    assert "x.py::other_f" not in results
+    assert any("graph_nodes.repository_id =" in q for q in queries)
+
+
 def _extract(file_path: str = "core.py") -> RefactoringSuggestion:
     return RefactoringSuggestion(
         refactoring_type="extract_method",
@@ -260,7 +323,7 @@ def test_a_function_no_test_reaches_asks_for_a_characterization_test_in_a_tested
     plan = build_validation_plan(_extract(), {}, _FILE_REACH, evidence=_evidence(()))
     assert plan.tests == ["tests/test_core.py", "tests/test_misc.py"]
     assert plan.prerequisite == (
-        "No test reaches this; add a characterization test for `parse` before the edit."
+        "No test reaches `parse` (2 reach its file); add a characterization test first."
     )
 
 

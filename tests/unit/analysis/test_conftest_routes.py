@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from textwrap import dedent
 
 import pytest
 
 from repowise.core.analysis.conftest_routes import (
     ConftestFacts,
+    _judge_routes,
+    _Route,
     conftest_use,
+    entry_names,
     local_names,
 )
 
@@ -92,6 +96,72 @@ def test_a_requested_fixture_that_only_patches_the_route_still_reaches_its_users
         """
     )
     assert use.fixtures == {"quiet"}
+
+
+@pytest.mark.parametrize(
+    "imports, line",
+    [
+        ("from app.store import clear_store_cache", "clear_store_cache()"),
+        ("from app import store", "store.reset_caches()"),
+        ("from app import store", "store.Lookup.invalidate_cache()"),
+    ],
+)
+def test_an_autouse_fixture_resetting_a_cache_is_import_time_only(imports: str, line: str) -> None:
+    """Emptying a cache changes no value; a test that sees it imports the owner itself."""
+    use = _use(
+        f"""
+        import pytest
+
+        @pytest.fixture(autouse=True)
+        def fresh():
+            {imports}
+            {line}
+            yield
+            {line}
+        """
+    )
+    assert use.run_all is None
+    assert use.fixtures == frozenset()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "store.reset()",  # not named as a cache
+        "store.clear_cache(1)",  # arguments
+        "x = store.clear_cache()",  # result used
+        "store.clear_cache",  # read, not called
+        "assert store.clear_cache() is None",
+    ],
+)
+def test_anything_but_a_bare_cache_reset_in_an_autouse_fixture_keeps_every_test(
+    line: str,
+) -> None:
+    use = _use(
+        f"""
+        import pytest
+        from app import store
+
+        @pytest.fixture(autouse=True)
+        def fresh():
+            {line}
+        """
+    )
+    assert use.run_all and "autouse fixture fresh uses store" in use.run_all
+
+
+def test_a_requested_fixture_resetting_a_cache_still_reaches_its_users() -> None:
+    use = _use(
+        """
+        import pytest
+        from app import store
+
+        @pytest.fixture
+        def fresh():
+            store.clear_cache()
+        """
+    )
+    assert use.fixtures == {"fresh"}
 
 
 def test_a_class_body_or_a_fixture_in_a_class_using_the_route_keeps_every_test() -> None:
@@ -349,6 +419,16 @@ def test_local_constants_are_names_bound_once_at_top_level_to_immutable_literals
     assert local_names("from x import *\nA = 1\n") == frozenset()
     assert local_names("frozenset = list\nA = frozenset(())\n") == frozenset()
     assert local_names("def broken(:\n") == frozenset()
+
+
+def test_local_names_reads_each_text_once() -> None:
+    """A long-lived server asks about the same unchanged entries on every selection."""
+    source = "SIZE = 3\n\ndef f():\n    return SIZE\n"
+    local_names.cache_clear()
+    first = local_names(source)
+    assert local_names(source) is first
+    assert local_names(source + "\nEXTRA = 1\n") == {"SIZE", "f", "EXTRA"}
+    assert local_names.cache_info().hits == 1
 
 
 def test_local_functions_use_nothing_the_module_imports_from_elsewhere() -> None:
@@ -617,3 +697,97 @@ def test_an_autouse_fixture_using_what_the_module_imports_or_holds_still_reaches
 ) -> None:
     use = _autouse("from app import store", line, _STORE_FUNCTIONS)
     assert use.run_all and "autouse fixture _f uses store" in use.run_all
+
+
+@pytest.mark.parametrize(
+    ("line", "narrowed"),
+    [
+        ('monkeypatch.setattr(store.Client, "detect", lambda self: False)', True),
+        ('monkeypatch.setattr(store.Client.Inner, "x", None)', True),
+        ('monkeypatch.setattr(store.make(), "x", None)', False),
+        ('monkeypatch.delattr(store.Client, "detect")', False),
+    ],
+)
+def test_patching_an_attribute_read_from_the_route_in_an_autouse_fixture_is_import_time_only(
+    line: str, narrowed: bool
+) -> None:
+    """A patch target that stops resolving fails the import check, which runs the fixture."""
+    use = _use(
+        f"""
+        import pytest
+        from app import store
+
+        @pytest.fixture(autouse=True)
+        def _isolate(monkeypatch):
+            {line}
+        """
+    )
+    assert (use.run_all is None) is narrowed
+
+
+_FACADE = {
+    "src/app/facade.py": (
+        "from app.console import NAMES as NAMES\n"
+        "from .console import reset\n"
+        "from app.console import LEVEL\n"
+        "from app.other import THING\n"
+        "from app import util\n"
+        "LEVEL = LEVEL + 1\n"
+    ),
+    "src/app/console.py": (
+        "import logging\nNAMES = ('a', 'b')\nLEVEL = 3\n_seen = {}\n\n"
+        "def reset():\n    _seen.clear()\n"
+    ),
+    "src/app/other.py": "from app.deep import THING\n",
+}
+
+
+def test_a_re_exported_local_name_is_stable_unless_the_change_is_where_it_is_defined() -> None:
+    names = entry_names("src/app/facade.py", _FACADE.get)
+    assert {"NAMES", "reset"} <= names.stable("src/app/util.py")
+    # The defining module is the change, so the name may be what changed.
+    assert not {"NAMES", "reset"} & names.stable("src/app/console.py")
+    # Rebound in the facade, or re-exported twice over: not followed.
+    assert not {"LEVEL", "THING", "util"} & names.stable("src/app/util.py")
+
+
+def test_a_re_exported_name_with_no_single_defining_file_stays_unresolved() -> None:
+    gone = {k: v for k, v in _FACADE.items() if k != "src/app/console.py"}
+    assert "NAMES" not in entry_names("src/app/facade.py", gone.get).stable("src/app/util.py")
+    # Two source roots both hold app/console.py: which one runs is unknown.
+    twice = {**_FACADE, "app/console.py": "NAMES = ()\n"}
+    assert "NAMES" not in entry_names("src/app/facade.py", twice.get).stable("src/app/util.py")
+
+
+@pytest.mark.parametrize("where", ["top", "fixture"])
+def test_an_autouse_fixture_reading_a_re_exported_constant_reaches_only_its_definer(
+    where: str,
+) -> None:
+    """``from facade import NAMES`` at top level or in the fixture body: an import-only route."""
+    imports, body = "from app.facade import NAMES", "loggers = list(NAMES)"
+    if where == "fixture":
+        imports, body = "", f"{imports}\n    {body}"
+    names = entry_names("src/app/facade.py", _FACADE.get)
+    source = f"import pytest\n{imports}\n\n@pytest.fixture(autouse=True)\ndef _f():\n    {body}\n"
+    entries = ["src/app/facade.py"]
+    behind = {"src/app/facade.py": names.stable("src/app/util.py")}
+    assert conftest_use(source, "tests/conftest.py", entries, behind).run_all is None
+    at_definer = {"src/app/facade.py": names.stable("src/app/console.py")}
+    assert conftest_use(source, "tests/conftest.py", entries, at_definer).run_all
+
+
+def test_judging_routes_reads_each_file_once() -> None:
+    """Entries re-exporting one module probe and read it once per judgement, not once each."""
+    files = {**_FACADE, "src/app/facade2.py": "from app.console import NAMES as NAMES\n"}
+    reads: Counter[str] = Counter()
+
+    def read(path: str) -> str | None:
+        reads[path] += 1
+        return files.get(path)
+
+    route = _Route(frozenset({"src/app/facade.py", "src/app/facade2.py"}), direct=False)
+    conftest = {"tests/conftest.py": "import pytest\nfrom app import facade, facade2\n"}
+    _judge_routes({"src/app/util.py": {"tests/conftest.py": route}}, conftest.get, None, read)
+    assert route.use is not None
+    assert reads["src/app/console.py"] == 1
+    assert max(reads.values()) == 1

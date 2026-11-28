@@ -15,18 +15,38 @@
  * and its cases in `packages/types/fixtures/views.conformance.json`. Maps
  * keyed by `ViewKind` (validator, renderers) fail to compile until filled.
  * `schema_version` changes whenever a field is added or removed, because both
- * validators reject unknown fields.
+ * validators reject unknown fields; readers keep accepting the older versions
+ * so stored parts still render, and a client meeting a chart it cannot draw
+ * shows its table (`parseViewParts`).
  */
 
 import type { CardBasis, CardRef } from "./evidence.js";
 
-export const VIEW_SCHEMA_VERSION = 1 as const;
+/** The version a server writes. */
+export const VIEW_SCHEMA_VERSION = 2 as const;
+/** Versions a reader accepts: 1 is every part stored before treemaps and heatmaps. */
+export const VIEW_SCHEMA_VERSIONS = [1, 2] as const;
+export type ViewSchemaVersion = (typeof VIEW_SCHEMA_VERSIONS)[number];
 
 /** The chat-only tool that builds views. Its call is plumbing, not evidence. */
 export const SHOW_VIEW_TOOL = "show_view";
+/** The chat-only tool that charts a server dataset in one call; plumbing too. */
+export const CHART_TOOL = "chart";
+/** Tool calls whose result is a view, not evidence. */
+export const VIEW_TOOLS: ReadonlySet<string> = new Set([SHOW_VIEW_TOOL, CHART_TOOL]);
 
 /** Chart forms. A new form is added with its builder, never as a general grammar. */
-export const CHART_TYPES = ["bar", "stacked_bar", "line", "donut"] as const;
+export const CHART_TYPES = [
+  "bar",
+  "horizontal_bar",
+  "stacked_bar",
+  "line",
+  "area",
+  "donut",
+  "scatter",
+  "treemap",
+  "heatmap",
+] as const;
 export type ChartType = (typeof CHART_TYPES)[number];
 
 /** What a coverage ratio measures. */
@@ -50,7 +70,9 @@ export const VIEW_LIMITS = {
   chart_series: 8,
   /** Rows a donut needs at least and at most. */
   donut_min_parts: 2,
-  donut_max_parts: 5,
+  donut_max_parts: 8,
+  /** Nesting levels a treemap may name in `groups`. */
+  treemap_groups: 3,
   narrative_blocks: 50,
   section_views: 20,
 } as const;
@@ -72,7 +94,7 @@ export interface ViewCoverage {
 }
 
 export interface ViewPartBase<K extends string> {
-  schema_version: typeof VIEW_SCHEMA_VERSION;
+  schema_version: ViewSchemaVersion;
   kind: K;
   /** Unique within one turn or report; sections and narrative cite parts by it. */
   id: string;
@@ -124,7 +146,12 @@ export interface TableView extends ViewPartBase<"table">, ViewProvenance, ViewTa
  * A chart over its own table, which renderers also show as the data view.
  * `x` and every `series` entry are column keys; series values are numbers in
  * one shared unit. `sort` states the rows' order by the sum of their series
- * values (absent means source order) and is checked, not trusted.
+ * values (absent means source order) and is checked, not trusted. A scatter's
+ * `x` is numeric too: each row is one point per series it has a value in.
+ * A heatmap reads the same table as a grid: rows by `x`, one column per
+ * series, each cell its value. A treemap sizes one cell per row by its one
+ * series, nests cells by `groups` (column keys, outermost first) and may
+ * colour them by `color` (a column key); both fields belong to treemaps only.
  */
 export interface ChartView extends ViewPartBase<"chart">, ViewProvenance {
   chart_type: ChartType;
@@ -134,6 +161,8 @@ export interface ChartView extends ViewPartBase<"chart">, ViewProvenance {
   sort?: ChartSortOrder;
   /** Required: a chart always comes with its text summary. */
   summary: string;
+  groups?: string[];
+  color?: string;
 }
 
 /** One paragraph of report narrative and the parts its facts rest on. */

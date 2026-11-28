@@ -21,6 +21,7 @@ from collections.abc import Callable
 from ...languages.registry import REGISTRY as _LANG_REGISTRY
 from ...models import HeritageRelation
 from ..helpers import node_text
+from .apex import _extract_apex_heritage
 from .cpp import _extract_cpp_heritage
 from .csharp import _extract_csharp_heritage
 from .dart import _extract_dart_heritage
@@ -53,7 +54,9 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "javascript": _extract_ts_js_heritage,
     "svelte": _extract_ts_js_heritage,
     "vue": _extract_ts_js_heritage,
+    "astro": _extract_ts_js_heritage,
     "java": _extract_java_heritage,
+    "apex": _extract_apex_heritage,
     "go": _extract_go_heritage,
     "rust": _extract_rust_heritage,
     "cpp": _extract_cpp_heritage,

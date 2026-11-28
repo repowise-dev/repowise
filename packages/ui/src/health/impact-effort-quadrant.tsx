@@ -11,6 +11,7 @@ import {
   type PointerEvent,
 } from "react";
 import type { ImpactEffortPoint, ImpactEffortResponse } from "@repowise-dev/types/health";
+import { formatNumber } from "../lib/format";
 
 /**
  * Impact against effort for every file the queue's filters keep.
@@ -84,7 +85,7 @@ function niceCeil(v: number): number {
 const Y_TICKS = [0, 1, 2, 5, 10, 20, 50, 100];
 
 function fmt(n: number): string {
-  return n.toLocaleString();
+  return formatNumber(n);
 }
 
 function describe(p: ImpactEffortPoint): string {
@@ -231,7 +232,7 @@ export function ImpactEffortQuadrant({
           aria-label={`Impact and effort plot of ${fmt(data.plotted)} files. Arrow keys step through them, largest gain first. Enter finds the file in the list.`}
           onKeyDown={onKeyDown}
           onBlur={() => setActive(null)}
-          className="rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+          className="rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
         >
           <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true" className="block">
             {/* Axes */}

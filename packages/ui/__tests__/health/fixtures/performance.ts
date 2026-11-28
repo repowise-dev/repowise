@@ -173,6 +173,13 @@ export function page(overrides: Partial<PerformanceOpportunityPage> = {}): Perfo
     has_more: true,
     next_offset: 3,
     facets: facets(),
+    scopes: { now: 7, production: 10, all: 13 },
+    areas: {
+      depth: 1,
+      total: 7,
+      more: 0,
+      items: [{ area: "src", total: 7, actionability: { investigate: 4, advisory: 2, plan_ready: 1 } }],
+    },
     summary: {
       status: "current",
       total: 7,

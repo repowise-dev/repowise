@@ -5,7 +5,8 @@ Runs the synchronous SDK call in a thread pool to avoid blocking asyncio.
 
 Recommended models:
     - gemini-3.5-flash-lite  — fast + cheap (default)
-    - gemini-3-flash-preview         — higher quality
+    - gemini-3.8-flash       — higher quality
+    - gemini-4-argon         — highest quality
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from repowise.core.providers.llm.base import (
     provider_should_retry,
     record_generation_cost,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -227,7 +229,7 @@ class GeminiProvider(BaseProvider):
     """Native Gemini provider using the google-genai SDK.
 
     Args:
-        model:        Gemini model name. Defaults to gemini-3.5-flash-lite.
+        model:        Gemini model name. Defaults to the spec's default_model.
         api_key:      Google API key. Falls back to GEMINI_API_KEY or GOOGLE_API_KEY env var.
         base_url:     Optional custom base URL (e.g., for proxy/self-hosted endpoints).
         rate_limiter: Optional RateLimiter instance.
@@ -236,7 +238,7 @@ class GeminiProvider(BaseProvider):
 
     def __init__(
         self,
-        model: str = "gemini-3.5-flash-lite",
+        model: str = PROVIDER_SPECS["gemini"].default_model,
         api_key: str | None = None,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
@@ -371,16 +373,19 @@ class GeminiProvider(BaseProvider):
             stop_reason, provider_stop_reason = normalize_stop_reason(
                 getattr(candidate, "finish_reason", None)
             )
+            thoughts_token_count = _thought_token_count(usage)
             return GeneratedResponse(
                 content=response.text or "",
                 input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
-                output_tokens=getattr(usage, "candidates_token_count", 0) or 0,
+                output_tokens=(getattr(usage, "candidates_token_count", 0) or 0)
+                + thoughts_token_count,
                 cached_tokens=getattr(usage, "cached_content_token_count", 0) or 0,
                 stop_reason=stop_reason,
                 provider_stop_reason=provider_stop_reason,
                 usage={
                     "prompt_token_count": getattr(usage, "prompt_token_count", 0) or 0,
                     "candidates_token_count": getattr(usage, "candidates_token_count", 0) or 0,
+                    "thoughts_token_count": thoughts_token_count,
                     "total_token_count": getattr(usage, "total_token_count", 0) or 0,
                 }
                 if usage
@@ -568,6 +573,12 @@ class GeminiProvider(BaseProvider):
             )
 
 
+def _thought_token_count(metadata: Any) -> int:
+    """Return a valid Gemini thinking-token count, or zero when it is malformed."""
+    value = getattr(metadata, "thoughts_token_count", None)
+    return value if type(value) is int and value >= 0 else 0
+
+
 class _UsageTotal:
     """Token counts summed over the internal tool loop's calls."""
 
@@ -581,7 +592,7 @@ class _UsageTotal:
         output = getattr(metadata, "candidates_token_count", None)
         if isinstance(prompt, int):
             self.input_tokens += prompt
-            self.output_tokens += output if isinstance(output, int) else 0
+            self.output_tokens += (output if isinstance(output, int) else 0) + _thought_token_count(metadata)
             self.reported = True
 
 

@@ -391,3 +391,71 @@ public class Unused {}
     unused = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
     assert "Deserializer" not in unused
     assert "Unused" in unused
+
+
+def _namespace_imported(importer_source: bytes | None) -> set[str]:
+    """Unused exports of ``mw/auth.py``, which ``app.py`` imports by module name."""
+
+    def sym(name: str, line: int) -> dict:
+        return {
+            "name": name,
+            "kind": "function",
+            "visibility": "public",
+            "decorators": [],
+            "start_line": line,
+            "end_line": line + 1,
+            "complexity_estimate": 1,
+        }
+
+    g = _build_graph(
+        nodes={
+            "mw/auth.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "symbols": [sym("verify", 1), sym("extract_token", 4), sym("io", 7)],
+            },
+            "app.py": {"is_entry_point": True, "is_test": False, "symbol_count": 0, "symbols": []},
+        },
+        edges=[("app.py", "mw/auth.py", {"edge_type": "imports", "imported_names": ["auth"]})],
+    )
+    source_map = {
+        "mw/auth.py": b"def verify():\n    pass\n\ndef extract_token():\n    pass\n",
+    }
+    if importer_source is not None:
+        source_map["app.py"] = importer_source
+    report = DeadCodeAnalyzer(g, git_meta_map={}, source_map=source_map).analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    return {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+
+
+def test_namespace_import_rescues_only_the_names_an_importer_writes():
+    # ``auth.verify()`` is a use; nothing writes ``extract_token``.
+    names = _namespace_imported(b"from mw import auth\n\nauth.verify()\n")
+    assert "verify" not in names
+    assert "extract_token" in names
+    # Too short for the identifier scan to see: never read as absent.
+    assert "io" not in names
+
+
+def test_namespace_import_rescues_everything_when_the_importer_is_unread():
+    # No source for the importer: which names it writes is unknown.
+    names = _namespace_imported(None)
+    assert not names & {"verify", "extract_token"}
+
+
+def test_namespace_import_read_by_computed_name_rescues_everything():
+    for source in (
+        b"from mw import auth\n\nhandler = getattr(auth, 'ex' + kind)\n",
+        b"from mw import auth\n\nfor k, v in vars(auth).items():\n    v()\n",
+        b"from mw import auth\n\nauth.__dict__['verify']()\n",
+    ):
+        names = _namespace_imported(source)
+        assert not names & {"verify", "extract_token"}, source

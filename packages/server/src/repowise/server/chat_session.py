@@ -11,8 +11,10 @@ events as SSE, and an in-process caller uses the class directly.
 The tools a model is shown, and the only ones it can run, are the backend's
 catalog for the principal narrowed by the policy's allowlist and safety
 ceiling, plus the chat-only ``show_view`` tool, which builds tables and
-charts from this turn's results (:mod:`repowise.server.chat_views`), and
-the chat-only ``find_suspects`` (:mod:`repowise.server.chat_suspects`).
+charts from the conversation's tool results (:mod:`repowise.server.chat_views`),
+the chat-only ``chart``, which draws a repository dataset in one call
+(:mod:`repowise.server.chat_chart`), and the chat-only ``find_suspects``
+(:mod:`repowise.server.chat_suspects`).
 Everything outside the loop goes through the seams in
 :mod:`repowise.server.chat_seams`.
 """
@@ -28,15 +30,17 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from repowise.core.providers.llm.base import ChatProvider, ProviderError
+from repowise.core.providers.llm.base import ChatProvider
 from repowise.server.auth import Principal
 from repowise.server.chat_artifacts import create_artifact_envelope
+from repowise.server.chat_chart import CHART_TOOL, chart_schema, run_chart
 from repowise.server.chat_context import (
     OVERFLOW_MESSAGE,
     bound_history,
     compose_request,
     is_context_overflow,
 )
+from repowise.server.chat_errors import NO_PROVIDER_MESSAGE, internal_error, provider_failure
 from repowise.server.chat_figures import check_figures
 from repowise.server.chat_grounding import plan_grounding, run_grounding
 from repowise.server.chat_prompt import (
@@ -47,6 +51,7 @@ from repowise.server.chat_prompt import (
     stored_messages_to_llm_format,
     tool_result_message,
 )
+from repowise.server.chat_references import VIEW_TOOLS, ArtifactIndex
 from repowise.server.chat_seams import (
     ConversationStore,
     NoTurnHooks,
@@ -70,7 +75,12 @@ from repowise.server.chat_suspects import (
     find_suspects_schema,
     run_find_suspects,
 )
-from repowise.server.chat_tools import ChatToolContract, LocalToolBackend, tool_schemas
+from repowise.server.chat_tools import (
+    ChatToolContract,
+    LocalToolBackend,
+    make_json_serializable,
+    tool_schemas,
+)
 from repowise.server.chat_views import SHOW_VIEW_TOOL, TurnViews, show_view_schema
 from repowise.server.schemas.evidence import CardRef
 
@@ -171,6 +181,14 @@ async def _never_cancelled() -> bool:
 # ---------------------------------------------------------------------------
 
 
+_CITATION_FIELDS = (
+    ("file_path", str),
+    ("symbol_name", str),
+    ("start_line", int),
+    ("end_line", int),
+)
+
+
 def _citations(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Files the turn's tool results cite, first mention first, each with the
     ``artifact_id`` of the result that cited it and its entity ``ref``."""
@@ -184,10 +202,11 @@ def _citations(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if isinstance(item, str):
                 citation = {"file_path": item}
             elif isinstance(item, dict) and isinstance(item.get("file_path"), str):
+                # Only the types the citation contract takes: a tool's "10-20" is not a line.
                 citation = {
                     key: item[key]
-                    for key in ("file_path", "symbol_name", "start_line", "end_line")
-                    if item.get(key) is not None
+                    for key, kind in _CITATION_FIELDS
+                    if isinstance(item.get(key), kind) and not isinstance(item[key], bool)
                 }
             else:
                 continue
@@ -330,15 +349,19 @@ class _Turn:
         is_cancelled: IsCancelled,
         shows_views: bool = False,
         finds_suspects: bool = False,
+        draws_charts: bool = False,
         question: str = "",
         prior_calls: list[dict[str, Any]] | None = None,
+        artifacts: ArtifactIndex | None = None,
     ) -> None:
         self.provider = provider
         self.tools = tools
         self.catalog = {tool.entry.name: tool for tool in catalog}
         self.shows_views = shows_views
         self.finds_suspects = finds_suspects
-        self.views = TurnViews()
+        self.draws_charts = draws_charts
+        #: Earlier turns' results stay citable by show_view.
+        self.views = TurnViews(artifacts)
         self.policy = policy
         self.base = base
         self.rounds: list[list[dict[str, Any]]] = []
@@ -369,10 +392,16 @@ class _Turn:
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Run one tool the session admits; also handed to providers that loop internally.
 
-        Each result is stamped with the artifact id ``show_view`` takes.
+        Each result is stamped with the artifact id ``show_view`` takes. A
+        result is JSON-safe from here on, so a backend's datetime never fails
+        the request, the stream or the store: the local backend and
+        ``find_suspects`` already serialize theirs, any other backend's is
+        serialized here, once.
         """
         if name == SHOW_VIEW_TOOL and self.shows_views:
             return self.views.show(arguments)
+        if name == CHART_TOOL and self.draws_charts:
+            return await run_chart(arguments, getattr(self.tools, "repo_alias", None), self.views)
         if name == SUSPECTS_TOOL and self.finds_suspects:
             result = await run_find_suspects(arguments, getattr(self.tools, "repo_alias", None))
             return self.views.record(name, arguments, result, evidence_basis="inferred")
@@ -382,10 +411,13 @@ class _Turn:
                 "error": f"Tool is not available in this session: {name}",
                 "error_code": "tool_not_enabled",
             }
+        result = await self.tools.execute(name, arguments)
+        if not isinstance(self.tools, LocalToolBackend):
+            result = make_json_serializable(result)
         return self.views.record(
             name,
             arguments,
-            await self.tools.execute(name, arguments),
+            result,
             artifact_type=tool.entry.artifact_type,
             evidence_basis=tool.entry.evidence_basis,
         )
@@ -477,14 +509,18 @@ class _Turn:
                         emitted = True
                         yield out
                 return
-            except ProviderError as exc:
+            except Exception as exc:
+                # A provider failure is the person's to fix; anything else is a bug.
+                message = provider_failure(exc, self.provider.provider_name)
+                if message is None:
+                    raise
                 overflow = is_context_overflow(exc)
                 if overflow and attempt == 0 and not emitted:
                     logger.warning("chat_context_overflow_retry")
                     pending.clear()
                     continue
                 self.stop_reason = "error"
-                self.error = OVERFLOW_MESSAGE if overflow else str(exc)
+                self.error = OVERFLOW_MESSAGE if overflow else message
                 yield {"type": "error", "message": self.error}
                 return
 
@@ -564,7 +600,7 @@ class _Turn:
             "summary": summary,
             "artifact": artifact,
         }
-        view = self.views.event(tool_id, result) if name == SHOW_VIEW_TOOL else None
+        view = self.views.event(tool_id, result) if name in VIEW_TOOLS else None
         return [event] if view is None else [event, view]
 
     def reply_content(self) -> dict[str, Any]:
@@ -788,7 +824,18 @@ class ChatSession:
         outcome: _Outcome,
     ) -> AsyncIterator[dict[str, Any]]:
         if self.provider is None:
-            raise ValueError("this session was opened without a provider")
+            outcome.result = ChatTurnResult(
+                conversation_id=self.id,
+                message_id=None,
+                user_message_id=None,
+                answer="",
+                stop_reason="error",
+                provider="",
+                model="",
+                error=NO_PROVIDER_MESSAGE,
+            )
+            yield {"type": "error", "message": NO_PROVIDER_MESSAGE}
+            return
         async with _turn_lock(self.id):
             try:
                 async for event in self._turn(
@@ -801,7 +848,7 @@ class ChatSession:
                 raise
             except Exception as exc:
                 logger.exception("Chat turn error")
-                text = f"Internal error: {type(exc).__name__}: {exc}"
+                text = internal_error(exc)
                 outcome.result = self._unstored("error", error=text)
                 yield {"type": "error", "message": text}
 
@@ -885,6 +932,8 @@ class ChatSession:
                 self.id, {"text": message}, idempotency_key=idempotency_key
             )
         history = await self.store.messages(self.id)
+        # Indexed once for the turn, so each show_view is a dict lookup.
+        artifacts = ArtifactIndex.from_history(history)
         opening = all(m.id == user_message_id for m in history)
 
         catalog = self.catalog()
@@ -898,7 +947,15 @@ class ChatSession:
             and any(tool.entry.name == SCOPE_TOOL for tool in catalog)
             and self.policy.admits_name(SUSPECTS_TOOL, "read_only")
         )
+        # chart reads the same index in process, so it is local like find_suspects.
+        draws_charts = (
+            shows_views
+            and isinstance(self.tools, LocalToolBackend)
+            and self.policy.admits_name(CHART_TOOL, "read_only")
+        )
         schemas = tool_schemas(catalog)
+        if draws_charts:
+            schemas.append(chart_schema())
         if shows_views:
             schemas.append(show_view_schema([tool.entry.artifact_type for tool in catalog]))
         if finds_suspects:
@@ -915,6 +972,7 @@ class ChatSession:
             is_cancelled=is_cancelled,
             shows_views=shows_views,
             finds_suspects=finds_suspects,
+            draws_charts=draws_charts,
             question=message,
             prior_calls=[
                 call
@@ -923,12 +981,18 @@ class ChatSession:
                 for call in stored.content.get("tool_calls") or []
                 if isinstance(call, dict)
             ],
+            artifacts=artifacts,
         )
         grounded = await turn.ground(context)
         if grounded is not None:
             yield grounded
         system_prompt = _build_system_prompt(
-            self.scope.repo_name, self.scope.repo_path, catalog, context
+            self.scope.repo_name,
+            self.scope.repo_path,
+            catalog,
+            context,
+            shows_views=shows_views,
+            draws_charts=draws_charts,
         )
         async for event in turn.run(system_prompt, schemas):
             yield event

@@ -11,6 +11,7 @@ from repowise.core.forges import (
     ForgeKind,
     detect_forge,
     forge_hosts,
+    read_remote_ref,
     read_remote_url,
 )
 
@@ -145,3 +146,18 @@ def test_a_broken_repo_config_contributes_no_hosts(tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "config.yaml").write_text("forges: [unclosed\n", encoding="utf-8")
     assert forge_hosts(tmp_path, env={}) == {}
+
+
+def test_read_remote_ref_is_none_without_a_remote(tmp_path: Path) -> None:
+    assert read_remote_ref(tmp_path, env={}) is None
+    assert read_remote_ref(_checkout(tmp_path / "bare", "[core]\n"), env={}) is None
+
+
+def test_read_remote_ref_parses_a_self_hosted_remote_through_the_repo_hosts(tmp_path: Path) -> None:
+    root = _checkout(tmp_path, _origin("ssh://git@git.corp.com:2222/g/p.git"))
+    (root / ".repowise").mkdir()
+    (root / ".repowise" / "config.yaml").write_text(
+        "forges:\n  hosts:\n    git.corp.com: gitlab\n", encoding="utf-8"
+    )
+    ref = read_remote_ref(root, env={})
+    assert ref is not None and ref.forge is ForgeKind.GITLAB and ref.is_self_hosted

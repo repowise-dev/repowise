@@ -41,15 +41,32 @@ def _unreachable(path: str) -> bool:
         # pnpm's install hook.
         ".pnpmfile.cjs",
         "tools/.pnpmfile.cjs",
-        # Next.js request proxy, the successor of ``middleware.ts``.
-        "proxy.ts",
-        "apps/web/proxy.ts",
-        "apps/web/src/proxy.js",
     ],
 )
 def test_js_tool_convention_files_are_never_flagged(path):
     assert never_flag_match(path)
     assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Framework convention files are anchored from the package.json that
+        # depends on the framework (framework_facts), not exempt by path: the
+        # same names in a repo without it can be dead.
+        "proxy.ts",
+        "apps/web/src/proxy.js",
+        "src/middleware.ts",
+        "app/dashboard/page.tsx",
+        "app/api/users/route.ts",
+        "src/routes/+page.svelte",
+        "pages/index.vue",
+        "src/pages/index.astro",
+        "src/pages/feed.json.mjs",
+    ],
+)
+def test_framework_convention_files_are_not_exempt_by_path(path):
+    assert not never_flag_match(path)
 
 
 @pytest.mark.parametrize(
@@ -78,6 +95,8 @@ def test_python_startup_hooks_are_never_flagged(path):
         "src/httpproxy.ts",
         "src/mysitecustomize.py",
         "src/sitecustomize_helpers.py",
+        "src/lib/pages/format.ts",  # a pages dir outside src/pages routes nothing
+        "src/components/Header.astro",
     ],
 )
 def test_near_misses_stay_flaggable(path):
@@ -112,6 +131,34 @@ def test_origin_near_misses_stay_flaggable(path):
 @pytest.mark.parametrize(
     "path",
     [
+        # A migration runner loads its scripts from their directory.
+        "packages/database/migration/20240101_add_x/migration.ts",
+        "src/migration/1700000000000-Init.ts",
+        "db/migrate/20240101_add_users.rb",
+        "alembic/versions/abc_add.py",
+        # TypeScript declaration files, ESM and CommonJS flavours included.
+        "src/types.d.ts",
+        "src/types.d.mts",
+        "src/types.d.cts",
+        "packages/x/dist/index.d.ts",
+    ],
+)
+def test_migrations_and_declarations_are_never_flagged(path):
+    assert never_flag_path(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/migration/index.ts", "modules/migration/comment.go", "src/types.mts"],
+)
+def test_migration_and_declaration_near_misses_stay_flaggable(path):
+    assert not never_flag_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         # A build tool runs a build file by its name; nothing imports one.
         "ktor-server/ktor-server-core/build.gradle.kts",
         "gradle/plugins/ktorbuild.kmp.gradle.kts",
@@ -122,6 +169,9 @@ def test_origin_near_misses_stay_flaggable(path):
         "magefile.go",
         "noxfile.py",
         "cmake/Toolchain.cmake",
+        "Package@swift-6.0.swift",
+        "Package@swift-5.10.swift",
+        "build/out.js",
     ],
 )
 def test_build_files_are_never_flagged(path):
@@ -133,8 +183,12 @@ def test_build_files_are_never_flagged(path):
     "path",
     [
         "src/build.rs",  # a ``mod build;`` module
+        "src/build/x.ts",
+        "packages/next/src/build/index.ts",
         "src/main/kotlin/io/ktor/Settings.kt",
         "lib/webpack.js",
+        "PackageManager.swift",
+        "Package+Extensions.swift",
     ],
 )
 def test_build_near_misses_stay_flaggable(path):
@@ -168,3 +222,89 @@ def test_dart_codegen_outputs_are_never_flagged(path):
 
 def test_hand_written_dart_stays_flaggable():
     assert not never_flag_path("lib/src/photo.dart")
+
+
+def test_swiftpm_version_specific_manifests_not_reported_unreachable(tmp_path):
+    from pathlib import Path
+
+    from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    manifest_59 = (
+        "// swift-tools-version:5.9\n"
+        "import PackageDescription\n"
+        'let package = Package(name: "Alamofire", targets: [.target(name: "Alamofire")])\n'
+    )
+    files = {
+        "Package.swift": manifest_59,
+        "Package@swift-6.0.swift": manifest_59.replace("5.9", "6.0"),
+        "Package@swift-5.10.swift": manifest_59.replace("5.9", "5.10"),
+        "Sources/Alamofire/Session.swift": "public final class Session {}\n",
+    }
+    for rel, text in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=tmp_path)
+    source_map: dict[str, bytes] = {}
+    parsed_files = {}
+    for fi in FileTraverser(tmp_path).traverse():
+        source = Path(fi.abs_path).read_bytes()
+        source_map[fi.path] = source
+        parsed = parser.parse_file(fi, source)
+        parsed_files[fi.path] = parsed
+        builder.add_file(parsed)
+    builder.set_source_map(source_map)
+    graph = builder.build()
+
+    report = DeadCodeAnalyzer(
+        graph,
+        {},
+        parsed_files=parsed_files,
+        source_map=source_map,
+        repo_root=tmp_path,
+    ).analyze(None)
+    unreachable = {
+        f.file_path for f in report.findings if f.kind is DeadCodeKind.UNREACHABLE_FILE
+    }
+    assert "Package.swift" not in unreachable
+    assert "Package@swift-6.0.swift" not in unreachable
+    assert "Package@swift-5.10.swift" not in unreachable
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # The formatter and Credo read their config files by name.
+        ".formatter.exs",
+        "apps/web/.formatter.exs",
+        ".credo.exs",
+        "apps/web/.credo.exs",
+        # Mix evaluates config/*.exs at boot.
+        "config/config.exs",
+        "config/runtime.exs",
+        "apps/web/config/dev.exs",
+        # Data files under priv/ are loaded by Code.eval_file or File.read!.
+        "priv/data/langs.exs",
+        "apps/web/priv/data/langs.exs",
+    ],
+)
+def test_elixir_tool_loaded_files_are_never_flagged(path):
+    assert never_flag_match(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "lib/demo.ex",
+        "lib/demo/langs.ex",
+        "apps/web/lib/web.ex",
+        "lib/demo/script.exs",
+        "mix_tasks/formatter.exs",
+    ],
+)
+def test_elixir_near_misses_stay_flaggable(path):
+    assert not never_flag_match(path)

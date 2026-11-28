@@ -47,19 +47,22 @@ from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
 from ...ingestion.barrels import BARREL_FILENAMES
 from ...ingestion.cohesion import records_no_use
+from ...ingestion.models import NON_CODE_EDGE_TYPES
 from .constants import never_flag_path
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
 
 #: Edge types that record association rather than dependency. A co-change edge
-#: says two files were committed together, which is not a path any code can
-#: take, so it must not answer "does anything import this".
-_NON_DEPENDENCY_EDGES: frozenset[str] = frozenset({"co_changes"})
+#: says two files were committed together and a doc link says prose names a
+#: file; neither is a path any code can take, so neither answers "does anything import this".
+_NON_DEPENDENCY_EDGES: frozenset[str] = NON_CODE_EDGE_TYPES
 
 _JVM_SUFFIXES: tuple[str, ...] = (".java", ".kt")
 
 CSHARP_SUFFIX = ".cs"
+
+_SWIFT_SUFFIX = ".swift"
 
 #: Objective-C implementation files, which no source ever imports.
 _OBJC_SOURCE_SUFFIXES: tuple[str, ...] = (".m", ".mm")
@@ -137,6 +140,13 @@ class ReachabilityRescues:
     #: so ``None`` is "not checked" and, like ``package_files``, resolves a
     #: ``.cs`` file to reachable.
     csharp_named_files: AbstractSet[str] | None = None
+    #: Swift files with no importer that a use edge, a type name or an extended
+    #: type reaches (see :mod:`swift_reachability`). ``None`` is "not checked"
+    #: and resolves a ``.swift`` file to reachable, as for C#.
+    swift_named_files: AbstractSet[str] | None = None
+    #: Apex files a root or a live file reaches (see :mod:`apex_reachability`).
+    #: ``None`` is "not checked" and resolves an Apex file to reachable.
+    apex_live_files: AbstractSet[str] | None = None
 
 
 #: Prefix of an :class:`repowise.core.ids.ExternalId`, matched textually rather
@@ -313,9 +323,20 @@ def is_file_reachable(
         return True if packages is None else is_jvm_file_reachable(path, graph, packages.jvm)
     if is_cpp_path(path):
         return True if packages is None else is_cpp_file_reachable(path, graph, packages.cpp)
-    if path.endswith(CSHARP_SUFFIX) and (
-        rescues.csharp_named_files is None or path in rescues.csharp_named_files
-    ):
+    if _named_rescue(path, node_data, rescues):
         return True
 
     return has_dependency_importer(graph, path)
+
+
+def _named_rescue(path: str, node_data: Mapping[str, Any], rescues: ReachabilityRescues) -> bool:
+    """Whether *path*'s name-granular rescue (C#, Swift, Apex) reaches it; unchecked reaches."""
+    if path.endswith(CSHARP_SUFFIX):
+        named = rescues.csharp_named_files
+    elif path.endswith(_SWIFT_SUFFIX):
+        named = rescues.swift_named_files
+    elif node_data.get("language") == "apex":
+        named = rescues.apex_live_files
+    else:
+        return False
+    return named is None or path in named

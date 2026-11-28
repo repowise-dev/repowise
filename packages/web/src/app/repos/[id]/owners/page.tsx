@@ -1,114 +1,53 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+/**
+ * Ownership — `/repos/[id]/owners` (the route keeps its original name).
+ *
+ * Knowledge and handover, as four tabs behind `?tab=`: the overview (truck
+ * factor lede, two reads, the full table collapsed), knowledge risks,
+ * knowledge loss, and the off-boarding what-if (`?leave=a,b&threshold=50`).
+ */
+
+import { useParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import useSWR from "swr";
-import useSWRInfinite from "swr/infinite";
 import { Users } from "lucide-react";
-import {
-  OwnerDirectory,
-  type OwnerDirectoryFilters,
-} from "@repowise-dev/ui/owners/owner-directory";
-import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
-import { useDebounce } from "@/lib/hooks/use-debounce";
-import { listAllOwners, listOwnersPage } from "@/lib/api/owners";
-import type { OwnerListEntry, Paginated } from "@/lib/api/types";
+import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
+import { ContributorsPanel } from "@/components/owners/contributors-panels";
+import { CONTRIBUTOR_TABS, useContributorsUrl } from "@/components/owners/use-contributors-url";
+import { getOwnersSummary } from "@/lib/api/owners";
 
-const LIMIT = 30;
-/** When contributor count is at or below this, prefetch everyone for an
- *  accurate ownership distribution bar via fetchAllPaginated. */
-const DISTRIBUTION_PREFETCH_CAP = 120;
-
-export default function OwnersDirectoryPage() {
+export default function ContributorsPage() {
   const t = useTranslations("views.contributors");
-  const tCommon = useTranslations("common");
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
-  const [filters, setFilters] = useState<OwnerDirectoryFilters>({
-    q: "",
-    sort: "files_owned",
+  const { tab, scenario, setTab, setScenario } = useContributorsUrl();
+  const summary = useSWR(`owners-summary:${id}`, () => getOwnersSummary(id), {
+    revalidateOnFocus: false,
   });
-  const debouncedQ = useDebounce(filters.q, 250);
-
-  const key = useMemo(
-    () => JSON.stringify({ q: debouncedQ, sort: filters.sort }),
-    [debouncedQ, filters.sort],
-  );
-
-  const { data, error, mutate, size, setSize, isLoading, isValidating } = useSWRInfinite<
-    Paginated<OwnerListEntry>
-  >(
-    (pageIndex, previous) => {
-      if (previous && !previous.has_more) return null;
-      return `owners:${id}:${key}:${pageIndex}`;
-    },
-    (k) => {
-      const pageIndex = parseInt(k.split(":").pop()!, 10);
-      return listOwnersPage({
-        repoId: id,
-        q: debouncedQ || undefined,
-        sort: filters.sort,
-        limit: LIMIT,
-        offset: pageIndex * LIMIT,
-      });
-    },
-    { revalidateOnFocus: false, revalidateFirstPage: false },
-  );
-
-  const items = useMemo(() => (data ? data.flatMap((p) => p.items) : []), [data]);
-  const total = data && data.length > 0 ? data[0].total : 0;
-  const hasMore = data ? data[data.length - 1].has_more : false;
-
-  const shouldPrefetchDistribution =
-    debouncedQ === "" && total > 0 && total <= DISTRIBUTION_PREFETCH_CAP;
-  const { data: distributionOwners } = useSWR(
-    shouldPrefetchDistribution ? `owners-all:${id}:${filters.sort}` : null,
-    () =>
-      listAllOwners({
-        repoId: id,
-        sort: filters.sort,
-        maxItems: DISTRIBUTION_PREFETCH_CAP,
-        pageSize: DISTRIBUTION_PREFETCH_CAP,
-      }),
-    { revalidateOnFocus: false },
-  );
+  const quiet = summary.data?.quiet_owners_total;
 
   return (
-    <PageShell
-      icon={<Users />}
-      title={t("title")}
-      description={t("description")}
-    >
-      <OwnerDirectory
-        owners={items}
-        distributionOwners={distributionOwners}
-        isLoading={isLoading}
-        isValidating={isValidating}
-        total={total}
-        hasMore={hasMore}
-        filters={filters}
-        onFiltersChange={setFilters}
-        onLoadMore={() => setSize(size + 1)}
-        base={`/repos/${id}`}
-        hrefFor={(o) => `/repos/${id}/owners/${encodeURIComponent(o.key)}`}
-        LinkComponent={Link}
-        error={
-          error ? (
-            <ApiError
-              title={t("loadFailedTitle")}
-              message={t("loadFailed")}
-              retryLabel={tCommon("retry")}
-              onRetry={() => void mutate()}
-            />
-          ) : undefined
-        }
-        onSelect={(o) =>
-          router.push(`/repos/${id}/owners/${encodeURIComponent(o.key)}`)
-        }
-      />
+    <PageShell icon={<Users />} title={t("title")} description={t("description")}>
+      <ViewTabs
+        aria-label={t("tabsLabel")}
+        tabs={CONTRIBUTOR_TABS.map((tabId) => ({
+          id: tabId,
+          label: t(`tabs.${tabId}`),
+          // Cheap and meaningful before the click: the summary already counts it.
+          ...(tabId === "loss" && quiet !== undefined ? { badge: quiet } : {}),
+        }))}
+        value={tab}
+        onValueChange={setTab}
+      >
+        <ContributorsPanel
+          tab={tab}
+          repoId={id}
+          summary={summary}
+          scenario={scenario}
+          onScenarioChange={setScenario}
+        />
+      </ViewTabs>
     </PageShell>
   );
 }

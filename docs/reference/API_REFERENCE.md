@@ -11,6 +11,12 @@ how authentication behaves, the shape of an error, how the two SSE streams are
 sequenced, and the conventions several routes share. Start at `/docs` for a
 specific endpoint; come back here for the things a schema cannot state.
 
+Each GitHub release also carries the same document as an `openapi.json` asset
+(`https://github.com/repowise-dev/repowise/releases/latest/download/openapi.json`).
+Every operation in it has `x-repowise-stability`: `stable` routes are the
+integration surface, and breaking changes to them are named in the changelog;
+`internal` routes serve the bundled dashboard and can change in any release.
+
 Nothing in this document duplicates a route table on purpose. Where a fact
 below is derived from code, the file is named so the claim can be re-checked.
 The default API address is `http://127.0.0.1:7337` (`docs/reference/CLI_REFERENCE.md`).
@@ -37,7 +43,7 @@ fail instead of silently doing nothing.
 |---|---|---|
 | `POST /api/repos` (`index: true`, the default) | Enqueues a first full index | Same work as `/index` below; the response carries `initial_job_id` |
 | `POST /api/repos/{repo_id}/index` | `initial_index` job: full pipeline plus LLM docs | Template wiki with no provider: no model, no cost |
-| `POST /api/repos/{repo_id}/sync` | Incremental index, then regenerate only the pages a recent change touched | Model calls on the changed-page subset, not the whole wiki |
+| `POST /api/repos/{repo_id}/sync` | Decision extraction inside the incremental index | Pages of the changed files re-render from structure with no model call; decision extraction can call the model (see below) |
 | `POST /api/repos/{repo_id}/full-resync` | `full_resync` job: regenerate all documentation | The most expensive endpoint in the API |
 | `POST /api/repos/{repo_id}/generate` | Writes an explicit page selection with a model (`repowise generate` over HTTP) | Fails (job `failed`) if no provider resolves |
 | `POST /api/pages/lookup/regenerate` | `single_page` job: regenerate one page | Same failure mode |
@@ -59,19 +65,30 @@ Verified against: `packages/server/src/repowise/server/routers/repos.py`
 `packages/core/src/repowise/core/analysis/health/refactoring/llm/enrich.py`
 (`enrich_suggestion`, `llm_enrichment_enabled`).
 
-The `sync` row is worth stating plainly, because the issue this page came from
-described `/sync` as "no LLM calls". That was true when the pipeline ran
-`generate_docs=False` and nothing else; it is not true today.
-`job_executor.py` runs `_incremental_page_regen` with `llm_client` whenever the
-mode is `sync` and a provider resolved, so a sync can bill for the pages a
-change touched.
+What a `sync` job spends, with a provider resolved: the pipeline runs with
+`generate_docs=False` and the provider (`job_executor.py`), and
+`_incremental_page_regen` (`job_incremental.py`) regenerates only the
+API-contract, symbol-spotlight and file pages of the changed files
+(`file_pages_only`, `page_generator/orchestrate.py`). Those page types render
+from structure, so the wiki side of a sync makes no model call; module,
+overview, onboarding and flow pages keep the text the last full run wrote.
+The analysis phase runs decision extraction with the same provider
+(`pipeline/phases/analysis.py`, `_run_decision_extraction`), and under the
+default `decisions:` policy the inline-marker, git-history, ADR, PR and comment
+sources may call the model (`analysis/decisions/policy.py`, `llm_allowed`). A
+sync with a provider can therefore bill for decision extraction.
+`decisions.llm: false` (`repowise config set decisions.llm false`) keeps
+decision capture local and the sync model-free. The CLI's `repowise update`
+gates the same mining on `decisions.update_mining`; the server's sync job does
+not read that key.
 
 ### 1.2 Endpoints that spend without a request
 
 Two paths enqueue sync jobs on their own, and a sync job can spend:
 
-- `POST /api/webhooks/github` and `POST /api/webhooks/gitlab` create a sync job
-  for pushes to the registered default branch (`routers/webhooks.py`).
+- `POST /api/webhooks/github`, `POST /api/webhooks/gitlab` and
+  `POST /api/webhooks/gitea` create a sync job for pushes to the registered
+  default branch (`routers/webhooks.py`).
 - The scheduler's polling fallback runs every 15 minutes in the serving
   process, and enqueues a sync job for any repo whose git HEAD has moved past
   its stored `last_sync_commit` (`packages/server/src/repowise/server/scheduler.py`).
@@ -90,11 +107,17 @@ disable the model calls themselves.
   it and price with the right model) and calls the pricing table only. It is a
   read-only preflight, not a model call.
 - `GET /api/repos/{repo_id}/chat/suggestions` goes through the same grounding
-  reads as chat but makes no model call.
+  reads as chat but makes no model call. With no `target` it only quotes chart
+  datasets already cached for the current index and reads nothing cold.
 - `POST /api/repos/{repo_id}/claude-md/generate` renders `CLAUDE.md` from
   indexed data synchronously, with no LLM call (`routers/claude_md.py`).
 - `POST /api/repos/{repo_id}/blast-radius` is a deterministic graph analysis
   (`packages/core/src/repowise/core/analysis/pr_blast.py`).
+  `POST /api/repos/{repo_id}/blast-radius/change` runs the same analysis on one
+  change picked from `GET /api/repos/{repo_id}/blast-radius/changes`
+  (uncommitted work, branches ahead of the default branch, recent indexed
+  commits; `core/analysis/change_candidates.py`). A server without a checkout
+  offers the commits only.
 - Every status update, deletion, settings write, and read-only report.
 
 ### 1.4 One data-leaving call
@@ -176,13 +199,13 @@ file, every surface behaves exactly as described below.
 (`deps.py`, `client_is_local`). The known consequence is that a same-host
 reverse proxy makes every peer loopback, so that deployment shape still needs
 the key. `repowise serve --host 0.0.0.0` without a key prints a warning at
-startup (`packages/cli/src/repowise/cli/commands/serve_cmd.py`) and the
+startup (`packages/cli/src/repowise/cli/commands/serve_cmd/command.py`) and the
 requests themselves are refused as above. All three rows were exercised against
 a running app with a fabricated remote peer.
 
 ### 2.3 Which endpoints enforce it
 
-Every router under `/api` is protected except the two webhook routes. The two
+Every router under `/api` is protected except the three webhook routes. The two
 probe endpoints are unprotected by design:
 
 | Route | Credential |
@@ -190,29 +213,36 @@ probe endpoints are unprotected by design:
 | `/health`, `/metrics` | none (`routers/health.py`: "these endpoints are NOT protected by API key auth") |
 | `/api/webhooks/github` | GitHub's `X-Hub-Signature-256` HMAC-SHA256 header over the raw body, `sha256=` prefix required |
 | `/api/webhooks/gitlab` | GitLab's `X-Gitlab-Token` shared secret |
+| `/api/webhooks/gitea` | Gitea's / Forgejo's `X-Gitea-Signature` or `X-Forgejo-Signature` HMAC-SHA256 header over the raw body, bare hex, no prefix |
 | `GET /api/jobs/{job_id}/stream` | bearer, or the per-job `?token=` described in section 4; this one route cannot carry a router-level bearer dependency because an `EventSource` cannot set headers |
 | everything else under `/api` | bearer |
 
-Counting the published document: 188 operations, 184 of which declare the
-`APIKeyHeader` security scheme and 4 of which do not, and those 4 are exactly
-the table's first three rows (the stream route declares the scheme even though
-it also accepts the token, which is a third reason this page exists).
+Counting the published document: 244 operations, 239 of which declare the
+`APIKeyHeader` security scheme and 5 of which do not, and those 5 are exactly
+the table's first four rows (the stream route declares the scheme even though
+it also accepts the token).
 
 Webhook behaviour when the secret is not configured mirrors the API key:
 loopback callers are accepted, a non-loopback caller gets `403`; a bad signature
-is `401 {"detail": "Invalid signature"}`, a missing `sha256=` prefix is `401`,
-and a bad GitLab token is `401 {"detail": "Invalid token"}` (`routers/webhooks.py`).
+is `401 {"detail": "Invalid signature"}`, a missing `sha256=` prefix on the
+GitHub route is `401`, a *present* `sha256=` prefix on the Gitea route is `401`
+(Gitea and Forgejo send bare hex), and a bad GitLab token is
+`401 {"detail": "Invalid token"}` (`routers/webhooks.py`).
 Verified by request: remote peer with no key gets the 403 and the exact detail
 string.
 
 ### 2.4 Two adjacent facts OpenAPI also omits
 
-- CORS is wide open: `allow_origins=["*"]`, `allow_credentials=True`,
-  `allow_methods=["*"]`, `allow_headers=["*"]` (`app.py`). Verified by request:
-  a preflight from an arbitrary origin is answered `200` with
-  `access-control-allow-origin` echoing that origin, and the same header comes
-  back on a simple request. Any origin can therefore call the API from a
-  browser, which is only safe because the key is what actually guards the data.
+- CORS allows any origin without credentials by default: `allow_origins=["*"]`,
+  `allow_credentials=False`, `allow_methods=["*"]`, `allow_headers=["*"]`
+  (`app.py`, `_cors_settings`). Verified by request: a preflight from an
+  arbitrary origin is answered `200` with `access-control-allow-origin: *`, and
+  the same header comes back on a simple request. Any origin can therefore call
+  the API from a browser, and the key is what guards the data. Setting
+  `REPOWISE_CORS_ORIGINS` to a comma-separated list of origins allows only those
+  origins and turns credentials on (browsers reject a wildcard origin with
+  credentials). `REPOWISE_CORS_ALLOW_CREDENTIALS` without explicit origins logs
+  a warning and changes nothing.
 - `POST /api/providers/{provider_id}/key` stores a key server-side and, when
   `repo_id` is supplied, also writes it to that repository's `.repowise/.env`
   (`routers/providers.py`, `provider_config.set_api_key`). The API can write a
@@ -267,8 +297,23 @@ detail endpoint returns the object, and two conventions sit on top:
 | `{results, accepted, skipped, errors}` with `202` | `POST /api/workspace/sync` | One entry per workspace repo, with its own `job_id` when accepted |
 | `RepoResponse` with `201` and `initial_job_id` | `POST /api/repos` with `index: true` | Registration that also enqueued a first index |
 | `{ok: true}` (and `{ok: true, deleted_pages: N}` for repo deletion) | mutations with nothing else to report, e.g. conversation delete, repository delete | Acknowledgement only |
-| `{event_id, status: "accepted"}` with `200` | both webhooks | The stored event's id, not a job id |
+| `{event_id, status: "accepted"}` with `200` | all three webhooks | The stored event's id, not a job id |
 | `X-Repowise-Redirected-From: <requested id>` response header | `GET /api/pages/{page_id}` and `/api/pages/lookup` | A retired page id resolved to its successor; the header names the id that was asked for (`routers/pages.py`) |
+| `{detail: {status: "retired", reason, superseded_by, archive_id, archive_url, page_id}}` with `410` | The same page readers, with an explicit `repo_id`, when an archived identity has no static redirect | The live page is gone; `archive_url` reads that exact retirement, not a guessed live successor |
+
+Retired records have native, repository-bound readers:
+
+- `GET /api/repos/{repo_id}/pages/retired?limit=100&offset=0` lists distinct
+  retirement events with `archive_id`, `page_id`, `repository_id`, UTC
+  `retired_at`, `reason`, `superseded_by` and `title`, without full bodies.
+- `GET /api/repos/{repo_id}/pages/retired/{page_id}` returns the same metadata,
+  the complete original `page` record, and all original `versions`, newest
+  first. Optional `archive_id` selects an exact event when an ID was reused.
+
+These routes inherit the repository router's authentication and workspace
+database routing. Ordinary live pages, version queries, search and MCP retrieval
+exclude archives. Records older than 90 days are purged in the existing
+retired-page sweep; reading cannot restore a retired row as live.
 
 Enum vocabularies are shared deliberately and are the same four values wherever
 one appears: `open`, `acknowledged`, `resolved`, `false_positive` for health
@@ -403,7 +448,7 @@ empty. The route still declares only `application/json`.
 Two query parameters repeat across the `code-health` tag, and both change the
 numbers rather than the rows:
 
-- `scope=all` (default) or `production`. `production` drops test files, which
+- `scope=all` (default) or `production`. `production` drops test, tooling, vendored and generated files, which
   lowers every figure without a defect having been found.
 - `counts=everything` (default) or `code_shape`. `code_shape` removes the
   git-derived half of the score, so the figure describes code shape rather than
@@ -427,6 +472,14 @@ client routing cannot collide with real ids; passing one to
 `GET /api/search` returns an empty list rather than falling back to the primary
 repo (`routers/search.py`).
 
+`POST /api/repos` on a path that is already registered updates that row, and a
+`url` or `default_branch` the body leaves out keeps its stored value, as with
+`PATCH`. A new row takes an omitted value from the path's registry row, else
+from git: the remote url (credentials removed) and default branch. The schema
+defaults (`""`, `"main"`) fill only what git cannot name. Each index replaces
+both with what git reports (`routers/repos.py`, `crud/repository.py`), so a
+value set by `PATCH` or `POST` holds until the next index whose git names one.
+
 ### 5.4 Pagination
 
 `limit`/`offset` is the convention (41 operations take `limit`, 18 take
@@ -443,6 +496,14 @@ Six job modes exist (`job_executor.py`, `VALID_JOB_MODES`): `sync`,
 `full_resync`, `initial_index`, `index_only`, `generate`, `single_page`. They
 are not addressable by name over HTTP; each is the engine behind the endpoints
 in section 1. The mode is visible in `GET /api/jobs/{id}` under `config.mode`.
+
+A job can complete while its provider failed: each page it could not write
+counts in `failed_pages`, and `config.provider_issue` (`{kind, message}` plus
+optional `provider`, `model`, `target`, or `null`) names a shared cause such as
+a rejected API key (`auth`), a rate limit, an unreachable base URL, a missing
+model or path, or docs skipped because a configured provider would not load
+(`docs_skipped`; a repo with no provider at all is not reported). A job that
+fails on a recognised provider error stores the same hint as its `error_message`.
 
 One job per repository may be `pending` or `running` at a time. A second launch
 is `409`. On startup, the server marks any job left `running` or `pending` by a
@@ -507,7 +568,7 @@ one per router area; this table maps an area to the tag to open there.
 | Merged changes (Change Records) reconstructed from git | `changes` | `routers/changes.py` |
 | Typed events from consecutive index runs (CloudEvents, pull) | `events` | `routers/events.py` |
 | Structural coupling report | `coupling` | `routers/coupling.py` |
-| Blast radius for a change | `blast-radius` | `routers/blast_radius.py` |
+| Blast radius for a change, and the changes to pick from | `blast-radius` | `routers/blast_radius.py` |
 | Architectural decisions, lanes, lineage, policy settings | `decisions` | `routers/decisions.py` |
 | Mined session episodes | `episodes` | `routers/episodes.py` |
 | Action prompts and recorded state | `actions` | `routers/actions.py` |
@@ -528,7 +589,7 @@ one per router area; this table maps an area to the tag to open there.
 | Knowledge map | `knowledge-map` | `routers/knowledge_map.py` |
 | External systems (third-party packages) | `external-systems` | `routers/external_systems.py` |
 | `CLAUDE.md` / `AGENTS.md` generation | `claude-md` | `routers/claude_md.py` |
-| GitHub and GitLab webhooks | `webhooks` | `routers/webhooks.py` |
+| GitHub, GitLab and Gitea/Forgejo webhooks | `webhooks` | `routers/webhooks.py` |
 | Liveness, readiness, Prometheus metrics | `health` | `routers/health.py` |
 | In-app feedback relay | `feedback` | `routers/feedback.py` |
 
@@ -547,13 +608,13 @@ Every claim above was checked against the code in
 `packages/server/src/repowise/server/` and, for the pipeline and provider
 behaviour, `packages/core/src/repowise/core/`. The counts and the
 "which operations declare auth" table come from generating the app's own
-OpenAPI document in this checkout (176 paths, 188 operations, 36 tags, 184
-operations declaring the security scheme). The runtime behaviours quoted as
-"verified by request" (auth outcomes and detail strings, error and 422 shapes,
-CORS headers, the 500 body, the SSE frame order and headers, the stream token's
-stability and cross-job rejection, the projection routes' status codes) were
-executed against a `create_app()` instance with an ASGI transport.
+OpenAPI document (228 paths, 244 operations, 45 tags, 239 operations declaring
+the security scheme). The runtime behaviours quoted as "verified by request"
+(auth outcomes and detail strings, error and 422 shapes, CORS headers, the 500
+body, the SSE frame order and headers, the stream token's stability and
+cross-job rejection, the projection routes' status codes) are executed against
+a `create_app()` instance with an ASGI transport.
 
-Where the code is genuinely ambiguous, the section says so rather than picking
-an answer: section 1.5 on cost accounting is the main one. If you change a route
-named here, change this page with it.
+Where the code leaves a question open, the section names both readings: section
+1.5 on cost accounting is the main one. If you change a route named here,
+change this page with it.

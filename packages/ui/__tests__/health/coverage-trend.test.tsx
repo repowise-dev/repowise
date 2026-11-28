@@ -16,6 +16,8 @@ const SUMMARY: CoverageSummary = {
   ingested_commit_sha: "aaaaaaaa11",
   report_paths: null,
   freshness: { status: "current", indexed_commit: "aaaaaaaa11" },
+  unreported_file_count: 0,
+  unreported_files: [],
 };
 
 function points(...pcts: number[]): CoverageHistoryPoint[] {

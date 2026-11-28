@@ -40,6 +40,49 @@ class TestGoSymbols:
         assert "Hello" in names
 
 
+class TestGoInterfaceMethodSpecs:
+    """A ``method_elem`` of a named interface is a bodiless method symbol."""
+
+    _SRC = (
+        b"package x\n\n"
+        b"type Base interface{ Close() error }\n\n"
+        b"type Reader interface {\n"
+        b"\tBase\n"
+        b"\tPeek() byte\n"
+        b"\tAdvance(n int)\n"
+        b"}\n"
+    )
+
+    def test_each_method_is_a_symbol_parented_by_the_interface(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_file("x/reader.go"), self._SRC)
+        specs = {s.id: s for s in result.symbols if s.parent_name == "Reader"}
+        assert set(specs) == {"x/reader.go::Reader::Peek", "x/reader.go::Reader::Advance"}
+        for spec in specs.values():
+            assert spec.kind == "method"
+            assert spec.is_declaration
+
+    def test_an_embedded_interface_is_not_a_method_symbol(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_file("x/reader.go"), self._SRC)
+        assert not any(s.name == "Base" and s.kind == "method" for s in result.symbols)
+        assert not any(s.parent_name == "Reader" and s.name == "Base" for s in result.symbols)
+
+    def test_the_interface_itself_is_unchanged(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_file("x/reader.go"), self._SRC)
+        iface = next(s for s in result.symbols if s.id == "x/reader.go::Reader")
+        assert iface.kind == "interface"
+
+    def test_an_anonymous_interface_declares_no_symbol(self, parser: ASTParser) -> None:
+        src = (
+            b"package x\n\n"
+            b"type Holder struct{ v interface{ Foo() } }\n\n"
+            b"func take(a interface{ Bar() }) {}\n\n"
+            b"func local() { type L interface{ Baz() } }\n"
+        )
+        result = parser.parse_file(_file(), src)
+        names = {s.name for s in result.symbols}
+        assert not names & {"Foo", "Bar", "Baz"}
+
+
 class TestGoHeritage:
     def test_struct_embedding(self, parser: ASTParser) -> None:
         src = b"package x\n\ntype Base struct{}\n\ntype Foo struct {\n  Base\n  Name string\n}\n"

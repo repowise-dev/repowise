@@ -42,8 +42,10 @@ from .pipeline_hooks import (
     pipeline_hooks,
     register_hook,
 )
+from .plugins import PLUGIN_API_VERSION
 
 __all__ = [
+    "PLUGIN_API_VERSION",
     "TOOL_SAFETY_KINDS",
     "TOOL_TIERS",
     "CLIRegistry",

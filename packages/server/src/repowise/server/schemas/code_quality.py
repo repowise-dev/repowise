@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     path_risk_factors,
 )
-from repowise.core.analysis.finding_registry import verification_label
+from repowise.core.analysis.finding_registry import preview_label, verification_label
+from repowise.server.schemas._datetime import UTCDateTime
+
+from .preview import PreviewLabelled
 
 
-class DeadCodeFindingResponse(BaseModel):
+class DeadCodeFindingResponse(PreviewLabelled, BaseModel):
     id: str
     kind: str
     file_path: str
@@ -41,13 +44,15 @@ class DeadCodeFindingResponse(BaseModel):
     # confidence ladder. Deliberately not ``age_days``: that is measured from
     # the *first* commit, so it answers "how old is this file", not "how long
     # has this been dead", and the two disagree on 75% of findings.
-    last_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
     # Commits to the file in the last 90 days. Top rung of the confidence
     # ladder (0 commits is what earns the high tiers), so surfacing it is what
     # makes a low confidence score legible: the file is still being worked on.
     commit_count_90d: int
     # ``"unverified"`` for a provisional kind a caller asked for by name.
     verification: str | None = None
+    #: The measurement note on a language dead code is served as a preview on.
+    preview: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DeadCodeFindingResponse:
@@ -85,6 +90,7 @@ class DeadCodeFindingResponse(BaseModel):
             last_commit_at=obj.last_commit_at,  # type: ignore[attr-defined]
             commit_count_90d=obj.commit_count_90d,  # type: ignore[attr-defined]
             verification=verification_label(obj.kind),  # type: ignore[attr-defined]
+            preview=preview_label("dead_code", file_path, obj.kind),  # type: ignore[attr-defined]
         )
 
 
@@ -97,10 +103,12 @@ class DeadCodeSummaryResponse(BaseModel):
     total_findings: int
     confidence_summary: dict
     deletable_lines: int
+    #: Deletion-ready findings, the ones ``deletable_lines`` sums.
+    safe_to_delete_count: int | None = None
     total_lines: int
     by_kind: dict
     # When dead-code analysis last ran; None = never ran or unknown (not all-clear).
-    analyzed_at: datetime | None = None
+    analyzed_at: UTCDateTime | None = None
     #: Open findings a language gate held back, ``{language: {count, reason}}``.
     gated: dict = {}
 
@@ -111,7 +119,7 @@ class SecurityFindingResponse(BaseModel):
     kind: str
     severity: str
     snippet: str | None
-    detected_at: datetime
+    detected_at: UTCDateTime
     # Where in the file. Checked against the live tree before serving, so a
     # line that drifted is either corrected or withdrawn — see
     # ``services/security_lines.py``. ``None`` means the snippet is gone from
@@ -123,13 +131,22 @@ class SecurityFindingResponse(BaseModel):
     # Present when the finding was sourced from git history (full-history
     # scan). ``None`` for working-tree findings produced during indexing.
     commit_sha: str | None
-    commit_at: datetime | None
+    commit_at: UTCDateTime | None
     found_in_history: bool
+    # Shipped source, tests, or docs (``services/security_classes.py``).
+    path_class: Literal["source", "test", "docs"] = "source"
 
 
 class SecuritySummaryResponse(BaseModel):
     # When the pattern scan last ran; None = never ran or unknown (not all-clear).
-    scanned_at: datetime | None = None
+    scanned_at: UTCDateTime | None = None
+    # Every stored finding, and how many sit in shipped source, tests and docs
+    # (``services/security_classes.py``). The page lede reads these rather
+    # than counting a capped list.
+    total: int = 0
+    class_counts: dict[Literal["source", "test", "docs"], int] = Field(default_factory=dict)
+    # High-severity findings in shipped source.
+    source_high: int = 0
 
 
 class RepoStatsResponse(BaseModel):

@@ -114,10 +114,7 @@ def _add_rust_router_edges(
 
 class _RustRouterHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        rust_router_in_stack = any(
-            token in dctx.stack_lower for token in ("axum", "actix", "actix-web")
-        )
-        return rust_router_in_stack or _has_rust_router_imports(dctx.parsed_files)
+        return _has_rust_router_imports(dctx.parsed_files)
 
     def add_edges(
         self,

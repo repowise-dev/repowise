@@ -41,8 +41,8 @@ _FINDINGS = [
 
 
 def test_the_repo_overview_shares_the_severity_fold_too() -> None:
-    """A fourth copy of this lived in ``routers/overview.py``."""
-    from repowise.server.routers.overview import health_severity_breakdown
+    """A fourth copy of this lived in the overview-summary route."""
+    from repowise.server.services.overview_payload import health_severity_breakdown
 
     assert health_severity_breakdown is core.severity_breakdown
 

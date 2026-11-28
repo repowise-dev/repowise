@@ -85,7 +85,7 @@ export function DismissibleNotice({
           type="button"
           onClick={onDismiss}
           aria-label={dismissLabel}
-          className="-mr-1 shrink-0 rounded p-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="-mr-1 shrink-0 rounded p-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>

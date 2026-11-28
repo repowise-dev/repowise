@@ -2,10 +2,10 @@
 
 These frameworks load files by filesystem convention — Remix's
 ``routes/*.tsx`` with ``loader``/``action`` exports, SvelteKit's
-``+page.ts``/``+server.ts``, Astro's ``src/pages/*``. Phase 1's
-``_NEVER_FLAG_PATTERNS`` already exempts the convention files
-themselves; this module emits edges from each convention file to its
-intra-repo imports so consumed helpers (``~/utils/db``,
+``+page.ts``/``+server.ts``, Astro's ``src/pages/*``. The convention
+files themselves are anchored by ``js_conventions`` when a ``package.json``
+depends on the framework; this module emits edges from each convention file
+to its intra-repo imports so consumed helpers (``~/utils/db``,
 ``$lib/server/auth``) inherit reachability.
 """
 
@@ -30,9 +30,10 @@ if TYPE_CHECKING:
 _SVELTE_ROUTE_RE = re.compile(r"/\+(?:page|layout|server|error)[.\w]*\.(ts|tsx|js|mjs|svelte)$")
 _ASTRO_PAGE_RE = re.compile(r"(?:^|/)src/pages/")
 
-# SvelteKit's +page.svelte / +layout.svelte are convention routes in their own
-# right, so components count here alongside their .ts/.js siblings.
-_ROUTE_LANGUAGES = ("typescript", "javascript", "svelte")
+# SvelteKit's +page.svelte / +layout.svelte and Astro's src/pages/*.astro are
+# convention routes in their own right, so components count here alongside
+# their .ts/.js siblings.
+_ROUTE_LANGUAGES = ("typescript", "javascript", "svelte", "astro")
 
 
 def _is_convention_route(path: str) -> bool:
@@ -45,7 +46,7 @@ def _is_convention_route(path: str) -> bool:
 
 class _ConventionRouteHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        if any(tok in dctx.stack_lower for tok in ("remix", "sveltekit", "astro")):
+        if dctx.uses("Remix", "SvelteKit", "Astro"):
             return True
         for path, parsed in dctx.parsed_files.items():
             if parsed.file_info.language not in _ROUTE_LANGUAGES:

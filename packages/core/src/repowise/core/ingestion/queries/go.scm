@@ -20,10 +20,25 @@
   parameters: (parameter_list) @symbol.params
 ) @symbol.def
 
-; Type declaration (struct, interface, alias)
+; Type declaration (struct, interface, defined type)
 ; type_spec is always inside type_declaration
 (type_spec
   name: (type_identifier) @symbol.name
+) @symbol.def
+
+; Alias declaration: type Old = int
+; The `=` form is its own node, not a type_spec.
+(type_alias
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; Interface method spec: type Reader interface { Peek() byte }
+; A bodiless declaration parented by its interface (see parser._find_parent).
+; Methods of an anonymous interface (a field or parameter type) have no named
+; owner and are dropped there.
+(method_elem
+  name: (field_identifier) @symbol.name
+  parameters: (parameter_list) @symbol.params
 ) @symbol.def
 
 ; Package-level const: const MaxRetries = 3

@@ -100,3 +100,55 @@ export function buildHotspotAiPrompt({
     explorationCloser(flavor, h.file_path, "hotspot"),
   ]);
 }
+
+/** Files listed in a batch prompt; the rest are counted, not dropped silently. */
+const MAX_BATCH_FILES = 25;
+
+export interface BuildHotspotBatchPromptOptions {
+  rows: HotspotPromptInput[];
+  /** Every row the filters match, when more exist than were loaded. */
+  total?: number;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+/** One prompt over several hotspots, e.g. every row the current filters show. */
+export function buildHotspotBatchAiPrompt({
+  rows,
+  total = rows.length,
+  flavor = "generic",
+  repoName,
+}: BuildHotspotBatchPromptOptions): string {
+  const only = rows.length === 1 && total === 1 ? rows[0] : undefined;
+  if (only) return buildHotspotAiPrompt({ hotspot: only, flavor, ...(repoName ? { repoName } : {}) });
+  const shown = rows.slice(0, MAX_BATCH_FILES);
+  const hidden = total - shown.length;
+
+  return joinSections([
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Hotspots to stabilize${repoSuffix(repoName)}`,
+    "",
+    "Ranked by hotspot score (recent change weighted most), highest first.",
+    "",
+    bulletList(
+      shown.map(
+        (h) =>
+          `\`${h.file_path}\` — ${h.commit_count_90d ?? 0} commits in 90 days${
+            h.bus_factor === 1 ? ", one person holds the knowledge" : ""
+          }${h.prior_defect_count ? `, ${h.prior_defect_count} prior bug fixes` : ""}`,
+      ),
+    ),
+    hidden > 0 ? `…and ${hidden} more in the same list (open Code Health in repowise for all of them).` : "",
+    "",
+    "## Your task",
+    "",
+    bulletList([
+      "Work one file at a time, highest first, and finish each before starting the next.",
+      "For each: find why it keeps changing, then make the smallest behaviour-preserving change that makes the next change cheaper, with tests that protect it.",
+      "Stop and report after each file with what you changed and what you would do next.",
+    ]),
+    "",
+    explorationCloser(flavor, shown[0]?.file_path ?? "", "hotspot"),
+  ]);
+}

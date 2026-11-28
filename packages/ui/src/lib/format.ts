@@ -5,6 +5,59 @@
 /** A timestamp we can render. */
 type Timestamp = string | Date;
 
+/** A calendar day with no time, "2026-11-01": a day the server already chose,
+ *  usually a UTC-day bucket, so it renders as that day in every zone. */
+function isDateOnly(date: Timestamp): boolean {
+  return typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date.trim());
+}
+
+/**
+ * The zone absolute dates render in: an IANA name such as "Europe/Berlin".
+ *
+ * One value per JS realm, set by the host from the viewer's preference
+ * (`setDisplayTimeZone`, or the `<DisplayTimeZone>` component for a React
+ * tree). It starts as UTC, so a host that never sets it renders exactly what
+ * it did before the preference existed.
+ *
+ * Ceiling: on a server that renders for many viewers at once, the value is
+ * shared by every in-flight request, so two viewers with different zones can
+ * briefly see each other's zone (React then repairs the text on hydration).
+ * Fine for a single-viewer server such as the OSS web UI. A multi-tenant host
+ * that needs it exact per request should scope it with AsyncLocalStorage.
+ */
+let displayTimeZone = "UTC";
+
+/** True for a zone `Intl` accepts, "UTC" or an IANA name. Never throws. */
+export function isTimeZone(value: unknown): value is string {
+  if (typeof value !== "string" || value === "") return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Set the zone absolute dates render in. An invalid zone falls back to UTC. */
+export function setDisplayTimeZone(zone: string | null | undefined): void {
+  displayTimeZone = isTimeZone(zone) ? zone : "UTC";
+}
+
+/** The zone absolute dates render in right now. */
+export function getDisplayTimeZone(): string {
+  return displayTimeZone;
+}
+
+/** This browser's own zone, or UTC where the runtime cannot say. */
+export function browserTimeZone(): string {
+  try {
+    const zone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return isTimeZone(zone) ? zone : "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
 /**
  * Parse an API timestamp into a `Date`, treating a bare ISO string without an
  * explicit timezone suffix (e.g. `"2026-08-21T13:23:33"`) as UTC. The repowise
@@ -14,6 +67,8 @@ type Timestamp = string | Date;
  */
 export function parseDate(date: Timestamp): Date {
   if (date instanceof Date) return date;
+  // A date-only string already parses as UTC, and "2026-06-23Z" is invalid in Safari.
+  if (isDateOnly(date)) return new Date(date.trim());
   // No timezone suffix (`Z`/`z` or `+HH:MM`)? Treat the wall-clock as UTC.
   if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
     return new Date(`${date.trim()}Z`);
@@ -67,8 +122,10 @@ export function formatCost(usd: number): string {
   }).format(usd);
 }
 
-/** Format a datetime to a relative string: "2h ago", "3d ago", "just now" */
-export function formatRelativeTime(date: string | Date): string {
+export type RelativeTimeUnit = "now" | "s" | "m" | "h" | "d" | "w" | "mo" | "y";
+
+/** The bucket `formatRelativeTime` picks, for hosts that word it themselves. */
+export function relativeTimeParts(date: string | Date): { unit: RelativeTimeUnit; value: number } {
   const d = parseDate(date);
   const now = Date.now();
   const diff = now - d.getTime();
@@ -79,14 +136,38 @@ export function formatRelativeTime(date: string | Date): string {
   const weeks = Math.floor(days / 7);
   const months = Math.floor(days / 30);
 
-  if (seconds < 10) return "just now";
-  if (seconds < 60) return `${seconds}s ago`;
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 7) return `${days}d ago`;
-  if (weeks < 5) return `${weeks}w ago`;
-  if (months < 12) return `${months}mo ago`;
-  return `${Math.floor(months / 12)}y ago`;
+  if (seconds < 10) return { unit: "now", value: 0 };
+  if (seconds < 60) return { unit: "s", value: seconds };
+  if (minutes < 60) return { unit: "m", value: minutes };
+  if (hours < 24) return { unit: "h", value: hours };
+  if (days < 7) return { unit: "d", value: days };
+  if (weeks < 5) return { unit: "w", value: weeks };
+  if (months < 12) return { unit: "mo", value: months };
+  return { unit: "y", value: Math.floor(months / 12) };
+}
+
+/** Wording per bucket, `{value}` standing for the count. Plain strings, so a
+ *  server component can hand localised wording to a client one. */
+export type RelativeTimeWords = Record<RelativeTimeUnit, string>;
+
+export const RELATIVE_TIME_WORDS: RelativeTimeWords = {
+  now: "just now",
+  s: "{value}s ago",
+  m: "{value}m ago",
+  h: "{value}h ago",
+  d: "{value}d ago",
+  w: "{value}w ago",
+  mo: "{value}mo ago",
+  y: "{value}y ago",
+};
+
+/** Format a datetime to a relative string: "2h ago", "3d ago", "just now" */
+export function formatRelativeTime(
+  date: string | Date,
+  words: Partial<RelativeTimeWords> = RELATIVE_TIME_WORDS,
+): string {
+  const { unit, value } = relativeTimeParts(date);
+  return (words[unit] ?? RELATIVE_TIME_WORDS[unit]).replace("{value}", String(value));
 }
 
 /** Relative time that tolerates null/invalid input, returning `fallback`
@@ -101,28 +182,54 @@ export function formatRelativeTimeOrNull(
   return formatRelativeTime(d);
 }
 
-/** Format a datetime to an absolute string: "Mar 19, 2026" (in UTC) */
-export function formatDate(date: string | Date): string {
+/** What the absolute date formatters render for a missing or unparseable
+ *  date, the same mark `formatRelativeTimeOrNull` uses. */
+const NO_DATE = "—";
+
+/** `parseDate` for a value that may be absent: null for a missing or
+ *  unparseable one. `Intl.DateTimeFormat.format` throws a RangeError on an
+ *  Invalid Date, so a single bad row would otherwise take down a whole table. */
+export function parseDateOrNull(date: Timestamp | null | undefined): Date | null {
+  if (date == null || date === "") return null;
   const d = parseDate(date);
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(d);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" (in UTC) */
-export function formatDateTime(date: string | Date): string {
-  const d = parseDate(date);
-  return new Intl.DateTimeFormat("en-US", {
+/**
+ * The one place a `Date` becomes absolute text. Renders in en-US (pinned, so
+ * server and browser agree) and in the display zone, except:
+ * - `options.timeZone` wins, for a label that must stay in one zone on
+ *   purpose, such as a server-side UTC bucket;
+ * - a date-only string renders in UTC, so "2026-11-01" stays Nov 1 for a
+ *   viewer west of Greenwich.
+ * A missing or unparseable date renders as "—".
+ */
+export function formatDateWith(
+  date: Timestamp | null | undefined,
+  options: Intl.DateTimeFormatOptions,
+): string {
+  const d = parseDateOrNull(date);
+  if (d == null) return NO_DATE;
+  const timeZone = options.timeZone ?? (isDateOnly(date!) ? "UTC" : displayTimeZone);
+  return new Intl.DateTimeFormat("en-US", { ...options, timeZone }).format(d);
+}
+
+/** Format a datetime to an absolute string: "Mar 19, 2026", in the display
+ *  zone. A missing or unparseable date renders as "—". */
+export function formatDate(date: Timestamp | null | undefined): string {
+  return formatDateWith(date, { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** Format a datetime to full: "Mar 19, 2026, 10:30 AM", in the display zone.
+ *  A missing or unparseable date renders as "—". */
+export function formatDateTime(date: Timestamp | null | undefined): string {
+  return formatDateWith(date, {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-    timeZone: "UTC",
-  }).format(d);
+  });
 }
 
 /** Format LOC counts: 50000 → "50K", 1234 → "1.2K" */
@@ -132,7 +239,14 @@ export function formatLOC(n: number): string {
   return String(n);
 }
 
-/** Truncate a file path keeping as many trailing components as fit: src/very/long/path/file.py → …/long/path/file.py */
+/**
+ * Truncate a file path keeping as many trailing components as fit:
+ * src/very/long/path/file.py → …/long/path/file.py
+ *
+ * @deprecated Render paths with `<FilePath>` (`shared/file-path`), which clips
+ * by the box width and keeps the full path in the tooltip and accessible name.
+ * Kept for plain-string contexts and existing callers.
+ */
 export function truncatePath(path: string, maxChars = 60): string {
   if (path.length <= maxChars) return path;
   const parts = path.split("/");
@@ -153,7 +267,7 @@ export function truncatePath(path: string, maxChars = 60): string {
  * basename is already unique keeps it. Each path grows by one trailing segment
  * per round until it is unique or has no segments left.
  *
- * Prefer {@link truncatePath} for a path shown on its own; this is for many
+ * Prefer `<FilePath>` for a path shown on its own; this is for many
  * paths displayed side by side, where a bare basename can be ambiguous.
  */
 export function disambiguateBasenames(paths: Iterable<string>): Map<string, string> {

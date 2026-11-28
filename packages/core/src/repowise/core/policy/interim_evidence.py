@@ -174,9 +174,9 @@ def _labelled_commits(root: Path, base: str, head: str) -> list[dict[str, Any]] 
     if len(records) > MAX_COMMITS:
         return None
     try:
-        import git
+        from repowise.core.git_repo import Repo
 
-        repo = git.Repo(root)
+        repo = Repo(root)
     except Exception:
         repo = None
     classifier = classifier_from_repo_config(root)

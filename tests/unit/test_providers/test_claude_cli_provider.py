@@ -145,8 +145,8 @@ def test_available_model_options_are_labelled(claude_on_path):
     options = ClaudeCliProvider().available_model_options()
     assert [o.model for o in options] == [
         "claude_cli/claude-haiku-5-5",
-        "claude_cli/claude-sonnet-4-6",
-        "claude_cli/claude-opus-4-6",
+        "claude_cli/claude-sonnet-5-5",
+        "claude_cli/claude-opus-5-5",
     ]
     assert sum(1 for o in options if o.recommended) == 1
     assert all(
@@ -303,6 +303,47 @@ async def test_error_subtype_raises(claude_on_path, monkeypatch):
 
     with pytest.raises(ProviderError, match="error_max_turns"):
         await ClaudeCliProvider().generate("sys", "user")
+
+
+async def test_missing_sign_in_names_the_headless_fix(claude_on_path, monkeypatch):
+    """The CLI's own text points at an interactive /login; a server needs the commands."""
+
+    async def fake_exec(*_args, **_kwargs):
+        # The shape `claude -p` prints with no credentials (subtype stays "success").
+        return FakeProcess(
+            returncode=1,
+            stdout=_success_json(
+                "Not logged in · Please run /login", is_error=True, api_error_status=None
+            ),
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ProviderError) as caught:
+        await ClaudeCliProvider().generate("sys", "user")
+
+    message = str(caught.value)
+    assert "not signed in" in message
+    assert "claude auth login" in message
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in message
+    assert "success" not in message
+
+
+async def test_rejected_credential_keeps_its_status(claude_on_path, monkeypatch):
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(
+            returncode=1,
+            stdout=_success_json(
+                "Invalid API key · Please run /login", is_error=True, api_error_status=401
+            ),
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ProviderError, match="401: Invalid API key") as caught:
+        await ClaudeCliProvider().generate("sys", "user")
+
+    assert caught.value.status_code == 401
 
 
 async def test_empty_result_raises(claude_on_path, monkeypatch):
@@ -642,3 +683,19 @@ def test_resolves_through_the_registry(claude_on_path):
     provider = get_provider("claude_cli")
     assert provider.provider_name == "claude_cli"
     assert provider.model_name == "claude_cli/claude-haiku-5-5"
+
+
+def test_nested_session_markers_are_stripped(claude_on_path, monkeypatch):
+    """Run from inside Claude Code, the child must not inherit the parent session."""
+    for name in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_TOKEN"):
+        monkeypatch.setenv(name, "parent")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "keep")
+
+    env = ClaudeCliProvider().subprocess_env()
+
+    assert "CLAUDECODE" not in env
+    assert "CLAUDE_CODE_SESSION_ID" not in env
+    assert "CLAUDE_CODE_MESSAGING_TOKEN" not in env
+    assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert env["ANTHROPIC_MODEL"] == "keep"

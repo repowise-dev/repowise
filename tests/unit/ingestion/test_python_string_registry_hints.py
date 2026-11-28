@@ -218,6 +218,221 @@ def test_wide_or_one_segment_template_links_the_package_only() -> None:
     }
 
 
+_SECTIONS = {
+    "src/app/__init__.py": "",
+    "src/app/sections/a.py": "",
+    "src/app/sections/b.py": "",
+    "src/app/sections/sub/__init__.py": "",
+    "src/app/sections/sub/deep.py": "",
+    "src/app/other.py": "",
+}
+_SECTIONS_PKG = "src/app/sections/__init__.py"
+_CHILDREN = {
+    "src/app/sections/a.py": (),
+    "src/app/sections/b.py": (),
+    "src/app/sections/sub/__init__.py": (),
+}
+
+
+def _sections(init: str, **extra: str) -> dict[str, str]:
+    return {**_SECTIONS, _SECTIONS_PKG: "import importlib\nimport pkgutil\n" + init, **extra}
+
+
+def test_package_importing_its_own_path_listing_reaches_every_child() -> None:
+    for load in (
+        'importlib.import_module(f"{__name__}.{_m.name}")',
+        'importlib.import_module(__name__ + "." + _m.name)',
+        'importlib.import_module(f".{_m.name}", package=__name__)',
+        'importlib.import_module("." + _m.name, __name__)',
+        'importlib.import_module(f"{__package__}.{_m.name}")',
+    ):
+        files = _sections(f"for _m in pkgutil.iter_modules(__path__):\n    {load}\n")
+        assert _refs(files, _SECTIONS_PKG) == _CHILDREN, load
+
+
+def test_walk_packages_with_name_prefix_reaches_every_descendant() -> None:
+    files = _sections(
+        'for _m in pkgutil.walk_packages(__path__, __name__ + "."):\n'
+        "    importlib.import_module(_m.name)\n"
+    )
+    assert _refs(files, _SECTIONS_PKG) == {**_CHILDREN, "src/app/sections/sub/deep.py": ()}
+
+
+def test_own_path_listing_is_not_capped() -> None:
+    many = {f"src/app/sections/p{i}.py": "" for i in range(60)}
+    files = _sections(
+        "for _m in pkgutil.iter_modules(__path__):\n"
+        '    importlib.import_module(f"{__name__}.{_m.name}")\n',
+        **many,
+    )
+    assert set(many) <= set(_refs(files, _SECTIONS_PKG))
+
+
+def test_listing_loop_that_skips_private_names_does_not_link_them() -> None:
+    private = {"src/app/sections/_helpers.py": "", "src/app/sections/sub/_impl.py": ""}
+    skipping = _sections(
+        "for _m in pkgutil.iter_modules(__path__):\n"
+        '    if not _m.name.startswith("_"):\n'
+        '        importlib.import_module(f".{_m.name}", __package__)\n',
+        **private,
+    )
+    assert _refs(skipping, _SECTIONS_PKG) == _CHILDREN
+    # With no such filter the loop loads them too.
+    loading_all = _sections(
+        "for _m in pkgutil.iter_modules(__path__):\n"
+        '    importlib.import_module(f"{__name__}.{_m.name}")\n',
+        **private,
+    )
+    assert _refs(loading_all, _SECTIONS_PKG) == {**_CHILDREN, "src/app/sections/_helpers.py": ()}
+
+
+def test_a_load_outside_the_listing_loop_links_nothing() -> None:
+    for init in (
+        # The listing feeds a name list; a separate loop loads its own names.
+        "NAMES = [m.name for m in pkgutil.iter_modules(__path__)]\n"
+        'for n in ["a"]:\n'
+        '    importlib.import_module(f"{__name__}.{n}")\n',
+        # A lazy table in the same file as a listing.
+        "NAMES = [m.name for m in pkgutil.iter_modules(__path__)]\n"
+        '_LAZY = {"A": "a"}\n'
+        "def __getattr__(name):\n"
+        '    return importlib.import_module(f"{__name__}.{_LAZY[name]}")\n',
+        # Inside the loop, but not the loop's name.
+        "for _m in pkgutil.iter_modules(__path__):\n"
+        '    importlib.import_module(f"{__name__}.{OTHER}")\n',
+    ):
+        assert _refs(_sections(init), _SECTIONS_PKG) == {}, init
+
+
+def test_a_name_guard_links_only_the_names_it_passes() -> None:
+    files = _sections(
+        "for _m in pkgutil.iter_modules(__path__):\n"
+        '    if _m.name == "a":\n'
+        '        importlib.import_module(f"{__name__}.{_m.name}")\n'
+    )
+    assert _refs(files, _SECTIONS_PKG) == {"src/app/sections/a.py": ()}
+
+
+def test_an_unrelated_import_beside_a_full_name_listing_links_nothing() -> None:
+    files = _sections(
+        'for _m in pkgutil.walk_packages(__path__, __name__ + "."):\n'
+        "    print(_m.name)\n"
+        'importlib.import_module("json")\n'
+    )
+    assert _refs(files, _SECTIONS_PKG) == {}
+
+
+_EXTRA = {"src/app/sections/_helpers.py": "", "src/app/sections/test_a.py": ""}
+_LOOP = "for _m in pkgutil.iter_modules(__path__):\n"
+_LOAD = 'importlib.import_module(f"{__name__}.{_m.name}")\n'
+_ALL = {**_CHILDREN, **{path: () for path in _EXTRA}}
+
+
+def test_skip_filters_are_read_from_the_loop_body() -> None:
+    for body, expected in (
+        (f'    if _m.name[0] != "_":\n        {_LOAD}', {
+            k: v for k, v in _ALL.items() if "/_helpers" not in k
+        }),
+        (f'    if _m.name.startswith("__"):\n        continue\n    {_LOAD}', _ALL),
+        (f'    if not _m.name.startswith("test"):\n        {_LOAD}', {
+            k: v for k, v in _ALL.items() if "/test_a" not in k
+        }),
+        (f"    if _m.ispkg:\n        {_LOAD}", {"src/app/sections/sub/__init__.py": ()}),
+        # A filter the reader cannot evaluate links nothing from that load.
+        (f"    if _m.name not in SKIP:\n        {_LOAD}", {}),
+        # A skip in a comment or string is not a filter.
+        (f'    # if _m.name.startswith("_"): continue\n    "startswith(\'_\')"\n    {_LOAD}', _ALL),
+    ):
+        assert _refs(_sections(_LOOP + body, **_EXTRA), _SECTIONS_PKG) == expected, body
+
+
+def test_a_filtered_comprehension_listing_links_what_passes() -> None:
+    files = _sections(
+        "for name in sorted(m.name for m in pkgutil.iter_modules(__path__) if m.name != 'b'):\n"
+        "    importlib.import_module(f'.{name}', __package__)\n"
+    )
+    assert _refs(files, _SECTIONS_PKG) == {
+        "src/app/sections/a.py": (),
+        "src/app/sections/sub/__init__.py": (),
+    }
+
+
+def test_relative_load_anchored_on_something_else_links_nothing() -> None:
+    files = _sections(
+        _LOOP + "    importlib.import_module(f'.{_m.name}', __name__.rpartition('.')[0])\n"
+    )
+    assert _refs(files, _SECTIONS_PKG) == {}
+
+
+def test_walk_packages_without_a_prefix_yields_children_only() -> None:
+    # Recursing imports ``sub`` by its bare name, which fails, so
+    # ``sub.deep`` is never listed.
+    files = _sections(
+        "for _m in pkgutil.walk_packages(__path__):\n"
+        '    importlib.import_module(f"{__name__}.{_m.name}")\n'
+    )
+    assert _refs(files, _SECTIONS_PKG) == _CHILDREN
+
+
+def test_listing_some_other_path_keeps_the_cap() -> None:
+    many = {f"src/app/sections/p{i}.py": "" for i in range(60)}
+    files = _sections(
+        "for _m in pkgutil.iter_modules([PLUGIN_DIR]):\n"
+        '    importlib.import_module(f"{__name__}.{_m.name}")\n',
+        **many,
+    )
+    # Over the cap with no listing to vouch for it: the package only, which
+    # is this file, so nothing.
+    assert _refs(files, _SECTIONS_PKG) == {}
+
+
+def test_own_path_listing_without_an_import_adds_nothing() -> None:
+    files = _sections(
+        "NAMES = [m.name for m in pkgutil.iter_modules(__path__)]\n"
+        'NAMED = list(pkgutil.walk_packages(__path__, __name__ + "."))\n'
+    )
+    assert _refs(files, _SECTIONS_PKG) == {}
+
+
+def test_own_path_listing_in_a_comment_adds_nothing() -> None:
+    files = _sections(
+        "# for _m in pkgutil.walk_packages(__path__, __name__ + '.'):\n"
+        "importlib.import_module(NAME)\n"
+    )
+    assert _refs(files, _SECTIONS_PKG) == {}
+
+
+def test_lazy_getattr_table_on_the_own_name_adds_nothing() -> None:
+    # Spells the same load but reaches only the modules its table names.
+    files = _sections(
+        '_LAZY = {"A": "a"}\n'
+        "def __getattr__(name):\n"
+        '    return getattr(importlib.import_module(f"{__name__}.{_LAZY[name]}"), name)\n'
+    )
+    assert _refs(files, _SECTIONS_PKG) == {}
+
+
+def test_own_name_template_in_a_plain_module_adds_nothing() -> None:
+    loader = "src/app/sections/loader.py"
+    files = _sections(
+        "",
+        **{
+            loader: (
+                "import importlib\n"
+                "def load(name):\n"
+                '    importlib.import_module(f"{__name__}.{name}")\n'
+                '    importlib.import_module(f"{__package__}.{name}")\n'
+            )
+        },
+    )
+    assert _refs(files, loader) == {}
+
+
+def test_relative_template_without_an_anchor_adds_nothing() -> None:
+    files = _sections('importlib.import_module(f".{NAME}")\n')
+    assert _refs(files, _SECTIONS_PKG) == {}
+
+
 def _hint(source: str, target: str, names: tuple[str, ...] = ()) -> DynamicEdge:
     return DynamicEdge(source, target, "dynamic_uses", "python_dynamic_import", imported_names=names)
 

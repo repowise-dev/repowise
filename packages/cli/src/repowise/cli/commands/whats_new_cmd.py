@@ -13,6 +13,8 @@ from repowise.cli.whats_new import (
     render_whats_new,
     write_last_seen_version,
 )
+from repowise.core.upgrade.changelog import UNRELEASED
+from repowise.core.upgrade.release import load_release_stats
 
 
 def _entry_dict(entry) -> dict:
@@ -27,6 +29,12 @@ def _entry_dict(entry) -> dict:
     return {
         "version": entry.version,
         "label": entry.label,
+        "summary": entry.summary,
+        "highlights": [
+            {"id": h.id, "title": h.title, "blurb": h.blurb, "href": h.href}
+            for h in entry.highlights
+        ],
+        "stats": load_release_stats().get(entry.version),
         "sections": [{"name": s.name, "items": list(s.items)} for s in entry.sections],
     }
 
@@ -69,7 +77,8 @@ def whats_new_command(version: str | None, show_all: bool, fmt: str) -> None:
                 }
             )
             return
-        render_whats_new(console, match, since_version=None, title=f"repowise v{version}")
+        title = "repowise (unreleased)" if version == UNRELEASED else f"repowise v{version}"
+        render_whats_new(console, match, since_version=None, title=title)
         return
 
     if show_all:

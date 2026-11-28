@@ -12,7 +12,7 @@ from httpx import AsyncClient
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.models import GraphNode, HealthFileMetric
 from repowise.core.stats_highlights import file_mix
 from repowise.server.routers.stats import stats_highlights
 from tests.unit.server.conftest import create_test_repo
@@ -112,3 +112,116 @@ async def test_files_index_labels_loc_as_nloc(client: AsyncClient, app) -> None:
     assert body["loc_unit"] == "nloc"
     assert body["loc_null_reason"]
     assert all(row["loc"] is None for row in body["files"])
+
+
+# A production hotspot, a test-origin one and a generated one, all in one
+# community under ``src/`` (#6266). The hotspot list shows only the first.
+_HOTSPOTS = (
+    ("src/core.py", "production"),
+    ("src/test_core.py", "test"),
+    ("src/core_pb2.py", "generated"),
+)
+
+
+async def _seed_hotspots(session_factory, repo_id: str) -> None:
+    async with get_session(session_factory) as session:
+        for rank, (path, origin) in enumerate(_HOTSPOTS):
+            session.add(
+                GraphNode(
+                    repository_id=repo_id,
+                    node_id=path,
+                    node_type="file",
+                    language="python",
+                    is_test=origin == "test",
+                    community_id=0,
+                    pagerank=0.5 - rank / 10,
+                )
+            )
+            await crud.upsert_git_metadata(
+                session,
+                repository_id=repo_id,
+                file_path=path,
+                commit_count_total=30,
+                primary_owner_name="Alice",
+                is_hotspot=True,
+                churn_percentile=0.9,
+                temporal_hotspot_score=9.0 - rank,
+            )
+            session.add(
+                HealthFileMetric(
+                    repository_id=repo_id,
+                    file_path=path,
+                    score=7.0,
+                    nloc=10,
+                    is_test=origin == "test",
+                    code_origin=origin,
+                )
+            )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_every_hotspot_count_matches_the_hotspot_list(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    rid = repo["id"]
+    await _seed_hotspots(app.state.session_factory, rid)
+
+    async def get(path: str, **params) -> dict:
+        resp = await client.get(path, params=params)
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    listed = await get(f"/api/repos/{rid}/hotspots", hold="map")
+    assert [r["file_path"] for r in listed["items"]] == ["src/core.py"]
+    shown = listed["total"]
+    assert shown == 1
+
+    modules = await get(f"/api/repos/{rid}/modules/health")
+    assert sum(m["hotspot_count"] for m in modules["items"]) == shown
+    module = await get(f"/api/repos/{rid}/modules/health/src")
+    assert module["hotspot_count"] == shown
+    assert module["top_hotspots"] == ["src/core.py"]
+
+    tree = await get(f"/api/repos/{rid}/areas/tree", hold="map")
+    assert tree["root"]["hotspot_count"] == shown
+    area = await get(f"/api/repos/{rid}/areas/src", hold="map")
+    assert area["area"]["hotspot_count"] == area["hotspots"]["total"] == shown
+
+    graph = await get(f"/api/graph/{rid}")
+    assert graph["hot_total"] == graph["hot_in_view"] == shown
+    module_graph = await get(f"/api/graph/{rid}/modules")
+    assert sum(m["hotspot_count"] for m in module_graph["nodes"]) == shown
+    community = await get(f"/api/graph/{rid}/communities/0")
+    assert community["hot_count"] == shown
+    architecture = await get(f"/api/graph/{rid}/architecture", min_members=1)
+    assert sum(n["hotspot_count"] for n in architecture["nodes"]) == shown
+
+
+@pytest.mark.asyncio
+async def test_truncated_graph_reserves_the_hotspots_it_counts(client: AsyncClient, app) -> None:
+    # Held-out hotspots outrank the production one, so a reservation on the raw
+    # flag would fill a two-node view with them and drop the counted hotspot.
+    repo = await create_test_repo(client)
+    rid = repo["id"]
+    await _seed_hotspots(app.state.session_factory, rid)
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            GraphNode(
+                repository_id=rid,
+                node_id="src/hub.py",
+                node_type="file",
+                language="python",
+                is_test=False,
+                community_id=0,
+                pagerank=0.9,
+            )
+        )
+        core = await crud.get_graph_nodes_by_ids(session, rid, ["src/core.py"])
+        core["src/core.py"].pagerank = 0.1
+        await session.commit()
+
+    resp = await client.get(f"/api/graph/{rid}", params={"limit": 2})
+    assert resp.status_code == 200, resp.text
+    graph = resp.json()
+    assert "src/core.py" in {n["node_id"] for n in graph["nodes"]}
+    assert graph["hot_total"] == graph["hot_in_view"] == 1

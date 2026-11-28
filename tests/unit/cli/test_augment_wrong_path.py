@@ -159,10 +159,22 @@ def test_a_relative_escape_to_another_checkout_stays_silent(tmp_path: Path) -> N
 
 def test_a_dot_directory_keeps_its_dot(tmp_path: Path) -> None:
     """".github/ci.yml" must not be echoed back as "github/ci.yml"."""
+    from repowise.cli.commands.augment_cmd import glob_rescue
+
     repo = _repo(tmp_path, (".github/workflows/ci.yml",))
     result = _fire(repo, ".github/ci.yml")
     assert result.context is not None
     assert result.context.startswith("[repowise] .github/ci.yml is not in this tree.")
+    for pattern in (
+        ".github/workflows/*.yml",
+        "./.github/workflows/*.yml",
+        "/.github/workflows/*.yml",
+        str(repo / ".github" / "workflows" / "*.yml"),
+    ):
+        assert glob_rescue.matching_paths(repo, pattern) == (
+            [".github/workflows/ci.yml"],
+            1,
+        )
 
 
 def test_a_repo_under_a_path_with_spaces_still_rescues(tmp_path: Path) -> None:

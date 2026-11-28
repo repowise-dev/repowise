@@ -104,7 +104,7 @@ export function FilePathPicker({ selected, onAdd, onRemove, onSearch }: FilePath
   return (
     <div ref={containerRef} className="relative">
       <div
-        className="flex flex-wrap items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1.5 focus-within:ring-1 focus-within:ring-[var(--color-accent-primary)]"
+        className="flex flex-wrap items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1.5 focus-within:ring-1 focus-within:ring-[var(--color-focus-ring)]"
         onClick={() => containerRef.current?.querySelector("input")?.focus()}
       >
         {selected.map((p) => (

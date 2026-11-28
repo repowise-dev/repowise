@@ -16,7 +16,8 @@ never imported in the first place:
 Each caps the finding to the review tier, except a program: a file whose
 first line is a shebang, that runs under a ``__main__`` guard or that writes
 the ``python <its path>`` command running it is an entry point, so
-:func:`drop_program_entries` removes it. The cap also stops "no commits in
+:func:`drop_program_entries` removes it, as it does a developer-tooling file
+that runs statements or exports nothing. The cap also stops "no commits in
 90 days" lifting such a file to the high tier, since an
 untouched loaded file is not an unused one. Shape is not proof of use, so the
 file stays listed as a candidate for a person to check.
@@ -30,6 +31,9 @@ from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any
+
+from repowise.core.code_origin import code_origin
+from repowise.core.pyparse import parse_python
 
 from ...ingestion.extractors.visibility import _TS_BLOCK_COMMENT, _TS_CJS_EXPORTS_RE
 from ...ingestion.languages.registry import REGISTRY
@@ -87,7 +91,7 @@ def _parse_python(path: str, blob: bytes) -> ast.Module | None:
     if REGISTRY.from_extension(PurePosixPath(path).suffix) != "python" or path.endswith(".pyi"):
         return None
     try:
-        return ast.parse(blob)
+        return parse_python(blob)
     except (SyntaxError, ValueError, RecursionError):
         return None
 
@@ -156,19 +160,38 @@ def defines_main_function(graph: Any, file_node: str) -> bool:
 
 
 def drop_program_entries(
-    findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
+    findings: list[DeadCodeFindingData],
+    source_map: dict[str, bytes],
+    public_names: Mapping[str, frozenset[str]] | None = None,
+    repo_root: Any | None = None,
 ) -> list[DeadCodeFindingData]:
     """Drop unreachable files that are programs: nothing imports an entry point.
 
     "No importer" is the wrong claim for a file whose first line is a shebang
-    or that runs under ``if __name__ == "__main__"``. Returns a new list.
+    or that runs under ``if __name__ == "__main__"``. In developer tooling
+    (``code_origin`` ``tooling``: ``tools/``, ``scripts/``) the bar is lower,
+    since a script there is run by hand or by CI: statements at module level,
+    or no public name for an importer to use (``main();`` closing a ``node``
+    script), say the same. *public_names* maps each unreachable file to its
+    top-level public names. Returns a new list.
     """
+    names = public_names or {}
     return [
         f
         for f in findings
         if f.kind is not DeadCodeKind.UNREACHABLE_FILE
-        or not is_program(f.file_path, source_map.get(f.file_path, b""))
+        or not _is_entry(f.file_path, source_map.get(f.file_path, b""), names, repo_root)
     ]
+
+
+def _is_entry(
+    path: str, blob: bytes, public_names: Mapping[str, frozenset[str]], repo_root: Any | None
+) -> bool:
+    if is_program(path, blob):
+        return True
+    if code_origin(path, blob or None, is_test=False, repo_root=repo_root) != "tooling":
+        return False
+    return not public_names.get(path) or _script_reason(path, blob) is not None
 
 
 def _script_reason(path: str, blob: bytes) -> str | None:

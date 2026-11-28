@@ -4,8 +4,10 @@ import type { FileDetailResponse } from "@repowise-dev/types/files";
 import { isExternal, nodeKind } from "@repowise-dev/types";
 import { EmptyState } from "../shared/empty-state";
 import { formatLOC, truncatePath } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { SYMBOL_FIX_TITLE } from "../git/fix-history-badge";
 import { FileSection, Fig } from "./file-section";
+import { FileSourceCode } from "./file-source-code";
 
 interface FileOverviewTabProps {
   data: FileDetailResponse;
@@ -15,6 +17,13 @@ interface FileOverviewTabProps {
   fileHref: (path: string) => string;
   /** Router link; defaults to `<a>` so the package stays framework-neutral. */
   LinkComponent?: ElementType | undefined;
+  /**
+   * Shiki HTML of the file with `data-line` on every `.line`, supplied by the
+   * host only for a `?line=N` deep link. Renders the Source section first.
+   */
+  sourceCodeHtml?: string | undefined;
+  /** The deep-linked line to scroll to and mark inside `sourceCodeHtml`. */
+  highlightLine?: number | undefined;
 }
 
 /**
@@ -32,8 +41,20 @@ export function FileOverviewTab({
   symbolHref,
   fileHref,
   LinkComponent = "a",
+  sourceCodeHtml,
+  highlightLine,
 }: FileOverviewTabProps) {
   const A = LinkComponent;
+  // A deep link to a line lands here: the source goes first, scrolled to it.
+  const source = sourceCodeHtml ? (
+    <FileSection first title="Source">
+      <FileSourceCode
+        html={sourceCodeHtml}
+        filePath={data.file_path}
+        highlightLine={highlightLine}
+      />
+    </FileSection>
+  ) : null;
   const deadLines = data.dead_code.reduce((s, f) => s + (f.lines ?? 0), 0);
   // Keyed on the row's own symbol_id, not a rebuilt `${path}::${name}`: some
   // extractors mint ids from the qualified name, and those would never match.
@@ -80,6 +101,7 @@ export function FileOverviewTab({
     !!data.graph && (data.graph.dependents.length > 0 || data.graph.dependencies.length > 0);
 
   if (keySymbols.length === 0 && !hasNeighbors && data.dead_code.length === 0) {
+    if (source) return source;
     return (
       <EmptyState
         titleAs="h2"
@@ -92,9 +114,10 @@ export function FileOverviewTab({
 
   return (
     <div>
+      {source}
       {keySymbols.length > 0 && (
         <FileSection
-          first
+          first={!source}
           title="Key symbols"
           description={
             <>
@@ -143,7 +166,7 @@ export function FileOverviewTab({
 
       {data.graph && hasNeighbors && (
         <FileSection
-          first={keySymbols.length === 0}
+          first={!source && keySymbols.length === 0}
           title="Nearest neighbours"
           description={
             <>
@@ -176,7 +199,7 @@ export function FileOverviewTab({
 
       {data.dead_code.length > 0 && (
         <FileSection
-          first={keySymbols.length === 0 && !hasNeighbors}
+          first={!source && keySymbols.length === 0 && !hasNeighbors}
           title="Unreachable"
           description={
             <>
@@ -258,10 +281,10 @@ function NeighborColumn({
             <li key={id} className="min-w-0">
               <A
                 href={symbol ? symbolHref(id) : fileHref(id)}
-                className="block truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
-                title={id}
+                className="flex min-w-0 font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
+                title={symbol ? id : undefined}
               >
-                {truncatePath(id, 40)}
+                {symbol ? <span className="truncate">{truncatePath(id, 40)}</span> : <FilePath path={id} fold />}
               </A>
             </li>
           );

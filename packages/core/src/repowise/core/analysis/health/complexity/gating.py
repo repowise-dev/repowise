@@ -16,13 +16,15 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ....ingestion.models import TS_JS_LANGUAGES
+
 if TYPE_CHECKING:
     from tree_sitter import Node
 
 #: Literal kinds that make a module constant falsy, and those that are ``False`` itself.
 _FALSY = frozenset({"false", "none", "null", "undefined", "integer", "number"})
 _FALSE = frozenset({"false"})
-_ECMASCRIPT = frozenset({"typescript", "tsx", "javascript", "jsx", "svelte", "vue"})
+_ECMASCRIPT = TS_JS_LANGUAGES | {"tsx", "jsx"}
 #: Plain assignments a guard may follow (``summary = {...}`` before the ``if``).
 _LEAD_STATEMENTS = 2
 _DECLARATIONS = frozenset({"lexical_declaration", "variable_declaration"})

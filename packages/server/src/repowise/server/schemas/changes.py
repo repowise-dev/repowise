@@ -11,6 +11,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_serializer
 
+from repowise.server.schemas.git import CommitHealthFindingResponse
+from repowise.server.schemas.history import HealthRollupResponse
+
 
 class ChangeIdentity(BaseModel):
     """``pr`` | ``change_id`` | ``merge`` | ``commit``, first that applies."""
@@ -50,6 +53,14 @@ class ChangeForgeMetadata(BaseModel):
     linked_issues: list[str] | None = None
 
 
+class ChangeCategoryBasis(BaseModel):
+    """What decided ``category``: ``changelog_fragment``, ``forge_label`` or ``title``."""
+
+    signal: str
+    #: The fragment path or label; null for the title.
+    value: str | None = None
+
+
 class ChangeSummary(BaseModel):
     schema_version: int
     id: str
@@ -68,6 +79,18 @@ class ChangeSummary(BaseModel):
     category: str
     # Null while AI attribution is off, or on rows indexed before it.
     provenance: ChangeProvenance | None = None
+    #: What the change's commits did to health, the row's lead. Null when
+    #: none of them was scanned.
+    health: HealthRollupResponse | None = None
+    #: Files the change touched that are hotspots now.
+    touches_hotspot: int = 0
+
+
+class EvidenceLine(BaseModel):
+    """An item's value as a message key and its parameters, for a client to word."""
+
+    key: str
+    params: dict[str, Any]
 
 
 class EvidenceItem(BaseModel):
@@ -80,6 +103,8 @@ class EvidenceItem(BaseModel):
     value: Any = None
     details: list[dict[str, Any]]
     source: str
+    #: ``value`` for a reader (``repowise.core.changes.evidence.item_line``).
+    line: EvidenceLine | None = None
 
 
 class ChangeEvidence(BaseModel):
@@ -93,7 +118,22 @@ class ChangeEvidence(BaseModel):
     items: list[EvidenceItem]
 
 
+class ChangeHealthFindingResponse(CommitHealthFindingResponse):
+    """A finding a change's commit introduced or worsened, with that commit."""
+
+    sha: str
+
+
+class ChangeHealthResponse(HealthRollupResponse):
+    """A change's health rollup plus its worse findings, worst first and
+    capped: file, lines, symbol and biomarker, enough for a fix prompt."""
+
+    findings: list[ChangeHealthFindingResponse] = Field(default_factory=list)
+
+
 class ChangeRecord(ChangeSummary):
+    health: ChangeHealthResponse | None = None
+    category_basis: ChangeCategoryBasis | None = None
     commits: list[str]
     files: list[ChangeFile]
     metadata: ChangeForgeMetadata
@@ -193,6 +233,7 @@ class Suspect(BaseModel):
 class SuspectsResponse(BaseModel):
     window: dict[str, str]
     candidates: int
+    candidates_capped: bool
     #: Changes git could not read; they are ranked on title and files alone.
     texts_missing: int = 0
     symptom_files: list[str] = []

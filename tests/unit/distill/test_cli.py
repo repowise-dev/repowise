@@ -15,10 +15,10 @@ from click.testing import CliRunner
 
 from repowise.cli.commands.distill_cmd import (
     _posix_shell,
-    _render_command,
     distill_command,
 )
 from repowise.cli.commands.expand_cmd import expand_command
+from repowise.core.command_runner import render_command as _render_command
 from repowise.core.distill.markers import parse_marker_refs
 from repowise.core.distill.store import OmissionStore
 
@@ -198,6 +198,31 @@ def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Pa
 
     assert proc.returncode == 0, proc.stderr or proc.stdout
     assert "SHIM_OK" in proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe program-name resolution")
+def test_render_command_runs_a_forward_slash_program_path(tmp_path: Path) -> None:
+    """A Git Bash spelling like ``./bin/tool.cmd`` must reach cmd as one program.
+
+    Unquoted, cmd reads the leading ``.`` as the program and ``/bin`` as a
+    switch, so a rewritten ``./.venv/Scripts/python.exe -m pytest`` never ran.
+    """
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "tool.cmd").write_text("@echo TOOL_OK\n", encoding="utf-8")
+
+    proc = subprocess.run(  # repowise-security-ignore: subprocess_shell_true
+        _render_command(("./bin/tool.cmd", "arg")),
+        shell=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=tmp_path,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "TOOL_OK" in proc.stdout
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")

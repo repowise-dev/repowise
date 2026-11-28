@@ -23,9 +23,8 @@ import pytest
 
 _PERSIST_PATHS = [
     ("repowise.core.pipeline.persist", "the full index"),
-    ("repowise.core.pipeline.incremental", "the incremental index"),
+    ("repowise.core.pipeline.incremental.persist_index", "the incremental index"),
     ("repowise.core.pipeline.scoped_generation", "a scoped regeneration"),
-    ("repowise.cli.commands.update_cmd.persistence", "the docs update"),
     ("repowise.cli.commands.upgrade_flow", "the fast-to-full upgrade"),
 ]
 
@@ -58,9 +57,17 @@ def test_persist_path_rebuilds_the_tree(module_name: str, description: str):
     )
 
 
+def test_the_docs_update_runs_the_shared_tree_rebuild():
+    """The docs update reuses the incremental index's rebuild step."""
+    from repowise.cli.commands.update_cmd.full_persist import FULL_UPDATE_STEPS
+    from repowise.core.pipeline.incremental.persist_index import rebuild_tree
+
+    assert rebuild_tree in [step.run for step in FULL_UPDATE_STEPS]
+
+
 def test_the_writer_list_is_not_silently_empty():
     """Guards the parametrisation itself."""
-    assert len(_PERSIST_PATHS) + len(_DEFERRED_PATHS) >= 6
+    assert len(_PERSIST_PATHS) + len(_DEFERRED_PATHS) >= 5
 
 
 @pytest.mark.parametrize("module_name,description,caller_name", _DEFERRED_PATHS)

@@ -257,10 +257,21 @@ def test_collection_of_mappers_is_not_a_mapper(tmp_path: Path):
     assert hits == []
 
 
-def test_java_rows_are_held_back_and_counted_not_dropped(tmp_path: Path):
-    from repowise.core.analysis.finding_registry import split_gated
+def test_java_rows_are_held_back_and_counted_not_dropped(tmp_path: Path, monkeypatch):
+    from repowise.core.analysis import finding_registry
+    from repowise.core.analysis.finding_registry import LanguageGate, split_gated
     from repowise.core.analysis.health.biomarkers.base import FileContext
     from repowise.core.analysis.health.biomarkers.io_in_loop import BIOMARKER
+
+    # A gated Java cell on both layers, whatever state today's table holds.
+    monkeypatch.setattr(
+        finding_registry,
+        "LANGUAGE_GATES",
+        tuple(
+            LanguageGate(layer, "java", 0.1, "test", "2026-10-15", "test")
+            for layer in ("health", "performance")
+        ),
+    )
 
     hits = _hits(tmp_path, _mybatis(_LOOP_SERVICE), _SERVICE)
     ctx = FileContext(file_path=_SERVICE, language="java", nloc=8, has_test_file=False,

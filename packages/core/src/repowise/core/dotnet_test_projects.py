@@ -1,8 +1,9 @@
 """Where .NET test projects live, read from .csproj files.
 
-A C# test project sets `<IsTestProject>true</IsTestProject>` or references
-`Microsoft.NET.Test.Sdk`. Files inside such a project (step definitions, fakes,
-helpers) are test material even if their filename or directory does not say Test.
+A C# test project sets `<IsTestProject>true</IsTestProject>` or references any
+of the well-known NuGet test packages (the Test SDK, xunit.v3, NUnit adapters,
+MSTest, TUnit …). Files inside such a project (step definitions, fakes, helpers)
+are test material even if their filename or directory does not say Test.
 """
 
 from __future__ import annotations
@@ -12,7 +13,26 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-_TEST_SDK_PACKAGE = "microsoft.net.test.sdk"
+from .ingestion.resolvers.dotnet.msbuild import conditioned_ids, tristate
+
+#: NuGet ids (lower-cased) that make a .csproj a test project.  Single source
+#: of truth — ``test_runners/packages.py`` imports this instead of keeping its
+#: own copy.  Extend here when a new test framework arrives; both the traverser
+#: and the runner planner will pick up the change automatically.
+TEST_PACKAGES: frozenset[str] = frozenset(
+    {
+        "microsoft.net.test.sdk",
+        "mstest",
+        "mstest.testadapter",
+        "nunit3testadapter",
+        "tunit",
+        "xunit",
+        "xunit.runner.visualstudio",
+        "xunit.v3",
+        "xunit.v3.mtp-v1",
+        "xunit.v3.mtp-v2",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +57,29 @@ class DotnetTestProjects:
         return None
 
 
+def _is_test_package_elem(elem: ET.Element) -> bool:
+    """Whether *elem* is an Include or Update of a test package."""
+    tag = elem.tag.split("}")[-1].lower()
+    if tag not in ("packagereference", "packageversion"):
+        return False
+    for attr_name, attr_val in elem.attrib.items():
+        if (
+            attr_name.split("}")[-1].lower() in ("include", "update")
+            and attr_val.strip().lower() in TEST_PACKAGES
+        ):
+            return True
+    return False
+
+
 def is_test_project_csproj(text: str) -> bool | None:
     """Whether a .csproj XML string describes a test project.
+
+    A project is a test project when ``<IsTestProject>true</IsTestProject>`` is
+    set, or when it references any package in :data:`TEST_PACKAGES`.  An
+    explicit ``<IsTestProject>false</IsTestProject>`` wins regardless of which
+    packages are present.  A conditioned ``IsTestProject`` is ignored because an
+    unevaluated condition cannot be judged; a conditioned test package still
+    counts, since the project runs tests for at least one target.
 
     Returns:
         True: is a test project.
@@ -51,29 +92,24 @@ def is_test_project_csproj(text: str) -> bool | None:
         return None
 
     explicit_is_test: bool | None = None
-    has_test_sdk = False
+    if "mstest.sdk" in (root.get("Sdk") or "").lower():
+        explicit_is_test = True
+
+    has_test_package = False
+    conditioned = conditioned_ids(root)
 
     for elem in root.iter():
-        local_tag = elem.tag.split("}")[-1].lower()
-        if local_tag == "istestproject":
-            val = (elem.text or "").strip().lower()
-            if val == "true":
-                explicit_is_test = True
-            elif val == "false":
-                explicit_is_test = False
-        elif local_tag in ("packagereference", "packageversion"):
-            for attr_name, attr_val in elem.attrib.items():
-                if (
-                    attr_name.split("}")[-1].lower() in ("include", "update")
-                    and attr_val.strip().lower() == _TEST_SDK_PACKAGE
-                ):
-                    has_test_sdk = True
+        tag = elem.tag.split("}")[-1].lower()
+        if tag == "istestproject":
+            if id(elem) not in conditioned and (flag := tristate(elem.text)) is not None:
+                explicit_is_test = flag
+        elif _is_test_package_elem(elem):
+            # Whatever its Condition: per-TFM groups still mean tests for some target.
+            has_test_package = True
 
-    if explicit_is_test is False:
-        return False
-    if explicit_is_test is True:
-        return True
-    return has_test_sdk
+    if explicit_is_test is not None:
+        return explicit_is_test
+    return has_test_package
 
 
 def read_dotnet_test_projects(files: Iterable[tuple[str, str]]) -> DotnetTestProjects:

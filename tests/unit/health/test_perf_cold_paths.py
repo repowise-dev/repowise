@@ -142,3 +142,50 @@ def test_gated_off_takes_precedence_over_cold_path() -> None:
 
     assert opportunity.actionability_reason == "gated_off"
     assert perf_queue_verdict(opportunity).reason == "gated_off"
+
+
+def test_growth_only_a_registry_or_a_migration_loop_shows_is_named_for_it() -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.health.perf.opportunity_rank import growth_source
+
+    def member(path: str, function: str, iterates: str = "query"):
+        details = {"loop_magnitude": "grows_with_data", "loop_iterates": iterates}
+        return SimpleNamespace(details=details, file_path=path, function_name=function)
+
+    registry = member("app/scheduler.py", "poll", "config_table")
+    migration = member("app/db_migration.py", "backfill")
+    warm = member("app/views.py", "list_items")
+    assert growth_source("io_in_loop", [registry, migration]) == "registry"
+    assert growth_source("io_in_loop", [migration]) == "cold_path"
+    assert growth_source("io_in_loop", [registry, warm]) == "loop"
+    assert growth_source("io_in_loop", []) == "none"
+    assert growth_source("hot_path_sync_io", [warm]) == "n/a"
+
+
+def test_a_measured_migration_loop_stays_queued_with_its_workload() -> None:
+    owner = "hermes_cli/kanban_db.py::_migrate_add_optional_columns"
+    row = _finding("hermes_cli/kanban_db.py", "_migrate_add_optional_columns")
+    row.details["role_owner"] = owner
+
+    opportunity = build_performance_opportunities([row], measured={owner: "board-load"})[0]
+
+    # A leading workload's run ranks it: the name's guess that it runs once is overruled.
+    assert opportunity.actionability_state == "advisory"
+    assert opportunity.facets["measured"] == "board-load"
+    assert perf_queue_verdict(opportunity).eligible
+    # The static growth reading is unchanged, so it never becomes the lead.
+    assert opportunity.facets["growth_source"] == "cold_path"
+    assert opportunity.facets["measured_overrides"] == "cold_path"
+
+
+def test_a_function_nobody_measured_keeps_the_static_reading() -> None:
+    row = _finding("hermes_cli/kanban_db.py", "_migrate_add_optional_columns")
+    row.details["role_owner"] = "hermes_cli/kanban_db.py::_migrate_add_optional_columns"
+
+    opportunity = build_performance_opportunities(
+        [row], measured={"app/api/orders.py::list_orders": "board-load"}
+    )[0]
+
+    assert opportunity.actionability_reason == "cold_path"
+    assert "measured" not in opportunity.facets

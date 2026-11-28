@@ -81,7 +81,9 @@ def test_no_hardcoded_eight_second_embed_budget() -> None:
     """Pins the fix: the embed budget is resolved live, not baked in at import."""
     from pathlib import Path
 
-    text = Path(pipeline.__file__).read_text(encoding="utf-8")
+    text = "".join(
+        p.read_text(encoding="utf-8") for p in sorted(Path(pipeline.__file__).parent.glob("*.py"))
+    )
     assert "_EMBED_TIMEOUT_S = 8.0" not in text
     assert "_EMBED_TIMEOUT_S =" not in text  # no hardcoded module-level constant at all
 
@@ -98,9 +100,9 @@ class _SlowEmbedTextsStore(InMemoryVectorStore):
         super().__init__(embedder=MockEmbedder())
         self._delay = delay
 
-    async def embed_texts(self, texts):
+    async def embed_texts(self, texts, *, kind="document"):
         await asyncio.sleep(self._delay)
-        return await super().embed_texts(texts)
+        return await super().embed_texts(texts, kind=kind)
 
 
 async def test_question_vector_gives_up_at_the_default_budget(monkeypatch, caplog) -> None:
