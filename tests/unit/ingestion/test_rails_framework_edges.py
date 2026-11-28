@@ -335,3 +335,52 @@ class TestRailsConventionEntries:
             "instance_statuses",
         ):
             assert graph.has_edge("config/routes.rb", f"app/controllers/{controller}_controller.rb")
+
+    def test_namespaced_controller_outside_app_controllers_has_no_stem_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        # Admin::UsersController lives in an overlay, so the app/controllers
+        # path probe misses and the index answers. A top-level UsersController
+        # shares its file stem and must not be bound.
+        graph = _edges_for(
+            tmp_path,
+            {
+                "config/routes.rb": (
+                    "Rails.application.routes.draw do\n"
+                    "  namespace :admin do\n    resources :users\n  end\n"
+                    "  namespace :ops do\n    resources :audits\n  end\n"
+                    "end\n"
+                ),
+                "app/controllers/users_controller.rb": "class UsersController; end\n",
+                "app/controllers/audits_controller.rb": "class AuditsController; end\n",
+                "enterprise/app/controllers/admin/users_controller.rb": "class X; end\n",
+            },
+        )
+        routes = "config/routes.rb"
+        assert graph.has_edge(routes, "enterprise/app/controllers/admin/users_controller.rb")
+        assert not graph.has_edge(routes, "app/controllers/users_controller.rb")
+        # Ops::AuditsController exists nowhere: no edge, not the top-level one.
+        assert not graph.has_edge(routes, "app/controllers/audits_controller.rb")
+
+    def test_option_continuation_line_opens_no_block(self, tmp_path: Path) -> None:
+        graph = _edges_for(
+            tmp_path,
+            {
+                "config/routes.rb": (
+                    "Rails.application.routes.draw do\n"
+                    "  namespace :api do\n"
+                    "    resources :reports, only: [:index],\n"
+                    "      module: :admin\n"
+                    "  end\n"
+                    "  resources :health\n"
+                    "end\n"
+                ),
+                "app/controllers/api/admin/reports_controller.rb": "class X; end\n",
+                "app/controllers/health_controller.rb": "class X; end\n",
+                "app/controllers/api/health_controller.rb": "class X; end\n",
+            },
+        )
+        routes = "config/routes.rb"
+        # The ``end`` closes ``namespace :api``, so ``health`` is top level.
+        assert graph.has_edge(routes, "app/controllers/health_controller.rb")
+        assert not graph.has_edge(routes, "app/controllers/api/health_controller.rb")

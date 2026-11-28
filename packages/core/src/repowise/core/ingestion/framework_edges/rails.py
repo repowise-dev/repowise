@@ -48,7 +48,9 @@ _RAILS_DRAW_RE = re.compile(r"^draw\s*\(?\s*[:'\"](\w+)")
 # or a compound statement at the start of the line (``if x`` opens one,
 # ``foo if x`` is a modifier and opens nothing).
 _DO_BLOCK_RE = re.compile(r"\bdo(?:\s*\|[^|]*\|)?$")
-_OPENS_BLOCK_RE = re.compile(r"^(?:if|unless|case|while|until|begin|def|class|module)\b")
+# The keyword must be followed by whitespace or end the line: ``module: :admin``
+# continuing a split ``resources`` line is an option, not a block.
+_OPENS_BLOCK_RE = re.compile(r"^(?:if|unless|case|while|until|begin|def|class|module)(?=\s|$)")
 _RAILS_AR_RELATION_RE = re.compile(
     r"\b(?:belongs_to|has_many|has_one|has_and_belongs_to_many)\s+:(\w+)"
 )
@@ -336,9 +338,13 @@ def _resolve_rails_controller(
     expected = "app/controllers/" + "/".join([*namespace_stack, name]) + ".rb"
     if expected in path_set:
         return expected
-    # Try via Rails autoload index (heritage)
-    constant = "::".join(_camelize(seg) for seg in [*namespace_stack, name])
-    return ctx.rails_lookup(constant)
+    # A route names its controller from the top level, so resolve it that way:
+    # ``lookup``'s last-segment stem fallback would bind
+    # ``Admin::UsersController`` to a top-level ``UsersController``.
+    index = get_or_build_rails_index(ctx)
+    if index is None:
+        return None
+    return index.resolve("::" + "::".join(_camelize(seg) for seg in [*namespace_stack, name]))
 
 
 def _resolve_rails_relation(
