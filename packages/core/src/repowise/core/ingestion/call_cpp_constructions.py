@@ -9,7 +9,9 @@ land on a class, one of its constructors or a type alias. Three rules settle it:
   ambiguous between two one-argument overloads).
 - ``T()`` and ``T(a, b)`` construct through a constructor, so a candidate set
   holding a class and only its own constructors is that constructor set, not
-  an ambiguity.
+  an ambiguity. A ``T(a, b)`` that still lands on a class declaring
+  constructors chose none of them, so it draws no edge; a class with no
+  constructor of its own keeps the edge.
 - ``Alias(x)`` through a ``using``/``typedef`` of a non-class type
   (``using size_type = uint32_t``), of a library type (``std::pair<..>``) or of
   a class the repository does not declare is a conversion, never a call, so it
@@ -57,7 +59,22 @@ class CppConstructionMixin:
             class_id = self._cpp_constructed_class(callee)
             if class_id is not None:
                 return replace(resolved, callee_id=class_id)
+        # ``T()`` stays: a defaulted default constructor is named by its class.
+        if (
+            callee.kind in _CONSTRUCTIBLE_KINDS
+            and (call.argument_count or 0) > 1
+            and self._cpp_declares_constructor(resolved.callee_id)
+        ):
+            return None
         return resolved
+
+    def _cpp_declares_constructor(self, class_id: str) -> bool:
+        """Does the class *class_id* declare a constructor of its own?"""
+        return any(
+            self._is_cpp_constructor(symbol) and self._cpp_constructed_class(symbol) == class_id
+            for sym_id in self._global_symbols.get(self._symbols_by_id[class_id].name, ())
+            if (symbol := self._symbols_by_id.get(sym_id)) is not None
+        )
 
     def _cpp_one_constructed_type(self, candidates: set[str], call: CallSite) -> str | None:
         """The one class *candidates* construct, when they are a class and its own constructors.
