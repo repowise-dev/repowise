@@ -1079,17 +1079,24 @@ _JS_TEST_TAILS = (
     ".spec.cts",
 )
 
+_JS_TEST_EXTENSIONS = frozenset(
+    {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte", ".astro"}
+)
+
 
 def _paired_affixes(p: PurePath) -> list[tuple[str, str]]:
     """``(before the stem, after the stem)`` of every conventional test name for *p*."""
     test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
-    return [
+    affixes: list[tuple[str, str]] = [
         ("test_", test_suffix),
         ("", f"_test{test_suffix}"),
         ("", f"_spec{test_suffix}"),
-        *(("", tail) for tail in _JS_TEST_TAILS),
-        *(("", f"{suffix}{p.suffix}") for suffix in _CLASS_TEST_SUFFIXES.get(p.suffix, ())),
     ]
+    if p.suffix.lower() in _JS_TEST_EXTENSIONS:
+        affixes.extend(("", tail) for tail in _JS_TEST_TAILS)
+    if p.suffix in _CLASS_TEST_SUFFIXES:
+        affixes.extend(("", f"{suffix}{p.suffix}") for suffix in _CLASS_TEST_SUFFIXES[p.suffix])
+    return affixes
 
 
 def paired_test_names(rel_path: str) -> frozenset[str]:
