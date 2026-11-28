@@ -42,6 +42,9 @@ from every host are recognised on every repository, since history can predate
 a move between hosts. Remote URLs shown in the dashboard and returned by the
 server have their credentials removed.
 
+A Perforce depot is read through a git-p4 or p4-fusion mirror; see
+[PERFORCE.md](PERFORCE.md).
+
 ## Self-managed hosts
 
 Repowise never probes a host over the network, so a self-managed host with a
@@ -127,6 +130,7 @@ again.
 ## See also
 
 - [CI.md](CI.md) for the gates and the GitHub Action and GitLab templates
+- [PERFORCE.md](PERFORCE.md) for a Perforce depot through a git mirror
 - [AUTO_SYNC.md](../scale/AUTO_SYNC.md) for webhook setup
 - [SECURITY.md](../layers/SECURITY.md) for the `gitlab_token`,
   `azure_devops_pat` and `git_url_credentials` secret kinds
