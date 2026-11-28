@@ -86,6 +86,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `commit_limit` | `5000` | >= 1 | How many of the newest commits are analysed. |  |
 | `follow_renames` | `false` |  | Follow files across renames in git history. |  |
 | `sql_dialect` | unset |  | SQL dialect for parsing .sql files (a sqlglot name such as postgres). |  |
+| `compile_commands` | unset |  | Where compile_commands.json is, for C and C++ include paths: the file or its folder, relative to the repo root or absolute. Unset: the repo root, then build/. |  |
 | `forges.hosts` | `{}` |  | Which forge a self-hosted git host is: host to github, gitlab, azure, bitbucket or generic. |  |
 | `editor_setup` | `true` |  | Let update keep agent and editor files current. init --no-editor-setup writes false, which leaves them alone. |  |
 | `changes.outcome_fix_days` | `30` | 1-365 | Days after a change in which fix commits to its files are counted. |  |

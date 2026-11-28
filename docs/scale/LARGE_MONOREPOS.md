@@ -66,6 +66,12 @@ cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 For Bazel, generate it with a compile-commands extractor (for example
 `hedron_compile_commands`) and leave the file at the repo root.
 
+Databases written for MSVC `cl.exe` or `clang-cl` (Sharpmake, FASTBuild
+`-compdb`, Unreal's `GenerateClangDatabase`) work as well: `/I` and
+`/external:I` paths, Windows command lines and `@file` response files are
+read. If the file lives elsewhere, point `compile_commands` in
+`.repowise/config.yaml` at it or at its folder.
+
 Python and Scala need no setup: Python imports resolve from the tree, and
 Scala resolves through the shared JVM index, reading SBT and Mill build files
 where it needs them.
