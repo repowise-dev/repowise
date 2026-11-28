@@ -369,7 +369,6 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_example.hpp",
     "*_example.cc",
     # Build output roots, in case the walker lets them in.
-    "*/build/**",
     "build/**",
     "*/cmake-build-*/**",
     "cmake-build-*/**",
