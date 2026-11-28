@@ -1017,6 +1017,63 @@ def test_jest_junit_in_the_package_needs_no_install_and_the_root_no_prefix():
     assert (stack.requires, stack.prepare, stack.notes) == (("yarn install --frozen-lockfile",), (), ())
 
 
+def test_rspec_without_the_formatter_gem_writes_no_junit():
+    (stack,) = detect_stacks(*_load("ruby"))
+    # RSpec aborts on a formatter it cannot load, so the command gets no flag.
+    assert (stack.junit_report, stack.junit_flag) == ("", "")
+    assert stack.with_junit(stack.test) is None
+    # The formatter gem is missing from the fixture's Gemfile, so setup says so.
+    assert "rspec_junit_formatter" in stack.notes[-1]
+    assert stack.test == "bundle exec rspec"
+
+
+def test_rspec_with_the_formatter_gem_needs_no_note():
+    gemfile = (
+        'source "https://rubygems.org"\n'
+        'gem "rspec"\n'
+        'gem "rspec_junit_formatter"\n'
+        'gem "simplecov-cobertura"\n'
+    )
+    (stack,) = detect_stacks(["Gemfile", "spec/a_spec.rb"], {"Gemfile": gemfile})
+    assert (stack.junit_report, stack.junit_flag) == (
+        "junit.xml",
+        "--format progress --format RspecJunitFormatter --out junit.xml",
+    )
+    # One run writes coverage (through SimpleCov, in-process) and the timings report.
+    assert stack.with_junit(stack.test) == (
+        "bundle exec rspec --format progress --format RspecJunitFormatter --out junit.xml"
+    )
+    assert stack.notes == ()
+
+
+def test_minitest_and_rake_test_write_no_junit():
+    (stack,) = detect_stacks(*_load("ruby_cobertura"))
+    assert stack.runner == "rake test"
+    assert (stack.junit_report, stack.junit_flag) == ("", "")
+    assert stack.with_junit(stack.test) is None
+
+
+def test_phpunit_writes_junit():
+    (stack,) = detect_stacks(*_load("php"))
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--log-junit junit.xml")
+    assert stack.with_junit(stack.test) == (
+        "vendor/bin/phpunit --coverage-clover clover.xml --log-junit junit.xml"
+    )
+
+
+def test_pest_writes_junit_the_same_way():
+    composer = {"require": {"php": "^8.2"}, "require-dev": {"pestphp/pest": "^3"}}
+    (stack,) = detect_stacks(
+        ["composer.json", "composer.lock", "tests/ATest.php"],
+        {"composer.json": json.dumps(composer)},
+    )
+    assert stack.runner == "pest"
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--log-junit junit.xml")
+    assert stack.with_junit(stack.test) == (
+        "vendor/bin/pest --coverage-clover clover.xml --log-junit junit.xml"
+    )
+
+
 def test_other_runners_need_no_junit_environment():
     files = {"package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1", "@vitest/coverage-v8": "1"})}
     (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
