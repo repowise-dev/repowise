@@ -23,6 +23,8 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 
+from .source_mask import mask_source
+
 #: Verbs the contract layer records as an HTTP method. A consumer that sees a
 #: wider verb set (Express ``use``/``all``) filters against this.
 HTTP_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "PATCH"})
@@ -1008,6 +1010,8 @@ _DJANGO_ENTRY_RE = re.compile(
 _DJANGO_INCLUDE_ARG_RE = re.compile(
     r"""\s*(?:(?P<q>['"])(?P<mod>[^'"]+)(?P=q)|(?P<expr>[\w.]+))"""
 )
+_DJANGO_INLINE_LIST_RE = re.compile(r"\s*\[")
+_DJANGO_LIST_BRACKET_RE = re.compile(r"[\[\]]")
 
 
 def _django_path(raw: str, verb: str) -> str:
@@ -1025,19 +1029,62 @@ def _django_path(raw: str, verb: str) -> str:
     return raw.strip("^$")
 
 
+def _walk_list_brackets(
+    brackets: Iterator[re.Match[str]],
+    bracket: re.Match[str] | None,
+    until: int,
+    depth: int,
+    prefixes: list[tuple[int, str]],
+) -> tuple[re.Match[str] | None, int]:
+    """Apply the list brackets before *until*: track the depth and drop the
+    prefix of each inline include whose list closes. Returns the next bracket
+    and the depth at *until*."""
+    while bracket is not None and bracket.start() < until:
+        if bracket[0] == "[":
+            depth += 1
+        else:
+            if prefixes and prefixes[-1][0] == depth:
+                prefixes.pop()
+            depth -= 1
+        bracket = next(brackets, None)
+    return bracket, depth
+
+
+def _django_entries(content: str) -> Iterator[tuple[re.Match[str], str]]:
+    """URLconf entries and their paths under any enclosing inline includes."""
+    code = mask_source(content, ".py", strings=True)
+    brackets = _DJANGO_LIST_BRACKET_RE.finditer(code)
+    bracket = next(brackets, None)
+    depth = 0
+    prefixes: list[tuple[int, str]] = []
+    for m in _DJANGO_ENTRY_RE.finditer(content):
+        if code[m.start()].isspace():
+            continue
+        bracket, depth = _walk_list_brackets(brackets, bracket, m.start(), depth, prefixes)
+        prefix = prefixes[-1][1] if prefixes else ""
+        path = prefix + _django_path(m.group("path"), m.group("verb"))
+        if (
+            m.group("handler") == "include"
+            and m.group("after") == "("
+            and _DJANGO_INLINE_LIST_RE.match(code, m.end("after"))
+        ):
+            prefixes.append((depth + 1, path))
+        yield m, path
+
+
 def django_routes(content: str) -> Iterator[RouteMatch]:
     """URLconf entries in *content* that name a view.
 
     ``verb`` is always ``*``; ``handler`` is the view expression as written. An
     ``include(...)`` entry is not a route — see :func:`django_includes`.
     """
-    for m in _DJANGO_ENTRY_RE.finditer(content):
+    for m, path in _django_entries(content):
         handler = m.group("handler")
         if handler == "include":
             continue
         yield RouteMatch(
             verb="*",
-            path=_django_path(m.group("path"), m.group("verb")),
+            path=path or "/",
             receiver=None,
             handler=handler,
             offset=m.start(),
@@ -1049,13 +1096,13 @@ def django_routes(content: str) -> Iterator[RouteMatch]:
 
 def django_includes(content: str) -> Iterator[tuple[str, str]]:
     """``(prefix, module)`` per ``include(...)`` entry — dotted as written."""
-    for m in _DJANGO_ENTRY_RE.finditer(content):
+    for m, path in _django_entries(content):
         if m.group("handler") != "include":
             continue
         arg = _DJANGO_INCLUDE_ARG_RE.match(content, m.end("after"))
         module = (arg.group("mod") or arg.group("expr")) if arg else None
         if module:
-            yield _django_path(m.group("path"), m.group("verb")), module
+            yield path, module
 
 
 # ---------------------------------------------------------------------------
