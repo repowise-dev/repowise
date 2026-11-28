@@ -88,7 +88,7 @@ class TestJavaRecords:
         result = parser.parse_file(_file(), src)
         accessors = {s.name: s for s in result.symbols if s.kind == "method"}
         assert accessors["a"].visibility == "public"
-        assert accessors["a"].signature == "public int a()"
+        assert accessors["a"].signature == "a() -> int"
         assert accessors["toString"].visibility == "public"
 
 
@@ -104,7 +104,7 @@ class TestJavaBindings:
         (imp,) = parser.parse_file(_file(), src).imports
         assert imp.imported_names == ["baz", "Bar"]
         # Only the member is bound: the type's bare name is not in scope.
-        assert [b.local_name for b in imp.bindings] == ["baz"]
+        assert [(b.local_name, b.member_of) for b in imp.bindings] == [("baz", "Bar")]
 
     def test_static_wildcard_import_names_only_the_type(self, parser: ASTParser) -> None:
         # The member is "*", so the last name is already the type.

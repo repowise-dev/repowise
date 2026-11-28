@@ -11,7 +11,10 @@ import threading
 import networkx as nx
 import pytest
 
+from repowise.core.ingestion import GraphBuilder
 from repowise.core.ingestion.graph import _betweenness as bw
+from repowise.core.ingestion.graph import _metrics
+from repowise.core.ingestion.graph._centrality_cache import CentralityCache, subgraph_signature
 
 
 def _random_digraph(n: int, p: float, seed: int) -> nx.DiGraph:
@@ -24,6 +27,119 @@ def _assert_close(ours: dict, theirs: dict) -> None:
     assert set(ours) == set(theirs)
     for node, expected in theirs.items():
         assert ours[node] == pytest.approx(expected, rel=1e-9, abs=1e-12), node
+
+
+def _symbol_builder(g: nx.DiGraph, **kwargs) -> GraphBuilder:
+    builder = GraphBuilder(**kwargs)
+    graph = builder.graph()
+    graph.add_nodes_from(g, node_type="symbol")
+    graph.add_edges_from(g.edges(), edge_type="calls")
+    # Every symbol has an ownership edge, even those isolated in the call graph.
+    graph.add_node("owner.py", node_type="file")
+    graph.add_edges_from((("owner.py", node) for node in g), edge_type="defines")
+    return builder
+
+
+class TestExactSymbolBetweenness:
+    """Skip isolated sources without changing the full symbol graph's scores."""
+
+    @pytest.mark.parametrize("isolated_count", [0, 23])
+    @pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])
+    def test_kernel_skips_isolates_and_preserves_scores(
+        self, monkeypatch, isolated_count, parallel
+    ):
+        g = _random_digraph(18, 0.13, seed=11)
+        # Keep every connected component, including a self-recursive symbol.
+        g.add_edges_from([("a", "b"), ("b", "c"), ("recursive", "recursive")])
+        g.add_nodes_from(f"unused_{i}" for i in range(isolated_count))
+        expected = nx.betweenness_centrality(g, normalized=True)
+        monkeypatch.setattr(_metrics, "_LARGE_REPO_THRESHOLD", len(g))
+        if parallel:
+            monkeypatch.setattr(bw, "_PARALLEL_COST_THRESHOLD", 0)
+        real_kernel = bw.betweenness_centrality_fast
+        scored_nodes = []
+
+        def recording_kernel(graph, **kwargs):
+            scored_nodes.append(set(graph))
+            return real_kernel(graph, max_workers=2, **kwargs)
+
+        monkeypatch.setattr(bw, "betweenness_centrality_fast", recording_kernel)
+        actual = _symbol_builder(g).symbol_betweenness_centrality()
+
+        assert actual == pytest.approx(expected, rel=0, abs=1e-12)
+        assert scored_nodes == [set(g) - set(nx.isolates(g))]
+        assert all(actual[node] == 0.0 for node in nx.isolates(g))
+
+    @pytest.mark.parametrize("n", [0, 1, 2, 12])
+    def test_all_isolated_symbols_need_no_kernel(self, monkeypatch, n):
+        g = nx.DiGraph()
+        g.add_nodes_from(f"unused_{i}" for i in range(n))
+
+        def unexpected_kernel(*args, **kwargs):
+            pytest.fail("isolated symbols have zero betweenness without running Brandes")
+
+        monkeypatch.setattr(bw, "betweenness_centrality_fast", unexpected_kernel)
+        assert _symbol_builder(g).symbol_betweenness_centrality() == dict.fromkeys(g, 0.0)
+
+    @pytest.mark.parametrize("edges", [[("a", "a")], [("a", "b"), ("b", "a")]])
+    @pytest.mark.parametrize("isolated_count", [0, 3])
+    def test_tiny_connected_graphs(self, edges, isolated_count):
+        g = nx.DiGraph(edges)
+        g.add_nodes_from(f"unused_{i}" for i in range(isolated_count))
+        assert _symbol_builder(g).symbol_betweenness_centrality() == nx.betweenness_centrality(g)
+
+    def test_sampling_still_uses_the_full_population(self, monkeypatch):
+        g = _random_digraph(18, 0.13, seed=12)
+        g.add_nodes_from(f"unused_{i}" for i in reversed(range(600)))
+        monkeypatch.setattr(_metrics, "_LARGE_REPO_THRESHOLD", 600)
+        ordered = nx.DiGraph()
+        ordered.add_nodes_from(sorted(g))
+        ordered.add_edges_from(g.edges())
+        expected = nx.betweenness_centrality(ordered, k=500, normalized=True, seed=42)
+        real_sample = nx.betweenness_centrality
+        sampled_nodes = []
+
+        def recording_sample(graph, **kwargs):
+            sampled_nodes.append(list(graph))
+            assert kwargs["k"] == 500
+            assert kwargs["seed"] == 42
+            return real_sample(graph, **kwargs)
+
+        def unexpected_kernel(*args, **kwargs):
+            pytest.fail("the full node count must still select the sampling branch")
+
+        monkeypatch.setattr(nx, "betweenness_centrality", recording_sample)
+        monkeypatch.setattr(bw, "betweenness_centrality_fast", unexpected_kernel)
+        assert _symbol_builder(g).symbol_betweenness_centrality() == expected
+        assert sampled_nodes == [sorted(g)]
+
+    def test_disk_cache_keeps_isolates_in_the_signature(self, tmp_path, monkeypatch):
+        g = nx.DiGraph([("a", "b"), ("b", "c")])
+        g.add_node("unused")
+        builder = _symbol_builder(g, centrality_cache_dir=tmp_path, head_commit="c0ffee")
+        values = builder.symbol_betweenness_centrality()
+        hit = CentralityCache(tmp_path).lookup(
+            "symbol", g, signature=subgraph_signature(g), max_churn=0
+        )
+        assert hit is not None
+        assert hit.values == values
+        assert hit.scored_commit == "c0ffee"
+        assert hit.churn == 0
+
+        def unexpected_kernel(*args, **kwargs):
+            pytest.fail("an unchanged full graph must reuse its cached scores")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(bw, "betweenness_centrality_fast", unexpected_kernel)
+            reloaded = _symbol_builder(g, centrality_cache_dir=tmp_path)
+            assert reloaded.symbol_betweenness_centrality() == values
+
+        # Adding only an isolate still changes the normalization denominator.
+        g.add_node("another_unused")
+        changed = _symbol_builder(g, centrality_cache_dir=tmp_path)
+        actual = changed.symbol_betweenness_centrality()
+        assert actual == pytest.approx(nx.betweenness_centrality(g), rel=0, abs=1e-12)
+        assert actual["b"] < values["b"]
 
 
 class TestSequentialFallback:

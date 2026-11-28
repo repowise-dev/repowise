@@ -37,6 +37,8 @@ export interface CodeHealthMapFile {
   /** Whether a performance detector runs on this file's language at all.
    *  `false` means nothing ever looked, which is not the same as clear. */
   performance_analyzed?: boolean | null;
+  /** Git flags the file a hotspot; drives the hotspot health lens. */
+  is_hotspot?: boolean | null;
   /** 0-100 churn percentile, drives the churn lens. */
   churn_percentile?: number | null;
   /** Reclaimable lines, drives the dead-code lens. */
@@ -61,36 +63,19 @@ export type CodeHealthOverlay =
   | "coverage"
   | "churn"
   | "dead-code"
-  | "security";
-
-/** One module = one galaxy: its files plus size aggregates. */
-export interface GalaxyAgg {
-  module: string;
-  files: CodeHealthMapFile[]; // NLOC-desc
-  totalNloc: number;
-  maxNloc: number;
-}
+  | "security"
+  /** Hotspot files in their health band, every other file grey. */
+  | "hotspot"
+  /** Area-level: who leads each folder. */
+  | "owner"
+  /** Area-level: share of a folder only one person has changed. */
+  | "knowledge";
 
 export interface FileNode {
   file: CodeHealthMapFile;
   x: number;
   y: number;
   r: number;
-}
-
-export interface Galaxy {
-  /** Grouping key: the module, a sub-folder, or a fold of small modules. */
-  module: string;
-  /** What the galaxy is called on the field. */
-  label: string;
-  /** Modules folded into this galaxy; 1 for an ordinary one. */
-  members: number;
-  cx: number;
-  cy: number;
-  R: number;
-  fileCount: number;
-  colorId: number;
-  nodes: FileNode[];
 }
 
 /**

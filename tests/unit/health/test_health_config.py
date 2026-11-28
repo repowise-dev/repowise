@@ -66,13 +66,13 @@ def test_to_analyzer_config_shape(tmp_path: Path):
     _write(
         tmp_path,
         {
-            "disabled_biomarkers": ["bumpy_road"],
+            "disabled_biomarkers": ["repeated_nesting"],
             "rules": [{"path": "src/*", "disabled_biomarkers": ["large_method"]}],
         },
     )
     cfg = HealthConfig.load(tmp_path)
     out = cfg.to_analyzer_config(["src/foo.py", "test/bar.py"])
-    assert out["disabled_biomarkers"] == ["bumpy_road"]
+    assert out["disabled_biomarkers"] == ["repeated_nesting"]
     pfd = out["per_file_disabled"]
     assert isinstance(pfd, dict)
     assert pfd["src/foo.py"] == {"large_method"}

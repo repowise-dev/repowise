@@ -155,6 +155,29 @@ async def test_get_health_dashboard_surfaces_performance(setup_mcp, health_data)
 
 
 @pytest.mark.asyncio
+async def test_a_file_with_short_history_says_so_beside_its_score(
+    setup_mcp, session, health_data
+):
+    """Most history markers need more commits than it has."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_health
+
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/db/models.py")
+        .values(commit_count_total=2)
+    )
+    await session.commit()
+    rows = {m["file_path"]: m for m in (await get_health(only=["worst_files"]))["worst_files"]}
+    assert rows["src/db/models.py"]["history"] == "short"
+    assert "history" not in rows["src/auth/service.py"]
+    targeted = await get_health(targets=["src/db/models.py"], only=["metrics"])
+    assert targeted["metrics"][0]["history"] == "short"
+
+
+@pytest.mark.asyncio
 async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
     """Leverage view: which files move the NLOC-weighted headline, not just which score low."""
     from repowise.server.mcp_server import get_health
@@ -304,7 +327,7 @@ async def test_entity_recovery_retains_health_semantics_and_freshness(
     assert "health_semantics" not in finding_detail["_meta"]
     asked = await get_health(finding_id=finding["id"], include=["semantics"])
     assert asked["_meta"]["health_semantics"]
-    assert finding_detail["_meta"]["health_analysis"]["recomputed_this_call"] is False
+    assert finding_detail["_meta"]["health_analysis"]["status"] == "provenance_unknown"
 
     await _seed_plans(
         session,
@@ -328,7 +351,7 @@ async def test_entity_recovery_retains_health_semantics_and_freshness(
     plan_detail = await get_health(plan_id=plan["id"])
     assert plan_detail["plan"]["id"] == plan["id"]
     assert plan_detail["plan"]["file_path"] == plan["file_path"]
-    assert plan_detail["_meta"]["health_analysis"]["recomputed_this_call"] is False
+    assert plan_detail["_meta"]["health_analysis"]["status"] == "provenance_unknown"
 
 
 @pytest.mark.asyncio
@@ -486,6 +509,72 @@ async def test_get_health_module_target_resolves_to_its_files(setup_mcp, health_
     result = await get_health(targets=["module:auth"])
     assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
     assert "unresolved" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_health_nested_module_target_matches_only_files_under_it(setup_mcp, health_data):
+    """A directory that is not a top-level module still names its own files.
+
+    ``module:`` was compared by equality with ``metric.module``, which holds a
+    single top-level segment, so no nested directory could ever resolve.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:src/auth"])
+    assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
+    assert "unresolved" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_health_nested_module_target_ignores_wrapping_separators(
+    setup_mcp, health_data
+):
+    """``./`` in front and a trailing slash are the same directory."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:./src/auth/"])
+    assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
+    assert "unresolved" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_health_nested_module_target_needs_a_directory_boundary(setup_mcp, health_data):
+    """``src/a`` is a shared name prefix, not the ``src/auth`` directory."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:src/a"])
+    assert result["metrics"] == []
+    assert result["unresolved"] == [{"target": "module:src/a", "reason": "no_such_module"}]
+    # The hint keeps listing top-level modules, so a typo stays correctable.
+    assert set(result["known_modules"]) == {"auth", "db"}
+
+
+@pytest.mark.asyncio
+async def test_get_health_module_target_rolls_up_its_files(setup_mcp, health_data):
+    """A bare ``module:`` call leads with the rollup, so a top-level name keeps its row."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:auth"])
+
+    assert [row["module"] for row in result["modules"]] == ["auth"]
+    assert result["modules"][0]["file_count"] == 1
+    assert result["modules"][0]["worst_performer_path"] == "src/auth/service.py"
+
+
+@pytest.mark.asyncio
+async def test_get_health_nested_module_target_rolls_up_under_its_own_name(setup_mcp, health_data):
+    """The rollup uses the same predicate as the expansion, and the caller's name.
+
+    A nested ``module:`` name matched files but no ``module`` value, so the row
+    used to disappear: metrics were served beside an empty ``modules`` list.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:src/auth"])
+
+    assert [row["module"] for row in result["modules"]] == ["src/auth"]
+    assert result["modules"][0]["file_count"] == 1
+    assert result["modules"][0]["worst_performer_path"] == "src/auth/service.py"
 
 
 @pytest.mark.asyncio
@@ -881,8 +970,31 @@ async def test_get_health_dimension_filter_leaves_kpis_and_ranking_alone(setup_m
     filtered = await get_health(
         include=["biomarkers", "maintainability"], only=["kpis", "worst_files"]
     )
-    assert filtered["kpis"]["performance_findings"] == full["kpis"]["performance_findings"]
+    assert filtered["kpis"]["performance_causes"] == full["kpis"]["performance_causes"]
     assert filtered["worst_files"] == full["worst_files"]
+
+
+@pytest.mark.asyncio
+async def test_get_health_kpis_print_the_one_performance_headline(setup_mcp, health_data):
+    """The kpis carry the core headline every surface prints, never a raw finding count."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import performance_headline
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import _session_factory, get_health
+
+    result = await get_health(only=["kpis"])
+    kpis = result["kpis"]
+    assert "performance_findings" not in kpis
+    async with _session_factory() as session:
+        repo = (await session.execute(select(Repository))).scalars().first()
+        causes = await performance_headline(session, repo.id, covered_nloc=1)
+    assert set(kpis["performance_causes"]) == {"now", "production", "all", "per_10k_loc"}
+    assert (
+        kpis["performance_causes"]["now"],
+        kpis["performance_causes"]["production"],
+        kpis["performance_causes"]["all"],
+    ) == (causes.now, causes.production, causes.all)
 
 
 @pytest.fixture
@@ -1727,6 +1839,9 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert second["items"] == block["items"][1:2]
     # The lead is the queue's, whatever page is shown.
     assert second["lead"] == block["lead"] == dashboard["lead"]
+    # Both say why ``gain`` need not fall down the list.
+    assert block["order"] == dashboard["order"]
+    assert block["order"].startswith("value band")
 
 
 @pytest.mark.asyncio
@@ -1860,6 +1975,40 @@ async def test_unknown_only_keys_are_rejected_with_a_hint(setup_mcp, health_data
     result = await get_health(only=["performance"])
     assert result["unknown_only_keys"] == ["performance"]
     assert "performance_opportunities" in result["unknown_only_keys_hint"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_only_key_names_the_include_it_needs(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(only=["performance_opportunities", "refactoring", "trnd"])
+    hint = result["unknown_only_keys_hint"]
+    assert hint.startswith(
+        'only=["performance_opportunities"] needs include=["performance"]. '
+        'only=["refactoring"] needs include=["refactoring"]. '
+    )
+    assert "trnd" not in hint
+
+
+def test_unknown_only_hint_skips_an_include_already_passed():
+    from repowise.server.mcp_server.tool_health.projection import (
+        _UNKNOWN_ONLY_HINT,
+        _unknown_only_hint,
+    )
+    from repowise.server.mcp_server.tool_health.request import HealthRequest
+
+    req = HealthRequest(
+        targets=None, include=["performance"], only=["performance_opportunities"], repo=None,
+        limit=None, cursor=0, refactoring_view="diversified", refactoring_type=None,
+        refactoring_confidence=None, refactoring_effort=None, refactoring_scope=None,
+        performance_view=None, performance_context=None, performance_boundary=None,
+        performance_confidence=None, performance_actionability=None, performance_sort=None,
+        scope="all", counts="everything",
+    )
+    assert (
+        _unknown_only_hint(req, ["performance_opportunities"], {"mode": "dashboard"})
+        == _UNKNOWN_ONLY_HINT
+    )
 
 
 @pytest.mark.asyncio
@@ -2137,6 +2286,34 @@ async def test_scope_narrows_every_figure_to_production(setup_mcp, session, popu
 
 
 @pytest.mark.asyncio
+async def test_production_scope_is_the_file_set_production_average_reads(
+    setup_mcp, session, populated_db
+):
+    """Tooling, vendored and generated files leave ``scope="production"`` as
+    they leave ``production_average``, so the narrowed headline equals it."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    def row(path: str, score: float, origin: str) -> dict:
+        return {"file_path": path, "score": score, "nloc": 100, "code_origin": origin}
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            row("src/auth/service.py", 4.0, "production"),
+            row("scripts/release.py", 10.0, "tooling"),
+            row("vendor/lib.js", 10.0, "vendored"),
+            row("src/gen/api_pb2.py", 10.0, "generated"),
+        ],
+    )
+    everything = (await get_health())["kpis"]
+    assert (everything["average_health"], everything["production_average"]) == (8.5, 4.0)
+    production = (await get_health(scope="production"))["kpis"]
+    assert (production["average_health"], production["file_count"]) == (4.0, 1)
+
+
+@pytest.mark.asyncio
 async def test_counts_reads_the_code_shape_half_across_the_response(
     setup_mcp, session, populated_db
 ):
@@ -2286,6 +2463,53 @@ async def test_a_misspelled_control_is_named_rather_than_silently_defaulted(
     assert result["counts"] == "everything"
     assert result["scope"] == "all"
     assert result["ignored_arguments"] == {"counts": "code-shape", "scope": "prod"}
+
+
+@pytest.mark.asyncio
+async def test_a_value_passed_to_the_other_control_names_the_right_one(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(
+        targets=["src/auth/service.py"], scope="code_shape", only=["metrics"]
+    )
+    assert result["ignored_arguments"] == {"scope": "code_shape"}
+    assert 'counts="code_shape"' in result["ignored_arguments_hint"]
+    reverse = await get_health(counts="production")
+    assert 'scope="production"' in reverse["ignored_arguments_hint"]
+    plain = await get_health(counts="code-shape")
+    assert "ignored_arguments_hint" not in plain
+
+
+@pytest.mark.asyncio
+async def test_metric_rows_carry_the_structure_and_history_split(
+    setup_mcp, session, populated_db
+):
+    """The two halves the score is ``10 - structure - history`` of, per file."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 3.0,
+                "nloc": 100,
+                "is_test": False,
+                "structure_deduction": 1.0,
+                "history_deduction": 6.0,
+            }
+        ],
+    )
+    row = (await get_health(targets=["src/auth/service.py"]))["metrics"][0]
+    assert (row["structure_deduction"], row["history_deduction"]) == (1.0, 6.0)
+    worst = (await get_health(only=["worst_files"]))["worst_files"][0]
+    assert (worst["structure_deduction"], worst["history_deduction"]) == (1.0, 6.0)
+    shaped = (await get_health(targets=["src/auth/service.py"], counts="code_shape"))["metrics"]
+    assert (shaped[0]["structure_deduction"], shaped[0]["history_deduction"]) == (1.0, 0.0)
 
 
 @pytest.mark.asyncio
@@ -2460,22 +2684,12 @@ async def test_meta_omits_the_commit_when_no_row_records_one(setup_mcp, health_d
     meta = (await get_health())["_meta"]
     assert "health_analyzed_commit" not in meta
     assert isinstance(meta["health_analyzed_at"], str)
-    assert meta["health_analysis"]["source"] == "stored_health_analysis"
-    assert meta["health_analysis"]["recomputed_this_call"] is False
-    assert meta["health_analysis"]["live_verification"] == {
-        "basis": "unavailable",
-        "source_bytes_verified": False,
-    }
     analysis = meta["health_analysis"]
     # Usable metrics with no recorded commit: a provenance gap, not a failed
     # capability, which is what ``degraded`` means everywhere else on the wire.
     assert analysis["status"] == "provenance_unknown"
     assert analysis["reason"] == "analysis_commit_not_recorded"
-    assert analysis["refresh"] == {
-        "command": "repowise update",
-        "precondition": "commit health-relevant working-tree changes first",
-        "required_before_comparison": True,
-    }
+    assert analysis["refresh"] == "repowise update"
 
 
 @pytest.mark.asyncio
@@ -2798,8 +3012,8 @@ async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, hea
     repo = SimpleNamespace(id=health_data)
     full = await _build_code_health(session, repo)
     assert full["band"] is not None
-    assert "unanalysed_file_count" not in full
-    assert "analysed_share" not in full
+    assert full["code_files"] == 2
+    assert "files_scored" not in full
 
     for i in range(3):
         session.add(
@@ -2814,7 +3028,340 @@ async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, hea
     await session.flush()
 
     partial = await _build_code_health(session, repo)
-    assert partial["file_count"] == 2
-    assert partial["unanalysed_file_count"] == 3
-    assert partial["analysed_share"] == 0.4
-    assert partial["band"] is None
+    assert partial["code_files"] == 5
+    assert partial["files_scored"] == 2
+    assert "band" not in partial
+
+
+@pytest.mark.asyncio
+async def test_what_if_names_the_points_a_fix_recovers(setup_mcp, session, populated_db):
+    """Per finding, per file and per headline, with the ceiling history leaves."""
+    from repowise.core.persistence.crud import save_health_findings, save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 4.5,
+                "nloc": 200,
+                "is_test": False,
+                "structure_deduction": 3.0,
+                "history_deduction": 2.5,
+            },
+            {"file_path": "src/db/models.py", "score": 9.0, "nloc": 50, "is_test": False},
+            # Off the worst-files list, but inside the headline average.
+            {"file_path": "tests/test_auth.py", "score": 9.0, "nloc": 250, "is_test": True},
+        ],
+    )
+    finding = {
+        "file_path": "src/auth/service.py",
+        "severity": "high",
+        "line_start": 10,
+        "line_end": 80,
+        "details": {},
+        "reason": "r",
+    }
+    await save_health_findings(
+        session,
+        populated_db,
+        [
+            {**finding, "biomarker_type": "complex_method", "function_name": "a", "health_impact": 2.0},
+            {**finding, "biomarker_type": "nested_complexity", "function_name": "b", "health_impact": 1.0},
+        ],
+    )
+    await session.commit()
+
+    plain = await get_health()
+    assert "what_if" not in plain
+    assert plain["kpis"]["file_count"] == 3
+    block = (await get_health(include=["what_if"], only=["what_if"]))["what_if"]
+    row = block["files"][0]
+    assert row["file_path"] == "src/auth/service.py"
+    assert row["is_hotspot"] is True
+    # With no structure left, history may deduct at most 1.0: a 9.0 ceiling.
+    assert row["ceiling"] == 9.0
+    assert "target_out_of_reach" not in row
+    top = block["top_fixes"][0]
+    # Points are the file rescored without the finding, not its stored impact:
+    # a high nested_complexity frees 1.45 (its 1.0 impact reads less).
+    assert (top["biomarker_type"], top["points"]) == ("nested_complexity", 1.45)
+    # History's cap stays above 2.5 at 1.55 structure: 4.5 -> 5.95, on 200 of
+    # the headline's 500 nloc; the only hotspot carries all of it.
+    assert top["gain"] == {"file": 1.45, "average": 0.581, "hotspot": 1.452}
+    assert row["fix_all_structure"]["file"] == 4.5
+
+
+def test_kpis_name_production_code_beside_the_all_files_average() -> None:
+    """``production_average`` rides beside ``average_health`` while tests are in
+    it, and is left out once the reading holds no tests."""
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_health.summary import _compute_kpis
+
+    def row(path: str, score: float, *, test: bool) -> HealthFileMetric:
+        return HealthFileMetric(file_path=path, score=score, nloc=100, is_test=test)
+
+    prod, test = row("src/a.py", 6.0, test=False), row("tests/test_a.py", 10.0, test=True)
+    mixed = _compute_kpis([prod, test], deductions={})
+    assert (mixed["average_health"], mixed["production_average"]) == (8.0, 6.0)
+    assert "production_average" not in _compute_kpis([prod], deductions={})
+
+
+def test_production_average_agrees_on_every_surface() -> None:
+    """Tooling, vendored and generated files stay out of ``production_average``
+    on get_health, get_overview and ``compute_kpis`` alike."""
+    from repowise.core.analysis.health.scoring import compute_kpis
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_health.summary import _compute_kpis
+    from repowise.server.mcp_server.tool_overview.health import _production_average
+
+    def row(path: str, score: float, origin: str) -> HealthFileMetric:
+        return HealthFileMetric(
+            file_path=path, score=score, nloc=100, is_test=False, code_origin=origin
+        )
+
+    rows = [
+        row("src/a.py", 6.0, "production"),
+        row("scripts/release.py", 10.0, "tooling"),
+        row("vendor/lib.js", 10.0, "vendored"),
+        row("src/gen/api_pb2.py", 10.0, "generated"),
+    ]
+    mcp = _compute_kpis(rows, deductions={})
+    assert (mcp["average_health"], mcp["production_average"]) == (9.0, 6.0)
+    assert compute_kpis(rows, set())["production_average"] == 6.0
+    assert _production_average(rows, len(rows)) == 6.0
+
+
+def test_kpis_scope_a_score_most_code_files_did_not_feed() -> None:
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_health.summary import _compute_kpis
+
+    rows = [HealthFileMetric(file_path=f"s{i}.sh", score=10.0, nloc=10) for i in range(9)]
+    minority = _compute_kpis(rows, unanalysed=106, deductions={})
+    assert minority["average_health_scope"] == "across 9 of 115 code files"
+    assert minority["band"] is None
+    assert "average_health_scope" not in _compute_kpis(rows, unanalysed=1, deductions={})
+
+
+@pytest.mark.asyncio
+async def test_workspace_rows_count_the_files_the_overview_counts(setup_mcp, health_data, session):
+    """repo="all" and the single-repo overview state one file count."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_overview.health import _build_code_health
+    from repowise.server.mcp_server.tool_overview.workspace import _code_files
+
+    overview = await _build_code_health(session, SimpleNamespace(id=health_data))
+    assert await _code_files(session, health_data) == overview["code_files"]
+
+
+@pytest.mark.asyncio
+async def test_meta_names_the_analyzer_the_stored_scores_came_from(
+    setup_mcp, session, health_data
+):
+    """Both modes report the newest snapshot's stamp, and omit it when none recorded it."""
+    from repowise.core.persistence.crud import save_health_snapshot
+    from repowise.server.mcp_server import get_health
+
+    assert "analyzer_version" not in (await get_health(only=["kpis"]))["_meta"]["health_analysis"]
+    await save_health_snapshot(
+        session,
+        health_data,
+        hotspot_health=5.0,
+        average_health=6.0,
+        worst_performer_path=None,
+        worst_performer_score=None,
+    )
+    await session.flush()
+
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    scoped = await get_health(targets=["src/auth/service.py"], only=["metrics"])
+    dashboard = await get_health(only=["kpis"])
+    for result in (scoped, dashboard):
+        assert result["_meta"]["health_analysis"]["analyzer_version"] == HEALTH_ANALYZER_VERSION
+
+
+@pytest.fixture
+async def many_findings_data(session, health_data: str) -> str:
+    """Seven more findings on one file, past the targeted default cap."""
+    from repowise.core.persistence.crud import save_health_findings
+
+    await save_health_findings(
+        session,
+        health_data,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "biomarker_type": "complex_method",
+                "severity": "medium",
+                "function_name": f"helper_{i}",
+                "line_start": 100 + 10 * i,
+                "line_end": 105 + 10 * i,
+                "details": {"ccn": 9},
+                "health_impact": 0.5 - i / 100,
+                "reason": f"helper_{i} has 9 independent paths",
+            }
+            for i in range(7)
+        ],
+    )
+    await session.flush()
+    return health_data
+
+
+@pytest.mark.asyncio
+async def test_targeted_findings_list_the_top_few_unless_a_limit_is_passed(
+    setup_mcp, many_findings_data
+):
+    """A file call lists the highest-impact five, states the total, and names
+    the call for the rest; ``limit`` lists more."""
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health.request import TARGETED_FINDINGS_CAP
+
+    bare = await get_health(targets=["src/auth/service.py"])
+    total = bare["findings_total"]
+    assert total > TARGETED_FINDINGS_CAP
+    assert len(bare["findings"]) == TARGETED_FINDINGS_CAP
+    impacts = [f["health_impact"] for f in bare["findings"]]
+    assert impacts[0] == max(impacts)
+    assert bare["findings_reduced_reason"] == "collection_cap"
+    rest = bare["recovery"]["findings"]
+    assert rest["remaining"] == total - TARGETED_FINDINGS_CAP
+    assert "repo=None" not in rest["call"] and "cursor=5" in rest["call"]
+
+    asked = await get_health(targets=["src/auth/service.py"], limit=20)
+    assert len(asked["findings"]) == total
+
+
+@pytest.mark.asyncio
+async def test_no_internal_leaks_in_default_health_responses(setup_mcp, many_findings_data):
+    """No unset argument written as ``None`` in a suggested call, no unclamped
+    score series, and no constant provenance block in ``_meta``."""
+    import json
+
+    from repowise.server.mcp_server import get_health
+
+    for result in (
+        await get_health(),
+        await get_health(targets=["src/auth/service.py"]),
+        await get_health(targets=["module:auth"]),
+    ):
+        text = json.dumps(result)
+        assert "=None" not in text
+        assert "unclamped" not in text
+        analysis = result["_meta"]["health_analysis"]
+        assert set(analysis) <= {"status", "reason", "refresh", "analyzer_version"}
+
+
+def test_trends_carry_the_reported_score_only(monkeypatch):
+    """A floored file's trend is the score it reports, never a below-floor series."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_health import targeted
+
+    point = SimpleNamespace
+    trend = SimpleNamespace(
+        file_path="a.py",
+        points=[point(score=1.0, unclamped_score=-0.2), point(score=1.0, unclamped_score=0.4)],
+        current=1.0,
+        delta=0.0,
+        declining=False,
+        unclamped_delta=0.6,
+    )
+    monkeypatch.setattr(targeted, "file_trend", lambda snapshots, path: trend)
+    data = SimpleNamespace(metric_rows=[SimpleNamespace(file_path="a.py")], snapshots=[])
+    (row,) = targeted._file_trends(data)
+    assert row == {
+        "file_path": "a.py",
+        "series": [1.0, 1.0],
+        "current": 1.0,
+        "delta": 0.0,
+        "declining": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_targeted_only_hint_names_the_keys_this_call_has(setup_mcp, health_data):
+    """#4089: a targeted call's hint names its own keys, not dashboard ones."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["src/auth/service.py"], only=["files"])
+    assert result["unknown_only_keys"] == ["files"]
+    hint = result["unknown_only_keys_hint"]
+    assert "metrics, findings" in hint and "trends" in hint
+    assert "fix_first" not in hint
+
+    kept = await get_health(targets=["src/auth/service.py"], only=["metrics"])
+    assert len(kept["metrics"]) == 1 and "unknown_only_keys" not in kept
+
+
+@pytest.mark.asyncio
+async def test_dashboard_counts_import_cycles_and_the_static_only_ones(
+    setup_mcp, health_data, session
+):
+    """Stored cycles are counted, a cycle of ``import x`` edges as static only."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GraphEdge, GraphNodeMembership
+    from repowise.server.mcp_server import get_health
+
+    assert "import_cycles" not in await get_health()
+
+    a, b = "src/auth/service.py", "src/db/models.py"
+    session.add(
+        GraphEdge(
+            id="ge_back", repository_id=health_data, source_node_id=b, target_node_id=a,
+            module_form=True,
+        )
+    )
+    await session.execute(update(GraphEdge).where(GraphEdge.id == "ge1").values(module_form=True))
+    session.add_all(
+        GraphNodeMembership(
+            repository_id=health_data, node_id=n, node_type="file", scc_id=1, scc_size=2
+        )
+        for n in (a, b)
+    )
+    await session.flush()
+
+    assert (await get_health())["import_cycles"] == {"total": 1, "static_only": 1}
+    only = await get_health(only=["import_cycles"])
+    assert only["import_cycles"] == {"total": 1, "static_only": 1}
+    assert "unknown_only_keys" not in only
+
+    # One edge that runs a ``from`` import at load: still a cycle, no longer static only.
+    await session.execute(update(GraphEdge).where(GraphEdge.id == "ge1").values(module_form=False))
+    await session.flush()
+    assert (await get_health())["import_cycles"] == {"total": 1, "static_only": 0}
+
+
+@pytest.mark.asyncio
+async def test_meta_says_duplication_is_off_only_while_it_is(setup_mcp, health_data, tmp_path):
+    """Off, both modes say why no DRY finding shows; on (the default), nothing is added."""
+    import json
+
+    from repowise.server.mcp_server import get_health
+
+    default = await get_health(only=["kpis"])
+    assert "duplication" not in default["_meta"]["health_analysis"]
+
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text("health:\n  duplication:\n    enabled: false\n", encoding="utf-8")
+    scoped = await get_health(targets=["src/auth/service.py"], only=["metrics"])
+    dashboard = await get_health(only=["kpis"])
+    for result in (scoped, dashboard):
+        assert result["_meta"]["health_analysis"]["duplication"] == (
+            "off: health.duplication.enabled is false"
+        )
+
+    config.write_text("health:\n  duplication:\n    enabled: true\n", encoding="utf-8")
+    back_on = await get_health(only=["kpis"])
+    assert "duplication" not in back_on["_meta"]["health_analysis"]
+    drop = ("timing_ms",)
+    sized = [
+        len(json.dumps({k: v for k, v in r["_meta"].items() if k not in drop}, default=str))
+        for r in (default, back_on)
+    ]
+    assert sized[0] == sized[1]

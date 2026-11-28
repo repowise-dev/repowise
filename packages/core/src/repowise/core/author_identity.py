@@ -18,6 +18,7 @@ email match is guarded and can be rolled back.
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from functools import lru_cache
@@ -101,10 +102,62 @@ def is_bot(name: str | None, email: str | None) -> bool:
     return identity_kind(name, email) != "human"
 
 
+# ``Name <email>`` inside a ``Co-authored-by`` trailer value.
+TRAILER_PERSON_RE = re.compile(r"^\s*(?P<name>[^<]*?)\s*<(?P<email>[^>]*)>\s*$")
+_COAUTHOR_LINE_RE = re.compile(r"^co-authored-by:(?P<value>.*)$", re.IGNORECASE | re.MULTILINE)
+
+
+def accountable_human(
+    author_name: str | None,
+    author_email: str | None,
+    committer_name: str | None,
+    committer_email: str | None,
+    body: str | None,
+) -> tuple[str, str] | None:
+    """The person to credit for a commit a coding agent authored, from git alone.
+
+    Only an author of kind ``agent`` is re-credited; a human or bot author
+    returns ``None`` (kept as is). The first ``Co-authored-by`` trailer naming
+    a human wins, else a human committer (who then differs from the agent
+    author). With neither, ``None``: the commit stays the agent's, and every
+    owner figure shows it as an agent, never as a person.
+    """
+    if identity_kind(author_name, author_email) != "agent":
+        return None
+    candidates = [*_co_authors(body or ""), (committer_name or "", committer_email or "")]
+    for name, email in candidates:
+        if _is_person(name, email):
+            return name or email, email
+    return None
+
+
+def _co_authors(body: str) -> list[tuple[str, str]]:
+    """``(name, email)`` of each ``Co-authored-by`` trailer in *body*, in order."""
+    people = []
+    for line in _COAUTHOR_LINE_RE.finditer(body):
+        m = TRAILER_PERSON_RE.match(line["value"])
+        if m:
+            people.append((m["name"].strip('"'), m["email"]))
+    return people
+
+
+def _is_person(name: str, email: str) -> bool:
+    """A human with a real address: a machine-local one (a container's
+    ``user@host.local``) names a box, not who answers for the change."""
+    canonical = canonicalize_author_email(email)
+    return bool(canonical) and (
+        identity_kind(name, email) == "human" and not _is_machine_local(canonical)
+    )
+
+
 def _is_machine_local(canonical_email: str) -> bool:
-    """An address git made up from a hostname: ``(none)``, ``localhost``, a
-    ``.local`` host, or a domain with no dot (so no public TLD)."""
-    domain = canonical_email.rpartition("@")[2].strip("()")
+    """An address git made up from a hostname: ``(none)`` (alone or after a
+    host, ``root@1a2b3c.(none)``), ``localhost``, a ``.local`` host, or a
+    domain with no dot (so no public TLD)."""
+    domain = canonical_email.rpartition("@")[2]
+    if "(none)" in domain.split("."):
+        return True
+    domain = domain.strip("()")
     if not domain or domain == "none" or "." not in domain:
         return True
     return any(label in _LOCAL_HOST_LABELS for label in domain.split("."))
@@ -164,19 +217,29 @@ class IdentityResolver:
         # Automation identities only; every other key is a person.
         self._kinds = kinds
         self._agents = agents
+        # key -> its member emails, built on the first ``aliases`` call.
+        self._members: dict[str, list[str]] | None = None
 
     def __call__(self, name: str | None, email: str | None) -> str:
         node = _node(name, email)
         return self._key_of.get(node, node)
 
-    def display_name(self, key: str) -> str:
-        """The identity's most frequent name, preferring names of 2+ words."""
+    def display_name(self, key: str, default: str | None = None) -> str:
+        """The identity's most frequent name, preferring names of 2+ words.
+
+        An identity the resolver was not built from has no names: *default*
+        (the caller's own observed name), else the key itself.
+        """
         names = self._names.get(key)
         if not names:
-            return key.removeprefix("name:")
+            return default or key.removeprefix("name:")
         pool = Counter({n: c for n, c in names.items() if len(n.split()) >= 2}) or names
         # Ties break alphabetically so the name is stable across runs.
         return min(pool, key=lambda n: (-pool[n], n))
+
+    def email(self, key: str) -> str:
+        """The identity's email: its key, or ``""`` for a name-only identity."""
+        return "" if key.startswith("name:") else key
 
     def kind(self, key: str) -> IdentityKind:
         return self._kinds.get(key, "human")
@@ -191,6 +254,19 @@ class IdentityResolver:
     def people(self) -> set[str]:
         """Every human identity the resolver was built from."""
         return set(self._names) - set(self._kinds)
+
+    def aliases(self, key: str) -> tuple[list[str], list[str]]:
+        """``(names, emails)`` folded into the identity *key*, each sorted.
+
+        The names are every display name it was seen under; the emails every
+        canonical address that resolves to it, its own key included.
+        """
+        if self._members is None:
+            self._members = defaultdict(list)
+            for node, k in self._key_of.items():
+                if not node.startswith("name:"):
+                    self._members[k].append(node)
+        return sorted(self._names.get(key, ())), sorted(self._members.get(key, ()))
 
 
 def build_identity_resolver(

@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 # The pages a reader meets before any reference content.
 ORIENTATION_PAGE_TYPES: frozenset[str] = frozenset(
-    {"onboarding", "layer_page", "repo_overview", "architecture_diagram"}
+    {"onboarding", "repo_overview", "architecture_diagram"}
 )
 
 # Both thresholds warn; neither fails a run.  The readings below come from a

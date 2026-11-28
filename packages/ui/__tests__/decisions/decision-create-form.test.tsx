@@ -61,7 +61,7 @@ describe("DecisionCreateForm", () => {
 
     fill("Title", "Prefer ruff check");
     fill("Decision", "never ruff format");
-    fireEvent.click(screen.getByRole("button", { name: "Save as candidate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save as background" }));
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
@@ -78,7 +78,7 @@ describe("DecisionCreateForm", () => {
   it("cannot be submitted without a title and a decision", () => {
     render(<DecisionCreateForm onSubmit={vi.fn(async () => undefined)} />);
 
-    const submit = screen.getByRole("button", { name: "Save as candidate" });
+    const submit = screen.getByRole("button", { name: "Save as background" });
     expect(submit).toBeDisabled();
 
     fill("Title", "Half a record");
@@ -116,7 +116,7 @@ describe("DecisionCreateForm", () => {
       fillRequired();
 
       expect(
-        screen.getByRole("button", { name: "Save as candidate" }),
+        screen.getByRole("button", { name: "Save as background" }),
       ).toBeEnabled();
       expect(
         screen.getByText(/Name the files it governs to confirm it/),
@@ -134,7 +134,7 @@ describe("DecisionCreateForm", () => {
       // server reads it: splitList drops the blanks on both sides.
       fill("Affected files", " , ");
       expect(
-        screen.getByRole("button", { name: "Save as candidate" }),
+        screen.getByRole("button", { name: "Save as background" }),
       ).toBeTruthy();
     });
 
@@ -142,10 +142,10 @@ describe("DecisionCreateForm", () => {
       const onSubmit = vi.fn(async () => undefined);
       render(<DecisionCreateForm onSubmit={onSubmit} />);
       fillRequired();
-      fireEvent.click(screen.getByRole("button", { name: "Save as candidate" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save as background" }));
 
       await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
-      expect(toastSuccess.mock.calls[0]?.[0]).toMatch(/candidate/i);
+      expect(toastSuccess.mock.calls[0]?.[0]).toMatch(/background/i);
     });
   });
 
@@ -158,7 +158,7 @@ describe("DecisionCreateForm", () => {
 
     fill("Title", "Use JWT");
     fill("Decision", "sign them");
-    fireEvent.click(screen.getByRole("button", { name: "Save as candidate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save as background" }));
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(onCreated).not.toHaveBeenCalled();

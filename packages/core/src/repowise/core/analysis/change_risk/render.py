@@ -16,6 +16,7 @@ from typing import Literal
 
 from ...ci import github
 from ...ci.markdown import ROW_LIMIT, cell, more_line, plural
+from ...ci.summary import FAIL, PASS, GateSummary
 from .service import _MIN_BASELINE, ChangeRiskResult
 
 PercentileGate = Literal["pass", "fail", "no_data", "not_set"]
@@ -166,6 +167,12 @@ def render_markdown(result: ChangeRiskResult, threshold: float | None = None) ->
         out += ["", "Bug fixes are recency-weighted: one from a year earlier counts a half."]
     out += ["", LIMITS]
     return "\n".join(out) + "\n"
+
+
+def gate_summary(result: ChangeRiskResult, threshold: float | None = None) -> GateSummary:
+    """The gate's row in the combined CI summary: the rank, with no findings."""
+    verdict = FAIL if percentile_gate(result, threshold) == "fail" else PASS
+    return GateSummary("risk", verdict, headline(result, threshold, markdown=False))
 
 
 def github_annotations(result: ChangeRiskResult, threshold: float | None = None) -> list[str]:

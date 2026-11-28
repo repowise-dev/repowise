@@ -13,13 +13,15 @@ import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { toFriendlyMessage } from "../lib/errors";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { formatDateTime, formatNumber, formatRelativeTimeOrNull } from "../lib/format";
+import { PromptForRowsButton } from "../health/row-prompt-action";
+import { formatDateTime, formatNumber } from "../lib/format";
 import { FindingIdentity, FindingConfidence, FindingRowActions } from "./finding-cells";
 import {
   DEAD_CODE_CONFIDENCE,
   type DeadCodeFinding,
   type DeadCodeStatus,
 } from "@repowise-dev/types/dead-code";
+import { RelativeTime } from "../shared/relative-time";
 
 /**
  * Display names and tab order for the kinds we know about. Any other kind the
@@ -304,7 +306,7 @@ export function FindingsTable({
         key: "path",
         header: "File / Symbol",
         sortable: true,
-        cellClassName: "min-w-[200px] max-w-[480px]",
+        cellClassName: "min-w-[200px] max-w-[360px]",
         render: (f) => (
           <FindingIdentity
             finding={f}
@@ -360,7 +362,7 @@ export function FindingsTable({
             className="block font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]"
             title={f.last_commit_at ? formatDateTime(f.last_commit_at) : undefined}
           >
-            {formatRelativeTimeOrNull(f.last_commit_at)}
+            <RelativeTime date={f.last_commit_at} fallback="—" />
             {/* Recent churn is why a finding scores low; saying so makes the
                 confidence number legible instead of arbitrary. */}
             {f.commit_count_90d ? (
@@ -388,9 +390,8 @@ export function FindingsTable({
         key: "actions",
         header: <span className="sr-only">Actions</span>,
         mobileLabel: "Actions",
-        // Two controls, not five: the cell no longer has to reserve room for a
-        // cluster that wrapped onto a second line at this width.
-        headerClassName: "w-24",
+        // The agent prompt leads, Resolve follows, the rest sit in the menu.
+        headerClassName: "w-64",
         align: "right",
         render: (f) => (
           <FindingRowActions
@@ -469,12 +470,20 @@ export function FindingsTable({
           </Button>
         )}
 
-        {onGeneratePrompt && selectedCount > 0 && (
-          <AiPromptButton
-            label={`AI prompt for ${selectedCount} selected`}
-            onClick={() => onGeneratePrompt(visibleSelected)}
-          />
-        )}
+        {/* The selection when there is one, else every row the filters show. */}
+        {onGeneratePrompt &&
+          (selectedCount > 0 ? (
+            <AiPromptButton
+              label={`Copy prompt for ${selectedCount} selected`}
+              onClick={() => onGeneratePrompt(visibleSelected)}
+              className="whitespace-nowrap"
+            />
+          ) : (
+            <PromptForRowsButton
+              count={current.length}
+              onClick={() => onGeneratePrompt(current.map((f) => f.id))}
+            />
+          ))}
       </div>
       <ConfirmDialog
         open={bulkConfirmOpen}

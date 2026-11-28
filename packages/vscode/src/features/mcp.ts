@@ -3,6 +3,8 @@ import * as path from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Commands } from "../constants";
 import type { RepowiseContext } from "../core/context";
+import { CLIENT_ENV } from "../core/cliInvocation";
+import { hasMcpProviderApi } from "../core/hostApi";
 
 /**
  * Provider id contributed in package.json under `mcpServerDefinitionProviders`.
@@ -32,9 +34,23 @@ function mcpArgs(repoPath: string): string[] {
 /**
  * MCP integration: registers an MCP server definition provider so AI agents in
  * the editor can reach the Repowise tools (via `repowise mcp <repo-path>` over
- * stdio). Owns the workspace MCP configuration command.
+ * stdio). Owns the workspace MCP configuration command, which works on every
+ * host. On a host without the provider API only the command is registered.
  */
-export function registerMcp(ctx: RepowiseContext): vscode.Disposable {
+export function registerMcp(
+  ctx: RepowiseContext,
+  api: Parameters<typeof hasMcpProviderApi>[0] = vscode,
+): vscode.Disposable {
+  const configure = vscode.commands.registerCommand(Commands.configureMcp, () =>
+    configureMcp(ctx),
+  );
+  if (!hasMcpProviderApi(api)) {
+    ctx.log.info(
+      "This editor has no MCP server provider API; use Configure MCP for this Workspace instead.",
+    );
+    return configure;
+  }
+
   // Fired when the resolved repo root may have changed, so VS Code re-queries
   // the provider. Kept cheap: one emitter, driven by workspace-folder changes.
   const didChange = new vscode.EventEmitter<void>();
@@ -52,6 +68,7 @@ export function registerMcp(ctx: RepowiseContext): vscode.Disposable {
         mcpArgs(repoRoot),
       );
       def.cwd = vscode.Uri.file(repoRoot);
+      def.env = { ...CLIENT_ENV };
       return [def];
     },
   };
@@ -60,9 +77,7 @@ export function registerMcp(ctx: RepowiseContext): vscode.Disposable {
     vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider),
     didChange,
     vscode.workspace.onDidChangeWorkspaceFolders(() => didChange.fire()),
-    vscode.commands.registerCommand(Commands.configureMcp, () =>
-      configureMcp(ctx),
-    ),
+    configure,
   ];
 
   return vscode.Disposable.from(...disposables);

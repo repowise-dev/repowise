@@ -2,6 +2,7 @@
 
 import type { TransitiveEntry } from "@repowise-dev/types/blast-radius";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
+import { FilePath } from "../shared/file-path";
 
 interface TransitiveTableProps {
   rows: TransitiveEntry[];
@@ -12,9 +13,7 @@ const COLUMNS: ResponsiveColumn<TransitiveEntry>[] = [
     key: "path",
     header: "File",
     render: (r) => (
-      <span className="font-mono text-xs break-all" title={r.path}>
-        {r.path}
-      </span>
+      <FilePath path={r.path} fold className="max-w-[28rem]" />
     ),
   },
   {

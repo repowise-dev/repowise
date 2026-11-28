@@ -8,6 +8,8 @@ hand back a vector from a different embedder or a different width.
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.providers.embedding.caching import MAX_ENTRIES, CachingEmbedder
 
 
@@ -18,13 +20,15 @@ class _CountingEmbedder:
         self._dimensions = dimensions
         self._seed = seed
         self.calls: list[list[str]] = []
+        self.kinds: list[str] = []
 
     @property
     def dimensions(self) -> int:
         return self._dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         self.calls.append(list(texts))
+        self.kinds.append(kind)
         return [[self._seed * (i + 1)] * self._dimensions for i, _ in enumerate(texts)]
 
 
@@ -126,7 +130,7 @@ async def test_a_short_inner_response_is_not_cached():
     response memoized for the life of the process."""
 
     class _Empty(_CountingEmbedder):
-        async def embed(self, texts):
+        async def embed(self, texts, *, kind="document"):
             self.calls.append(list(texts))
             return []
 
@@ -136,3 +140,94 @@ async def test_a_short_inner_response_is_not_cached():
     assert await embedder.embed(["q"]) == []
     assert await embedder.embed(["q"]) == []
     assert inner.calls == [["q"], ["q"]], "the bad response was cached"
+
+
+async def test_query_and_document_of_one_text_are_cached_apart():
+    """With an asymmetric prefix the same text embeds differently per kind."""
+    inner = _CountingEmbedder()
+    embedder = CachingEmbedder(inner)
+
+    await embedder.embed(["auth"], kind="query")
+    await embedder.embed(["auth"], kind="document")
+    await embedder.embed(["auth"], kind="query")
+
+    assert inner.kinds == ["query", "document"]
+
+
+class _FailingEmbedder(_CountingEmbedder):
+    """Fails every call, like a provider with a dead key or a spent quota."""
+
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        self.calls.append(list(texts))
+        raise RuntimeError("429 quota")
+
+
+async def test_a_failed_query_embed_pauses_the_next_ones(monkeypatch):
+    from repowise.core.providers.embedding import caching
+
+    clock = [100.0]
+    monkeypatch.setattr(caching.time, "monotonic", lambda: clock[0])
+    inner = _FailingEmbedder()
+    embedder = CachingEmbedder(inner)
+
+    with pytest.raises(RuntimeError, match="429"):
+        await embedder.embed(["auth"], kind="query")
+    for texts in (["auth"], ["other"], ["a", "b"]):
+        with pytest.raises(caching.EmbedderCoolingDownError):
+            await embedder.embed(texts, kind="query")
+    assert len(inner.calls) == 1, "a paused query reached the provider"
+
+    # Index writes are not queries: they still reach the provider.
+    with pytest.raises(RuntimeError, match="429"):
+        await embedder.embed(["doc"])
+    assert len(inner.calls) == 2
+
+    clock[0] += caching.FAILURE_COOLDOWN_S
+    with pytest.raises(RuntimeError, match="429"):
+        await embedder.embed(["auth"], kind="query")
+    assert len(inner.calls) == 3, "the provider was not asked again after the pause"
+
+
+async def test_a_document_failure_does_not_pause_queries():
+    inner = _FailingEmbedder()
+    embedder = CachingEmbedder(inner)
+    with pytest.raises(RuntimeError):
+        await embedder.embed(["doc"])
+    with pytest.raises(RuntimeError, match="429"):
+        await embedder.embed(["auth"], kind="query")
+    assert len(inner.calls) == 2
+
+
+class _StatusError(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+
+
+class _RejectingEmbedder(_CountingEmbedder):
+    """Answers every call with one HTTP status error."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__()
+        self.status_code = status_code
+
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        self.calls.append(list(texts))
+        raise _StatusError(self.status_code)
+
+
+@pytest.mark.parametrize(
+    ("status", "pauses"), [(400, False), (422, False), (401, True), (429, True), (503, True)]
+)
+async def test_only_an_endpoint_failure_pauses_the_next_queries(status, pauses):
+    """A query the endpoint refuses for itself leaves the next query alone."""
+    from repowise.core.providers.embedding import caching
+
+    inner = _RejectingEmbedder(status)
+    embedder = CachingEmbedder(inner)
+    with pytest.raises(_StatusError):
+        await embedder.embed(["too long"], kind="query")
+    error = caching.EmbedderCoolingDownError if pauses else _StatusError
+    with pytest.raises(error):
+        await embedder.embed(["next"], kind="query")
+    assert len(inner.calls) == (1 if pauses else 2)

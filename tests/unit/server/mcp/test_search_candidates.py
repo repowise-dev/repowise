@@ -173,3 +173,13 @@ class TestFileCandidates:
 
     def test_empty_pool_yields_no_block(self):
         assert file_candidates([], limit=10) == []
+
+
+def test_served_targets_skip_results_that_are_not_hits():
+    """The post-shed refresh reads only hit rows: a mapping or a bare value serves no file."""
+    from repowise.server.mcp_server.tool_search.serve import _refresh_served_targets
+
+    for results in ({"a.py": {"file": "a.py"}}, ["a.py", None, {"file": "b.py"}]):
+        response = {"truncated": True, "_meta": {}, "results": results}
+        _refresh_served_targets(response, None)
+        assert response["_meta"]["targets"] == ([] if isinstance(results, dict) else ["b.py"])

@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
-import math
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.pr_blast import untested_files
-from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
+from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS, shown_snippet
 from repowise.core.co_change import confidence_ratio, parse_partners
+from repowise.core.code_origin import path_origin
+from repowise.core.ingestion.git_indexer.co_change import windowed_partners
 from repowise.core.persistence.models import (
     GitMetadata,
     Repository,
@@ -26,102 +27,55 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import served_root
+from repowise.server.mcp_server._origin_rank import file_origins
+from repowise.server.mcp_server.tool_risk.history import (  # noqa: F401  re-exported
+    _BUG_PRONE_FIXES,
+    _TOP_FIX_SYMBOLS,
+    _churn_clause,
+    _classify_risk_type,
+    _compute_trend,
+    _defect_profile,
+    _derive_change_pattern,
+    _fix_clause,
+    _history_tier_card,
+    _load_commit_categories,
+    _owner_clause,
+    _top_fix_symbols,
+    fix_annotation,
+    history_fields,
+    risk_summary,
+)
 from repowise.server.repo_paths import missing_path_hint, normalize_target_path
-
-#: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
-#: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
-_BUG_PRONE_FIXES = 3
-
-#: How many attributed symbols the defect profile names. Enough to say "mostly
-#: these", short enough to keep the block inside the per-file token budget.
-_TOP_FIX_SYMBOLS = 3
 
 # Relationship rows are deliberately bounded independently.  Their totals are
 # computed after repository exclusions and before this presentation cap.
 _RELATIONSHIP_LIMIT = 5
+# Partner rows were the largest part of a card. The total stays on the card and
+# the tail stays recoverable, so three is enough to act on.
+_CO_CHANGE_LIMIT = 3
 
 
-def _derive_change_pattern(categories: dict[str, int]) -> str:
-    """Derive a human-readable change pattern from commit category counts."""
-    if not categories:
-        return "uncategorized"
-    total = sum(categories.values())
-    if total == 0:
-        return "uncategorized"
-    dominant = max(categories, key=lambda k: categories[k])
-    ratio = categories[dominant] / total
-    if ratio >= 0.5:
-        labels = {
-            "feature": "feature-active",
-            "refactor": "primarily refactored",
-            "fix": "fix-heavy",
-            "dependency": "dependency-churn",
-        }
-        return labels.get(dominant, dominant)
-    return "mixed-activity"
+@dataclass(frozen=True)
+class CoChangeWindow:
+    """A ``since`` window for co-change partners, resolved once per call.
 
-
-def _compute_trend(meta: Any) -> str:
-    """Compute risk velocity from 30d vs 90d commit rates."""
-    c30 = meta.commit_count_30d or 0
-    c90 = meta.commit_count_90d or 0
-    # Baseline: commits in the 60-day window before the last 30 days
-    baseline_commits = c90 - c30
-    recent_rate = c30 / 30.0
-    baseline_rate = baseline_commits / 60.0
-
-    if c90 == 0:
-        return "stable"
-    if baseline_rate == 0:
-        return "increasing" if c30 > 0 else "stable"
-    ratio = recent_rate / baseline_rate
-    if ratio > 1.5:
-        return "increasing"
-    elif ratio < 0.5:
-        return "decreasing"
-    return "stable"
-
-
-def _classify_risk_type(meta: Any, dep_count: int, team_size: int | None = None) -> str:
-    """Classify risk as churn-heavy, bug-prone, high-coupling, or bus-factor-risk.
-
-    *team_size* is the repo's active-contributor count (90d). On a small
-    team (≤ SMALL_TEAM_MAX_CONTRIBUTORS) a single-author file is the
-    expected operating model, so ``bus-factor-risk`` is reserved for
-    hotspot-active files there (issue #361). ``None`` = unknown → keep
-    the historical behaviour.
-
-    ``bug-prone`` reads the counted fix history rather than the old keyword
-    scan over ``significant_commits``: that scan matched "fix" anywhere in a
-    subject, counted doc and test commits, and had no recency at all, while
-    ``prior_defect_count`` is the shape-filtered windowed count and
-    ``bug_magnet`` is its decayed form. An index that predates the fix-event
-    rollup reports 0/None here and simply falls through to the next rule,
-    the same way every other backfilled column behaves until the next update.
+    ``git_since`` is the ``YYYY-MM-DD`` handed to git and echoed on the card;
+    ``indexed_files`` are the paths a partner may be, as for the stored walk.
     """
-    from repowise.core.analysis.health.biomarkers.base import SMALL_TEAM_MAX_CONTRIBUTORS
 
-    churn_score = meta.churn_percentile or 0.0
-    bus_factor = getattr(meta, "bus_factor", 0) or 0
-    total_commits = meta.commit_count_total or 0
+    git_since: str
+    indexed_files: frozenset[str]
 
-    small_team = team_size is not None and team_size <= SMALL_TEAM_MAX_CONTRIBUTORS
 
-    # Bug-prone takes priority: real counted fixes, decayed or plain.
-    prior_defects = getattr(meta, "prior_defect_count", 0) or 0
-    if getattr(meta, "bug_magnet", False) or prior_defects >= _BUG_PRONE_FIXES:
-        return "bug-prone"
-    if churn_score >= 0.7:
-        return "churn-heavy"
-    if (
-        bus_factor == 1
-        and total_commits > 20
-        and (not small_team or bool(getattr(meta, "is_hotspot", False)))
-    ):
-        return "bus-factor-risk"
-    if dep_count >= 5:
-        return "high-coupling"
-    return "stable"
+def _partner_rank(origin: str, target_origin: str) -> int:
+    """Shipped code first, then other non-test code, then tests.
+
+    A test target's test partners rank with shipped code, so the tests that
+    change with a test stay at the top of its card.
+    """
+    if origin == "production" or origin == target_origin == "test":
+        return 0
+    return 2 if origin == "test" else 1
 
 
 async def _get_active_contributor_count(session: AsyncSession, repo_id: str) -> int | None:
@@ -260,28 +214,89 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             ),
             {"repo_id": repo_id, "fp": target},
         )
-        return [
-            {"kind": r[0], "severity": r[1], "snippet": r[2]}
-            for r in rows.all()
-            if r[0] not in SYMBOL_NAME_KINDS
-        ]
+        signals = []
+        for kind, severity, snippet in rows.all():
+            if kind in SYMBOL_NAME_KINDS:
+                continue
+            signal = {"kind": kind, "severity": severity}
+            if shown := shown_snippet(kind, snippet):
+                signal["snippet"] = shown
+            signals.append(signal)
+        return signals
     except Exception:
         return []
 
 
+def advisory_call_line(rows: list[Any]) -> str:
+    """One line naming the strongest advisory production code reaches through a file.
+
+    *rows* are one file's
+    :func:`~repowise.core.inventory.advisory_tiers.called_advisories_in_files`
+    rows, strongest first; their sites are calls in that file.
+    """
+    top = rows[0]
+    notes = ", ".join(n for n in (top.advisory.severity, top.fix and f"fixed in {top.fix}") if n)
+    head = f"{top.advisory.id}{f' ({notes})' if notes else ''}"
+    site = top.tier.sites[0]
+    where = f"{site.path}:{site.line}" if site.line else site.path
+    line = f"{head} in {top.package}: a production function calls into the package at {where}"
+    if len(rows) > 1:
+        key = f"package:{top.ecosystem}:{top.package}" if top.ecosystem else f"package:{top.package}"
+        line += f'; {len(rows) - 1} more advisory(ies): get_context(targets=["{key}"])'
+    return line
+
+
+async def attach_advisory_calls(
+    session: AsyncSession, repo_id: str, repo_root: str | None, cards: list[dict]
+) -> None:
+    """Add ``advisory_call`` to each card whose file calls, from production code,
+    a package with a stored advisory. Every other card is left untouched, and
+    with no stored package call in the targets this is one indexed read."""
+    from repowise.core.inventory.advisory_tiers import called_advisories_in_files
+
+    try:
+        by_path: dict[str, list[dict]] = {}
+        for card in cards:
+            if card.get("resolved") is not False:
+                path = normalize_target_path(card["target"], repo_root=repo_root)
+                by_path.setdefault(path, []).append(card)
+        if not by_path:
+            return
+        # A savepoint, so a failed read never aborts the transaction the rest
+        # of get_risk reads through.
+        async with session.begin_nested():
+            found = await called_advisories_in_files(session, repo_id, repo_root or ".", by_path)
+    except Exception:
+        # The card stands without the line; it is never worth failing the call.
+        return
+    for path, rows in found.items():
+        for card in by_path[path]:
+            card["advisory_call"] = advisory_call_line(rows)
+
+
 def _build_co_changes(
-    meta: Any, structural_related: Any, exclude_spec: Any
+    meta: Any,
+    structural_related: Any,
+    exclude_spec: Any,
+    origins: dict[str, str] | None = None,
+    target_origin: str = "production",
 ) -> tuple[list[dict], int]:
     """Historical co-change partners and their exact post-filter population.
 
-    Larger lists make MCP responses verbose without adding signal: top-5 captures
-    the bulk of the temporal-coupling mass and keeps tool output tight for agents.
-
-    Row order stays by recency-decayed ``weight``. Each row carries ``file_path``,
-    ``support`` (shared commit count, when known), ``conf_ab`` (share of target's
-    commits that touched partner, when known), and ``has_import_link``.
+    Rows lead with shipped code (``code_origin``: the stored origin in
+    *origins*, else the path's), so a target's tests do not crowd its source
+    partners out of the capped rows; within an origin, order stays by the
+    stored ``weight``. Each row carries ``file_path``, ``support`` (shared
+    commit count, when known), ``conf_ab`` (share of target's commits that
+    touched partner, when known), and ``has_import_link``.
     """
-    partners_sorted = parse_partners(meta.co_change_partners_json)
+    origins = origins or {}
+    partners_sorted = sorted(
+        parse_partners(meta.co_change_partners_json),
+        key=lambda p: _partner_rank(
+            origins.get(p.file_path) or path_origin(p.file_path), target_origin
+        ),
+    )
     relation_types = structural_related if isinstance(structural_related, dict) else {}
     related_paths = set(structural_related)
     rows = []
@@ -300,127 +315,6 @@ def _build_co_changes(
         rows.append(row)
     population = filter_dicts_by_key(rows, "file_path", exclude_spec)
     return population, len(population)
-
-
-def fix_annotation(meta: Any, now: datetime | None = None) -> dict | None:
-    """The shared count/age/magnet fix block used by context and risk.
-
-    Centralized so the two tools agree on the wire format and the age contract
-    is enforced once: the ``bug_magnet`` flag rides on the age and is never
-    emitted alone. ``bug_magnet`` is a claim about RECENT fix pressure, so with
-    no timestamp to anchor it the same word would describe a file fixed four
-    times last month and one fixed four times two years ago.
-
-    Read off the ``GitMetadata`` row the caller already loaded: no query.
-    """
-    count = getattr(meta, "prior_defect_count", 0) or 0
-    if count <= 0:
-        return None
-
-    out: dict[str, Any] = {"fix_count": count}
-    last_fix_at = getattr(meta, "last_fix_at", None)
-    if isinstance(last_fix_at, datetime):
-        # Rows are stored naive-UTC; compare on the same footing.
-        ref = (
-            datetime.now(UTC)
-            if now is None
-            else (now if now.tzinfo else now.replace(tzinfo=UTC))
-        )
-        moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
-        out["last_fix_days_ago"] = max(0, (ref - moment).days)
-        if getattr(meta, "bug_magnet", False):
-            out["bug_magnet"] = True
-    return out
-
-
-def _fix_clause(profile: dict | None) -> str:
-    """Lead clause for ``risk_summary``, or empty when there is no fix history.
-
-    Trailing separator included so the caller concatenates without a dangling
-    comma on files that have never been fixed. Never renders a count without an
-    age: an unanchored count reads as a claim about the distant past.
-    """
-    if not profile or "last_fix_days_ago" not in profile:
-        return ""
-    n = profile["fix_count"]
-    magnet = " (bug magnet)" if profile.get("bug_magnet") else ""
-    return (
-        f"{n} bug fix{'es' if n != 1 else ''} in 6mo, "
-        f"last {profile['last_fix_days_ago']}d before the indexed commit{magnet}, "
-    )
-
-
-def _churn_clause(churn_percentile: float, is_hotspot: bool, trend: str) -> str:
-    """Churn clause for ``risk_summary``, or empty when the file is not a hotspot.
-
-    ``churn_percentile`` is a rank (0 to 1), not a risk. Printed as a bare
-    percentage it read like "100% risk", and it was printed for files below the
-    hotspot cut too. So the clause states the rank as a rank ("top N%") and only
-    for files the stored ``is_hotspot`` flag marks; ``trend`` stays available as
-    its own field either way. Trailing separator included, as in ``_fix_clause``.
-    """
-    if not is_hotspot:
-        return ""
-    # Round before the ceiling: 1 - 0.86 is 0.14000000000000001 in floats, and
-    # that would otherwise print as top 15%.
-    top_pct = max(1, math.ceil(round((1.0 - churn_percentile) * 100, 6)))
-    return f"churn hotspot, top {top_pct}% ({trend}), "
-
-
-def _defect_profile(meta: Any, now: datetime | None = None) -> dict | None:
-    """What this file's counted bug fixes say about it, or ``None`` for silence.
-
-    Built from the fix-event rollup already loaded on the ``GitMetadata`` row,
-    so there is no second query. Silent when the file has no counted fixes, so a
-    clean file and a repo with no fix history both add nothing to the response
-    (the FileSignalsPanel convention).
-
-    Every field is aggregate. No inducing commit is named here or anywhere else:
-    file-level SZZ ran at 74.5% precision against the frozen judgments, which is
-    fine for counting and too thin to accuse a commit.
-
-    The approximation caveat on ``top_symbols`` lives in ``get_risk``'s docstring
-    rather than in each row. It is the same sentence every time, and a constant
-    string repeated once per target is exactly the per-file cost the lean-MCP
-    work went to some trouble to remove.
-    """
-    profile = fix_annotation(meta, now=now)
-    if profile is None:
-        return None
-    profile["window"] = "6 months"
-
-    symbols = _top_fix_symbols(getattr(meta, "fix_symbol_counts_json", None))
-    if symbols:
-        profile["top_symbols"] = symbols
-    return profile
-
-
-def _top_fix_symbols(raw: str | None) -> dict[str, int]:
-    """Top few ``symbol -> fix count`` pairs, with the redundant path stripped.
-
-    Stored keys are ``path/to/file.py::Name`` and the caller already knows the
-    path, so the prefix is pure token cost in an MCP response. The stored map is
-    written in descending-count order, so "top few" is a slice.
-    """
-    if not raw:
-        return {}
-    try:
-        counts = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    if not isinstance(counts, dict):
-        return {}
-    return {str(k).rsplit("::", 1)[-1]: int(v) for k, v in list(counts.items())[:_TOP_FIX_SYMBOLS]}
-
-
-def _load_commit_categories(meta: Any) -> dict:
-    """Parse the persisted commit-category counts, tolerating malformed JSON."""
-    categories: dict = {}
-    cat_json = getattr(meta, "commit_categories_json", None)
-    if cat_json:
-        with contextlib.suppress(json.JSONDecodeError, TypeError):
-            categories = json.loads(cat_json)
-    return categories
 
 
 async def _unresolved_reason(
@@ -452,45 +346,254 @@ async def _unresolved_reason(
     return {"unresolved_reason": "no_such_path", **hint}
 
 
-def _history_tier_card(target: str, meta: Any, security_signals: list[dict]) -> dict:
-    """The card for a file indexed at the history tier (``meta.history_only``).
+def _bounded_dependents(population: list[dict]) -> list[dict]:
+    """The first rows of *population*, keeping one transitive row when any exists.
 
-    A non-code file keeps commit counts, windows and authorship, but no churn
-    percentile, hotspot flag, co-change partners or fix rollup, so the scored
-    card would print zeros nothing measured. This one carries only what was.
+    Without it a large direct fan-in would hide every transitive row while the
+    totals say transitive reach exists.
     """
-    commits = meta.commit_count_total or 0
-    last = meta.last_commit_at.isoformat() if meta.last_commit_at else None
-    owner = meta.primary_owner_name or "unknown"
-    pct = meta.primary_owner_commit_pct or 0.0
+    dependents = population[:_RELATIONSHIP_LIMIT]
+    first_transitive = next((row for row in population if not row["direct"]), None)
+    if (
+        first_transitive is not None
+        and dependents
+        and all(row["direct"] for row in dependents)
+        and len(population) > len(dependents)
+    ):
+        dependents[-1] = first_transitive
+    return dependents
+
+
+def _relationship_analysis() -> dict[str, Any]:
+    """Fresh ``relationship_analysis`` block; workspace enrichment fills the rest."""
     return {
-        "target": target,
-        "signal_tier": "history",
-        "signal_tier_reason": (
-            "not a parsed code file: only commit history is indexed, so hotspot, "
-            "co-change and risk classification do not apply"
-        ),
-        "commit_count_total": commits,
-        "commit_count_90d": meta.commit_count_90d or 0,
-        "last_commit_at": last,
-        "trend": _compute_trend(meta),
-        "primary_owner": owner,
-        "owner_pct": pct,
-        "contributor_count": meta.contributor_count or 0,
-        "security_signals": security_signals,
-        # Workspace enrichment adds its rows here; co-change covers code files only.
-        "relationship_analysis": {
-            "co_change": {
-                "status": "unavailable",
-                "scope": "git_history",
-                "reason": "history-tier file",
-            }
+        "dependencies": {
+            "status": "available",
+            "scope": "repository_graph",
+            "evidence_kind": "structural",
+            "max_depth": 2,
+            "runtime_breakage_claim": False,
         },
-        "risk_summary": (
-            f"{target}: history only, {commits} commits, last {last[:10] if last else 'unknown'}, "
-            f"{_owner_clause(owner, pct, None)}"
-        ),
+        "consumers": {
+            "status": "unavailable",
+            "scope": "workspace_contract_links",
+            "reason": "workspace contract analysis is unavailable",
+        },
+        "cross_repo": {
+            "status": "unavailable",
+            "scope": "workspace_file_relationships",
+            "reason": "workspace relationship analysis is unavailable",
+        },
     }
+
+
+def _dependency_card(
+    target: str,
+    lookup_path: str,
+    reverse_deps: dict[str, dict[str, set[str]]],
+    node_meta: dict[str, Any],
+    exclude_spec: Any,
+    collector: OmissionCollector | None,
+) -> tuple[dict[str, Any], int]:
+    """The card's structural-dependents fields and its direct dependents count."""
+    population = _dependency_population(lookup_path, reverse_deps, node_meta, exclude_spec)
+    dependents = _bounded_dependents(population)
+    ranked = sorted(population, key=lambda row: (-row["pagerank"], row["file_path"]))
+    impact_surface = ranked[:3]
+    direct_total = sum(row["direct"] for row in population)
+    # ``dependents_count`` is the compatibility field: direct graph dependents
+    # over the same post-exclusion population as the typed rows.
+    card: dict[str, Any] = {
+        "target": target,
+        "dependents_count": direct_total,
+        "dependents": dependents,
+        "dependents_total": len(population),
+        "dependents_emitted": len(dependents),
+        "dependents_truncated": len(dependents) < len(population),
+        "direct_dependents_total": direct_total,
+        "transitive_dependents_total": len(population) - direct_total,
+        "impact_surface": impact_surface,
+        "impact_surface_total": len(population),
+        "impact_surface_emitted": len(impact_surface),
+        "impact_surface_truncated": len(impact_surface) < len(population),
+        "consumers": [],
+        "consumers_total": 0,
+        "consumers_emitted": 0,
+        "consumers_truncated": False,
+        "cross_repo_links": [],
+        "cross_repo_links_total": 0,
+        "cross_repo_links_emitted": 0,
+        "cross_repo_links_truncated": False,
+        "relationship_analysis": _relationship_analysis(),
+    }
+    cap_collection(
+        card,
+        "dependents",
+        population,
+        _RELATIONSHIP_LIMIT,
+        collector,
+        emitted=dependents,
+        label=f"{target} :: dependents beyond cap={_RELATIONSHIP_LIMIT}",
+        preserve_counts=True,
+    )
+    cap_collection(
+        card,
+        "impact_surface",
+        ranked,
+        3,
+        collector,
+        emitted=impact_surface,
+        label=f"{target} :: impact_surface beyond cap=3",
+        preserve_counts=True,
+    )
+    return card, direct_total
+
+
+async def _load_git_metadata(
+    session: AsyncSession, repo_id: str, lookup_path: str
+) -> GitMetadata | None:
+    """The target's ``GitMetadata`` row, keyed on the normalized POSIX path."""
+    res = await session.execute(
+        select(GitMetadata).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.file_path == lookup_path,
+        )
+    )
+    return res.scalar_one_or_none()
+
+
+async def _no_metadata_card(
+    card: dict[str, Any],
+    session: AsyncSession,
+    repo_id: str,
+    target: str,
+    lookup_path: str,
+    dep_count: int,
+) -> dict[str, Any]:
+    """Finish the card of a graph node with no git row (a new file)."""
+    card.update(
+        {
+            "hotspot_score": 0.0,
+            "is_hotspot": False,
+            "co_change_partners": [],
+            "co_change_partners_total": 0,
+            "co_change_partners_emitted": 0,
+            "co_change_partners_truncated": False,
+        }
+    )
+    card["relationship_analysis"]["co_change"] = {
+        "status": "unavailable",
+        "scope": "git_history",
+        "reason": "no git metadata is available for the target",
+    }
+    card.update(
+        {
+            "primary_owner": None,
+            "owner_pct": None,
+            "trend": "unknown",
+            "risk_type": "high-coupling" if dep_count >= 5 else "unknown",
+        }
+    )
+    card["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
+    card["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)
+    card["risk_summary"] = f"{target} — no git metadata available"
+    return card
+
+
+async def _co_change_source(
+    session: AsyncSession,
+    repo_id: str,
+    meta: Any,
+    lookup_path: str,
+    repo_root: str | None,
+    window: CoChangeWindow | None,
+) -> tuple[Any, dict[str, str], dict[str, Any] | None]:
+    """The partner records to show, their origins, and the card's window note.
+
+    Without *window* the records are the stored ones. With it they come from a
+    walk of the checkout since the window's date; when that walk cannot run,
+    the stored records stay and the note says the window was not applied, so
+    all-history partners are never read as recent ones.
+    """
+    source: Any = meta
+    note: dict[str, Any] | None = None
+    if window is not None:
+        walked = (
+            await asyncio.to_thread(
+                windowed_partners,
+                repo_root,
+                lookup_path,
+                window.git_since,
+                set(window.indexed_files),
+            )
+            if repo_root
+            else None
+        )
+        if walked is None:
+            note = {
+                "since": window.git_since,
+                "applied": False,
+                "reason": (
+                    "git could not walk the checkout (missing, failed or timed out); "
+                    "partners span the indexed history"
+                ),
+            }
+        else:
+            records, commits = walked
+            source = SimpleNamespace(co_change_partners_json=records)
+            note = {"since": window.git_since, "target_commits": commits}
+    paths = [p.file_path for p in parse_partners(source.co_change_partners_json)]
+    origins = await file_origins(session, repo_id, [lookup_path, *paths]) if paths else {}
+    return source, origins, note
+
+
+def _applied_since(note: dict[str, Any] | None) -> str | None:
+    """The date a window counted partners from, when it was applied."""
+    return note["since"] if note and "target_commits" in note else None
+
+
+def _apply_co_changes(
+    card: dict[str, Any],
+    meta: Any,
+    target: str,
+    structural_related: Any,
+    exclude_spec: Any,
+    collector: OmissionCollector | None,
+    origins: dict[str, str] | None = None,
+    target_origin: str = "production",
+    source: Any = None,
+) -> int:
+    """Add the hotspot flags and co-change partners; return the partner total.
+
+    *source* holds the partner records when they are not *meta*'s stored ones.
+    """
+    population, total = _build_co_changes(
+        meta if source is None else source, structural_related, exclude_spec, origins, target_origin
+    )
+    co_changes = population[:_CO_CHANGE_LIMIT]
+    card["hotspot_score"] = meta.churn_percentile or 0.0
+    # The stored flag already applies the absolute activity floors, which a
+    # client thresholding the score alone cannot reproduce.
+    card["is_hotspot"] = bool(getattr(meta, "is_hotspot", False))
+    card["co_change_partners"] = co_changes
+    card["co_change_partners_total"] = total
+    card["co_change_partners_emitted"] = len(co_changes)
+    card["co_change_partners_truncated"] = len(co_changes) < total
+    cap_collection(
+        card,
+        "co_change_partners",
+        population,
+        _CO_CHANGE_LIMIT,
+        collector,
+        label=f"{target} :: co_change_partners beyond cap={_CO_CHANGE_LIMIT}",
+        preserve_counts=True,
+    )
+    card["relationship_analysis"]["co_change"] = {
+        "status": "available",
+        "scope": "git_history",
+        "evidence_kind": "historical",
+    }
+    return total
 
 
 async def _assess_one_target(
@@ -507,137 +610,38 @@ async def _assess_one_target(
     include_graph: bool = False,
     as_of_ts: datetime | None = None,
     repo_root: str | None = None,
+    window: CoChangeWindow | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
     Enriches each result with:
-    - test_gap: bool — True when no test file matching this file's basename exists.
-    - security_signals: list of {kind, severity, snippet} from security_findings.
+    - test_gap: bool, True when nothing shows a test reaches this file
+      (``pr_blast.untested_files``: coverage, the reach walk, or a test named for it).
+    - security_signals: list of {kind, severity, snippet} from security_findings;
+      a secret has no snippet.
     """
     repo_id = repository.id
-    result_data: dict[str, Any] = {"target": target}
-
     repo_root = served_root(repository, repo_root)
+    # Callers pass paths in many forms (backslashes, ``./``, repo-absolute);
+    # stored rows are POSIX-relative. Every lookup keys on the normalized path,
+    # the response on what the caller asked for.
     lookup_path = normalize_target_path(target, repo_root=repo_root)
-    dependency_population = _dependency_population(
-        lookup_path, reverse_deps, node_meta, exclude_spec
-    )
-    dependents = dependency_population[:_RELATIONSHIP_LIMIT]
-    # If both distances exist, protect one transitive row from a large direct
-    # fan-in. Otherwise the totals would say transitive reach exists while the
-    # bounded typed field silently showed only direct rows.
-    first_transitive = next((row for row in dependency_population if not row["direct"]), None)
-    if (
-        first_transitive is not None
-        and dependents
-        and all(row["direct"] for row in dependents)
-        and len(dependency_population) > len(dependents)
-    ):
-        dependents[-1] = first_transitive
-    impact_surface = sorted(
-        dependency_population,
-        key=lambda row: (-row["pagerank"], row["file_path"]),
-    )[:3]
-    direct_dependents_total = sum(row["direct"] for row in dependency_population)
-    transitive_dependents_total = len(dependency_population) - direct_dependents_total
-    # The compatibility count uses the same post-exclusion population as the
-    # typed rows. ``all_edge_map`` remains in the signature for callers that
-    # predate the typed adjacency, but no longer drives the public total.
-    dep_count = direct_dependents_total
-
-    result_data.update(
-        {
-            # ``dependents_count`` is the compatibility field: direct, directed
-            # graph dependents only. It no longer absorbs co-change or contract
-            # rows. The typed collection includes both direct and two-hop rows.
-            "dependents_count": dep_count,
-            "dependents": dependents,
-            "dependents_total": len(dependency_population),
-            "dependents_emitted": len(dependents),
-            "dependents_truncated": len(dependents) < len(dependency_population),
-            "direct_dependents_total": direct_dependents_total,
-            "transitive_dependents_total": transitive_dependents_total,
-            "impact_surface": impact_surface,
-            "impact_surface_total": len(dependency_population),
-            "impact_surface_emitted": len(impact_surface),
-            "impact_surface_truncated": len(impact_surface) < len(dependency_population),
-            "consumers": [],
-            "consumers_total": 0,
-            "consumers_emitted": 0,
-            "consumers_truncated": False,
-            "cross_repo_links": [],
-            "cross_repo_links_total": 0,
-            "cross_repo_links_emitted": 0,
-            "cross_repo_links_truncated": False,
-            "relationship_analysis": {
-                "dependencies": {
-                    "status": "available",
-                    "scope": "repository_graph",
-                    "evidence_kind": "structural",
-                    "max_depth": 2,
-                    "runtime_breakage_claim": False,
-                },
-                "consumers": {
-                    "status": "unavailable",
-                    "scope": "workspace_contract_links",
-                    "reason": "workspace contract analysis is unavailable",
-                },
-                "cross_repo": {
-                    "status": "unavailable",
-                    "scope": "workspace_file_relationships",
-                    "reason": "workspace relationship analysis is unavailable",
-                },
-            },
-        }
-    )
-    cap_collection(
-        result_data,
-        "dependents",
-        dependency_population,
-        _RELATIONSHIP_LIMIT,
+    # ``all_edge_map`` stays in the signature for older callers; the typed
+    # adjacency drives the counts.
+    result_data, dep_count = _dependency_card(
+        target,
+        lookup_path,
+        reverse_deps,
+        node_meta,
+        exclude_spec,
         collector if include_graph else None,
-        emitted=dependents,
-        label=f"{target} :: dependents beyond cap={_RELATIONSHIP_LIMIT}",
-        preserve_counts=True,
     )
-    cap_collection(
-        result_data,
-        "impact_surface",
-        sorted(dependency_population, key=lambda row: (-row["pagerank"], row["file_path"])),
-        3,
-        collector if include_graph else None,
-        emitted=impact_surface,
-        label=f"{target} :: impact_surface beyond cap=3",
-        preserve_counts=True,
-    )
+    meta = await _load_git_metadata(session, repo_id, lookup_path)
 
-    # Callers reach get_risk with the file path in many forms — backslashes
-    # (Windows), a leading ``./``, a trailing separator, or a repo-absolute
-    # path — while git_metadata.file_path (and the graph node/edge ids) are
-    # stored POSIX-relative. Exact-string equality against the raw target made
-    # a row that exists look absent, and _assess_one_target then reported the
-    # indistinguishable "no git metadata available" card (hotspot_score=0,
-    # primary_owner=None, empty co_change_partners) — issue #1279. Normalize
-    # once and key every file-path lookup on it, but keep the response keyed by
-    # what the caller asked for.
-    # Git metadata
-    res = await session.execute(
-        select(GitMetadata).where(
-            GitMetadata.repository_id == repo_id,
-            GitMetadata.file_path == lookup_path,
-        )
-    )
-    meta = res.scalar_one_or_none()
-
-    symbol_target = "::" in target
-    if meta is None and lookup_path not in node_meta and not symbol_target:
-        # Nothing below measured this target, so every numeric field would be
-        # a structural zero no reader could tell from a measured one. Name the
-        # miss and emit no counts.
-        #
-        # All three conditions are required. A graph node without a git row is
-        # a real target (a new file); a ``path::Symbol`` id is an accepted
-        # input shape here, so rejecting one is a different change.
+    if meta is None and lookup_path not in node_meta and "::" not in target:
+        # Nothing measured this target, so every count would be a structural
+        # zero. A graph node without a git row (a new file) and a
+        # ``path::Symbol`` id are real targets and fall through.
         return {
             "target": target,
             "resolved": False,
@@ -652,136 +656,40 @@ async def _assess_one_target(
         return _history_tier_card(target, meta, security)
 
     if meta is None:
-        result_data["hotspot_score"] = 0.0
-        result_data["is_hotspot"] = False
-        result_data["co_change_partners"] = []
-        result_data["co_change_partners_total"] = 0
-        result_data["co_change_partners_emitted"] = 0
-        result_data["co_change_partners_truncated"] = False
-        result_data["relationship_analysis"]["co_change"] = {
-            "status": "unavailable",
-            "scope": "git_history",
-            "reason": "no git metadata is available for the target",
-        }
-        result_data["primary_owner"] = None
-        result_data["owner_pct"] = None
-        result_data["trend"] = "unknown"
-        result_data["risk_type"] = "high-coupling" if dep_count >= 5 else "unknown"
-        result_data["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
-        result_data["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)
-        result_data["risk_summary"] = f"{target} — no git metadata available"
-        return result_data
+        return await _no_metadata_card(
+            result_data, session, repo_id, target, lookup_path, dep_count
+        )
 
-    hotspot_score = meta.churn_percentile or 0.0
-
-    co_change_population, co_changes_total = _build_co_changes(
-        meta, import_links.get(lookup_path, {}), exclude_spec
+    source, origins, window_note = await _co_change_source(
+        session, repo_id, meta, lookup_path, repo_root, window
     )
-    co_changes = co_change_population[:_RELATIONSHIP_LIMIT]
-
-    owner = meta.primary_owner_name or "unknown"
-    pct = meta.primary_owner_commit_pct or 0.0
-    line_pct = getattr(meta, "primary_owner_line_pct", None)
-
-    # --- Risk velocity (trend) ---
-    trend = _compute_trend(meta)
-
-    # --- Risk type classification ---
-    risk_type = _classify_risk_type(meta, dep_count, team_size)
-
-    # Phase 2: commit classification → change_pattern
-    change_pattern = _derive_change_pattern(_load_commit_categories(meta))
-
-    # Phase 2: recent owner & bus factor
-    bus_factor = getattr(meta, "bus_factor", 0) or 0
-
-    result_data["hotspot_score"] = hotspot_score
-    # Emit the backend's hotspot classification, not a client re-derivation.
-    # ``is_hotspot`` lives on the stored GitMetadata row and already applies
-    # the absolute activity floors (issue #361); a client that thresholds the
-    # score alone can reproduce the churn half but not the floors, so on a
-    # quiet repo it would badge files the backend does not consider hotspots.
-    result_data["is_hotspot"] = bool(getattr(meta, "is_hotspot", False))
-    result_data["co_change_partners"] = co_changes
-    result_data["co_change_partners_total"] = co_changes_total
-    result_data["co_change_partners_emitted"] = len(co_changes)
-    result_data["co_change_partners_truncated"] = len(co_changes) < co_changes_total
-    cap_collection(
+    co_changes_total = _apply_co_changes(
         result_data,
-        "co_change_partners",
-        co_change_population,
-        _RELATIONSHIP_LIMIT,
+        meta,
+        target,
+        import_links.get(lookup_path, {}),
+        exclude_spec,
         collector,
-        label=f"{target} :: co_change_partners beyond cap={_RELATIONSHIP_LIMIT}",
-        preserve_counts=True,
+        origins,
+        origins.get(lookup_path) or path_origin(lookup_path),
+        source,
     )
-    result_data["relationship_analysis"]["co_change"] = {
-        "status": "available",
-        "scope": "git_history",
-        "evidence_kind": "historical",
-    }
-    result_data["primary_owner"] = owner
-    result_data["owner_pct"] = pct
-    result_data["owner_line_pct"] = line_pct
-    result_data["recent_owner"] = getattr(meta, "recent_owner_name", None)
-    result_data["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
-    result_data["bus_factor"] = bus_factor
-    result_data["contributor_count"] = getattr(meta, "contributor_count", 0) or 0
-    result_data["trend"] = trend
-    result_data["risk_type"] = risk_type
-    result_data["change_pattern"] = change_pattern
-    result_data["change_magnitude"] = {
-        "lines_added_90d": getattr(meta, "lines_added_90d", 0) or 0,
-        "lines_deleted_90d": getattr(meta, "lines_deleted_90d", 0) or 0,
-        "avg_commit_size": round(getattr(meta, "avg_commit_size", 0.0) or 0.0, 1),
-    }
-    # Phase 3: rename tracking & merge commit proxy
-    original_path = getattr(meta, "original_path", None)
-    if original_path:
-        result_data["original_path"] = original_path
-    merge_commit_count = getattr(meta, "merge_commit_count_90d", 0) or 0
-    if merge_commit_count > 0:
-        result_data["merge_commit_count_90d"] = merge_commit_count
-
+    if window_note is not None:
+        result_data["co_change_window"] = window_note
+    result_data.update(history_fields(meta, dep_count, team_size))
     defect_profile = _defect_profile(meta, now=as_of_ts)
     if defect_profile is not None:
         result_data["defect_profile"] = defect_profile
-
-    # C. Test gaps + security signals
     result_data["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
     result_data["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)
-
-    capped = getattr(meta, "commit_count_capped", False)
-    capped_note = " (history truncated — actual count may be higher)" if capped else ""
-    result_data["commit_count_capped"] = capped
-
-    bus_note = ""
-    if bus_factor == 1 and (meta.commit_count_total or 0) > 20:
-        bus_note = f", bus factor risk (sole maintainer: {owner})"
-
-    # Lead with the bug-fix history when there is any. The summary used to open
-    # on a churn percentile even where risk_type said "bug-prone", so the first
-    # thing an agent read disagreed with the classification beside it. Counted
-    # fixes are the better grounded defect signal, so they go first and churn
-    # keeps its place as the next clause, for files that are churn hotspots.
-    result_data["risk_summary"] = (
-        f"{target} — {_fix_clause(defect_profile)}"
-        f"{_churn_clause(hotspot_score, result_data['is_hotspot'], trend)}"
-        f"{dep_count} direct dependents, {risk_type}, {change_pattern}, "
-        f"{co_changes_total} co-change partners, {_owner_clause(owner, pct, line_pct)}"
-        f"{bus_note}{capped_note}"
+    result_data["commit_count_capped"] = getattr(meta, "commit_count_capped", False)
+    result_data["risk_summary"] = risk_summary(
+        target,
+        meta,
+        result_data,
+        defect_profile,
+        dep_count,
+        co_changes_total,
+        co_change_since=_applied_since(window_note),
     )
-
     return result_data
-
-
-def _owner_clause(owner: str, commit_pct: float, line_pct: float | None) -> str:
-    """Name the owner with the share each figure actually measures.
-
-    With blame, the owner is the top author of current lines, which need not
-    be the top committer, so both shares are stated and neither is called the
-    other.
-    """
-    if line_pct is None:
-        return f"primary owner {owner} ({commit_pct:.0%} of commits)"
-    return f"{owner} wrote {line_pct:.0%} of current lines ({commit_pct:.0%} of commits)"

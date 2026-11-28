@@ -31,11 +31,13 @@ def _create_test_app():
     from fastapi.responses import JSONResponse
 
     from repowise.server.routers import (
+        areas,
         blast_radius,
         c4,
         changes,
         code_health,
         costs,
+        coupling,
         dead_code,
         decisions,
         doc_drift,
@@ -57,8 +59,10 @@ def _create_test_app():
         repos,
         search,
         security,
+        settings,
         symbols,
         webhooks,
+        wins,
     )
 
     @asynccontextmanager
@@ -95,6 +99,7 @@ def _create_test_app():
     app.include_router(webhooks.router)
     app.include_router(git.router)
     app.include_router(changes.router)
+    app.include_router(wins.router)
     app.include_router(events.router)
     app.include_router(files.router)
     app.include_router(dead_code.router)
@@ -103,6 +108,8 @@ def _create_test_app():
     app.include_router(code_health.router)
     app.include_router(owners.router)
     app.include_router(modules.router)
+    app.include_router(areas.router)
+    app.include_router(coupling.router)
     app.include_router(decisions.router)
     app.include_router(episodes.router)
     app.include_router(external_systems.router)
@@ -110,6 +117,7 @@ def _create_test_app():
     app.include_router(refactoring.router)
     app.include_router(providers.router)
     app.include_router(security.router)
+    app.include_router(settings.router)
 
     return app
 

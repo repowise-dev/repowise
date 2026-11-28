@@ -79,6 +79,7 @@ def flask_file(content: str) -> bool:
 class FlaskDialect:
     name = "flask"
     extensions = PYTHON
+    requires = ("flask",)
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         """``register_blueprint(bp, url_prefix=...)`` mounts declared in the file.

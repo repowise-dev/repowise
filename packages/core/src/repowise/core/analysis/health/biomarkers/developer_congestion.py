@@ -1,4 +1,4 @@
-"""Developer Congestion — too many hands on a single file.
+"""Many authors — too many hands on a single file.
 
 When a file has a large contributor count over a 90-day window and is
 also a hotspot, coordination cost explodes. This pattern is strongly

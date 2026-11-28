@@ -45,13 +45,13 @@ const READ_FIRST: Record<Exclude<AiPromptFlavor, "claude-code-mcp">, (open: stri
   generic: (open) =>
     `Open ${open}, then confirm each item in the code before you act. If one is a false positive, say so and skip it.`,
   "claude-code": (open) =>
-    `Use Read, Grep and Glob on ${open} before planning edits, and flag any false positive. Use TodoWrite for non-trivial steps.`,
+    `Open and search ${open} before planning edits, and flag any false positive. Keep a step list for non-trivial steps.`,
   cursor: (open) =>
-    `Use @file and @codebase to read ${open} before editing, and call out any false positive.`,
+    `Use @file to read ${open} and search the codebase before editing, and call out any false positive.`,
 };
 
 const MCP_FALLBACK =
-  "Fall back to Read / Grep / Glob only for what the index cannot serve, and flag any false positive. Use TodoWrite for non-trivial steps.";
+  "Fall back to reading and searching the files only for what the index cannot serve, and flag any false positive. Keep a step list for non-trivial steps.";
 
 export type PreambleParts =
   | {

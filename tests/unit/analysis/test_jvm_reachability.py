@@ -228,6 +228,54 @@ class TestJvmFileReachable:
         pkgs = build_jvm_package_files(graph)
         assert is_jvm_file_reachable("app/Main.kt", graph, pkgs) is True
 
+    @staticmethod
+    def _extension_call_graph(origin: str, caller_file: str) -> nx.DiGraph:
+        # A Kotlin extension function in one Gradle module, called from the
+        # same package in another: no import, so no file-level edge.
+        ext = "common/src/main/kotlin/com/ex/browser/BrowserQueries.kt"
+        fun = {"name": "firstCardIdsOfNotes", "kind": "function", "visibility": "public"}
+        caller = {"name": "query", "kind": "method", "visibility": "public"}
+        return _build_graph(
+            {ext: _kt_file(symbols=[fun]), caller_file: _kt_file(symbols=[caller])},
+            edges=[
+                (
+                    f"{caller_file}::query",
+                    f"{ext}::firstCardIdsOfNotes",
+                    {"edge_type": "calls", "resolution_origin": origin},
+                ),
+            ],
+        )
+
+    def test_same_package_call_from_another_module_reaches_the_file(self) -> None:
+        caller = "feature/src/main/java/com/ex/browser/BrowserRowCollection.kt"
+        graph = self._extension_call_graph("same_package", caller)
+        pkgs = build_jvm_package_files(graph)
+        ext = "common/src/main/kotlin/com/ex/browser/BrowserQueries.kt"
+        assert is_jvm_file_reachable(ext, graph, pkgs) is True
+
+    def test_a_weak_name_only_call_does_not_reach_the_file(self) -> None:
+        caller = "feature/src/main/java/com/ex/browser/BrowserRowCollection.kt"
+        graph = self._extension_call_graph("global_unique", caller)
+        pkgs = build_jvm_package_files(graph)
+        ext = "common/src/main/kotlin/com/ex/browser/BrowserQueries.kt"
+        assert is_jvm_file_reachable(ext, graph, pkgs) is False
+
+    def test_a_call_from_the_same_file_does_not_reach_it(self) -> None:
+        ext = "common/src/main/kotlin/com/ex/browser/BrowserQueries.kt"
+        graph = _build_graph(
+            {
+                ext: _kt_file(
+                    symbols=[
+                        {"name": "a", "kind": "function", "visibility": "public"},
+                        {"name": "b", "kind": "function", "visibility": "public"},
+                    ]
+                )
+            },
+            edges=[(f"{ext}::a", f"{ext}::b", {"edge_type": "calls", "resolution_origin": "same_file"})],
+        )
+        pkgs = build_jvm_package_files(graph)
+        assert is_jvm_file_reachable(ext, graph, pkgs) is False
+
 
 # ---------------------------------------------------------------------------
 # Never-flag patterns

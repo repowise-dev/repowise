@@ -1,43 +1,32 @@
 """Single-target resolution for get_context.
 
 ``_resolve_one_target`` resolves one target through the ladder in
-``resolution`` and assembles its triage card (docs, triage signals, ownership,
-last_change, decisions, freshness, KG layer/tour, and the opt-in enrichment
-blocks delegated to ``enrichment``).
+``resolution`` and runs the card sections in wire order. The ``docs`` block
+lives here; every other section (triage signals, ownership, last_change,
+decisions, freshness, KG layer/tour, the opt-in enrichment blocks) lives in
+``sections``.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+import re
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.communities import has_community
-from repowise.core.analysis.decisions.lifecycle import is_governing
-from repowise.core.analysis.decisions.scope import binds_to_paths
-from repowise.core.attribution import attribution_enabled, file_share
-from repowise.core.generation.page_selection import is_stale_status
+from repowise.core.generation.models import compute_page_id
 from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
-from repowise.core.persistence.crud import (
-    accepted_predicate,
-    decision_currencies,
-    decision_priority_order,
-    get_kg_layers,
-    get_kg_tour_steps,
-)
-from repowise.core.persistence.decision_graph import get_governing_decisions
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
+from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
-    DecisionRecord,
-    GitMetadata,
     GraphEdge,
     GraphNode,
     Page,
@@ -46,42 +35,32 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server._basis import call_resolution_basis, same_file_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
-from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
-from repowise.server.mcp_server._edit_sites import reference_edit_set
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
-    _decision_body,
     clean_signature,
     escape_like,
     filter_dicts_by_key,
     filter_path_list,
+    no_source_field,
+    serves_no_source,
 )
 from repowise.server.mcp_server._index_state import index_state_key
-from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity, symbol_identity
-from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
-from repowise.server.mcp_server.tool_context.enrichment import (
-    _DOC_DRIFT_PATH,
-    _MIN_CALL_CONFIDENCE,
-    _resolve_call_graph,
-    _resolve_community,
-    _resolve_health,
-    _resolve_metrics,
-    _resolve_skeleton,
-)
-from repowise.server.mcp_server.tool_context.kg import (
-    _classify_file_role,
-    _find_layer_for_file,
-    _find_tour_step_for_file,
-)
+from repowise.server.mcp_server._symbol_facts import shows_call_origin, symbol_card_facts
+from repowise.server.mcp_server._symbol_lookup import spotlight_owners
+from repowise.server.mcp_server.tool_context.enrichment import _MIN_CALL_CONFIDENCE
+from repowise.server.mcp_server.tool_context.files import files_section
 from repowise.server.mcp_server.tool_context.preview import (  # noqa: F401  (re-exported)
     _NO_SYMBOL_SUMMARY_SUFFIX,
-    _file_preview,
+    _file_preview_async,
     _markdown_headings,
     _outline_lines,
     _preview_summary,
     _rst_headings,
     _rst_table_lines,
+)
+from repowise.server.mcp_server.tool_context.preview import (
+    _file_preview as _file_preview,
 )
 from repowise.server.mcp_server.tool_context.resolution import (  # noqa: F401  (re-exported)
     ResolvedTarget,
@@ -90,15 +69,40 @@ from repowise.server.mcp_server.tool_context.resolution import (  # noqa: F401  
     _size_exclusion_note,
     resolve_target,
 )
-from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
+from repowise.server.mcp_server.tool_context.sections import (  # noqa: F401  (re-exported)
+    _MAX_CANDIDATES,
+    _MAX_DECISION_HISTORY,
+    CardSection,
+    CardState,
+    _agent_provenance,
+    _as_utc,
+    _call_graph_section,
+    _changes_section,
+    _community_section,
+    _days_since_last_change,
+    _decision_lanes,
+    _decisions_section,
+    _doc_drift_section,
+    _freshness_section,
+    _git_meta_row,
+    _governing_decision_titles,
+    _health_section,
+    _identity_section,
+    _kg_section,
+    _last_change_section,
+    _metrics_section,
+    _ownership_section,
+    _page_freshness,
+    _parent_page_section,
+    _references_section,
+    _skeleton_section,
+    _tombstone_section,
+    _triage_section,
+)
 
 #: How many users of a symbol the card carries. The file target's
 #: ``imported_by`` is uncapped; whether that asymmetry is intended is unknown.
 _MAX_USED_BY = 20
-#: Caps for the non-accepted decision lanes: a candidate is a review request
-#: and a withdrawn decision is context, neither worth the shared budget.
-_MAX_CANDIDATES = 3
-_MAX_DECISION_HISTORY = 2
 
 #: Bound parameters per rank lookup. SQLite's ceiling is 999 before 3.32 and
 #: 32,766 after, and which applies depends on the libsqlite3 linked at runtime.
@@ -149,7 +153,7 @@ async def _compact_symbol_rows(
             "line": s.start_line,
         }
         sid = symbol_identity(s.symbol_id)
-        if sid != f"{path}::{s.name}":
+        if sid != make_symbol_id(path, s.name):
             row["symbol_id"] = sid
         scored.append(
             ((_kind_rank(s.kind), -rank.get(s.symbol_id, 0.0), s.start_line or 0), row)
@@ -183,91 +187,6 @@ def _synthesize_structural_summary(file_path: str, classes: list[str], functions
     if not parts:
         return f"{name}: {_NO_SYMBOL_SUMMARY_SUFFIX}"
     return f"{name}: " + "; ".join(parts) + "."
-
-
-async def _days_since_last_change(
-    session: AsyncSession,
-    repo_id: str,
-    last_commit_at: datetime | None,
-    as_of_ts: datetime | None = None,
-) -> int | None:
-    """Whole days from a file's last commit to the index's reference date.
-
-    Uses ``as_of_ts`` (the anchor ``fix_annotation`` already uses) when given,
-    else the newest commit in the index, so it agrees with the other ages on
-    the file however old the index is. Rows are stored naive-UTC, so a naive
-    timestamp is read as UTC.
-    """
-    if last_commit_at is None:
-        return None
-    reference = as_of_ts
-    if reference is None:
-        reference = (
-            await session.execute(
-                select(func.max(GitMetadata.last_commit_at)).where(
-                    GitMetadata.repository_id == repo_id
-                )
-            )
-        ).scalar()
-    reference = reference or last_commit_at
-    return max(0, (_as_utc(reference) - _as_utc(last_commit_at)).days)
-
-
-def _as_utc(moment: datetime) -> datetime:
-    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
-
-
-@dataclass
-class CardState:
-    """One target's card while its sections write into ``data``."""
-
-    query: TargetQuery
-    resolved: ResolvedTarget
-    data: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def session(self) -> AsyncSession:
-        return self.query.session
-
-    @property
-    def repo_id(self) -> str:
-        return self.query.repo_id
-
-    @property
-    def target(self) -> str:
-        return self.query.target
-
-    @property
-    def include(self) -> set[str] | None:
-        return self.query.include
-
-    @property
-    def page(self) -> Page | None:
-        return self.resolved.page
-
-    def wants(self, name: str) -> bool:
-        """An opt-in block the caller named."""
-        return bool(self.include and name in self.include)
-
-    def default_on(self, name: str) -> bool:
-        """A default block: on with no ``include``, else only when named."""
-        return self.include is None or name in self.include
-
-    @property
-    def git_path(self) -> str | None:
-        """The path git rows are keyed on: the module's directory for a module."""
-        if self.resolved.target_type == "module" and self.page:
-            return self.page.target_path
-        return self.resolved.file_path
-
-    @property
-    def skeleton_plus(self) -> bool:
-        return self.wants("skeleton+")
-
-    @property
-    def want_skeleton(self) -> bool:
-        # Asking for both skeleton and skeleton+ renders one block, the plus view.
-        return self.skeleton_plus or self.wants("skeleton")
 
 
 async def _resolve_one_target(
@@ -306,64 +225,6 @@ async def _resolve_one_target(
     return card.data
 
 
-def _identity_section(card: CardState) -> None:
-    data, resolved = card.data, card.resolved
-    data["target"] = card.target
-    data["type"] = resolved.target_type
-    if resolved.target_type == "file" and resolved.file_path:
-        data["path"] = path_identity(resolved.file_path)
-    meta = resolved.live_file_meta
-    if meta is not None:
-        data["index_status"] = "live_file_without_wiki_page"
-        data["verification_basis"] = "indexed_plus_live"
-        data["exists_in_git"] = True
-        data["last_commit_at"] = meta.last_commit_at.isoformat() if meta.last_commit_at else None
-        data["primary_owner"] = meta.primary_owner_name
-        data["is_hotspot"] = meta.is_hotspot
-    elif resolved.live_unindexed_file:
-        data["index_status"] = "live_file_without_index_record"
-        data["verification_basis"] = "live"
-
-
-def _tombstone_section(card: CardState) -> bool:
-    """The file was deleted or renamed since indexing: write the redirect
-    rather than a misleading card, and say the card ends here."""
-    page = card.page
-    if page is None or getattr(page, "freshness_status", "") != "tombstone":
-        return False
-    try:
-        successors = json.loads(page.metadata_json or "{}").get("successor_paths") or []
-    except (ValueError, TypeError):
-        successors = []
-    card.data["error"] = (
-        f"'{card.target}' was deleted or renamed after indexing — this page is a tombstone."
-    )
-    if successors:
-        card.data["successor_paths"] = successors
-        card.data["hint"] = f"Content moved; call get_context on {successors[0]!r} instead."
-    return True
-
-
-async def _parent_page_section(card: CardState) -> None:
-    """Position in the concept tree: a file up to its concept page, a concept
-    page up to its layer."""
-    page = card.page
-    if page is None or not page.parent_page_id:
-        return
-    parent = await card.session.get(Page, page.parent_page_id)
-    if (
-        parent is not None
-        and parent.repository_id == card.repo_id
-        and getattr(parent, "freshness_status", "") != "tombstone"
-    ):
-        # Skip a tombstoned parent, for the reason _tombstone_section redirects.
-        card.data["parent_page"] = {
-            "title": parent.title,
-            "target_path": parent.target_path,
-            "section": parent.section_number,
-        }
-
-
 async def _docs_section(card: CardState) -> None:
     # "full_doc" implies "docs".
     if not (card.default_on("docs") or card.wants("full_doc")):
@@ -377,7 +238,9 @@ def _file_page_docs(card: CardState, docs: dict[str, Any]) -> None:
     page = card.page
     if page is None:
         return
-    docs["title"] = page.title
+    if page.title != f"File: {page.target_path}":
+        # The generated title only repeats the path.
+        docs["title"] = page.title
     docs["summary"] = page.summary or ""
     if card.wants("full_doc"):
         docs["content_md"] = page.content
@@ -415,7 +278,7 @@ async def _file_docs(card: CardState, docs: dict[str, Any]) -> None:
     # A symbol-less file still has content: one read serves counts and a
     # verbatim excerpt instead of a card that restates the filename.
     if not symbols:
-        _attach_file_preview(card, docs)
+        await _attach_file_preview(card, docs)
 
 
 async def _compact_file_symbols(card: CardState, docs: dict[str, Any], symbols: Any) -> None:
@@ -491,8 +354,11 @@ async def _file_importers_and_community(card: CardState, docs: dict[str, Any]) -
         }
 
 
-def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
-    preview = _file_preview(card.query.repo_root, card.target)
+async def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
+    if serves_no_source():
+        docs["file_preview"] = no_source_field(card.target)
+        return
+    preview = await _file_preview_async(card.query.repo_root, card.target)
     if preview is not None:
         docs["file_preview"] = preview
         # Replace the stub summary with the preview's own counts.
@@ -500,13 +366,40 @@ def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
             docs["summary"] = _preview_summary(card.target, preview)
 
 
+async def _directory_docs(card: CardState, docs: dict[str, Any]) -> None:
+    """A directory with no module page: its files with git history, capped as symbols are."""
+    paths = sorted(r.file_path for r in await card.dir_rows())
+    docs["summary"] = (
+        f"{card.dir_path}: a directory with no module page; {len(paths)} file(s) "
+        "under it have git history."
+    )
+    _cap_file_rows(card, docs, [{"path": p} for p in paths])
+
+
+def _cap_file_rows(card: CardState, docs: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """``docs["files"]``, capped as symbols are, the rest recoverable from the collector."""
+    cap_collection(
+        docs,
+        "files",
+        rows,
+        _SYMBOL_CAP,
+        card.query.collector,
+        label=f"{card.target} :: docs.files beyond cap={_SYMBOL_CAP}",
+    )
+    # Agents asking "which files here lack tests" miss the opt-in from the
+    # tool description alone, so a cut list names it.
+    if len(rows) > _SYMBOL_CAP and not card.wants("files"):
+        docs["files_all"] = 'include=["files"]'
+
+
 async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
     page = card.page
+    if page is None:
+        await _directory_docs(card, docs)
+        return
     exclude_spec = card.query.exclude_spec
     docs["title"] = page.title
     docs["summary"] = page.summary or ""
-    if page.section_number:
-        docs["section"] = page.section_number
     if card.wants("full_doc"):
         docs["content_md"] = page.content
         # Questions, identifiers, public API and git signals: kept off the
@@ -531,23 +424,31 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
                     "title": ch.title,
                     "target_path": ch.target_path,
                     "page_type": ch.page_type,
-                    "section": ch.section_number,
                 }
                 for ch in child_pages
             ],
             "target_path",
             exclude_spec,
         )
-    # Child file pages
+    await _module_file_docs(card, page, docs)
+
+
+async def _module_file_docs(card: CardState, page: Page, docs: dict[str, Any]) -> None:
+    """The module's file pages, ranked by PageRank and capped.
+
+    A large module's whole file list outweighs its page, so uncapped it cost
+    the page body and digest their room in the budget.
+    """
     res = await card.session.execute(
         select(Page).where(
             Page.repository_id == card.repo_id,
             Page.page_type == "file_page",
+            Page.freshness_status != TOMBSTONE,
             Page.target_path.like(f"{escape_like(page.target_path)}/%", escape=LIKE_ESCAPE),
         )
     )
     file_pages = res.scalars().all()
-    docs["files"] = filter_dicts_by_key(
+    rows = filter_dicts_by_key(
         [
             {
                 "path": f.target_path,
@@ -558,8 +459,11 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
             for f in file_pages
         ],
         "path",
-        exclude_spec,
+        card.query.exclude_spec,
     )
+    rank = await _file_ranks(card, {row["path"] for row in rows})
+    rows.sort(key=lambda row: (-rank[row["path"]], row["path"]))
+    _cap_file_rows(card, docs, rows)
 
 
 async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
@@ -580,12 +484,22 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
         if value:
             docs[key] = clean_signature(value) if attr == "signature" else value
     # File page summary (full content gated behind include=["full_doc"])
-    sym_page = await card.session.get(Page, f"file_page:{sym.file_path}")
+    sym_page = await file_backed_page(card.session, card.repo_id, sym.file_path)
+    if sym_page is not None and sym_page.freshness_status == TOMBSTONE:
+        sym_page = None
     if sym_page is not None:
         docs["file_summary"] = sym_page.summary or ""
-        if card.wants("full_doc"):
-            docs["documentation"] = sym_page.content
+    if card.wants("full_doc"):
+        await _symbol_documentation(card, sym, sym_page, docs)
     await _symbol_used_by(card, sym, docs)
+    # Opt in: get_symbol carries them by default; the card stays its default size.
+    sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
+    if card.wants("facts") and sym_node_id:
+        docs.update(
+            await symbol_card_facts(
+                card.session, card.repo_id, sym_node_id, card.query.exclude_spec
+            )
+        )
     # Candidates
     if len(sym_matches) > 1:
         docs["candidates"] = filter_dicts_by_key(
@@ -603,6 +517,85 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
         )
 
 
+async def _symbol_documentation(
+    card: CardState, sym: Any, file_page: Page | None, docs: dict[str, Any]
+) -> None:
+    """The symbol's own page, else its entry on the file page, else nothing.
+
+    A spotlight is the page written about this symbol; the file page is shared
+    by every symbol in the file, so serving it whole repeats it per symbol.
+    ``file_summary`` still names the file; its page is one file target away.
+    """
+    spotlight = await _spotlight_page(card, sym)
+    if spotlight is not None:
+        docs["documentation"] = spotlight.content
+        return
+    entry = _file_page_entry(file_page.content or "", sym.name) if file_page else None
+    if entry:
+        docs["documentation"] = entry
+
+
+async def _spotlight_page(card: CardState, sym: Any) -> Page | None:
+    """The spotlight page written for *sym*, if one was and *sym* owns it."""
+    page = await card.session.get(
+        Page, compute_page_id("symbol_spotlight", f"{sym.file_path}::{sym.name}")
+    )
+    # A tombstoned spotlight was deselected or its file is gone; either way its
+    # body is no longer this symbol's documentation.
+    if page is None or page.freshness_status == TOMBSTONE:
+        return None
+    key = (sym.file_path, sym.name)
+    owner = (await spotlight_owners(card.session, card.repo_id, {key})).get(key)
+    start_line = getattr(sym, "start_line", None)
+    if owner is not None and start_line is not None and owner.start_line != start_line:
+        return None
+    return page
+
+
+_BULLET_SPAN_RE = re.compile(r"^(\s*)- `([^`]*)`")
+
+# Where a rendered declaration stops naming itself: its parameters, type,
+# value, generics or base list.
+_DECLARATION_HEAD_END_RE = re.compile(r"[(:=<\[{]|\s(?:extends|implements)\s")
+_IDENTIFIER_RE = re.compile(r"[\w$]+")
+
+
+def _file_page_entry(content: str, name: str) -> str | None:
+    """The file page's list entry for *name*, with its nested rows.
+
+    Matches a bullet whose leading code span declares the symbol, as the file
+    page's API list renders it. ``None`` when the page lists no such entry.
+    """
+    lines = content.splitlines()
+    for start, line in enumerate(lines):
+        match = _BULLET_SPAN_RE.match(line)
+        if match is None or _declared_name(match.group(2)) != name:
+            continue
+        depth = len(match.group(1))
+        end = start + 1
+        while end < len(lines) and _nested_under(lines[end], depth):
+            end += 1
+        return "\n".join(lines[start:end])
+    return None
+
+
+def _declared_name(span: str) -> str | None:
+    """The name a rendered declaration declares: the last word before its
+    parameters, type or value (``def area(self)`` -> ``area``). A path
+    (``src/app.py``) declares nothing."""
+    if "/" in span:
+        return None
+    head = _DECLARATION_HEAD_END_RE.split(span, maxsplit=1)[0]
+    words = _IDENTIFIER_RE.findall(head)
+    return words[-1] if words else None
+
+
+def _nested_under(line: str, depth: int) -> bool:
+    """True when *line* is indented deeper than a bullet at *depth*."""
+    stripped = line.lstrip()
+    return bool(stripped) and len(line) - len(stripped) > depth
+
+
 async def _symbol_user_files(
     card: CardState, sym: Any, sym_node_id: Any
 ) -> tuple[set[str], set[str]]:
@@ -614,7 +607,12 @@ async def _symbol_user_files(
     row per file, unlike symbol-grained ``callers``.
     """
     res = await card.session.execute(
-        select(GraphEdge.source_node_id, GraphNode.file_path, GraphEdge.confidence)
+        select(
+            GraphEdge.source_node_id,
+            GraphNode.file_path,
+            GraphEdge.confidence,
+            GraphEdge.resolution_origin,
+        )
         .outerjoin(
             GraphNode,
             (GraphNode.repository_id == GraphEdge.repository_id)
@@ -634,8 +632,10 @@ async def _symbol_user_files(
     # by the confidence floor include=["callers"] serves (a recursive call is
     # not a user), so an empty list can say so.
     same_file_users: set[str] = set()
-    for source_node_id, file_path, confidence in res.all():
-        path = file_path or source_node_id.split("::", 1)[0]
+    for source_node_id, file_path, confidence, origin in res.all():
+        if not shows_call_origin(origin, sym.file_path):
+            continue
+        path = file_path or file_of_symbol(source_node_id)
         user_files.add(path)
         if (
             path == sym.file_path
@@ -647,11 +647,11 @@ async def _symbol_user_files(
 
 
 async def _file_ranks(card: CardState, user_files: set[str]) -> dict[str, float]:
-    """PageRank per using file, 0.0 when the graph has no node for it.
+    """PageRank per file, 0.0 when the graph has no node for it.
 
-    Looked up by the folded path, not joined: a source whose symbol node is
-    missing has no file to join through and would rank 0.0. Chunked because
-    this binds one parameter per using file.
+    Looked up by path, not joined: a using symbol whose node is missing has
+    no file to join through and would rank 0.0. Chunked because this binds
+    one parameter per file.
     """
     best_rank: dict[str, float] = {p: 0.0 for p in user_files}
     ordered = sorted(user_files)
@@ -704,440 +704,12 @@ async def _symbol_used_by(card: CardState, sym: Any, docs: dict[str, Any]) -> No
 
 _DOCS_BY_TYPE = {"file": _file_docs, "module": _module_docs, "symbol": _symbol_docs}
 
-
-async def _triage_section(card: CardState) -> None:
-    """Triage signals (always on): small pointers to the next tool, never the
-    dossier itself.
-
-    * ``hotspot``: points to ``get_risk`` for high-churn files.
-    * ``fix_history``: "does this file break", which churn does not answer;
-      omitted on files with no counted fixes.
-    * ``decision_records``: titles only, pointing to ``get_why``; inlining
-      rationale would bloat every cached response.
-    """
-    triage_path = card.git_path
-    if not triage_path:
-        return
-    # Same single row, four columns instead of one: no extra round trip.
-    triage_meta_res = await card.session.execute(
-        select(
-            GitMetadata.is_hotspot,
-            GitMetadata.prior_defect_count,
-            GitMetadata.bug_magnet,
-            GitMetadata.last_fix_at,
-        ).where(
-            GitMetadata.repository_id == card.repo_id,
-            GitMetadata.file_path == triage_path,
-        )
-    )
-    triage_meta = triage_meta_res.one_or_none()
-    card.data["hotspot"] = bool(triage_meta.is_hotspot) if triage_meta is not None else False
-    if triage_meta is not None:
-        # Row exposes the selected columns as attributes, which is exactly the
-        # shape fix_annotation reads off a full ORM row.
-        fixes = fix_annotation(triage_meta, now=card.query.as_of_ts)
-        if fixes is not None:
-            card.data["fix_history"] = fixes
-    # Governing decisions, opt-in only: the graph query is not worth its
-    # latency on every card. Returns titles; get_why has the rationale.
-    if card.wants("decisions"):
-        await _governing_decision_titles(card, triage_path)
-
-
-async def _governing_decision_titles(card: CardState, triage_path: str) -> None:
-    target = card.target
-    governing: list[DecisionRecord] = []
-    seen_ids: set[str] = set()
-    for lookup_node in dict.fromkeys(
-        [triage_path, target] if triage_path != target else [triage_path]
-    ):
-        if not lookup_node:
-            continue
-        for dr in await get_governing_decisions(card.session, card.repo_id, lookup_node):
-            if dr.id not in seen_ids:
-                seen_ids.add(dr.id)
-                governing.append(dr)
-    if governing:
-        governing_sorted = sorted(governing, key=lambda d: -(d.confidence or 0.0))
-        card.data["decision_records"] = [dr.title for dr in governing_sorted[:3]]
-        card.data["decision_records_hint"] = (
-            "Decisions touch this file. Call get_why(targets=[...]) for rationale."
-        )
-
-
-async def _git_meta_row(card: CardState, git_path: str | None) -> GitMetadata | None:
-    if not git_path:
-        return None
-    res = await card.session.execute(
-        select(GitMetadata).where(
-            GitMetadata.repository_id == card.repo_id,
-            GitMetadata.file_path == git_path,
-        )
-    )
-    return res.scalar_one_or_none()
-
-
-async def _ownership_section(card: CardState) -> None:
-    if not card.default_on("ownership"):
-        return
-    ownership: dict[str, Any] = {}
-    meta = await _git_meta_row(card, card.git_path)
-    if meta:
-        ownership["primary_owner"] = meta.primary_owner_name
-        # owner_pct is the owner's share of commits; owner_line_pct their
-        # share of current lines by blame (None without blame).
-        ownership["owner_pct"] = meta.primary_owner_commit_pct
-        ownership["owner_line_pct"] = getattr(meta, "primary_owner_line_pct", None)
-        ownership["contributor_count"] = getattr(meta, "contributor_count", 0) or len(
-            json.loads(meta.top_authors_json)
-        )
-        ownership["bus_factor"] = getattr(meta, "bus_factor", 0) or 0
-        # Recent owner (who maintains this file now)
-        recent = getattr(meta, "recent_owner_name", None)
-        if recent and recent != meta.primary_owner_name:
-            ownership["recent_owner"] = recent
-            ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
-        _agent_provenance(card, meta, ownership)
-    else:
-        ownership["primary_owner"] = None
-        ownership["owner_pct"] = None
-        ownership["contributor_count"] = 0
-        ownership["bus_factor"] = 0
-    card.data["ownership"] = ownership
-
-
-def _agent_provenance(card: CardState, meta: GitMetadata, ownership: dict[str, Any]) -> None:
-    """Agent provenance, only when agent-attributed commits exist and
-    attribution is on. The share is of commits with a known source, with its
-    coverage; unknown is never human."""
-    if not (
-        getattr(meta, "agent_commit_count", 0)
-        and attribution_enabled(card.query.repository.local_path)
-    ):
-        return
-    ownership["agent_share"] = file_share(
-        meta.agent_commit_count,
-        getattr(meta, "attribution_known_count", 0),
-        meta.commit_count_total,
-    ).summary()
-    ownership["agent_commit_count"] = meta.agent_commit_count
-    with contextlib.suppress(TypeError, ValueError):
-        ownership["agent_tier_counts"] = json.loads(
-            getattr(meta, "agent_tier_counts_json", None) or "{}"
-        )
-
-
-async def _last_change_section(card: CardState) -> None:
-    if not card.default_on("last_change"):
-        return
-    last_change: dict[str, Any] = {}
-    meta = await _git_meta_row(card, card.git_path)
-    if meta:
-        last_change["date"] = meta.last_commit_at.isoformat() if meta.last_commit_at else None
-        last_change["author"] = meta.primary_owner_name
-        last_change["days_ago"] = await _days_since_last_change(
-            card.session, card.repo_id, meta.last_commit_at, card.query.as_of_ts
-        )
-    else:
-        last_change["date"] = None
-        last_change["author"] = None
-        last_change["days_ago"] = None
-    card.data["last_change"] = last_change
-
-
-async def _changes_section(card: CardState) -> None:
-    """Change Records and provenance (file targets, opt-in)."""
-    include = card.include
-    file_path = card.resolved.file_path
-    if not (
-        include
-        and card.resolved.target_type == "file"
-        and file_path
-        and include & {"changes", "provenance"}
-    ):
-        return
-    repository = card.query.repository
-    attribution = attribution_enabled(repository.local_path)
-    if "changes" in include:
-        found = await file_changes(card.session, repository, [file_path], attribution=attribution)
-        card.data.update(found[file_path])
-    if "provenance" in include:
-        meta = await load_file_meta(card.session, card.repo_id, file_path) if attribution else None
-        card.data["provenance"] = file_provenance(meta, attribution)
-
-
-async def _decisions_section(card: CardState) -> None:
-    """Decision lanes. Acceptance is authority, not the status column. The
-    lanes match ``get_why`` path mode: ``decisions`` accepted and binding,
-    ``candidates`` never accepted, ``history`` accepted then withdrawn.
-    Ordering is ``decision_priority_order``, shared with the Decisions page.
-
-    The dismissed filter is ``count_decisions_by_lane``'s: "dismissed" marks
-    both a tombstoned candidate and a withdrawn decision, and only the
-    acceptance row tells them apart, so a bare status filter would lose the
-    withdrawn ones from the history lane.
-    """
-    if not card.default_on("decisions"):
-        return
-    res = await card.session.execute(
-        select(DecisionRecord)
-        .where(
-            DecisionRecord.repository_id == card.repo_id,
-            or_(DecisionRecord.status != "dismissed", accepted_predicate()),
-        )
-        .order_by(*decision_priority_order())
-    )
-    all_decisions = list(res.scalars().all())
-    currencies = await decision_currencies(card.session, card.repo_id, all_decisions)
-    governing, candidates, history = _decision_lanes(card, all_decisions, currencies)
-    target, collector = card.target, card.query.collector
-    card.data["decisions"] = governing
-    # One budget covers the whole payload, so an uncapped lane would displace
-    # the docs the caller asked for. Accepted decisions stay uncapped (small by
-    # construction); dropped rows go to the collector.
-    if candidates:
-        cap_collection(
-            card.data,
-            "candidates",
-            candidates,
-            _MAX_CANDIDATES,
-            collector,
-            label=f"{target} :: candidates beyond cap={_MAX_CANDIDATES}",
-        )
-    if history:
-        cap_collection(
-            card.data,
-            "history",
-            history,
-            _MAX_DECISION_HISTORY,
-            collector,
-            label=f"{target} :: decision history beyond cap={_MAX_DECISION_HISTORY}",
-        )
-
-
-def _decision_lanes(
-    card: CardState, all_decisions: list[DecisionRecord], currencies: dict[str, Any]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """The decisions naming this target, split into governing, candidate and
-    history lanes."""
-    target, file_path = card.target, card.resolved.file_path
-    governing: list[dict[str, Any]] = []
-    candidates: list[dict[str, Any]] = []
-    history: list[dict[str, Any]] = []
-    for d in all_decisions:
-        # A commit footprint is not a claim about any one of its files.
-        if not binds_to_paths(d.scope_basis):
-            continue
-        affected_files = json.loads(d.affected_files_json)
-        affected_modules = json.loads(d.affected_modules_json)
-        if not (
-            target in affected_files
-            or target in affected_modules
-            or (file_path and file_path in affected_files)
-        ):
-            continue
-        entry: dict[str, Any] = {
-            "id": d.id,
-            "title": d.title,
-            "status": d.status,
-            "decision": _decision_body(d),
-            "rationale": d.rationale,
-            "confidence": d.confidence,
-        }
-        currency = currencies.get(d.id)
-        if currency is None:
-            entry["authority"] = "candidate"
-            candidates.append(entry)
-        elif is_governing(currency):
-            entry["authority"] = "accepted"
-            entry["currency"] = currency
-            governing.append(entry)
-        else:
-            entry["authority"] = "withdrawn"
-            entry["currency"] = currency
-            history.append(entry)
-    return governing, candidates, history
-
-
-def _page_freshness(page: Page | None) -> dict[str, Any]:
-    if not page:
-        return {"confidence_score": None, "freshness_status": None, "is_stale": None}
-    return {
-        "confidence_score": page.confidence,
-        "freshness_status": page.freshness_status,
-        "is_stale": is_stale_status(page.freshness_status),
-    }
-
-
-async def _freshness_section(card: CardState) -> None:
-    """``is_stale`` uses ``is_stale_status``, the rule ``repowise generate
-    --stale`` uses, so "stale" means one thing. Not ``confidence``: that rates
-    how far a page can be trusted, not whether it has fallen behind the code."""
-    if not card.default_on("freshness"):
-        return
-    file_path = card.resolved.file_path
-    page = card.page
-    if not page and card.resolved.target_type == "symbol" and file_path:
-        page = await card.session.get(Page, f"file_page:{file_path}")
-    freshness = _page_freshness(page)
-    if file_path and uncommitted_targets(
-        served_root(card.query.repository, card.query.repo_root), [file_path]
-    ):
-        freshness["working_tree"] = "modified"
-    card.data["freshness"] = freshness
-
-
-async def _kg_section(card: CardState) -> None:
-    """The file's architectural layer and its step in the guided tour."""
-    file_path = card.resolved.file_path
-    if not (card.resolved.target_type == "file" and file_path):
-        return
-    kg_layers = await get_kg_layers(card.session, card.repo_id)
-    if not kg_layers:
-        return
-    for _l in kg_layers:
-        _l._parsed_node_ids = json.loads(_l.node_ids_json) if _l.node_ids_json else []
-    file_layer = _find_layer_for_file(file_path, kg_layers)
-    if file_layer:
-        edge_res = await card.session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == card.repo_id,
-                GraphEdge.target_node_id == file_path,
-                GraphEdge.edge_type == "imports",
-            )
-        )
-        incoming_edges = list(edge_res.scalars())
-        card.data["architectural_layer"] = {
-            "name": file_layer.name,
-            "description": (file_layer.description or "")[:200],
-            "role": _classify_file_role(file_path, file_layer, incoming_edges),
-        }
-    kg_tour = await get_kg_tour_steps(card.session, card.repo_id)
-    if kg_tour:
-        for _s in kg_tour:
-            _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
-        file_tour_step = _find_tour_step_for_file(file_path, kg_tour)
-        if file_tour_step:
-            card.data["tour_context"] = {
-                "step": file_tour_step.step_order,
-                "title": file_tour_step.title,
-                "why": (file_tour_step.description or "")[:200],
-            }
-
-
-async def _call_graph_section(card: CardState) -> None:
-    want_callers = card.wants("callers")
-    want_callees = card.wants("callees")
-    if not (want_callers or want_callees):
-        return
-    query = card.query
-    await _resolve_call_graph(
-        card.session,
-        query.repository,
-        card.resolved.symbol_node_id or card.target,
-        card.resolved.target_type,
-        card.data,
-        want_callers=want_callers,
-        want_callees=want_callees,
-        exclude_spec=query.exclude_spec,
-        collector=query.collector,
-        repo_root=served_root(query.repository, query.repo_root),
-    )
-
-
-async def _references_section(card: CardState) -> None:
-    """Reference edit set: every live site naming the symbol."""
-    if not card.wants("references"):
-        return
-    resolved = card.resolved
-    ref_node = resolved.graph_symbol
-    symbol_node_id = resolved.symbol_node_id
-    if ref_node is None and resolved.target_type == "symbol" and symbol_node_id:
-        res = await card.session.execute(
-            select(GraphNode).where(
-                GraphNode.repository_id == card.repo_id,
-                GraphNode.node_id.in_(symbol_id_variants(symbol_node_id)),
-                GraphNode.node_type == "symbol",
-            )
-        )
-        ref_node = min(
-            res.scalars().all(),
-            key=lambda g: (g.node_id != symbol_node_id, g.node_id),
-            default=None,
-        )
-    root = served_root(card.query.repository, card.query.repo_root)
-    if ref_node is not None and root:
-        card.data["references"] = await reference_edit_set(
-            card.session, card.repo_id, root, ref_node, card.query.collector
-        )
-    else:
-        card.data["references_note"] = "references require a symbol target in the graph"
-
-
-async def _metrics_section(card: CardState) -> None:
-    if card.wants("metrics"):
-        await _resolve_metrics(
-            card.session,
-            card.query.repository,
-            card.resolved.symbol_node_id or card.target,
-            card.data,
-        )
-
-
-async def _community_section(card: CardState) -> None:
-    if card.wants("community"):
-        await _resolve_community(
-            card.session,
-            card.query.repository,
-            card.resolved.symbol_node_id or card.target,
-            card.data,
-            exclude_spec=card.query.exclude_spec,
-        )
-
-
-async def _health_section(card: CardState) -> None:
-    if card.wants("health"):
-        await _resolve_health(
-            card.session,
-            card.query.repository,
-            card.target,
-            card.resolved.target_type,
-            card.data,
-        )
-
-
-async def _doc_drift_section(card: CardState) -> None:
-    """Documents naming this file (doc-drift reverse view).
-
-    Only the path is recorded here. The read itself is one batched pass over
-    every target, after the gather: see ``attach_doc_references``, which
-    explains why a savepoint per target cannot work on a shared session.
-    """
-    if card.wants("doc_drift"):
-        card.data[_DOC_DRIFT_PATH] = card.resolved.file_path
-
-
-async def _skeleton_section(card: CardState) -> None:
-    """Skeleton (distill), opt-in only; see the module note."""
-    if card.want_skeleton:
-        await _resolve_skeleton(
-            card.session,
-            card.query.repository,
-            card.target,
-            card.resolved.target_type,
-            card.data,
-            repo_root=card.query.repo_root,
-            mode="plus" if card.skeleton_plus else "smart",
-        )
-
-
-CardSection = Callable[[CardState], Awaitable[None]]
-
 #: The card after identity, in wire (JSON key) order: each section adds its
 #: keys after the ones before it.
 _CARD_SECTIONS: tuple[CardSection, ...] = (
     _parent_page_section,
     _docs_section,
+    files_section,
     _triage_section,
     _ownership_section,
     _last_change_section,

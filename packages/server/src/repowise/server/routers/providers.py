@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from repowise.core.persistence import crud
@@ -23,6 +26,8 @@ from repowise.server.schemas import (
     SetActiveProviderRequest,
     SetApiKeyRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/providers",
@@ -56,15 +61,65 @@ async def _repo_path_for(request: Request, repo_id: str | None) -> str | None:
 
 
 @router.get("", response_model=ProviderStatusResponse)
-async def get_providers(request: Request, repo_id: str | None = None):
+async def get_providers(request: Request, repo_id: str | None = None, detect: bool = False):
     """List all providers with their status and active selection.
 
     Pass ``?repo_id=`` so the active selection reflects that repo's own
     ``.repowise/config.yaml`` (and any per-repo UI override) instead of the
-    server-global default.
+    server-global default. ``?detect=true`` also asks each agent CLI whether
+    it is signed in (a short subprocess each), so it runs off the event loop.
     """
     repo_path = await _repo_path_for(request, repo_id)
+    if detect:
+        status, route = await asyncio.gather(
+            asyncio.to_thread(
+                list_provider_status, repo_id=repo_id, repo_path=repo_path, detect=True
+            ),
+            _plan_route(request, repo_id, repo_path),
+        )
+        return {**status, "plan_route": route}
     return list_provider_status(repo_id=repo_id, repo_path=repo_path)
+
+
+# Model calls ``generate`` makes, per repo, counted once per process: the count
+# loads the stored graph, seconds on a very large repo. It only times a route
+# while the repo has no model, and the first page ``generate`` writes saves the
+# provider, which ends the route, so a count cannot outlive what it sized.
+_generate_calls: dict[str, int] = {}
+
+
+async def _plan_route(
+    request: Request, repo_id: str | None, repo_path: str | None
+) -> dict | None:
+    """The plan-billed sign-in the keyless upgrade line names, timed by ``generate``'s calls.
+
+    Same rule and count as the MCP reply, ``status`` and ``doctor``; the time
+    is left out when the calls cannot be counted.
+    """
+    if not repo_id or not repo_path:
+        return None
+    from repowise.core.generation.scope import generate_model_calls
+    from repowise.core.providers.llm.subscription import detect_free_route, route_minutes
+
+    try:
+        route = await asyncio.to_thread(detect_free_route, repo_path)
+    except Exception:
+        # The line is extra: a failed probe must not fail the provider list.
+        logger.debug("providers: plan route probe failed for %s", repo_id, exc_info=True)
+        return None
+    if route is None:
+        return None
+    try:
+        calls = _generate_calls.get(repo_id)
+        if calls is None:
+            factory = resolve_session_factory(request.app.state, repo_id)
+            async with get_session(factory) as session:
+                calls = await generate_model_calls(session, repo_id, repo_path)
+            _generate_calls[repo_id] = calls
+        route = route_minutes(route, calls)
+    except Exception:
+        logger.debug("providers: could not count generate's calls for %s", repo_id, exc_info=True)
+    return {"provider": route.provider, "cli_name": route.cli_name, "minutes": route.minutes}
 
 
 @router.patch("/active", response_model=ProviderStatusResponse)

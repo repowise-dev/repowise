@@ -5,8 +5,11 @@
  *
  * Everything a frame reads lives in one mutable loop state, so a frame never
  * waits on React and React never re-renders for a frame. Callers mark which
- * layer changed with `invalidate`; a frame paints only those layers, and keeps
- * scheduling itself only while a camera flight or a lens recolor is running.
+ * layer changed with `invalidate`; a frame decides the semantic zoom for the
+ * current camera ({@link computeView}), paints only the layers that changed,
+ * and keeps scheduling itself only while a camera flight or a lens recolor is
+ * running. Once the camera rests, the frame tells the host what the view wants
+ * loaded next.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -15,6 +18,9 @@ import type { MutableRefObject, RefObject } from "react";
 import { useThemeVersion } from "../../shared/use-theme-tokens";
 import { easeInOutCubic, interpolateCamera } from "../../zoom/camera-anim";
 import { isLoudFill } from "../tokens";
+import type { AreaIndex } from "./areas";
+import type { AreaGeometry } from "./area-layout";
+import { computeView, type DiscView, type FieldView } from "./area-view";
 import { NEUTRAL_FILL } from "./lens";
 import { WORLD, fitCamera } from "./layout";
 import { placeLabels } from "./labels";
@@ -50,17 +56,29 @@ export interface Tween {
   dur: number;
 }
 
+/** What the view asks the host to load, reported once the camera rests. */
+export interface Wants {
+  children: string[];
+  files: string[];
+}
+
 /** What the frame loop paints, refreshed by the component on every render. */
 export interface FieldLive {
+  index: AreaIndex;
+  geo: AreaGeometry;
   scene: FieldScene;
   fills: string[];
-  focusIdx: number;
+  areaFill: ReadonlyMap<string, string>;
   marked: number[];
   selectedIdx: number;
   cursorIdx: number;
   hoverIdx: number;
+  selectedArea: string | null;
+  hoverArea: string | null;
+  cursorArea: string | null;
   minNodeR: number;
-  labelOrder: number[];
+  filesCovered: (path: string) => boolean;
+  onWants?: ((wants: Wants) => void) | undefined;
 }
 
 export interface Dirty {
@@ -86,6 +104,10 @@ export interface LoopState {
   raf: number | null;
   resolve: (css: string) => Rgb;
   palette: Palette | null;
+  /** The semantic zoom the last frame drew, for picking. */
+  field: FieldView | null;
+  /** Last frame's draw time in ms, for the perf readout. */
+  frameMs: number;
 }
 
 export type Invalidate = (what?: Partial<Dirty>) => void;
@@ -114,6 +136,8 @@ function initialLoop(): LoopState {
     raf: null,
     resolve: () => [128, 128, 128],
     palette: null,
+    field: null,
+    frameMs: 0,
   };
 }
 
@@ -153,14 +177,7 @@ function floorFor(st: LoopState, live: FieldLive): number {
 }
 
 function rebuild(st: LoopState, live: FieldLive, floor: number): void {
-  st.batches = groupBatches(
-    live.scene,
-    live.fills,
-    st.colour?.from ?? null,
-    live.focusIdx,
-    isLoudFill,
-    st.resolve,
-  );
+  st.batches = groupBatches(live.scene, live.fills, st.colour?.from ?? null, isLoudFill, st.resolve);
   attachPaths(st.batches, live.scene, floor);
   st.floor = floor;
   st.stale = false;
@@ -170,7 +187,47 @@ function rebuild(st: LoopState, live: FieldLive, floor: number): void {
 interface Layers {
   base: RefObject<HTMLCanvasElement | null>;
   top: RefObject<HTMLCanvasElement | null>;
-  labels: MutableRefObject<(HTMLElement | null)[]>;
+  labels: MutableRefObject<Map<string, HTMLElement>>;
+  shownLabels: Set<HTMLElement>;
+}
+
+const discOf = (field: FieldView, path: string | null): DiscView | null =>
+  path === null ? null : (field.discs.find((d) => d.path === path && d.state !== "slot") ?? null);
+
+/** The semantic zoom for this camera: recomputed when the camera or the field moved. */
+function decideField(st: LoopState, live: FieldLive, moved: boolean): FieldView {
+  if (!moved && !st.dirty.base && st.field) return st.field;
+  return computeView({
+    index: live.index,
+    geo: live.geo,
+    hosts: live.scene.hosts,
+    hostIndex: live.scene.hostIndex,
+    filesCovered: live.filesCovered,
+    cam: st.cam,
+    view: st.view,
+  });
+}
+
+/** The top layer's rings, for what is selected, hovered, under the cursor or matched. */
+function paintMarks(top: CanvasRenderingContext2D, st: LoopState, live: FieldLive, frame: Frame): void {
+  const { field } = frame;
+  drawMarks(top, frame, {
+    selected: live.selectedIdx,
+    hovered: live.hoverIdx,
+    cursor: live.cursorIdx,
+    matches: live.marked,
+    selectedArea: discOf(field, live.selectedArea),
+    hoveredArea: discOf(field, live.hoverArea),
+    cursorArea: discOf(field, live.cursorArea),
+    fillOf: (i) => st.resolve(live.fills[i] ?? NEUTRAL_FILL),
+    floorPx: MIN_NODE_PX,
+  });
+}
+
+/** Once the camera rests on a new view, tell the host what it wants loaded. */
+function reportWants(live: FieldLive, field: FieldView, settled: boolean): void {
+  const wants = field.wantChildren.length > 0 || field.wantFiles.length > 0;
+  if (settled && wants) live.onWants?.({ children: field.wantChildren, files: field.wantFiles });
 }
 
 /** One frame: advance the tweens, rebuild what went stale, paint what changed. */
@@ -184,37 +241,25 @@ function runFrame(st: LoopState, live: FieldLive, layers: Layers): boolean {
   st.palette ??= resolvePalette(st.resolve);
   if (st.stale && base) rebuild(st, live, floor);
 
+  const field = decideField(st, live, flight.moved);
+  const fieldChanged = field !== st.field;
+  st.field = field;
   const frame: Frame = {
     scene: live.scene,
     cam: st.cam,
     view: st.view,
     palette: st.palette,
-    focus: live.focusIdx,
+    field,
+    areaRgb: (path) => st.resolve(live.areaFill.get(path) ?? NEUTRAL_FILL),
   };
-  const moved = flight.moved;
-  if (base && (st.dirty.base || moved)) drawField(base, frame, st.batches, colour.t);
-  if (top && (st.dirty.top || moved)) {
-    drawMarks(top, frame, {
-      selected: live.selectedIdx,
-      hovered: live.hoverIdx,
-      cursor: live.cursorIdx,
-      matches: live.marked,
-      fillOf: (i) => st.resolve(live.fills[i] ?? NEUTRAL_FILL),
-      floorPx: MIN_NODE_PX,
-    });
-  }
-  if (st.dirty.labels || moved) {
-    placeLabels({
-      galaxies: live.scene.galaxies,
-      order: live.labelOrder,
-      focus: live.focusIdx,
-      camera: st.cam,
-      view: st.view,
-      els: layers.labels.current,
-    });
-  }
+  if (base && (st.dirty.base || flight.moved)) drawField(base, frame, st.batches, colour.t);
+  if (top && (st.dirty.top || fieldChanged)) paintMarks(top, st, live, frame);
+  if (st.dirty.labels || fieldChanged) placeLabels(field, layers.labels.current, st.view, layers.shownLabels);
   st.dirty = { base: false, top: false, labels: false };
-  return flight.animating || colour.animating;
+  st.frameMs = now() - t0;
+  const animating = flight.animating || colour.animating;
+  reportWants(live, field, !animating && fieldChanged);
+  return animating;
 }
 
 /** Size both canvases to `w` by `h` CSS px at the current pixel ratio. */
@@ -305,7 +350,8 @@ function useRepaintTriggers(
   invalidate: Invalidate,
 ): void {
   const themeVersion = useThemeVersion();
-  const { scene, fills, focusIdx, marked, selectedIdx, cursorIdx, hoverIdx } = live;
+  const { scene, fills, areaFill, geo, marked, selectedIdx, cursorIdx, hoverIdx } = live;
+  const { selectedArea, hoverArea, cursorArea } = live;
   useEffect(() => {
     const st = loop.current;
     st.resolve = createColourResolver(container.current);
@@ -315,12 +361,11 @@ function useRepaintTriggers(
   }, [themeVersion, container, loop, invalidate]);
 
   useEffect(() => {
-    // A new feed is a new field: no tween from the old one's colours.
+    // New files are a new set of paths: no tween from the old colours.
     const st = loop.current;
     st.shownFills = null;
     st.colour = null;
     st.stale = true;
-    if (!st.userMoved && st.view.w > 0) st.cam = fitCamera(st.view.w, st.view.h);
     invalidate();
   }, [scene, loop, invalidate]);
 
@@ -335,14 +380,14 @@ function useRepaintTriggers(
     invalidate();
   }, [fills, reducedMotion, loop, invalidate]);
 
+  // A finished or failed load changes what the view should ask for next.
   useEffect(() => {
-    loop.current.stale = true;
     invalidate();
-  }, [focusIdx, loop, invalidate]);
+  }, [areaFill, geo, live.filesCovered, invalidate]);
 
   useEffect(() => {
     invalidate({ top: true });
-  }, [marked, selectedIdx, cursorIdx, hoverIdx, invalidate]);
+  }, [marked, selectedIdx, cursorIdx, hoverIdx, selectedArea, hoverArea, cursorArea, invalidate]);
 
   useEffect(() => {
     invalidate({ labels: true });
@@ -353,7 +398,7 @@ export function useFieldCanvas(opts: {
   container: RefObject<HTMLElement | null>;
   base: RefObject<HTMLCanvasElement | null>;
   top: RefObject<HTMLCanvasElement | null>;
-  labels: MutableRefObject<(HTMLElement | null)[]>;
+  labels: MutableRefObject<Map<string, HTMLElement>>;
   minHeight: number;
   live: FieldLive;
   reducedMotion: boolean;
@@ -364,7 +409,7 @@ export function useFieldCanvas(opts: {
   const loop = useRef<LoopState>(initialLoop());
   const liveRef = useRef(live);
   liveRef.current = live;
-  const layers = useRef<Layers>({ base, top, labels }).current;
+  const layers = useRef<Layers>({ base, top, labels, shownLabels: new Set() }).current;
   const [ready, setReady] = useState(false);
 
   const frame = useCallback(() => {

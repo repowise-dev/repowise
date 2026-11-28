@@ -215,7 +215,7 @@ def test_working_tree_only_update_skips_history_phases_until_the_commit(
 
     analysis = _spy(monkeypatch, update_command_mod, "_run_partial_analysis")
     drift = _spy(monkeypatch, update_command_mod, "_run_doc_drift_partial")
-    # The CLI path imports it from the package; the core writer holds its own reference.
+    # Both lookup sites: the package and the core writer's own reference.
     commits = _spy(monkeypatch, core_incremental, "persist_incremental_commits")
     commits_core = _spy(monkeypatch, persist_index, "persist_incremental_commits")
 

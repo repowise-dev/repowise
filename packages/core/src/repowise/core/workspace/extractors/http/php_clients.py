@@ -23,6 +23,8 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..langs import PHP
 from ..strings import PHP_SYNTAX, call_arguments, match_paren, string_constants
 from .client_calls import VERBS, ClientCallMatch, consumer_contracts, method_from_argument
@@ -50,8 +52,6 @@ _CHAIN_ARROW_RE = re.compile(r"\s*->\s*")
 
 # How far along a builder chain the verb call is looked for.
 _MAX_CHAIN_LINKS = 8
-
-_AMBIGUOUS_RECEIVER_CONFIDENCE = 0.65
 
 
 def _names_a_client(content: str) -> bool:
@@ -92,7 +92,7 @@ def guzzle_verb_calls(content: str) -> Iterator[ClientCallMatch]:
             url=args[0],
             offset=m.start(),
             method=m.group(1).upper(),
-            confidence=_AMBIGUOUS_RECEIVER_CONFIDENCE,
+            origin=ContractOrigin.NAME_HEURISTIC,
         )
 
 
@@ -129,6 +129,7 @@ def laravel_http_calls(content: str) -> Iterator[ClientCallMatch]:
 class PhpClientsDialect:
     name = "php-clients"
     extensions = PHP
+    requires = ("Client", "Http::")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         request_rows = list(guzzle_request_calls(ctx.content))

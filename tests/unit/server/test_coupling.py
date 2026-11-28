@@ -53,6 +53,7 @@ def test_edge_wire_shape() -> None:
         "confidence_ba": 0.1,
         "structural": "unexplained",
         "dependency_kind": None,
+        "cross_area": None,
     }
 
 
@@ -69,6 +70,7 @@ def test_an_edge_from_an_older_index_still_serializes() -> None:
         "confidence_ba": None,
         "structural": None,
         "dependency_kind": None,
+        "cross_area": None,
     }
 
 

@@ -11,13 +11,12 @@ So the class is gated. If a document is published through a renderer whose slug
 algorithm this module does not implement, the anchor class stands down for that
 document and reports ``uncheckable`` rather than guessing.
 
-The gate is **per subtree, not per repository.** This repository is why: it
-ships a Jekyll site at ``website/_config.yml`` that publishes the fifteen
-documents under ``website/`` and nothing else. The ``docs/`` tree and
-``.github/CONTRIBUTING.md`` beside it are read on GitHub. A repo-global gate
-reads one marker file and stands the whole class down, losing every real
-finding outside the site directory --- which is exactly what happened the first
-time this ran. A marker governs the directory that contains it, and documents
+The gate is **per subtree, not per repository.** A repo can ship a Jekyll site
+at ``website/_config.yml`` that publishes the documents under ``website/`` and
+nothing else, while the ``docs/`` tree and ``.github/CONTRIBUTING.md`` beside
+it are read on GitHub. A repo-global gate reads one marker file and stands the
+whole class down, losing every real finding outside the site directory. A
+marker governs the directory that contains it, and documents
 outside every marked subtree are rendered by the forge.
 
 Adding MkDocs or Docusaurus support later means implementing its slug function

@@ -29,13 +29,6 @@ from repowise.server.mcp_server._transport import (
 )
 
 
-@pytest.fixture
-def no_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None
-    )
-
-
 @pytest.mark.parametrize(
     "exc",
     [
@@ -81,20 +74,14 @@ def test_stray_stdout_names_itself() -> None:
 def test_a_group_of_hang_ups_is_still_a_hang_up() -> None:
     group = ExceptionGroup("closed", [BrokenPipeError(), anyio.ClosedResourceError()])
 
-    assert (
-        classify_termination("stdio", group, leaves=_server.group_leaves)
-        == CLIENT_CLOSED
-    )
+    assert classify_termination("stdio", group, leaves=_server.group_leaves) == CLIENT_CLOSED
 
 
 def test_one_real_fault_beside_a_hang_up_is_a_fault() -> None:
     """A crash that also broke the pipe is a crash, not a clean close."""
     group = ExceptionGroup("mixed", [BrokenPipeError(), PermissionError("locked")])
 
-    assert (
-        classify_termination("stdio", group, leaves=_server.group_leaves)
-        == SERVER_FAULT
-    )
+    assert classify_termination("stdio", group, leaves=_server.group_leaves) == SERVER_FAULT
 
 
 def test_a_clean_outcome_reaches_stderr_with_no_logging_configured(capsys) -> None:
@@ -156,8 +143,7 @@ def test_a_fault_is_logged_at_error_and_a_close_is_not() -> None:
         _transport._log.propagate = True
 
     levels = {
-        record.getMessage().split("ended: ")[1].split()[0]: record.levelno
-        for record in records
+        record.getMessage().split("ended: ")[1].split()[0]: record.levelno for record in records
     }
     assert levels["client_closed"] == logging.INFO
     assert levels["server_fault"] == logging.ERROR
@@ -198,9 +184,10 @@ def test_the_real_stream_comes_back_after_a_failure() -> None:
 
 
 def test_a_closed_transport_returns_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """The regression: an ordinary hang-up escaped as a traceback."""
+
     def hang_up(**_kw):
         raise BrokenPipeError("the client hung up")
 
@@ -210,7 +197,7 @@ def test_a_closed_transport_returns_instead_of_raising(
 
 
 def test_a_grouped_closed_transport_returns_too(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     def hang_up(**_kw):
         raise ExceptionGroup("closed", [anyio.ClosedResourceError()])
@@ -221,9 +208,10 @@ def test_a_grouped_closed_transport_returns_too(
 
 
 def test_a_server_fault_still_raises(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """Classification must not turn a real crash into a quiet exit."""
+
     def boom(**_kw):
         raise ExceptionGroup("task failed", [PermissionError("wiki.db is locked")])
 
@@ -234,7 +222,7 @@ def test_a_server_fault_still_raises(
 
 
 def test_a_clean_stdio_session_names_its_ending(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     monkeypatch.setattr(_server.mcp, "run", lambda **_kw: None)
 
@@ -242,7 +230,7 @@ def test_a_clean_stdio_session_names_its_ending(
 
 
 def test_a_session_that_printed_to_stdout_says_so(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     monkeypatch.setattr(_server.mcp, "run", lambda **_kw: print("stray"))
 
@@ -250,7 +238,7 @@ def test_a_session_that_printed_to_stdout_says_so(
 
 
 def test_a_network_transport_reports_its_own_shutdown(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     monkeypatch.setattr(_server.mcp, "run", lambda **_kw: None)
 
@@ -263,36 +251,37 @@ def test_a_network_transport_never_reports_a_closure() -> None:
 
 
 def test_a_startup_fault_is_never_read_as_a_clean_close(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """A truncated index artifact raises EOFError, which is a hang-up class.
 
     Classifying it as one reported a broken index as an ordinary session and
     exited 0, which is the failure this whole module exists to prevent.
     """
-    def boom():
+
+    def boom(_names):
         raise EOFError("compressed file ended before the end-of-stream marker")
 
-    monkeypatch.setattr("repowise.server.mcp_server.ensure_full_surface", boom)
+    monkeypatch.setattr("repowise.server.mcp_server.ensure_surface", boom)
 
     with pytest.raises(EOFError):
         _server.run_mcp(transport="stdio")
 
 
 def test_a_grouped_startup_fault_is_not_a_closure_either(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
-    def boom():
+    def boom(_names):
         raise ExceptionGroup("startup", [EOFError("truncated artifact")])
 
-    monkeypatch.setattr("repowise.server.mcp_server.ensure_full_surface", boom)
+    monkeypatch.setattr("repowise.server.mcp_server.ensure_surface", boom)
 
     with pytest.raises(EOFError):
         _server.run_mcp(transport="stdio")
 
 
 def test_an_interrupt_is_not_a_closure(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """Ctrl-C ends a server; it is not the client hanging up."""
     monkeypatch.setattr(
@@ -304,7 +293,7 @@ def test_an_interrupt_is_not_a_closure(
 
 
 def test_an_unopenable_store_is_not_a_closure(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     monkeypatch.setattr(
         _server.mcp,
@@ -334,9 +323,10 @@ def test_the_watchdog_speaks_the_shared_vocabulary(capsys, monkeypatch) -> None:
 
 
 def test_a_session_that_printed_and_then_hung_up_reports_the_hang_up(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """How it ended outranks what happened during it; the guard still warns."""
+
     def print_then_hang_up(**_kw):
         print("stray")
         raise BrokenPipeError("hung up")

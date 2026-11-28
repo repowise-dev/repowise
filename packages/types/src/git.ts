@@ -7,6 +7,21 @@
  * adapter before passing data to components.
  */
 
+import type {
+  CommitFileResponse,
+  CommitHealthFindingResponse,
+  HealthDeltaSummaryResponse,
+  RiskDriverResponse,
+  RiskHistogramBucket,
+} from "./generated/http.js";
+
+/** Shapes the server schema already states exactly, generated from it. */
+export type {
+  HotspotFacets,
+  OwnershipEntry,
+  RiskHistogramBucket,
+} from "./generated/http.js";
+
 export interface FileAuthor {
   name: string;
   email: string;
@@ -79,6 +94,14 @@ export interface GitMetadata {
   original_path?: string | null;
   /** True when the per-file commit-history cap was hit during indexing. */
   commit_count_capped?: boolean;
+  /** Agent-provenance rollup. The pct (0-1) is the agent share of commits
+   *  with a known source, null below the coverage floor; every field is null
+   *  when attribution is off for the repository. */
+  agent_commit_count?: number | null;
+  agent_authored_pct?: number | null;
+  agent_tier_counts?: Record<string, number> | null;
+  attribution_coverage?: number | null;
+  agent_share_suppressed?: string | null;
 }
 
 export interface Hotspot {
@@ -119,7 +142,17 @@ export interface Hotspot {
   last_fix_at?: string | null;
   /** The file's path before its most recent rename, if any. */
   original_path?: string | null;
+  /** Faster over the last 30 days than over the last 90, on a file older than that window. */
+  accelerating?: boolean;
+  /** Place by hotspot score within the listed scope; set by the hotspot list only. */
+  rank?: number | null;
 }
+
+/** The hotspot list's filters; `all` lists every hotspot in scope. */
+export type HotspotFilter = "all" | "bus_factor_1" | "accelerating" | "bug_magnet";
+/** The hotspot list's sortable columns; `score` is the temporal hotspot score. */
+export type HotspotSort = "score" | "commits" | "fixes" | "churn";
+export type HotspotOrder = "asc" | "desc";
 
 /** Repo-relative tercile of the diff-size percentile within its own repo;
  * size, not danger. */
@@ -164,45 +197,25 @@ export interface Commit {
   agent_confidence?: string | null;
   /** agent / human_attested / unknown; null when attribution is off. */
   attribution?: CommitAttribution | null;
+  /** What the commit did to health, the row's lead; null when never scanned. */
+  health_delta?: HealthDeltaSummaryResponse | null;
+  /** Hotspot files (as flagged now) the commit touched. */
+  touches_hotspot?: number;
 }
 
 export type CommitAttribution = "agent" | "human_attested" | "unknown";
 
-/** One feature's signed contribution to a commit's change-risk logit. */
-export interface RiskDriver {
-  feature: string;
-  value: number | null;
-  /** Signed push on the model logit; positive raises the supporting score. */
-  contribution: number;
-  label: string;
-}
+/** One feature's signed contribution to a commit's change-risk logit;
+ *  a positive `contribution` raises the supporting score. */
+export type RiskDriver = RiskDriverResponse;
 
-/** One file a commit touched, with what it cost and what it carries. */
-export interface CommitFile {
-  path: string;
-  lines_added: number;
-  lines_deleted: number;
-  /** Bug-fix commits recorded against this path; null when untracked. */
-  prior_fixes?: number | null;
-}
+/** One file a commit touched; `prior_fixes` is null when untracked. */
+export type CommitFile = CommitFileResponse;
 
-/** One thing a commit introduced or worsened. */
-export interface CommitHealthFinding {
-  change_kind: string;
-  dimension: string;
-  biomarker_type: string;
-  severity: string;
-  /** Only set on `worsened`: what the severity was before the commit. */
-  severity_before?: string | null;
-  path: string;
-  symbol?: string | null;
-  line_start?: number | null;
-  line_end?: number | null;
-  /** How directly the commit is responsible, from `added_lines` down to
-   *  `unknown`. Separates what a change wrote from what it merely touched. */
-  attribution_basis: string;
-  reason: string;
-}
+/** One thing a commit introduced or worsened. `attribution_basis` runs from
+ *  `added_lines` down to `unknown`, separating what a change wrote from what
+ *  it merely touched; `moved_from` is set when the code came from another file. */
+export type CommitHealthFinding = CommitHealthFindingResponse;
 
 /** What a commit did to code health, computed at index time.
  *
@@ -213,9 +226,16 @@ export interface CommitHealth {
   /** `available` when every changed file was compared, `partial` when some
    *  were skipped (unsupported language, binary, unreadable). */
   status: string;
+  /** An older analyzer wrote it: the direction holds, the counts do not
+   *  compare with current rows. */
+  stale?: boolean;
   introduced_count: number;
   worsened_count: number;
   resolved_count: number;
+  /** Findings whose metric dropped, at the same place or after a move. */
+  improved_count?: number;
+  /** Findings carried to another file with their code; a worsened or improved one is in that count too. */
+  moved_count?: number;
   files_analyzed: number;
   files_skipped: number;
   /** Worst first, capped. `introduced_count + worsened_count` is the true
@@ -258,7 +278,9 @@ export interface AgentTrendBucket extends AttributionShareFields {
 /** Monthly attribution trend across the indexed commit window. `enabled` is
  * false, with every figure empty, when attribution is off for the repo. */
 export interface AgentTrend extends AttributionShareFields {
-  enabled: boolean;
+  /** Absent from a server that does not send it; a trend carrying
+   *  `agent_pct_of_covered` then reads as on. */
+  enabled?: boolean;
   coverage_floor_pct: number;
   buckets: AgentTrendBucket[];
   agent_names: { name: string; count: number }[];
@@ -294,15 +316,6 @@ export interface CommitEvolution {
   last_commit_at: string | null;
 }
 
-/** One bin of the repo's supporting 0-10 diff-shape score distribution. */
-export interface RiskHistogramBucket {
-  /** Bin lower bound on the 0-10 raw score axis (inclusive). */
-  start: number;
-  /** Bin upper bound (exclusive, except the final bin). */
-  end: number;
-  count: number;
-}
-
 /** Repo-wide commit aggregates (over all commits, not the loaded page). */
 export interface CommitStats {
   total_commits: number;
@@ -323,14 +336,6 @@ export interface CommitStats {
   moderate_cut?: number | null;
   /** Raw score at the moderate/high boundary — the review-priority line. */
   high_cut?: number | null;
-}
-
-export interface OwnershipEntry {
-  module_path: string;
-  primary_owner: string | null;
-  owner_pct: number | null;
-  file_count: number;
-  is_silo: boolean;
 }
 
 export interface TopOwner {

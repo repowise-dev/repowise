@@ -2,6 +2,7 @@
 frontmatter: |
     description: Check the health of your Repowise index — sync state, page counts, provider, and token usage.
     allowed-tools: Bash(repowise status:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Status

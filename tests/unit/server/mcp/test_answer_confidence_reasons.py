@@ -303,4 +303,4 @@ async def test_a_served_named_body_still_earns_high_on_weak_retrieval(
     assert "symbol_bodies" in note, "the note must name the evidence it actually used"
     assert "clearly dominates" not in note
     assert "verify against best_guesses" not in note
-    assert result["next_action_hint"] == "Use the answer and citations directly."
+    assert result["next_action_hint"].startswith("Use the answer directly; it rests on `run_sweep`")

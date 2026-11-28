@@ -8,6 +8,9 @@
 
 export type SecuritySeverity = "high" | "med" | "low" | (string & {});
 
+/** Shipped source, tests, or docs, as the server classifies the file. */
+export type SecurityPathClass = "source" | "test" | "docs";
+
 export interface SecurityFinding {
   id: number;
   file_path: string;
@@ -29,6 +32,8 @@ export interface SecurityFinding {
   line_verified: boolean;
   /** When the introducing commit landed; only set for history findings. */
   commit_at: string | null;
+  /** Shipped source, tests, or docs. Absent on older servers. */
+  path_class?: SecurityPathClass;
 }
 
 /** Run metadata for the pattern scan, served beside the findings list. */
@@ -38,6 +43,12 @@ export interface SecuritySummary {
    * means never ran or unknown, which is not an all-clear.
    */
   scanned_at?: string | null;
+  /** Every stored finding. Absent on older servers, with the two below. */
+  total?: number;
+  /** Findings by where they sit: shipped source, tests, docs. */
+  class_counts?: Partial<Record<SecurityPathClass, number>>;
+  /** High-severity findings in shipped source. */
+  source_high?: number;
 }
 
 export interface SecurityFindingList {

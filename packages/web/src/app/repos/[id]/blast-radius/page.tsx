@@ -1,11 +1,12 @@
 import { redirect } from "next/navigation";
+import { reviewHref } from "@/lib/changes";
 
-/** Legacy route — redirects into the consolidated IA. */
+/** Legacy route: blast radius lives on the Review page. */
 export default async function LegacyRedirect({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  redirect(`/repos/${id}/code-health?tab=impact`);
+  redirect(reviewHref(id));
 }

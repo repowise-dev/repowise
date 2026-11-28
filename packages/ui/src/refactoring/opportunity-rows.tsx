@@ -25,8 +25,10 @@
 import * as React from "react";
 
 import { formatNumber } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { typeMeta } from "./meta";
 import { PreviewBadge } from "../health/preview-badge";
+import { AiPromptButton } from "../health/ai-prompt-button";
 import {
   STATUS_LABEL,
   TRIAGE_STATUSES,
@@ -80,7 +82,7 @@ const GRID =
   // own row and left the labels on a ragged edge, wrapping the type mid-phrase
   // on the wider rows only.
   "grid grid-cols-[8.5rem_minmax(0,1fr)] gap-x-5 gap-y-2 px-3 " +
-  "lg:grid-cols-[116px_minmax(0,1fr)_150px_104px_96px_32px]";
+  "lg:grid-cols-[116px_minmax(0,1fr)_150px_104px_96px_auto]";
 
 export function OpportunityRows({
   opportunities,
@@ -148,7 +150,6 @@ function OpportunityRow({
   const effort = EFFORT_WORD[opportunity.effort_bucket] ?? opportunity.effort_bucket;
   const href = fileHref?.(opportunity.file_path);
   const gain = opportunity.recoverable_health;
-  const name = opportunity.file_path.split("/").pop() ?? opportunity.file_path;
 
   // Optimistic, with the server's answer as the authority. A triage click that
   // waits for a round trip reads as a dead control on a list this long.
@@ -204,14 +205,13 @@ function OpportunityRow({
         onBlur={() => onHighlight?.(null)}
         className="group order-1 col-span-2 min-w-0 text-left lg:order-none lg:col-span-1"
       >
-        <span className="block break-words font-mono text-sm font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
-          {name}
-        </span>
-        {/* Full path, no ellipsis: a truncated title reports a layout decision
-            to the reader as missing content. */}
-        <span className="mt-0.5 block break-all font-mono text-xs text-[var(--color-text-tertiary)]">
-          {opportunity.file_path}
-        </span>
+        {/* One line: the file name never clips, the directory gives way
+            first, and the tooltip carries the whole path. */}
+        <FilePath
+          path={opportunity.file_path}
+          fold
+          className="flex text-sm text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]"
+        />
         <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
           {opportunityLede(opportunity)}
         </span>
@@ -283,11 +283,20 @@ function OpportunityRow({
         </span>
       </div>
 
-      <div className="order-6 justify-self-end lg:order-none lg:-mt-1">
+      {/* The agent prompt is the row's one primary verb, so it sits on the
+          row rather than in the overflow: handing the change to an agent is
+          what most readers came to do. */}
+      <div className="order-6 flex items-center gap-1 justify-self-end lg:order-none lg:-mt-1">
+        {onAiPrompt ? (
+          <AiPromptButton
+            onClick={() => onAiPrompt(opportunity)}
+            ariaLabel={`Agent prompt: ${opportunity.file_path}`}
+            className="whitespace-nowrap"
+          />
+        ) : null}
         <RowOverflow
           opportunity={opportunity}
           status={status}
-          onAiPrompt={onAiPrompt}
           onStatusChange={onStatusChange ? setStatus : undefined}
           href={href}
         />
@@ -299,7 +308,8 @@ function OpportunityRow({
 /**
  * The row's second-order verbs.
  *
- * Opening the opportunity is the row itself. Everything else lives here so a
+ * Opening the opportunity is the row itself and the agent prompt sits beside
+ * it. Everything else lives here so a
  * 580-row list is not 580 clusters of controls the reader has to parse before
  * they can read a row - and so each verb can have its real name rather than an
  * abbreviation that only expands for someone who already knows the model.
@@ -307,13 +317,11 @@ function OpportunityRow({
 function RowOverflow({
   opportunity,
   status,
-  onAiPrompt,
   onStatusChange,
   href,
 }: {
   opportunity: RefactoringOpportunity;
   status: OpportunityStatus;
-  onAiPrompt?: ((opportunity: RefactoringOpportunity) => void) | undefined;
   onStatusChange?: ((status: OpportunityStatus) => void) | undefined;
   href?: string | undefined;
 }) {
@@ -347,7 +355,7 @@ function RowOverflow({
     };
   }, [open, close]);
 
-  if (!onAiPrompt && !href && !onStatusChange) return null;
+  if (!href && !onStatusChange) return null;
 
   return (
     <div className="relative" ref={ref}>
@@ -367,19 +375,6 @@ function RowOverflow({
           role="menu"
           className="absolute right-0 top-full z-20 mt-1 w-60 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1 shadow-md"
         >
-          {onAiPrompt ? (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                close();
-                onAiPrompt(opportunity);
-              }}
-              className="block w-full px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
-            >
-              Copy prompt for an agent
-            </button>
-          ) : null}
           {href ? (
             <a
               href={href}
@@ -413,7 +408,7 @@ function RowOverflow({
                     }}
                     className={`block w-full px-3 py-2 text-left text-sm ${
                       current
-                        ? "font-medium text-[var(--color-accent-primary)]"
+                        ? "font-medium text-[var(--color-text-primary)]"
                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
                     }`}
                   >

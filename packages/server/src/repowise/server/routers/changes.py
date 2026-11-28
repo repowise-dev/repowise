@@ -14,6 +14,7 @@ from repowise.core.attribution import attribution_enabled
 from repowise.core.changes.collect import (
     build_stored_evidence,
     cached_evidence,
+    components_stale,
     evidence_summary,
     keep_outcomes,
     list_needing_attention,
@@ -21,6 +22,7 @@ from repowise.core.changes.collect import (
     outcomes_key,
     outcomes_stale,
     save_evidence,
+    with_current_components,
     with_item,
 )
 from repowise.core.changes.evidence import ChangeEvidence, item_line
@@ -29,7 +31,9 @@ from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.suspects import Symptom
 from repowise.core.suspects.index import find_suspects
+from repowise.server.auth import read_route
 from repowise.server.deps import get_db_session, resolve_request_session_factory, verify_api_key
+from repowise.server.routers._history_filters import HistoryParams, history_params
 from repowise.server.schemas.changes import (
     ChangeEvidenceSummary,
     ChangeListResponse,
@@ -38,6 +42,19 @@ from repowise.server.schemas.changes import (
     SuspectsRequest,
     SuspectsResponse,
     summary_from_record,
+)
+from repowise.server.schemas.history import PeriodHealthSummaryResponse
+from repowise.server.services.history.changes import (
+    ChangeInputs,
+    change_detail_health,
+    change_health,
+    change_period_summary,
+    narrow_by_health,
+)
+from repowise.server.services.history.health import (
+    current_stamp,
+    period_response,
+    rollup_response,
 )
 
 router = APIRouter(
@@ -79,20 +96,34 @@ async def list_changes(
     ),
     limit: int = Query(50, ge=1, le=_MAX_PAGE),
     offset: int = Query(0, ge=0),
+    params: HistoryParams = Depends(history_params),
     session: AsyncSession = Depends(get_db_session),
 ) -> ChangeListResponse:
-    """A page of changes, newest merged first."""
+    """A page of changes, newest merged first, each led by what its commits did
+    to health. ``since``/``until`` read ``merged_at``; ``delta`` and
+    ``touches_hotspot`` judge the change's rollup."""
     attribution = await _attribution(session, repo_id)
-    where = crud.ChangeFilter(category=category, shape=shape, q=q)
+    stamp = await current_stamp(session, repo_id)
+    where = await narrow_by_health(
+        session,
+        repo_id,
+        _change_filter(params, category=category, shape=shape, q=q),
+        stamp,
+        delta=params.delta,
+        touches_hotspot=params.touches_hotspot,
+    )
     if needs_attention:
         rows, total = await list_needing_attention(
             session, repo_id, where, limit=limit, offset=offset
         )
     else:
         rows, total = await crud.list_changes(session, repo_id, where, limit=limit, offset=offset)
+    health = await change_health(session, repo_id, [_inputs(r) for r in rows], stamp)
     items = []
     for r in rows:
         item = summary_from_record(change_record(r, attribution=attribution))
+        item.health = rollup_response(health[r.change_id].rollup)
+        item.touches_hotspot = health[r.change_id].touches_hotspot
         if evidence:
             summary = evidence_summary(r)
             item.evidence_summary = summary and ChangeEvidenceSummary(**summary)
@@ -109,6 +140,41 @@ async def list_changes(
         attribution=attribution,
         checklists_built=checklists,
     )
+
+
+def _change_filter(params: HistoryParams, **narrow: str | None) -> crud.ChangeFilter:
+    return crud.ChangeFilter(
+        **narrow,
+        since=params.since,
+        until=params.until,
+        author=params.author,
+        area=params.area,
+    )
+
+
+def _inputs(row: Any) -> ChangeInputs:
+    return ChangeInputs.parse(row.change_id, row.commit_shas_json, row.files_json)
+
+
+@router.get("/{repo_id}/changes/summary", response_model=PeriodHealthSummaryResponse)
+async def changes_summary(
+    repo_id: str,
+    category: str | None = Query(None, description="One commit category, e.g. fix"),
+    params: HistoryParams = Depends(history_params),
+    session: AsyncSession = Depends(get_db_session),
+) -> PeriodHealthSummaryResponse:
+    """A period headline: how many changes made health better, worse, both or
+    neither (improvements first), and the findings behind it."""
+    await _attribution(session, repo_id)
+    summary = await change_period_summary(
+        session,
+        repo_id,
+        _change_filter(params, category=category),
+        await current_stamp(session, repo_id),
+        delta=params.delta,
+        touches_hotspot=params.touches_hotspot,
+    )
+    return period_response(summary, params.since, params.until)
 
 
 @router.get("/{repo_id}/changes/{change_id}", response_model=ChangeRecord)
@@ -128,15 +194,21 @@ async def get_change(
     if row is None:
         raise HTTPException(status_code=404, detail="Change not found")
     record = change_record(row, attribution=attribution)
+    record["health"], record["touches_hotspot"] = await change_detail_health(
+        session, repo_id, _inputs(row), await current_stamp(session, repo_id)
+    )
     if evidence:
         kept = None if refresh else cached_evidence(row)
         repo = await crud.get_repository(session, repo_id)
-        # A kept checklist is current but for ``outcomes``, which follows HEAD.
+        # A kept checklist is current but for ``outcomes``, which follows HEAD,
+        # and components, which follow the catalog.
         task = None
         factory = resolve_request_session_factory(request)
         if kept is None:
             task = _build(factory, repo_id, row.change_id, repo.local_path)
-        elif await outcomes_stale(repo.local_path, kept):
+        elif await outcomes_stale(repo.local_path, kept) or await components_stale(
+            repo.local_path, kept
+        ):
             task = _build(factory, repo_id, row.change_id, repo.local_path, kept)
         if task is not None:
             try:
@@ -189,14 +261,20 @@ async def _build_and_keep(factory: Any, repo_id: str, change_id: str, root: str)
 async def _outcomes_and_keep(
     factory: Any, repo_id: str, change_id: str, root: str, kept: ChangeEvidence
 ) -> ChangeEvidence:
-    """Read the outcomes item, then merge only it into what is stored by then."""
+    """Read the outcomes item, then merge only it into what is stored by then;
+    then resolve components again if the catalog changed."""
     key = await outcomes_key(root)
     async with get_session(factory) as session:
         row = await crud.get_change(session, repo_id, change_id)
         item = await outcomes_item(session, repo_id, root, row, key)
     async with get_session(factory) as session:
         merged = await keep_outcomes(session, repo_id, change_id, item)
-    return merged or with_item(kept, item)
+    async with get_session(factory) as session:
+        row = await crud.get_change(session, repo_id, change_id)
+        current = merged or with_item(kept, item)
+        if row is None:  # deleted meanwhile
+            return current
+        return await with_current_components(session, repo_id, root, row, current)
 
 
 def _when(value: str | None, field: str) -> datetime | None:
@@ -210,6 +288,7 @@ def _when(value: str | None, field: str) -> datetime | None:
 
 
 @router.post("/{repo_id}/suspects", response_model=SuspectsResponse)
+@read_route
 async def rank_suspects(
     repo_id: str,
     body: SuspectsRequest,

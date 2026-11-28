@@ -44,9 +44,11 @@ HAPPY_ORDER = [
     "reconcile_full_index_scope",
     "upsert_pages_from_generated",
     "tombstone_pages_outside_generation",
-    "sweep_retired_pages",
+    "sweep_store_hygiene",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
+    "sweep_deselected_pages",
+    "sweep_deselected_flow_pages",
     # Swept embeddings leave before the SQL session commits.
     "vectors.delete_many",
     "tombstone_candidates",
@@ -85,9 +87,11 @@ HAPPY_ORDER = [
     "persist_incremental_edges",
     "refresh_external_systems",
     "prune_deleted_file_rows",
+    "prune_absent_synthetic_nodes",
     "_analyzed_commit",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
+    "apply_fix_rollups",
     "upsert_generation_job",
     # After the session closes.
     "fts.ensure_index",
@@ -148,7 +152,13 @@ class _Inputs:
         self.pages = [_page("file_page:src/a.py")]
 
 
-async def _persist_full(repo: Path, rec: StepRecorder, inputs: _Inputs, degraded: list[str]) -> int:
+async def _persist_full(
+    repo: Path,
+    rec: StepRecorder,
+    inputs: _Inputs,
+    degraded: list[str],
+    failed_steps: list[str] | None = None,
+) -> int:
     return await _persist_full_update_async(
         repo_path=repo,
         repo_name=repo.name,
@@ -168,6 +178,7 @@ async def _persist_full(repo: Path, rec: StepRecorder, inputs: _Inputs, degraded
         parsed_files=inputs.parsed_files,
         reconcile_full_scope=True,
         reconcile_full_generation=True,
+        failed_steps=failed_steps,
     )
 
 
@@ -192,23 +203,24 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
     assert rec.args_of("fts.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
 
 
+# Steps left working when every other one fails.
+_SURVIVORS = {
+    # Pages have no net: a failure here fails the update.
+    "upsert_pages_from_generated",
+    "tombstone_candidates",
+    "file_import_edges",
+    "prune_deleted_file_rows",
+    "_analyzed_commit",
+    "refresh_commit_health_after_update",
+}
+
+
 async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
     from repowise.core.pipeline.cleanup_debt import record_cleanup_debt
 
     # Seeded debt is what reaches the vector tail once tombstoning has failed.
     record_cleanup_debt(repo, "vectors", {"file_page:src/old.py"})
-    survivors = {
-        # Pages have no net: a failure here fails the update.
-        "upsert_pages_from_generated",
-        "tombstone_candidates",
-        "file_import_edges",
-        "prune_deleted_file_rows",
-        "_analyzed_commit",
-        "refresh_commit_health_after_update",
-    }
-    rec = StepRecorder(
-        monkeypatch, fail=frozenset(label for label in HAPPY_ORDER if label not in survivors)
-    )
+    rec = StepRecorder(monkeypatch, fail=frozenset(HAPPY_ORDER) - _SURVIVORS)
     _install(rec, prune_ret=(1, [REFUSAL]))
     degraded: list[str] = []
 
@@ -218,7 +230,7 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
         "reconcile_full_index_scope",
         "upsert_pages_from_generated",
         "tombstone_pages_outside_generation",
-        "sweep_retired_pages",
+        "sweep_store_hygiene",
         "tombstone_candidates",
         "mark_tombstone_pages",
         "file_import_edges",
@@ -228,8 +240,14 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
         "persist_kg",
         "persist_git_refresh",
         "persist_incremental_commits",
-        # One try around the whole chain: the first repair ends it.
+        # Each repair fails on its own; the upsert still runs.
         "unretire_auto_superseded",
+        "purge_proposed_decisions_by_source",
+        "reconcile_source_ranks",
+        "reconcile_decision_confidence",
+        "apply_id_migration",
+        "apply_migration",
+        "bulk_upsert_decisions",
         "apply_revert_supersession",
         "apply_head_artifact_check",
         "refresh_governance_findings",
@@ -242,8 +260,10 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
         "persist_incremental_edges",
         "refresh_external_systems",
         "prune_deleted_file_rows",
+        "prune_absent_synthetic_nodes",
         "_analyzed_commit",
         "finalize_performance_opportunities",
+        "apply_fix_rollups",
         "upsert_generation_job",
         "fts.ensure_index",
         "vectors.delete_many",
@@ -263,6 +283,12 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
                 "Knowledge-graph persist",
                 "Git persist",
                 "Commit capture",
+                "Decision unretire",
+                "Retired-source decision purge",
+                "Decision source-rank repair",
+                "Decision confidence repair",
+                "Decision id migration",
+                "Decision entity migration",
                 "Decision persist",
                 "Revert supersession",
                 "Decision HEAD artifact check",
@@ -278,11 +304,74 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
             )
         ),
         REFUSAL,
+        f"Synthetic graph node prune: {FAILURE}",
         f"Queue rebuild after prune: {FAILURE}",
+        f"Git rollups: {FAILURE}",
         f"Generation job record: {FAILURE}",
         f"Full-text search indexing: {FAILURE}",
         f"Deferred vector cleanup: {FAILURE}",
     ]
+
+
+async def test_range_scoped_failures_are_recorded_for_repair(repo, monkeypatch):
+    rec = StepRecorder(monkeypatch, fail=frozenset(HAPPY_ORDER) - _SURVIVORS)
+    _install(rec)
+    failed_steps: list[str] = []
+
+    await _persist_full(repo, rec, _Inputs(), [], failed_steps)
+
+    assert failed_steps == [
+        "Tombstone marking",
+        "Git persist",
+        "Health persist",
+        "Dead-code persist",
+        "Symbol persist",
+        "Security persist",
+        "Graph edges persist",
+        "External systems refresh",
+        "Full-text search indexing",
+    ]
+
+
+async def test_a_failing_decision_repair_skips_only_itself(repo, monkeypatch):
+    rec = StepRecorder(monkeypatch, fail=frozenset({"unretire_auto_superseded"}))
+    _install(rec)
+    degraded: list[str] = []
+
+    await _persist_full(repo, rec, _Inputs(), degraded)
+
+    rec.assert_all_called(HAPPY_ORDER)
+    assert rec.order == HAPPY_ORDER
+    assert degraded == [f"Decision unretire: {FAILURE}"]
+
+
+async def test_a_failing_repair_fails_a_required_decision_persist(repo, monkeypatch):
+    rec = StepRecorder(monkeypatch, fail=frozenset({"unretire_auto_superseded"}))
+    _install(rec)
+    degraded: list[str] = []
+    inputs = _Inputs()
+
+    with pytest.raises(RuntimeError, match=FAILURE):
+        await _persist_full_update_async(
+            repo_path=repo,
+            repo_name=repo.name,
+            generated_pages=inputs.pages,
+            file_diffs=inputs.file_diffs,
+            git_meta_map=dict(GIT_META),
+            new_decision_markers=[],
+            decision_vector_store=rec.vector_store(),
+            provider=None,
+            partial_health_report=None,
+            dead_code_report=None,
+            graph_builder=inputs.graph_builder,
+            knowledge_graph_result=None,
+            degraded=degraded,
+            parsed_files=inputs.parsed_files,
+            require_decision_persist_success=True,
+        )
+
+    assert degraded == [f"Decision unretire: {FAILURE}"]
+    assert "purge_proposed_decisions_by_source" not in rec.order
 
 
 # ---------------------------------------------------------------------------
@@ -293,9 +382,11 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
 SHARED_STEPS = [
     "reconcile_full_index_scope",
     "tombstone_pages_outside_generation",
-    "sweep_retired_pages",
+    "sweep_store_hygiene",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
+    "sweep_deselected_pages",
+    "sweep_deselected_flow_pages",
     "tombstone_candidates",
     "mark_tombstone_pages",
     "rebuild_page_tree",
@@ -311,8 +402,10 @@ SHARED_STEPS = [
     "persist_kg",
     "refresh_external_systems",
     "prune_deleted_file_rows",
+    "prune_absent_synthetic_nodes",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
+    "apply_fix_rollups",
     "refresh_commit_health_after_update",
 ]
 

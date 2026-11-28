@@ -5,6 +5,8 @@ import type { PerformanceOpportunitySummary } from "@repowise-dev/types/health";
 
 import { EmptyState } from "../../shared/empty-state";
 import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
+import { AiPromptButton } from "../ai-prompt-button";
+import { buildConnectEvidencePrompt } from "../ai-prompts/setup-prompt";
 
 /**
  * Every state the queue can be in other than "here are the rows". They are
@@ -54,14 +56,125 @@ export function UnavailableQueue({ summary }: { summary: PerformanceOpportunityS
   );
 }
 
-/** Analyzed, and nothing supported surfaced. Say exactly that. */
-export function EmptyQueue() {
+/**
+ * No runtime evidence is stored for this repository. Says what fills the view
+ * (profiles and benchmark results) and hands the agent the one prompt that
+ * collects them; `found` names files already on disk, when there are any.
+ */
+export function ConnectEvidenceState({
+  found,
+  variant = "empty",
+  prompt = buildConnectEvidencePrompt,
+  hint,
+}: {
+  found?: readonly string[] | null | undefined;
+  /**
+   * `row` is the slim form above a queue that has causes: the queue keeps its
+   * place above the fold, and the row says why nothing in it is measured.
+   */
+  variant?: "empty" | "row";
+  /** The text the button copies. Omitted, the `repowise evidence setup` prompt. */
+  prompt?: (() => string) | undefined;
+  /** The line under the button. Omitted, it names `repowise evidence setup`; null drops it. */
+  hint?: React.ReactNode;
+}) {
+  if (variant === "row") {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2.5 border-y border-[var(--color-border-default)] py-3">
+        <p className="max-w-[70ch] text-sm text-[var(--color-text-secondary)]">
+          <strong className="font-semibold text-[var(--color-text-primary)]">
+            Ranked by code shape.
+          </strong>{" "}
+          No profile or benchmark is connected, so nothing here is measured. One prompt has your
+          agent run the repo&apos;s own benchmarks and add the results.
+        </p>
+        <AiPromptButton
+          label="Copy prompt for your agent"
+          copyText={() => prompt()}
+        />
+      </div>
+    );
+  }
+  const shown = found?.slice(0, 3) ?? [];
+  const more = (found?.length ?? 0) - shown.length;
+  return (
+    <EmptyState
+      icon={<Gauge />}
+      title="Add runtime evidence to rank by measured time"
+      description="Repowise reads code shape on its own. Profiles and benchmark results show where time is actually spent, so slow paths are ranked by measurement, not inference."
+    >
+      <div className="flex flex-col items-center gap-2">
+        {shown.length > 0 ? (
+          <p className="text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
+            Found on disk:{" "}
+            {shown.map((path, i) => (
+              <span key={path}>
+                {i > 0 ? ", " : ""}
+                <code className="font-mono">{path}</code>
+              </span>
+            ))}
+            {more > 0 ? ` and ${more} more` : ""}.
+          </p>
+        ) : null}
+        <AiPromptButton
+          label="Copy prompt for your agent"
+          copyText={() => prompt()}
+        />
+        {hint !== undefined ? (
+          hint
+        ) : (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Or run <code className="font-mono">repowise evidence setup</code> yourself.
+          </p>
+        )}
+      </div>
+    </EmptyState>
+  );
+}
+
+/**
+ * The slim connect row above a queue that has causes, shown only when the
+ * host knows no runtime evidence is connected.
+ */
+export function ConnectEvidenceRow({
+  runtimeEvidence,
+  hasCauses,
+  prompt,
+}: {
+  runtimeEvidence: { connected: boolean } | null;
+  hasCauses: boolean;
+  prompt?: (() => string) | undefined;
+}) {
+  if (!runtimeEvidence || runtimeEvidence.connected || !hasCauses) return null;
+  return <ConnectEvidenceState variant="row" prompt={prompt} />;
+}
+
+/**
+ * Analyzed, and nothing in this scope needs a change: the good state. It
+ * names the scope and commit it holds for; the accounting sentence beneath
+ * says where the rest of the repository is, so "clear" is a statement about
+ * something specific and the reader can check the rest.
+ */
+export function GoodState({
+  scope,
+  analyzedCommit,
+  children,
+}: {
+  /** "worth doing now in production code", "in all code". */
+  scope: string;
+  analyzedCommit: string | null | undefined;
+  /** The accounting sentence for the scope. */
+  children?: React.ReactNode;
+}) {
+  const at = analyzedCommit ? ` at ${analyzedCommit.slice(0, 7)}` : "";
   return (
     <EmptyState
       tone="positive"
-      title="No supported pattern surfaced"
-      description="The detectors are high precision and low recall, so an empty queue means nothing they recognize was found. It does not measure latency and does not claim the code is fast."
-    />
+      title={`No performance changes ${scope}${at}`}
+      description="The detectors read code shape, not latency, and are high precision and low recall."
+    >
+      {children}
+    </EmptyState>
   );
 }
 
@@ -76,7 +189,8 @@ export function FilteredEmpty({ onClear }: { onClear: () => void }) {
   );
 }
 
-function Notice({
+/** A one-line notice on a hairline: warning ink for a caveat, neutral otherwise. */
+export function Notice({
   tone,
   children,
 }: {
@@ -158,7 +272,7 @@ export function LinkedCauseUnavailable({
       <button
         type="button"
         onClick={onDismiss}
-        className="rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         Dismiss
       </button>

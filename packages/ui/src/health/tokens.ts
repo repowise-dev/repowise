@@ -9,6 +9,7 @@
 
 import {
   bandForScore,
+  formatScore,
   HEALTH_BAND_LABEL,
   type HealthBand,
 } from "@repowise-dev/types/health";
@@ -45,24 +46,15 @@ export const SEVERITY_CHIP: Record<Severity, string> = {
   low: "bg-[var(--color-text-tertiary)]/15 text-[var(--color-text-tertiary)] border border-[var(--color-text-tertiary)]/30",
 };
 
+/** The quiet mono label: a field name, a state word, a small tag. */
+export const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
 /** Segment fills for a severity split (ProportionBar `color`). */
 export const SEVERITY_SEGMENT: Record<Severity, string> = {
   critical: "var(--color-error)",
   high: "var(--color-warning)",
   medium: "var(--color-caution)",
   low: "var(--color-text-tertiary)",
-};
-
-/**
- * Effort tint. A ramp, not a judgement: green is the cheap end, red the
- * expensive one. The badge prints the bucket letter beside it, so it belongs
- * on the semantic ramp. Here rather than in the card so it has one home.
- */
-export const EFFORT_TINT: Record<"S" | "M" | "L" | "XL", string> = {
-  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
-  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
-  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
 };
 
 /**
@@ -254,6 +246,29 @@ export function healthBand100(score100: number): HealthBand {
 export function healthBand(score: number): { color: string; label: string } {
   const band = bandForScore(score);
   return { color: HEALTH_BAND_VAR[band], label: HEALTH_BAND_LABEL[band] };
+}
+
+export interface HealthMark {
+  /** The score at one decimal, floored so it never crosses a band edge. */
+  value: string;
+  band: HealthBand;
+  label: string;
+  color: string;
+}
+
+/**
+ * A 1-10 score as a health mark: figure, word and colour on the five bands,
+ * the same reading every other score in the product takes, so a repository
+ * row, a system map node and a file pill never disagree about one number.
+ */
+export function healthMark(score: number): HealthMark {
+  const band = bandForScore(score);
+  return {
+    value: formatScore(score),
+    band,
+    label: HEALTH_BAND_LABEL[band],
+    color: HEALTH_BAND_VAR[band],
+  };
 }
 
 export function riskInk(risk01: number): string {

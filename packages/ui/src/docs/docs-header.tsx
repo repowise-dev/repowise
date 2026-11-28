@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, BarChart3 } from "lucide-react";
+import { BookOpen, BarChart3, FileWarning } from "lucide-react";
 import { cn } from "../lib/cn";
 import type { ReaderLinkComponent } from "./docs-reader";
 
@@ -8,17 +8,20 @@ export interface DocsHeaderTab {
   label: string;
   href: string;
   isActive: boolean;
-  icon: "explorer" | "freshness";
+  icon: "explorer" | "freshness" | "drift";
+  /** A cheap count shown beside the label, e.g. open drift findings. */
+  badge?: number | undefined;
 }
 
 const ICONS = {
   explorer: BookOpen,
   freshness: BarChart3,
+  drift: FileWarning,
 } as const;
 
 /**
  * Single compact chrome row for the documentation surface: the Explorer /
- * Doc-freshness view switch as a segmented control, and a right-aligned slot
+ * Doc freshness / Doc drift view switch as a segmented control, and a right-aligned slot
  * for page-specific actions. Pure presentation — the host resolves tab
  * hrefs/active state and injects a router-aware ``LinkComponent``.
  *
@@ -43,7 +46,8 @@ export function DocsHeader({
       <h1 className="sr-only">Documentation</h1>
 
       <nav
-        className="flex shrink-0 items-center rounded-lg bg-[var(--color-bg-elevated)] p-0.5"
+        // h-7 to match the bar's right-hand controls (Search, More).
+        className="flex h-7 shrink-0 items-center rounded-lg bg-[var(--color-bg-elevated)] p-0.5"
         aria-label="Docs views"
       >
         {tabs.map((tab) => {
@@ -55,7 +59,7 @@ export function DocsHeader({
               aria-current={tab.isActive ? "page" : undefined}
               title={tab.label}
               className={cn(
-                "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors sm:px-2.5",
+                "flex h-6 items-center gap-1.5 rounded-md px-2 text-xs font-medium whitespace-nowrap transition-colors sm:px-2.5",
                 tab.isActive
                   ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-sm"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
@@ -67,6 +71,11 @@ export function DocsHeader({
                   in the row and the least load-bearing, since the active tab is
                   already marked by its filled ground. */}
               <span className="hidden sm:inline">{tab.label}</span>
+              {tab.badge !== undefined && (
+                <span className="font-mono text-[10px] font-normal tabular-nums text-[var(--color-text-tertiary)]">
+                  {tab.badge}
+                </span>
+              )}
             </Link>
           );
         })}

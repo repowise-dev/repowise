@@ -26,6 +26,7 @@ from repowise.server.mcp_server.tool_health.pillars import (
 from repowise.server.mcp_server.tool_health.plans import _render_plans
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding
+from repowise.server.mcp_server.tool_health.what_if import what_if_block
 
 
 def add_optional_blocks(
@@ -51,10 +52,14 @@ def add_optional_blocks(
         )
     if "doc_drift" in include:
         result["doc_drift"] = _doc_drift_block(data, pager)
+    if "untested_complexity" in include:
+        result["untested_complexity"] = pager.bound(data.crap_rows, "untested_complexity")
     # The dimension filter (``include=["performance"]`` etc.) is applied where
     # rows are selected: filtering here would filter a list already capped.
     if "refactoring" in include and req.wants("suggestion_legend"):
         result["suggestion_legend"] = _suggestion_legend(data)
+    if "what_if" in include and req.wants("what_if"):
+        result["what_if"] = what_if_block(data, req)
 
 
 def _add_biomarkers(result: dict[str, Any], data: HealthData, pager: Pager) -> None:

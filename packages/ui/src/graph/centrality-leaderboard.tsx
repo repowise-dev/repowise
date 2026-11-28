@@ -4,6 +4,8 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, Crown, Info } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
+import { isFileNodeId } from "./node-id";
 
 export interface CentralityNode {
   node_id: string;
@@ -46,6 +48,16 @@ function score(node: CentralityNode, metric: "pagerank" | "betweenness" | "degre
   return (node.in_degree ?? 0) + (node.out_degree ?? 0);
 }
 
+/** A node's label when it has one; a bare file id reads as a path. */
+function NodeLabel({ nodeId, label }: { nodeId: string; label?: string | null | undefined }) {
+  if (label || !isFileNodeId(nodeId)) {
+    return (
+      <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">{label ?? nodeId}</p>
+    );
+  }
+  return <FilePath path={nodeId} fold className="flex text-[var(--color-text-primary)]" />;
+}
+
 export function CentralityLeaderboard({
   nodes,
   metric: initialMetric = "pagerank",
@@ -79,7 +91,7 @@ export function CentralityLeaderboard({
                 <button
                   type="button"
                   aria-label="What do these metrics mean?"
-                  className="inline-flex shrink-0 items-center rounded-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="inline-flex shrink-0 items-center rounded-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   <Info className="h-3 w-3" aria-hidden />
                 </button>
@@ -120,7 +132,7 @@ export function CentralityLeaderboard({
                 className={cn(
                   "flex-1 px-2 py-1.5 transition-colors",
                   metric === m
-                    ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                    ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                     : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
                 )}
               >
@@ -149,12 +161,10 @@ export function CentralityLeaderboard({
                       {i + 1}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
-                        {n.label ?? n.node_id}
-                      </p>
+                      <NodeLabel nodeId={n.node_id} label={n.label} />
                       <div className="mt-0.5 h-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
                         <div
-                          className="h-full bg-[var(--color-accent-primary)]"
+                          className="h-full bg-[var(--color-progress-fill)]"
                           style={{ width: `${pct.toFixed(1)}%` }}
                         />
                       </div>

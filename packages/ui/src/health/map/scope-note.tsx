@@ -13,9 +13,11 @@
 
 import type { ReactNode } from "react";
 import type { MapScope } from "./types";
+import type { MapCanvasLabels } from "./canvas-labels";
+import { formatNumber } from "../../lib/format";
 
 const ACTION =
-  "pointer-events-auto rounded px-1 text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:cursor-wait disabled:opacity-60";
+  "pointer-events-auto rounded px-1 text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:cursor-wait disabled:opacity-60";
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
@@ -48,9 +50,9 @@ function Action({
 /** What the cap left out, in the units the server could count. */
 function omittedText(scope: MapScope): string {
   const causes = scope.omitted.performanceFiles;
-  if (causes == null) return `${scope.omitted.files.toLocaleString()} not drawn`;
-  if (causes === 0) return "every file with an open cause is drawn";
-  return `${causes.toLocaleString()} ${plural(causes, "file", "files")} with open causes not drawn`;
+  if (causes == null) return `${formatNumber(scope.omitted.files)} not drawn`;
+  if (causes === 0) return "every file with a cause worth fixing now is drawn";
+  return `${formatNumber(causes)} ${plural(causes, "file", "files")} with causes worth fixing now not drawn`;
 }
 
 function HeldToggle({
@@ -69,7 +71,7 @@ function HeldToggle({
       <Action pending={pending} onClick={() => onChange(!scope.includeHeld)}>
         {scope.includeHeld
           ? "Hide vendored and generated files"
-          : `Include ${held.toLocaleString()} vendored and generated ${plural(held, "file", "files")}`}
+          : `Include ${formatNumber(held)} vendored and generated ${plural(held, "file", "files")}`}
       </Action>
     </Part>
   );
@@ -93,9 +95,9 @@ function SearchPart({
   const pinned = scope.query && scope.query.text === query ? scope.query : null;
   return (
     <Part>
-      <span className="tabular-nums">{matches.toLocaleString()}</span>
+      <span className="tabular-nums">{formatNumber(matches)}</span>
       {pinned
-        ? ` of ${pinned.matches.toLocaleString()} ${plural(pinned.matches, "match", "matches")} drawn`
+        ? ` of ${formatNumber(pinned.matches)} ${plural(pinned.matches, "match", "matches")} drawn`
         : ` ${plural(matches, "match", "matches")} here`}
       {onFindUndrawn && capped && !pinned ? (
         <Part>
@@ -135,14 +137,14 @@ export function MapScopeNote({
       className="pointer-events-none absolute bottom-3 right-3 z-20 max-w-[64%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-2.5 py-1.5 text-right text-xs text-[var(--color-text-tertiary)] shadow-sm backdrop-blur-sm sm:max-w-[52%]"
     >
       <span className="font-mono tabular-nums">
-        {scope.shown.toLocaleString()} of {scope.eligible.toLocaleString()}
+        {formatNumber(scope.shown)} of {formatNumber(scope.eligible)}
       </span>{" "}
       files drawn
       {capped ? <Part>{omittedText(scope)}</Part> : null}
       {capped && onDrawMore && more > 0 ? (
         <Part>
           <Action pending={pending} onClick={onDrawMore}>
-            Draw {more.toLocaleString()} more
+            Draw {formatNumber(more)} more
           </Action>
         </Part>
       ) : null}
@@ -159,6 +161,94 @@ export function MapScopeNote({
           onFindUndrawn={onFindUndrawn}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The lazily loaded field's scope: how many files are drawn so far against
+ * the repository, and how to see the rest. Every area is complete once loaded,
+ * so the only thing to say is how far the reader has zoomed in.
+ */
+/**
+ * The groups the map holds out by default (tests, build files, ...), each a
+ * toggle that brings it back. The server names the groups and counts them;
+ * the host keeps which are brought back in the URL.
+ */
+export interface HeldGroups {
+  /** The held origins, in the server's order. */
+  default: readonly string[];
+  /** Files per held origin, repository-wide. */
+  counts: Readonly<Record<string, number>>;
+  /** Origins brought back. */
+  include: readonly string[];
+  onChange: (include: string[]) => void;
+}
+
+function HeldToggles({ groups, labels }: { groups: HeldGroups; labels: MapCanvasLabels }) {
+  const present = groups.default.filter((o) => (groups.counts[o] ?? 0) > 0);
+  if (present.length === 0) return null;
+  return (
+    <>
+      {present.map((origin) => {
+        const on = groups.include.includes(origin);
+        const name = labels.originName(origin);
+        const next = on ? groups.include.filter((o) => o !== origin) : [...groups.include, origin];
+        return (
+          <Part key={origin}>
+            <button
+              type="button"
+              onClick={() => groups.onChange(next)}
+              className={ACTION}
+            >
+              {on ? labels.hideHeld(name) : labels.showHeld(name, groups.counts[origin] ?? 0)}
+            </button>
+          </Part>
+        );
+      })}
+    </>
+  );
+}
+
+export function LoadedNote({
+  loaded,
+  total,
+  matches,
+  held,
+  labels,
+}: {
+  loaded: number;
+  total: number;
+  /** Search matches among the loaded files, or null with no search. */
+  matches: number | null;
+  held?: HeldGroups | undefined;
+  labels: MapCanvasLabels;
+}) {
+  return (
+    <div
+      data-testid="map-scope"
+      className="pointer-events-none absolute bottom-3 right-3 z-20 max-w-[64%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-2.5 py-1.5 text-right text-xs text-[var(--color-text-tertiary)] shadow-sm backdrop-blur-sm sm:max-w-[52%]"
+    >
+      {loaded === 0 ? (
+        <>
+          <span className="font-mono tabular-nums">{formatNumber(total)}</span> files in folders ·
+          zoom into one to see its files
+        </>
+      ) : (
+        <>
+          <span className="font-mono tabular-nums">
+            {formatNumber(loaded)} of {formatNumber(total)}
+          </span>{" "}
+          files loaded{loaded < total ? " · zoom in for more" : ""}
+        </>
+      )}
+      {matches !== null ? (
+        <Part>
+          <span className="tabular-nums">{formatNumber(matches)}</span>{" "}
+          {plural(matches, "match", "matches")} loaded
+        </Part>
+      ) : null}
+      {held ? <HeldToggles groups={held} labels={labels} /> : null}
     </div>
   );
 }

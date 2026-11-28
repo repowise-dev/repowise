@@ -45,7 +45,7 @@ describe("Fix first header", () => {
     // Under the score: the headline keeps the first screen.
     expect(details.open).toBe(false);
     const summary = container.querySelector("summary")!;
-    expect(summary.textContent).toContain("Fix first");
+    expect(summary.textContent).toContain("Highest-interest technical debt");
     expect(summary.textContent).toContain("3 items");
   });
 
@@ -156,6 +156,7 @@ describe("Fix first items", () => {
       signature: "def _<name>(repo_path):",
       call: "info = _<name>(repo_path)",
       command: "pytest tests/unit/cli/test_repo_scanner.py",
+      notes: ["Type tc as the guard on line 50 narrows it: a wider type undoes that narrowing."],
     };
     const item: FixItem = {
       ...REFACTOR,
@@ -171,6 +172,7 @@ describe("Fix first items", () => {
     expect(screen.getByText("info = _<name>(repo_path)")).toBeTruthy();
     expect(screen.getByText(/with a name for what the lines do/)).toBeTruthy();
     expect(screen.getByText(step.command)).toBeTruthy();
+    expect(screen.getByText(step.notes[0]!)).toBeTruthy();
     expect(screen.getByText(first)).toBeTruthy();
   });
 

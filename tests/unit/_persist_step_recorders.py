@@ -105,6 +105,7 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     import repowise.core.persistence as persistence
     import repowise.core.persistence.search as search
     import repowise.core.pipeline.commit_health as commit_health
+    import repowise.core.pipeline.fix_rollups as fix_rollups
     import repowise.core.pipeline.incremental as incremental
     import repowise.core.pipeline.incremental.commits as commits
     import repowise.core.pipeline.incremental.external_systems as external_systems
@@ -116,14 +117,19 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
 
     rec.patch(persist, "reconcile_full_index_scope", ret=[])
     rec.patch(persist, "tombstone_pages_outside_generation", ret=[])
-    rec.patch(persist, "sweep_retired_pages", ret=[SWEPT])
+    rec.patch(persist, "restore_stored_complexity")
+    rec.patch(persist, "sweep_store_hygiene", ret=[SWEPT])
     rec.patch(persist, "sweep_absent_cycle_pages", ret=[])
     rec.patch(persist, "sweep_absent_symbol_spotlights", ret=[])
+    rec.patch(persist, "sweep_deselected_pages", ret=[])
+    rec.patch(persist, "sweep_deselected_flow_pages", ret=[])
+    # One value for both persisters, so their sweep inputs compare equal.
+    rec.monkeypatch.setattr(persist_index, "_generation_config", lambda _path: "config")
     rec.patch(persist, "tombstone_candidates", ret=[], sync=True)
     rec.patch(persist, "mark_tombstone_pages", ret=[TOMBSTONED])
     rec.patch(page_tree_sync, "rebuild_page_tree")
     rec.patch(persist, "persist_git_refresh")
-    # The CLI looks these up on the package at call time, the core writer on its own module.
+    # Package callers look these up at call time, the core writer on its own module.
     reexported = (incremental, persist_index)
     rec.patch(commits, "persist_incremental_commits", where=reexported)
     rec.patch(crud, "replace_dead_code_findings")
@@ -139,9 +145,12 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(external_systems, "refresh_external_systems", where=reexported)
     rec.patch(crud, "purge_proposed_decisions_by_source")
     rec.patch(persist, "prune_deleted_file_rows", ret=prune_ret)
+    rec.patch(persist, "prune_absent_synthetic_nodes", ret=0)
     rec.patch(persist, "_analyzed_commit", ret="abc123")
     rec.patch(crud, "finalize_performance_opportunities")
     rec.patch(crud, "finalize_refactoring_opportunities")
+    rec.patch(crud, "recompute_git_percentiles", ret=0)
+    rec.patch(fix_rollups, "apply_fix_rollups", ret=0)
     rec.patch(commit_health, "refresh_commit_health_after_update")
     # Core reads it from the search module, the CLI from the package.
     fts = rec.fts_class()

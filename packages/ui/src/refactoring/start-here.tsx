@@ -24,6 +24,8 @@
 import * as React from "react";
 
 import { formatNumber } from "../lib/format";
+import { splitPath } from "../lib/path-parts";
+import { FilePath } from "../shared/file-path";
 import { EFFORT_LABEL } from "../health/labels";
 import { StructuralMap } from "./structural-map";
 import { typeMeta } from "./meta";
@@ -137,19 +139,22 @@ export function StartHere({
               </span>
               <span className="min-w-0">
                 <span className="block text-sm font-semibold text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
-                  {meta.label} · {item.file_path.split("/").pop()}
+                  {meta.label} · {splitPath(item.file_path).name}
                 </span>
-                {/* Full path, no ellipsis: a truncated title reports a layout
-                    decision to the reader as missing content. */}
-                <span className="mt-0.5 block break-all font-mono text-xs text-[var(--color-text-tertiary)]">
-                  {item.file_path}
-                </span>
+                {/* One line under the title, which already names the file:
+                    the directory clips in the middle, the tooltip has it all. */}
+                <FilePath
+                  path={item.file_path}
+                  mode="middle-ellipsis"
+                  fold
+                  className="mt-0.5 flex text-[var(--color-text-tertiary)]"
+                />
                 <span className="mt-1.5 block max-w-[70ch] text-sm text-[var(--color-text-secondary)]">
                   {stepSummary(item)} ·{" "}
                   {addressesPrimaryShort(item.addresses_primary_problem).toLowerCase()}
                 </span>
               </span>
-              <span className="mt-2 block text-xs text-[var(--color-text-tertiary)] md:mt-0 md:text-right">
+              <span className="col-start-2 mt-2 block text-xs text-[var(--color-text-tertiary)] md:col-start-auto md:mt-0 md:text-right">
                 {effort} effort
                 <br />
                 {item.confidence === "high"

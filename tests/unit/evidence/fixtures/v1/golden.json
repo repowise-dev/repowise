@@ -1,0 +1,834 @@
+{
+ "benchmark": {
+  "capped": {
+   "rows": [
+    {
+     "allocs_per_op": null,
+     "benchmark_key": "test_build[small]",
+     "bytes_per_op": null,
+     "iterations": 1,
+     "lower_is_better": true,
+     "max": 0.02,
+     "mean": 0.013,
+     "median": 0.012,
+     "min": 0.011,
+     "rounds": 50,
+     "stddev": 0.001,
+     "symbol_id": "src/app.py::build",
+     "unit": "s"
+    },
+    {
+     "allocs_per_op": 3.0,
+     "benchmark_key": "BenchmarkParse-8",
+     "bytes_per_op": 128.0,
+     "iterations": null,
+     "lower_is_better": null,
+     "max": null,
+     "mean": 120.5,
+     "median": null,
+     "min": null,
+     "rounds": null,
+     "stddev": null,
+     "symbol_id": null,
+     "unit": "ns"
+    },
+    {
+     "allocs_per_op": null,
+     "benchmark_key": "gen bench",
+     "bytes_per_op": null,
+     "iterations": null,
+     "lower_is_better": null,
+     "max": null,
+     "mean": 1.0,
+     "median": null,
+     "min": null,
+     "rounds": null,
+     "stddev": null,
+     "symbol_id": null,
+     "unit": null
+    }
+   ],
+   "truncated": 1
+  },
+  "document": {
+   "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "dirty": null,
+   "entries": [
+    {
+     "allocs_per_op": null,
+     "bytes_per_op": null,
+     "iterations": 1,
+     "location": {
+      "exact": true,
+      "function": "build",
+      "line": null,
+      "path": "src/app.py"
+     },
+     "lower_is_better": true,
+     "max": 0.02,
+     "mean": 0.013,
+     "median": 0.012,
+     "min": 0.011,
+     "name": "test_build[small]",
+     "rounds": 50,
+     "stddev": 0.001,
+     "unit": "s"
+    },
+    {
+     "allocs_per_op": 3.0,
+     "bytes_per_op": 128.0,
+     "iterations": null,
+     "location": null,
+     "lower_is_better": null,
+     "max": null,
+     "mean": 120.5,
+     "median": null,
+     "min": null,
+     "name": "BenchmarkParse-8",
+     "rounds": null,
+     "stddev": null,
+     "unit": "ns"
+    },
+    {
+     "allocs_per_op": null,
+     "bytes_per_op": null,
+     "iterations": null,
+     "location": {
+      "function": "decode",
+      "line": null,
+      "path": "gen/pb.py"
+     },
+     "lower_is_better": null,
+     "max": null,
+     "mean": 1.0,
+     "median": null,
+     "min": null,
+     "name": "gen bench",
+     "rounds": null,
+     "stddev": null,
+     "unit": null
+    },
+    {
+     "allocs_per_op": null,
+     "bytes_per_op": null,
+     "iterations": null,
+     "location": {
+      "function": "nope",
+      "line": null,
+      "path": "src/app.py"
+     },
+     "lower_is_better": null,
+     "max": null,
+     "mean": null,
+     "median": 2.0,
+     "min": null,
+     "name": "unknown fn",
+     "rounds": null,
+     "stddev": null,
+     "unit": null
+    }
+   ],
+   "explained": null,
+   "kind": "benchmark",
+   "libraries": null,
+   "repo_self": null,
+   "skipped": {
+    "duplicate": 1,
+    "no_value": 1
+   },
+   "tool_name": "pytest-benchmark",
+   "tool_version": "4.0.0",
+   "total": null,
+   "total_samples": null,
+   "unit": "s",
+   "value_kind": null,
+   "waits": null
+  },
+  "entry_paths": [
+   "gen/pb.py",
+   "src/app.py"
+  ],
+  "joined": {
+   "matched": 4,
+   "rows": [
+    {
+     "allocs_per_op": null,
+     "benchmark_key": "test_build[small]",
+     "bytes_per_op": null,
+     "iterations": 1,
+     "lower_is_better": true,
+     "max": 0.02,
+     "mean": 0.013,
+     "median": 0.012,
+     "min": 0.011,
+     "rounds": 50,
+     "stddev": 0.001,
+     "symbol_id": "src/app.py::build",
+     "unit": "s"
+    },
+    {
+     "allocs_per_op": 3.0,
+     "benchmark_key": "BenchmarkParse-8",
+     "bytes_per_op": 128.0,
+     "iterations": null,
+     "lower_is_better": null,
+     "max": null,
+     "mean": 120.5,
+     "median": null,
+     "min": null,
+     "rounds": null,
+     "stddev": null,
+     "symbol_id": null,
+     "unit": "ns"
+    },
+    {
+     "allocs_per_op": null,
+     "benchmark_key": "gen bench",
+     "bytes_per_op": null,
+     "iterations": null,
+     "lower_is_better": null,
+     "max": null,
+     "mean": 1.0,
+     "median": null,
+     "min": null,
+     "rounds": null,
+     "stddev": null,
+     "symbol_id": null,
+     "unit": null
+    },
+    {
+     "allocs_per_op": null,
+     "benchmark_key": "unknown fn",
+     "bytes_per_op": null,
+     "iterations": null,
+     "lower_is_better": null,
+     "max": null,
+     "mean": null,
+     "median": 2.0,
+     "min": null,
+     "rounds": null,
+     "stddev": null,
+     "symbol_id": null,
+     "unit": null
+    }
+   ],
+   "skipped": {},
+   "unlinked": {
+    "generated": 1,
+    "unknown_symbol": 1
+   },
+   "unmatched_sample": []
+  },
+  "run": {
+   "checkout_root": "/repo",
+   "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "dirty": false,
+   "environment": "unknown",
+   "explained_value": null,
+   "format": "repowise-evidence-v1",
+   "kind": "benchmark",
+   "library_value": null,
+   "mapping_partial": false,
+   "repo_self_value": null,
+   "run_key": "k",
+   "skipped_json": "{\"duplicate\": 1, \"no_value\": 1}",
+   "source": "cli",
+   "tests_failed": null,
+   "timing_summary_json": null,
+   "tool_name": "pytest-benchmark",
+   "tool_version": "4.0.0",
+   "total_samples": null,
+   "total_value": null,
+   "unit": "s",
+   "units_matched": 3,
+   "units_outside_repo": 0,
+   "units_skipped": 2,
+   "units_total": 6,
+   "units_truncated": 1,
+   "unlisted_symbols": null,
+   "unmatched_sample_json": "[]",
+   "value_kind": null,
+   "wait_value": null,
+   "workload_class": "entry_point",
+   "workload_name": "golden"
+  },
+  "run_key": "5049c579acc8fba68ea377d93015cb59"
+ },
+ "profile": {
+  "capped": {
+   "rows": [
+    {
+     "call_count": 3,
+     "drivers_json": "[{\"name\": \"Reader.read\", \"share\": 0.7, \"symbol\": \"src/app.py::Reader.read\"}, {\"name\": \"pytest_pyfunc_call\", \"share\": 0.3}, {\"name\": \"decode\", \"path\": \"gen/pb.py\", \"share\": 0.1}]",
+     "inside_json": "[{\"kind\": \"library\", \"leaf\": {\"kind\": \"native\", \"name\": \"stat\", \"share\": 0.55}, \"name\": \"Path.is_file\", \"share\": 0.57}, {\"kind\": \"repo\", \"name\": \"Reader.read\", \"share\": 0.2}]",
+     "line": 10,
+     "resolution": "declared",
+     "self_samples": 12,
+     "self_value": 12.0,
+     "symbol_id": "src/app.py::build",
+     "total_samples": 410,
+     "total_value": 410.0
+    },
+    {
+     "call_count": null,
+     "drivers_json": null,
+     "inside_json": null,
+     "line": 50,
+     "resolution": "declared",
+     "self_samples": null,
+     "self_value": null,
+     "symbol_id": "src/app.py::Writer.read",
+     "total_samples": null,
+     "total_value": 90.0
+    }
+   ],
+   "truncated": 0
+  },
+  "document": {
+   "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "dirty": false,
+   "entries": [
+    {
+     "call_count": 3,
+     "drivers": [
+      {
+       "function": "Reader.read",
+       "line": 30,
+       "path": "src/app.py",
+       "share": 0.7
+      },
+      {
+       "function": "pytest_pyfunc_call",
+       "share": 0.3
+      },
+      {
+       "function": "decode",
+       "path": "gen/pb.py",
+       "share": 0.1
+      }
+     ],
+     "function": "build",
+     "inside": [
+      {
+       "kind": "library",
+       "leaf": {
+        "kind": "native",
+        "name": "stat",
+        "share": 0.55
+       },
+       "name": "Path.is_file",
+       "share": 0.57
+      },
+      {
+       "kind": "repo",
+       "name": "Reader.read",
+       "share": 0.2
+      }
+     ],
+     "line": 10,
+     "path": "src/app.py",
+     "self_samples": 12,
+     "self_value": 12.0,
+     "total_samples": 410,
+     "total_value": 410.0
+    },
+    {
+     "call_count": null,
+     "drivers": null,
+     "function": "read",
+     "inside": null,
+     "line": 50,
+     "path": "src/app.py",
+     "self_samples": null,
+     "self_value": null,
+     "total_samples": null,
+     "total_value": 90.0
+    },
+    {
+     "call_count": null,
+     "drivers": null,
+     "function": "parse",
+     "inside": null,
+     "line": null,
+     "path": "src/app.py",
+     "self_samples": null,
+     "self_value": null,
+     "total_samples": null,
+     "total_value": 5.0
+    },
+    {
+     "call_count": null,
+     "drivers": null,
+     "function": "decode",
+     "inside": null,
+     "line": null,
+     "path": "gen/pb.py",
+     "self_samples": null,
+     "self_value": 4.0,
+     "total_samples": null,
+     "total_value": null
+    },
+    {
+     "call_count": null,
+     "drivers": null,
+     "function": "f",
+     "inside": null,
+     "line": null,
+     "path": "src/edited.py",
+     "self_samples": null,
+     "self_value": 1.0,
+     "total_samples": null,
+     "total_value": null
+    },
+    {
+     "call_count": null,
+     "drivers": null,
+     "function": "missing",
+     "inside": null,
+     "line": null,
+     "path": "src/app.py",
+     "self_samples": null,
+     "self_value": 1.0,
+     "total_samples": null,
+     "total_value": null
+    }
+   ],
+   "explained": 580.0,
+   "kind": "profile",
+   "libraries": 120.0,
+   "repo_self": 310.0,
+   "skipped": {
+    "duplicate": 1,
+    "no_value": 1,
+    "not_an_object": 1,
+    "other": 2,
+    "outside_repo": 813
+   },
+   "tool_name": "pyinstrument",
+   "tool_version": "4.6.2",
+   "total": 5300.0,
+   "total_samples": 5300,
+   "unit": "samples",
+   "value_kind": "wall",
+   "waits": 900.0
+  },
+  "entry_paths": [
+   "gen/pb.py",
+   "src/app.py",
+   "src/edited.py"
+  ],
+  "joined": {
+   "matched": 2,
+   "rows": [
+    {
+     "call_count": 3,
+     "drivers_json": "[{\"name\": \"Reader.read\", \"share\": 0.7, \"symbol\": \"src/app.py::Reader.read\"}, {\"name\": \"pytest_pyfunc_call\", \"share\": 0.3}, {\"name\": \"decode\", \"path\": \"gen/pb.py\", \"share\": 0.1}]",
+     "inside_json": "[{\"kind\": \"library\", \"leaf\": {\"kind\": \"native\", \"name\": \"stat\", \"share\": 0.55}, \"name\": \"Path.is_file\", \"share\": 0.57}, {\"kind\": \"repo\", \"name\": \"Reader.read\", \"share\": 0.2}]",
+     "line": 10,
+     "resolution": "declared",
+     "self_samples": 12,
+     "self_value": 12.0,
+     "symbol_id": "src/app.py::build",
+     "total_samples": 410,
+     "total_value": 410.0
+    },
+    {
+     "call_count": null,
+     "drivers_json": null,
+     "inside_json": null,
+     "line": 50,
+     "resolution": "declared",
+     "self_samples": null,
+     "self_value": null,
+     "symbol_id": "src/app.py::Writer.read",
+     "total_samples": null,
+     "total_value": 90.0
+    }
+   ],
+   "skipped": {
+    "ambiguous_symbol": 1,
+    "dirty_file": 1,
+    "generated": 1,
+    "unknown_symbol": 1
+   },
+   "unlinked": {},
+   "unmatched_sample": [
+    "src/app.py",
+    "gen/pb.py",
+    "src/edited.py",
+    "src/app.py"
+   ]
+  },
+  "run": {
+   "checkout_root": "/repo",
+   "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "dirty": false,
+   "environment": "unknown",
+   "explained_value": 580.0,
+   "format": "repowise-evidence-v1",
+   "kind": "profile",
+   "library_value": 120.0,
+   "mapping_partial": false,
+   "repo_self_value": 310.0,
+   "run_key": "k",
+   "skipped_json": "{\"ambiguous_symbol\": 1, \"dirty_file\": 1, \"duplicate\": 1, \"generated\": 1, \"no_value\": 1, \"not_an_object\": 1, \"other\": 2, \"outside_repo\": 813, \"unknown_symbol\": 1}",
+   "source": "cli",
+   "tests_failed": null,
+   "timing_summary_json": null,
+   "tool_name": "pyinstrument",
+   "tool_version": "4.6.2",
+   "total_samples": 5300,
+   "total_value": 5300.0,
+   "unit": "samples",
+   "units_matched": 2,
+   "units_outside_repo": 813,
+   "units_skipped": 9,
+   "units_total": 824,
+   "units_truncated": 0,
+   "unlisted_symbols": null,
+   "unmatched_sample_json": "[\"src/app.py\", \"gen/pb.py\", \"src/edited.py\", \"src/app.py\"]",
+   "value_kind": "wall",
+   "wait_value": 900.0,
+   "workload_class": "entry_point",
+   "workload_name": "golden"
+  },
+  "run_key": "c3943fcc95f5116aefc20b6553dd150a"
+ },
+ "query_count": {
+  "capped": {
+   "rows": [
+    {
+     "identical_max": 10,
+     "query_count": 11,
+     "scope_id": "tests/test_app.py::test_build",
+     "scope_items": 10,
+     "scope_kind": "test",
+     "site_line": 10,
+     "site_symbol_id": "src/app.py::build",
+     "statement_fp": "0123456789abcdef",
+     "total_ms": 4.5
+    },
+    {
+     "identical_max": null,
+     "query_count": 2,
+     "scope_id": "GET /users",
+     "scope_items": null,
+     "scope_kind": "request",
+     "site_line": null,
+     "site_symbol_id": "src/app.py::Reader.read",
+     "statement_fp": "fedcba9876543210",
+     "total_ms": null
+    }
+   ],
+   "truncated": 0
+  },
+  "document": {
+   "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "dirty": null,
+   "entries": [
+    {
+     "function": "build",
+     "identical_max": 10,
+     "line": 10,
+     "path": "src/app.py",
+     "query_count": 11,
+     "scope_id": "tests/test_app.py::test_build",
+     "scope_items": 10,
+     "scope_kind": "test",
+     "statement_fp": "0123456789abcdef",
+     "total_ms": 4.5
+    },
+    {
+     "function": "Reader.read",
+     "identical_max": null,
+     "line": null,
+     "path": "src/app.py",
+     "query_count": 2,
+     "scope_id": "GET /users",
+     "scope_items": null,
+     "scope_kind": "request",
+     "statement_fp": "fedcba9876543210",
+     "total_ms": null
+    },
+    {
+     "function": "decode",
+     "identical_max": null,
+     "line": null,
+     "path": "gen/pb.py",
+     "query_count": 1,
+     "scope_id": "t",
+     "scope_items": null,
+     "scope_kind": "test",
+     "statement_fp": "0123456789abcdef",
+     "total_ms": null
+    }
+   ],
+   "explained": null,
+   "kind": "query_count",
+   "libraries": null,
+   "repo_self": null,
+   "skipped": {
+    "no_scope": 1,
+    "statement_not_digest": 1
+   },
+   "tool_name": null,
+   "tool_version": null,
+   "total": null,
+   "total_samples": null,
+   "unit": "count",
+   "value_kind": null,
+   "waits": null
+  },
+  "entry_paths": [
+   "gen/pb.py",
+   "src/app.py"
+  ],
+  "joined": {
+   "matched": 2,
+   "rows": [
+    {
+     "identical_max": 10,
+     "query_count": 11,
+     "scope_id": "tests/test_app.py::test_build",
+     "scope_items": 10,
+     "scope_kind": "test",
+     "site_line": 10,
+     "site_symbol_id": "src/app.py::build",
+     "statement_fp": "0123456789abcdef",
+     "total_ms": 4.5
+    },
+    {
+     "identical_max": null,
+     "query_count": 2,
+     "scope_id": "GET /users",
+     "scope_items": null,
+     "scope_kind": "request",
+     "site_line": null,
+     "site_symbol_id": "src/app.py::Reader.read",
+     "statement_fp": "fedcba9876543210",
+     "total_ms": null
+    }
+   ],
+   "skipped": {
+    "generated": 1
+   },
+   "unlinked": {},
+   "unmatched_sample": [
+    "gen/pb.py"
+   ]
+  },
+  "run": {
+   "checkout_root": "/repo",
+   "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "dirty": false,
+   "environment": "unknown",
+   "explained_value": null,
+   "format": "repowise-evidence-v1",
+   "kind": "query_count",
+   "library_value": null,
+   "mapping_partial": false,
+   "repo_self_value": null,
+   "run_key": "k",
+   "skipped_json": "{\"generated\": 1, \"no_scope\": 1, \"statement_not_digest\": 1}",
+   "source": "cli",
+   "tests_failed": null,
+   "timing_summary_json": null,
+   "tool_name": null,
+   "tool_version": null,
+   "total_samples": null,
+   "total_value": null,
+   "unit": "count",
+   "units_matched": 2,
+   "units_outside_repo": 0,
+   "units_skipped": 3,
+   "units_total": 5,
+   "units_truncated": 0,
+   "unlisted_symbols": null,
+   "unmatched_sample_json": "[\"gen/pb.py\"]",
+   "value_kind": null,
+   "wait_value": null,
+   "workload_class": "entry_point",
+   "workload_name": "golden"
+  },
+  "run_key": "5d6c4452187ff02819c833f3faf328b3"
+ },
+ "test_timing": {
+  "capped": {
+   "rows": [
+    {
+     "duration_s": 1.25,
+     "first_in_class": true,
+     "outcome": "passed",
+     "symbol_id": "tests/test_app.py::test_build",
+     "test_file": "tests/test_app.py",
+     "test_id": "tests/test_app.py::test_build"
+    },
+    {
+     "duration_s": 0.5,
+     "first_in_class": null,
+     "outcome": "failed",
+     "symbol_id": "tests/test_app.py::TestX::test_y",
+     "test_file": "tests/test_app.py",
+     "test_id": "tests/test_app.py::TestX::test_y"
+    },
+    {
+     "duration_s": 0.1,
+     "first_in_class": null,
+     "outcome": "skipped",
+     "symbol_id": "tests/unit/test_x.py::TestC::test_z",
+     "test_file": "tests/unit/test_x.py",
+     "test_id": "tests/unit/test_x.py::TestC::test_z"
+    }
+   ],
+   "truncated": 1
+  },
+  "document": {
+   "commit_sha": null,
+   "dirty": null,
+   "entries": [
+    {
+     "classname": null,
+     "duration_s": 1.25,
+     "first_in_class": true,
+     "location": {
+      "function": "test_build",
+      "line": 4,
+      "path": "tests/test_app.py"
+     },
+     "outcome": "passed",
+     "test_file": "tests/test_app.py",
+     "test_id": "tests/test_app.py::test_build"
+    },
+    {
+     "classname": null,
+     "duration_s": 0.5,
+     "first_in_class": null,
+     "location": {
+      "function": "TestX::test_y",
+      "line": null,
+      "path": "tests/test_app.py"
+     },
+     "outcome": "failed",
+     "test_file": "tests/test_app.py",
+     "test_id": "tests/test_app.py::TestX::test_y"
+    },
+    {
+     "classname": null,
+     "duration_s": 0.1,
+     "first_in_class": null,
+     "location": {
+      "exact": true,
+      "function": "TestC::test_z",
+      "line": null,
+      "path": "tests/unit/test_x.py"
+     },
+     "outcome": "skipped",
+     "test_file": "tests/unit/test_x.py",
+     "test_id": "tests/unit/test_x.py::TestC::test_z"
+    },
+    {
+     "classname": null,
+     "duration_s": null,
+     "first_in_class": null,
+     "location": null,
+     "outcome": "skipped",
+     "test_file": null,
+     "test_id": "tests/test_app.py::test_skip"
+    }
+   ],
+   "explained": null,
+   "kind": "test_timing",
+   "libraries": null,
+   "repo_self": null,
+   "skipped": {
+    "no_id": 1,
+    "no_value": 1
+   },
+   "tool_name": "junit",
+   "tool_version": null,
+   "total": null,
+   "total_samples": null,
+   "unit": "s",
+   "value_kind": "wall",
+   "waits": null
+  },
+  "entry_paths": [
+   "tests/test_app.py",
+   "tests/unit/test_x.py"
+  ],
+  "joined": {
+   "matched": 4,
+   "rows": [
+    {
+     "duration_s": 1.25,
+     "first_in_class": true,
+     "outcome": "passed",
+     "symbol_id": "tests/test_app.py::test_build",
+     "test_file": "tests/test_app.py",
+     "test_id": "tests/test_app.py::test_build"
+    },
+    {
+     "duration_s": 0.5,
+     "first_in_class": null,
+     "outcome": "failed",
+     "symbol_id": "tests/test_app.py::TestX::test_y",
+     "test_file": "tests/test_app.py",
+     "test_id": "tests/test_app.py::TestX::test_y"
+    },
+    {
+     "duration_s": 0.1,
+     "first_in_class": null,
+     "outcome": "skipped",
+     "symbol_id": "tests/unit/test_x.py::TestC::test_z",
+     "test_file": "tests/unit/test_x.py",
+     "test_id": "tests/unit/test_x.py::TestC::test_z"
+    },
+    {
+     "duration_s": null,
+     "first_in_class": null,
+     "outcome": "skipped",
+     "symbol_id": null,
+     "test_file": null,
+     "test_id": "tests/test_app.py::test_skip"
+    }
+   ],
+   "skipped": {},
+   "unlinked": {},
+   "unmatched_sample": []
+  },
+  "run": {
+   "checkout_root": "/repo",
+   "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "dirty": false,
+   "environment": "unknown",
+   "explained_value": null,
+   "format": "repowise-evidence-v1",
+   "kind": "test_timing",
+   "library_value": null,
+   "mapping_partial": false,
+   "repo_self_value": null,
+   "run_key": "k",
+   "skipped_json": "{\"no_id\": 1, \"no_value\": 1}",
+   "source": "cli",
+   "tests_failed": null,
+   "timing_summary_json": "{\"tests\":4,\"timed\":3,\"seconds\":1.85,\"histogram\":[[0,0.0],[0,0.0],[1,0.1],[1,0.5],[1,1.25],[0,0.0],[0,0.0]],\"files\":{\"tests/test_app.py\":[1.75,2],\"tests/unit/test_x.py\":[0.1,1]}}",
+   "tool_name": "junit",
+   "tool_version": null,
+   "total_samples": null,
+   "total_value": null,
+   "unit": "s",
+   "units_matched": 3,
+   "units_outside_repo": 0,
+   "units_skipped": 2,
+   "units_total": 6,
+   "units_truncated": 1,
+   "unlisted_symbols": null,
+   "unmatched_sample_json": "[]",
+   "value_kind": "wall",
+   "wait_value": null,
+   "workload_class": "entry_point",
+   "workload_name": "golden"
+  },
+  "run_key": "dbeb47d75360b10a7b3042e7f0d35015"
+ }
+}

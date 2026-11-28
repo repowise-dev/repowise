@@ -5,6 +5,7 @@ tests.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta
 
@@ -19,6 +20,7 @@ from repowise.core.analysis.actions.facts import (
     FileFacts,
     LeadFinding,
     RecentFinding,
+    RuntimeState,
     SecretFacts,
 )
 from repowise.core.analysis.actions.model import SEVERITY_VALUE, TIER_RANK, Action
@@ -72,15 +74,27 @@ def _text(a: Action) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_fragile_without_coverage_says_add_tests_and_basis_unknown() -> None:
+def test_fragile_without_coverage_states_graph_absence_and_basis_unknown() -> None:
     out = _run(code.fragile_file, _facts([_file("src/a.py")]))
     (a,) = out.actions
-    assert a.title.startswith("Add tests around `src/a.py`")
+    assert a.title == (
+        "No test reaches `src/a.py` in the code graph: "
+        "confirm it is tested before its next change"
+    )
     cov = next(w for w in a.why if w.label == "line coverage")
     assert cov.basis == "unknown"
     assert a.confidence == "medium"
     # Unknown is not zero: nothing may call it untested.
     assert "untested" not in _text(a)
+
+
+def test_fragile_impact_names_the_fix_window_and_what_counts() -> None:
+    (a,) = _run(code.fragile_file, _facts([_file("src/a.py")])).actions
+    # 90-day code fixes, not commit prefixes or get_risk's 6-month fix_count.
+    assert a.impact.startswith(
+        "Changed 10 times in 90 days; 5 of those were bug fixes that changed its code."
+    )
+    assert next(w for w in a.why if w.label == "bug-fix commits in 90 days").value == "5"
 
 
 def test_fragile_below_80_says_raise_coverage() -> None:
@@ -90,12 +104,52 @@ def test_fragile_below_80_says_raise_coverage() -> None:
 
 
 def test_fragile_covered_with_lead_says_simplify() -> None:
-    lead = LeadFinding("complex_method", "high", "build", 12, "ccn 20")
+    lead = LeadFinding("complex_method", "high", "build", 12, "CCN 45", worth=True)
     f = _file("src/a.py", line_coverage_pct=91.0, lead=lead)
     (a,) = _run(code.fragile_file, _facts([f])).actions
     assert a.title.startswith("Simplify `build` in `src/a.py`")
     assert a.target_symbol == "build"
     assert a.marker == "complex_method"
+
+
+def test_fragile_lead_not_worth_breaking_up_says_review_and_names_no_finding() -> None:
+    """Ours: call_language_strategies.py at 93% led by coverage_gradient, and
+    health/engine.py led by `__init__` at CCN 10, both read "Simplify"."""
+    for lead in (
+        LeadFinding("coverage_gradient", "low", None, None, "7% of lines uncovered"),
+        LeadFinding("complex_method", "medium", "__init__", 40, "CCN 10"),
+    ):
+        f = _file("src/a.py", line_coverage_pct=93.0, lead=lead)
+        (a,) = _run(code.fragile_file, _facts([f])).actions
+        assert a.title == "Review why fixes keep landing in `src/a.py`: it is tested"
+        assert a.done_when == "Bug-fix commits slow down."
+        assert (a.target_symbol, a.marker, a.details) == (None, None, ())
+        assert a.confidence == "high"
+    reached = _file("src/a.py", lead=lead, tests_reaching=3)
+    (a,) = _run(code.fragile_file, _facts([reached])).actions
+    assert a.title == "Review why fixes keep landing in `src/a.py`: tests reach it"
+    assert a.confidence == "medium"
+
+
+def test_leads_carry_the_shared_break_up_verdict() -> None:
+    from repowise.core.analysis.actions.build import with_leads
+
+    def row(path: str, marker: str, fn: str | None, details: dict) -> dict:
+        return {"file_path": path, "biomarker_type": marker, "severity": "high",
+                "function_name": fn, "line_start": 1, "line_end": 90, "reason": "",
+                "health_impact": 1.0, "details_json": json.dumps(details)}
+
+    files = {p: _file(p) for p in ("src/big.py", "src/small.py", "src/cov.py")}
+    out = with_leads(files, [
+        row("src/big.py", "complex_method", "run", {"ccn": 44, "nloc": 90, "max_nesting": 3}),
+        row("src/small.py", "complex_method", "__init__", {"ccn": 10, "nloc": 30}),
+        row("src/cov.py", "coverage_gradient", None, {}),
+    ])
+    assert {p: (f.lead.biomarker, f.lead.worth) for p, f in out.items()} == {
+        "src/big.py": ("complex_method", True),
+        "src/small.py": ("complex_method", False),
+        "src/cov.py": ("coverage_gradient", False),
+    }
 
 
 def test_fragile_covered_without_lead_is_silent() -> None:
@@ -140,67 +194,103 @@ def test_fragile_week_horizon_only_for_top_five_touched_this_week() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _recent(path: str, symbol: str | None = "fn", severity: str = "high", sha: str = "c1") -> RecentFinding:
+def _recent(
+    path: str,
+    symbol: str | None = "fn",
+    severity: str = "high",
+    sha: str = "c1",
+    kind: str = "coverage",
+) -> RecentFinding:
     return RecentFinding(
         sha=sha,
         subject="feat: thing",
         committed_at=ANCHOR - timedelta(days=1),
         file_path=path,
         symbol=symbol,
-        biomarker="complex_method",
+        biomarker={"shape": "complex_method", "performance": "io_in_loop"}.get(kind, "coverage_gap"),
         severity=severity,
         change_kind="introduced",
         line=10,
+        kind=kind,
     )
 
 
 def test_regressions_up_to_three_files_are_per_file() -> None:
-    found = (_recent("src/a.py", "build"), _recent("src/b.py", "x"), _recent("src/b.py", "y"))
+    found = (
+        _recent("src/a.py", "build", kind="performance"),
+        _recent("src/b.py", "x"),
+        _recent("src/b.py", "y"),
+    )
     out = _run(code.fresh_regressions, _facts(recent_findings=found))
     assert {a.target_path for a in out.actions} == {"src/a.py", "src/b.py"}
     a = next(a for a in out.actions if a.target_path == "src/a.py")
     assert a.tier == "act_now"
     assert a.horizons == ("week",)
     assert a.target_kind == "symbol"
-    assert a.title == "Simplify `build` in `src/a.py` while the change is fresh"
+    assert a.title == "Fix the performance regression in `build` in `src/a.py`"
+    b = next(a for a in out.actions if a.target_path == "src/b.py")
+    assert b.title == "Restore the test coverage this week's changes lost in `src/b.py`"
+    assert "2 coverage drops" in b.impact
 
 
 def test_regressions_over_three_files_roll_up() -> None:
     found = (
         *(_recent(f"src/f{i}.py") for i in range(4)),
-        _recent("src/worst.py", severity="critical"),
+        _recent("src/worst.py", kind="performance"),
     )
     out = _run(code.fresh_regressions, _facts(recent_findings=found))
     (a,) = out.actions
     assert a.target_kind == "repo"
+    assert a.tier == "act_now"
     assert a.severity == "high"
     assert a.includes[0] == "src/worst.py"
     assert set(a.includes) == {"src/worst.py", *(f"src/f{i}.py" for i in range(4))}
-
-
-def test_regressions_with_many_critical_findings_top_out_at_high() -> None:
-    """heyputer/everything: 132 detector-critical findings in a week of commits
-    read as a CRITICAL action. The count stays a fact; the label stays high."""
-    found = tuple(
-        _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}") for i in range(40)
+    assert a.title == (
+        "Fix what this week's commits added: 1 performance regression and 4 coverage drops in 5 files"
     )
-    (rollup,) = _run(code.fresh_regressions, _facts(recent_findings=found)).actions
+
+
+def test_code_shape_from_the_week_is_one_maintainability_item_to_plan() -> None:
+    """heyputer/everything: 132 detector-critical code-shape findings in a week
+    of feature work read as a CRITICAL action, every week. They are one item to
+    plan, below anything defect-class."""
+    found = tuple(
+        _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}", kind="shape") for i in range(40)
+    )
+    for subset in (found, found[:1]):
+        (a,) = _run(code.fresh_regressions, _facts(recent_findings=subset)).actions
+        # Its severity is its evidence's, held at high; its value keeps it below defects.
+        assert (a.tier, a.severity, a.effective_value) == ("plan", "high", SEVERITY_VALUE["medium"])
+        assert a.horizons == ("week",)
+        assert dict((w.label, w.value) for w in a.why)["code-shape findings"] == str(len(subset))
     (single,) = _run(code.fresh_regressions, _facts(recent_findings=found[:1])).actions
-    for a in (rollup, single):
-        assert a.severity == "high"
-        assert dict((w.label, w.value) for w in a.why)["critical findings"] == (
-            "40" if a is rollup else "1"
-        )
+    assert single.target_path == "src/f0.py"
+    assert single.title == "Tidy the code shape this week's commits left: 1 finding in `src/f0.py`"
 
 
-def test_a_week_with_critical_findings_still_outranks_one_without() -> None:
-    critical = _run(
-        code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py", severity="critical"),))
+def test_shape_and_defects_in_one_week_are_separate_actions() -> None:
+    found = (
+        _recent("src/a.py", kind="shape"),
+        _recent("src/a.py", kind="performance"),
+        *(_recent(f"src/s{i}.py", kind="shape") for i in range(5)),
+    )
+    out = _run(code.fresh_regressions, _facts(recent_findings=found))
+    by_tier = {a.tier: a for a in out.actions}
+    assert set(by_tier) == {"act_now", "plan"}
+    assert by_tier["act_now"].evidence_total == 1
+    assert by_tier["plan"].evidence_total == 6
+    assert by_tier["act_now"].action_id != by_tier["plan"].action_id
+
+
+def test_a_proven_performance_regression_outranks_lost_coverage() -> None:
+    perf = _run(
+        code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py", kind="performance"),))
     ).actions[0]
-    high = _run(code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py"),))).actions[0]
-    assert critical.effective_value == SEVERITY_VALUE["critical"]
-    assert high.effective_value == SEVERITY_VALUE["high"]
-    assert critical.effective_priority > high.effective_priority
+    cov = _run(code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py"),))).actions[0]
+    assert perf.effective_value == SEVERITY_VALUE["critical"]
+    assert cov.effective_value == SEVERITY_VALUE["high"]
+    assert perf.effective_priority > cov.effective_priority
+    assert perf.severity == cov.severity == "high"
 
 
 def test_only_a_live_credential_is_critical() -> None:
@@ -213,7 +303,9 @@ def test_only_a_live_credential_is_critical() -> None:
     facts = _facts(
         [hot],
         recent_findings=tuple(
-            _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}") for i in range(10)
+            _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}", kind=kind)
+            for i in range(10)
+            for kind in ("performance", "shape")
         ),
         secrets=(SecretFacts("src/config.py", "hardcoded_secret", 4, 'API_KEY = "sk_live_abc1"'),),
         fix_first=_fix_items(),
@@ -283,8 +375,8 @@ def test_a_folder_names_its_first_step() -> None:
     (a,) = _run(code.fix_concentration, _concentration_facts()).actions
     # Every file here is untested; the most fixed one comes first.
     assert a.title == (
-        "Stabilise `pkg/cli/update/`: first, add tests around `pkg/cli/update/a0.py` "
-        "before its next change"
+        "Stabilise `pkg/cli/update/`: first, no test reaches `pkg/cli/update/a0.py` "
+        "in the code graph: confirm it is tested before its next change"
     )
     assert "10 of the 25 bug-fix commits" in a.impact
 
@@ -328,7 +420,7 @@ def _fix_items():
     from repowise.core.analysis.health.fix_first import build_fix_first
     from tests.unit.health import fix_first_rows as rows
 
-    return build_fix_first(
+    items = build_fix_first(
         metrics=rows.METRICS,
         findings=rows.FINDINGS,
         refactoring=rows.REFACTORING,
@@ -336,6 +428,8 @@ def _fix_items():
         plans=rows.PLANS,
         limit=3,
     ).items
+    # The rules read the tier as given: the perf item stands in for a next one.
+    return (replace(items[0], tier="next"), *items[1:])
 
 
 def test_fix_first_emits_now_and_next_and_leaves_later() -> None:
@@ -353,6 +447,45 @@ def test_fix_first_emits_now_and_next_and_leaves_later() -> None:
     assert actions[0].surface == "performance"
     assert actions[1].commands[0].mcp == f'get_health(fix_id="{items[1].id}")'
     assert len({a.action_id for a in actions}) == 2
+
+
+def test_a_fix_first_row_reads_its_findings_severity() -> None:
+    """GraphFlow's row said medium while its own severity fact said high."""
+    from repowise.core.analysis.health.fix_first.model import FixFact
+
+    item = _fix_items()[0]
+    for fact, tier, expected in (
+        ("high", "next", "high"),
+        ("critical", "now", "high"),
+        ("medium", "now", "medium"),
+        (None, "next", "medium"),
+        (None, "now", "high"),
+    ):
+        facts = (FixFact("severity", fact),) if fact else ()
+        (a,) = _run(code.fix_first, _facts(fix_first=(replace(item, tier=tier, facts=facts),))).actions
+        assert a.severity == expected, (fact, tier)
+        if fact:
+            assert dict((w.label, w.value) for w in a.why)["severity"] == fact
+
+
+def test_a_regression_row_reads_its_findings_severity() -> None:
+    def severity(*found: RecentFinding) -> str:
+        return _run(code.fresh_regressions, _facts(recent_findings=found)).actions[0].severity
+
+    assert severity(_recent("src/a.py", severity="medium")) == "medium"
+    assert severity(_recent("src/a.py", severity="critical", kind="performance")) == "high"
+    assert severity(_recent("src/a.py", severity="low", kind="shape")) == "low"
+
+
+def test_fix_first_leaves_a_cause_the_week_added_to_fresh_regressions() -> None:
+    perf = _fix_items()[0]
+    assert perf.kind == "perf_fix" and perf.target.symbol
+    path, symbol = perf.target.file_path, perf.target.symbol.rsplit(".", 1)[-1]
+    same = _recent(path, symbol, kind="performance")
+    other = _recent(path, "elsewhere", kind="performance")
+    for found, listed in (((same,), False), ((other,), True)):
+        actions = _run(code.fix_first, _facts(fix_first=_fix_items(), recent_findings=found)).actions
+        assert (perf.title in [a.title for a in actions]) is listed
 
 
 def test_fix_first_unavailable_is_named() -> None:
@@ -395,6 +528,27 @@ def test_secret_ignores_docs_comments_and_quotes() -> None:
         SecretFacts("src/c.py", "os_system", 3, "os.system(cmd)"),
     )
     assert _run(hygiene.live_secret, _facts(secrets=quiet)).actions == ()
+
+
+def test_secret_action_carries_location_and_kind_only() -> None:
+    from repowise.core.agent_prompts import render_action
+    from repowise.core.analysis.security.credentials import masked_snippet
+
+    value = "Zq9XjW7vK3pLm2NbQ8tR"  # made up for this test
+    snippet = masked_snippet(f'    API_KEY = "{value}"')
+    assert snippet.startswith('API_KEY = "Zq9X')  # what the store keeps
+    s = SecretFacts("src/config.py", "hardcoded_secret", 4, snippet)
+    (a,) = _run(hygiene.live_secret, _facts(secrets=(s,))).actions
+    wire = a.as_dict()
+    surfaces = [json.dumps(wire), render_action(wire), render_action(wire, "claude-code-mcp")]
+    for text in surfaces:
+        assert "API_KEY" not in text and "****" not in text
+        for at in range(len(value) - 2):
+            assert value[at : at + 3] not in text
+    assert "`src/config.py:4`" in surfaces[1]
+    assert [(d["path"], d["line"], d["marker"], d["reason"]) for d in wire["details"]] == [
+        ("src/config.py", 4, "hardcoded_secret", "")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -513,16 +667,65 @@ def test_coverage_stale_is_improve_signal() -> None:
     (a,) = _run(signal.coverage_stale, _facts(coverage=cov)).actions
     assert a.tier == "improve_signal"
     recent = CoverageState("stale", ANCHOR - timedelta(days=3), 40)
-    assert _run(signal.coverage_stale, _facts(coverage=recent)).actions == ()
-
-
-def test_decisions_unreviewed_is_improve_signal() -> None:
-    (a,) = _run(signal.decisions_unreviewed, _facts(proposed_decisions=6)).actions
-    assert a.tier == "improve_signal"
-    assert (
-        _run(signal.decisions_unreviewed, _facts(proposed_decisions=6, accepted_decisions=1)).actions
-        == ()
+    outcome = _run(signal.coverage_stale, _facts(coverage=recent))
+    assert outcome.actions == ()
+    # Stale is one thing everywhere: measured at an earlier commit.
+    assert outcome.reason.startswith("Coverage was measured at an earlier commit;")
+    file = _file("src/a.py", line_coverage_pct=62.0)
+    (row,) = _run(code.fragile_file, _facts([file], coverage=recent)).actions
+    assert dict((w.label, w.value) for w in row.why)["line coverage"] == (
+        "62% (measured at an earlier commit)"
     )
+
+
+def test_coverage_actions_hand_over_the_setup_command() -> None:
+    stale = CoverageState("stale", ANCHOR - timedelta(days=30), 40)
+    for a in (
+        *_run(signal.coverage_missing, _facts(_many_files())).actions,
+        *_run(signal.coverage_stale, _facts(coverage=stale)).actions,
+    ):
+        assert a.command == "repowise coverage setup"
+        (cmd,) = a.as_dict()["commands"]
+        assert cmd["cli"] == "repowise coverage setup --format json"
+        assert cmd["mcp"] is None
+
+
+def test_runtime_missing_fires_only_with_something_to_run() -> None:
+    files = _many_files()
+    found = RuntimeState("unknown", targets=("entry_point", "unit_test"))
+    (a,) = _run(signal.runtime_missing, _facts(files, runtime=found)).actions
+    assert (a.tier, a.surface) == ("improve_signal", "performance")
+    assert a.command == "repowise evidence setup"
+    assert a.commands[0].cli == "repowise evidence setup --format json"
+    why = {w.label: (w.value, w.basis) for w in a.why}
+    assert why["runtime evidence"] == ("None stored", "unknown")
+    assert why["found to run"] == ("entry points, a test suite", "inferred")
+    assert "hot" not in _text(a).split() and "cold" not in _text(a).split()
+
+    nothing = _run(signal.runtime_missing, _facts(files))
+    assert (nothing.status, nothing.actions) == ("not_applicable", ())
+    small = _run(signal.runtime_missing, _facts(_many_files(5), runtime=found))
+    assert small.status == "not_applicable"
+    stored = RuntimeState("measured", ANCHOR, "head", 2)
+    assert _run(signal.runtime_missing, _facts(files, runtime=stored)).actions == ()
+    gone = _run(signal.runtime_missing, _facts(files, unavailable={"runtime": "Not here."}))
+    assert (gone.status, gone.reason) == ("unavailable", "Not here.")
+
+
+def test_runtime_stale_asks_once_the_newest_run_is_old() -> None:
+    old = RuntimeState("stale", ANCHOR - timedelta(days=30), "abc" * 10, 3)
+    (a,) = _run(signal.runtime_stale, _facts(runtime=old)).actions
+    assert a.tier == "improve_signal"
+    assert a.command == "repowise evidence setup"
+    why = {w.label: w.value for w in a.why}
+    assert why == {"newest run age": "30 days", "measured at": "abcabcabcabc", "runs stored": "3"}
+    recent = replace(old, ingested_at=ANCHOR - timedelta(days=3))
+    outcome = _run(signal.runtime_stale, _facts(runtime=recent))
+    assert outcome.actions == ()
+    assert outcome.reason.startswith("Runtime evidence was measured at an earlier commit;")
+    current = replace(old, status="measured")
+    assert _run(signal.runtime_stale, _facts(runtime=current)).actions == ()
+
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +772,7 @@ def test_engine_reports_totals_and_every_rule() -> None:
     assert quarter["total"] == len(quarter["actions"]) == 7
     assert quarter["hidden"] == 0
     assert quarter["by_tier"] == {"act_now": 1, "plan": 5, "improve_signal": 1}
-    assert len(view["rules"]) == 12
+    assert len(view["rules"]) == 13
     # The week sees the secret and the coverage prompt, not the quarter's plan work.
     assert view["horizons"]["week"]["total"] == 2
 
@@ -716,7 +919,7 @@ def test_week_rollup_does_not_hide_a_fragile_file_from_the_quarter() -> None:
 
 
 def test_fragile_id_survives_a_change_of_lead_function() -> None:
-    lead = LeadFinding("complex_method", "high", "a", 1, "")
+    lead = LeadFinding("complex_method", "high", "a", 1, "", worth=True)
     before = _file("src/x.py", fix_commits_90d=9, commits_90d=20, line_coverage_pct=90.0, lead=lead)
     after = replace(before, lead=replace(lead, function="b"))
     ctx = dict(busy_threshold=5, fix_threshold=3)
@@ -744,7 +947,7 @@ def test_secret_ignores_a_dummy_word_value() -> None:
 def test_rollup_carries_evidence_starting_with_the_worst_file_and_commands() -> None:
     found = (
         *(_recent(f"src/f{i}.py", sha=f"s{i}") for i in range(4)),
-        _recent("src/worst.py", severity="critical", sha="w1"),
+        _recent("src/worst.py", sha="w1", kind="performance"),
     )
     (a,) = _run(code.fresh_regressions, _facts(recent_findings=found)).actions
     assert a.details[0].path == "src/worst.py" == a.includes[0]
@@ -758,7 +961,7 @@ def test_rollup_carries_evidence_starting_with_the_worst_file_and_commands() -> 
 # Self-checks: "add tests" needs no test reaching the file; short history
 # ---------------------------------------------------------------------------
 
-_LEAD = LeadFinding("complex_method", "high", "runEmbeddedAttempt", 40, "CCN 90")
+_LEAD = LeadFinding("complex_method", "high", "runEmbeddedAttempt", 40, "CCN 90", worth=True)
 
 
 def test_fragile_reached_by_tests_says_simplify_not_add_tests() -> None:
@@ -781,11 +984,20 @@ def test_fragile_reached_by_tests_without_a_lead_is_silent() -> None:
     assert out.actions == ()
 
 
-def test_fragile_no_test_reaches_says_add_tests() -> None:
+def test_fragile_no_test_reaches_states_graph_absence_not_untested() -> None:
     (a,) = _run(code.fragile_file, _facts([_file("src/a.py", tests_reaching=0)])).actions
-    assert a.title.startswith("Add tests around `src/a.py`")
+    assert a.title.startswith("No test reaches `src/a.py` in the code graph")
+    assert "Add tests" not in a.title
     reach = next(w for w in a.why if w.label == "tests that reach it")
     assert (reach.value, reach.basis) == ("None in the code graph", "inferred")
+
+
+def test_fragile_reached_only_by_replacing_tests_gives_that_reason_not_none() -> None:
+    f = _file("src/a.py", tests_reaching=0, tests_reaching_via="mocked-only")
+    (a,) = _run(code.fragile_file, _facts([f])).actions
+    assert a.title.startswith("Add tests around `src/a.py`")
+    reach = next(w for w in a.why if w.label == "tests that reach it")
+    assert (reach.value, reach.basis) == ("Only tests that replace it reach it", "inferred")
 
 
 def test_fragile_unknown_reach_is_not_zero() -> None:
@@ -795,11 +1007,11 @@ def test_fragile_unknown_reach_is_not_zero() -> None:
     facts = _facts([unknown], unavailable={"test_map": "Not in this index yet."})
     assert _run(code.fragile_file, facts).actions == ()
     (zero,) = _run(code.fragile_file, _facts([replace(unknown, tests_reaching=0)])).actions
-    assert zero.title.startswith("Add tests around")
+    assert zero.title.startswith("No test reaches")
 
 
 def test_an_anonymous_lead_function_is_left_out_of_the_title() -> None:
-    lead = LeadFinding("complex_method", "high", "<anonymous@3167>", 3167, "")
+    lead = LeadFinding("complex_method", "high", "<anonymous@3167>", 3167, "", worth=True)
     f = _file("src/gateway/chat.ts", lead=lead, tests_reaching=3)
     (a,) = _run(code.fragile_file, _facts([f])).actions
     assert a.title == "Simplify `src/gateway/chat.ts`: tests reach it, and fixes keep landing"
@@ -808,10 +1020,10 @@ def test_an_anonymous_lead_function_is_left_out_of_the_title() -> None:
 
 def test_measured_coverage_wins_over_the_test_map() -> None:
     """Ours: update_cmd/command.py (68 changes, 27 fixes, 70%) keeps "raise coverage",
-    and call_resolver.py keeps "simplify _csharp_type_id", whatever reaches them."""
+    and a covered file keeps its simplify step, whatever reaches them."""
     raise_path = "packages/cli/src/repowise/cli/commands/update_cmd/command.py"
     tested_path = "packages/core/src/repowise/core/ingestion/call_resolver.py"
-    lead = LeadFinding("complex_method", "high", "_csharp_type_id", 10, "")
+    lead = LeadFinding("complex_method", "high", "_csharp_type_id", 10, "", worth=True)
     files = [
         _file(raise_path, commits_90d=68, fix_commits_90d=27, line_coverage_pct=70.0,
               tests_reaching=40),
@@ -844,3 +1056,25 @@ def test_history_at_the_busy_floor_or_uncounted_is_not_flagged() -> None:
         facts = _facts(files, history_commits=commits)
         assert build_context(facts).history_too_short is False
         assert _run(code.fragile_file, facts).status == "evaluated"
+
+
+def _dead_row(path: str) -> dict:
+    return {"id": path, "kind": "unused_export", "file_path": path, "symbol_name": "old",
+            "lines": 5, "confidence": 0.9, "safe_to_delete": True, "status": "open"}
+
+
+def test_dead_code_actions_skip_tests_by_the_shared_classifier() -> None:
+    from repowise.core.analysis.actions.build import build_dead
+
+    paths = ("src/components/tests/tests-view.tsx", "src/components/foo.test.ts")
+    dead = build_dead([_dead_row(p) for p in paths], {})
+    assert [d.file_path for d in dead["dead"]] == ["src/components/tests/tests-view.tsx"]
+
+
+def test_dead_code_actions_read_the_stored_test_flag_first() -> None:
+    from repowise.core.analysis.actions.build import build_dead
+
+    path = "core/check_test.py"
+    stored = {path: _file(path, is_test=False)}
+    assert [d.file_path for d in build_dead([_dead_row(path)], stored)["dead"]] == [path]
+    assert build_dead([_dead_row(path)], {})["dead"] == ()

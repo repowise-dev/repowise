@@ -450,15 +450,28 @@ def _base_url_steps(ctx: _Context, chosen: str) -> list[Step]:
     return steps
 
 
-def _autodetect(ctx: _Context) -> str | None:
+def _credentialed(ctx: _Context) -> Iterable[str]:
     keys = ctx.global_config.get("keys")
     stored = keys if isinstance(keys, Mapping) else {}
     for name in PROVIDER_AUTODETECT_ORDER:
         if not ctx.counts(name):
             continue
         if provider_credentials_present(name, ctx.getenv) or _clean(stored.get(name)):
-            return name
-    return None
+            yield name
+
+
+def _autodetect(ctx: _Context) -> str | None:
+    return next(iter(_credentialed(ctx)), None)
+
+
+def credentialed_providers(repo_path: Path | str | None = None) -> tuple[str, ...]:
+    """Every provider auto-detection could pick for *repo_path*, in its order.
+
+    The same keys and order :func:`resolve_llm` reads (process env, the repo's
+    ``.env``, stored keys), so a picker that defaults to the first of these
+    agrees with what ``--yes`` would run.
+    """
+    return tuple(_credentialed(_context(repo_path, _Layer("flag", None, None), None, None)))
 
 
 def resolve_api_key(
@@ -640,6 +653,29 @@ def save_repo_llm_selection(
     save_repo_config(repo_path, apply_llm_selection(config, provider, model, base_url))
 
 
+def write_provider_setting(repo_path: Path | str, key: str, value: str | None) -> None:
+    """Write ``provider``; ``None`` removes it. The settings-registry writer.
+
+    A model id belongs to one provider, so a new provider drops a model saved
+    for the old one and the new provider's default applies; picking the same
+    provider again keeps it.
+    """
+    from repowise.core.providers.llm.registry import list_providers
+    from repowise.core.repo_config import load_repo_config, save_repo_config
+
+    config = load_repo_config(repo_path)
+    if value is None:
+        config.pop("provider", None)
+        config.pop("model", None)
+    else:
+        known = list_providers()
+        if value not in known:
+            raise ValueError(f"provider: unknown {value!r}; known: {', '.join(known)}")
+        keep = config.get("model") if config.get("provider") == value else None
+        apply_llm_selection(config, value, keep)
+    save_repo_config(repo_path, config)
+
+
 __all__ = [
     "UNSET",
     "LLMSelection",
@@ -648,6 +684,7 @@ __all__ = [
     "base_url_trusted",
     "cached_read",
     "clear_cache",
+    "credentialed_providers",
     "first_found",
     "forget_cached",
     "found",
@@ -665,4 +702,5 @@ __all__ = [
     "update_global_config",
     "validate_base_url",
     "without_credentials",
+    "write_provider_setting",
 ]

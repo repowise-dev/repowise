@@ -1,7 +1,7 @@
 /**
  * Findings in the words a developer uses, for the file drawer's first screen.
  *
- * The glossary names detectors ("Brain method", "Bumpy road"); those names are
+ * The glossary names detectors ("Brain method", "Repeated nesting"); those names are
  * precise and they are jargon. A reader who has never seen Repowise needs what
  * is wrong and why it matters, so each detector gets a plain title and a
  * one-line consequence here, with its category as the fallback. The detector's
@@ -59,6 +59,14 @@ const BY_CATEGORY: Record<BiomarkerCategory, PlainIssue> = {
     title: "Risky SQL",
     why: "The query is hard to reason about or can touch more rows than meant.",
   },
+  apex: {
+    title: "Apex security or test risk",
+    why: "It can expose records, break in another org, or depend on org data.",
+  },
+  cobol: {
+    title: "Jump out of structured flow",
+    why: "Where control goes next has to be traced by hand.",
+  },
 };
 
 const BY_BIOMARKER: Record<string, PlainIssue> = {
@@ -70,7 +78,7 @@ const BY_BIOMARKER: Record<string, PlainIssue> = {
     title: "Deeply nested logic",
     why: "Each level of nesting is more context a reader has to hold.",
   },
-  bumpy_road: {
+  repeated_nesting: {
     title: "Several tangled blocks in one function",
     why: "It reads as a few functions glued together.",
   },
@@ -87,7 +95,7 @@ const BY_BIOMARKER: Record<string, PlainIssue> = {
     why: "One class owns too many responsibilities to change safely.",
   },
   complex_method: {
-    title: "Too many paths through one function",
+    title: "Many paths through one function",
     why: "Every path is another case to test.",
   },
   large_method: {
@@ -101,6 +109,10 @@ const BY_BIOMARKER: Record<string, PlainIssue> = {
   untested_hotspot: {
     title: "Changes often and is untested",
     why: "Frequent edits with nothing to catch a mistake.",
+  },
+  untested_complexity: {
+    title: "Complex and little tested",
+    why: "Many paths through it, and few of them run under test.",
   },
   prior_defect: {
     title: "Fixed for bugs often",

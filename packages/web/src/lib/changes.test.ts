@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTranslator } from "next-intl";
 import type { EvidenceItem } from "@repowise-dev/types/changes";
-import { type ChangesTranslator, commitsViewHref, evidenceValueText, evidenceWord, parseCommitsView } from "./changes";
+import { type ChangesTranslator, commitsViewHref, reviewHref, evidenceValueText, evidenceWord, parseCommitsView } from "./changes";
 import en from "../../messages/en.json";
 import zhCN from "../../messages/zh-CN.json";
 
@@ -10,6 +10,7 @@ const LINES: [string, Record<string, unknown>][] = [
   ["unknown", { reason: "not gathered for this change" }],
   ["unknown", { reason: "" }],
   ["components_touched", { count: 2, names: "core, web", more: 0 }],
+  ["components_outside", { files: 3 }],
   ["suggested_reviewers", { count: 8, names: "a, b, c, d, e, f", more: 2 }],
   ["owners", { count: 1, names: "@core", more: 0, unowned: 3 }],
   ["owners", { count: 0, names: "", more: 0, unowned: 1 }],
@@ -25,6 +26,7 @@ const LINES: [string, Record<string, unknown>][] = [
   ["provenance", { label: "human attested", known: 3, commits: 4 }],
   ["provenance_named", { label: "agent", known: 1, commits: 1, names: "claude-code, claude-opus-4-5" }],
   ["risk_score", { percentile: 97.5 }],
+  ["risk_score_before", { percentile: 72.5, sample: 200, as_of: "6bb3c0c293" }],
   ["outcomes", { reverts: 0, references: 1 }],
   ["outcomes_rate", { reverts: 1, references: 0, fixed: 2, files: 5, days: 90 }],
 ];
@@ -77,10 +79,19 @@ it("says how many changed files a test reaches and how many are not known", () =
 describe("Commits page views", () => {
   it("reads only the known views and keeps the commit view param-free", () => {
     expect(parseCommitsView("changes")).toBe("changes");
-    expect(parseCommitsView("events")).toBe("events");
+    // Review is its own page; the commits page redirects these.
+    expect(parseCommitsView("review")).toBe("commits");
+    // An old Events link lands on the commit history.
+    expect(parseCommitsView("events")).toBe("commits");
     expect(parseCommitsView(undefined)).toBe("commits");
     expect(parseCommitsView("anything")).toBe("commits");
     expect(commitsViewHref("r1", "commits")).toBe("/repos/r1/commits");
-    expect(commitsViewHref("r1", "events")).toBe("/repos/r1/commits?view=events");
+    expect(commitsViewHref("r1", "changes")).toBe("/repos/r1/commits?view=changes");
+  });
+
+  it("links into the Review page with files or one change", () => {
+    expect(reviewHref("r1")).toBe("/repos/r1/review");
+    expect(reviewHref("r1", { file: ["a.py", "b/c.py"] })).toBe("/repos/r1/review?file=a.py&file=b%2Fc.py");
+    expect(reviewHref("r1", { change: "feat/x" })).toBe("/repos/r1/review?change=feat%2Fx");
   });
 });

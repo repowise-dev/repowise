@@ -16,7 +16,7 @@ into docs, commits, or chat.
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 ## 1. Working-tree scan (automatic)
@@ -52,28 +52,35 @@ repowise security scan --history --since v1.0.0 --to HEAD
 # Also report non-secret code-smell patterns in history
 repowise security scan --history --all-patterns
 
-# Machine-readable
-repowise security scan --history --output json
+# Machine-readable summary
+repowise security scan --history --format json
 ```
 
 Re-runs are idempotent (unique constraint on findings). Point at another repo
 with `--path /path/to/repo` when cwd is not the target.
 
-### What "a finding" looks like (synthetic)
+### What the command prints
 
-JSON output is a list of finding objects. Field shapes vary by version; treat
-this as illustrative only:
+The command reports what the walk did, not the findings themselves. The table
+output lists commits, blobs and files scanned, how many findings were stored,
+and a breakdown by severity and by kind. `--format json` prints the same
+summary as one object (synthetic values):
 
 ```json
 {
-  "kind": "hardcoded_secret",
-  "severity": "high",
-  "file_path": "config/example.env.sample",
-  "line": 12,
-  "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "message": "possible hardcoded secret (redacted)"
+  "commits_scanned": 2,
+  "blobs_scanned": 2,
+  "files_scanned": 2,
+  "findings_inserted": 1,
+  "by_severity": {"high": 1},
+  "by_kind": {"hardcoded_password": 1}
 }
 ```
+
+`findings_inserted` counts new rows only, so a re-run over the same history
+reports 0 and empty breakdowns. The findings themselves land in the local
+`security_findings` table: review them on the Security page of
+`repowise server` or through its security API.
 
 Repowise stores fingerprints / redacted previews for review — treat any hit as
 a rotation candidate, not as a safe-to-copy value.
@@ -96,10 +103,10 @@ separate from this local OSS history walk — see
 
 | Step | Expected |
 |------|----------|
-| `repowise init --index-only --yes` | Completes; working-tree findings may appear in Security UI |
+| `repowise init --yes --no-prose` | Completes; working-tree findings may appear in Security UI |
 | `repowise security scan` | Short hint mentioning `--history` |
-| `repowise security scan --history` | Table (or empty) of history findings |
-| `repowise security scan --history --output json` | JSON list; re-run stays stable |
+| `repowise security scan --history` | Summary table: commits, blobs and files scanned, findings stored, by severity and kind |
+| `repowise security scan --history --format json` | The same summary as one JSON object; a re-run stores 0 new findings |
 
 ## Related docs
 

@@ -708,3 +708,30 @@ def test_read_blobs_batch_git_failure_raises(tmp_path: Path) -> None:
     with pytest.raises(subprocess.CalledProcessError):
         scanner._read_blobs_batch(not_a_repo, ["abc1234"])
 
+
+
+async def test_history_reads_a_data_folders_origin_from_the_repository(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    """A sink in a data folder's code is low in history, as in the indexed scan."""
+    for i in range(4):
+        item = secret_repo / "backend" / "data" / "problems" / f"p{i}"
+        item.mkdir(parents=True)
+        for n in range(12):
+            (item / f"case{n}.json").write_text("{}\n")
+        for name in ("python.py", "Solution.java", "go.go"):
+            (item / name).write_text("\n")
+    (secret_repo / "backend/data/problems/p0/python.py").write_text("import os\nos.system(c)\n")
+    _git(secret_repo, "add", ".")
+    _git(secret_repo, "commit", "-m", "add a data folder")
+
+    summary = await HistorySecurityScanner(session, "repo-1").scan_history(
+        secret_repo, secrets_only=False
+    )
+    rows = (
+        await session.execute(
+            text("SELECT severity FROM security_findings WHERE kind = 'os_system'")
+        )
+    ).all()
+    assert [row.severity for row in rows] == ["low"]
+    assert summary.by_kind.get("os_system") == 1

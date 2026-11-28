@@ -16,6 +16,7 @@ function pair(overrides: Partial<WorkspaceCoChangeEntry> = {}): WorkspaceCoChang
     strength: 0.694,
     frequency: 3,
     last_date: "2026-09-01",
+    evidence: null,
     ...overrides,
   };
 }
@@ -163,7 +164,7 @@ describe("co-change prompt Verify", () => {
       expect(opening).not.toContain("the commits that touched them before");
     }
     expect(buildCoChangePairAiPrompt({ pair: pair(), flavor: "claude-code" })).toContain(
-      "Use Read, Grep and Glob on the files it names before planning edits",
+      "Open and search the files it names before planning edits",
     );
   });
 });

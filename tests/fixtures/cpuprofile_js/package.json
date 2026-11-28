@@ -1,0 +1,6 @@
+{
+  "name": "cpuprofile-js",
+  "version": "1.0.0",
+  "private": true,
+  "bin": { "wordstat": "app.js" }
+}

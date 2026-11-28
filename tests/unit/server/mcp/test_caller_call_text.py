@@ -16,7 +16,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
 from repowise.server.mcp_server import _basis
 from repowise.server.mcp_server._edit_sites import MAX_TEXT_CHARS
 from repowise.server.mcp_server.tool_answer import callers
-from repowise.server.mcp_server.tool_context import enrichment
+from repowise.server.mcp_server.tool_context import call_graph, enrichment
 
 _NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
 
@@ -370,8 +370,8 @@ async def test_get_context_without_callers_is_byte_identical(
     async def _noop(*_a, **_k):
         return None
 
-    monkeypatch.setattr(enrichment, "attach_call_text", _noop)
-    monkeypatch.setattr(enrichment, "first_call_line", lambda _raw: None)
+    monkeypatch.setattr(call_graph, "attach_call_text", _noop)
+    monkeypatch.setattr(call_graph, "first_call_line", lambda _raw: None)
     for include in (None, ["callees"]):
         without = await get_context(targets=["src/diag.ts::tick"], include=include)
         assert _strip(shown[str(include)]) == _strip(without)

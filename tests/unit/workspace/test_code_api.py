@@ -285,10 +285,33 @@ class TestPublishability:
         # partial list is a surface, not a lie about one.
         assert self._packages(tmp_path)[0]["lib"].reexported == frozenset({"Widget"})
 
+    def _crate(self, crate_dir: Path, manifest: str, *sources: str) -> None:
+        (crate_dir / "src").mkdir(parents=True)
+        (crate_dir / "Cargo.toml").write_text(manifest, encoding="utf-8")
+        for source in sources:
+            (crate_dir / "src" / source).write_text("", encoding="utf-8")
+
     def test_a_cargo_crate_publishes_its_lib_root(self, tmp_path: Path):
-        (tmp_path / "Cargo.toml").write_text(
-            '[package]\nname = "widget"\n', encoding="utf-8"
+        self._crate(tmp_path, '[package]\nname = "widget"\n', "lib.rs")
+        packages, _ = self._packages(tmp_path)
+        assert packages["widget"].entry_files == frozenset({"src/lib.rs"})
+
+    def test_a_bin_only_cargo_crate_is_counted_not_published(self, tmp_path: Path):
+        self._crate(tmp_path / "app", '[package]\nname = "app"\n', "main.rs")
+        self._crate(tmp_path / "lib", '[package]\nname = "corelib"\n', "lib.rs")
+        packages, counts = self._packages(tmp_path)
+        assert set(packages) == {"corelib"}
+        assert counts["code_unpublished_manifest"] == 1
+
+    def test_an_explicit_cargo_lib_path_wins(self, tmp_path: Path):
+        self._crate(
+            tmp_path, '[package]\nname = "widget"\n\n[lib]\npath = "src/api.rs"\n', "api.rs"
         )
+        packages, _ = self._packages(tmp_path)
+        assert packages["widget"].entry_files == frozenset({"src/api.rs"})
+
+    def test_a_cargo_crate_with_lib_and_main_publishes_its_lib_root(self, tmp_path: Path):
+        self._crate(tmp_path, '[package]\nname = "widget"\n', "lib.rs", "main.rs")
         packages, _ = self._packages(tmp_path)
         assert packages["widget"].entry_files == frozenset({"src/lib.rs"})
 

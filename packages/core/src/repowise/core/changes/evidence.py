@@ -17,7 +17,9 @@ Detail rows a policy reads have fixed keys (the local change policy in
 
 * ``components_touched``: ``{name, source, owner, criticality, tags, files,
   bus_factor}``; ``owner`` is a team name or ``None``, ``bus_factor`` an int
-  when measured, else ``None``;
+  when measured, else ``None``; then one ``{outside: true, source, files}`` row
+  for the changed files no component holds (``source`` is ``declared`` when
+  a catalog is declared, else ``derived``). A reader of components skips it;
 * ``reaching_tests``: one row per changed source file, ``{path, tests, ...}``;
   ``tests`` lists test ids, ``[]`` only for a measured absence, ``None`` when
   nothing knows;
@@ -65,6 +67,11 @@ KINDS: tuple[str, ...] = (
     "outcomes",
 )
 
+#: Kinds a checklist's status counts leave out. Health leads a change row from
+#: its commits' stored deltas, so counting the checklist's own health row would
+#: flag the same fact twice, from a second source.
+SUMMARY_SKIPPED_KINDS: frozenset[str] = frozenset({"health_delta"})
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceItem:
@@ -95,6 +102,12 @@ class EvidenceItem:
         if data["kind"] == "reaching_tests" and data["basis"] != "unresolved":
             # Derived from the rows, so a kept checklist reads under the current rule.
             status = _tests_status(data.get("details") or [])
+        elif data["kind"] == "health_delta" and isinstance(data.get("value"), Mapping):
+            value = data["value"]
+            status = _health_status(
+                (value.get("introduced") or 0) + (value.get("worsened") or 0),
+                bool(value.get("complete")),
+            )
         return cls(
             kind=data["kind"],
             label=data["label"],
@@ -115,12 +128,15 @@ class ChangeEvidence:
     schema_version: int = EVIDENCE_SCHEMA_VERSION
     #: The indexed commit the index facts were read at; ``None`` when unknown.
     index_commit: str | None = None
+    #: The component catalog's digest when components were resolved
+    #: (``components.catalog.catalog_digest``); ``None`` when not recorded.
+    catalog_digest: str | None = None
 
     def item(self, kind: str) -> EvidenceItem | None:
         return next((i for i in self.items if i.kind == kind), None)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "schema_version": self.schema_version,
             "change_id": self.change_id,
             "revspec": self.revspec,
@@ -128,6 +144,9 @@ class ChangeEvidence:
             "index_commit": self.index_commit,
             "items": [i.to_dict() for i in self.items],
         }
+        if self.catalog_digest is not None:
+            out["catalog_digest"] = self.catalog_digest
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ChangeEvidence:
@@ -137,6 +156,7 @@ class ChangeEvidence:
             revspec=data.get("revspec"),
             generated_at=data["generated_at"],
             index_commit=data.get("index_commit"),
+            catalog_digest=data.get("catalog_digest"),
             items=[EvidenceItem.from_dict(i) for i in data.get("items") or []],
         )
 
@@ -250,7 +270,7 @@ def _components(inputs: EvidenceInputs) -> EvidenceItem:
         label,
         "ok",
         "declared" if declared else "inferred",
-        [r["name"] for r in rows],
+        [r["name"] for r in rows if not r.get("outside")],
         rows,
         source,
     )
@@ -436,20 +456,29 @@ def _health(bundle: ChangeReviewBundle) -> EvidenceItem:
     ]
     if delta.status == "partial":
         details.append({"note": delta.explanation})
+    complete = delta.status == "available"
     return EvidenceItem(
         kind,
         label,
-        "attention" if worse else "ok",
+        _health_status(worse, complete),
         "measured",
         {
             "introduced": delta.introduced_total,
             "worsened": delta.worsened_total,
             "resolved": delta.resolved_total,
-            "complete": delta.status == "available",
+            "complete": complete,
         },
         details,
         source,
     )
+
+
+def _health_status(worse: int, complete: bool) -> Status:
+    """A regression found is attention either way; finding none clears the
+    change only when the comparison covered all of it."""
+    if worse:
+        return "attention"
+    return "ok" if complete else "unknown"
 
 
 def _provenance(inputs: EvidenceInputs) -> EvidenceItem:
@@ -489,7 +518,11 @@ def _risk(bundle: ChangeReviewBundle) -> EvidenceItem:
         [
             {
                 "baseline_sample_size": risk.baseline_sample_size,
-                "note": "ranks diff size against recent commits; not a defect probability",
+                # The commit the sample runs back from: the change's parent
+                # (a range's merge-base), so the rank is fixed at the change
+                # and matches ``repowise risk`` however the change is spelled.
+                "baseline_as_of": risk.baseline_as_of,
+                "note": "ranks diff size against the commits before it; not a defect probability",
             }
         ],
         source,
@@ -565,6 +598,13 @@ def _named_list(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line |
     return (kind, {"count": len(value), **_names(value)}) if isinstance(value, list) else None
 
 
+def _components_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line | None:
+    if value == []:
+        files = sum(len(r.get("files") or ()) for r in rows if r.get("outside"))
+        return "components_outside", {"files": files}
+    return _named_list(kind, value, rows)
+
+
 def _owners_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line | None:
     if not isinstance(value, list):
         return None
@@ -616,7 +656,14 @@ def _provenance_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _L
 
 
 def _risk_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line:
-    return kind, {"percentile": value.get("percentile")}
+    params = {"percentile": value.get("percentile")}
+    row = rows[0] if rows else {}
+    # A checklist kept before the sample was stamped ranked against HEAD at
+    # build time, so it keeps the unlabelled line rather than claim a cohort.
+    if not row.get("baseline_as_of"):
+        return kind, params
+    sample = {"sample": row.get("baseline_sample_size", 0), "as_of": row["baseline_as_of"][:10]}
+    return "risk_score_before", {**params, **sample}
 
 
 def _outcomes_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line:
@@ -629,7 +676,7 @@ def _outcomes_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Lin
 
 #: Each kind's line from its value and rows; ``None`` reads as unknown.
 _LINES: dict[str, Any] = {
-    "components_touched": _named_list,
+    "components_touched": _components_line,
     "suggested_reviewers": _named_list,
     "owners": _owners_line,
     "reaching_tests": _tests_line,
@@ -719,6 +766,7 @@ def _outcomes_text(key: str, p: Mapping[str, Any]) -> str:
 _TEXT: dict[str, Any] = {
     "unknown": lambda k, p: f"Not known: {p['reason']}" if p["reason"] else "Not known",
     "components_touched": lambda k, p: f"{_n(p['count'], 'component')}: {_listed(p)}",
+    "components_outside": lambda k, p: f"Outside every component ({_n(p['files'], 'changed file')})",
     "suggested_reviewers": lambda k, p: _listed(p),
     "owners": _owners_text,
     "reaching_tests": _tests_text,
@@ -736,6 +784,10 @@ _TEXT: dict[str, Any] = {
     "provenance": _provenance_text,
     "provenance_named": _provenance_text,
     "risk_score": lambda k, p: f"Larger than {p['percentile']}% of recent commits",
+    "risk_score_before": lambda k, p: (
+        f"Larger than {p['percentile']}% of the {_n(p['sample'], 'commit')} before this change "
+        f"(as of {p['as_of']})"
+    ),
     "outcomes": _outcomes_text,
     "outcomes_rate": _outcomes_text,
 }

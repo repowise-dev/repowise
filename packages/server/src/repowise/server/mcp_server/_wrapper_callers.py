@@ -15,6 +15,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.exclusion import is_excluded, node_is_excluded
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import get_graph_nodes_by_ids
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.server.mcp_server._edit_sites import first_call_line
@@ -78,6 +80,7 @@ async def forwarding_wrapper_callers(
     *,
     limit: int = MAX_WRAPPER_CALLER_ROWS,
     known_nodes: dict[str, GraphNode] | None = None,
+    exclude_spec: Any = None,
 ) -> list[dict[str, Any]]:
     """Rows for the callers of every forwarding wrapper among ``caller_ids``.
 
@@ -89,6 +92,10 @@ async def forwarding_wrapper_callers(
     file-level caller row (``imports: true``): a dynamic import consumed in a
     callback is the usual reason the call itself went unresolved.
     ``known_nodes`` saves the caller-node read when the caller already holds them.
+
+    With ``exclude_spec``, a wrapper in an excluded file is never followed, and
+    an excluded outer caller or importer neither takes a row nor stops the
+    importer fallback.
     """
     if not caller_ids or limit <= 0:
         return []
@@ -99,6 +106,7 @@ async def forwarding_wrapper_callers(
         cid
         for cid in caller_ids
         if (n := candidates.get(cid)) is not None
+        and not node_is_excluded(cid, exclude_spec)
         and n.kind in _WRAPPER_KINDS
         and (_span(n) or _MAX_SAME_NAME_SPAN + 1) <= _MAX_SAME_NAME_SPAN
     ]
@@ -129,7 +137,8 @@ async def forwarding_wrapper_callers(
     )
     inbound: dict[str, list[GraphEdge]] = {w: [] for w in wrappers}
     for edge in res.scalars().all():
-        inbound[edge.target_node_id].append(edge)
+        if not node_is_excluded(edge.source_node_id, exclude_spec):
+            inbound[edge.target_node_id].append(edge)
 
     # The target, its direct callers and the wrappers are already accounted
     # for; skipping them is also what keeps a wrapper cycle from re-entering.
@@ -154,7 +163,7 @@ async def forwarding_wrapper_callers(
             "symbol_id": edge.source_node_id,
             "name": other.name if other else edge.source_node_id.split("::")[-1],
             "kind": other.kind if other else None,
-            "file": other.file_path if other else edge.source_node_id.split("::")[0],
+            "file": other.file_path if other else file_of_symbol(edge.source_node_id),
             "line": other.start_line if other else None,
             "confidence": edge.confidence,
             "edge_type": edge.edge_type,
@@ -167,9 +176,9 @@ async def forwarding_wrapper_callers(
         rows.append(row)
 
     if unreached and len(rows) < limit:
-        seen_files = {sid.split("::")[0] for sid in seen}
+        seen_files = {file_of_symbol(sid) for sid in seen}
         imported = await files_importing(
-            session, repo_id, [candidates[w] for w in unreached], seen_files
+            session, repo_id, [candidates[w] for w in unreached], seen_files, exclude_spec
         )
         for importer, confidence, wrapper_id, named in imported[: limit - len(rows)]:
             row = {"file": importer, "imports": True, "confidence": confidence}
@@ -186,6 +195,7 @@ async def files_importing(
     repo_id: str,
     symbols: list[GraphNode],
     skip_files: set[str],
+    exclude_spec: Any = None,
 ) -> list[tuple[str, float | None, str, bool]]:
     """``(importer, confidence, symbol_id, named)`` for files importing a symbol.
 
@@ -194,7 +204,8 @@ async def files_importing(
 
     One row per importing file, outside ``skip_files``, in a stable order. The
     file-level edge is all the graph has when the symbol is passed by
-    reference or loaded dynamically rather than called.
+    reference or loaded dynamically rather than called. An importer in an
+    excluded file is skipped here, before the caller's row cap.
     """
     by_file: dict[str, list[GraphNode]] = {}
     for node in symbols:
@@ -212,7 +223,7 @@ async def files_importing(
     out: list[tuple[str, float | None, str, bool]] = []
     for edge in sorted(res.scalars().all(), key=lambda e: (e.target_node_id, e.source_node_id)):
         importer = edge.source_node_id
-        if importer in seen:
+        if importer in seen or is_excluded(importer, exclude_spec):
             continue
         names = imported_names(edge)
         candidates = by_file[edge.target_node_id]

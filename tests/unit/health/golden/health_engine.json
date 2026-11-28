@@ -21,7 +21,108 @@
         "code_origin": "production"
       }
     ],
-    "findings": [],
+    "findings": [
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "FastestSupplier",
+        "line_start": 155,
+        "line_end": 166,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 155
+        },
+        "health_impact": 0.0,
+        "reason": "FastestSupplier has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_9c4e543562fe5f8b76ad"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "AddLine",
+        "line_start": 224,
+        "line_end": 239,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 224
+        },
+        "health_impact": 0.0,
+        "reason": "AddLine has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_03e106976978913f3b80"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "OrdersBySupplier",
+        "line_start": 271,
+        "line_end": 284,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 271
+        },
+        "health_impact": 0.0,
+        "reason": "OrdersBySupplier has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_74751d6b8941656b8a14"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "OpenOrders",
+        "line_start": 286,
+        "line_end": 298,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 286
+        },
+        "health_impact": 0.0,
+        "reason": "OpenOrders has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d596f31c5cf5b49adb34"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "ReceiveOrder",
+        "line_start": 332,
+        "line_end": 351,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 332
+        },
+        "health_impact": 0.0,
+        "reason": "ReceiveOrder has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_fd719cff20def72136b2"
+      }
+    ],
     "kpis": {
       "hotspot_health": null,
       "average_health": 10.0,
@@ -35,8 +136,8 @@
       "performance_average": 10.0,
       "performance_hotspot": null,
       "structure_average": 0.0,
-      "structure_hotspot": null,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
       "production_average": 10.0,
       "production_file_count": 1,
@@ -94,8 +195,8 @@
       "performance_average": 10.0,
       "performance_hotspot": null,
       "structure_average": 0.0,
-      "structure_hotspot": null,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
       "production_average": 10.0,
       "production_file_count": 1,
@@ -109,7 +210,7 @@
     "metrics": [
       {
         "file_path": "account.ts",
-        "score": 8.2,
+        "score": 8.42,
         "max_ccn": 17,
         "max_nesting": 3,
         "nloc": 66,
@@ -118,10 +219,10 @@
         "duplication_pct": 97.14,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.2,
+        "defect_score": 8.42,
         "maintainability_score": 8.1,
         "performance_score": 10.0,
-        "structure_deduction": 1.802,
+        "structure_deduction": 1.578,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -147,7 +248,7 @@
       },
       {
         "file_path": "workspace.ts",
-        "score": 8.2,
+        "score": 8.42,
         "max_ccn": 17,
         "max_nesting": 3,
         "nloc": 66,
@@ -156,10 +257,10 @@
         "duplication_pct": 97.14,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.2,
+        "defect_score": 8.42,
         "maintainability_score": 8.1,
         "performance_score": 10.0,
-        "structure_deduction": 1.802,
+        "structure_deduction": 1.578,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -184,8 +285,8 @@
             "end": 52
           }
         },
-        "health_impact": 1.452,
-        "reason": "parseAccount has cyclomatic complexity 17",
+        "health_impact": 1.247,
+        "reason": "parseAccount has 17 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_f79a5d5e8f306abe7ab7"
       },
@@ -203,10 +304,30 @@
           "worst_clone_partner": "workspace.ts",
           "worst_clone_co_change": 0
         },
-        "health_impact": 0.35,
+        "health_impact": 0.331,
         "reason": "97% of file duplicated in other files; worst clone shares 68 lines with workspace.ts",
         "dimension": "maintainability",
         "id": "finding_adecdf1cea8a1aad2796"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "account.ts",
+        "function_name": "parseAccount",
+        "line_start": 15,
+        "line_end": 56,
+        "details": {
+          "crap": 306.0,
+          "ccn": 17,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 15
+        },
+        "health_impact": 0.0,
+        "reason": "parseAccount has CRAP 306 (complexity 17, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_01e0fea6a9a9584edcb7"
       },
       {
         "biomarker_type": "complex_method",
@@ -226,8 +347,8 @@
             "end": 52
           }
         },
-        "health_impact": 1.452,
-        "reason": "parseWorkspace has cyclomatic complexity 17",
+        "health_impact": 1.247,
+        "reason": "parseWorkspace has 17 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_d79d97d650bcedab3ec2"
       },
@@ -245,17 +366,37 @@
           "worst_clone_partner": "account.ts",
           "worst_clone_co_change": 0
         },
-        "health_impact": 0.35,
+        "health_impact": 0.331,
         "reason": "97% of file duplicated in other files; worst clone shares 68 lines with account.ts",
         "dimension": "maintainability",
         "id": "finding_27bf987f937f7819f307"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "workspace.ts",
+        "function_name": "parseWorkspace",
+        "line_start": 15,
+        "line_end": 56,
+        "details": {
+          "crap": 306.0,
+          "ccn": 17,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 15
+        },
+        "health_impact": 0.0,
+        "reason": "parseWorkspace has CRAP 306 (complexity 17, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_73748342cd33391dda21"
       }
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 8.28,
+      "average_health": 8.49,
       "worst_performer_path": "account.ts",
-      "worst_performer_score": 8.2,
+      "worst_performer_score": 8.42,
       "worst_test_path": null,
       "worst_test_score": null,
       "file_count": 3,
@@ -263,11 +404,11 @@
       "maintainability_hotspot": null,
       "performance_average": 10.0,
       "performance_hotspot": null,
-      "structure_average": 1.72,
-      "structure_hotspot": null,
+      "structure_average": 1.51,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
-      "production_average": 8.28,
+      "production_average": 8.49,
       "production_file_count": 3,
       "unanalysed_file_count": 0,
       "analysed_share": 1.0
@@ -280,7 +421,7 @@
         "target_symbol": "parseAccount",
         "line_start": 15,
         "line_end": 56,
-        "impact_delta": 0.256,
+        "impact_delta": 0.193,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -291,7 +432,7 @@
         "target_symbol": "parseWorkspace",
         "line_start": 15,
         "line_end": 56,
-        "impact_delta": 0.256,
+        "impact_delta": 0.193,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -302,7 +443,7 @@
     "metrics": [
       {
         "file_path": "handlers.py",
-        "score": 8.5,
+        "score": 6.91,
         "max_ccn": 12,
         "max_nesting": 3,
         "nloc": 182,
@@ -311,10 +452,10 @@
         "duplication_pct": 85.42,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.5,
+        "defect_score": 6.91,
         "maintainability_score": 8.0,
         "performance_score": 10.0,
-        "structure_deduction": 1.5,
+        "structure_deduction": 3.084,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -339,8 +480,8 @@
             "end": 46
           }
         },
-        "health_impact": 0.25,
-        "reason": "read_account has cyclomatic complexity 12",
+        "health_impact": 0.514,
+        "reason": "read_account has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_c58a781745af6691c556"
       },
@@ -362,8 +503,8 @@
             "end": 67
           }
         },
-        "health_impact": 0.25,
-        "reason": "close_account has cyclomatic complexity 10",
+        "health_impact": 0.514,
+        "reason": "close_account has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_8b967d56d3c522a17535"
       },
@@ -385,8 +526,8 @@
             "end": 110
           }
         },
-        "health_impact": 0.25,
-        "reason": "read_workspace has cyclomatic complexity 12",
+        "health_impact": 0.514,
+        "reason": "read_workspace has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_0b6ecfa0a2ac9cd7addc"
       },
@@ -408,8 +549,8 @@
             "end": 131
           }
         },
-        "health_impact": 0.25,
-        "reason": "close_workspace has cyclomatic complexity 10",
+        "health_impact": 0.514,
+        "reason": "close_workspace has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_4934d3ca94e412af4fb3"
       },
@@ -431,8 +572,8 @@
             "end": 174
           }
         },
-        "health_impact": 0.25,
-        "reason": "read_project has cyclomatic complexity 12",
+        "health_impact": 0.514,
+        "reason": "read_project has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_39991e29869edf38f6d2"
       },
@@ -454,17 +595,197 @@
             "end": 195
           }
         },
-        "health_impact": 0.25,
-        "reason": "close_project has cyclomatic complexity 10",
+        "health_impact": 0.514,
+        "reason": "close_project has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_ebd7768c22e919caee2c"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "read_account",
+        "line_start": 22,
+        "line_end": 48,
+        "details": {
+          "crap": 156.0,
+          "ccn": 12,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 22
+        },
+        "health_impact": 0.0,
+        "reason": "read_account has CRAP 156 (complexity 12, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_be3bc1e43f396ec4b1d2"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "close_account",
+        "line_start": 52,
+        "line_end": 71,
+        "details": {
+          "crap": 110.0,
+          "ccn": 10,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 52
+        },
+        "health_impact": 0.0,
+        "reason": "close_account has CRAP 110 (complexity 10, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_8d5ebbeab16804227744"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "list_accounts",
+        "line_start": 75,
+        "line_end": 83,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 75
+        },
+        "health_impact": 0.0,
+        "reason": "list_accounts has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_01fbce0dcb4b8c1cbbcf"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "read_workspace",
+        "line_start": 86,
+        "line_end": 112,
+        "details": {
+          "crap": 156.0,
+          "ccn": 12,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 86
+        },
+        "health_impact": 0.0,
+        "reason": "read_workspace has CRAP 156 (complexity 12, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_c3ce87446b4e7949dc32"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "close_workspace",
+        "line_start": 116,
+        "line_end": 135,
+        "details": {
+          "crap": 110.0,
+          "ccn": 10,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 116
+        },
+        "health_impact": 0.0,
+        "reason": "close_workspace has CRAP 110 (complexity 10, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d01c9e91d2a81a69d705"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "list_workspaces",
+        "line_start": 139,
+        "line_end": 147,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 139
+        },
+        "health_impact": 0.0,
+        "reason": "list_workspaces has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_ea0dc36989d7db2e3cd9"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "read_project",
+        "line_start": 150,
+        "line_end": 176,
+        "details": {
+          "crap": 156.0,
+          "ccn": 12,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 150
+        },
+        "health_impact": 0.0,
+        "reason": "read_project has CRAP 156 (complexity 12, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_dc33685f497d775411c5"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "close_project",
+        "line_start": 180,
+        "line_end": 199,
+        "details": {
+          "crap": 110.0,
+          "ccn": 10,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 180
+        },
+        "health_impact": 0.0,
+        "reason": "close_project has CRAP 110 (complexity 10, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_47eeb076a35072b87323"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "list_projects",
+        "line_start": 203,
+        "line_end": 211,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 203
+        },
+        "health_impact": 0.0,
+        "reason": "list_projects has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_1941c4a02c0d4659337a"
       }
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 8.5,
+      "average_health": 6.91,
       "worst_performer_path": "handlers.py",
-      "worst_performer_score": 8.5,
+      "worst_performer_score": 6.91,
       "worst_test_path": null,
       "worst_test_score": null,
       "file_count": 1,
@@ -472,11 +793,11 @@
       "maintainability_hotspot": null,
       "performance_average": 10.0,
       "performance_hotspot": null,
-      "structure_average": 1.5,
-      "structure_hotspot": null,
+      "structure_average": 3.09,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
-      "production_average": 8.5,
+      "production_average": 6.91,
       "production_file_count": 1,
       "unanalysed_file_count": 0,
       "analysed_share": 1.0
@@ -489,7 +810,7 @@
         "target_symbol": "read_account",
         "line_start": 22,
         "line_end": 48,
-        "impact_delta": 0.083,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -500,7 +821,7 @@
         "target_symbol": "read_project",
         "line_start": 150,
         "line_end": 176,
-        "impact_delta": 0.083,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -511,7 +832,7 @@
         "target_symbol": "read_workspace",
         "line_start": 86,
         "line_end": 112,
-        "impact_delta": 0.083,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -542,6 +863,158 @@
   },
   "lang_samples": {
     "metrics": [
+      {
+        "file_path": "apex/AccountService.cls",
+        "score": 10.0,
+        "max_ccn": 1,
+        "max_nesting": 0,
+        "nloc": 36,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
+        "file_path": "apex/AccountTrigger.trigger",
+        "score": 10.0,
+        "max_ccn": 1,
+        "max_nesting": 0,
+        "nloc": 4,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
+        "file_path": "apex/HealthMarkersTest.cls",
+        "score": 10.0,
+        "max_ccn": 1,
+        "max_nesting": 0,
+        "nloc": 16,
+        "has_test_file": true,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": true,
+        "code_origin": "test"
+      },
+      {
+        "file_path": "apex/assertions.cls",
+        "score": 10.0,
+        "max_ccn": 1,
+        "max_nesting": 0,
+        "nloc": 34,
+        "has_test_file": true,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": true,
+        "code_origin": "test"
+      },
+      {
+        "file_path": "apex/classes.cls",
+        "score": 10.0,
+        "max_ccn": 2,
+        "max_nesting": 1,
+        "nloc": 53,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
+        "file_path": "apex/health_markers.cls",
+        "score": 10.0,
+        "max_ccn": 1,
+        "max_nesting": 0,
+        "nloc": 56,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
+        "file_path": "apex/nested.cls",
+        "score": 8.55,
+        "max_ccn": 7,
+        "max_nesting": 5,
+        "nloc": 60,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 8.55,
+        "maintainability_score": 8.8,
+        "performance_score": 10.0,
+        "structure_deduction": 1.452,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
+        "file_path": "apex/perf_io_in_loop.cls",
+        "score": 10.0,
+        "max_ccn": 3,
+        "max_nesting": 2,
+        "nloc": 119,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
       {
         "file_path": "cpp/assertions.cpp",
         "score": 10.0,
@@ -582,7 +1055,7 @@
       },
       {
         "file_path": "cpp/nested.cpp",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 24,
@@ -591,10 +1064,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -612,7 +1085,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 9.02,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -658,7 +1131,7 @@
       },
       {
         "file_path": "csharp/nested.cs",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 34,
@@ -667,10 +1140,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -715,7 +1188,7 @@
       },
       {
         "file_path": "dart/nested.dart",
-        "score": 8.21,
+        "score": 8.34,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 24,
@@ -724,10 +1197,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.21,
+        "defect_score": 8.34,
         "maintainability_score": 8.6,
         "performance_score": 10.0,
-        "structure_deduction": 1.785,
+        "structure_deduction": 1.657,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -745,7 +1218,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 9.51,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -753,7 +1226,7 @@
       },
       {
         "file_path": "go/conditionals.go",
-        "score": 9.2,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 19,
@@ -762,17 +1235,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "go/nested.go",
-        "score": 8.39,
+        "score": 8.55,
         "max_ccn": 6,
         "max_nesting": 5,
         "nloc": 19,
@@ -781,17 +1254,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.39,
+        "defect_score": 8.55,
         "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.608,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "go/perf_io_in_loop.go",
-        "score": 9.85,
+        "score": 10.0,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 56,
@@ -800,17 +1273,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.85,
-        "maintainability_score": 9.7,
-        "performance_score": 8.0,
-        "structure_deduction": 0.15,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 9.16,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "java/Conditionals.java",
-        "score": 9.2,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 20,
@@ -819,17 +1292,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "java/Nested.java",
-        "score": 8.24,
+        "score": 8.55,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 23,
@@ -838,10 +1311,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.24,
-        "maintainability_score": 8.5,
+        "defect_score": 8.55,
+        "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.758,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -859,7 +1332,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 9.58,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -867,7 +1340,7 @@
       },
       {
         "file_path": "javascript/nested.js",
-        "score": 8.24,
+        "score": 8.55,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 20,
@@ -876,10 +1349,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.24,
-        "maintainability_score": 8.5,
+        "defect_score": 8.55,
+        "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.758,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -943,7 +1416,7 @@
       },
       {
         "file_path": "kotlin/nested.kt",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 24,
@@ -952,10 +1425,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1038,7 +1511,7 @@
       },
       {
         "file_path": "pascal/complex.pas",
-        "score": 9.15,
+        "score": 9.23,
         "max_ccn": 13,
         "max_nesting": 1,
         "nloc": 40,
@@ -1047,17 +1520,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.15,
+        "defect_score": 9.23,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.847,
+        "structure_deduction": 0.774,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "pascal/nested.pas",
-        "score": 8.39,
+        "score": 8.55,
         "max_ccn": 6,
         "max_nesting": 5,
         "nloc": 32,
@@ -1066,10 +1539,29 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.39,
+        "defect_score": 8.55,
         "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.608,
+        "structure_deduction": 1.452,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
+        "file_path": "perl/control_flow.pm",
+        "score": 10.0,
+        "max_ccn": 5,
+        "max_nesting": 2,
+        "nloc": 31,
+        "has_test_file": false,
+        "module": "perl",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1133,7 +1625,7 @@
       },
       {
         "file_path": "php/nested.php",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 7,
         "max_nesting": 4,
         "nloc": 89,
@@ -1142,10 +1634,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1171,7 +1663,7 @@
       },
       {
         "file_path": "python/classes.py",
-        "score": 9.65,
+        "score": 10.0,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 34,
@@ -1180,17 +1672,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.65,
-        "maintainability_score": 9.3,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.35,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "python/complex.py",
-        "score": 8.55,
+        "score": 8.75,
         "max_ccn": 15,
         "max_nesting": 2,
         "nloc": 21,
@@ -1199,17 +1691,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.55,
+        "defect_score": 8.75,
         "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.452,
+        "structure_deduction": 1.247,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "python/conditionals.py",
-        "score": 9.2,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 12,
@@ -1218,10 +1710,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1229,8 +1721,8 @@
       {
         "file_path": "python/match.py",
         "score": 10.0,
-        "max_ccn": 5,
-        "max_nesting": 2,
+        "max_ccn": 4,
+        "max_nesting": 1,
         "nloc": 19,
         "has_test_file": false,
         "module": "python",
@@ -1247,7 +1739,7 @@
       },
       {
         "file_path": "python/nested.py",
-        "score": 8.09,
+        "score": 8.28,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 14,
@@ -1256,10 +1748,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.09,
+        "defect_score": 8.28,
         "maintainability_score": 8.2,
         "performance_score": 10.0,
-        "structure_deduction": 1.908,
+        "structure_deduction": 1.724,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1277,7 +1769,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 9.02,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1342,7 +1834,7 @@
       },
       {
         "file_path": "ruby/nested.rb",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 7,
         "max_nesting": 4,
         "nloc": 81,
@@ -1351,10 +1843,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1372,7 +1864,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 8.67,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1380,7 +1872,7 @@
       },
       {
         "file_path": "rust/conditionals.rs",
-        "score": 9.2,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 18,
@@ -1389,10 +1881,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1400,8 +1892,8 @@
       {
         "file_path": "rust/flat_match.rs",
         "score": 10.0,
-        "max_ccn": 5,
-        "max_nesting": 3,
+        "max_ccn": 4,
+        "max_nesting": 2,
         "nloc": 31,
         "has_test_file": false,
         "module": "rust",
@@ -1418,7 +1910,7 @@
       },
       {
         "file_path": "rust/nested.rs",
-        "score": 8.39,
+        "score": 8.55,
         "max_ccn": 6,
         "max_nesting": 5,
         "nloc": 19,
@@ -1427,10 +1919,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.39,
+        "defect_score": 8.55,
         "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.608,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1448,7 +1940,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 8.6,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1475,7 +1967,7 @@
       },
       {
         "file_path": "scala/classes.scala",
-        "score": 9.65,
+        "score": 10.0,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 50,
@@ -1484,17 +1976,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.65,
-        "maintainability_score": 9.3,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.35,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "scala/nested.scala",
-        "score": 7.54,
+        "score": 7.77,
         "max_ccn": 9,
         "max_nesting": 5,
         "nloc": 49,
@@ -1503,10 +1995,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 7.54,
+        "defect_score": 7.77,
         "maintainability_score": 8.1,
         "performance_score": 10.0,
-        "structure_deduction": 2.455,
+        "structure_deduction": 2.226,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1524,7 +2016,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 8.67,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1532,7 +2024,7 @@
       },
       {
         "file_path": "shell/control_flow.sh",
-        "score": 9.15,
+        "score": 9.23,
         "max_ccn": 10,
         "max_nesting": 1,
         "nloc": 30,
@@ -1541,10 +2033,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.15,
+        "defect_score": 9.23,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.847,
+        "structure_deduction": 0.774,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1646,7 +2138,7 @@
       },
       {
         "file_path": "swift/nested.swift",
-        "score": 9.06,
+        "score": 9.12,
         "max_ccn": 9,
         "max_nesting": 4,
         "nloc": 24,
@@ -1655,10 +2147,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.06,
+        "defect_score": 9.12,
         "maintainability_score": 9.3,
         "performance_score": 10.0,
-        "structure_deduction": 0.938,
+        "structure_deduction": 0.883,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1684,7 +2176,7 @@
       },
       {
         "file_path": "typescript/classes.ts",
-        "score": 9.65,
+        "score": 10.0,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 37,
@@ -1693,17 +2185,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.65,
-        "maintainability_score": 9.3,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.35,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "typescript/conditionals.ts",
-        "score": 9.2,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 26,
@@ -1712,17 +2204,17 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.2,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.798,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
       },
       {
         "file_path": "typescript/nested.ts",
-        "score": 8.24,
+        "score": 8.55,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 21,
@@ -1731,10 +2223,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.24,
-        "maintainability_score": 8.5,
+        "defect_score": 8.55,
+        "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.758,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1752,7 +2244,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 10.0,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1818,6 +2310,355 @@
     ],
     "findings": [
       {
+        "biomarker_type": "apex_see_all_data",
+        "severity": "low",
+        "file_path": "apex/HealthMarkersTest.cls",
+        "function_name": "HealthMarkersTest",
+        "line_start": 2,
+        "line_end": 2,
+        "details": {
+          "value": "class",
+          "symbol_line": 2
+        },
+        "health_impact": 0.0,
+        "reason": "@IsTest(SeeAllData=true) on class HealthMarkersTest: the test reads the org's live data, so its result depends on the org it runs in",
+        "dimension": "advisory",
+        "id": "finding_36631da27da27fc56829"
+      },
+      {
+        "biomarker_type": "apex_see_all_data",
+        "severity": "low",
+        "file_path": "apex/HealthMarkersTest.cls",
+        "function_name": "readsOrgData",
+        "line_start": 4,
+        "line_end": 4,
+        "details": {
+          "value": "method",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "@IsTest(SeeAllData=true) on method readsOrgData: the test reads the org's live data, so its result depends on the org it runs in",
+        "dimension": "advisory",
+        "id": "finding_5ad2784c4b1e3692c080"
+      },
+      {
+        "biomarker_type": "apex_soql_injection",
+        "severity": "high",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "byName",
+        "line_start": 13,
+        "line_end": 13,
+        "details": {
+          "value": "name",
+          "symbol_line": 12
+        },
+        "health_impact": 0.0,
+        "reason": "Dynamic query splices `name`, a String from outside the method, into a quoted SOQL literal with no escaping: bind it (`:value`) or pass it through String.escapeSingleQuotes",
+        "dimension": "advisory",
+        "id": "finding_f1341e96d7d388579f63"
+      },
+      {
+        "biomarker_type": "apex_soql_injection",
+        "severity": "high",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "byBuiltClause",
+        "line_start": 20,
+        "line_end": 20,
+        "details": {
+          "value": "city",
+          "symbol_line": 16
+        },
+        "health_impact": 0.0,
+        "reason": "Dynamic query splices `city`, a String from outside the method, into a quoted SOQL literal with no escaping: bind it (`:value`) or pass it through String.escapeSingleQuotes",
+        "dimension": "advisory",
+        "id": "finding_4ae2e2ef6626a04cd197"
+      },
+      {
+        "biomarker_type": "apex_soql_injection",
+        "severity": "high",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "bySearchProperty",
+        "line_start": 24,
+        "line_end": 24,
+        "details": {
+          "value": "searchText",
+          "symbol_line": 23
+        },
+        "health_impact": 0.0,
+        "reason": "Dynamic query splices `searchText`, a String from outside the method, into a quoted SOQL literal with no escaping: bind it (`:value`) or pass it through String.escapeSingleQuotes",
+        "dimension": "advisory",
+        "id": "finding_f43545b2aa74a6b7613f"
+      },
+      {
+        "biomarker_type": "apex_soql_injection",
+        "severity": "high",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "byNames",
+        "line_start": 28,
+        "line_end": 28,
+        "details": {
+          "value": "names",
+          "symbol_line": 27
+        },
+        "health_impact": 0.0,
+        "reason": "Dynamic query splices `names`, a String from outside the method, into a quoted SOQL literal with no escaping: bind it (`:value`) or pass it through String.escapeSingleQuotes",
+        "dimension": "advisory",
+        "id": "finding_8f755e834430112253f6"
+      },
+      {
+        "biomarker_type": "apex_missing_sharing",
+        "severity": "medium",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "HealthMarkers",
+        "line_start": 4,
+        "line_end": 4,
+        "details": {
+          "value": "line 13",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "Class HealthMarkers runs SOQL or DML (line 13) and declares no sharing keyword, so whether record sharing applies depends on its caller",
+        "dimension": "advisory",
+        "id": "finding_fa887492d1d88d4d4cb3"
+      },
+      {
+        "biomarker_type": "apex_hardcoded_id",
+        "severity": "medium",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "HealthMarkers",
+        "line_start": 6,
+        "line_end": 6,
+        "details": {
+          "value": "0051t000002bF3QAAU",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "Hardcoded record Id '0051t000002bF3QAAU': Ids differ between orgs and sandboxes",
+        "dimension": "advisory",
+        "id": "finding_231d102a50d21a2b4ba8"
+      },
+      {
+        "biomarker_type": "apex_hardcoded_id",
+        "severity": "medium",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "defaultRecordType",
+        "line_start": 32,
+        "line_end": 32,
+        "details": {
+          "value": "012000000000AbcAAE",
+          "symbol_line": 31
+        },
+        "health_impact": 0.0,
+        "reason": "Hardcoded record Id '012000000000AbcAAE': Ids differ between orgs and sandboxes",
+        "dimension": "advisory",
+        "id": "finding_7df931acae6b893d752d"
+      },
+      {
+        "biomarker_type": "nested_complexity",
+        "severity": "high",
+        "file_path": "apex/nested.cls",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 21,
+        "details": {
+          "max_nesting": 5,
+          "ccn": 7,
+          "cognitive": 20,
+          "dispatch_share": 0.0,
+          "symbol_line": 3,
+          "deepest_block": {
+            "start": 8,
+            "end": 14
+          }
+        },
+        "health_impact": 1.452,
+        "reason": "deeplyNested nests 5 levels deep",
+        "dimension": "defect",
+        "id": "finding_e2bc6665fe8f36d35f95"
+      },
+      {
+        "biomarker_type": "io_in_loop",
+        "severity": "medium",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "function_name": "soqlPerRecord",
+        "line_start": 8,
+        "line_end": 8,
+        "details": {
+          "boundary_kind": "db",
+          "cross_function": false,
+          "loop_iterates": "parameter",
+          "loop_line": 7,
+          "sink_call": "SOQL",
+          "symbol_line": 6,
+          "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
+          "execution_role": "unknown",
+          "opportunity_id": "perf5_2dc2d05483e3be154222"
+        },
+        "health_impact": 0.0,
+        "reason": "a database call runs once per loop iteration (N+1 query)",
+        "dimension": "performance",
+        "id": "finding_b424265e962a4fbc7e8b"
+      },
+      {
+        "biomarker_type": "io_in_loop",
+        "severity": "medium",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "function_name": "dmlPerRecord",
+        "line_start": 14,
+        "line_end": 14,
+        "details": {
+          "boundary_kind": "db",
+          "cross_function": false,
+          "loop_iterates": "parameter",
+          "loop_line": 13,
+          "sink_call": "update",
+          "symbol_line": 12,
+          "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::dmlPerRecord",
+          "execution_role": "unknown",
+          "opportunity_id": "perf5_7adb36b5d04725ba470e"
+        },
+        "health_impact": 0.0,
+        "reason": "a database call runs once per loop iteration (N+1 query)",
+        "dimension": "performance",
+        "id": "finding_22382e45520ab6bb7b0d"
+      },
+      {
+        "biomarker_type": "io_in_loop",
+        "severity": "medium",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "function_name": "databaseAndCallout",
+        "line_start": 21,
+        "line_end": 21,
+        "details": {
+          "boundary_kind": "db",
+          "cross_function": false,
+          "loop_iterates": "parameter",
+          "loop_line": 20,
+          "sink_call": "Database.delete",
+          "symbol_line": 18,
+          "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
+          "execution_role": "unknown",
+          "opportunity_id": "perf5_8ecdf8a7dacf3c71dd27"
+        },
+        "health_impact": 0.0,
+        "reason": "a database call runs once per loop iteration (N+1 query)",
+        "dimension": "performance",
+        "id": "finding_9165427cd04cf7e4726a"
+      },
+      {
+        "biomarker_type": "io_in_loop",
+        "severity": "medium",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "function_name": "databaseAndCallout",
+        "line_start": 22,
+        "line_end": 22,
+        "details": {
+          "boundary_kind": "network",
+          "cross_function": false,
+          "loop_key_unused": true,
+          "loop_iterates": "parameter",
+          "loop_line": 20,
+          "sink_call": "http.send",
+          "symbol_line": 18,
+          "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
+          "execution_role": "unknown",
+          "opportunity_id": "perf5_a850ad3bb607d14ed87e"
+        },
+        "health_impact": 0.0,
+        "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
+        "dimension": "performance",
+        "id": "finding_0245fab87b55c23492c6"
+      },
+      {
+        "biomarker_type": "io_in_loop",
+        "severity": "medium",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "function_name": "asyncPerRecord",
+        "line_start": 28,
+        "line_end": 28,
+        "details": {
+          "boundary_kind": "db",
+          "cross_function": false,
+          "loop_iterates": "parameter",
+          "loop_line": 27,
+          "sink_call": "System.enqueueJob",
+          "symbol_line": 26,
+          "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::asyncPerRecord",
+          "execution_role": "unknown",
+          "opportunity_id": "perf5_c825658c4fdf4b8ecbff"
+        },
+        "health_impact": 0.0,
+        "reason": "a database call runs once per loop iteration (N+1 query)",
+        "dimension": "performance",
+        "id": "finding_e659d96b233a265d645d"
+      },
+      {
+        "biomarker_type": "io_in_loop",
+        "severity": "medium",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "function_name": "asyncPerRecord",
+        "line_start": 29,
+        "line_end": 29,
+        "details": {
+          "boundary_kind": "db",
+          "cross_function": false,
+          "loop_iterates": "parameter",
+          "loop_line": 27,
+          "sink_call": "notifyLater",
+          "symbol_line": 26,
+          "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::asyncPerRecord",
+          "execution_role": "unknown",
+          "opportunity_id": "perf5_c825658c4fdf4b8ecbff"
+        },
+        "health_impact": 0.0,
+        "reason": "a database call runs once per loop iteration (N+1 query)",
+        "dimension": "performance",
+        "id": "finding_55745384c52960933827"
+      },
+      {
+        "biomarker_type": "io_in_loop",
+        "severity": "medium",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "function_name": "nested",
+        "line_start": 40,
+        "line_end": 40,
+        "details": {
+          "boundary_kind": "db",
+          "cross_function": false,
+          "loop_line": 39,
+          "sink_call": "insert",
+          "symbol_line": 37,
+          "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::nested",
+          "execution_role": "unknown",
+          "opportunity_id": "perf5_009daa9fe845b0b0a724"
+        },
+        "health_impact": 0.0,
+        "reason": "a database call runs once per loop iteration (N+1 query)",
+        "dimension": "performance",
+        "id": "finding_760a8253c79b976573d7"
+      },
+      {
+        "biomarker_type": "nested_loop_with_io",
+        "severity": "medium",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "function_name": "nested",
+        "line_start": 40,
+        "line_end": 40,
+        "details": {
+          "boundary_kind": "db",
+          "loop_line": 39,
+          "sink_call": "insert",
+          "symbol_line": 37,
+          "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::nested",
+          "execution_role": "unknown",
+          "opportunity_id": "perf5_009daa9fe845b0b0a724"
+        },
+        "health_impact": 0.0,
+        "reason": "a database call runs inside a nested loop (O(n\u00b7m) round-trips); batch the inner query or restructure the loops",
+        "dimension": "performance",
+        "id": "finding_ad8e4f3c1ef52ec49958"
+      },
+      {
         "biomarker_type": "nested_complexity",
         "severity": "medium",
         "file_path": "cpp/nested.cpp",
@@ -1835,10 +2676,30 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_7336de57febe95c93630"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "cpp/nested.cpp",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_294c508a3bdf5636dbc5"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -1857,7 +2718,7 @@
           "symbol_line": 17,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::EfAsyncN1",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_95bb8ae957b8b655327e"
+          "opportunity_id": "perf5_95bb8ae957b8b655327e"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -1880,7 +2741,7 @@
           "symbol_line": 25,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::HttpInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_3f08df93f1b3e36c763f"
+          "opportunity_id": "perf5_3f08df93f1b3e36c763f"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -1904,7 +2765,7 @@
           "symbol_line": 33,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::SaveInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_db17d793aaa4beb033a1"
+          "opportunity_id": "perf5_db17d793aaa4beb033a1"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -1927,7 +2788,7 @@
           "symbol_line": 41,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::FileReadInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_c429bf008236dca10f03"
+          "opportunity_id": "perf5_c429bf008236dca10f03"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -1951,7 +2812,7 @@
           "symbol_line": 49,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::SyncLinqInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_87ea71b2c97643e64f9e"
+          "opportunity_id": "perf5_87ea71b2c97643e64f9e"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -1972,7 +2833,7 @@
           "symbol_line": 57,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::StringConcatInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_8b234729806b1ff9613d"
+          "opportunity_id": "perf5_8b234729806b1ff9613d"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -1991,7 +2852,7 @@
           "symbol_line": 67,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::SyncOverAsync",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_669d5b763f11aa6fb225"
+          "opportunity_id": "perf5_669d5b763f11aa6fb225"
         },
         "health_impact": 0.0,
         "reason": ".Result blocks the event loop inside an async function",
@@ -2010,7 +2871,7 @@
           "symbol_line": 67,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::SyncOverAsync",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_669d5b763f11aa6fb225"
+          "opportunity_id": "perf5_669d5b763f11aa6fb225"
         },
         "health_impact": 0.0,
         "reason": ".Wait() blocks the event loop inside an async function",
@@ -2035,10 +2896,30 @@
             "end": 16
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "DeeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_525e8162089608e8a869"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "csharp/nested.cs",
+        "function_name": "DeeplyNested",
+        "line_start": 5,
+        "line_end": 21,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 5
+        },
+        "health_impact": 0.0,
+        "reason": "DeeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_06ba5b0fe6a38fa75b04"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -2058,7 +2939,7 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_14da5768ef44be629cdb"
@@ -2074,17 +2955,57 @@
           "ccn": 9,
           "cognitive": 8,
           "nloc": 9,
-          "dispatch_share": 0.0,
+          "dispatch_share": 0.38,
           "symbol_line": 20,
           "deepest_block": {
             "start": 21,
             "end": 21
           }
         },
-        "health_impact": 0.847,
-        "reason": "manyBranches has cyclomatic complexity 9",
+        "health_impact": 0.774,
+        "reason": "manyBranches has 9 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_75e1face476206b793af"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "dart/nested.dart",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_3b2e6e678827a0c95db8"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "dart/nested.dart",
+        "function_name": "manyBranches",
+        "line_start": 20,
+        "line_end": 28,
+        "details": {
+          "crap": 90.0,
+          "ccn": 9,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 20
+        },
+        "health_impact": 0.0,
+        "reason": "manyBranches has CRAP 90 (complexity 9, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_c1ac480b4aeb3197f16d"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -2097,12 +3018,13 @@
           "boundary_kind": "network",
           "cross_function": false,
           "loop_key_unused": true,
+          "loop_iterates": "parameter",
           "loop_line": 9,
           "sink_call": "get",
           "symbol_line": 8,
           "role_owner": "dart/perf_io_in_loop.dart::serialFetch",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_33de3d67ada57c94f63e"
+          "opportunity_id": "perf5_33de3d67ada57c94f63e"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -2120,12 +3042,13 @@
           "boundary_kind": "filesystem",
           "cross_function": false,
           "loop_key_unused": true,
+          "loop_iterates": "parameter",
           "loop_line": 15,
           "sink_call": "readAsString",
           "symbol_line": 14,
           "role_owner": "dart/perf_io_in_loop.dart::readFiles",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_a76757394590890d677d"
+          "opportunity_id": "perf5_a76757394590890d677d"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -2143,12 +3066,13 @@
           "boundary_kind": "db",
           "cross_function": false,
           "loop_key_unused": true,
+          "loop_iterates": "parameter",
           "loop_line": 21,
           "sink_call": "rawQuery",
           "symbol_line": 20,
           "role_owner": "dart/perf_io_in_loop.dart::queryRows",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_f16b2a14051afa858b30"
+          "opportunity_id": "perf5_f16b2a14051afa858b30"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2163,12 +3087,13 @@
         "line_start": 29,
         "line_end": 29,
         "details": {
+          "loop_iterates": "parameter",
           "loop_line": 28,
           "subject": "s",
           "symbol_line": 26,
           "role_owner": "dart/perf_io_in_loop.dart::concat",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_1b24c911f6c8a4b52508"
+          "opportunity_id": "perf5_1b24c911f6c8a4b52508"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -2183,11 +3108,12 @@
         "line_start": 36,
         "line_end": 36,
         "details": {
+          "loop_iterates": "parameter",
           "loop_line": 35,
           "symbol_line": 34,
           "role_owner": "dart/perf_io_in_loop.dart::makeClients",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_c0a715a42fe48ca40678"
+          "opportunity_id": "perf5_c0a715a42fe48ca40678"
         },
         "health_impact": 0.0,
         "reason": "a heavy client / connection is constructed each loop iteration; hoist and reuse a single instance",
@@ -2195,42 +3121,44 @@
         "id": "finding_fc2bd6cbf299ac72583b"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "go/conditionals.go",
         "function_name": "ThreeOps",
-        "line_start": 4,
-        "line_end": 4,
+        "line_start": 3,
+        "line_end": 8,
         "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 3
         },
-        "health_impact": 0.399,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_b4706faf8eea57f3c000"
+        "health_impact": 0.0,
+        "reason": "ThreeOps has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_814731f9fbc11f91edc5"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "go/conditionals.go",
         "function_name": "SixOps",
-        "line_start": 11,
-        "line_end": 11,
+        "line_start": 10,
+        "line_end": 15,
         "details": {
-          "operator_count": 6,
-          "enclosing_construct": "for",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 10
         },
-        "health_impact": 0.399,
-        "reason": "for condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_ed03ae737c057c537559"
+        "health_impact": 0.0,
+        "reason": "SixOps has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_c1cb731e126a1224c410"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -2250,10 +3178,30 @@
             "end": 12
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "DeeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_8a94b5551a568cc7522f"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "go/nested.go",
+        "function_name": "DeeplyNested",
+        "line_start": 3,
+        "line_end": 17,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "DeeplyNested has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d271936fd68e02aa1a7f"
       },
       {
         "biomarker_type": "error_handling",
@@ -2267,10 +3215,10 @@
           "symbol_line": 36,
           "symbol": "deferInLoop"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.0,
         "reason": "error value is checked then ignored, or discarded via the blank identifier",
-        "dimension": "maintainability",
-        "id": "finding_ae2ad6b7dd45e467cae7"
+        "dimension": "advisory",
+        "id": "finding_7814e4814e7ab6773849"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -2288,7 +3236,7 @@
           "symbol_line": 18,
           "role_owner": "go/perf_io_in_loop.go::dbQueryInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_35b661ae09ee25af0697"
+          "opportunity_id": "perf5_35b661ae09ee25af0697"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2311,7 +3259,7 @@
           "symbol_line": 24,
           "role_owner": "go/perf_io_in_loop.go::httpGetInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_91dadbe5903aff9695f8"
+          "opportunity_id": "perf5_91dadbe5903aff9695f8"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -2334,7 +3282,7 @@
           "symbol_line": 30,
           "role_owner": "go/perf_io_in_loop.go::osOpenInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_ba93597be8695e77aef8"
+          "opportunity_id": "perf5_ba93597be8695e77aef8"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -2357,7 +3305,7 @@
           "symbol_line": 36,
           "role_owner": "go/perf_io_in_loop.go::deferInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_d743e5cb03ad33337138"
+          "opportunity_id": "perf5_d743e5cb03ad33337138"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -2378,7 +3326,7 @@
           "symbol_line": 50,
           "role_owner": "go/perf_io_in_loop.go::stringConcatInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_a5c52085fe28e577fb7f"
+          "opportunity_id": "perf5_a5c52085fe28e577fb7f"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -2398,7 +3346,7 @@
           "symbol_line": 43,
           "role_owner": "go/perf_io_in_loop.go::regexpCompileInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_e3ebce657d83f671209d"
+          "opportunity_id": "perf5_e3ebce657d83f671209d"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -2418,7 +3366,7 @@
           "symbol_line": 36,
           "role_owner": "go/perf_io_in_loop.go::deferInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_62acaef3397d76cbe2f5"
+          "opportunity_id": "perf5_62acaef3397d76cbe2f5"
         },
         "health_impact": 0.0,
         "reason": "a deferred call inside a loop runs only when the enclosing function returns, so the resource stays held across every iteration; close it in the loop body (or wrap the body in a function) instead",
@@ -2426,42 +3374,44 @@
         "id": "finding_7f34c7947a7498cc922c"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "java/Conditionals.java",
         "function_name": "threeOps",
-        "line_start": 3,
-        "line_end": 3,
+        "line_start": 2,
+        "line_end": 7,
         "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 2
         },
-        "health_impact": 0.399,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_92b0b6c1f3be5fe497d3"
+        "health_impact": 0.0,
+        "reason": "threeOps has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_5cad121e3eec66668619"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "java/Conditionals.java",
         "function_name": "sixOps",
-        "line_start": 10,
-        "line_end": 10,
+        "line_start": 9,
+        "line_end": 14,
         "details": {
-          "operator_count": 6,
-          "enclosing_construct": "while",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 9
         },
-        "health_impact": 0.399,
-        "reason": "while condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_13a165fcb9f91a97a666"
+        "health_impact": 0.0,
+        "reason": "sixOps has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_fd14e71841abee247de5"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -2481,10 +3431,30 @@
             "end": 12
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_716ef8994749727b5d74"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "java/Nested.java",
+        "function_name": "deeplyNested",
+        "line_start": 2,
+        "line_end": 19,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 2
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_37724bd1b3882e3b1429"
       },
       {
         "biomarker_type": "error_handling",
@@ -2498,10 +3468,10 @@
           "symbol_line": 2,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.0,
         "reason": "caught exception is swallowed without any handling",
-        "dimension": "maintainability",
-        "id": "finding_45419b3eb06537a00ce0"
+        "dimension": "advisory",
+        "id": "finding_df953bc22aa0cc5d6600"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -2519,7 +3489,7 @@
           "symbol_line": 16,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::springDataN1",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_911dde4f6806cc6b75b7"
+          "opportunity_id": "perf5_911dde4f6806cc6b75b7"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2542,7 +3512,7 @@
           "symbol_line": 22,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::jdbcInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_eb7be3ffffcf819dbfc9"
+          "opportunity_id": "perf5_eb7be3ffffcf819dbfc9"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2565,7 +3535,7 @@
           "symbol_line": 28,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::filesInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_e156dff3c84c5779634b"
+          "opportunity_id": "perf5_e156dff3c84c5779634b"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -2588,7 +3558,7 @@
           "symbol_line": 34,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::newStreamInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_22acf8c6252402350330"
+          "opportunity_id": "perf5_22acf8c6252402350330"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -2609,7 +3579,7 @@
           "symbol_line": 46,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::stringConcatInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_ceaed73c82949f778dae"
+          "opportunity_id": "perf5_ceaed73c82949f778dae"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -2629,7 +3599,7 @@
           "symbol_line": 40,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::regexCompileInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_e63d99176047a0f3cd49"
+          "opportunity_id": "perf5_e63d99176047a0f3cd49"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -2654,10 +3624,30 @@
             "end": 10
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_bd08c69b932b606b18c9"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "javascript/nested.js",
+        "function_name": "deeplyNested",
+        "line_start": 1,
+        "line_end": 17,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_f4d48fd3c571c65c8066"
       },
       {
         "biomarker_type": "error_handling",
@@ -2671,10 +3661,10 @@
           "symbol_line": 1,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.0,
         "reason": "caught exception is swallowed without any handling",
-        "dimension": "maintainability",
-        "id": "finding_4614b0ce342fb6f1e7f8"
+        "dimension": "advisory",
+        "id": "finding_bd4dfeaf0d4a9003aa29"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -2694,10 +3684,30 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_341db9359cf919b9c51c"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "kotlin/nested.kt",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_763d93b2e5a15a2123fe"
       },
       {
         "biomarker_type": "complex_method",
@@ -2717,10 +3727,30 @@
             "end": 28
           }
         },
-        "health_impact": 0.847,
-        "reason": "ManyBranches has cyclomatic complexity 13",
+        "health_impact": 0.774,
+        "reason": "ManyBranches has 13 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_cdb1bfd5e7f5961c0f48"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "pascal/complex.pas",
+        "function_name": "ManyBranches",
+        "line_start": 7,
+        "line_end": 46,
+        "details": {
+          "crap": 182.0,
+          "ccn": 13,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 7
+        },
+        "health_impact": 0.0,
+        "reason": "ManyBranches has CRAP 182 (complexity 13, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_7fa470e6114dc37b6fd9"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -2740,10 +3770,50 @@
             "end": 23
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "DeeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_472f3545d0b4e4e51dcb"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "pascal/nested.pas",
+        "function_name": "DeeplyNested",
+        "line_start": 7,
+        "line_end": 30,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 7
+        },
+        "health_impact": 0.0,
+        "reason": "DeeplyNested has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d69da900f78a85b1c0f8"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "perl/control_flow.pm",
+        "function_name": "guards",
+        "line_start": 16,
+        "line_end": 22,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 16
+        },
+        "health_impact": 0.0,
+        "reason": "guards has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_a2fbcef49ed9454ecf7b"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -2763,10 +3833,30 @@
             "end": 11
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeply_nested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_08fb66e3bd4471dcc116"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "php/nested.php",
+        "function_name": "deeply_nested",
+        "line_start": 4,
+        "line_end": 15,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "deeply_nested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_6a2d7046d153f5e28f70"
       },
       {
         "biomarker_type": "low_cohesion",
@@ -2782,10 +3872,10 @@
           "field_count": 2,
           "symbol_line": 26
         },
-        "health_impact": 0.35,
+        "health_impact": 0.0,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
-        "dimension": "maintainability",
-        "id": "finding_2c342a6d7294a6f43a48"
+        "dimension": "advisory",
+        "id": "finding_9946119bef5614d647ba"
       },
       {
         "biomarker_type": "complex_method",
@@ -2805,48 +3895,70 @@
             "end": 20
           }
         },
-        "health_impact": 1.452,
-        "reason": "many_branches has cyclomatic complexity 15",
+        "health_impact": 1.247,
+        "reason": "many_branches has 15 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_0218dfee9ddbbc3acb0c"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "python/conditionals.py",
-        "function_name": "three_ops",
-        "line_start": 2,
-        "line_end": 2,
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "python/complex.py",
+        "function_name": "many_branches",
+        "line_start": 1,
+        "line_end": 21,
         "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 240.0,
+          "ccn": 15,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 1
         },
-        "health_impact": 0.399,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_c86a6881aaec275e9ff1"
+        "health_impact": 0.0,
+        "reason": "many_branches has CRAP 240 (complexity 15, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_878a89457f1905e001a4"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "python/conditionals.py",
+        "function_name": "three_ops",
+        "line_start": 1,
+        "line_end": 4,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "three_ops has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_e51ed3bb71580fb53c52"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "python/conditionals.py",
         "function_name": "six_ops",
-        "line_start": 8,
-        "line_end": 8,
+        "line_start": 7,
+        "line_end": 10,
         "details": {
-          "operator_count": 6,
-          "enclosing_construct": "while",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 7
         },
-        "health_impact": 0.399,
-        "reason": "while condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_3ce2bf004e5ad8e70bed"
+        "health_impact": 0.0,
+        "reason": "six_ops has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_9ce0eaced1fca0186c01"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -2866,10 +3978,30 @@
             "end": 10
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeply_nested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_d4ee38f48a43bc6c92fd"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "python/nested.py",
+        "function_name": "deeply_nested",
+        "line_start": 1,
+        "line_end": 12,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "deeply_nested has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_b229a93c6dc594cdc15f"
       },
       {
         "biomarker_type": "error_handling",
@@ -2883,7 +4015,7 @@
           "symbol_line": 1,
           "symbol": "deeply_nested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.136,
         "reason": "caught exception is swallowed without any handling",
         "dimension": "maintainability",
         "id": "finding_a2c98dd353bdd9aa22b3"
@@ -2900,7 +4032,7 @@
           "symbol_line": 1,
           "symbol": "deeply_nested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.136,
         "reason": "broad `except Exception` catches unrelated errors and can hide bugs",
         "dimension": "maintainability",
         "id": "finding_61df1a80f37292b7b485"
@@ -2921,7 +4053,7 @@
           "symbol_line": 18,
           "role_owner": "python/perf_io_in_loop.py::db_execute_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_3dc56d1298758cec0e7d"
+          "opportunity_id": "perf5_3dc56d1298758cec0e7d"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2944,7 +4076,7 @@
           "symbol_line": 23,
           "role_owner": "python/perf_io_in_loop.py::subprocess_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_069d54d9219b684b8852"
+          "opportunity_id": "perf5_069d54d9219b684b8852"
         },
         "health_impact": 0.0,
         "reason": "a subprocess spawn runs once per loop iteration (I/O call inside a loop)",
@@ -2967,7 +4099,7 @@
           "symbol_line": 28,
           "role_owner": "python/perf_io_in_loop.py::http_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_cd8a40bdf6f8657389c1"
+          "opportunity_id": "perf5_cd8a40bdf6f8657389c1"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -2990,7 +4122,7 @@
           "symbol_line": 83,
           "role_owner": "python/perf_io_in_loop.py::open_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_177a2b674a1483bdb31a"
+          "opportunity_id": "perf5_177a2b674a1483bdb31a"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3011,7 +4143,7 @@
           "symbol_line": 38,
           "role_owner": "python/perf_io_in_loop.py::string_concat_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_02a9e6ff6fb58543432e"
+          "opportunity_id": "perf5_02a9e6ff6fb58543432e"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -3030,7 +4162,7 @@
           "symbol_line": 45,
           "role_owner": "python/perf_io_in_loop.py::blocking_in_async",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_07c417d2125a398652e2"
+          "opportunity_id": "perf5_07c417d2125a398652e2"
         },
         "health_impact": 0.0,
         "reason": "time.sleep blocks the event loop inside an async function",
@@ -3049,7 +4181,7 @@
           "symbol_line": 45,
           "role_owner": "python/perf_io_in_loop.py::blocking_in_async",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_07c417d2125a398652e2"
+          "opportunity_id": "perf5_07c417d2125a398652e2"
         },
         "health_impact": 0.0,
         "reason": "requests.get blocks the event loop inside an async function",
@@ -3074,10 +4206,50 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeply_nested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_980163708d497ecefb31"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "ruby/nested.rb",
+        "function_name": "deeply_nested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeply_nested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_75bf41261c0bcdf5e53c"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "ruby/nested.rb",
+        "function_name": "many_branches",
+        "line_start": 16,
+        "line_end": 27,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 16
+        },
+        "health_impact": 0.0,
+        "reason": "many_branches has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_77744cd877e0d96bea97"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -3095,7 +4267,7 @@
           "symbol_line": 6,
           "role_owner": "ruby/perf_io_in_loop.rb::sync_fetch_each",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_72ff99e9bea8942e1d56"
+          "opportunity_id": "perf5_72ff99e9bea8942e1d56"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -3118,7 +4290,7 @@
           "symbol_line": 12,
           "role_owner": "ruby/perf_io_in_loop.rb::read_files",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_2fdb693e277e138e8f8f"
+          "opportunity_id": "perf5_2fdb693e277e138e8f8f"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3141,7 +4313,7 @@
           "symbol_line": 16,
           "role_owner": "ruby/perf_io_in_loop.rb::nested_read",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_d1c54153bab1417f5dd4"
+          "opportunity_id": "perf5_d1c54153bab1417f5dd4"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3164,7 +4336,7 @@
           "symbol_line": 16,
           "role_owner": "ruby/perf_io_in_loop.rb::nested_read",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_d1c54153bab1417f5dd4"
+          "opportunity_id": "perf5_d1c54153bab1417f5dd4"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3187,7 +4359,7 @@
           "symbol_line": 24,
           "role_owner": "ruby/perf_io_in_loop.rb::orders_report",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_b52d9dad50af33698879"
+          "opportunity_id": "perf5_b52d9dad50af33698879"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -3210,7 +4382,7 @@
           "symbol_line": 65,
           "role_owner": "ruby/perf_io_in_loop.rb::fresh_clients",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_4c9a8d9d71f9abc2a65c"
+          "opportunity_id": "perf5_4c9a8d9d71f9abc2a65c"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -3233,7 +4405,7 @@
           "symbol_line": 72,
           "role_owner": "ruby/perf_io_in_loop.rb::shell_out",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_ec0090b8a2683a637225"
+          "opportunity_id": "perf5_ec0090b8a2683a637225"
         },
         "health_impact": 0.0,
         "reason": "a subprocess spawn runs once per loop iteration (I/O call inside a loop)",
@@ -3256,7 +4428,7 @@
           "symbol_line": 78,
           "role_owner": "ruby/perf_io_in_loop.rb::locked_write",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_604ed2f876f904e76aee"
+          "opportunity_id": "perf5_604ed2f876f904e76aee"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3277,7 +4449,7 @@
           "symbol_line": 39,
           "role_owner": "ruby/perf_io_in_loop.rb::build_report",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_f8009e55994b59b42b1b"
+          "opportunity_id": "perf5_f8009e55994b59b42b1b"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -3297,7 +4469,7 @@
           "symbol_line": 57,
           "role_owner": "ruby/perf_io_in_loop.rb::regex_scan",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_ec9fdd1aece3d2edc916"
+          "opportunity_id": "perf5_ec9fdd1aece3d2edc916"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -3317,7 +4489,7 @@
           "symbol_line": 65,
           "role_owner": "ruby/perf_io_in_loop.rb::fresh_clients",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_dca67c3bd9d21c04b3d9"
+          "opportunity_id": "perf5_dca67c3bd9d21c04b3d9"
         },
         "health_impact": 0.0,
         "reason": "a heavy client / connection is constructed each loop iteration; hoist and reuse a single instance",
@@ -3337,7 +4509,7 @@
           "symbol_line": 78,
           "role_owner": "ruby/perf_io_in_loop.rb::locked_write",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_89c5ae4309ebf07ea162"
+          "opportunity_id": "perf5_89c5ae4309ebf07ea162"
         },
         "health_impact": 0.0,
         "reason": "a lock is acquired every loop iteration; hoist the lock outside the loop or batch the critical section",
@@ -3359,7 +4531,7 @@
           "symbol_line": 16,
           "role_owner": "ruby/perf_io_in_loop.rb::nested_read",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_d1c54153bab1417f5dd4"
+          "opportunity_id": "perf5_d1c54153bab1417f5dd4"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs inside a nested loop (O(n\u00b7m) round-trips); batch the inner query or restructure the loops",
@@ -3379,7 +4551,7 @@
           "symbol_line": 78,
           "role_owner": "ruby/perf_io_in_loop.rb::locked_write",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_e9b2aa6f45b6556776a7"
+          "opportunity_id": "perf5_e9b2aa6f45b6556776a7"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs while a lock is held; every thread that needs the lock waits for it",
@@ -3387,42 +4559,44 @@
         "id": "finding_8ef9939b9fdcbcf63e88"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "rust/conditionals.rs",
         "function_name": "three_ops",
-        "line_start": 2,
-        "line_end": 2,
+        "line_start": 1,
+        "line_end": 6,
         "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 1
         },
-        "health_impact": 0.399,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_5e2e7ed7cf94318d223b"
+        "health_impact": 0.0,
+        "reason": "three_ops has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_a42703ee8e4769a7c306"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "rust/conditionals.rs",
         "function_name": "six_ops",
-        "line_start": 9,
-        "line_end": 9,
+        "line_start": 8,
+        "line_end": 13,
         "details": {
-          "operator_count": 6,
-          "enclosing_construct": "while",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 8
         },
-        "health_impact": 0.399,
-        "reason": "while condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_a4bb8ffa6c328be7035f"
+        "health_impact": 0.0,
+        "reason": "six_ops has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_7e8892978e25daab749c"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -3442,10 +4616,30 @@
             "end": 11
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeply_nested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_51c3d3fb3a7baa49f5d1"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "rust/nested.rs",
+        "function_name": "deeply_nested",
+        "line_start": 1,
+        "line_end": 16,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "deeply_nested has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_274f31bce9e3a7e76826"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -3464,7 +4658,7 @@
           "symbol_line": 14,
           "role_owner": "rust/perf_io_in_loop.rs::sqlx_fetch_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_939b75f0ac56803ff533"
+          "opportunity_id": "perf5_939b75f0ac56803ff533"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -3487,7 +4681,7 @@
           "symbol_line": 22,
           "role_owner": "rust/perf_io_in_loop.rs::fs_read_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_adad65cebc5f1c75f474"
+          "opportunity_id": "perf5_adad65cebc5f1c75f474"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3510,7 +4704,7 @@
           "symbol_line": 28,
           "role_owner": "rust/perf_io_in_loop.rs::fs_read_to_string_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_f4f30f0e3cd8255db043"
+          "opportunity_id": "perf5_f4f30f0e3cd8255db043"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3533,7 +4727,7 @@
           "symbol_line": 34,
           "role_owner": "rust/perf_io_in_loop.rs::reqwest_get_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_0b5f442a6246aab14c0f"
+          "opportunity_id": "perf5_0b5f442a6246aab14c0f"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -3552,7 +4746,7 @@
           "symbol_line": 56,
           "role_owner": "rust/perf_io_in_loop.rs::thread_sleep_in_async",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_b1c2a1cc1e7062adeb82"
+          "opportunity_id": "perf5_b1c2a1cc1e7062adeb82"
         },
         "health_impact": 0.0,
         "reason": "thread::sleep blocks the event loop inside an async function",
@@ -3572,7 +4766,7 @@
           "symbol_line": 41,
           "role_owner": "rust/perf_io_in_loop.rs::regex_new_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_f658722384a884802dd9"
+          "opportunity_id": "perf5_f658722384a884802dd9"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -3592,7 +4786,7 @@
           "symbol_line": 49,
           "role_owner": "rust/perf_io_in_loop.rs::pgpool_connect_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_e0d343e0f04b46173da9"
+          "opportunity_id": "perf5_e0d343e0f04b46173da9"
         },
         "health_impact": 0.0,
         "reason": "a heavy client / connection is constructed each loop iteration; hoist and reuse a single instance",
@@ -3613,10 +4807,10 @@
           "field_count": 2,
           "symbol_line": 30
         },
-        "health_impact": 0.35,
+        "health_impact": 0.0,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
-        "dimension": "maintainability",
-        "id": "finding_37149d90e97e94d08056"
+        "dimension": "advisory",
+        "id": "finding_ea7c5e4277fe11036aa2"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -3636,7 +4830,7 @@
             "end": 13
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_8444c612b6ad7c705ffd"
@@ -3659,10 +4853,50 @@
             "end": 25
           }
         },
-        "health_impact": 0.847,
-        "reason": "manyBranches has cyclomatic complexity 9",
+        "health_impact": 0.774,
+        "reason": "manyBranches has 9 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_35278d63e4c3bf59be37"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "scala/nested.scala",
+        "function_name": "deeplyNested",
+        "line_start": 4,
+        "line_end": 18,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_bef116cdaae8db9288a4"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "scala/nested.scala",
+        "function_name": "manyBranches",
+        "line_start": 20,
+        "line_end": 28,
+        "details": {
+          "crap": 90.0,
+          "ccn": 9,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 20
+        },
+        "health_impact": 0.0,
+        "reason": "manyBranches has CRAP 90 (complexity 9, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_5bf22a92bcba1473b280"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -3680,7 +4914,7 @@
           "symbol_line": 14,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::readAll",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_b7ae0ae40ee161bbb6a5"
+          "opportunity_id": "perf5_b7ae0ae40ee161bbb6a5"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3703,7 +4937,7 @@
           "symbol_line": 23,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::matrix",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_e976af66936a82c966c7"
+          "opportunity_id": "perf5_e976af66936a82c966c7"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3723,7 +4957,7 @@
           "symbol_line": 50,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::concat",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_c5af9958214b7571ad9a"
+          "opportunity_id": "perf5_c5af9958214b7571ad9a"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -3742,7 +4976,7 @@
           "symbol_line": 67,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::slow",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_06c429b28b60dda16af1"
+          "opportunity_id": "perf5_06c429b28b60dda16af1"
         },
         "health_impact": 0.0,
         "reason": "Await.result blocks the event loop inside an async function",
@@ -3761,7 +4995,7 @@
           "symbol_line": 31,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::regexInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_daad2514fb5c14b02486"
+          "opportunity_id": "perf5_daad2514fb5c14b02486"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -3780,7 +5014,7 @@
           "symbol_line": 31,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::regexInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_daad2514fb5c14b02486"
+          "opportunity_id": "perf5_daad2514fb5c14b02486"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -3799,7 +5033,7 @@
           "symbol_line": 81,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::locked",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_446e8e6461f803f5222e"
+          "opportunity_id": "perf5_446e8e6461f803f5222e"
         },
         "health_impact": 0.0,
         "reason": "a lock is acquired every loop iteration; hoist the lock outside the loop or batch the critical section",
@@ -3821,7 +5055,7 @@
           "symbol_line": 23,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::matrix",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_e976af66936a82c966c7"
+          "opportunity_id": "perf5_e976af66936a82c966c7"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs inside a nested loop (O(n\u00b7m) round-trips); batch the inner query or restructure the loops",
@@ -3846,10 +5080,30 @@
             "end": 13
           }
         },
-        "health_impact": 0.847,
-        "reason": "process has cyclomatic complexity 10",
+        "health_impact": 0.774,
+        "reason": "process has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_d2fe951005c971f897c1"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "shell/control_flow.sh",
+        "function_name": "process",
+        "line_start": 5,
+        "line_end": 36,
+        "details": {
+          "crap": 110.0,
+          "ccn": 10,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 5
+        },
+        "health_impact": 0.0,
+        "reason": "process has CRAP 110 (complexity 10, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_45212a20ebb63db6f7dc"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -3869,10 +5123,30 @@
             "end": 10
           }
         },
-        "health_impact": 0.938,
+        "health_impact": 0.883,
         "reason": "deeplyNested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_d407fd3ab687e2789f32"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "swift/nested.swift",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_8bf514f1b02c06aca9a2"
       },
       {
         "biomarker_type": "low_cohesion",
@@ -3888,48 +5162,50 @@
           "field_count": 2,
           "symbol_line": 28
         },
-        "health_impact": 0.35,
+        "health_impact": 0.0,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
-        "dimension": "maintainability",
-        "id": "finding_71eaf8ee511ffe4dce0d"
+        "dimension": "advisory",
+        "id": "finding_02abe3197e7e71eb3779"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "typescript/conditionals.ts",
         "function_name": "threeOps",
-        "line_start": 2,
-        "line_end": 2,
+        "line_start": 1,
+        "line_end": 6,
         "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 1
         },
-        "health_impact": 0.399,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_5da1fdb1c287eae427a0"
+        "health_impact": 0.0,
+        "reason": "threeOps has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d6eb483a3c2792253001"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
         "file_path": "typescript/conditionals.ts",
         "function_name": "sixOps",
-        "line_start": 17,
-        "line_end": 17,
+        "line_start": 8,
+        "line_end": 21,
         "details": {
-          "operator_count": 6,
-          "enclosing_construct": "while",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
           "symbol_line": 8
         },
-        "health_impact": 0.399,
-        "reason": "while condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_35d87c20e1ce38c81d46"
+        "health_impact": 0.0,
+        "reason": "sixOps has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_97168cde0d08fc10589a"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -3949,10 +5225,30 @@
             "end": 12
           }
         },
-        "health_impact": 1.608,
+        "health_impact": 1.452,
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_28aa3ceec6692a33ea1e"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "typescript/nested.ts",
+        "function_name": "deeplyNested",
+        "line_start": 1,
+        "line_end": 19,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_b8dce4aaa790eae85100"
       },
       {
         "biomarker_type": "error_handling",
@@ -3966,10 +5262,10 @@
           "symbol_line": 1,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.15,
+        "health_impact": 0.0,
         "reason": "caught exception is swallowed without any handling",
-        "dimension": "maintainability",
-        "id": "finding_a35ce27fd3a48728b788"
+        "dimension": "advisory",
+        "id": "finding_96f5405e20c8f13d3fc3"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -3987,7 +5283,7 @@
           "symbol_line": 7,
           "role_owner": "typescript/perf_io_in_loop.ts::fetchInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_f670b296bb8c129b3c74"
+          "opportunity_id": "perf5_f670b296bb8c129b3c74"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -4010,7 +5306,7 @@
           "symbol_line": 13,
           "role_owner": "typescript/perf_io_in_loop.ts::axiosInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_1acf767e3212f9ff02a9"
+          "opportunity_id": "perf5_1acf767e3212f9ff02a9"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -4033,7 +5329,7 @@
           "symbol_line": 19,
           "role_owner": "typescript/perf_io_in_loop.ts::prismaInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf3_43357842949e4aa0d990"
+          "opportunity_id": "perf5_43357842949e4aa0d990"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -4043,27 +5339,71 @@
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 9.55,
+      "average_health": 9.67,
       "worst_performer_path": "scala/nested.scala",
-      "worst_performer_score": 7.54,
-      "worst_test_path": null,
-      "worst_test_score": null,
-      "file_count": 63,
-      "maintainability_average": 9.62,
+      "worst_performer_score": 7.77,
+      "worst_test_path": "apex/HealthMarkersTest.cls",
+      "worst_test_score": 10.0,
+      "file_count": 72,
+      "maintainability_average": 9.73,
       "maintainability_hotspot": null,
-      "performance_average": 9.5,
+      "performance_average": 9.8,
       "performance_hotspot": null,
-      "structure_average": 0.45,
-      "structure_hotspot": null,
+      "structure_average": 0.33,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
-      "production_average": 9.55,
-      "production_file_count": 63,
+      "production_average": 9.67,
+      "production_file_count": 70,
       "unanalysed_file_count": 4,
-      "analysed_share": 0.9403
+      "analysed_share": 0.9474
     },
     "repo_function_mod_p80": null,
     "suggestions": [
+      {
+        "refactoring_type": "performance_fix",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "target_symbol": "apex/perf_io_in_loop.cls::nested",
+        "line_start": 40,
+        "line_end": 40,
+        "impact_delta": 0.0,
+        "effort_bucket": "S",
+        "confidence": "medium",
+        "source_biomarker": "nested_loop_with_io"
+      },
+      {
+        "refactoring_type": "performance_fix",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "target_symbol": "apex/perf_io_in_loop.cls::databaseAndCallout",
+        "line_start": 21,
+        "line_end": 21,
+        "impact_delta": 0.0,
+        "effort_bucket": "S",
+        "confidence": "medium",
+        "source_biomarker": "io_in_loop"
+      },
+      {
+        "refactoring_type": "performance_fix",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "target_symbol": "apex/perf_io_in_loop.cls::dmlPerRecord",
+        "line_start": 14,
+        "line_end": 14,
+        "impact_delta": 0.0,
+        "effort_bucket": "S",
+        "confidence": "medium",
+        "source_biomarker": "io_in_loop"
+      },
+      {
+        "refactoring_type": "performance_fix",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "target_symbol": "apex/perf_io_in_loop.cls::soqlPerRecord",
+        "line_start": 8,
+        "line_end": 8,
+        "impact_delta": 0.0,
+        "effort_bucket": "S",
+        "confidence": "medium",
+        "source_biomarker": "io_in_loop"
+      },
       {
         "refactoring_type": "performance_fix",
         "file_path": "csharp/PerfIoInLoop.cs",
@@ -4294,6 +5634,28 @@
         "effort_bucket": "S",
         "confidence": "medium",
         "source_biomarker": "string_concat_in_loop"
+      },
+      {
+        "refactoring_type": "performance_fix",
+        "file_path": "apex/perf_io_in_loop.cls",
+        "target_symbol": "apex/perf_io_in_loop.cls::asyncPerRecord",
+        "line_start": 28,
+        "line_end": 28,
+        "impact_delta": 0.0,
+        "effort_bucket": "M",
+        "confidence": "medium",
+        "source_biomarker": "io_in_loop"
+      },
+      {
+        "refactoring_type": "extract_method",
+        "file_path": "pascal/complex.pas",
+        "target_symbol": "ManyBranches",
+        "line_start": 7,
+        "line_end": 46,
+        "impact_delta": 0.281,
+        "effort_bucket": "S",
+        "confidence": "high",
+        "source_biomarker": "complex_method"
       }
     ]
   }

@@ -100,7 +100,7 @@ def test_a_rename_carries_the_finding_across(make_repo):
     assert delta.unchanged_total >= 1
 
 
-def test_deleting_a_file_surfaces_nothing_and_is_recorded_as_skipped(make_repo):
+def test_deleting_a_file_compares_its_base_side_and_surfaces_nothing(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": python_complex("tangle", 14), "keep.py": "x = 1\n"})
     repo.remove("app.py")
@@ -109,7 +109,19 @@ def test_deleting_a_file_surfaces_nothing_and_is_recorded_as_skipped(make_repo):
     delta = compare(repo)
 
     assert delta.introduced_total == 0
-    assert delta.skipped.get("app.py") == "deleted"
+    assert "app.py" not in delta.skipped
+    assert delta.resolved_total == 0
+    assert delta.status == "available"
+    assert delta.explanation == "No supported new findings surfaced in the analyzed scope."
+
+
+def test_a_deleted_file_with_no_health_dialect_is_still_recorded_as_skipped(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"page.html": "<p>hi</p>\n", "app.py": python_complex("tangle", 14)})
+    repo.remove("page.html")
+    repo.commit("delete", {"app.py": python_complex("tangle", 14) + "\n"})
+
+    assert compare(repo).skipped.get("page.html") == "deleted"
 
 
 # -- multiplicity -----------------------------------------------------------
@@ -450,6 +462,30 @@ def test_a_generated_file_is_excluded_by_reason(make_repo):
     # Nothing was compared, so this is not a partial pass and not a clean one.
     assert delta.status == "unavailable"
     assert not delta.is_clean
+
+
+def test_a_docstring_that_mentions_generated_code_is_still_analysed(make_repo):
+    doc = '"""Readers for protobuf output.\n\nSkips GENERATED CODE and DO NOT EDIT banners.\n"""\n'
+    repo = make_repo()
+    repo.commit("seed", {"reader.py": doc + "x = 1\n"})
+    repo.commit("edit", {"reader.py": doc + python_complex("tangle", 16)})
+
+    delta = compare(repo)
+
+    assert "reader.py" not in delta.skipped
+    assert delta.introduced_total >= 1
+
+
+def test_a_banner_below_a_license_is_excluded(make_repo):
+    head = "# Copyright 2024 Example\n# License: MIT\n# AUTO-GENERATED FILE. DO NOT EDIT.\n"
+    repo = make_repo()
+    repo.commit("seed", {"gen.py": head + "x = 1\n"})
+    repo.commit("edit", {"gen.py": head + python_complex("tangle", 16)})
+
+    delta = compare(repo)
+
+    assert delta.skipped.get("gen.py") == "generated"
+    assert delta.findings == []
 
 
 def test_a_bad_revspec_is_an_explicit_unsupported_range(make_repo):

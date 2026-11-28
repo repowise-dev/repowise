@@ -155,6 +155,59 @@ def test_only_branches_sharing_a_file_appear(repo):
     assert [row.file for row in result.branches[1].rows] == ["shared.py"]
 
 
+@pytest.fixture
+def fork(tmp_path):
+    """A fork behind its upstream, with two upstream branches cut from upstream's trunk."""
+    path = tmp_path / "fork"
+    path.mkdir()
+    day = "2026-02-01T00:00:00+00:00"
+    _run(path, "init", "-b", "main")
+    _commit(path, "base", {"shared.py": "0\n", "other.py": "0\n", "mine.py": "0\n"}, day)
+
+    _run(path, "checkout", "-b", "upstream-trunk")
+    _commit(path, "only upstream has this", {"shared.py": "upstream\n"}, day)
+    _run(path, "update-ref", "refs/remotes/upstream/main", "upstream-trunk")
+
+    _run(path, "checkout", "-b", "upstream-elsewhere")
+    _commit(path, "elsewhere", {"other.py": "theirs\n"}, day)
+    _run(path, "update-ref", "refs/remotes/upstream/elsewhere", "upstream-elsewhere")
+
+    _run(path, "checkout", "-b", "upstream-rival", "upstream-trunk")
+    _commit(path, "rival", {"shared.py": "rival\n"}, day)
+    _run(path, "update-ref", "refs/remotes/upstream/rival", "upstream-rival")
+
+    _run(path, "checkout", "-b", "feat/x", "main")
+    _commit(path, "ours", {"shared.py": "ours\n"}, day)
+    _run(path, "branch", "-D", "upstream-trunk", "upstream-elsewhere", "upstream-rival")
+    return path
+
+
+@pytest.mark.parametrize("named_head", [True, False])
+def test_another_remotes_branch_is_measured_from_that_remotes_trunk(fork, named_head):
+    """What upstream's trunk did is not the work of every branch cut from it."""
+    if named_head:
+        _run(fork, "symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/main")
+
+    result = _overlap(fork, ours=["shared.py"])
+
+    assert [entry.branch for entry in result.branches] == ["upstream/rival"]
+    assert (result.branches[0].ahead, result.branches[0].behind) == (1, 0)
+    # The other remote's trunk is a base, not an open branch.
+    assert (result.scanned, result.total) == (2, 2)
+
+
+def test_the_local_copy_of_the_base_is_not_an_open_branch(fork):
+    """A local trunk ahead of a stale ``origin`` holds merged history, not a rival change."""
+    _run(fork, "update-ref", "refs/remotes/origin/main", "main")
+    _run(fork, "checkout", "main")
+    _commit(fork, "synced", {"shared.py": "synced\n"}, "2026-02-02T00:00:00+00:00")
+    _run(fork, "checkout", "feat/x")
+
+    result = scan_branches(str(fork), ["shared.py"], base="origin/main").overlap
+
+    assert "main" not in [entry.branch for entry in result.branches]
+
+
 def test_scanned_and_total_count_every_candidate(repo):
     result = _overlap(repo)
 
@@ -468,3 +521,17 @@ async def test_the_wire_shape_names_every_field(tmp_path, repo):
         {"file": "hub.py", "basis": "same file"},
         {"file": "partner.py", "partner": "shared.py", "basis": "co-change pair, 6 of 9 commits"},
     ]
+
+
+def test_every_registry_package_manifest_and_pip_requirements_are_noise():
+    from repowise.core.analysis.branch_overlap import _signal
+
+    paths = [
+        "ios/Package.swift",
+        "app/pubspec.yaml",
+        "src/Shop/Shop.csproj",
+        "requirements.txt",
+        "native/CMakeLists.txt",
+        "src/app.py",
+    ]
+    assert _signal(paths) == {"native/CMakeLists.txt", "src/app.py"}

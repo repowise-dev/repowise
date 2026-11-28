@@ -9,8 +9,10 @@
 
 import { useMemo } from "react";
 import { cn } from "../../lib/cn";
+import { formatScore } from "@repowise-dev/types/health";
 import { performanceBurden, performanceSentence } from "./lens";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./types";
+import { formatNumber } from "../../lib/format";
 
 /** Rows the ranked list draws. Past this it is an inventory, not a lead. */
 export const FIELD_LIST_CAP = 50;
@@ -27,8 +29,8 @@ function causesOutside(scope: MapScope | undefined): string {
   if (scope === undefined || omitted === null || omitted === undefined) {
     return ". Whether more carry causes outside the drawn field is not reported here.";
   }
-  if (omitted === 0) return ". Every file with an open cause is drawn.";
-  return `. ${omitted.toLocaleString()} more carry causes outside the drawn field.`;
+  if (omitted === 0) return ". Every file with a cause worth fixing now is drawn.";
+  return `. ${formatNumber(omitted)} more carry causes worth fixing now outside the drawn field.`;
 }
 
 /** Worst-first for the active lens, so the list ranks what the field marks. */
@@ -116,9 +118,9 @@ export function MapFieldList({
                 aria-current={selected ? "true" : undefined}
                 className={cn(
                   "flex w-full flex-col gap-0.5 px-1.5 py-2 text-left transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
                   selected
-                    ? "bg-[var(--color-bg-selected)] shadow-[inset_2px_0_0_var(--color-accent-primary)]"
+                    ? "bg-[var(--color-bg-selected)] shadow-[inset_2px_0_0_var(--color-tab-active)]"
                     : "hover:bg-[var(--color-bg-elevated)]",
                 )}
               >
@@ -132,7 +134,7 @@ export function MapFieldList({
                     </span>
                   ) : (
                     <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--color-text-secondary)]">
-                      {f.score == null ? "—" : f.score.toFixed(1)}
+                      {f.score == null ? "—" : formatScore(f.score)}
                     </span>
                   )}
                 </span>
@@ -151,8 +153,8 @@ export function MapFieldList({
       </ul>
       <p className="text-xs text-[var(--color-text-tertiary)]">
         <span className="tabular-nums">{rows.length}</span> of{" "}
-        <span className="tabular-nums">{ranked.length.toLocaleString()}</span>{" "}
-        {overlay === "performance" ? "files with an open cause" : "drawn files"} listed
+        <span className="tabular-nums">{formatNumber(ranked.length)}</span>{" "}
+        {overlay === "performance" ? "files with a cause worth fixing now" : "drawn files"} listed
         {overlay === "performance" ? causesOutside(scope) : "."}
       </p>
     </div>

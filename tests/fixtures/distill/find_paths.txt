@@ -27,7 +27,7 @@ packages/core/src/repowise/core/analysis/decision_semantic_match.py
 packages/core/src/repowise/core/analysis/execution_flows.py
 packages/core/src/repowise/core/analysis/health/biomarkers/base.py
 packages/core/src/repowise/core/analysis/health/biomarkers/brain_method.py
-packages/core/src/repowise/core/analysis/health/biomarkers/bumpy_road.py
+packages/core/src/repowise/core/analysis/health/biomarkers/repeated_nesting.py
 packages/core/src/repowise/core/analysis/health/biomarkers/change_entropy.py
 packages/core/src/repowise/core/analysis/health/biomarkers/churn_risk.py
 packages/core/src/repowise/core/analysis/health/biomarkers/code_age_volatility.py

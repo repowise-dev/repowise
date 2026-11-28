@@ -25,8 +25,9 @@ def _node_is_usable(node: str | None) -> bool:
     min_major = _web_assets._NODE_MIN_MAJOR
     if not node:
         console.print(
-            f"[yellow]Node.js not found — starting API server only.[/yellow]\n"
-            f"[dim]To get the web UI, install Node.js {min_major}+ or use Docker:\n"
+            f"[yellow]Node.js not found, starting the API server only.[/yellow]\n"
+            f"[dim]The web UI needs Node.js {min_major}+. Install it and run "
+            "repowise serve again, or use Docker:\n"
             f"{_DOCKER_RUN}"
         )
         return False
@@ -34,9 +35,9 @@ def _node_is_usable(node: str | None) -> bool:
     if node_major is None or node_major >= min_major:
         return True
     console.print(
-        f"[yellow]Node.js {node_major} is too old for the bundled web UI "
-        f"(requires {min_major}+) — starting API server only.[/yellow]\n"
-        f"[dim]Upgrade Node.js to {min_major}+ or use Docker:\n"
+        f"[yellow]Node.js {node_major} is too old for the web UI "
+        f"(needs {min_major}+), starting the API server only.[/yellow]\n"
+        f"[dim]Upgrade Node.js to {min_major}+ and run repowise serve again, or use Docker:\n"
         f"{_DOCKER_RUN}"
     )
     return False
@@ -47,14 +48,14 @@ def _rebuild_stale_local_web(local_web: Path) -> bool:
     npm = _web_assets._npm_available()
     if not npm:
         console.print(
-            "[yellow]Local web bundle is stale and npm not found — "
-            "falling back to released tarball.[/yellow]"
+            "[yellow]Local web bundle is stale and npm was not found, "
+            "using the released bundle instead.[/yellow]"
         )
         return False
-    console.print("[dim]Local web bundle is older than source — rebuilding...[/dim]")
+    console.print("[dim]Local web bundle is older than its source, rebuilding...[/dim]")
     if _web_assets._build_local_web(local_web, npm):
         return True
-    console.print("[yellow]Local rebuild failed — falling back to released tarball.[/yellow]")
+    console.print("[yellow]Local rebuild failed, using the released bundle instead.[/yellow]")
     return False
 
 
@@ -83,12 +84,14 @@ def _launch_web_ui(
 
     ready, local_web = _resolve_web_bundle(refresh_ui)
     if not ready:
+        # The download or build error is printed just above this line.
         console.print(
-            "[yellow]Web UI not available — starting API server only.[/yellow]\n"
-            "[dim]The web UI will be available in a future release.\n"
-            "For now, use Docker for the full experience:[/dim]\n"
-            f"[dim]  docker build -t repowise https://github.com/{_web_assets._GITHUB_REPO}.git\n"
-            "  docker run -p 7337:7337 -p 3000:3000 -v .repowise:/data repowise[/dim]"
+            f"[yellow]Could not get the web UI for v{__version__}, "
+            "starting the API server only.[/yellow]\n"
+            "[dim]Check the network and retry with repowise serve --refresh-ui, "
+            "or use Docker:\n"
+            f"  docker build -t repowise https://github.com/{_web_assets._GITHUB_REPO}.git\n"
+            f"{_DOCKER_RUN}"
         )
         return None
 
@@ -96,7 +99,10 @@ def _launch_web_ui(
     if proc:
         console.print(f"[green]Web UI starting on http://localhost:{ui_port}[/green]")
     else:
-        console.print("[yellow]Could not start web UI — running API only.[/yellow]")
+        console.print(
+            "[yellow]Could not start the web UI, running the API server only.[/yellow]\n"
+            "[dim]Retry with repowise serve --refresh-ui to download it again.[/dim]"
+        )
     return proc
 
 

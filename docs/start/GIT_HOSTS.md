@@ -25,17 +25,17 @@ matching a webhook to a registered repository. This page says what works where.
 
 ## Support
 
-| Host | Remote recognised | CI detected | PR / MR numbers from history | Webhook auto-sync |
-|------|-------------------|-------------|------------------------------|-------------------|
-| GitHub | Yes | GitHub Actions | Yes | `/api/webhooks/github` |
-| GitHub Enterprise | With a [host override](#self-managed-hosts) | GitHub Actions | Yes | `/api/webhooks/github` |
-| GitLab.com | Yes | GitLab CI | Yes | `/api/webhooks/gitlab` |
-| Self-managed GitLab | Yes when a host label is `gitlab` (`gitlab.corp.com`), else with an override | GitLab CI | Yes | `/api/webhooks/gitlab` |
-| Azure DevOps (`dev.azure.com`, `ssh.dev.azure.com`, `*.visualstudio.com`) | Yes, all three URL forms as one repo | Azure Pipelines | Yes | No |
-| Bitbucket Cloud | Yes | Bitbucket Pipelines | Yes | No |
-| Bitbucket Data Center | With an override | Jenkins or another [listed CI](#ci-systems) | Yes | No |
-| Gitea / Forgejo | As a generic host | Any [listed CI](#ci-systems) | Yes | `/api/webhooks/gitea` |
-| Other git hosts (cgit, plain ssh) | As a generic host | Any [listed CI](#ci-systems) | Yes | No |
+| Host | Remote recognised | CI detected | PR / MR numbers from history | Webhook auto-sync | Gate summary on the PR / MR |
+|------|-------------------|-------------|------------------------------|-------------------|-----------------------------|
+| GitHub | Yes | GitHub Actions | Yes | `/api/webhooks/github` | Comment ([Action](CI.md#github-actions)) |
+| GitHub Enterprise | With a [host override](#self-managed-hosts) | GitHub Actions | Yes | `/api/webhooks/github` | Comment ([Action](CI.md#github-actions)) |
+| GitLab.com | Yes | GitLab CI | Yes | `/api/webhooks/gitlab` | Note ([template](CI.md#gitlab)) |
+| Self-managed GitLab | Yes when a host label is `gitlab` (`gitlab.corp.com`), else with an override | GitLab CI | Yes | `/api/webhooks/gitlab` | Note ([template](CI.md#gitlab)) |
+| Azure DevOps (`dev.azure.com`, `ssh.dev.azure.com`, `*.visualstudio.com`) | Yes, all three URL forms as one repo | Azure Pipelines | Yes | No | No |
+| Bitbucket Cloud | Yes | Bitbucket Pipelines | Yes | No | No |
+| Bitbucket Data Center | With an override | Jenkins or another [listed CI](#ci-systems) | Yes | No | No |
+| Gitea / Forgejo | As a generic host | Any [listed CI](#ci-systems) | Yes | `/api/webhooks/gitea` | No |
+| Other git hosts (cgit, plain ssh) | As a generic host | Any [listed CI](#ci-systems) | Yes | No | No |
 
 Azure DevOps Server needs an override too. Bot accounts and noreply addresses
 from every host are recognised on every repository, since history can predate

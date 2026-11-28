@@ -3,13 +3,15 @@
 ; tree-sitter-ruby (install separately if needed)
 ; =============================================================================
 
+; Operators (def ==, def [], def +@) name the method with an (operator) node
+; and writers (def name=) with a (setter) node; both texts are the real name.
 (method
-  name: (identifier) @symbol.name
+  name: [(identifier) (operator) (setter)] @symbol.name
   parameters: (method_parameters)? @symbol.params
 ) @symbol.def
 
 (singleton_method
-  name: (identifier) @symbol.name
+  name: [(identifier) (operator) (setter)] @symbol.name
 ) @symbol.def
 
 (class
@@ -56,6 +58,13 @@
   method: (identifier) @call.target
 ) @call.site
 
+; Method call on an instance variable: @conversation.toggle_status. The call
+; resolver types the receiver by the Rails naming convention.
+(call
+  receiver: (instance_variable) @call.receiver
+  method: (identifier) @call.target
+) @call.site
+
 ; Namespaced class/module method call: Foo::Bar.baz(args).
 ;
 ; The pattern above constrains the receiver to a bare ``constant``, and the
@@ -72,3 +81,17 @@
   receiver: (scope_resolution name: (constant) @call.receiver)
   method: (identifier) @call.target
 ) @call.site
+
+; ---------------------------------------------------------------------------
+; Constant references (Zeitwerk autoloading)
+; ---------------------------------------------------------------------------
+
+; Every constant a file mentions: ``Foo.x``, ``Foo::Bar.new``, a superclass,
+; ``include Concern``, a constant passed as a value. Rails code names its
+; dependencies this way rather than with ``require``, and the graph builder
+; resolves each through the Zeitwerk index into a file-level ``type_use``
+; edge. The head extractor (``_ruby_head_constant``) reports a namespaced path
+; once, from its outermost node, and drops the names a class, module or
+; constant assignment defines.
+(constant) @param.type
+(scope_resolution) @param.type

@@ -109,102 +109,37 @@ different strategies:
 ```
 repowise/
 ├── packages/
-│   ├── core/                   # Python: ingestion + generation engine
+│   ├── core/          # Python: ingestion, analysis, generation, persistence, providers, pipeline
 │   │   ├── src/repowise/core/
-│   │   │   ├── ingestion/
-│   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .repowiseIgnore + extra exclude patterns
-│   │   │   │   ├── parser.py           # ASTParser: one class, all languages; _extract_calls(), _extract_import_bindings()
-│   │   │   │   ├── parsers/            # per-language parser helpers
-│   │   │   │   ├── graph.py            # NetworkX dep graph builder; add_file(), _resolve_calls(), file_subgraph()
-│   │   │   │   ├── call_resolver.py    # CallResolver: origin-stamped call resolution
-│   │   │   │   ├── change_detector.py  # git diff + change propagation
-│   │   │   │   ├── git_indexer.py      # git history mining → git_metadata table
-│   │   │   │   ├── special_handlers.py # OpenAPI, Protobuf, GraphQL, Dockerfile, CI YAML
-│   │   │   │   └── models.py           # ParsedFile, FileInfo, Symbol, Import, CallSite, NamedBinding, EdgeType, etc.
-│   │   │   ├── analysis/
-│   │   │   │   └── dead_code.py        # dead code detection (graph + SQL, no LLM)
-│   │   │   ├── generation/
-│   │   │   │   ├── page_generator.py   # hierarchical page generator
-│   │   │   │   ├── context_assembler.py# context assembly (RAG + graph + git + source)
-│   │   │   │   ├── job_system.py       # resumable job state machine
-│   │   │   │   ├── models.py           # GeneratedPage, GenerationConfig, PageType, etc.
-│   │   │   │   ├── templates/          # Jinja2 prompt templates (one per page type)
-│   │   │   │   └── editor_files/       # CLAUDE.md / cursor.md generation (no LLM)
-│   │   │   │       ├── base.py         # BaseEditorFileGenerator (marker-merge, atomic write)
-│   │   │   │       ├── data.py         # EditorFileData + sub-dataclasses (frozen)
-│   │   │   │       ├── fetcher.py      # EditorFileDataFetcher (DB → EditorFileData)
-│   │   │   │       ├── tech_stack.py   # filesystem tech stack + build command detection
-│   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
-│   │   │   ├── pipeline/
-│   │   │   │   ├── orchestrator.py     # run_pipeline(), PipelineResult
-│   │   │   │   ├── persist/            # persist_pipeline_result(): shared by CLI + server
-│   │   │   │   └── progress.py         # ProgressCallback protocol + LoggingProgressCallback
-│   │   │   ├── persistence/
-│   │   │   │   ├── models.py           # SQLAlchemy ORM models
-│   │   │   │   ├── crud.py             # async CRUD layer
-│   │   │   │   ├── database.py         # engine factory, session management
-│   │   │   │   ├── search.py           # SQLite FTS5 full-text search
-│   │   │   │   ├── vector_store.py     # VectorStore abstraction (LanceDB)
-│   │   │   │   └── embedder.py         # Embedder base class + MockEmbedder
-│   │   │   ├── providers/              # LLM provider abstraction
-│   │   │   │   ├── base.py             # BaseProvider, GeneratedResponse, ProviderError
-│   │   │   │   ├── anthropic.py
-│   │   │   │   ├── openai.py
-│   │   │   │   ├── ollama.py
-│   │   │   │   ├── litellm.py
-│   │   │   │   ├── mock.py
-│   │   │   │   └── registry.py         # get_provider(), register_provider(), list_providers()
-│   │   │   └── rate_limiter.py         # token-bucket RPM + TPM limiter
-│   │   └── queries/                    # tree-sitter .scm query files (one per language)
-│   │       ├── python.scm
-│   │       ├── typescript.scm
-│   │       ├── javascript.scm
-│   │       ├── go.scm
-│   │       ├── rust.scm
-│   │       ├── java.scm
-│   │       ├── cpp.scm
-│   │       ├── c.scm
-│   │       ├── ruby.scm
-│   │       ├── kotlin.scm
-│   │       ├── csharp.scm
-│   │       ├── swift.scm
-│   │       ├── scala.scm
-│   │       └── php.scm
-│   │
-│   ├── server/                 # Python: FastAPI REST API + MCP server
-│   │   └── src/repowise/server/
-│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, doc-drift, decisions, search, claude-md)
-│   │       ├── mcp_server/      # MCP server package (11 default tools, split into focused modules)
-│   │       ├── webhooks/        # GitHub + GitLab handlers
-│   │       ├── job_executor.py  # Background pipeline executor: bridges REST to core pipeline
-│   │       └── scheduler.py     # APScheduler background jobs
-│   │
-│   ├── cli/                    # Python: repowise CLI (click + rich)
-│   │   └── src/repowise/cli/
-│   │       └── commands/        # init, update, watch, serve, search, export, status, doctor, dead-code, decision, mcp, reindex, generate-claude-md
-│   │
-│   └── web/                    # Next.js 15 frontend
-│       ├── src/app/             # App Router pages (dashboard, wiki, search, graph, symbols, overview, …)
-│       ├── src/components/      # UI primitives, layout, wiki, repos, jobs, settings, dashboard
-│       └── src/lib/             # API client, SWR hooks, utilities (health-score, format), design tokens
-│
-├── integrations/
-│   ├── github-action/           # action.yml + Dockerfile entrypoint
-│   └── github-app/              # GitHub App webhook handler
-│
-├── docker/
-│   ├── Dockerfile               # multi-stage: Python + Node build + final runtime
-│   └── docker-compose.yml       # with optional Redis profile
-│
-├── tests/
-│   ├── unit/                    # unit tests (no LLM calls, no filesystem)
-│   ├── integration/             # integration tests using sample_repo fixture
-│   ├── e2e/                     # full repowise init + update flows
-│   └── fixtures/
-│       └── sample_repo/         # 30-file multi-language fixture repo
-│
-└── docs/                        # repowise's own generated wiki (dogfooding)
+│   │   │   ├── ingestion/     # traverser, parser/, languages/, queries/ (.scm), graph/, call resolution, git_indexer/
+│   │   │   ├── analysis/      # dead_code/, health/, security/, decisions/, change_risk/, coupling/, test intelligence
+│   │   │   ├── generation/    # page_generator/, context_assembler.py, templates/, editor_files/ (CLAUDE.md, AGENTS.md)
+│   │   │   ├── persistence/   # SQLAlchemy models, crud/, search.py (FTS), vector_store/
+│   │   │   ├── providers/     # llm/ (one module per provider, registry.py) and embedding/
+│   │   │   ├── pipeline/      # orchestrator.py, phases/, incremental/, persist/
+│   │   │   ├── workspace/     # multi-repo workspaces
+│   │   │   └── ...            # distill, evidence, ownership, settings, ci, forges, and more
+│   │   └── alembic/           # database migrations
+│   ├── server/        # Python: FastAPI REST API (routers/), MCP server (mcp_server/), chat, job executor, scheduler
+│   ├── cli/           # Python: the repowise CLI (click + rich), commands/, agent_targets/, editor integrations
+│   ├── web/           # Next.js 15 web UI
+│   ├── ui/            # shared React components used by the web UI
+│   ├── api-client/    # TypeScript client for the REST API
+│   ├── types/         # shared TypeScript types
+│   └── vscode/        # VS Code extension
+├── plugins/           # agent plugins: claude-code, codex, cursor, shared
+├── ci/                # CI templates: github, gitlab
+├── docker/            # Dockerfile, Dockerfile.mcp, docker-compose.yml
+├── scripts/           # maintenance scripts (doc generators, checks)
+├── tests/             # unit, integration, e2e, core, providers; fixtures/ holds sample repos
+└── docs/              # start, agent, architecture, layers, reference, business, scale, design
 ```
+
+Each subsystem has its own page in this folder: see the [architecture index](README.md)
+(ingestion and languages in [language-support.md](language-support.md), graph in
+[graph-algorithms.md](graph-algorithms.md), health in [code-health.md](code-health.md),
+dead code in [dead-code.md](dead-code.md), decisions in [decisions.md](decisions.md),
+chat in [chat.md](chat.md), workspaces in [workspace.md](workspace.md)).
 
 ---
 
@@ -227,7 +162,7 @@ Key tables:
 |-------|---------|
 | `repos` | Registered repositories, sync state, provider config |
 | `wiki_pages` | All generated wiki pages with content, metadata, confidence score, and a short LLM-extracted `summary` (1–3 sentences) used by `get_context` to keep responses bounded |
-| `page_versions` | Full version history of every page (for diff view) |
+| `page_versions` | The newest earlier versions of each page, for the diff view (`wiki.page_versions_keep`, default 10) |
 | `symbols` | Symbol index: every function, class, method across all files |
 | `answer_cache` | Memoised `get_answer` responses keyed by `(repository_id, question_hash)` plus the provider/model used. Repeated questions return at zero LLM cost; cache entries are invalidated by repository re-indexing. |
 | `generation_jobs` | Job state machine with checkpoint fields for resumability |
@@ -286,7 +221,7 @@ the configured embedder (Gemini or OpenAI). No LLM calls, only embedding API cal
 The dependency graph is a two-tier directed graph where **file nodes** represent source
 files and **symbol nodes** represent individual functions, classes, and methods. Edges
 include `imports`, `DEFINES`, `HAS_METHOD`, `CALLS` (with confidence 0.0–1.0),
-`inherits`, `implements`, and `co_changes`. `CALLS` edges are built by `CallResolver`
+`inherits`, `implements`, `co_changes` and `documents`. `CALLS` edges are built by `CallResolver`
 using 3-tier resolution; all others are built by `GraphBuilder` during AST ingestion.
 
 It is built by the `ASTParser` + `GraphBuilder` + `CallResolver` during ingestion and
@@ -303,13 +238,17 @@ The graph is used for:
 - **Change propagation**: when a file changes, walk the graph to find all
   pages that reference its symbols and mark them as stale
 - **PageRank**: runs on `file_subgraph()` (file + package nodes only) to identify
-  the most central files; these get "spotlight" wiki pages and richer generation prompts
+  the most central files, which get richer generation prompts
 - **SCC detection**: circular dependency clusters require a special generation
   strategy (see [Section 5.3](#53-dependency-graph-construction))
 - **Co-change edges**: temporal coupling from git history. Files that frequently
   change together (but may have no import relationship) get `co_changes` edges.
   These participate in change propagation and are shown in the graph visualization
   as dashed purple lines. They do NOT affect PageRank.
+- **Documentation edges** give a Markdown document a `documents` edge to each file
+  it links to or names. No graph metric, dead-code reachability, change
+  propagation or graph view reads them; the knowledge-graph export keeps them
+  as their own relation (see [GRAPH.md](../layers/GRAPH.md#edge-types)).
 - **Dead code detection**: files with `in_degree == 0` (no importers) are
   candidates for unreachable file detection
 - **MCP `get_dependency_path` tool** *(opt-in)*: answers "how is module A connected to module B?"
@@ -392,7 +331,8 @@ priority order:
    `src/generated/` without affecting other directories with the same name.
 4. **`extra_exclude_patterns`** (constructor param): additional gitignore-style
    patterns passed at runtime from `--exclude/-x` CLI flags or
-   `repo.settings["exclude_patterns"]` (set via Web UI or REST API PATCH). Applied
+   `.repowise/config.yaml exclude_patterns` (also written by the Web UI and REST API
+   PATCH). Applied
    to both directory pruning (entire subtree skipped) and individual file filtering.
 5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `vendor`,
    `*.lock`, `*.min.js`, generated protobuf files, etc.). `build`, `coverage`,
@@ -425,13 +365,19 @@ FileTraverser(
 |--------|------------------------------|
 | `repowise init -x vendor/ -x 'src/gen/**'` | Merged with `config.yaml exclude_patterns`, passed directly |
 | `repowise update` | Read from `.repowise/config.yaml exclude_patterns` |
-| Web UI Excluded Paths section | Saved to `repo.settings["exclude_patterns"]` via REST API |
-| Server sync job | Read from `repo.settings.get("exclude_patterns", [])` |
+| Web UI Excluded Paths section | Saved to `.repowise/config.yaml exclude_patterns` via REST API PATCH |
+| Server sync job | Read from `.repowise/config.yaml exclude_patterns`; an older `repo.settings` copy applies only while the file lacks the key |
 
 The traverser also detects monorepo structure by looking for multiple
 `pyproject.toml`, `package.json`, `go.mod`, or `Cargo.toml` files at depth 1–2.
 When detected, each package is documented as a semi-independent unit with
 cross-package edges tracked in the graph.
+
+Package roots come from the language registry's manifest names. The projects,
+crates, packages and modules a repo builds, their in-repo dependencies and the
+units owning each file are read once per graph build into a stored
+`BuildUnitIndex`: see [build-units.md](build-units.md). Each of these shared
+questions has one owning module, listed in [single-sources.md](single-sources.md).
 
 Each `FileInfo` is tagged with: `language`, `is_test`, `is_config`, `is_api_contract`,
 `is_entry_point`, `git_hash`. These tags influence generation priority and prompt choice.
@@ -490,7 +436,7 @@ instead of tree-sitter.
 
 **Edge types.** User-facing walkthrough: [docs/layers/GRAPH.md](../layers/GRAPH.md).
 `EdgeType` in `ingestion/models.py` is the source of truth, a
-closed `Literal` of 17 values, with `EDGE_TYPE_VALUES` derived from it at runtime
+closed `Literal` of 18 values, with `EDGE_TYPE_VALUES` derived from it at runtime
 and pinned by `tests/unit/ingestion/test_edge_type_vocabulary.py`. The ones whose
 meaning is easy to get wrong:
 
@@ -515,17 +461,21 @@ meaning is easy to get wrong:
 - `co_changes`: A and B frequently change in the same commit (from git history,
   added by `GitIndexer` after graph construction). Weight = co-change count.
   Filtered out of PageRank but included in change propagation and visualization.
+- `documents`: Markdown document → a file it links to or names in backticks,
+  from doc drift's resolver, added by `GraphBuilder.build()`. Replaces a
+  `co_changes` edge on the same pair. Prose, not a dependency: excluded from
+  every metric and view, and kept in the knowledge-graph export.
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
-with a `ResolutionOrigin`, a closed vocabulary of 39 values in
+with a `ResolutionOrigin`, a closed vocabulary of 40 values in
 `ingestion/models.py`, each carrying exactly one confidence, so the origin
 distribution and the confidence histogram are two views of the same data. The
 span runs from `same_file` and `self_scope` at 0.95, through import- and
 package-scoped origins at 0.88–0.90, down to `global_unique` at 0.50, a
 repo-wide name match, which the source comments label as a guess.
 
-Twelve of the 39 are **receiver-typing** origins: they resolve a call on a
+Twelve of the 40 are **receiver-typing** origins: they resolve a call on a
 variable by reading the variable's declaration (a local, a parameter, an
 enclosing class's field, or a type a framework decorator imposed), then resolving
 the method on that type. Registered for Java, C#, Python, Go, Kotlin and Swift.
@@ -555,7 +505,8 @@ scores.
 After graph construction, the builder computes:
 
 - **PageRank**: nodes with high PageRank are central and well-connected.
-  Used to decide generation priority and which symbols get spotlight pages.
+  Used to decide generation priority. Spotlight pages rank each symbol by its
+  own production callers instead (`selection/scoring.py::score_symbol`).
 - **Strongly Connected Components (SCCs)**: groups of files with circular imports.
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
@@ -638,9 +589,9 @@ content to draw from.
 Level 0: External API contracts (OpenAPI, proto, GraphQL)
          → self-contained, no dependencies on other pages
 
-Level 1: Symbol spotlight pages (top 10% by PageRank)
+Level 1: Symbol spotlight pages (most-called public symbols, at most 8 per file)
          → short, fast, parallelizable
-         → high-PageRank symbols get richer documentation
+         → signature, docstring and resolved callers; no source copy
 
 Level 2: File pages
          → uses: source + symbol docs + import summaries (from RAG)
@@ -957,7 +908,7 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 **Finding types:**
 - `unreachable_file`: file with `in_degree == 0`, not an entry point, test, or config
 - `unused_export`: public symbol with no incoming edges (but file IS imported)
-- `unused_internal`: private symbol with no `calls` edges from same file
+- `unused_internal`: private symbol with no `calls` edges from same file; a COBOL paragraph is judged from the program's source text instead
 - `zombie_package`: monorepo package with no incoming `inter_package` edges
 
 **Confidence scoring (conservative: when in doubt, do NOT flag):**
@@ -977,7 +928,10 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 - `__init__.py` public re-exports
 - `@pytest.fixture`: `@pytest.mark.*` symbols
 - Files matching `*migrations*`, `*schema*`, `*seed*`
-- TypeScript `.d.ts` files
+- Schema migrations under other directory names (`alembic/versions/`,
+  `db/migrate/`, `db/migration/`, numbered entries of a singular
+  `migration/`), as `code_origin.is_migration_path` reads them
+- TypeScript declaration files (`.d.ts`, `.d.mts`, `.d.cts`)
 - Files where `is_api_contract == True`
 - Files named in the `whitelist` key of the analyzer's config argument (an API
   parameter; no CLI flag or config file populates it today)
@@ -1027,14 +981,27 @@ describes *what*, decisions capture *why*.
 
 ### Capture Sources
 
-Decisions are extracted from four sources, each with a different confidence level:
+Sources are registered once, as `SourceSpec` entries in
+`analysis/decisions/policy.py` (`SOURCE_SPECS`), and one resolved policy backs the
+CLI, the REST API and the index pipeline:
 
-| Source | Confidence | Status | Trigger |
-|--------|-----------|--------|---------|
-| **Inline markers** (`# WHY:`, `# DECISION:`, `# TRADEOFF:`, `# ADR:`, `# RATIONALE:`, `# REJECTED:`) | 0.95 | `active` | File scanning during init/update |
-| **Git archaeology** (commit messages with migration/refactor signals) | 0.70–0.85 | `proposed` | Init only, reuses git layer data |
-| **README/docs mining** (implicit decisions in prose) | 0.60 | `proposed` | Init only, LLM extraction |
-| **CLI capture** (`repowise decision add`) | 1.00 | `active` | Manual entry |
+| Key | Captures | Default |
+|-----|----------|---------|
+| `inline_marker` | `WHY:` / `DECISION:` / `TRADEOFF:` / `ADR:` / `RATIONALE:` / `REJECTED:` comment markers | on |
+| `git_archaeology` | Commit messages carrying a decision verb | on |
+| `adr` | Nygard and MADR architecture decision records | on |
+| `pr` | Pull request bodies that read as a description | on |
+| `comment` | Rationale prose in comments on high-centrality files | on |
+| `session` | Durable choices mined from local coding-agent transcripts | off |
+| `session_discovery` | One broad model pass over new transcript prose each update | off |
+| `conventions` | Import patterns the graph proves (a wrapper most files reach a library through) | off |
+| `cli` | `repowise decision add` (manual entry) | always |
+| `agent` | `repowise decision add --agent` (a coding agent's entry) | always |
+
+Confidence is computed per record from the strongest source's rank, how many
+independent sources corroborate it, how complete it is, and whether its quote
+verifies against the source span. Stages, verification, ranks and the confidence
+formula are in [decisions.md](decisions.md).
 
 ### Data Model
 
@@ -1046,8 +1013,15 @@ affected files, modules, tags, and evidence commits. Deduplication key:
 
 Decisions have a `staleness_score` (0.0 = fresh, 1.0 = very stale) computed during
 `repowise init` and recomputed on every `repowise update`. Staleness rises when affected
-files receive commits after the decision was recorded. Decisions with `staleness_score > 0.5`
-are flagged as stale.
+files receive commits after the decision was recorded. Test and docs files never count.
+
+Once files move, a rule check (`analysis/decisions/rule_check.py`) reads whether the rule
+itself still holds: the identifiers and literals the record names and, for a record mined
+from a code comment, that comment. `holds` (nothing the rule points at changed, or the
+comment still sits on its code) keeps the decision active however many files moved;
+`drifted` (the comment, a cited name or a stated literal is gone) flags it for review.
+When the check cannot tell, `staleness_score >= 0.5` flags it, as before. An acceptance
+clears the verdict and the next index checks again from the acceptance.
 
 ### MCP Tools
 
@@ -1060,22 +1034,25 @@ are flagged as stale.
 repowise decision add        # interactive capture
 repowise decision list       # tabular list with filters
 repowise decision show <id>  # full detail
-repowise decision confirm    # proposed → active
+repowise decision confirm <id>  # candidate → accepted
 repowise decision dismiss    # dismiss proposed (sticky tombstone)
 repowise decision deprecate  # active → deprecated
 repowise decision health     # health summary
 ```
 
+These are the everyday commands; `repowise decision --help` lists the full group
+(config, sources, review, sync, import and export among them).
+
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `core/analysis/decision_extractor.py` | All 4 capture sources + staleness computation |
+| `core/analysis/decisions/` | Source registry and policy, one module per source, provenance, lifecycle, staleness, rule check |
 | `core/persistence/models.py` | `DecisionRecord` ORM model |
-| `core/persistence/crud.py` | 8 decision CRUD functions |
+| `core/persistence/crud/decision_*.py`, `crud/decisions.py` | Decision ingest, evidence, staleness and health queries |
 | `server/mcp_server/tool_why/` | MCP tool `get_why` (package: one module per mode, plus shared loading, ranking, projection and caps) |
 | `server/routers/decisions.py` | REST API endpoints |
-| `cli/commands/decision_cmd.py` | CLI command group (7 subcommands) |
+| `cli/commands/decision_cmd.py` and `decision_*_cmd.py` | The `repowise decision` command group |
 
 ---
 
@@ -1120,10 +1097,11 @@ Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 ### Auto-generated Config
 
 `repowise init` registers the MCP server directly where it can: Claude Code
-(`~/.claude/settings.json`), Claude Desktop (if installed), VS Code
+(`~/.claude.json`), Claude Desktop (if installed), VS Code
 (`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
 `.repowise/mcp.json` for clients configured by hand. The completion panel says
-which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
+which clients were wired up, which to restart, and the `repowise agents add`
+command for any other agent installed on the machine.
 
 ---
 
@@ -1144,7 +1122,7 @@ Key routers:
 - `/api/webhooks/gitlab`: GitLab webhook handler
 - `/api/webhooks/gitea`: Gitea and Forgejo webhook handler with HMAC verification
 - `/api/repos/{id}/git-metadata`: per-file git metadata
-- `/api/repos/{id}/hotspots`: high-churn + high-complexity files
+- `/api/repos/{id}/hotspots`: hotspots ranked by temporal hotspot score; `q`, `filter`, `sort`/`order`, offset paging, `hold`/`include` (map scope) and `facets` counts over the searched set
 - `/api/repos/{id}/ownership`: ownership breakdown (file/module/package granularity)
 - `/api/repos/{id}/co-changes`: co-change partners for a file
 - `/api/repos/{id}/git-summary`: aggregate git health signals for dashboard
@@ -1212,8 +1190,9 @@ file, tokens used, estimated cost, estimated time remaining).
 repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
-the user has configured and has access to **7 tools** from the MCP surface
-(see [`chat.md`](chat.md), not the full 11-tool MCP default).
+the user has configured and calls the repository's configured MCP surface (the
+ten task-shaped tools by default) plus three chat-only tools (`show_view`,
+`chart`, `find_suspects`).
 
 See [`docs/architecture/chat.md`](chat.md) for the full technical reference covering the
 backend agentic loop, SSE streaming protocol, provider abstraction extensions,
@@ -1224,9 +1203,11 @@ database schema, frontend component architecture, and artifact rendering system.
 - **Provider-agnostic**: the chat agent goes through the same provider abstraction
   as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
   `stream_chat()` for streaming + tool use without breaking existing callers.
-- **Tool reuse**: the 7 chat tools are called directly as Python functions (no
-  subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
-  fed to both the LLM and the executor.
+- **Tool reuse**: chat reads the same MCP tool registry and selection the MCP
+  server lists (`selected_tool_entries`), narrowed by the principal's scope and
+  the session policy, and calls the tools directly as Python functions (no
+  subprocess round-trip). Schemas come from FastMCP's generated contracts, so
+  the LLM and the executor see one definition.
 - **SSE streaming**: `POST /api/repos/{repo_id}/chat/messages` runs the agentic
   loop and streams back Server-Sent Events (`text_delta`, `tool_start`,
   `tool_result`, `done`, `error`).
@@ -1279,7 +1260,7 @@ JobSystem
        │
        ├── Level 0: special handlers (OpenAPI, proto, GraphQL, Dockerfile...)
        │
-       ├── Level 1: symbol spotlight pages (top 10% PageRank)
+       ├── Level 1: symbol spotlight pages (most-called symbols)
        │              ┌────────────────────────────────────┐
        │              │ ContextAssembler                   │
        │              │  source + graph metadata           │
@@ -1434,9 +1415,9 @@ a different problem:
 
 3. **`extra_exclude_patterns` (runtime)**: patterns injected without touching any
    file on disk: from `--exclude/-x` CLI flags (dev workflow), from
-   `config.yaml exclude_patterns` (persisted per repo), or from
-   `repo.settings["exclude_patterns"]` (Web UI / REST API). This lets teams configure
-   exclusions through the UI without git access to the target repo.
+   `config.yaml exclude_patterns` (persisted per repo, and written by the Web UI /
+   REST API too). This lets teams configure exclusions through the UI, and the CLI
+   and the UI always show the same list.
 
 All three layers use `pathspec` with `gitwildmatch` semantics, the same library used
 for `.gitignore` parsing, so the full gitignore syntax works everywhere.
@@ -1577,9 +1558,9 @@ Key files:
 | `core/generation/editor_files/base.py` | `BaseEditorFileGenerator`, marker-merge logic shared by all editor-file generators |
 | `core/generation/editor_files/data.py` | `EditorFileData` frozen dataclass, the data contract between fetcher and template |
 | `core/generation/editor_files/fetcher.py` | `EditorFileDataFetcher`, queries DB for architecture summary, modules, hotspots, decisions |
-| `core/generation/editor_files/tech_stack.py` | Filesystem scan for languages, frameworks, build commands |
+| `core/ingestion/tech_stack.py` | Filesystem scan for languages, frameworks (nested `package.json` included), build commands; also the framework set the framework-edge handlers read |
 | `core/generation/editor_files/claude_md.py` | `ClaudeMdGenerator`, 30-line subclass that binds filename + template |
-| `core/generation/templates/claude_md.j2` | Jinja2 template for the Repowise-managed section |
+| `core/generation/templates/_editor_block.j2` | Jinja2 template for the Repowise-managed section |
 | `cli/commands/claude_md_cmd.py` | `repowise generate-claude-md` CLI command |
 | `server/routers/claude_md.py` | `GET/POST /api/repos/{id}/claude-md` REST endpoints |
 
@@ -1594,7 +1575,7 @@ each with the file it registers in and what you lose by skipping it.
 
 Two things worth knowing before you start:
 
-- **You never edit `parser.py` or `registry.py`.** Language identity goes in
+- **You never edit `parser/` or `registry.py`.** Language identity goes in
   `ingestion/languages/specs/<lang>.py` and is slotted into `ALL_SPECS`; parser
   configuration goes in `ingestion/language_configs.py`. The one unavoidable
   core edit is adding your tag to the `LanguageTag` Literal in
@@ -1625,9 +1606,9 @@ CLI follows [agent-platform.md](agent-platform.md).
 Full configuration with defaults (`.repowise/config.yaml`):
 
 ```yaml
-provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | ollama | litellm | codex_cli | opencode | edenai | mock
-model: claude-sonnet-4-5    # passed through to the provider
-embedder: gemini             # gemini | openai | openrouter | ollama | edenai | mock
+provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | edenai | ollama | litellm | claude_cli | codex_cli | copilot_cli | opencode | mock
+model: claude-haiku-5-5      # passed through to the provider; omitted, the provider default is used
+embedder: gemini             # gemini | openai | openrouter | ollama | edenai | fastembed | mock
 embedding_model: gemini-embedding-001
 
 prompt_caching: true

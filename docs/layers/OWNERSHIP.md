@@ -36,8 +36,7 @@ get_overview(include=["ownership"])
 ```
 
 In the dashboard, open **Owners** for the contributor directory and per-person
-profiles, and the **Impact** tab of **Code Health** for reviewer suggestions on a
-set of files.
+profiles, and the **Review** page for reviewer suggestions on a set of files.
 
 Sample `get_context` ownership block:
 
@@ -49,7 +48,11 @@ Sample `get_context` ownership block:
   "contributor_count": 4,
   "bus_factor": 1,
   "recent_owner": "Sam Ortiz",
-  "recent_owner_pct": 0.6
+  "recent_owner_pct": 0.6,
+  "commits": {
+    "all_time": "Dana Lee 34 of 48",
+    "last_90d": "Sam Ortiz 6 of 10"
+  }
 }
 ```
 
@@ -63,6 +66,7 @@ Sample `get_context` ownership block:
 | `owner_pct` | The primary owner's share of the file's commits (0-1). Can be empty when the blame owner made none of the indexed commits |
 | `owner_line_pct` | The primary owner's share of current lines by blame (0-1). Empty without blame |
 | `recent_owner`, `recent_owner_pct` | Who made the most commits to the file in the last 90 days, and their share of those commits. `get_context` only shows these when the recent owner differs from the primary owner |
+| `commits.all_time`, `commits.last_90d` | `get_context` only. The author of the most commits to the file over the indexed history and over the last 90 days, with their count out of all commits in that window (bots excluded) (`no commits` when nobody touched it in 90 days). The 90 days count back from the newest indexed commit. Both are shown even when they name the primary owner, so "who should review this" needs no `git log`. A total ending in `+` is a floor: the file has more authors than the 50 kept |
 | `contributor_count` | Distinct authors in the indexed history of the file |
 | `bus_factor` | How many of the top authors it takes to cover 80% of the file's commits. 1 means one person wrote at least 80% of them. 0 means no history was indexed for the file, not "no risk" |
 
@@ -71,12 +75,27 @@ emails go through the repository's `.mailmap`, and GitHub `noreply` addresses
 for one login fold into one person, so a contributor who committed from several
 addresses is usually counted once. Each file keeps its top 50 authors.
 
+A commit a coding agent authored counts for the person behind it: the first
+`Co-authored-by` trailer that names a person, else a human committer. That credit
+applies to owners, top authors, bus factor, contributor count and blame lines. With
+no human signal the commit stays the agent's. Bots are never credited.
+
 ### Module ownership and silos
 
 Per module (top-level directory), the owner is the person who is primary owner of
 the most files in it. A module is a **silo** when one person owns more than 80%
 of its files. Per file, the dashboard and REST API mark a silo when the primary
 owner holds more than 80% of the file's commits.
+
+### Repository summary and knowledge matrix
+
+`/api/repos/<id>/owners/summary` returns the truck factor, single-owner files,
+silo modules, the share of owned files held by the top three people, active
+contributors, and quiet owners (no commit in 90 days, still owning files that
+changed in that window). `/api/repos/<id>/owners/knowledge-matrix` returns every
+code file's top five people with their share of its commits, for off-boarding
+what-ifs. Both count people only: bots and coding agents own nothing and hold no
+share, and each contributor carries a `kind` (`human`, `bot`, `agent`).
 
 ### Detectors
 
@@ -105,7 +124,6 @@ add "informational: small team" to the reason.
 | Truck factor | Stats page | Fewest primary owners who together own more than half the owned files. Bot authors are left out |
 | Single-owner files | Stats page | Files with bus factor 1 |
 | Silo count | Stats page | Modules where one person owns more than 80% of files |
-| `git_health.avg_bus_factor`, `git_health.files_with_bus_factor_1` | `get_overview` | Average bus factor and count of bus-factor-1 files |
 | `knowledge_map.top_owners` | `get_overview(include=["ownership"])` | The three people owning the most files, by display name only |
 
 ### Contributor profiles
@@ -148,7 +166,7 @@ The detectors use the code-health rules file, `.repowise/health-rules.json`:
 - `severity_overrides` sets a detector's label; an explicit entry wins over the
   profile.
 - History depth: `repowise init --commit-limit N` sets how many commits per file
-  are read (default 5000, maximum 10000). `--follow-renames` follows a file
+  are read (default 5000; set it above the commit count for full history). `--follow-renames` follows a file
   across renames, so ownership survives a move. Both are saved to config.
 - `--mode fast` skips blame. Owners then come from commit counts alone and
   `owner_line_pct` stays empty.
@@ -160,8 +178,8 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 - Ownership is authorship. Someone who reviews every change to a file but never
   commits to it does not appear.
 - Squash merges credit the whole change to whoever is recorded as the commit
-  author. Pair-programming credit via `Co-authored-by` trailers is not counted
-  toward ownership.
+  author. On a commit a person authored, `Co-authored-by` trailers are not counted
+  toward ownership; they credit a person only on a commit a coding agent authored.
 - Identity merging is conservative: beyond `.mailmap` and GitHub `noreply`
   folding, two addresses are only merged on guarded evidence, so some people may
   still appear twice. A false merge is treated as worse than a split.
@@ -181,7 +199,7 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 |---|---|
 | CLI | `repowise context --include ownership`, `repowise risk --target` (owner, recent owner, bus factor), `repowise health` findings |
 | MCP | `get_context` `ownership` block, `get_risk` owner fields and PR-mode reviewers, `get_overview` ownership summary, `get_health` findings |
-| Dashboard | **Owners** directory and profiles, **Stats** people numbers, **Code Health** findings and **Impact** reviewer suggestions |
+| Dashboard | **Owners** directory and profiles, **Stats** people numbers, **Code Health** findings and **Review** page reviewer suggestions |
 | Editor | VS Code: file hover shows the owner and their commit share; the **Hotspots & Ownership** view lists module owners and flags silos, with bus factor in each hotspot's tooltip |
 
 ## Reference
@@ -192,7 +210,7 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 | `repowise risk` | `--target PATH` | Score a file's history, including owners and bus factor |
 | `repowise risk` | `--changed-file PATH` | With `--target`: PR mode; `--format json` includes `recommended_reviewers` |
 | `repowise health` | `--file PATH` | One file's findings, including the ownership detectors |
-| `repowise init` | `--commit-limit N` | Commits read per file (default 5000, max 10000) |
+| `repowise init` | `--commit-limit N` | Newest commits read (default 5000, no upper bound) |
 | `repowise init` | `--follow-renames` | Track files across renames |
 | `repowise init` | `--mode fast` | Skip blame; commit-count ownership only |
 

@@ -19,6 +19,11 @@ def test_suggestion_unknown_biomarker_falls_back():
     assert "health-rules.json" in text  # fallback hints at suppression
 
 
+def test_suggestion_for_a_renamed_marker_reads_its_current_template():
+    assert suggestion_for("bumpy_road") == suggestion_for("repeated_nesting")
+    assert "health-rules.json" not in suggestion_for("bumpy_road")
+
+
 def test_every_registered_biomarker_has_its_own_action():
     # The Findings tab shows this sentence as each row's action line, so a
     # marker without one would fall back to the generic "review this" text.
@@ -35,3 +40,18 @@ def test_annotate_finding_adds_suggestion_field():
     assert out["biomarker_type"] == "nested_complexity"
     assert "suggestion" in out
     assert out["suggestion"] == suggestion_for("nested_complexity")
+
+
+def test_stale_governance_suggestion_claims_only_that_files_changed():
+    text = suggestion_for("stale_governance")
+    assert "hasn't been reviewed" not in text
+    assert "changed since the decision was recorded" in text
+
+
+def test_stale_governance_fix_first_fact_claims_only_that_files_changed():
+    from repowise.core.analysis.health.fix_first.text import history_fact
+
+    fact = history_fact("stale_governance", {})
+    assert fact is not None
+    assert "out of date" not in fact
+    assert "predates changes" in fact

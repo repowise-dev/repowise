@@ -62,10 +62,18 @@ export class ApiClientError extends Error {
   constructor(
     public readonly status: number,
     public readonly detail: string,
+    /** What a refused write named as missing, when the server listed it. */
+    public readonly blockers: string[] = [],
   ) {
     super(`API error ${status}: ${detail}`);
     this.name = "ApiClientError";
   }
+}
+
+/** The `blockers` list a refused write carries in `detail`, else empty. */
+function blockersOf(detail: unknown): string[] {
+  const list = (detail as { blockers?: unknown } | null)?.blockers;
+  return Array.isArray(list) ? list.filter((b): b is string => typeof b === "string") : [];
 }
 
 /** Flatten a FastAPI error `detail` into a readable string. Plain strings
@@ -73,6 +81,14 @@ export class ApiClientError extends Error {
  * useful text lives in `msg`. */
 function stringifyDetail(detail: unknown): string | null {
   if (typeof detail === "string") return detail;
+  // A refusal: `{message, blockers}`, as the decision write sends it.
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = (detail as { message?: unknown }).message;
+    const blockers = blockersOf(detail);
+    if (typeof message === "string" && message) {
+      return blockers.length ? `${message} ${blockers.join("; ")}` : message;
+    }
+  }
   if (Array.isArray(detail)) {
     const msgs = detail
       .map((d) =>
@@ -89,13 +105,15 @@ function stringifyDetail(detail: unknown): string | null {
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
+    let blockers: string[] = [];
     try {
       const json = (await res.json()) as ApiError;
       detail = stringifyDetail(json.detail) ?? detail;
+      blockers = blockersOf(json.detail);
     } catch {
       // response body is not JSON
     }
-    throw new ApiClientError(res.status, detail);
+    throw new ApiClientError(res.status, detail, blockers);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -255,6 +273,42 @@ export async function apiDelete<T>(
     ...fetchOptions,
   });
   return handleResponse<T>(res);
+}
+
+/** A write's method and body, for the APIs built on `ApiRequest`. */
+export interface ApiRequestInit {
+  method: "POST" | "PUT";
+  /** JSON text, so a host's own fetch wrapper can send it unchanged. */
+  body?: string;
+}
+
+/**
+ * The one request primitive the `create*Api` factories need: a path relative
+ * to the host's API base, its query already on it. A host with its own fetch
+ * layer (auth, timeouts, errors) passes its wrapper; this package passes
+ * `apiRequest`.
+ */
+export type ApiRequest = <T>(path: string, init?: ApiRequestInit) => Promise<T>;
+
+/** `ApiRequest` over this client's base URL, token and fetch. */
+export function apiRequest<T>(path: string, init?: ApiRequestInit): Promise<T> {
+  if (!init) return apiGet<T>(path);
+  return init.method === "PUT"
+    ? apiPut<T>(path, undefined, init)
+    : apiPost<T>(path, undefined, init);
+}
+
+/** *path* with the defined *params* as its query, encoded as `apiGet` encodes them. */
+export function withQuery(
+  path: string,
+  params: Record<string, string | number | boolean | null | undefined>,
+): string {
+  const query = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) query.set(k, String(v));
+  }
+  const text = query.toString();
+  return text ? `${path}?${text}` : path;
 }
 
 export { buildHeaders };

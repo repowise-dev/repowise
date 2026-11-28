@@ -9,6 +9,7 @@
 import { useCallback, useState } from "react";
 import Link from "next/link";
 import useSWR, { useSWRConfig } from "swr";
+import { useTranslations } from "next-intl";
 import { FixFirstList } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
@@ -32,6 +33,7 @@ export function fixPlanHref(repoId: string, item: FixItem): string | null {
 }
 
 export function FixFirstSection({ repoId }: { repoId: string }) {
+  const t = useTranslations("views.codeHealth");
   const [scope, setScope] = useState<FixScope>("production");
   const key = `code-health-fix-first:${repoId}:${scope}`;
   const { data, error, isLoading, mutate } = useSWR<FixFirstQueue>(
@@ -44,15 +46,21 @@ export function FixFirstSection({ repoId }: { repoId: string }) {
   const onTriage = useCallback(
     async (item: FixItem, status: "acknowledged" | "resolved" | "false_positive") => {
       // A handful of ids per item; each is the existing per-finding PATCH.
-      await Promise.all(
+      const writes = await Promise.allSettled(
         item.source.finding_ids.map((id) => updateFindingStatus(repoId, id, status)),
       );
-      // The queue and every health view that counts findings re-read.
-      await mutateAll(
-        (k) => typeof k === "string" && k.startsWith("code-health") && k.includes(repoId),
-        undefined,
-        { revalidate: true },
-      );
+      // The queue and every health view that counts findings re-read. No data
+      // argument: passing one, `undefined` included, would blank each key
+      // while it refetches. Whatever landed is re-read even if a write failed;
+      // only a triage where every write failed skips it. An item with no
+      // finding ids writes nothing and still re-reads.
+      const failure = writes.find((w) => w.status === "rejected");
+      if (!failure || writes.some((w) => w.status === "fulfilled")) {
+        await mutateAll(
+          (k) => typeof k === "string" && k.startsWith("code-health") && k.includes(repoId),
+        );
+      }
+      if (failure) throw failure.reason;
     },
     [repoId, mutateAll],
   );
@@ -77,6 +85,7 @@ export function FixFirstSection({ repoId }: { repoId: string }) {
       onTriage={onTriage}
       loadPrompt={loadPrompt}
       LinkComponent={Link}
+      title={t("fixFirstTitle")}
     />
   );
 }

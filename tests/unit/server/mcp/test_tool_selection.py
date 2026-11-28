@@ -191,3 +191,78 @@ def test_settings_surface_marks_a_gated_tool_ineligible(tmp_path, monkeypatch):
     assert rows["get_health"]["eligible"] is False
     assert rows["get_health"]["enabled"] is False
     assert rows["get_answer"]["eligible"] is True
+
+
+# --- listed mode matches served mode ---------------------------------------
+
+
+def test_listed_workspace_mode_matches_served_mode(tmp_path, monkeypatch):
+    """A nested non-member repo and --no-workspace list the single-repo surface.
+
+    The lifespan serves both as a single repo, so listing list_repos or the
+    workspace-only tools there offers tools that only answer "workspace mode".
+    """
+    from repowise.core.workspace.config import WORKSPACE_CEILING_ENV_VAR
+    from repowise.server.mcp_server import _state
+    from repowise.server.mcp_server._tool_selection import _is_workspace
+
+    monkeypatch.setenv(WORKSPACE_CEILING_ENV_VAR, str(tmp_path))
+    monkeypatch.setattr(_state, "_force_single_repo", False)
+    (tmp_path / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: main\nrepos:\n- path: .\n  alias: main\n  is_primary: true\n",
+        encoding="utf-8",
+    )
+    nested = tmp_path / "test-repos" / "other"
+    (nested / ".repowise").mkdir(parents=True)
+    (nested / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    assert _is_workspace(str(tmp_path)) is True
+    assert _is_workspace(str(nested)) is False
+
+    monkeypatch.setattr(_state, "_force_single_repo", True)
+    assert _is_workspace(str(tmp_path)) is False
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "core",
+        "lean",
+        "core +get_health",
+        "lean -get_why +get_dead_code",
+        "core get_overview",
+        "get_answer,get_context,search_codebase,get_symbol",
+        "get_answer nonexistent_tool",
+        "core +get_architecture",
+    ],
+)
+@pytest.mark.parametrize("is_workspace", [False, True])
+@pytest.mark.parametrize("client", [None, "claude_code", "codex"])
+def test_candidate_catalog_resolves_like_the_full_one(override, is_workspace, client):
+    """A boot that imports only the candidate tools resolves the same surface."""
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.tool_selection import candidate_tools
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+    entries = mcp_tool_registry.entries()
+    names = candidate_tools(override, is_workspace=is_workspace)
+    assert names is not None
+    full = resolve_enabled_tools(
+        entries, is_workspace=is_workspace, override=override, client=client
+    )
+    narrowed = resolve_enabled_tools(
+        [e for e in entries if e.name in names],
+        is_workspace=is_workspace,
+        override=override,
+        client=client,
+    )
+    assert full <= names
+    assert narrowed == full
+
+
+@pytest.mark.parametrize("override", [None, "", "standard", "all", "+get_health", "all -get_why"])
+def test_profiles_reading_default_flags_need_the_whole_catalog(override):
+    from repowise.core.registry.tool_selection import candidate_tools
+
+    assert candidate_tools(override, is_workspace=False) is None

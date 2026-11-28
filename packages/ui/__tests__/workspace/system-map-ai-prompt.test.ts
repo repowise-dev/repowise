@@ -8,9 +8,7 @@ import {
   buildServiceAiPrompt,
 } from "../../src/workspace/system-map/system-map-ai-prompt";
 import {
-  edgeLinks,
   edgeSentence,
-  healthMark,
   serviceDiagnostics,
   serviceResolver,
   summarizeServiceContracts,
@@ -93,17 +91,10 @@ const graph: SystemGraph = {
 };
 
 describe("system map model", () => {
-  it("reads health in the canonical three bands", () => {
-    expect(healthMark(85)).toMatchObject({ value: "8.5", label: "Healthy" });
-    expect(healthMark(67.4)).toMatchObject({ value: "6.7", label: "Warning" });
-    expect(healthMark(30)).toMatchObject({ label: "Alert" });
-  });
-
-  it("puts a file in its deepest service, else the repo root, and in its repo when collapsed", () => {
-    const resolve = serviceResolver(graph, false);
+  it("puts a file in its deepest service, else the repo root", () => {
+    const resolve = serviceResolver(graph);
     expect(resolve("mono", "packages/web/src/x.ts")).toBe("mono::packages/web");
     expect(resolve("mono", "packages/website/x.ts")).toBe("mono");
-    expect(serviceResolver(graph, true)("mono", "packages/web/x.ts")).toBe("mono");
   });
 
   it("counts a service's contracts by role and type, most linked first", () => {
@@ -119,7 +110,7 @@ describe("system map model", () => {
         total: 4,
       },
       "mono::packages/web",
-      serviceResolver(graph, false),
+      serviceResolver(graph),
     );
     expect(summary.consumes).toEqual({ http: 2 });
     expect(summary.provides).toEqual({ code: 1 });
@@ -127,24 +118,13 @@ describe("system map model", () => {
   });
 
   it("attributes unmatched consumers and unused providers to the owning service", () => {
-    const resolve = serviceResolver(graph, false);
+    const resolve = serviceResolver(graph);
     expect(serviceDiagnostics(graph.diagnostics, "mono::packages/web", resolve)).toEqual({
       unmatched: 1,
       unmatchedByReason: { no_provider: 1 },
       unusedProviders: 0,
     });
     expect(serviceDiagnostics(graph.diagnostics, "api", resolve).unusedProviders).toBe(1);
-  });
-
-  it("joins an edge to the links it aggregates, consumer to provider", () => {
-    const e = graph.edges[0]!;
-    const links = edgeLinks(
-      e,
-      [link({}), link({ consumer_file: "server/r.py" }), link({ contract_type: "code" }), link({})],
-      serviceResolver(graph, false),
-    );
-    // Wrong service, wrong type and a duplicate are all dropped.
-    expect(links).toHaveLength(1);
   });
 
   it("names the weight's unit and says the relationship as a sentence", () => {
@@ -188,9 +168,10 @@ describe("system map AI prompts", () => {
       provider_file: "app/r.py",
       consumer_repo: "frontend",
       consumer_file: "src/client.ts",
+      strategy: i === 0 ? "unique_path" : null,
     }));
     const text = buildEdgeAiPrompt({
-      edge: { id: "frontend->backend:http", kind: "http", match_type: "exact", confidence: 0.85, weight: 180, structural: true },
+      edge: { id: "frontend->backend:http", kind: "http", match_type: "exact", strategy: "service_mapped", confidence: 0.85, weight: 180, structural: true },
       source: { id: "frontend", name: "frontend" },
       target: { id: "backend", name: "backend" },
       sentence: "frontend calls backend over HTTP.",
@@ -200,10 +181,28 @@ describe("system map AI prompts", () => {
       flavor: "generic",
     });
     expect(text).toContain("frontend calls backend over HTTP.");
-    expect(text).toContain("Confidence: 85%");
-    expect(text).toContain("provider `backend:app/r.py`, consumer `frontend:src/client.ts`");
+    expect(text).toContain("Match: exact, matched by service name (`service_mapped`). Confidence: 85%");
+    expect(text).toContain(
+      "- `http::GET::/r0`: provider `backend:app/r.py`, consumer `frontend:src/client.ts`, matched by path only (`unique_path`)",
+    );
+    expect(text).toContain("- `http::GET::/r1`: provider `backend:app/r.py`, consumer `frontend:src/client.ts`\n");
     expect(text).toContain("...and 3 more links not listed here.");
     expect(text).not.toContain("get_blast_radius");
+  });
+
+  it("edge prompt for a lean edge states the kept count instead of no evidence", () => {
+    const text = buildEdgeAiPrompt({
+      edge: { id: "web->api:http", kind: "http", match_type: "exact", confidence: 0.9, weight: 4, structural: true },
+      source: { id: "web", name: "web" },
+      target: { id: "api", name: "api" },
+      sentence: "web calls api over HTTP.",
+      weightLabel: "4 endpoints called",
+      evidence: [],
+      refs: [],
+      refCount: 3,
+    });
+    expect(text).toContain("The graph kept 3 contract ids for this edge");
+    expect(text).not.toContain("No evidence rows were returned");
   });
 
   it("edge prompt for co-change asks about a hidden dependency", () => {

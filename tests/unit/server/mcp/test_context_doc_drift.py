@@ -366,3 +366,37 @@ async def test_the_answer_is_capped_with_a_recoverable_receipt(setup_mcp, sessio
     assert block["references_total"] == 30
     assert block["references_omitted"] == 10
     assert block["references_reduced_reason"] == "construction_cap"
+
+
+@pytest.mark.asyncio
+async def test_a_document_naming_the_file_by_a_short_form_is_a_mention(
+    setup_mcp, reference_rows, tmp_path
+):
+    """``auth/service`` resolves to no path on its own; the line is still served, apart."""
+    from repowise.server.mcp_server import get_context
+
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "auth.md").write_text(
+        "# Auth\n\nSee `auth/service` for login.\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "other.md").write_text(
+        "`auth/service.test` and auth/services are other files.\n", encoding="utf-8"
+    )
+
+    card = (await get_context(targets=[_TARGET], include=["doc_drift"]))["targets"][_TARGET]
+    block = card["doc_drift"]
+
+    assert block["mentions"] == [
+        {"document": "docs/auth.md", "line": 3, "text": "See `auth/service` for login."}
+    ]
+    assert block["mentions_basis"]
+    assert block["documents"] == 2
+
+
+@pytest.mark.asyncio
+async def test_no_mention_adds_no_field(setup_mcp, reference_rows):
+    from repowise.server.mcp_server import get_context
+
+    card = (await get_context(targets=[_TARGET], include=["doc_drift"]))["targets"][_TARGET]
+
+    assert "mentions" not in card["doc_drift"]

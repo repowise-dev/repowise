@@ -10,6 +10,7 @@ from rich.progress import Progress
 
 from repowise.cli.helpers import (
     console,
+    cross_repo_cut_inputs,
     ensure_repowise_dir,
     get_db_url_for_repo,
     resolve_repo_path,
@@ -186,15 +187,19 @@ def export_command(
                         DeadCodeFinding.repository_id == repo.id
                     )
                 )
+                from repowise.cli._helpers.paths import find_workspace_root
+                from repowise.core.analysis.dead_code.serving import is_safe, serve_findings
+
+                cut = cross_repo_cut_inputs(repo_path, find_workspace_root(repo_path))
                 extra_data["dead_code"] = [
                     {
                         "file_path": f.file_path,
                         "symbol_name": f.symbol_name,
                         "kind": f.kind,
                         "confidence": f.confidence,
-                        "safe_to_delete": f.safe_to_delete,
+                        "safe_to_delete": is_safe(f),
                     }
-                    for f in dc.scalars().all()
+                    for f in serve_findings(list(dc.scalars().all()), **cut)
                 ]
 
                 # Git metadata (hotspots)

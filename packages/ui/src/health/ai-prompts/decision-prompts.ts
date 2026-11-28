@@ -75,7 +75,7 @@ function decisionToolsLead(d: DecisionPromptInput, scope: string[]): string {
 
 function verificationTask(isProposed: boolean, isStale: boolean): string {
   if (isProposed) {
-    return "repowise auto-proposed this architectural decision from the code and history. Verify it: does the codebase actually reflect this decision today? Then recommend whether to **confirm** it (it's real and current) or **reject** it (it's wrong, speculative, or already superseded).";
+    return "repowise mined this decision from history. It is background: context for the why, not in force. Check whether the codebase reflects it today. If it holds, you can put it in force with `repowise decision confirm`; if not, say why.";
   }
   if (isStale) {
     return "This recorded decision is flagged stale — the code it governs has changed since it was written. Re-verify it against the current code and recommend whether to **keep**, **update**, or **deprecate** it.";
@@ -85,7 +85,7 @@ function verificationTask(isProposed: boolean, isStale: boolean): string {
 
 function verificationExpected(isProposed: boolean): string[] {
   return [
-    `1. A verdict: ${isProposed ? "**confirm** or **reject**" : "**keep**, **update**, or **deprecate**"}, in one line.`,
+    `1. A verdict: ${isProposed ? "**holds** or **does not hold**" : "**keep**, **update**, or **deprecate**"}, in one line.`,
     "2. The evidence: the files/symbols you checked and whether each conforms.",
     "3. Any conformance gaps — places that violate the decision — as a short list.",
     "4. If you'd update the decision text, the exact wording you'd change.",

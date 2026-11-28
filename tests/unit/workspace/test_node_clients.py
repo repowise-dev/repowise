@@ -103,6 +103,25 @@ class TestInstances:
         repo = _write(tmp_path, {"src/client/index.ts": index, "src/pages/p.ts": caller})
         assert _calls(repo) == {("ky", "GET", "/api/things", "")}
 
+    def test_a_base_built_from_scheme_and_host_placeholders(self, tmp_path: Path) -> None:
+        http = (
+            "import axios from 'axios';\n"
+            "export const api = axios.create({\n"
+            "  baseURL: `${window.location.protocol}//"
+            "${import.meta.env.VITE_BACKEND_HOST || window?.location.host}`,\n"
+            "});\n"
+        )
+        caller = (
+            "import { api } from './http';\n"
+            'export const a = () => api.get<unknown>("/api/keys");\n'
+            "export const b = () => api.post<R>(`/api/conversations/${id}/start`, {});\n"
+        )
+        repo = _write(tmp_path, {"src/api/http.ts": http, "src/api/keys.ts": caller})
+        assert _calls(repo) == {
+            ("axios", "GET", "/api/keys", "VITE_BACKEND_HOST"),
+            ("axios", "POST", "/api/conversations/{param}/start", "VITE_BACKEND_HOST"),
+        }
+
     def test_got_extend_ofetch_create_and_class_fields(self, tmp_path: Path) -> None:
         text = (
             "import got from 'got';\nimport { ofetch } from 'ofetch';\n"
@@ -257,3 +276,122 @@ def test_an_instance_verb_with_a_method_option_is_not_a_wrapper_row(tmp_path: Pa
     )
     rows = [c for c in HttpExtractor().extract(_write(tmp_path, {"a.ts": text}), "web") if c.role == "consumer"]
     assert [(c.meta["client"], c.contract_id) for c in rows] == [("axios", "http::POST::/api/pay")]
+
+
+class TestRequestSuperagentNeedleAndHttp:
+    def test_request_by_url_options_and_verbs(self, tmp_path: Path) -> None:
+        text = (
+            "var express = require('express')\n"
+            "  , request = require('request')\n"
+            "app.get('/cart', function (req, res) {\n"
+            "  request(base + '/' + custId + '/items', function (e, r, b) {});\n"
+            "});\n"
+            "app.delete('/cart', function (req, res) {\n"
+            "  var options = {\n    uri: base + '/' + custId,\n    method: 'DELETE'\n  };\n"
+            "  request(options, function (e, r, b) {});\n"
+            "});\n"
+            "app.post('/cart', function (req, res) {\n"
+            "  var options = { uri: base + '/items/' + req.body.id.toString(), method: 'POST' };\n"
+            "  request(options, cb);\n"
+            "});\n"
+            "request.put('/api/sizes', cb);\n"
+        )
+        assert _calls(_write(tmp_path, {"api/cart.js": text})) == {
+            ("request", "GET", "/{param}/items", "base"),
+            ("request", "POST", "/items/{param}", "base"),
+            ("request", "PUT", "/api/sizes", ""),
+        }
+
+    def test_a_local_from_a_closed_block_or_reassigned_is_not_read(self, tmp_path: Path) -> None:
+        text = (
+            "const request = require('request');\n"
+            "function a() { var options = { uri: '/api/a' };\n}\n"
+            "function b(options) { request(options, cb); }\n"
+            "function c() { var url = '/api/c';\n  url = next;\n  request(url, cb); }\n"
+        )
+        assert _calls(_write(tmp_path, {"a.js": text})) == set()
+
+    def test_the_base_comes_from_a_required_module_exports(self, tmp_path: Path) -> None:
+        endpoints = (
+            "var util = require('util');\nvar domain = '';\n"
+            "module.exports = {\n"
+            "  cartsUrl: util.format('http://carts%s/carts', domain),\n"
+            "  ordersUrl: 'http://orders',\n"
+            "};\n"
+        )
+        cart = (
+            "var request = require('request'), endpoints = require('../endpoints');\n"
+            "request(endpoints.cartsUrl + '/' + custId + '/items', cb);\n"
+            "request.post(endpoints.ordersUrl + '/orders', cb);\n"
+        )
+        repo = _write(tmp_path, {"api/endpoints.js": endpoints, "api/cart/index.js": cart})
+        assert _calls(repo) == {
+            ("request", "GET", "/carts/{param}/items", ""),
+            ("request", "POST", "/orders", ""),
+        }
+
+    def test_superagent_and_needle(self, tmp_path: Path) -> None:
+        text = (
+            "import superagent from 'superagent';\nconst needle = require('needle');\n"
+            "superagent.get('/api/a').end(cb);\n"
+            "needle.post('/api/b', body, { json: true }, cb);\n"
+            "needle.request('delete', '/api/c', null, cb);\n"
+        )
+        assert _calls(_write(tmp_path, {"a.js": text})) == {
+            ("superagent", "GET", "/api/a", ""),
+            ("needle", "POST", "/api/b", ""),
+            ("needle", "DELETE", "/api/c", ""),
+        }
+
+    def test_request_needs_its_require(self, tmp_path: Path) -> None:
+        text = "app.get('/x', (request, res) => { request('/api/nope'); request.get('/api/no'); });\n"
+        assert {row for row in _calls(_write(tmp_path, {"a.js": text})) if row[0] == "request"} == set()
+
+    def test_angularjs_http_by_config_and_verbs(self, tmp_path: Path) -> None:
+        text = (
+            "app.controller('cart', function($scope, $http) {\n"
+            "  $http({\n    url: '/api/catalogue/products/' + category,\n    method: 'GET'\n  });\n"
+            "  var url = '/api/cart/add/' + user.id + '/' + $scope.sku;\n"
+            "  $http({ url: url, method: 'PUT' }).then(ok);\n"
+            "  $http.post('/api/user/login', creds);\n"
+            "  // $http.get('/api/commented');\n"
+            "});\n"
+        )
+        assert _calls(_write(tmp_path, {"static/js/controller.js": text})) == {
+            ("angularjs", "GET", "/api/catalogue/products/{param}", ""),
+            ("angularjs", "PUT", "/api/cart/add/{param}/{param}", ""),
+            ("angularjs", "POST", "/api/user/login", ""),
+        }
+
+
+def test_a_node_request_call_links_to_the_service_it_names(tmp_path: Path) -> None:
+    catalogue = _write(
+        tmp_path / "catalogue",
+        {"server.js": "const app = require('express')();\napp.get('/product/:sku', (req, res) => {});\n"},
+    )
+    cart = _write(
+        tmp_path / "cart",
+        {
+            "server.js": (
+                "const request = require('request');\n"
+                "var catalogueHost = process.env.CATALOGUE_HOST || 'catalogue'\n"
+                "request('http://' + catalogueHost + ':8080/product/' + sku, (err, res, body) => {});\n"
+            )
+        },
+    )
+    contracts = HttpExtractor().extract(catalogue, "catalogue") + HttpExtractor().extract(cart, "cart")
+    links = {(link.provider_repo, link.consumer_repo, link.contract_id) for link in match_contracts(contracts)}
+    assert links == {("catalogue", "cart", "http::GET::/product/{param}")}
+
+
+def test_only_a_placeholder_host_after_a_scheme_placeholder_is_stripped() -> None:
+    from repowise.core.workspace.extractors.http.paths import strip_leading_base_expr
+
+    assert strip_leading_base_expr("${a}//literal.host/x") == ("//literal.host/x", "a")
+    assert strip_leading_base_expr("${a}//${b}:${PORT}/x") == ("/x", "b")
+    assert strip_leading_base_expr("${a}//${env.HOST ?? location.host}/x") == ("/x", "env.HOST")
+    assert strip_leading_base_expr("${API}/users/${id}") == ("/users/${id}", "API")
+    # A placeholder that is only part of the host is not a whole base.
+    path, _ = strip_leading_base_expr("${s}//${tenant}.example.com/api/users")
+    assert path.startswith("//${tenant}")
+    assert strip_leading_base_expr("${a}//${b}") == ("/", "b")

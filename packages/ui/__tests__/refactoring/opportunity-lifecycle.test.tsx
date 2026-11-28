@@ -53,7 +53,7 @@ describe("OpportunityRows", () => {
     expect(screen.getByText("packages/core/src/big.py")).toBeTruthy();
     expect(screen.getByText("3 steps, 2 mechanical")).toBeTruthy();
     // The lead cause, in words, not a token.
-    expect(screen.getByText(/Split File, against nested complexity/)).toBeTruthy();
+    expect(screen.getByText(/Split File, against deep nesting/)).toBeTruthy();
   });
 
   it("keeps addresses_primary_problem in three states", () => {
@@ -138,9 +138,26 @@ describe("OpportunityRows", () => {
   });
 
   it("hides the triage group entirely when the host cannot write", async () => {
-    render(<OpportunityRows opportunities={[opportunity()]} onOpen={() => {}} onAiPrompt={() => {}} />);
+    render(
+      <OpportunityRows
+        opportunities={[opportunity()]}
+        onOpen={() => {}}
+        onAiPrompt={() => {}}
+        fileHref={(path) => `/files/${path}`}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /More actions/ }));
     expect(screen.queryByRole("menuitemradio")).toBeNull();
-    expect(screen.getByRole("menuitem", { name: /Copy prompt/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /Open file/ })).toBeTruthy();
+  });
+
+  it("puts the agent prompt on the row itself, not in the overflow", () => {
+    const onAiPrompt = vi.fn();
+    const row = opportunity();
+    render(<OpportunityRows opportunities={[row]} onOpen={() => {}} onAiPrompt={onAiPrompt} />);
+    fireEvent.click(screen.getByRole("button", { name: `Agent prompt: ${row.file_path}` }));
+    expect(onAiPrompt).toHaveBeenCalledWith(row);
+    // Nothing else to put in the overflow without a file link or triage.
+    expect(screen.queryByRole("button", { name: /More actions/ })).toBeNull();
   });
 });

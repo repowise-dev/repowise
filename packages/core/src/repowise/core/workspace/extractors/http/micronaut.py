@@ -24,6 +24,7 @@ from repowise.core.ingestion.framework_routes import (
 )
 
 from ..base import line_at
+from ..calls import outside_comments
 from ..langs import JAVA, KOTLIN
 from .dialect import build_provider_contract
 from .mounts import compose_prefix
@@ -62,17 +63,16 @@ def _nearest_controller(
 class MicronautDialect:
     name = "micronaut"
     extensions = JAVA | KOTLIN
+    requires = (_MICRONAUT_ANNOTATIONS,)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if _MICRONAUT_ANNOTATIONS not in content:
-            return []
         # One scan of the file's annotations, read by all three recognisers.
         annotations = micronaut_annotations(content)
         class_paths = micronaut_class_paths(content, annotations)
         clients = micronaut_client_types(content, annotations)
         out: list[Contract] = []
-        for route in micronaut_routes(content, annotations):
+        for route in outside_comments(ctx, micronaut_routes(content, annotations)):
             # HEAD and OPTIONS are Micronaut verbs the contract layer does not
             # record; a path it could not read is refused rather than served at
             # the class prefix.

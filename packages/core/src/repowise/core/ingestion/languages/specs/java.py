@@ -183,5 +183,27 @@ SPEC = LanguageSpec(
         }
     ),
     external_return_types=_EXTERNAL_RETURN_TYPES,
+    # Methods the JDK's Object, String, Class and collection types declare.
+    # A call the receiver tiers could not type (``a.b.contains(x)``,
+    # ``X.class.isAssignableFrom(y)``) is a JDK call far more often than the
+    # one repo method of that name. Names repositories declare and call in
+    # their own right (``get``, ``put``, ``remove``, ``size``) stay out, and
+    # so do string helpers a wildcard static import brings in (``isBlank``,
+    # ``trim``, ``split``): the merged-import tier reads this list too.
+    builtin_methods=frozenset(
+        {
+            # java.lang.Object, String and CharSequence
+            "equals", "hashCode", "toString", "getClass", "notify", "notifyAll", "wait",
+            "length", "charAt",
+            # java.lang.Class
+            "isAssignableFrom", "isInstance", "getSimpleName", "getCanonicalName",
+            "getDeclaredFields", "getDeclaredMethods", "getDeclaredConstructor",
+            "getEnumConstants", "getComponentType", "isPrimitive", "isInterface",
+            # Collection, Map and Iterable
+            "add", "addAll", "contains", "containsAll", "containsKey", "containsValue",
+            "removeAll", "retainAll", "entrySet", "keySet", "putAll", "putIfAbsent",
+            "computeIfAbsent", "getOrDefault", "iterator", "stream", "forEach",
+        }
+    ),
     color_hex="#B07219",
 )

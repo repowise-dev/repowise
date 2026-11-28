@@ -32,7 +32,7 @@ const overview: HealthOverviewResponse = {
     maintainability_average: 8.2,
     performance_average: 9.9,
     maintainability_findings: 6,
-    performance_findings: 0,
+    performance_causes: { now: 0, production: 0, all: 0, per_10k_loc: null },
   },
   distribution: {
     total_files: 128,

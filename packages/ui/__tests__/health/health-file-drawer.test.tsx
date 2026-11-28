@@ -220,7 +220,7 @@ describe("HealthFileDrawer finding grouping", () => {
       />,
     );
     openSection(/Other issues/);
-    for (const label of [/Nested complexity · across the file/i, /Brain method · across the file/i]) {
+    for (const label of [/Deep nesting · across the file/i, /Brain method · across the file/i]) {
       expect(within(screen.getByRole("button", { name: label })).queryByText("at limit"))
         .not.toBeInTheDocument();
     }

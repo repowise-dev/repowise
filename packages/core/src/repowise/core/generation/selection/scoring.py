@@ -12,8 +12,14 @@ for the bucket's slot count.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
+
+from repowise.core.ingestion.symbol_use import SymbolUse
+from repowise.core.test_paths import is_test_support_path
+
+from ..public_api import is_public_api
 
 # -- File score --------------------------------------------------------
 
@@ -34,6 +40,16 @@ _PENALTY_TEST = 0.60
 _PENALTY_TRIVIAL_SIZE_BYTES = 4000
 _PENALTY_TRIVIAL_SYMBOL_CAP = 4
 _PENALTY_TRIVIAL = 0.40
+
+
+def is_test_spec(fi: Any) -> bool:
+    """A test proper: ``FileInfo.is_test`` less the support files around tests.
+
+    ``is_test`` covers both, but ``conftest.py``, ``tests/helpers/`` and
+    ``e2e/fixtures.ts`` carry the harness conventions a reader asks about, so
+    page selection treats them as code (#1497).
+    """
+    return fi.is_test and not is_test_support_path(fi.path, fi.language)
 
 
 def _normalize(value: float, max_value: float) -> float:
@@ -85,7 +101,7 @@ def score_file(
     base += kg_bonus
 
     # Penalties.
-    if fi.is_test:
+    if is_test_spec(fi):
         base *= _PENALTY_TEST
     if (
         n_symbols <= _PENALTY_TRIVIAL_SYMBOL_CAP
@@ -113,13 +129,96 @@ _KIND_WEIGHT = {
     "constant": 0.4,
 }
 
+# Kinds that hold a value rather than behaviour. Their file page already
+# prints the declaration whole, so a page of their own has to be earned by use.
+_VALUE_KINDS = frozenset({"variable", "constant", "type_alias", "module"})
 
-def score_symbol(symbol: Any, file_pagerank: float, max_pagerank: float) -> float:
-    """Score a public symbol for ``symbol_spotlight`` candidacy."""
-    if symbol.visibility != "public":
+# Production callers that earn a spotlight for a symbol the floors would
+# otherwise drop: a value, or a body of a few lines. Below it the file page's
+# one-line declaration is everything a spotlight would say.
+_HEAVY_USE_CALLERS = 5
+_TRIVIAL_BODY_LINES = 3
+
+# Weights of the per-symbol signals. Callers from other files lead: "many
+# other files depend on it" separates a concept from a busy local helper.
+# Size and complexity rank among symbols nobody resolved a call to (types,
+# framework-invoked handlers). The file's PageRank only breaks ties.
+_W_CROSS_FILE = 1.0
+_W_SAME_FILE = 0.3
+_W_SIZE = 0.5
+_W_COMPLEXITY = 0.3
+_W_FILE_PAGERANK = 0.3
+_SIZE_SATURATION_LINES = 200
+_COMPLEXITY_SATURATION = 20
+
+
+def _symbol_fields(symbol: Any) -> dict[str, Any]:
+    """The fields :func:`is_public_api` reads, off a parsed ``Symbol``."""
+    return {
+        "name": symbol.name,
+        "kind": str(symbol.kind),
+        "language": symbol.language,
+        "parent_name": symbol.parent_name,
+    }
+
+
+def _body_lines(symbol: Any) -> int:
+    """Lines the declaration spans; 0 when the parser recorded no range."""
+    if not symbol.start_line or not symbol.end_line:
+        return 0
+    return max(0, symbol.end_line - symbol.start_line + 1)
+
+
+def _docstring_beyond_summary(symbol: Any) -> bool:
+    """Whether the docstring says more than the line the file page prints."""
+    # Deferred: the page generator imports this module.
+    from ..page_generator.file_facts import first_sentence
+
+    doc = (symbol.docstring or "").strip()
+    return bool(doc) and " ".join(doc.split()) != first_sentence(doc).rstrip("…")
+
+
+def spotlight_eligible(symbol: Any, use: SymbolUse) -> bool:
+    """Whether *symbol* could say anything its file page does not.
+
+    Public API only (no dunders, ``__all__`` or module state). The file page
+    already prints each symbol's signature and the first sentence of its
+    docstring, so a spotlight has to add callers or the rest of the docstring.
+    A value, or a body of a few lines, is printed whole there too, so it needs
+    :data:`_HEAVY_USE_CALLERS` production callers.
+    """
+    if symbol.visibility != "public" or not is_public_api(_symbol_fields(symbol)):
+        return False
+    trivial = str(symbol.kind) in _VALUE_KINDS or _body_lines(symbol) <= _TRIVIAL_BODY_LINES
+    if trivial:
+        return use.callers >= _HEAVY_USE_CALLERS
+    return use.callers > 0 or _docstring_beyond_summary(symbol)
+
+
+def score_symbol(
+    symbol: Any,
+    use: SymbolUse,
+    file_pagerank: float,
+    max_pagerank: float,
+) -> float:
+    """Score a public symbol for ``symbol_spotlight`` candidacy; 0.0 = never.
+
+    Ranks the symbol, not the file it lives in. Scoring by the file's PageRank
+    made every symbol of a hub file tie, so the cut took whole files (105
+    spotlights on one types module) and missed the load-bearing symbols of
+    files that matter for their logic rather than their importers.
+    """
+    if not spotlight_eligible(symbol, use):
         return 0.0
-    weight = _KIND_WEIGHT.get(str(symbol.kind), 0.5)
-    return _normalize(file_pagerank, max_pagerank) * weight
+    same_file = use.callers - use.cross_file
+    signal = (
+        _W_CROSS_FILE * math.log1p(use.cross_file)
+        + _W_SAME_FILE * math.log1p(same_file)
+        + _W_SIZE * min(math.log1p(_body_lines(symbol)) / math.log1p(_SIZE_SATURATION_LINES), 1.0)
+        + _W_COMPLEXITY * _normalize(symbol.complexity_estimate or 0, _COMPLEXITY_SATURATION)
+        + _W_FILE_PAGERANK * _normalize(file_pagerank, max_pagerank)
+    )
+    return signal * _KIND_WEIGHT.get(str(symbol.kind), 0.5)
 
 
 # -- SCC score ---------------------------------------------------------

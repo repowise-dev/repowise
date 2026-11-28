@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from repowise.core.git_head import CheckoutMatch, match_checkout
+from repowise.core.ingestion.source_view import DiskSource, SourceView
 
 _log = logging.getLogger("repowise.workspace.registry")
 
@@ -26,12 +30,22 @@ _log = logging.getLogger("repowise.workspace.registry")
 # ---------------------------------------------------------------------------
 
 
+#: :attr:`RepoContext.source` left unset: the checkout at ``path``, when there is one.
+_DISK: Any = object()
+
+
 @dataclass
 class RepoContext:
-    """Holds all resources needed to serve MCP queries for a single repo."""
+    """Holds all resources needed to serve MCP queries for a single repo.
+
+    ``source`` and ``git`` say what the server can read besides the store: the
+    repository's files and its git history. A context built over a store with
+    no checkout (``path`` ``None``, or ``source=None, git=False``) serves every
+    stored fact and names the live ones it cannot.
+    """
 
     alias: str
-    path: Path
+    path: Path | None
     session_factory: async_sessionmaker[AsyncSession]
     fts: Any  # FullTextSearch
     vector_store: Any  # LanceDB or InMemoryVectorStore
@@ -39,6 +53,20 @@ class RepoContext:
     # None: readiness is not tracked, so searches do not wait for it.
     vector_store_ready: asyncio.Event | None = field(default_factory=asyncio.Event)
     _engine: Any = field(default=None, repr=False)  # AsyncEngine, for dispose
+    source: SourceView | None = field(default=_DISK, repr=False)
+    git: bool = True
+
+    def __post_init__(self) -> None:
+        if self.source is _DISK:
+            self.source = DiskSource(self.path) if self.path is not None else None
+        if self.path is None:
+            # No checkout to run git in: git would read the process's own directory.
+            self.git = False
+
+
+#: ``Session.info`` key a shared-store context sets to the repository it
+#: serves, so a tool's default repository is that one and not the first row.
+REPOSITORY_ID_INFO_KEY = "repowise_repository_id"
 
 
 def repo_db_path(repo_path: Path) -> Path:
@@ -59,6 +87,197 @@ async def open_repo_db(repo_path: Path) -> tuple[Any, async_sessionmaker[AsyncSe
     engine = create_engine(get_db_url(f"sqlite:///{repo_db_path(repo_path).as_posix()}"))
     await init_db(engine)
     return engine, async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+
+def _repository_sessions(engine: Any, repository_id: str) -> async_sessionmaker[AsyncSession]:
+    """Sessions over a store whose default repository is *repository_id*."""
+    return async_sessionmaker(
+        engine,
+        expire_on_commit=False,
+        class_=AsyncSession,
+        info={REPOSITORY_ID_INFO_KEY: repository_id},
+    )
+
+
+def embedded_context(
+    engine: Any,
+    repository_id: str,
+    *,
+    alias: str,
+    vector_store: Any = None,
+    fts: Any = None,
+) -> RepoContext:
+    """A context over an already-open store, for a host serving the tools with no checkout.
+
+    Built the way a workspace builds one over a shared store: sessions default
+    to *repository_id* and full-text search is scoped to it. No path, source or
+    git, so every live read answers from the store. Nothing is written, so a
+    store opened read-only works: the caller runs ``ensure_index`` beforehand
+    if it wants one. The caller owns *engine* and disposes it.
+    """
+    if fts is None:
+        from repowise.core.persistence.search import FullTextSearch
+
+        fts = FullTextSearch(engine, repository_id=repository_id)
+    return RepoContext(
+        alias=alias,
+        path=None,
+        session_factory=_repository_sessions(engine, repository_id),
+        fts=fts,
+        vector_store=vector_store,
+        decision_store=vector_store,  # decisions share the page store, as in a workspace
+        vector_store_ready=None,
+        source=None,
+        git=False,
+    )
+
+
+@dataclass(frozen=True)
+class ReadOnlyStore:
+    """A store opened by :func:`open_store`: nothing through it can write.
+
+    Build the serving context with :meth:`context`, which hands
+    :func:`embedded_context` this store's full-text search, so a missing or
+    stale ``page_fts`` answers empty instead of erroring. Empty reads the same
+    as no match to the tools, so a host that serves a store whose
+    :attr:`page_fts` is not present should say so itself. The caller owns the
+    engine: :meth:`dispose` it when done.
+    """
+
+    engine: Any  # AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession]
+    fts: Any  # FullTextSearch
+    repository_id: str
+    page_fts: Any  # PageFtsState
+
+    def context(self, alias: str, *, vector_store: Any = None) -> RepoContext:
+        """The :class:`RepoContext` a host serves the tools through."""
+        return embedded_context(
+            self.engine, self.repository_id, alias=alias, vector_store=vector_store, fts=self.fts
+        )
+
+    async def dispose(self) -> None:
+        await self.engine.dispose()
+
+
+async def open_store(db_path: str | Path, repository_id: str) -> ReadOnlyStore:
+    """Open the SQLite store at *db_path* read-only and immutable, to serve *repository_id*.
+
+    Never writes: no ``init_db``, no ``ensure_index``, and any write through
+    the engine raises. Raises :class:`~repowise.core.persistence.database.SchemaBehindError`
+    when an older repowise wrote the store (a writer would reconcile it; this
+    cannot), ``FileNotFoundError`` when there is no file, and ``LookupError``
+    when the store holds no such repository. Check a store with
+    :func:`publishable` before shipping it to a host.
+    """
+    from sqlalchemy import text
+
+    from repowise.core.persistence.database import (
+        SchemaBehindError,
+        create_engine,
+        read_only_url,
+        schema_behind,
+    )
+    from repowise.core.persistence.search import FullTextSearch, PageFtsState, page_fts_state
+
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"No store at {path}")
+    engine = create_engine(read_only_url(path))
+    try:
+        if await schema_behind(engine):
+            raise SchemaBehindError(
+                f"{path} lacks tables or columns this repowise reads; "
+                "re-index it with this version to serve it read-only"
+            )
+        async with engine.connect() as conn:
+            found = await conn.execute(
+                text("SELECT 1 FROM repositories WHERE id = :id"), {"id": repository_id}
+            )
+            if found.scalar() is None:
+                raise LookupError(f"No repository {repository_id!r} in {path}")
+        state = await page_fts_state(engine)
+    except BaseException:
+        await engine.dispose()
+        raise
+    if state is not PageFtsState.PRESENT:
+        _log.warning("page_fts is %s in %s: full-text search answers empty", state.value, path)
+    return ReadOnlyStore(
+        engine=engine,
+        session_factory=_repository_sessions(engine, repository_id),
+        fts=FullTextSearch(engine, repository_id=repository_id, page_fts=state),
+        repository_id=repository_id,
+        page_fts=state,
+    )
+
+
+@dataclass(frozen=True)
+class Publishability:
+    """What :func:`publishable` found. ``problems`` is empty when the store can ship."""
+
+    problems: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
+def _pending_sidecars(path: Path) -> list[str]:
+    """``wal_pending`` / ``journal_pending`` for each non-empty sidecar beside *path*."""
+    sidecars = (("-wal", "wal_pending"), ("-journal", "journal_pending"))
+    return [
+        code
+        for suffix, code in sidecars
+        if (side := path.with_name(path.name + suffix)).is_file() and side.stat().st_size > 0
+    ]
+
+
+async def publishable(db_path: str | Path) -> Publishability:
+    """Whether the store at *db_path* serves in full when opened by :func:`open_store`.
+
+    Read-only checks, each a problem code:
+
+    - ``missing``: no file.
+    - ``wal_pending`` / ``journal_pending``: a non-empty ``-wal`` or
+      ``-journal`` file beside it. An immutable open never reads them, so
+      writes in them would be invisible. Conservative: a WAL already
+      checkpointed but not truncated counts too. Checkpoint with
+      ``PRAGMA wal_checkpoint(TRUNCATE)``, or publish a backup copy.
+    - ``schema_behind``: an older repowise wrote it.
+    - ``page_fts_missing`` / ``page_fts_stale``: full-text search would answer
+      empty. ``FullTextSearch.ensure_index`` on a writable copy builds a missing
+      index and widens one on an older column set; it refuses a table with
+      columns it does not know, which needs a re-index.
+    - ``no_repository``: no repository row to serve.
+    - ``unreadable``: SQLite could not read it as a store.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence.database import create_engine, read_only_url, schema_behind
+    from repowise.core.persistence.search import PageFtsState, page_fts_state
+
+    path = Path(db_path)
+    if not path.is_file():
+        return Publishability(("missing",))
+    problems = _pending_sidecars(path)
+    engine = create_engine(read_only_url(path))
+    try:
+        state = await page_fts_state(engine)
+        if state is not PageFtsState.PRESENT:
+            problems.append(f"page_fts_{state.value}")
+        if await schema_behind(engine):
+            problems.append("schema_behind")  # the repositories table may be missing too
+        else:
+            async with engine.connect() as conn:
+                row = await conn.execute(text("SELECT 1 FROM repositories LIMIT 1"))
+                if row.scalar() is None:
+                    problems.append("no_repository")
+    except (SQLAlchemyError, OSError):
+        problems.append("unreadable")
+    finally:
+        await engine.dispose()
+    return Publishability(tuple(problems))
 
 
 # ---------------------------------------------------------------------------
@@ -82,8 +301,14 @@ class RepoRegistry:
         ws_config: Any,  # WorkspaceConfig
         embedder_factory: Callable[[], Any] | None = None,
         on_vector_store_error: Callable[[str, BaseException], None] | None = None,
+        db_url: str | None = None,
     ) -> None:
         self._workspace_root = workspace_root
+        # A configured database (``REPOWISE_DB_URL``) holds every member's rows:
+        # one engine serves them all, each context scoped to its repository id.
+        # None: each member reads its own ``.repowise/wiki.db``.
+        self._db_url = db_url
+        self._shared_engine: Any = None
         self._ws_config = ws_config
         self._embedder_factory = embedder_factory
         # Told when a repo's semantic index exists but cannot be opened, so
@@ -94,6 +319,7 @@ class RepoRegistry:
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
         # Serialises loads so concurrent callers can't overshoot the cap.
         self._load_lock = asyncio.Lock()
+        self._repo_ids: dict[str, str] = {}
         self._validate_public_identities()
 
     def _identity_key(self, value: str | Path) -> str:
@@ -188,8 +414,68 @@ class RepoRegistry:
                 return entry.alias
             if candidate.is_absolute() and candidate.resolve() == absolute:
                 return entry.alias
+        if candidate_text == ".":  # no member sits at the root: "." is the default
+            return self.get_default_alias()
+        matched = self.match_checkout(repo)
+        if matched is not None:
+            return matched[0]
         available = self.get_all_aliases()
         raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
+
+    def match_checkout(self, repo: str) -> tuple[str, CheckoutMatch] | None:
+        """The alias an absolute path inside one of the repos names, with the match.
+
+        Covers a subdirectory and another git worktree of an indexed repo (see
+        :func:`~repowise.core.git_head.match_checkout`). The checkout that
+        holds the path wins over another worktree, then the deepest repo.
+        """
+        if not Path(repo).is_absolute():
+            return None
+        best: tuple[str, CheckoutMatch] | None = None
+        for entry in self._ws_config.repos:
+            found = match_checkout(repo, (self._workspace_root / entry.path).resolve())
+            if found is None:
+                continue
+            rank = (found.same_checkout, found.depth)
+            if best is None or rank > (best[1].same_checkout, best[1].depth):
+                best = (entry.alias, found)
+        return best
+
+    def repo_id(self, repo: str) -> str | None:
+        """The repository id behind any identity ``resolve_repo_param`` accepts.
+
+        The id of the one row the repo's own index holds, the rule the
+        single-repo server uses; None when it is unknown, unindexed or holds
+        several. Synchronous for per-call auth checks: one read-only SQLite
+        query per alias, then cached, without loading the repo's context. On a
+        shared store, the id :meth:`ensure_repo_ids` read for the member.
+        """
+        try:
+            alias = self.resolve_repo_param(repo)
+        except ValueError:
+            return None
+        if not isinstance(alias, str):  # "all"
+            return None
+        cached = self._repo_ids.get(alias)
+        if cached is not None or self._db_url is not None:
+            return cached  # a shared store's ids come from ensure_repo_ids()
+        entry = self._ws_config.get_repo(alias)
+        if entry is None:
+            return None
+        db_path = repo_db_path((self._workspace_root / entry.path).resolve())
+        if not db_path.exists():
+            return None
+        try:
+            with contextlib.closing(
+                sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
+            ) as conn:
+                rows = conn.execute("SELECT id FROM repositories LIMIT 2").fetchall()
+        except sqlite3.Error:
+            return None
+        if len(rows) != 1:
+            return None
+        self._repo_ids[alias] = rows[0][0]
+        return rows[0][0]
 
     async def get(self, alias: str) -> RepoContext:
         """Get the ``RepoContext`` for *alias*, loading lazily if needed."""
@@ -224,6 +510,50 @@ class RepoRegistry:
             await self._dispose_context(alias)
         self._contexts.clear()
         self._access_order.clear()
+        if self._shared_engine is not None:
+            await self._shared_engine.dispose()
+            self._shared_engine = None
+
+    async def ensure_repo_ids(self) -> None:
+        """Read the members' repository ids from a shared store, when one is unknown.
+
+        Per-call auth checks read :meth:`repo_id` synchronously, so the ids are
+        read here first. A member indexed after the server started is found on
+        the next call. A no-op for per-repo stores and before the store opens.
+        """
+        if self._shared_engine is None:
+            return
+        if all(entry.alias in self._repo_ids for entry in self._ws_config.repos):
+            return
+        from sqlalchemy import select
+
+        from repowise.core.persistence.models import Repository
+
+        async with self._shared_engine.connect() as conn:
+            rows = (await conn.execute(select(Repository.id, Repository.local_path))).all()
+        by_path = {self._identity_key(path): repo_id for repo_id, path in rows}
+        for entry in self._ws_config.repos:
+            # As written and resolved: an indexer may have stored either
+            # spelling of a symlinked checkout.
+            path = self._workspace_root / entry.path
+            for checkout in (self._identity_key(path.resolve()), self._identity_key(path)):
+                if checkout in by_path:
+                    self._repo_ids[entry.alias] = by_path[checkout]
+                    break
+
+    async def _open_shared_store(self) -> Any:
+        """The engine on the configured database, opened once for every member."""
+        if self._shared_engine is None:
+            from repowise.core.persistence.database import create_engine, init_db
+
+            engine = create_engine(self._db_url, short_lived=False)
+            try:
+                await init_db(engine)
+            except BaseException:
+                await engine.dispose()
+                raise
+            self._shared_engine = engine
+        return self._shared_engine
 
     # -- Internal ----------------------------------------------------------
 
@@ -239,17 +569,32 @@ class RepoRegistry:
         from repowise.core.persistence.vector_store import InMemoryVectorStore
         from repowise.core.providers.embedding.base import KeylessEmbedder
 
-        db_path = repo_db_path(repo_path)
-        if not db_path.exists():
-            _log.warning("No wiki.db for repo '%s' at %s", alias, db_path)
-        engine, session_factory = await open_repo_db(repo_path)
-
-        fts = FullTextSearch(engine)
+        if self._db_url is not None:
+            engine = await self._open_shared_store()
+            await self.ensure_repo_ids()
+            repository_id = self._repo_ids.get(alias)
+            if repository_id is None:
+                # Not cached, so a member indexed later answers without a restart.
+                raise LookupError(
+                    f"No repositories found at {repo_path} in the configured database. "
+                    f"Run 'repowise init' in {repo_path} first."
+                )
+            session_factory = _repository_sessions(engine, repository_id)
+            fts = FullTextSearch(engine, repository_id=repository_id)
+            owned_engine = None  # shared: disposed by close(), never per context
+        else:
+            db_path = repo_db_path(repo_path)
+            if not db_path.exists():
+                _log.warning("No wiki.db for repo '%s' at %s", alias, db_path)
+            engine, session_factory = await open_repo_db(repo_path)
+            fts = FullTextSearch(engine)
+            owned_engine = engine
         try:
             await fts.ensure_index()
         except BaseException:
             # A timeout cancels here; don't leak the engine.
-            await engine.dispose()
+            if owned_engine is not None:
+                await owned_engine.dispose()
             raise
 
         # Seed placeholder vector stores.
@@ -268,7 +613,7 @@ class RepoRegistry:
             vector_store=vector_store,
             decision_store=vector_store,  # same store, decision: namespace
             vector_store_ready=vs_ready,
-            _engine=engine,
+            _engine=owned_engine,
         )
 
         # Load real vector stores in background; track task for cancellation on eviction
@@ -294,14 +639,22 @@ class RepoRegistry:
             if lance_dir.exists() and self._on_vector_store_error is not None:
                 self._on_vector_store_error(ctx.alias, exc)
 
+        from repowise.core.providers.embedding.base import is_semantic_embedder, warm_query_embedder
+
+        # A keyless store is never searched (``store_has_semantic_vectors``),
+        # so it is not worth opening.
+        has_index = lance_dir.exists() and is_semantic_embedder(embedder)
+        # Overlaps the import and open below; awaited before ready is set.
+        warmup = asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))
         try:
             try:
-                await asyncio.to_thread(__import__, "lancedb")
-                from repowise.core.persistence.vector_store import LanceDBVectorStore
+                if has_index:
+                    await asyncio.to_thread(__import__, "lancedb")
+                    from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()
+                    await warmup
                     # Repoint both stores to the same LanceDB table.
                     # Decisions live under the "decision:" page-id namespace.
                     ctx.vector_store = vs
@@ -315,6 +668,7 @@ class RepoRegistry:
                 )
                 _report(exc)
         finally:
+            warmup.cancel()  # a no-op once awaited; stops it on a failed open
             # Only signal ready if this context is still the active one.
             # If it was evicted before we finished loading, a fresh context
             # will have its own event — setting the stale one would leave the

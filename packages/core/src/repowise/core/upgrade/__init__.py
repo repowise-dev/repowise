@@ -9,7 +9,14 @@ never forced.
 
 from __future__ import annotations
 
-from .manager import UpgradeContext, apply_auto, assess, stamp
+from .manager import (
+    UpgradeContext,
+    apply_auto,
+    assess,
+    mark_wiki_rebuilt,
+    pending_wiki_rebuilds,
+    stamp,
+)
 from .registry import MIGRATIONS, Migration, migrations_between
 from .verdict import (
     UpgradeAction,
@@ -22,6 +29,7 @@ from .version import (
     PARSER_SCHEMA_VERSION,
     STORE_FORMAT_VERSION,
     STORE_FORMAT_VERSION_KEY,
+    WIKI_REBUILT_VERSION_KEY,
     WRITTEN_BY_VERSION_KEY,
 )
 
@@ -31,6 +39,7 @@ __all__ = [
     "PARSER_SCHEMA_VERSION",
     "STORE_FORMAT_VERSION",
     "STORE_FORMAT_VERSION_KEY",
+    "WIKI_REBUILT_VERSION_KEY",
     "WRITTEN_BY_VERSION_KEY",
     "Migration",
     "UpgradeAction",
@@ -40,6 +49,8 @@ __all__ = [
     "UpgradeVerdict",
     "apply_auto",
     "assess",
+    "mark_wiki_rebuilt",
     "migrations_between",
+    "pending_wiki_rebuilds",
     "stamp",
 ]

@@ -285,6 +285,28 @@ _GODOT_CALLBACK_NAMES: frozenset[str] = frozenset({
 })
 
 
+# Apex platform types the org runtime instantiates or calls into (from Setup,
+# an email service, a package install, ``sort()``), so a class extending or
+# implementing one is an entry point. Folded last segment, as heritage records it.
+APEX_PLATFORM_TYPES: frozenset[str] = frozenset({
+    # Async and scheduling
+    "schedulable", "queueable", "batchable", "finalizer",
+    # Collections and dynamic dispatch the runtime calls into
+    "comparable", "comparator", "iterable", "iterator", "callable",
+    # Test doubles the test runner calls
+    "stubprovider", "httpcalloutmock", "webservicemock",
+    # Configuration-registered handlers
+    "inboundemailhandler", "registrationhandler", "samljithandler",
+    "configurableselfreghandler", "logindiscoveryhandler",
+    "mydomainlogindiscoveryhandler", "authproviderpluginclass", "connectedappplugin",
+    "oauth2tokenexchangehandler", "installhandler", "uninstallhandler", "plugin",
+    "urlrewriter", "emailtemplateselector", "milestonetriggertimecalculator",
+    "quickactiondefaultshandler", "canvaslifecyclehandler", "eventcondition",
+    "asynccondition", "policycondition", "deploycallback", "cachebuilder",
+    "dynamicpicklist", "notificationaction",
+})
+
+
 def is_contract_method(
     sym_name: str,
     sym_kind: str | None,

@@ -5,14 +5,13 @@ import {
   MapLegend,
   NEUTRAL_FILL,
   MapLensSwitcher,
-  groupByModule,
   performanceBurden,
   performanceFill,
   performanceSentence,
   type CodeHealthMapFile,
 } from "../../src/health/code-health-map.js";
 import { NODE_RAMP_STOP } from "../../src/health/tokens.js";
-import { nodeAt, stubMapEnvironment } from "./map-test-utils.js";
+import { nextFrame, nodeAt, stubMapEnvironment } from "./map-test-utils.js";
 
 function f(
   file_path: string,
@@ -25,36 +24,13 @@ function f(
 
 beforeAll(stubMapEnvironment);
 
-describe("groupByModule", () => {
-  it("groups files by module, sums NLOC, sorts files biggest-first", () => {
-    const galaxies = groupByModule([
-      f("a/x.py", 100, "core"),
-      f("a/y.py", 40, "core"),
-      f("b/z.py", 60, "ui"),
-    ]);
-    const core = galaxies.find((g) => g.module === "core");
-    expect(core?.files).toHaveLength(2);
-    expect(core?.totalNloc).toBe(140);
-    expect(core?.maxNloc).toBe(100);
-    expect(core?.files.map((x) => x.nloc)).toEqual([100, 40]); // desc
-    // Galaxies themselves are ordered by total size (core 140 > ui 60).
-    expect(galaxies[0]?.module).toBe("core");
-  });
-
-  it("drops zero-NLOC files and buckets a null module as (ungrouped)", () => {
-    const galaxies = groupByModule([f("a.py", 0, "core"), f("b.py", 20, null)]);
-    expect(galaxies.find((g) => g.module === "core")).toBeUndefined();
-    expect(galaxies.find((g) => g.module === "(ungrouped)")?.files).toHaveLength(1);
-  });
-});
-
 describe("CodeHealthMap", () => {
   it("renders the empty state when there are no files", () => {
     const { getByText } = render(<CodeHealthMap files={[]} />);
     expect(getByText(/No files to map yet/i)).toBeInTheDocument();
   });
 
-  it("opens a file when its node is clicked", () => {
+  it("opens a file when its node is clicked", async () => {
     const onSelectFile = vi.fn();
     const files = [
       f("core/a.py", 120, "core", 3),
@@ -62,6 +38,7 @@ describe("CodeHealthMap", () => {
       f("ui/c.py", 40, "ui", 6),
     ];
     const { getByTestId } = render(<CodeHealthMap files={files} onSelectFile={onSelectFile} />);
+    await nextFrame();
     fireEvent.click(getByTestId("map-canvas"), nodeAt(files, "core/a.py"));
     expect(onSelectFile).toHaveBeenCalledWith("core/a.py");
   });
@@ -76,48 +53,49 @@ describe("CodeHealthMap", () => {
     expect(container.querySelectorAll("canvas")).toHaveLength(2);
   });
 
-  it("zooms into a galaxy from its name and Escape returns to the overview", async () => {
+  it("opens an area from its name, and Escape returns to the repository", async () => {
     const files = [f("core/a.py", 120, "core"), f("ui/c.py", 40, "ui")];
-    const { getByText, queryByText, getByRole, findByRole } = render(<CodeHealthMap files={files} />);
-    // Names are placed by the frame loop, and a field this small names all.
-    fireEvent.click(await findByRole("button", { name: "core" }));
-    expect(getByText("← Overview")).toBeInTheDocument();
+    const { getByRole, getByTestId } = render(<CodeHealthMap files={files} />);
+    await nextFrame();
+    fireEvent.click(getByTestId("map-field").parentElement!.querySelector('[data-area="core"]')!);
+    expect(getByTestId("map-field").getAttribute("data-area")).toBe("core");
+    expect(getByRole("navigation", { name: "Breadcrumb" }).textContent).toContain("core");
     fireEvent.keyDown(getByRole("group", { name: /Code health map/ }), { key: "Escape" });
-    expect(queryByText("← Overview")).not.toBeInTheDocument();
+    expect(getByTestId("map-field").getAttribute("data-area")).toBe("");
   });
 
-  it("leaves an Escape aimed at something else alone", async () => {
-    // The listener used to be on the window, so dismissing anything else on
-    // the page - the file drawer this map opens, most of all - also reset the
-    // zoom underneath it.
+  it("Backspace climbs one level and the breadcrumb climbs to any", () => {
+    const onAreaChange = vi.fn();
+    const files = [f("pkg/core/a.py", 120, "core"), f("pkg/core/b.py", 20, "core"), f("pkg/ui/c.py", 40, "ui")];
+    const { getByRole } = render(<CodeHealthMap files={files} area="pkg/core" onAreaChange={onAreaChange} />);
+    fireEvent.keyDown(getByRole("group", { name: /Code health map/ }), { key: "Backspace" });
+    expect(onAreaChange).toHaveBeenLastCalledWith("pkg");
+    fireEvent.click(getByRole("button", { name: "Repository" }));
+    expect(onAreaChange).toHaveBeenLastCalledWith("");
+  });
+
+  it("leaves an Escape aimed at something else alone", () => {
+    const onAreaChange = vi.fn();
     const files = [f("core/a.py", 120, "core"), f("ui/c.py", 40, "ui")];
-    const { getByText, findByRole } = render(<CodeHealthMap files={files} />);
-    fireEvent.click(await findByRole("button", { name: "core" }));
+    render(<CodeHealthMap files={files} area="core" onAreaChange={onAreaChange} />);
     fireEvent.keyDown(document.body, { key: "Escape" });
-    expect(getByText("← Overview")).toBeInTheDocument();
+    expect(onAreaChange).not.toHaveBeenCalled();
   });
 
-  it("keeps an Escape it used from reaching the drawer behind it", async () => {
-    // The file drawer dismisses on a document-level capture listener; one
-    // press must not both leave the galaxy and close the drawer.
+  it("keeps an Escape it used from reaching anything behind it", () => {
     const files = [f("core/a.py", 120, "core"), f("ui/c.py", 40, "ui")];
-    const { getByRole, findByRole, queryByText } = render(<CodeHealthMap files={files} />);
-    fireEvent.click(await findByRole("button", { name: "core" }));
-    const drawer = vi.fn();
-    document.addEventListener("keydown", drawer, true);
-    const field = getByRole("group", { name: /Code health map/ });
-    fireEvent.keyDown(field, { key: "Escape" });
-    expect(queryByText("← Overview")).not.toBeInTheDocument();
-    expect(drawer).not.toHaveBeenCalled();
-    // With nothing left to climb out of, the next Escape is the drawer's.
-    fireEvent.keyDown(field, { key: "Escape" });
-    expect(drawer).toHaveBeenCalledTimes(1);
-    document.removeEventListener("keydown", drawer, true);
+    const { getByRole, getByTestId } = render(<CodeHealthMap files={files} area="core" onAreaChange={vi.fn()} />);
+    const behind = vi.fn();
+    document.addEventListener("keydown", behind, true);
+    fireEvent.keyDown(getByRole("group", { name: /Code health map/ }), { key: "Escape" });
+    expect(behind).not.toHaveBeenCalled();
+    document.removeEventListener("keydown", behind, true);
+    expect(getByTestId("map-field").getAttribute("data-area")).toBe("core");
   });
 
   it("offers zoom and fit controls with names", () => {
     const { getByRole } = render(<CodeHealthMap files={[f("a.py", 30, "core")]} />);
-    for (const name of ["Zoom in", "Zoom out", "Fit the whole field"]) {
+    for (const name of ["Zoom in", "Zoom out", "Frame the selected area"]) {
       expect(getByRole("button", { name })).toBeInTheDocument();
     }
   });
@@ -125,7 +103,7 @@ describe("CodeHealthMap", () => {
   it("shows the on-canvas health legend on the five canonical bands", () => {
     const { getByText } = render(<CodeHealthMap files={[f("a.py", 30, "core")]} />);
     expect(getByText("Code health")).toBeInTheDocument();
-    expect(getByText(/galaxy = module/i)).toBeInTheDocument();
+    expect(getByText(/disc = folder/i)).toBeInTheDocument();
     expect(getByText("Excellent · 8.5+")).toBeInTheDocument();
     expect(getByText("Good · 7.0 to 8.5")).toBeInTheDocument();
     expect(getByText("Fair · 5.5 to 7.0")).toBeInTheDocument();
@@ -257,10 +235,28 @@ describe("map chrome, off canvas", () => {
     expect(onOverlayChange).toHaveBeenCalledWith("performance");
   });
 
+  it("puts the lenses past the primary ones behind More, and keeps the active one visible", () => {
+    const onOverlayChange = vi.fn();
+    const lenses = ["health", "hotspot", "owner", "performance", "coverage"] as const;
+    const primary = ["health", "hotspot", "owner"] as const;
+    const { getByRole, queryByRole, rerender } = render(
+      <MapLensSwitcher overlay="health" onOverlayChange={onOverlayChange} lenses={[...lenses]} primary={[...primary]} />,
+    );
+    expect(queryByRole("radio", { name: "Performance" })).not.toBeInTheDocument();
+    fireEvent.click(getByRole("button", { name: "More" }));
+    fireEvent.click(getByRole("menuitemradio", { name: "Performance" }));
+    expect(onOverlayChange).toHaveBeenCalledWith("performance");
+    rerender(
+      <MapLensSwitcher overlay="performance" onOverlayChange={onOverlayChange} lenses={[...lenses]} primary={[...primary]} />,
+    );
+    expect(getByRole("radio", { name: "Performance" })).toBeChecked();
+  });
+
   it("MapLegend renders the active lens's bands and caption", () => {
     const { getByText } = render(<MapLegend overlay="performance" />);
     expect(getByText("5 or more")).toBeInTheDocument();
-    expect(getByText("Nothing surfaced")).toBeInTheDocument();
+    expect(getByText("Nothing surfaced or not analysed")).toBeInTheDocument();
+    expect(getByText("No issues found")).toBeInTheDocument();
     // The caption refuses the runtime claim the colour could be read as making,
     // and the rows are grouped so a flat column of swatches is not the whole key.
     expect(getByText(/never a runtime measurement/i)).toBeInTheDocument();

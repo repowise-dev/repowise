@@ -8,8 +8,9 @@ edges whose target resolved to a row in the ``external_systems`` table.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from repowise.core.analysis.c4.labels import coupling_strength, relation_label
 from repowise.core.analysis.c4.relations import roll_up_edges
@@ -22,16 +23,40 @@ from .models import Relation
 async def load_edges(
     session: AsyncSession, repository_id: str
 ) -> list[tuple[str, str, str]]:
-    """Read every graph edge once, as ``(source, target, type)`` rows.
+    """Read every file-to-file graph edge once, as ``(source, target, type)`` rows.
 
     Split out so a caller rolling the same edges up several ways — by
     container and by component, say — pays for one read instead of one per
     aggregation.
+
+    Only edges between ``file`` nodes (external-system nodes are ``file``
+    nodes too) are read: the roll-up keys file endpoints alone, and the symbol
+    edges it would skip are most of the table.
     """
+    # Joined on the unique (repository_id, node_id) key, not filtered with two
+    # ``IN (subquery)`` lists: SQLite probed those as a source x target product
+    # of index seeks, about 9 s on a 3k-file repo against 0.5 s for the join.
+    source = aliased(GraphNode)
+    target = aliased(GraphNode)
     result = await session.execute(
-        select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.edge_type).where(
-            GraphEdge.repository_id == repository_id
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.edge_type)
+        .join(
+            source,
+            and_(
+                source.repository_id == GraphEdge.repository_id,
+                source.node_id == GraphEdge.source_node_id,
+                source.node_type == "file",
+            ),
         )
+        .join(
+            target,
+            and_(
+                target.repository_id == GraphEdge.repository_id,
+                target.node_id == GraphEdge.target_node_id,
+                target.node_type == "file",
+            ),
+        )
+        .where(GraphEdge.repository_id == repository_id)
     )
     return list(result.all())
 

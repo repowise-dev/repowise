@@ -17,6 +17,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.analysis.health.biomarker_labels import biomarker_phrase
+
 if TYPE_CHECKING:
     from repowise.server.chat_datasets import Dataset
 
@@ -131,7 +133,7 @@ def _from_get_risk(target: str, result: Mapping[str, Any]) -> list[dict[str, Any
             where = f" in {function}" if isinstance(function, str) and function else f" in {name}"
             out.append(
                 _suggestion(
-                    f"Explain the {_humanize(kind)} finding{where}", "page", "get_health"
+                    f"Explain the {biomarker_phrase(kind)} finding{where}", "page", "get_health"
                 )
             )
 
@@ -177,7 +179,7 @@ def _from_get_health(target: str, result: Mapping[str, Any]) -> list[dict[str, A
         if isinstance(kind, str) and kind:
             out.append(
                 _suggestion(
-                    f"Explain the {_humanize(kind)} finding{where}", "page", "get_health"
+                    f"Explain the {biomarker_phrase(kind)} finding{where}", "page", "get_health"
                 )
             )
 
