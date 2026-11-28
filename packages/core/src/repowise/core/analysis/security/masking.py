@@ -52,6 +52,69 @@ def _template_stop(raw_backticks: bool) -> re.Pattern[str]:
     return _RAW_BACKTICK_STOP if raw_backticks else _TEMPLATE_STOP
 
 
+def _line_comment_end(source: str, start: int) -> int:
+    """Offset of the newline ending the line comment at *start*, or the end of *source*."""
+    stop = source.find("\n", start)
+    return len(source) if stop == -1 else stop
+
+
+def _verbatim_string_end(source: str, start: int) -> tuple[int, bool]:
+    """Offset past the next ``""`` or ``"`` in a C# verbatim string, and whether it closed."""
+    match = _VERBATIM_STRING_STOP.search(source, start)
+    if match is None:
+        return len(source), False
+    return match.end(), match.group() == '"'
+
+
+def _quoted_end(source: str, start: int, pattern: re.Pattern[str]) -> tuple[int, str | None]:
+    """Offset past the next stop *pattern* finds, and the closing token
+    (``None`` for an escape or the end of *source*)."""
+    match = pattern.search(source, start)
+    if match is None:
+        return len(source), None
+    # A backslash escapes the character after it, whatever it is.
+    if match.group() == "\\":
+        return min(match.end() + 1, len(source)), None
+    return match.end(), match.group()
+
+
+def _interpolated_end(
+    source: str, start: int, quote: str, triple: bool, verbatim: bool
+) -> tuple[int, str]:
+    """Offset past the next stop in an interpolated string, and its action:
+    ``"open"`` a hole, ``"close"`` the string, ``"more"`` stays, ``"end"`` ran out."""
+    pattern = _INTERPOLATED_VERBATIM_STOP if verbatim else _INTERPOLATED_STOP
+    match = pattern.search(source, start)
+    if match is None:
+        return len(source), "end"
+    matched, pos = match.group(), match.start()
+    if matched == "\\":
+        return min(match.end() + 1, len(source)), "more"
+    if matched in "{}":
+        if source.startswith(matched * 2, pos):
+            return pos + 2, "more"
+        return pos + 1, "open" if matched == "{" else "more"
+    # The quote itself: doubled in a verbatim string, or one of three.
+    if triple:
+        if source.startswith(quote * 3, pos):
+            return pos + 3, "close"
+        return pos + 1, "more"
+    if verbatim and source.startswith(quote * 2, pos):
+        return pos + 2, "more"
+    return pos + 1, "close"
+
+
+def _string_prefix(source: str, start: int, verbatim_strings: bool) -> tuple[bool, bool]:
+    """Whether the ``"`` at *start* opens an interpolated string, and a verbatim one."""
+    if start == 0:
+        return False, False
+    if source.endswith(("$@", "@$"), 0, start):
+        return True, True
+    if source.endswith("$", 0, start):
+        return True, False
+    return False, verbatim_strings and source.endswith("@", 0, start)
+
+
 def mask_comments_and_strings(
     source: str,
     *,
@@ -79,6 +142,10 @@ def mask_comments_and_strings(
         out.append(_NOT_NEWLINE.sub(" ", source[start:end]))
         copied = end
 
+    def blank_string(start: int, end: int) -> None:
+        if strings:
+            blank(start, end)
+
     size = len(source)
     i = 0
     state = "code"
@@ -88,8 +155,7 @@ def mask_comments_and_strings(
     stack: list[dict[str, Any]] = []
     while i < size:
         if state == "line_comment":
-            stop = source.find("\n", i)
-            stop = size if stop == -1 else stop
+            stop = _line_comment_end(source, i)
             blank(i, stop)
             i = stop + 1
             state = "code"
@@ -100,60 +166,35 @@ def mask_comments_and_strings(
             i = stop
             state = "code"
             continue
+        if state == "string" and verbatim and quote == '"':
+            stop, closed = _verbatim_string_end(source, i)
+            blank_string(i, stop)
+            i = stop
+            if closed:
+                state = "code"
+                verbatim = False
+            continue
         if state in {"string", "template"}:
-            if state == "string" and verbatim and quote == '"':
-                match = _VERBATIM_STRING_STOP.search(source, i)
-                stop = size if match is None else match.end()
-                if strings:
-                    blank(i, stop)
-                i = stop
-                if match is not None and match.group() == '"':
-                    state = "code"
-                    verbatim = False
-                continue
             pattern = (
                 _STRING_STOP[quote * (3 if triple else 1)]
                 if state == "string"
                 else _template_stop(raw_backticks)
             )
-            match = pattern.search(source, i)
-            # A backslash escapes the character after it, whatever it is.
-            stop = size if match is None else min(match.end() + (match.group() == "\\"), size)
-            if strings:
-                blank(i, stop)
+            stop, closer = _quoted_end(source, i, pattern)
+            blank_string(i, stop)
             i = stop
-            if match is not None and match.group() != "\\":
+            if closer is not None:
                 state = "code"
-                if match.group() == "${":
+                if closer == "${":
                     stack.append({"kind": "template", "depth": 1})
             continue
-
         if state == "interpolated":
-            pattern = _INTERPOLATED_VERBATIM_STOP if verbatim else _INTERPOLATED_STOP
-            match = pattern.search(source, i)
-            if match is None:
-                if strings:
-                    blank(i, size)
+            stop, action = _interpolated_end(source, i, quote, triple, verbatim)
+            blank_string(i, stop)
+            if action == "end":
                 break
-            matched = match.group()
-            pos = match.start()
-            if matched == "\\":
-                stop = min(match.end() + 1, size)
-                if strings:
-                    blank(i, stop)
-                i = stop
-                continue
-            if matched == "{":
-                if source.startswith("{{", pos):
-                    stop = pos + 2
-                    if strings:
-                        blank(i, stop)
-                    i = stop
-                    continue
-                stop = pos + 1
-                if strings:
-                    blank(i, stop)
-                i = stop
+            i = stop
+            if action == "open":
                 stack.append(
                     {
                         "kind": "interpolated",
@@ -164,45 +205,9 @@ def mask_comments_and_strings(
                     }
                 )
                 state = "code"
-                continue
-            if matched == "}":
-                if source.startswith("}}", pos):
-                    stop = pos + 2
-                    if strings:
-                        blank(i, stop)
-                    i = stop
-                    continue
-                stop = pos + 1
-                if strings:
-                    blank(i, stop)
-                i = stop
-                continue
-            if matched == quote:
-                if triple:
-                    if source.startswith(quote * 3, pos):
-                        stop = pos + 3
-                        if strings:
-                            blank(i, stop)
-                        i = stop
-                        state = "code"
-                        continue
-                    stop = pos + 1
-                    if strings:
-                        blank(i, stop)
-                    i = stop
-                    continue
-                if verbatim and source.startswith(quote * 2, pos):
-                    stop = pos + 2
-                    if strings:
-                        blank(i, stop)
-                    i = stop
-                    continue
-                stop = pos + 1
-                if strings:
-                    blank(i, stop)
-                i = stop
+            elif action == "close":
                 state = "code"
-                continue
+            continue
 
         match = _CODE_STOP.search(source, i)
         if match is None:
@@ -213,8 +218,7 @@ def mask_comments_and_strings(
             stack[-1]["depth"] += 1
             i += 1
         elif stack and char == "}":
-            if strings:
-                blank(i, i + 1)
+            blank_string(i, i + 1)
             stack[-1]["depth"] -= 1
             i += 1
             if stack[-1]["depth"] == 0:
@@ -233,36 +237,25 @@ def mask_comments_and_strings(
             i += 2
             state = "block_comment"
         elif char == "`":
-            if strings:
-                blank(i, i + 1)
+            blank_string(i, i + 1)
             i += 1
             state = "template"
+        elif lifetimes and char == "'":
+            char_lit = _RUST_CHAR_LITERAL.match(source, i)
+            if char_lit is not None:
+                blank_string(i, char_lit.end())
+                i = char_lit.end()
+            else:
+                # Rust lifetime ('a, 'static, '_) or loop label ('outer:).
+                i += 1
         elif char in {"'", '"'}:
-            if lifetimes and char == "'":
-                char_lit = _RUST_CHAR_LITERAL.match(source, i)
-                if char_lit is not None:
-                    if strings:
-                        blank(i, char_lit.end())
-                    i = char_lit.end()
-                else:
-                    # Rust lifetime ('a, 'static, '_) or loop label ('outer:).
-                    i += 1
-                continue
             quote = char
             triple = source.startswith(quote * 3, i)
             width = 3 if triple else 1
-            is_interpolated = False
-            verbatim = False
-            if char == '"' and i > 0:
-                if source.endswith(("$@", "@$"), 0, i):
-                    is_interpolated = True
-                    verbatim = True
-                elif source.endswith("$", 0, i):
-                    is_interpolated = True
-                elif verbatim_strings and source.endswith("@", 0, i):
-                    verbatim = True
-            if strings:
-                blank(i, i + width)
+            is_interpolated, verbatim = (
+                _string_prefix(source, i, verbatim_strings) if char == '"' else (False, False)
+            )
+            blank_string(i, i + width)
             i += width
             state = "interpolated" if is_interpolated else "string"
         else:
