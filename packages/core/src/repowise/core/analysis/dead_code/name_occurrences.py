@@ -57,7 +57,11 @@ from ...ingestion.extractors.visibility import (
     _TS_EXPORT_DEFAULT_NAME_RE,
     _TS_EXPORT_LIST_SOURCE_RE,
 )
-from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
+from ...ingestion.languages.js_config_values import (
+    jest_root_dirs,
+    plugin_path_arguments,
+    value_spans,
+)
 from ...ingestion.languages.registry import REGISTRY
 from ...ingestion.models import TS_JS_LANGUAGES
 from ...ingestion.source_mask import can_mask, mask_source
@@ -102,6 +106,7 @@ def _is_js_ts(path: str | None) -> bool:
     if not path:
         return False
     return PurePosixPath(path).suffix.lower() in _JS_TS_EXTENSIONS
+
 
 #: Where an unused internal lands when its own file could not be searched for
 #: it: the declaration's extent is unknown, or the name is one the scan cannot
@@ -200,9 +205,7 @@ def _uses_in_own_file(
       site, and excluding the body would drop that use and leave a live symbol
       claiming the top tier.
     """
-    spanned = [
-        f for f in findings if f.start_line is not None and f.end_line is not None
-    ]
+    spanned = [f for f in findings if f.start_line is not None and f.end_line is not None]
     out: dict[int, _Verdict] = {
         id(f): (_ABSENT if f in spanned else _SPAN_UNKNOWN) for f in findings
     }
@@ -413,9 +416,7 @@ def _verdicts(
     """
     # Built from the candidates alone, which is what keeps a whole-repo scan
     # affordable: the index only ever holds the names some finding asks about.
-    answerable = {
-        searchable_token(f.symbol_name, path=f.file_path) for f in candidates
-    } - {b""}
+    answerable = {searchable_token(f.symbol_name, path=f.file_path) for f in candidates} - {b""}
     occurrences = occurrence_files(source_map, answerable)
 
     out: dict[int, _Verdict] = {}
@@ -607,9 +608,7 @@ def drop_internals_used_in_own_file(
 #: Whether a run names a candidate is decided by the lookup. The lookbehind and
 #: possessive run only skip starts inside a word, which can never be leftmost:
 #: same matches, without rescanning each word from every one of its letters.
-_PATH_TOKEN_RE = re.compile(
-    rb"(?<![A-Za-z0-9_@~+\-])[A-Za-z0-9_@~+\-]*+[./][A-Za-z0-9_.@~+\-/]*"
-)
+_PATH_TOKEN_RE = re.compile(rb"(?<![A-Za-z0-9_@~+\-])[A-Za-z0-9_@~+\-]*+[./][A-Za-z0-9_.@~+\-/]*")
 
 
 def _path_keys(path: str) -> list[str]:
@@ -671,9 +670,20 @@ def _files_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, 
     unnamed: set[bytes] = set()
     for path, blob in sorted(source_map.items()):
         base = path.rpartition("/")[0]
-        for target in _targets_in(blob, wanted, tails, base, unnamed) - {path}:
+        scan_blob = _expand_root_dir(blob, path) if is_tool_config(path) else blob
+        for target in _targets_in(scan_blob, wanted, tails, base, unnamed) - {path}:
             named_in.setdefault(target, []).append(path)
     return named_in
+
+
+def _expand_root_dir(blob: bytes, config: str, source: bytes | None = None) -> bytes:
+    """Replace ``<rootDir>/`` in *blob* using *source*'s literal ``rootDir`` values when present."""
+    if b"<rootDir>/" not in blob:
+        return blob
+    roots = jest_root_dirs(blob if source is None else source, config)
+    if not roots:
+        return blob
+    return b"\n".join(blob.replace(b"<rootDir>/", f"{r}/".encode() if r else b"./") for r in roots)
 
 
 def _targets_in(
@@ -807,7 +817,7 @@ class _ConfigLoads:
             # a bare word argument is a name, not a file, so it needs a "/".
             paths = [f'"{s}"'.encode() for s in plugin_path_arguments(text) if "/" in s]
             spans = value_spans(text, _TOOL_CONFIG_LOAD_KEYS)
-            self._values[config] = b"\n".join([*spans, *paths])
+            self._values[config] = _expand_root_dir(b"\n".join([*spans, *paths]), config, text)
         return self._values[config]
 
 
@@ -818,6 +828,8 @@ def _cap_named_by_path(finding: DeadCodeFindingData, namers: list[str] | None) -
     finding.confidence = RISK_CAP_CONFIDENCE
     finding.safe_to_delete = False
     finding.evidence.append(f"Named by path in {namers[0]}, which may load it without an import")
+
+
 def _is_reference_assembly(path: str) -> bool:
     """A .NET reference-assembly source: ``src/libraries/X/ref/X.cs``."""
     return path.endswith(".cs") and "/ref/" in f"/{path}"

@@ -273,3 +273,26 @@ def test_plugin_call_text_inside_a_string_is_not_a_load(config):
     assert not _dropped("src/old.ts", {"next.config.ts": config})
     # A real call after the literal still loads its file.
     assert _dropped("src/old.ts", {"next.config.ts": config + 'somePlugin("./src/old.ts");\n'})
+
+
+def test_jest_non_root_rootdir_setup_file_is_loaded():
+    config = 'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };\n'
+    assert _dropped("src/setup.ts", {"jest.config.js": config})
+    assert _dropped("pkg/src/setup.ts", {"pkg/jest.config.js": config})
+    # Without a matching rootDir, a setup file in another directory is not dropped.
+    assert not _dropped("other/setup.ts", {"jest.config.js": config})
+    # Multi-project config with distinct rootDir entries resolves each project's setup file.
+    multi = (
+        "module.exports = { projects: ["
+        '{ rootDir: "packages/a", setupFiles: ["<rootDir>/x.ts"] }, '
+        '{ rootDir: "packages/b", setupFiles: ["<rootDir>/y.ts"] }'
+        "] };\n"
+    )
+    assert _dropped("packages/a/x.ts", {"jest.config.js": multi})
+    assert _dropped("packages/b/y.ts", {"jest.config.js": multi})
+    # Computed rootDir must not treat the first string argument as rootDir.
+    computed = (
+        'module.exports = { rootDir: path.join(__dirname, "packages", "app"), '
+        'setupFiles: ["<rootDir>/setup.ts"] };\n'
+    )
+    assert not _dropped("packages/x/packages/setup.ts", {"packages/x/jest.config.js": computed})

@@ -103,6 +103,65 @@ def test_a_setup_path_resolves_against_the_config_or_any_directory_above() -> No
     assert resolve_setup_spec("@testing-library/jest-dom", "web/config/jest.config.js", ctx) is None
 
 
+def test_jest_non_root_rootdir_resolves_rootdir_setup_spec() -> None:
+    graph, parsed, ctx = _ctx(
+        {
+            "package.json": "{}",
+            "jest.config.js": (
+                'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };'
+            ),
+            "src/setup.ts": "export const x = 1;\n",
+            "src/add.test.ts": "",
+            "pkg/package.json": "{}",
+            "pkg/jest.config.js": (
+                'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };'
+            ),
+            "pkg/src/setup.ts": "",
+            "pkg/src/sub.test.ts": "",
+        }
+    )
+    assert resolve_setup_spec("<rootDir>/setup.ts", "jest.config.js", ctx) == "src/setup.ts"
+    assert resolve_setup_spec("<rootDir>/setup.ts", "pkg/jest.config.js", ctx) == "pkg/src/setup.ts"
+
+    added = _add_setup_edges(graph, parsed, ctx, ctx.path_set)
+    assert added == 3
+    assert graph.has_edge("src/add.test.ts", "src/setup.ts")
+    assert graph.has_edge("pkg/src/sub.test.ts", "pkg/src/setup.ts")
+
+
+def test_jest_multi_project_rootdirs_and_computed_rootdir() -> None:
+    graph, parsed, ctx = _ctx(
+        {
+            "package.json": "{}",
+            "jest.config.js": (
+                "module.exports = { projects: ["
+                '{ rootDir: "packages/a", setupFiles: ["<rootDir>/x.ts"] }, '
+                '{ rootDir: "packages/b", setupFiles: ["<rootDir>/y.ts"] }'
+                "] };"
+            ),
+            "packages/a/x.ts": "",
+            "packages/b/y.ts": "",
+            "packages/a/a.test.ts": "",
+            "packages/x/package.json": "{}",
+            "packages/x/jest.config.js": (
+                'module.exports = { rootDir: path.join(__dirname, "packages", "app"), '
+                'setupFiles: ["<rootDir>/setup.ts"] };'
+            ),
+            "packages/x/packages/setup.ts": "",
+            "packages/x/setup.ts": "",
+        }
+    )
+    assert resolve_setup_spec("<rootDir>/x.ts", "jest.config.js", ctx) == "packages/a/x.ts"
+    assert resolve_setup_spec("<rootDir>/y.ts", "jest.config.js", ctx) == "packages/b/y.ts"
+    # Computed path.join(__dirname, "packages", "app") must not mis-read "packages" as rootDir.
+    assert resolve_setup_spec("<rootDir>/setup.ts", "packages/x/jest.config.js", ctx) == (
+        "packages/x/setup.ts"
+    )
+    _add_setup_edges(graph, parsed, ctx, ctx.path_set)
+    assert graph.has_edge("packages/a/a.test.ts", "packages/a/x.ts")
+    assert graph.has_edge("packages/a/a.test.ts", "packages/b/y.ts")
+
+
 def test_tests_a_config_runs_get_an_edge_to_its_setup_files() -> None:
     graph, parsed, ctx = _ctx(
         {
