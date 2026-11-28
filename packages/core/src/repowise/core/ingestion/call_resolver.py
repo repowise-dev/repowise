@@ -2070,7 +2070,9 @@ class CallResolver(
         symbol = self._symbols_by_id[sym_id]
         if symbol.kind in _TYPE_KINDS:
             return True
-        # Construction is marked only in C#, where a function is a constructor or a delegate.
+        if symbol.parent_name and id_segment_name(symbol.parent_name) == symbol.name:
+            return True  # a constructor
+        # Construction is marked only in C#, where a delegate is indexed as a function.
         return symbol.language == "csharp" and symbol.kind == "function"
 
     def _flat_hit_is_stranger(self, call: CallSite, callee_id: str) -> bool:
