@@ -65,7 +65,7 @@ def _extract_imports(
             continue
         seen_imports[dedup_key] = []
 
-        module_text = node_text(module_nodes[0], src).strip().strip("\"'` ")
+        module_text = node_text(module_nodes[0], src).strip().strip("\"'` <>")
         if not module_text:
             continue
 
