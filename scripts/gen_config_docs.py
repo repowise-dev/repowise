@@ -97,6 +97,8 @@ _ENV_AREA_ORDER = (
     "evidence",
     "health",
     "performance",
+    # Filled only by installed plugins, which this script never loads: no rows.
+    "plugins",
     "report",
 )
 

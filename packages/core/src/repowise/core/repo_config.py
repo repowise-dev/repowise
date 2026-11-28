@@ -61,6 +61,8 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "mcp",
             # Read by a process when it starts (the MCP cache warmup).
             "performance",
+            # Plugin settings, read by a plugin's source when it syncs.
+            "plugins",
             # Version history kept per page: trims old rows, never changes a page.
             "wiki",
         }

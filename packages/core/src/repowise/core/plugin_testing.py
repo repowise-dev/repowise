@@ -113,20 +113,23 @@ def check_plugin(target: str) -> list[SeamCheck]:
     Returns one :class:`SeamCheck` per thing it registered, or a single
     ``load`` failure when it does not load (an import error, a raising
     ``register()``, or a ``MIN_PLUGIN_API_VERSION`` newer than this repowise).
-    Every seam implementation the plugin registered is undone afterwards, so
-    a test run is not changed by the check; built-in implementations imported
+    Every seam implementation and setting the plugin registered is undone
+    afterwards, so a test run is not changed by the check, and a plugin that
+    already loaded can be checked again; built-in implementations imported
     meanwhile stay, as do commands, tools and hooks it registered.
     """
     from repowise.core.registry import plugins
+    from repowise.core.settings.registry import plugin_settings_set_aside
 
     record = plugins.PluginRecord(target, "check", target)
     saved = {
         name: (dict(r._impls), dict(r._owners), r._chosen) for name, r in plugins.seams().items()
     }
     try:
-        with plugins._lock:
-            plugins._load(record)
-        return check_record(record)
+        with plugin_settings_set_aside():
+            with plugins._lock:
+                plugins._load(record)
+            return check_record(record)
     finally:
         _undo_registrations(record, saved)
 

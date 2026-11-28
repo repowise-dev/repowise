@@ -946,6 +946,21 @@ never as zero. How evidence is collected and joined:
 | `lead_min_runs` | `2` | >= 2 | Independent runs, in workload classes that may lead, in which a function must be ranked to become a lead candidate without the share rule. |
 <!-- END GENERATED settings:evidence -->
 
+## The `plugins:` block
+
+Settings that installed plugins declare, one block per plugin. When
+`plugins.<plugin>.<name>` has no value in the file, repowise reads
+`REPOWISE_PLUGIN_<PLUGIN>_<NAME>`. Credentials are read from that variable
+only. `repowise config list --area plugins` shows what the installed plugins
+declare, and `repowise plugins` shows which required ones still need a value.
+See [Settings for a plugin](PLUGINS.md#settings-for-a-plugin).
+
+```yaml
+plugins:
+  linear:
+    team: ENG
+```
+
 ## The `refactoring:` block
 
 Tunes the Extract Class / Extract Method / Extract Helper / Move Method / Break

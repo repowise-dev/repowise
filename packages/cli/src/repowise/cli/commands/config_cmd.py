@@ -40,6 +40,10 @@ def config_group() -> None:
     `explain <key>` says what one does, `set <key> <value>` changes it and
     prints the undo command, `reset <key>` goes back to the default.
     """
+    from repowise.core.registry.plugins import load_plugins
+
+    # Installed plugins add their settings as they load (the plugins area).
+    load_plugins()
 
 
 # ---------------------------------------------------------------------------

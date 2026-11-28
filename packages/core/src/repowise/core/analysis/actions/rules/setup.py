@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.evidence.setup import EVIDENCE_SETUP, SETUP_COMMAND, coverage_ingest_line
+from repowise.core.source_sync import sync_command
 
 from ..model import Action, ActionDetail, RuleOutcome, WhyFact, fingerprint
 from ..setup import AGENT_CALLS_UNLOCK, NAMED_FILES, SYNCED_COMMITS_UNLOCK, SetupFacts
@@ -176,6 +177,33 @@ def evidence_found(facts: SetupFacts) -> RuleOutcome:
     )
 
 
+def sources_unsynced(facts: SetupFacts) -> RuleOutcome:
+    rule = "sources_unsynced"
+    names = facts.unsynced_sources
+    if names is None:
+        return _unknown(rule, facts, "sources")
+    if not names:
+        return RuleOutcome(rule, "evaluated", "Every configured plugin source has synced.")
+    title = (
+        f"Sync the {code(names[0])} source"
+        if len(names) == 1
+        else f"Sync the {len(names)} plugin sources that are set up"
+    )
+    return _step(
+        rule,
+        title=title,
+        impact=(
+            "Its settings are set, but it has not fetched yet. `repowise update` "
+            "syncs it from then on."
+        ),
+        why=(WhyFact("sources", ", ".join(names)),),
+        surface="setup",
+        done_when="Each configured source has synced once.",
+        command=sync_command(),
+        marks=names,
+    )
+
+
 def decisions_unchecked(facts: SetupFacts) -> RuleOutcome:
     rule = "decisions_unchecked"
     count = facts.background_records
@@ -314,6 +342,7 @@ SETUP_RULES: tuple[SetupRule, ...] = (
     sync_hook_missing,
     coverage_found,
     evidence_found,
+    sources_unsynced,
     decisions_unchecked,
     docs_model_ready,
     settings_suggested,

@@ -107,6 +107,29 @@ def _plugin_rows(records: list) -> list[dict]:
     return rows
 
 
+def _settings_state(rows: list[dict]) -> None:
+    """Add ``configured`` and ``missing`` (each unset required setting and its fix) to each row.
+
+    Read against the repository in the current directory; a plugin with no
+    settings is configured.
+    """
+    from pathlib import Path
+
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
+    from repowise.core.settings import get
+    from repowise.core.settings.plugins import fix_command, source_values
+
+    try:
+        config = load_repo_config(Path.cwd())
+    except RepoConfigError:
+        config = {}
+    for row in rows:
+        keys = [entry.split(":", 1)[1] for entry in row["seams"] if entry.startswith("setting:")]
+        _plain, _secrets, missing = source_values([get(k) for k in keys], config)
+        row["configured"] = not missing
+        row["missing"] = [{"key": s.key, "fix": fix_command(s)} for s in missing]
+
+
 @click.group("plugins", invoke_without_command=True)
 @format_option()
 @click.pass_context
@@ -130,6 +153,7 @@ def _list_plugins(fmt: str) -> None:
 
     _import_builtin_seams()
     rows = _plugin_rows(load_plugins())
+    _settings_state(rows)
     from repowise.core.ingestion.document_extractors import document_extractor_claims
 
     seam_rows = {
@@ -178,6 +202,11 @@ def _print_plugin_row(r: dict) -> None:
     console.print(f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}")
     if r["seams"]:
         console.print(f"  registered: {escape(', '.join(r['seams']))}")
+    for m in r.get("missing", ()):
+        console.print(
+            f"  [yellow]not configured[/yellow]: {escape(m['key'])} is not set. "
+            f"Next: [cyan]{escape(m['fix'])}[/cyan]"
+        )
     if r["storage"]["applied"] or r["storage"]["pending"]:
         applied = ", ".join(r["storage"]["applied"]) or "none"
         pending = ", ".join(r["storage"]["pending"]) or "none"

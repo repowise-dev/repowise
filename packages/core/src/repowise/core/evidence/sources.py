@@ -21,6 +21,13 @@ The contract:
   an opaque credentials object. Credentials are the host's: repowise passes
   the object through, never stores, logs or prints it, and a source must not
   copy it into a batch.
+* A source may declare ``settings``: the plugin settings it reads
+  (:func:`repowise.core.settings.plugins.plugin_setting`). ``repowise sources
+  sync`` then builds the request from the settings registry, plain values in
+  ``settings`` and secrets in ``credentials``, both keyed by setting key, and
+  runs the source only once every setting with no default has a value
+  (:mod:`repowise.core.source_sync`). A source with no ``settings`` is left
+  to a host that passes credentials of its own.
 * :class:`SourceBatch` is one run: its header (kind, workload, class,
   environment, commit, when it was measured), then either ``repowise-evidence-v1``
   entries or raw bytes in a ``profile-format`` format, and the cursor to
@@ -124,6 +131,8 @@ class EvidenceSource(Protocol):
     name: str
     #: The kinds its batches carry, e.g. ``("statement_stats",)``.
     kinds: tuple[str, ...]
+    # Optional, so not declared here: ``settings``, the plugin settings it
+    # reads, which ``repowise sources sync`` resolves into the request.
 
     def fetch(self, request: SourceRequest) -> Iterable[SourceBatch]:
         """The runs in *request*'s window after its cursor, oldest first."""

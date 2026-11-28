@@ -45,7 +45,7 @@ async def test_get_returns_the_actions_shape(actions_client: AsyncClient, sessio
     assert ", 1 of them now" in body.summary["quarter"]
     (secret,) = [a for a in body.horizons["quarter"].actions if a.rule == "live_secret"]
     assert secret.tier == "act_now"
-    assert len(body.rules) == 21  # 13 stored rules and 8 live setup steps
+    assert len(body.rules) == 22  # 13 stored rules and 9 live setup steps
 
 
 @pytest.mark.anyio

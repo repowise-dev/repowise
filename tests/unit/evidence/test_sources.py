@@ -649,7 +649,11 @@ def test_only_the_runner_imports_the_source_seam() -> None:
         if any(_imports_sources(node, package) for node in ast.walk(tree)):
             importers.add(path.relative_to(_REPO).as_posix())
 
-    assert importers == {"packages/core/src/repowise/core/evidence/add.py"}
+    # The store, and the host runner behind ``repowise sources sync``.
+    assert importers == {
+        "packages/core/src/repowise/core/evidence/add.py",
+        "packages/core/src/repowise/core/source_sync.py",
+    }
 
 
 def test_a_data_batch_must_hold_the_kind_it_names(double, indexed) -> None:
