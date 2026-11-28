@@ -433,7 +433,7 @@ def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resoluti
     # because repositories almost always have `.github/` (and sometimes
     # `.vscode/`), which would otherwise let the anchoring rule promote a
     # non-existent `.github/copilot-instructions.md` to a false MISSING.
-    if _is_tool_config_path(target):
+    if _is_tool_config_path(ref.target):
         return Resolution(ref, DriftVerdict.UNCHECKABLE, "tool-config")
 
     # Anchoring. A reference is evidence about THIS repository only when it
