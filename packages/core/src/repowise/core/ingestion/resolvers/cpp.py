@@ -14,7 +14,8 @@ repo-relative file path. Order, highest-fidelity first:
 5. **Stdlib filter** — angle-bracket system includes like ``<vector>``
    / ``<stdio.h>`` resolve to ``None`` (no edge emitted) so the graph
    isn't polluted with one external node per stdlib import.
-6. **Stem fallback** — last-ditch lookup against the global stem map.
+6. **Stem fallback** — last-ditch lookup against the global stem map; a
+   path-qualified include only lands on a file whose path ends with it.
 
 An include names one file, so it resolves to one file. Build-target
 membership never becomes an import edge: an includer of one header does
@@ -139,21 +140,59 @@ def _resolve_single(
         return candidate_rel
 
     # 6. Stem fallback (5 was system-include filter above)
-    return _stem_fallback(module_path, ctx)
+    return _stem_fallback(module_path, importer_dir, ctx)
 
 
-def _stem_fallback(module_path: str, ctx: ResolverContext) -> str | None:
+def _dir_distance(a: str, b: str) -> int:
+    """Directory hops between two repo-relative directories."""
+    pa = a.split("/") if a else []
+    pb = b.split("/") if b else []
+    common = 0
+    for x, y in zip(pa, pb, strict=False):
+        if x != y:
+            break
+        common += 1
+    return len(pa) + len(pb) - 2 * common
+
+
+def _nearest_suffix_match(written: str, importer_dir: str, ctx: ResolverContext) -> str | None:
+    """The repo file whose path ends with *written*, nearest the importer."""
+    # Leading ``../`` segments already failed the importer-relative join.
+    parts = [p for p in written.split("/") if p not in ("", ".", "..")]
+    if not parts:
+        return None
+    candidates = ctx.stem_map.get(Path(parts[-1]).stem) or ()
+    suffix = "/" + "/".join(parts)
+    matches = [c for c in candidates if ("/" + c.lower()).endswith(suffix)]
+    # ``min`` keeps the stem map's order among equally near files.
+    return min(
+        matches,
+        key=lambda c: _dir_distance(posixpath.dirname(c), importer_dir),
+        default=None,
+    )
+
+
+def _stem_fallback(module_path: str, importer_dir: str, ctx: ResolverContext) -> str | None:
     """The repo file *module_path* most plausibly names, by file stem alone.
 
-    The stem map holds every file of every kind, so ``"data/Clump.hpp"``
-    finds ``Clump.cpp`` beside ``Clump.hpp``. The exact file name wins; an
-    include of a header otherwise takes only another header, never a
+    An include with a directory part (``"storage/x.h"``) names a file whose
+    path ends with that written path; when several do, the one nearest the
+    importer wins, and when none does there is no edge: a same-named file
+    elsewhere is a different header. ``"../x.h"`` counts as path-qualified,
+    so it takes the nearest ``x.h``.
+
+    A bare name keeps the stem rules: the stem map holds every file of every
+    kind, so ``"Clump.hpp"`` also sees ``Clump.cpp``. The exact file name
+    wins; an include of a header otherwise takes only another header, never a
     translation unit or a non-C file that happens to share the stem. An
     include with no extension (``<format>``, ``<QString>``) names that exact
     file or nothing in the repo.
     """
     # An angle include can still arrive wrapped (``<core/Logger.hpp>``).
-    name = posixpath.basename(module_path.strip("<>")).lower()
+    written = posixpath.normpath(module_path.strip("<>").replace("\\", "/").lower())
+    if "/" in written:
+        return _nearest_suffix_match(written, importer_dir, ctx)
+    name = written
     candidates = ctx.stem_map.get(Path(name).stem) or ()
     for candidate in candidates:
         if posixpath.basename(candidate).lower() == name:
