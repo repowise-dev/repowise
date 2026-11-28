@@ -72,23 +72,35 @@ def _majority_package_name(candidates: list[str]) -> str:
     return Counter(non_main).most_common(1)[0][0] if non_main else counts.most_common(1)[0][0]
 
 
-def _resolve_dir_package_name(pkg_dir: str, parsed_files: Any, resolved_file: str) -> str | None:
-    candidates: list[str] = []
+def build_go_directory_package_map(parsed_files: Any) -> dict[str, str]:
+    """Map each Go source directory to its declared package name in one pass."""
+    candidates: dict[str, list[str]] = {}
     if hasattr(parsed_files, "items"):
         for p, pf in parsed_files.items():
-            if (
-                posixpath.dirname(p) == pkg_dir
-                and getattr(pf, "module_name", None)
-                and not p.endswith("_test.go")
-            ):
-                candidates.append(pf.module_name)
-    target_pf = parsed_files.get(resolved_file) if hasattr(parsed_files, "get") else None
-    if not candidates and target_pf is not None and getattr(target_pf, "module_name", None):
-        candidates.append(target_pf.module_name)
+            pkg_name = getattr(pf, "module_name", None)
+            if pkg_name and not p.endswith("_test.go"):
+                pkg_dir = posixpath.dirname(p)
+                candidates.setdefault(pkg_dir, []).append(pkg_name)
+    return {
+        pkg_dir: _majority_package_name(pkg_candidates)
+        for pkg_dir, pkg_candidates in candidates.items()
+    }
 
-    if not candidates:
-        return None
-    return _majority_package_name(candidates)
+
+def _resolve_dir_package_name(
+    pkg_dir: str,
+    parsed_files: Any,
+    resolved_file: str,
+    dir_to_pkg: dict[str, str] | None = None,
+) -> str | None:
+    if dir_to_pkg is not None:
+        return dir_to_pkg.get(pkg_dir)
+    dir_to_pkg = build_go_directory_package_map(parsed_files)
+    pkg_name = dir_to_pkg.get(pkg_dir)
+    if pkg_name:
+        return pkg_name
+    target_pf = parsed_files.get(resolved_file) if hasattr(parsed_files, "get") else None
+    return getattr(target_pf, "module_name", None) if target_pf is not None else None
 
 
 def _apply_go_binding_name(imp: Any, pkg_name: str) -> None:
@@ -132,9 +144,9 @@ def sync_go_import_binding(
     if dir_to_pkg is not None and pkg_dir in dir_to_pkg:
         pkg_name = dir_to_pkg[pkg_dir]
     else:
-        pkg_name = _resolve_dir_package_name(pkg_dir, parsed_files, resolved_file)
-        if dir_to_pkg is not None and pkg_name:
-            dir_to_pkg[pkg_dir] = pkg_name
+        if dir_to_pkg is None:
+            dir_to_pkg = build_go_directory_package_map(parsed_files)
+        pkg_name = _resolve_dir_package_name(pkg_dir, parsed_files, resolved_file, dir_to_pkg)
 
     if not pkg_name:
         return

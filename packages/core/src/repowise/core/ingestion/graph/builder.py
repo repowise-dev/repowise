@@ -618,7 +618,9 @@ class GraphBuilder(
         import time as _t
 
         lang_import_time: dict[str, float] = {}
-        _go_dir_pkgs: dict[str, str] = {}
+        from ..extractors.bindings.go import build_go_directory_package_map
+
+        _go_dir_pkgs = build_go_directory_package_map(self._parsed_files)
 
         import_items = self._scoped_items(scope_set)
         if progress:

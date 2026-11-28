@@ -84,7 +84,9 @@ def build_import_name_maps(
     framework writes for a file (Nuxt auto-imports), read after its own.
     """
     maps = ImportNameMaps()
-    _go_dir_pkgs: dict[str, str] = {}
+    from .extractors.bindings.go import build_go_directory_package_map
+
+    _go_dir_pkgs = build_go_directory_package_map(parsed_files)
     for path, parsed in parsed_files.items():
         file_wide: set[str] = set()
         for imp in (*parsed.imports, *(implicit or {}).get(path, ())):

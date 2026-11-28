@@ -20,6 +20,9 @@ from repowise.core.ingestion.resolvers.go_workspace import (
     build_go_package_index,
     exported_go_files,
 )
+from repowise.core.ingestion.extractors.bindings.go import (
+    build_go_directory_package_map,
+)
 
 
 def _ctx(repo: Path, paths: list[str], go_modules: tuple = ()) -> ResolverContext:
@@ -279,6 +282,55 @@ class TestInterfaceTypedReceiverCalls:
 
 
 class TestPackageClauseImportBindings:
+    def test_explicit_alias_flag_is_recorded_on_binding(self) -> None:
+        parser = ASTParser()
+        content = b'package main\n\nimport alias "example.com/m/pkg"\n'
+        info = FileInfo(
+            path="main.go",
+            abs_path="/tmp/main.go",
+            language="go",
+            size_bytes=len(content),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        parsed = parser.parse_file(info, content)
+        (imp,) = parsed.imports
+        assert imp.bindings[0].is_explicit_alias is True
+
+    def test_directory_package_map_resolves_each_directory_once(self, tmp_path: Path) -> None:
+        sources = {
+            "go.mod": "module example.com/m\n\ngo 1.22\n",
+            "db/db.go": "package db\n\nfunc Open() {}\n",
+            "db/db_test.go": "package db_test\n",
+        }
+        for rel, body in sources.items():
+            path = tmp_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+
+        parsed = {}
+        parser = ASTParser()
+        for rel in ("db/db.go", "db/db_test.go"):
+            info = FileInfo(
+                path=rel,
+                abs_path=str((tmp_path / rel).resolve()),
+                language="go",
+                size_bytes=100,
+                git_hash="",
+                last_modified=datetime.now(),
+                is_test=rel.endswith("_test.go"),
+                is_config=False,
+                is_api_contract=False,
+                is_entry_point=False,
+            )
+            parsed[rel] = parser.parse_file(info, (tmp_path / rel).read_bytes())
+
+        assert build_go_directory_package_map(parsed) == {"db": "db"}
+
     def test_go_foo_declaring_package_foo_gains_calls_edge(self, tmp_path: Path) -> None:
         sources = {
             "go.mod": "module example.com/m\n\ngo 1.22\n",
