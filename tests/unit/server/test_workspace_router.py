@@ -71,6 +71,7 @@ def _make_ws_config():
     repo1.is_primary = True
     repo1.indexed_at = "2026-04-12T10:00:00Z"
     repo1.last_commit_at_index = "abc1234"
+    repo1.display_name = None
 
     repo2 = MagicMock()
     repo2.alias = "frontend"
@@ -78,6 +79,7 @@ def _make_ws_config():
     repo2.is_primary = False
     repo2.indexed_at = None
     repo2.last_commit_at_index = None
+    repo2.display_name = "Web app"
 
     ws_config = MagicMock()
     ws_config.repos = [repo1, repo2]
@@ -329,6 +331,12 @@ class TestGetWorkspace:
         assert len(data["repos"]) == 2
         assert data["repos"][0]["alias"] == "backend"
         assert data["repos"][0]["is_primary"] is True
+        # The label rides beside the alias, which stays the identity.
+        assert data["repos"][0]["display_name"] is None
+        assert (data["repos"][1]["alias"], data["repos"][1]["display_name"]) == (
+            "frontend",
+            "Web app",
+        )
         assert data["default_repo"] == "backend"
         assert data["workspace_root"] == "/projects/myworkspace"
 
@@ -1693,6 +1701,7 @@ class TestRepoQueryBudget:
             r.is_primary = i == 0
             r.indexed_at = None
             r.last_commit_at_index = None
+            r.display_name = None
             repos.append(r)
         ws_config.repos = repos
         ws_config.default_repo = aliases[0]

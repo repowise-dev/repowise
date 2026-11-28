@@ -104,11 +104,11 @@ def test_a_primary_picked_in_the_prompt_wins(tmp_path: Path) -> None:
     assert cfg.get_repo("b").is_primary and not cfg.get_repo("a").is_primary
 
 
-def test_existing_tags_and_contracts_survive(tmp_path: Path) -> None:
+def test_existing_tags_display_name_and_contracts_survive(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
     data = {
         "version": 1,
-        "repos": [{"path": "a", "alias": "a", "tags": ["frontend"]}],
+        "repos": [{"path": "a", "alias": "a", "tags": ["frontend"], "display_name": "Web app"}],
         "default_repo": "a",
         "contracts": {"detect_http": False},
     }
@@ -116,6 +116,7 @@ def test_existing_tags_and_contracts_survive(tmp_path: Path) -> None:
 
     cfg = _build(tmp_path, ["a"], "a")
     assert cfg.get_repo("a").tags == ["frontend"]
+    assert cfg.get_repo("a").display_name == "Web app"
     assert cfg.contracts.detect_http is False
 
 

@@ -121,7 +121,7 @@ def attach_workspace_metadata(
     ws_root_path: Path,
     indexed_repo_ids: set[str],
 ) -> set[str]:
-    """Attach alias + identity + docs status to registered rows.
+    """Attach alias, display name, identity and docs status to registered rows.
 
     Returns the aliases that matched a registered row.
     """
@@ -137,6 +137,7 @@ def attach_workspace_metadata(
         if entry is None:
             continue
         resp.workspace_alias = entry.alias
+        resp.display_name = entry.display_name
         resp.is_primary = bool(entry.is_primary)
         if resp.id in indexed_repo_ids:
             resp.workspace_status = "indexed"
@@ -171,6 +172,7 @@ def unregistered_workspace_rows(
                 created_at=now,
                 updated_at=now,
                 workspace_alias=entry.alias,
+                display_name=entry.display_name,
                 workspace_status=status,
                 is_primary=bool(entry.is_primary),
                 docs_enabled=False,

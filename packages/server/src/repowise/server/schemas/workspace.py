@@ -17,6 +17,9 @@ class WorkspaceRepoRemovedResponse(BaseModel):
 
 class WorkspaceRepoEntry(BaseModel):
     alias: str
+    # The config's ``display_name`` for this repo, or None when it sets none.
+    # For display only: requests keep naming the repo by ``alias``.
+    display_name: str | None = None
     path: str
     is_primary: bool = False
     indexed_at: str | None = None

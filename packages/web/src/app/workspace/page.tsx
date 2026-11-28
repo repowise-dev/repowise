@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Layers } from "lucide-react";
 import type { WorkspaceRepoEntry } from "@repowise-dev/api-client/types";
+import { repoLabel } from "@repowise-dev/types/repos";
 import { PageShell } from "@repowise-dev/ui/shared";
 import { PageLede, LedeLink } from "@repowise-dev/ui/shared/page-lede";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
@@ -138,7 +139,10 @@ export default async function WorkspaceDashboardPage() {
       ? { a: topPair.source_repo, b: topPair.target_repo, sessions: topPair.frequency }
       : null,
     lowest: lowest ? { name: lowest.name, score: lowest.score } : null,
-    notIndexed: repos.filter((r) => statusOf(r) === "needs_index").map((r) => r.alias),
+    notIndexed: repos
+      .filter((r) => statusOf(r) === "needs_index")
+      .map((r) => repoLabel(r, r.alias)),
+    // Aliases, not labels: the welcome turns these into questions for an agent.
     members: indexed.map((r) => r.alias),
   };
 
@@ -308,8 +312,9 @@ function byAttention(a: WorkspaceRepoEntry, b: WorkspaceRepoEntry): number {
 
 function toRow(repo: WorkspaceRepoEntry): RepoRow {
   return {
+    // `id` stays the alias: the row's sync and remove actions send it.
     id: repo.alias,
-    name: repo.alias,
+    name: repoLabel(repo, repo.alias),
     localPath: repo.path,
     href: repo.repo_id ? `/repos/${repo.repo_id}/overview` : "/workspace",
     status: statusOf(repo),
@@ -333,11 +338,11 @@ function toRow(repo: WorkspaceRepoEntry): RepoRow {
 function attentionSentence(t: Translator, repos: WorkspaceRepoEntry[]): string {
   const names = (list: WorkspaceRepoEntry[]) =>
     list.length <= 3
-      ? list.map((r) => r.alias).join(", ")
+      ? list.map((r) => repoLabel(r, r.alias)).join(", ")
       : t("attention.andMore", {
           list: list
             .slice(0, 3)
-            .map((r) => r.alias)
+            .map((r) => repoLabel(r, r.alias))
             .join(", "),
           count: list.length - 3,
         });

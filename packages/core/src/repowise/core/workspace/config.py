@@ -57,9 +57,18 @@ class RepoEntry:
     # On a large estate a ``group:<name>`` tag also names the system the repo's
     # services are grouped under (see ``grouping.py``); other tags never do.
     tags: list[str] = field(default_factory=list)
+    # Label the dashboard shows instead of the alias or folder name. Display
+    # only: commands, MCP tools, rules and storage keep addressing the repo by
+    # ``alias``, so changing this never changes what the repo is called there.
+    display_name: str | None = None
+
+    def __post_init__(self) -> None:
+        self.display_name = _display_name(self.display_name)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"path": self.path, "alias": self.alias}
+        if self.display_name is not None:
+            d["display_name"] = self.display_name
         if self.is_primary:
             d["is_primary"] = True
         if self.indexed_at is not None:
@@ -81,7 +90,21 @@ class RepoEntry:
             indexed_at=data.get("indexed_at"),
             last_commit_at_index=data.get("last_commit_at_index"),
             tags=[str(t) for t in data.get("tags", [])],
+            display_name=data.get("display_name"),
         )
+
+
+def _display_name(value: Any) -> str | None:
+    """*value* as a display label, or ``None`` when it is unset or blank.
+
+    YAML 1.1 reads an unquoted ``Yes``, ``No``, ``On`` or ``Off`` as a boolean,
+    whose original word is lost, so a boolean counts as unset rather than
+    showing as ``True`` or ``False``.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    label = str(value).strip()
+    return label or None
 
 
 @dataclass
@@ -421,11 +444,16 @@ class WorkspaceConfig:
         """Return all repo aliases in order."""
         return [r.alias for r in self.repos]
 
-    def alias_for_path(self, workspace_root: Path, repo_path: Path | str) -> str | None:
-        """The alias of the member checked out at *repo_path*, or ``None``."""
+    def entry_for_path(self, workspace_root: Path, repo_path: Path | str) -> RepoEntry | None:
+        """The member checked out at *repo_path*, or ``None``."""
         target = Path(repo_path).resolve()
         root = Path(workspace_root)
-        return next((e.alias for e in self.repos if (root / e.path).resolve() == target), None)
+        return next((e for e in self.repos if (root / e.path).resolve() == target), None)
+
+    def alias_for_path(self, workspace_root: Path, repo_path: Path | str) -> str | None:
+        """The alias of the member checked out at *repo_path*, or ``None``."""
+        entry = self.entry_for_path(workspace_root, repo_path)
+        return entry.alias if entry is not None else None
 
     # ------------------------------------------------------------------
     # Mutation helpers

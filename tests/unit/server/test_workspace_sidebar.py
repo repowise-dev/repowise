@@ -199,6 +199,33 @@ async def test_list_repos_includes_unindexed_workspace_entries(
     assert by_alias["frontend"]["docs_enabled"] is False
 
 
+async def test_display_name_rides_beside_the_identity_on_every_repo_read(
+    workspace_app, client: AsyncClient
+):
+    """A ``display_name`` in the workspace config reaches each repo read the
+    dashboard names a repo from, while ``name`` and ``workspace_alias`` keep
+    their values: the label is for display, never for lookup."""
+    _, _ws_root, ws_config, repo_id = workspace_app
+    ws_config.get_repo("backend").display_name = "Billing API"
+
+    listed = {r["workspace_alias"]: r for r in (await client.get("/api/repos")).json()}
+    assert (listed["backend"]["name"], listed["backend"]["display_name"]) == (
+        "backend",
+        "Billing API",
+    )
+    # An unlabelled member, here the synthetic not-yet-indexed row, has none.
+    assert listed["frontend"]["display_name"] is None
+
+    one = (await client.get(f"/api/repos/{repo_id}")).json()
+    assert (one["name"], one["display_name"]) == ("backend", "Billing API")
+
+    overview = (await client.get(f"/api/repos/{repo_id}/overview-summary")).json()
+    assert (overview["repo"]["name"], overview["repo"]["display_name"]) == (
+        "backend",
+        "Billing API",
+    )
+
+
 # ---------------------------------------------------------------------------
 # B2 — search fans across workspace, accepts repo_id filter
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ import { LanguageSwitcher } from "./language-switcher";
 import { SetupProgressMark, useSetupEntry } from "@/components/setup/setup-entry";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
+import { repoLabel } from "@repowise-dev/types/repos";
 import { GLOBAL_NAV, WORKSPACE_NAV, isNavItemActive, repoNavGroups } from "./nav-items";
 import { NAV_ROW_ACTIVE, NAV_ROW_IDLE, NavGroupList } from "./nav-group-list";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
@@ -195,19 +196,20 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                     {repos.map((repo) => {
                       const isExpanded = expandedRepos.has(repo.id);
                       const navGroups = repoNavGroups(repo.id);
+                      const label = repoLabel(repo, repo.name);
                       return (
                         <div key={repo.id}>
                           <button
                             onClick={() => toggleRepo(repo.id)}
                             aria-expanded={isExpanded}
-                            title={repo.name}
+                            title={label}
                             className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
                           >
                             <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                               <Circle className="h-2 w-2 fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]" />
                             </span>
                             <span className="min-w-0 flex-1 truncate text-left">
-                              {repo.name}
+                              {label}
                             </span>
                             {isExpanded ? (
                               <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-40" />

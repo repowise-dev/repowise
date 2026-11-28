@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { repoLabel } from "@repowise-dev/types/repos";
 import { getRepo } from "@/lib/api/repos";
 import { SetupPage } from "@/components/setup/setup-page";
 
@@ -11,7 +12,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   try {
     const repo = await getRepo(id);
-    return { title: `${repo.name} · Setup` };
+    return { title: `${repoLabel(repo, repo.name)} · Setup` };
   } catch {
     return { title: "Setup" };
   }

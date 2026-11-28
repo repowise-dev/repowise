@@ -16,7 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
-from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
+from repowise.server.deps import (
+    cross_repo_cut_inputs,
+    get_db_session,
+    verify_api_key,
+    workspace_display_name,
+)
 from repowise.server.routers.git import _hotspot_from_row
 from repowise.server.services import overview_payload as sections
 from repowise.server.services.hotspots import DEFAULT_HELD, HotspotQuery, list_hotspots
@@ -90,6 +95,8 @@ async def overview_summary(
         "repo": {
             "id": repo.id,
             "name": repo.name,
+            # The workspace's label for the repo, or None; shown in place of the name.
+            "display_name": workspace_display_name(request.app.state, repo.local_path),
             "local_path": repo.local_path,
             "default_branch": repo.default_branch,
             "head_commit": indexed_commit,

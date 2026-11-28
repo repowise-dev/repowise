@@ -14,6 +14,7 @@ import { getFilesIndex } from "@/lib/api/files";
 import { repoNavItems } from "@/components/layout/nav-items";
 import { pageHref } from "@/lib/utils/page-href";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
+import { repoLabel } from "@repowise-dev/types/repos";
 
 interface CommandPaletteProps {
   repos: RepoResponse[];
@@ -160,7 +161,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
 
           {/* Per-repo page navigation */}
           {activeRepo && repoPages.length > 0 && (
-            <Command.Group heading={t("goTo", { repo: activeRepo.name })} className="px-2 pb-1">
+            <Command.Group heading={t("goTo", { repo: repoLabel(activeRepo, activeRepo.name) })} className="px-2 pb-1">
               {repoPages.map((item) => {
                 const Icon = item.icon;
                 return (
@@ -237,12 +238,13 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
               {repos.map((repo) => (
                 <Command.Item
                   key={repo.id}
-                  value={`repo-${repo.name}`}
+                  // The folder name stays searchable beside the display name.
+                  value={`repo-${repo.name} ${repoLabel(repo, "")}`.trim()}
                   onSelect={() => navigate(`/repos/${repo.id}/overview`)}
                   className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
                 >
                   <BookOpen className="h-4 w-4" />
-                  {repo.name}
+                  {repoLabel(repo, repo.name)}
                 </Command.Item>
               ))}
             </Command.Group>

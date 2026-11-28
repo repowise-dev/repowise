@@ -32,6 +32,9 @@ export interface OverviewRepoMeta {
    *  only to resolve a repo avatar, so a null (no remote, or a host we do not
    *  recognise) simply falls back to initials. */
   remote_url?: string | null;
+  /** The workspace's label for the repo, shown in place of `name`; null when
+   *  none is set. See `repoLabel` in `@repowise-dev/types/repos`. */
+  display_name?: string | null;
 }
 
 export interface OverviewStatDeltas {

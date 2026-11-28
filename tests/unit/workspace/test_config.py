@@ -69,6 +69,23 @@ class TestRepoEntry:
     def test_from_dict_defaults(self) -> None:
         entry = RepoEntry.from_dict({"path": "lib", "alias": "lib"})
         assert entry.is_primary is False
+        assert entry.display_name is None
+
+    def test_display_name_round_trips_beside_the_alias(self) -> None:
+        entry = RepoEntry.from_dict({"path": "pkg", "alias": "pkg", "display_name": "Billing API"})
+        assert (entry.alias, entry.display_name) == ("pkg", "Billing API")
+        assert entry.to_dict() == {"path": "pkg", "alias": "pkg", "display_name": "Billing API"}
+
+    @pytest.mark.parametrize("value", [None, "", "   ", True, False])
+    def test_blank_display_name_is_unset_and_not_written(self, value: str | bool | None) -> None:
+        entry = RepoEntry.from_dict({"path": "pkg", "alias": "pkg", "display_name": value})
+        assert entry.display_name is None
+        assert "display_name" not in entry.to_dict()
+
+    def test_display_name_is_trimmed_and_read_as_text(self) -> None:
+        assert RepoEntry(path="a", alias="a", display_name="  Docs  ").display_name == "Docs"
+        numeric = RepoEntry.from_dict({"path": "a", "alias": "a", "display_name": 2026})
+        assert numeric.display_name == "2026"
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +173,37 @@ class TestWorkspaceConfigSerialization:
         assert loaded.repos[0].last_commit_at_index == "abc1234567890"
         assert loaded.repos[1].indexed_at is None
         assert loaded.repos[1].last_commit_at_index is None
+
+    def test_display_name_survives_a_rewrite(self, tmp_path: Path) -> None:
+        """Commands rewrite the file to stamp index times; the label stays."""
+        WorkspaceConfig(
+            repos=[RepoEntry(path="web-legacy", alias="web-legacy", display_name="Docs")],
+            default_repo="web-legacy",
+        ).save(tmp_path)
+
+        config = WorkspaceConfig.load(tmp_path)
+        config.repos[0].indexed_at = "2026-04-12T10:30:00+00:00"
+        config.save(tmp_path)
+
+        entry = WorkspaceConfig.load(tmp_path).get_repo("web-legacy")
+        assert entry is not None
+        assert entry.display_name == "Docs"
+        assert entry.indexed_at == "2026-04-12T10:30:00+00:00"
+
+    def test_unquoted_yaml_boolean_display_name_is_not_written(self, tmp_path: Path) -> None:
+        """YAML 1.1 loads `display_name: No` as False, which must not become the label "False"."""
+        (tmp_path / WORKSPACE_CONFIG_FILENAME).write_text(
+            "version: 1\nrepos:\n  - path: svc-02\n    alias: svc-02\n    display_name: No\n"
+            '  - path: web-legacy\n    alias: web-legacy\n    display_name: "No"\n',
+            encoding="utf-8",
+        )
+        config = WorkspaceConfig.load(tmp_path)
+        assert [repo.display_name for repo in config.repos] == [None, "No"]
+
+        config.save(tmp_path)
+        text = (tmp_path / WORKSPACE_CONFIG_FILENAME).read_text(encoding="utf-8")
+        assert "False" not in text
+        assert WorkspaceConfig.load(tmp_path).get_repo("web-legacy").display_name == "No"
 
     def test_load_file_not_found(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):

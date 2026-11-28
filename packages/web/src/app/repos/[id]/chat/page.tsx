@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { repoLabel } from "@repowise-dev/types/repos";
 import { getRepo } from "@/lib/api/repos";
 import { ChatInterface } from "@/components/chat/chat-interface";
 
@@ -12,7 +13,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   try {
     const repo = await getRepo(id);
-    return { title: `${repo.name} — Chat` };
+    return { title: `${repoLabel(repo, repo.name)} — Chat` };
   } catch {
     return { title: "Repository" };
   }
@@ -34,7 +35,7 @@ export default async function RepoChatPage({ params, searchParams }: Props) {
     <div className="flex h-full flex-col">
       <ChatInterface
         repoId={id}
-        repoName={repo.name}
+        repoName={repoLabel(repo, repo.name)}
         {...(q ? { initialQuestion: q } : {})}
       />
     </div>

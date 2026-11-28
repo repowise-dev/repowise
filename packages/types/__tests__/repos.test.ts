@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeRepoPath } from "../src/repos.js";
+import { normalizeRepoPath, repoLabel } from "../src/repos.js";
+
+describe("repoLabel", () => {
+  it("shows the workspace's display name when one is set", () => {
+    expect(repoLabel({ display_name: "Billing API" }, "svc-02")).toBe("Billing API");
+  });
+
+  it("falls back to the name the surface showed before", () => {
+    expect(repoLabel({}, "svc-02")).toBe("svc-02");
+    expect(repoLabel({ display_name: null }, "svc-02")).toBe("svc-02");
+    expect(repoLabel({ display_name: "  " }, "svc-02")).toBe("svc-02");
+  });
+});
 
 describe("normalizeRepoPath on Windows", () => {
   it("turns drive paths into lowercase forward-slash form", () => {

@@ -2,6 +2,7 @@
   "repo": {
     "id": "<repo-id>",
     "name": "test-repo",
+    "display_name": null,
     "local_path": "<tmp>/test-repo",
     "default_branch": "main",
     "head_commit": null,

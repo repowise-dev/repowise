@@ -14,6 +14,7 @@ import {
   Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
+import { repoLabel } from "@repowise-dev/types/repos";
 import {
   GLOBAL_NAV,
   WORKSPACE_NAV,
@@ -248,6 +249,9 @@ export function Sidebar({
                   const needsIndex =
                     repo.workspace_status === "needs_index" || isSynthetic;
                   const isMissing = repo.workspace_status === "missing_dir";
+                  // The workspace's display name, else what each row showed before.
+                  const label = repoLabel(repo, repo.name);
+                  const pendingLabel = repoLabel(repo, repo.workspace_alias ?? repo.name);
 
                   if (needsIndex || isMissing) {
                     // Unindexed entry: a status pill that routes to where
@@ -263,13 +267,13 @@ export function Sidebar({
                             <Link
                               href={indexHref}
                               className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-text-tertiary)] opacity-60 transition-colors hover:bg-[var(--color-bg-elevated)]"
-                              aria-label={`${repo.name} (${isMissing ? ts("statusDirectoryMissing") : ts("statusNeedsIndexing")})`}
+                              aria-label={`${label} (${isMissing ? ts("statusDirectoryMissing") : ts("statusNeedsIndexing")})`}
                             >
                               <Circle className="h-2.5 w-2.5 stroke-current" />
                             </Link>
                           </TooltipTrigger>
                           <TooltipContent side="right">
-                            {repo.workspace_alias ?? repo.name}
+                            {pendingLabel}
                             {" — "}
                             {isMissing ? ts("statusDirectoryMissing") : ts("statusNeedsIndexing")}
                           </TooltipContent>
@@ -293,7 +297,7 @@ export function Sidebar({
                           <Circle className="h-2 w-2 stroke-current" />
                         </RowGlyph>
                         <span className="min-w-0 flex-1 truncate text-left">
-                          {repo.workspace_alias ?? repo.name}
+                          {pendingLabel}
                         </span>
                         <span className="shrink-0 rounded-full bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
                           {isMissing ? ts("pillMissing") : ts("pillIndex")}
@@ -313,12 +317,12 @@ export function Sidebar({
                             <TooltipTrigger asChild>
                               <div
                                 className="flex w-full items-center justify-center rounded-md bg-[var(--color-bg-selected)] p-2 text-[var(--color-text-primary)]"
-                                aria-label={repo.name}
+                                aria-label={label}
                               >
                                 <Circle className="h-2.5 w-2.5 fill-[var(--color-text-primary)]" />
                               </div>
                             </TooltipTrigger>
-                            <TooltipContent side="right">{repo.name}</TooltipContent>
+                            <TooltipContent side="right">{label}</TooltipContent>
                           </Tooltip>
                           {navGroups.map((group, gi) => (
                             <React.Fragment key={group.id}>
@@ -342,12 +346,12 @@ export function Sidebar({
                           <Link
                             href={`/repos/${repo.id}/overview`}
                             className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
-                            aria-label={repo.name}
+                            aria-label={label}
                           >
                             <Circle className="h-2.5 w-2.5 fill-current" />
                           </Link>
                         </TooltipTrigger>
-                        <TooltipContent side="right">{repo.name}</TooltipContent>
+                        <TooltipContent side="right">{label}</TooltipContent>
                       </Tooltip>
                     );
                   }
@@ -360,7 +364,7 @@ export function Sidebar({
                         aria-controls={`sidebar-repo-${repo.id}`}
                         // The name still truncates at ~24 characters, so the
                         // title carries the rest.
-                        title={repo.name}
+                        title={label}
                         className={cn(ROW, ROW_L1, isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE)}
                       >
                         <RowGlyph>
@@ -374,7 +378,7 @@ export function Sidebar({
                           />
                         </RowGlyph>
                         <span className="min-w-0 flex-1 truncate text-left">
-                          {repo.name}
+                          {label}
                         </span>
                         {/* Narrower than the leading slot on purpose: this is
                             a disclosure affordance, not a peer of the icon

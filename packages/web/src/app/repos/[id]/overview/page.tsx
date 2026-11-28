@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { getOverviewSummary } from "@/lib/api/overview";
+import { repoLabel } from "@repowise-dev/types/repos";
 import { ApiClientError } from "@/lib/api/client";
 import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { getActions } from "@/lib/api/actions";
@@ -120,7 +121,7 @@ export default async function OverviewPage({ params }: Props) {
 
   const header = (
     <RepoIdentityHeader
-      name={repo.name}
+      name={repoLabel(repo, repo.name)}
       owner={repo.owner}
       description={repo.local_path}
       remoteUrl={repo.remote_url}

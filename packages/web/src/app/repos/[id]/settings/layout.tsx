@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { repoLabel } from "@repowise-dev/types/repos";
 import { getRepo } from "@/lib/api/repos";
 import { SettingsFrame } from "@/components/settings/settings-frame";
 import { REPO_SETTINGS_GROUPS, repoSettingsBase } from "@/components/settings/settings-groups";
@@ -15,7 +16,7 @@ export async function generateMetadata({ params }: Omit<Props, "children">): Pro
   const { id } = await params;
   try {
     const repo = await getRepo(id);
-    return { title: `${repo.name} · Settings` };
+    return { title: `${repoLabel(repo, repo.name)} · Settings` };
   } catch {
     return { title: "Settings" };
   }
@@ -38,7 +39,7 @@ export default async function RepoSettingsLayout({ params, children }: Props) {
   return (
     <SettingsFrame
       title={t("title")}
-      description={t("description", { repo: repo.name })}
+      description={t("description", { repo: repoLabel(repo, repo.name) })}
       base={repoSettingsBase(id)}
       groups={REPO_SETTINGS_GROUPS}
     >

@@ -9,6 +9,7 @@ import { RowPromptAction } from "@repowise-dev/ui/health/row-prompt-action";
 import { CopyLine, SettingsRow, SettingsRows } from "@repowise-dev/ui/settings";
 import { hostedLink } from "@/lib/hosted";
 import type { RepoResponse } from "@/lib/api/types";
+import { repoLabel } from "@repowise-dev/types/repos";
 import { SETTINGS_LINK, SettingsBlock, repoSettingsHref } from "@/components/settings/settings-groups";
 import { AttentionPrompt, StatusDot, useSetupText } from "./setup-row";
 import { agentListRows, type SetupRow } from "./setup-rows";
@@ -187,17 +188,20 @@ function RepoLinkRows({
   }
   return (
     <ul className="flex flex-col">
-      {indexed.map((repo) => (
-        <li
-          key={repo.id}
-          className="flex items-center justify-between gap-3 border-b border-[var(--color-border-default)] py-2.5 last:border-b-0"
-        >
-          <span className="min-w-0 truncate text-sm text-[var(--color-text-primary)]">{repo.name}</span>
-          <Link href={hrefFor(repo.id)} className={SETTINGS_LINK} aria-label={linkAria(repo.name)}>
-            {linkLabel}
-          </Link>
-        </li>
-      ))}
+      {indexed.map((repo) => {
+        const label = repoLabel(repo, repo.name);
+        return (
+          <li
+            key={repo.id}
+            className="flex items-center justify-between gap-3 border-b border-[var(--color-border-default)] py-2.5 last:border-b-0"
+          >
+            <span className="min-w-0 truncate text-sm text-[var(--color-text-primary)]">{label}</span>
+            <Link href={hrefFor(repo.id)} className={SETTINGS_LINK} aria-label={linkAria(label)}>
+              {linkLabel}
+            </Link>
+          </li>
+        );
+      })}
     </ul>
   );
 }
