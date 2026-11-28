@@ -1,17 +1,14 @@
 """C++ calls written through a type name: ``T(x)``, ``T(a, b)``, ``Alias(x)``.
 
 C++ spells a construction and a conversion like a call, so a bare call can
-land on a class, one of its constructors or a type alias. Three rules settle it:
+land on a class, one of its constructors or a type alias. Two rules settle it:
 
-- ``T(x)`` with one argument is a function-style cast. It names the type, so it
-  binds the class, not a converting constructor (the class's own constructors
-  share its name and would otherwise compete with it, or leave the call
-  ambiguous between two one-argument overloads).
-- ``T()`` and ``T(a, b)`` construct through a constructor, so a candidate set
-  holding a class and only its own constructors is that constructor set, not
-  an ambiguity. A ``T(a, b)`` that still lands on a class declaring
-  constructors chose none of them, so it draws no edge; a class with no
-  constructor of its own keeps the edge.
+- ``T()``, ``T(x)`` and ``T(a, b)`` on a repository class call the one user
+  constructor whose parameters admit that argument count, chosen the way any
+  overload set is (an exact arity first, then defaults). A tie the overload
+  phases cannot break, or a class with no constructor that fits (none
+  declared, so only a compiler-made one runs), draws no edge: neither the
+  class node nor a constructor of another arity is what the call ran.
 - ``Alias(x)`` through a ``using``/``typedef`` of a non-class type
   (``using size_type = uint32_t``), of a library type (``std::pair<..>``) or of
   a class the repository does not declare is a conversion, never a call, so it
@@ -28,6 +25,7 @@ from itertools import accumulate
 from .call_receiver_typing._shared import _FUNCTION_KINDS
 from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
+from .return_types import signature_parameter_range
 from .symbol_identity import id_segment_name, outer_scope
 from .type_names import bare_type_name, strip_type_arguments
 
@@ -55,32 +53,45 @@ class CppConstructionMixin:
             return resolved
         if callee.kind == "type_alias":
             return resolved if self._cpp_alias_names_repo_class(callee) else None
-        if call.argument_count == 1 and self._is_cpp_constructor(callee):
-            class_id = self._cpp_constructed_class(callee)
-            if class_id is not None:
-                return replace(resolved, callee_id=class_id)
-        # ``T()`` stays: a defaulted default constructor is named by its class.
-        if (
-            callee.kind in _CONSTRUCTIBLE_KINDS
-            and (call.argument_count or 0) > 1
-            and self._cpp_declares_constructor(resolved.callee_id)
-        ):
-            return None
-        return resolved
+        if callee.kind in _CONSTRUCTIBLE_KINDS:
+            # A forward declaration stands for the class body that holds the constructors.
+            key = (self._redirect_to_definition(resolved) or resolved).callee_id
+            owner = self._symbols_by_id.get(key, callee)
+            path = self._symbol_paths_by_id.get(key, "")
 
-    def _cpp_declares_constructor(self, class_id: str) -> bool:
-        """Does the class *class_id* declare a constructor of its own?"""
-        return any(
-            self._is_cpp_constructor(symbol) and self._cpp_constructed_class(symbol) == class_id
-            for sym_id in self._global_symbols.get(self._symbols_by_id[class_id].name, ())
-            if (symbol := self._symbols_by_id.get(sym_id)) is not None
-        )
+            # Read from the body's span: a nested class's id carries its outer
+            # class, while its constructors' ids do not.
+            def in_group(s: Symbol) -> bool:
+                return s.name == owner.name and owner.start_line <= s.start_line <= owner.end_line
+
+        elif self._is_cpp_constructor(callee):
+            # The constructor's own group: the class body, or the file that defines it
+            # out of line. Another file's same-named class is no evidence.
+            key = outer_scope(callee.id)
+            path = self._symbol_paths_by_id.get(callee.id, "")
+
+            def in_group(s: Symbol) -> bool:
+                return outer_scope(s.id) == key
+
+        else:
+            return resolved
+        members = self._cpp_constructors.get(key)
+        if members is None:
+            # An in-class declaration and its inline definition share one id; the
+            # declaration comes first and is the one that carries default arguments.
+            ranges: dict[str, tuple[int, int | None] | None] = {}
+            for s in getattr(self._parsed_files.get(path), "symbols", ()):
+                if self._is_cpp_constructor(s) and in_group(s):
+                    ranges.setdefault(s.id, signature_parameter_range(s.signature or "", "cpp"))
+            members = self._cpp_constructors[key] = tuple(ranges.items())
+        found = self._deciding_members(members, call.argument_count, call.argument_types)
+        return replace(resolved, callee_id=found[0]) if len(found) == 1 else None
 
     def _cpp_one_constructed_type(self, candidates: set[str], call: CallSite) -> str | None:
         """The one class *candidates* construct, when they are a class and its own constructors.
 
-        A one-argument call answers with the class, any other with the
-        constructor set, which overload narrowing then splits by arity.
+        The class stands for the set; ``_cpp_type_name_callee`` then picks the
+        constructor the call's arguments fit.
         """
         types = [c for c in candidates if self._symbols_by_id[c].kind in _CONSTRUCTIBLE_KINDS]
         if len(types) != 1 or self._symbols_by_id[types[0]].language != "cpp":
@@ -92,9 +103,7 @@ class CppConstructionMixin:
             for c in constructors
         ):
             return None
-        if call.argument_count == 1 or len(constructors) != 1:
-            return types[0]
-        return next(iter(constructors))
+        return types[0]
 
     def _cpp_function_local(self, sym_id: str) -> bool:
         """Is C++ *sym_id* declared inside a function body, where only that body names it?
