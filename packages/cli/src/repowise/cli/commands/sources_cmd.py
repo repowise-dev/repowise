@@ -27,11 +27,15 @@ def sources_group() -> None:
     """Fetch from the sources plugins register (a database, a profiler, an issue tracker)."""
 
 
-async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | None:
+async def _sync(
+    repo_path: Path, planned: list[Any], *, named: bool = False
+) -> list[dict[str, Any]] | None:
     """Run each configured source in *planned* into the index; ``None`` with no index.
 
     Each source runs in its own session, committed before its cursor is kept,
-    and a source that raises past ``run_fetch`` costs only its own row.
+    and a source that raises past ``run_fetch`` costs only its own row. With
+    *named* (``--source``), a source whose settings are set runs even where it
+    does not apply, so its own refusal says why.
     """
     from repowise.cli.helpers import (
         get_db_url_for_repo,
@@ -53,7 +57,7 @@ async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | N
                 return None
         results = []
         for p in planned:
-            if not p.configured:
+            if not (p.configured or (named and p.settings_ready)):
                 results.append(not_configured(p))
                 continue
             cursor = ledger_cursor(load_state(repo_path), p)
@@ -76,6 +80,7 @@ async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | N
                     "seam": p.seam.name,
                     "state": "failed",
                     "batches": 0,
+                    "counts": {},
                     "message": type(exc).__name__,
                     "next_command": "repowise plugins",
                     "missing": [],
@@ -91,17 +96,42 @@ async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | N
         await engine.dispose()
 
 
-def _line(r: dict[str, Any]) -> str:
-    """One source's result, ending with the command to run next."""
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
+def _stored_text(r: dict[str, Any]) -> str:
+    """What a sync stored: issue links (and how many name a bug), runs, else batches."""
+    counts = r.get("counts") or {}
+    if "links" in counts:
+        text = f"stored {_plural(counts['links'], 'issue link')}"
+        bugs = counts.get("bug_links", 0)
+        return f"{text} ({bugs} to a bug or incident)" if bugs else text
+    if "runs" in counts:
+        return f"stored {_plural(counts['runs'], 'run')}"
+    return f"stored {r['batches']} batch{'es' if r['batches'] != 1 else ''}"
+
+
+def _line(r: dict[str, Any], *, in_update: bool = False) -> str:
+    """One source's result, ending with the command to run next.
+
+    Inside ``repowise update`` a ``repowise update`` next command is dropped:
+    the update running is that command.
+    """
     color = _COLORS.get(r["state"], "red")
     if r["state"] == "stored":
-        what = f"stored {r['batches']} batch{'es' if r['batches'] != 1 else ''}"
+        what = _stored_text(r)
     else:
         what = r["state"].replace("_", " ")
         if r["message"]:
             what += f": {r['message']}"
+    # A message is a sentence of its own; the line adds its one period.
+    what = what.rstrip(". ")
     head = f"{r['seam']} [bold]{escape(r['source'])}[/bold]: [{color}]{escape(what)}[/{color}]"
-    return f"{head}. Next: [cyan]{escape(r['next_command'])}[/cyan]"
+    command = r.get("next_command")
+    if not command or (in_update and command == "repowise update"):
+        return f"{head}."
+    return f"{head}. Next: [cyan]{escape(command)}[/cyan]"
 
 
 def _planned(repo_path: Path, only: str | None, fmt: str) -> list[Any]:
@@ -110,7 +140,7 @@ def _planned(repo_path: Path, only: str | None, fmt: str) -> list[Any]:
     from repowise.core.source_sync import plan_sources
 
     try:
-        planned = plan_sources(load_repo_config(repo_path))
+        planned = plan_sources(load_repo_config(repo_path), root=repo_path)
     except RepoConfigError as exc:
         emit_refusal(
             "config_unreadable", str(exc), fmt, remedy="Fix the file, then run this again."
@@ -159,7 +189,7 @@ def sources_sync_command(only: str | None, path: str | None, fmt: str) -> None:
     if not planned:
         _say_none_installed(repo_path, fmt)
         return
-    results = run_async(_sync(repo_path, planned))
+    results = run_async(_sync(repo_path, planned, named=only is not None))
     if results is None:
         emit_refusal(
             "no_index",
@@ -197,7 +227,9 @@ def sync_after_update(repo_path: Path, *, before: bool = False) -> None:
         from repowise.core.source_sync import plan_sources
 
         planned = [
-            p for p in plan_sources(config) if p.configured and p.seam.before_update == before
+            p
+            for p in plan_sources(config, root=repo_path)
+            if p.configured and p.seam.before_update == before
         ]
         if not planned:
             return
@@ -210,4 +242,4 @@ def sync_after_update(repo_path: Path, *, before: bool = False) -> None:
         )
         return
     for r in results:
-        console.print(f"Sources: {_line(r)}")
+        console.print(f"Sources: {_line(r, in_update=True)}")

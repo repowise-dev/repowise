@@ -252,6 +252,9 @@ def _classify_path(rel_posix: str) -> str:
     return "other"
 
 
+_ABS_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:/)")
+
+
 def _resolve_repo_rel(
     cmakelists_dir: str,
     raw_path: str,
@@ -261,15 +264,15 @@ def _resolve_repo_rel(
     """Resolve a CMake-relative path to a repo-relative POSIX path.
 
     *cmakelists_dir* is the dir containing the CMakeLists, repo-relative.
-    *raw_path* may be absolute (``${CMAKE_CURRENT_SOURCE_DIR}/x`` expanded),
-    relative to the CMakeLists, or contain unexpanded ``${VAR}`` refs (which
-    we leave verbatim so the caller can stem-match).
+    *raw_path* may be absolute (POSIX or ``D:/``-style), relative to the
+    CMakeLists, or contain unexpanded ``${VAR}`` refs (which we leave
+    verbatim so the caller can stem-match).
     """
     if not raw_path or "${" in raw_path:
         return raw_path  # unexpanded — let caller stem-match
-    if raw_path.startswith("/") and repo_root_posix and raw_path.startswith(repo_root_posix + "/"):
-        return raw_path[len(repo_root_posix) + 1:]
-    if raw_path.startswith("/"):
+    if _ABS_PATH_RE.match(raw_path):
+        if repo_root_posix and raw_path.startswith(repo_root_posix + "/"):
+            return raw_path[len(repo_root_posix) + 1:]
         return raw_path  # outside repo — caller will discard
     joined = (PurePosixPath(cmakelists_dir) / raw_path).as_posix() if cmakelists_dir else raw_path
     # Collapse ../ and ./ segments
@@ -316,12 +319,15 @@ def parse_cmake_lists(
 
     cm = CMakeFile(path=rel_self)
 
-    # Pre-seed implicit variables so common patterns expand.
-    cm.variables["CMAKE_CURRENT_SOURCE_DIR"] = cmakelists_dir or "."
-    cm.variables["CMAKE_CURRENT_LIST_DIR"] = cmakelists_dir or "."
+    # Pre-seed the directory variables relative to this file's dir, which is
+    # what every path below resolves against: an absolute root could hold a
+    # space (paths split on whitespace) and would leak the checkout location.
+    cm.variables["CMAKE_CURRENT_SOURCE_DIR"] = "."
+    cm.variables["CMAKE_CURRENT_LIST_DIR"] = "."
     if repo_root_posix:
-        cm.variables["PROJECT_SOURCE_DIR"] = repo_root_posix
-        cm.variables["CMAKE_SOURCE_DIR"] = repo_root_posix
+        to_root = "/".join([".."] * len(PurePosixPath(cmakelists_dir).parts)) or "."
+        cm.variables["PROJECT_SOURCE_DIR"] = to_root
+        cm.variables["CMAKE_SOURCE_DIR"] = to_root
 
     for cmd in commands:
         name = cmd.name

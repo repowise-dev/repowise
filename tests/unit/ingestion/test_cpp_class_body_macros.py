@@ -77,17 +77,29 @@ struct URL {
     explicit URL(int port);
     ENCODE_HELPERS(URL);
 };
+template <class T>
+class VEC {
+    VEC();
+    VEC_ALLOC(VEC);
+};
 template <>
 class VEC<int> {
     VEC();
     VEC_ALLOC(VEC);
+};
+template <class T>
+class VEC<T*> {
+    VEC();
+    VEC_ALLOC(VEC)
 };
 """
     members = _members(source)
 
     assert members["Hasher"] == {"CRC32", "RESET", "Hasher"}
     assert members["URL"] == {"URL"}
+    assert members["VEC"] == {"VEC"}
     assert members["VEC<int>"] == {"VEC"}
+    assert members["VEC<T*>"] == {"VEC"}
 
 
 def test_qt_object_class_is_still_a_root(tmp_path: Path) -> None:

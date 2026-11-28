@@ -12,13 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.settings import AREAS, Setting, all_settings, get
 from repowise.core.settings.views import APPLIES, requirement, resolve_many, view
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._local_git import local_repo_path
+from repowise.server.routers.plugins import forget_report
 from repowise.server.schemas.settings import (
     SettingChangeResponse,
     SettingsResponse,
@@ -81,6 +82,7 @@ async def list_settings(
 async def change_setting(
     repo_id: str,
     body: SettingUpdate,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Set one setting, or reset it to its default, in ``.repowise/config.yaml``.
@@ -132,4 +134,6 @@ async def change_setting(
         )
     except ValueError as exc:
         _refuse(400, "invalid_value", str(exc), accepts=requirement(setting))
+    # A plugin's settings decide what the plugins panel shows.
+    forget_report(request.app, repo_path)
     return change_report("reset" if body.reset else "set", change)

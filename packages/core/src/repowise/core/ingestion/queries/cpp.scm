@@ -194,6 +194,17 @@
   name: (type_identifier) @symbol.name
 ) @symbol.def
 
+; Specialization: template<typename C> struct formatter<std::tm, C> { ... }
+(class_specifier
+  name: (template_type) @symbol.name
+  body: (_)
+) @symbol.def
+
+(struct_specifier
+  name: (template_type) @symbol.name
+  body: (_)
+) @symbol.def
+
 ; Enum (type_identifier is a direct child, not a named field in this grammar)
 (enum_specifier
   (type_identifier) @symbol.name

@@ -38,10 +38,12 @@ from ..parser_helpers import (
     _fsharp_binding_has_params,
     _objc_is_macro_enum,
     _objc_symbol_name,
+    cpp_template_type_name,
 )
 from ..python_overload import is_python_overload as _is_python_overload
 
 _node_text = node_text
+_CPP_CLASS_HEADS = frozenset({"class_specifier", "struct_specifier"})
 
 
 _TS_OVERLOAD_SIGNATURES = frozenset({"function_signature", "method_signature"})
@@ -123,6 +125,12 @@ def _language_symbol_name(language: str, def_node: Node, name: str, src: str) ->
     if language == "cpp":
         if _is_cpp_member_macro_call(def_node, name, src):
             return None
+        head = def_node.child_by_field_name("name")
+        if def_node.type in _CPP_CLASS_HEADS and head is not None and head.type == "template_type":
+            # Named as its members' parent is, so the two ids agree. One that
+            # spells the template's own parameters would take the primary's id.
+            special = cpp_template_type_name(head, src)
+            return special if "<" in special else None
         return _cpp_conversion_operator_name(def_node, src) or name
     return name
 

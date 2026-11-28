@@ -98,6 +98,18 @@ describe("PluginsPanel", () => {
     await waitFor(() => expect(onSync).toHaveBeenCalledWith("forge"));
   });
 
+  it("keeps a source's last sync once it is no longer configured", () => {
+    const unset = {
+      ...data.sources![0]!,
+      configured: false,
+      message: "needs REPOWISE_PLUGIN_FORGE_TOKEN",
+      next_command: "export REPOWISE_PLUGIN_FORGE_TOKEN=<value>",
+    };
+    render(<PluginsPanel data={{ ...data, sources: [unset] }} guideHref="/guide" />);
+    expect(screen.getAllByText("Not configured").length).toBeGreaterThan(0);
+    expect(screen.getByText("Stored 3 batches")).toBeInTheDocument();
+  });
+
   it("shows a running sync and disables Sync now until it ends", () => {
     render(
       <PluginsPanel data={{ ...data, syncing: [ALL_SOURCES] }} guideHref="/guide" onSync={vi.fn()} />,

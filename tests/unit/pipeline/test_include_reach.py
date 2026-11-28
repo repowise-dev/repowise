@@ -75,6 +75,17 @@ def test_other_languages_are_not_compared() -> None:
     assert include_reach_refusal(_graph(after), _seed(before), parsed) is None
 
 
+def test_an_objective_c_file_whose_reach_moved_refuses() -> None:
+    """An Objective-C++ definition pairs with a header its includes reach."""
+    before = [("view.mm", "view.h", "imports")]
+    after = [*before, ("view.h", "c.h", "imports")]
+    parsed = {**_parsed("view.mm", "view.h", language="objectivec"), **_parsed("c.h")}
+
+    reason = include_reach_refusal(_graph(after), _seed(before), parsed)
+
+    assert reason == "view.h: the files its includes reach changed"
+
+
 def test_a_pass_that_runs_after_import_resolution_carries_no_reach() -> None:
     """A full build reads import targets before it pairs headers with sources."""
     before = [("a.cpp", "b.h", "imports")]
