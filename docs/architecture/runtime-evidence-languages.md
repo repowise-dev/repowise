@@ -145,7 +145,7 @@ ones; a new reason also needs the list in
 | `no_span` | your join | no indexed function holds the line |
 | `ambiguous` | `_javascript`, `_name_join` | two indexed functions start on the line, or several fit the name and nothing picks one |
 | `no_second_signal` | your join | the frame lacks the field the join checks |
-| `no_source` | `_javascript` | the source line could not be read |
+| `no_source` | `_javascript`, `_pascal` | the source could not be read |
 | `second_signal_mismatch` | your join | the field disagrees with the symbol |
 
 ### Generated and vendored code
@@ -270,7 +270,7 @@ and assert each entry's `test_id` and `test_file` after `place_test_entries`.
   "Must not change" line.
 - Run the test files named above locally; CI runs the full suite on the PR.
 - Update `docs/`: the sentences naming the joined languages (Python, Go,
-  JavaScript, Java and Kotlin) in [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md#accuracy-and-limits)
+  JavaScript, Java, Kotlin, Rust and Pascal) in [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md#accuracy-and-limits)
   and [LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md#runtime-evidence),
   and that page's table.
   The maintainers update the docs site.

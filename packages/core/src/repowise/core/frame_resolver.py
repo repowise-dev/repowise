@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-FrameLanguage = Literal["go", "python", "javascript", "rust", "java", "kotlin"]
+FrameLanguage = Literal["go", "python", "javascript", "rust", "java", "kotlin", "pascal"]
 
 #: JVM frames: no file of their own, placed by class name (:func:`place_jvm_frames`).
 _JVM = frozenset({"java", "kotlin"})
@@ -52,7 +52,7 @@ SkipReason = Literal[
     "no_span",  # no indexed symbol holds (JavaScript: starts at) the line
     "ambiguous",  # several indexed functions fit and nothing in the frame picks one
     "no_second_signal",  # the frame lacks the field its language is checked on
-    "no_source",  # JavaScript: the start line could not be read to check the column
+    "no_source",  # JavaScript and Pascal: the source needed to check the frame could not be read
     "second_signal_mismatch",
 ]
 
@@ -69,14 +69,15 @@ _JS_HEAD_RE = re.compile(r"[\w$.\s=:*#\[\]\ufeff]*")
 class ProfileFrame:
     """One frame as the profiler wrote it.
 
-    *line* is 1-based: the executing line for Go, Python and the JVM, the
-    function's start line for JavaScript (V8 records no executing line); 0
+    *line* is 1-based: the executing line for Go, Python, Pascal and the JVM,
+    the function's start line for JavaScript (V8 records no executing line); 0
     when the profiler wrote none. *column* is the 1-based column V8 gives for
     a function's start. *start_line* is the function's start line where the
     format records it (Go ``s=``). *function* is the name the profiler gave:
     Python's ``co_qualname`` (or ``co_name``), Go's function name, V8's
-    ``functionName``, a JVM ``class.method`` with its parameter types or
-    descriptor when the profiler wrote them (:func:`parse_jvm_frame`).
+    ``functionName``, Pascal's DWARF name, a JVM ``class.method`` with its
+    parameter types or descriptor when the profiler wrote them
+    (:func:`parse_jvm_frame`).
     """
 
     path: str
@@ -135,14 +136,16 @@ def resolve_frames(
     that differ from that commit. *origins* is the stored ``code_origin`` per
     file; a file without one falls back to :func:`path_origin`. *read_lines*
     returns a repo-relative file's lines from the checkout, for the JavaScript
-    checks and Python decorator lines; without it those frames are skipped.
+    checks, Python decorator lines and Pascal nested routines; without it those
+    frames are skipped.
 
     Second signals, after the span lookup: Go needs the index start line to
     equal the frame's ``start_line``; Python needs the frame's qualified name
     to be a dotted tail of the symbol's; JavaScript joins by position only:
     exactly one indexed function starts on the frame's line, and nothing but
     names, keywords, ``=`` and ``:`` stands before the frame's column, so it is
-    the first function the line can start. A JVM frame (Java, Kotlin) needs
+    the first function the line can start; Pascal needs the frame's name, in any
+    case, to be a dotted tail of the symbol's. A JVM frame (Java, Kotlin) needs
     the method name and class to agree with the innermost method at its line;
     with no line it joins by name (:func:`_name_join`): the one method of that
     name in that class, else the one whose parameter count (and types) match
@@ -161,11 +164,12 @@ def resolve_frames(
     matches; a JavaScript function that starts on a body line of an indexed
     function; a Rust closure or async body (``{{closure}}``, ``{closure#0}``,
     ``{async_block#0}``) whose enclosing name matches, or one outside any
-    function into the file. Module bodies (Python ``<module>``, the Go package
-    initializer, the CommonJS wrapper at 1:1, a JVM static initializer)
-    resolve to the file, and a Python frame on a decorator line resolves to the
-    function it decorates. A JVM lambda (``lambda$name$0``, Kotlin
-    ``name$lambda$0``) and a method of an anonymous class (``Outer$1``) fold
+    function into the file; a Pascal nested routine declared inside the symbol
+    above the frame's line. Module bodies (Python ``<module>``, the Go package
+    initializer, the CommonJS wrapper at 1:1, a JVM static initializer, a
+    Pascal program or unit block) resolve to the file, and a Python frame on a
+    decorator line resolves to the function it decorates. A JVM lambda
+    (``lambda$name$0``, Kotlin ``name$lambda$0``) and a method of an anonymous class (``Outer$1``) fold
     into the method at their line; compiler-made accessors and bridges
     (``access$000``, ``$default``, ``$$Lambda``, ``$$`` proxies) are
     ``generated``.
@@ -291,7 +295,7 @@ def _resolve(
     rel = paths.relative(frame.path)
     if rel is None:
         return "outside_root"
-    if frame.language not in ("go", "python", "javascript", "rust", *_JVM):
+    if frame.language not in ("go", "python", "javascript", "rust", "pascal", *_JVM):
         return "unsupported_language"
     # A JVM frame without a line still has its class, method and parameters;
     # a Rust one its demangled path (:func:`_rust_by_name`).
@@ -323,6 +327,8 @@ def _resolve(
         outcome = _jvm(frame, symbols, kotlin=rel.endswith(".kt"))
     elif frame.language == "rust":
         outcome = _rust(frame, symbols, lines)
+    elif frame.language == "pascal":
+        outcome = _pascal(frame, symbols, lines)
     else:
         outcome = _python(frame, symbols, lines)
     return (rel, outcome) if isinstance(outcome, tuple) else outcome
@@ -1035,6 +1041,39 @@ def _id_types(symbol: IndexedSymbol) -> tuple[str, ...] | None:
     if symbol.file_path.endswith(".kt"):
         spelled = [_KOTLIN_JVM_TYPES.get(t.rstrip("?"), t.rstrip("?")) for t in spelled]
     return tuple(spelled)
+
+
+# -- Pascal --------------------------------------------------------------------
+
+# The program's main block and a unit's initialization and finalization, as
+# FPC names them: ``$main``, ``$UNIT_$$_init$``, ``$UNIT_$$_finalize$``.
+_PAS_BLOCK_RE = re.compile(r"\$main|\$.+_\$\$_(?:init|finalize)\$")
+
+
+def _pascal(
+    frame: ProfileFrame,
+    symbols: Sequence[IndexedSymbol],
+    lines: Callable[[], list[str] | None],
+) -> _Hit | SkipReason:
+    # FPC records no start line, so the second signal is the name, and Pascal
+    # names have no case.
+    name = frame.function.casefold()
+    if not name:
+        return "no_second_signal"
+    symbol = symbol_at((s for s in symbols if s.kind in _CALLABLE_KINDS), frame.line)
+    if symbol is None:
+        return (None, False) if _PAS_BLOCK_RE.fullmatch(name) else "no_span"
+    if _qualname_tail(name, symbol.qualified_name.casefold()):
+        return (symbol, False)
+    # A nested routine has no symbol of its own and DWARF gives its bare name:
+    # only its declaration inside the symbol ties it to the symbol.
+    text = lines()
+    if text is None:
+        return "no_source"
+    declared = re.compile(rf"\s*(?:procedure|function)\s+{re.escape(name)}(?!\w)", re.IGNORECASE)
+    if any(declared.match(line) for line in text[symbol.start_line : frame.line]):
+        return (symbol, True)
+    return "second_signal_mismatch"
 
 
 # -- JavaScript ----------------------------------------------------------------
