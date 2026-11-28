@@ -433,19 +433,15 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         src,
     )
 
-    parent_name = (
-        object_owner
-        or _cpp_local_parent(def_node, config, language, src)
-        or _resolve_parent_name(
-            def_node,
-            config,
-            capture_dict.get("symbol.receiver", []),
-            name_nodes,
-            language,
-            src,
-            no_export_type=export_type is None,
-            export_type_parents=file.cpp_exports.parents,
-        )
+    parent_name = object_owner or _resolve_parent_name(
+        def_node,
+        config,
+        capture_dict.get("symbol.receiver", []),
+        name_nodes,
+        language,
+        src,
+        no_export_type=export_type is None,
+        export_type_parents=file.cpp_exports.parents,
     )
 
     # Anonymous Go interface methods have no named owner and are not symbols.
@@ -615,14 +611,13 @@ def _resolve_parent_name(
     export_type_parents: dict[int, str],
 ) -> str | None:
     """The enclosing type or module name, trying each language's own shape."""
+    if language == "cpp":
+        export_parents = export_type_parents if no_export_type else None
+        return _cpp_parent_name(def_node, config, name_nodes, src, export_parents)
+
     parent_name = _find_parent(def_node, config, receiver_nodes, src)
     if parent_name is not None:
         return parent_name
-
-    if language == "cpp" and no_export_type:
-        parent_name = _cpp_export_macro_parent(def_node, export_type_parents)
-        if parent_name is not None:
-            return parent_name
 
     # Dart mixin_declaration exposes no ``name`` field, so
     # ``_find_parent``'s field lookup misses mixin members.
@@ -635,8 +630,8 @@ def _resolve_parent_name(
     if language == "fsharp":
         return _fsharp_parent_name(def_node, src)
 
-    # C/C++ out-of-line ``void Foo::method()`` names its class in the scope.
-    if language in ("cpp", "c") and name_nodes:
+    # C out-of-line ``void Foo::method()`` names its class in the scope.
+    if language == "c" and name_nodes:
         return _qualified_cpp_parent(name_nodes[0], src)
 
     # Pascal out-of-line ``function TFoo.Bar`` names its class in the header.
@@ -662,9 +657,27 @@ def _resolve_parent_name(
     return None
 
 
-def _cpp_local_parent(
-    def_node: Node, config: LanguageConfig, language: str, src: str
+def _cpp_parent_name(
+    def_node: Node,
+    config: LanguageConfig,
+    name_nodes: list[Node],
+    src: str,
+    export_type_parents: dict[int, str] | None,
 ) -> str | None:
+    """A C++ symbol's parent, by the first shape that names one.
+
+    A local class's scope, the enclosing class, an export-macro type, or the
+    class an out-of-line ``Foo::method`` names.
+    """
+    parent_name = _cpp_local_parent(def_node, config, src) or _nesting_parent(def_node, config, src)
+    if parent_name is None and export_type_parents is not None:
+        parent_name = _cpp_export_macro_parent(def_node, export_type_parents)
+    if parent_name is None and name_nodes:
+        parent_name = _qualified_cpp_parent(name_nodes[0], src)
+    return parent_name
+
+
+def _cpp_local_parent(def_node: Node, config: LanguageConfig, src: str) -> str | None:
     """The parent of a class declared in a function body, or of a member of one.
 
     It is the function's own id scope followed by every class between it and
@@ -674,8 +687,6 @@ def _cpp_local_parent(
     Ceiling: overloads of one function share the scope without their
     discriminator, so same-named local classes in two overloads share ids.
     """
-    if language != "cpp":
-        return None
     classes: list[str] = []
     child, node = def_node, def_node.parent
     while node is not None:
