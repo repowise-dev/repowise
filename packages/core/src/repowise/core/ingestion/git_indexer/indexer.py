@@ -1089,7 +1089,7 @@ class GitIndexer:
     def capture_new_commit_rows(
         self, *, since_ts: int | None = None, file_rows_sink: list[dict] | None = None
     ) -> list[dict]:
-        """Build ``git_commits`` rows for commits newer than *since_ts*.
+        """Build ``git_commits`` rows for commits at or after *since_ts*.
 
         *file_rows_sink*, when given, is extended with the matching
         ``git_commit_files`` rows from the same walk.
@@ -1099,7 +1099,9 @@ class GitIndexer:
         bounded to commits newer than the newest already-persisted one) and
         turns the sunk commits into rows via :func:`build_commit_rows`. Empty in
         rename-tracking mode (no batched commit index — same limitation as the
-        full index). Failure-isolated: returns ``[]`` on any error.
+        full index). The bound is inclusive on the boundary second: same-second
+        commits are re-captured and idempotently re-upserted rather than
+        permanently dropped. Failure-isolated: returns ``[]`` on any error.
         """
         if self.follow_renames:
             return []
