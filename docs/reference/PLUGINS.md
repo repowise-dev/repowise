@@ -44,6 +44,10 @@ repowise plugins check
 `repowise plugins new` takes `issue-source`, `evidence-source` or
 `authorizer`. The package has a working stub, a test, and an `AGENTS.md` that
 walks you (or a coding agent) through turning the stub into the real thing.
+It copies the seam's contract (the types, link rules and failure exceptions)
+from the repowise you have installed, so it matches your version, and for an
+issue or evidence source it ends after `repowise update`, with the command
+that shows the links or runs it stored.
 `repowise plugins check` inspects every seam implementation your plugin
 registers and prints the rule that broke and how to fix it. See
 [Check the contracts](PLUGINS_REFERENCE.md#check-the-contracts).

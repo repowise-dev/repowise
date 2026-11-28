@@ -2606,7 +2606,8 @@ exits 1 if a check fails or a plugin fails to load. See the [plugin reference](P
 `new` writes an installable plugin package for `issue-source`, `evidence-source` or `authorizer` into `--dir`
 (default `./repowise-<name>`, which must be empty or absent): a `pyproject.toml` with the entry point and the
 `repowise-plugin` keyword, a module whose stub passes `check`, a contract test, a README and an `AGENTS.md` with the
-steps to finish, install, verify and configure it. It ends with the next three commands to run; `--format json`
+steps to finish, install, verify and configure it. `AGENTS.md` holds the seam's contract as the installed repowise
+defines it, and for a source it ends with `repowise update` and the command that shows the result. It ends with the next three commands to run; `--format json`
 lists the files written and those commands. An unknown seam is refused with the supported list.
 
 ### `repowise attribution`
