@@ -7,6 +7,16 @@ without a fork. The working example is
 [`examples/plugins/hello`](../../examples/plugins/hello/); this page explains
 each step.
 
+The quickest start is a generated package. It installs, loads and passes the
+contract checks before you change a line, and its `AGENTS.md` walks you (or a
+coding agent) through the rest:
+
+```bash
+repowise plugins new issue-source --name linear
+pip install -e repowise-linear
+repowise plugins check
+```
+
 The plugin API is experimental. Read [Stability](#stability) before you publish.
 
 ## What a plugin can do
@@ -52,7 +62,9 @@ author, so read its README for install steps and supported versions.
 |--------|------|--------------|
 | [repowise-markitdown-plugin](https://github.com/digimangos/repowise-markitdown-plugin) | `document-extractors` | Indexes PDFs through Microsoft's MarkItDown, with results cited by the original PDF path |
 
-To list yours, open a pull request that adds a row here.
+To list yours, open a pull request that adds a row here. To find others,
+search GitHub for the `repowise-plugin` topic or PyPI for the
+`repowise-plugin` keyword.
 
 ## Build your first plugin
 
@@ -501,18 +513,58 @@ each registered source under `evidence-source`.
 #### Syncing a source
 
 Give a source a `settings` attribute and repowise runs it for you. List the
-[plugin settings](#settings-for-a-plugin) it reads:
+[plugin settings](#settings-for-a-plugin) it reads. This source reads a
+service that returns `statement_stats` entries already in the
+`repowise-evidence-v1` shape, one page per fetch:
 
 ```python
-class StatementSource:
-    name = "postgres-statements"
-    kinds = ("statement_stats",)
-    settings = (DATABASE, DSN)  # DSN is declared with secret=True
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 
-    def fetch(self, request: SourceRequest):
-        database = request.settings[DATABASE.key]
-        dsn = request.credentials[DSN.key]
-        ...
+from repowise.core.evidence.sources import (
+    SourceBatch, SourceRefused, SourceUnavailable, evidence_sources,
+)
+from repowise.core.settings.plugins import plugin_setting, register_settings
+
+URL = plugin_setting("statements", "url", "str", None, "Statistics service base URL.")
+TOKEN = plugin_setting("statements", "token", "str", None, "Statistics API token.", secret=True)
+
+
+class StatementSource:
+    name = "statements"
+    kinds = ("statement_stats",)
+    settings = (URL, TOKEN)
+
+    def fetch(self, request):
+        base, token = request.settings[URL.key], request.credentials[TOKEN.key]
+        query = urllib.parse.urlencode({"after": request.cursor or ""})
+        page = self._get(f"{base}/api/statements?{query}", token)
+        if page["entries"]:
+            yield SourceBatch(
+                kind="statement_stats", workload="prod db", workload_class=None,
+                commit=None, environment="production",
+                entries=page["entries"], document={"window": page["window"]},
+                next_cursor=page["cursor"],
+            )
+
+    def _get(self, url, token):
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                raise SourceRefused("the service refused the token") from None
+            raise SourceUnavailable(f"the service answered {exc.code}") from None
+        except OSError:
+            raise SourceUnavailable("the service did not answer") from None
+
+
+def register():
+    register_settings(URL, TOKEN)
+    evidence_sources.register(StatementSource.name, StatementSource())
 ```
 
 `repowise sources sync` runs each source once all its required settings have
@@ -615,7 +667,7 @@ TYPES = {"Bug": "bug", "Incident": "incident", "Story": "feature", "Task": "task
 
 
 class TrackerIssues:
-    name = "my-tracker"
+    name = "mytracker"
     settings = (URL, TOKEN)
 
     def fetch(self, request):
@@ -942,6 +994,10 @@ shows how to restore each registry afterwards.
 
 4. In your README, give the install line, the seam names or commands you add,
    and any `REPOWISE_SEAM_<NAME>` value a user sets.
+5. Add the `repowise-plugin` keyword to your `pyproject.toml` and the
+   `repowise-plugin` topic to your GitHub repository, so people searching for
+   plugins find it. A package from `repowise plugins new` already has the
+   keyword.
 
 ## Stability
 

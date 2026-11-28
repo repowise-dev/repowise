@@ -2593,6 +2593,7 @@ the value), its `next_command` and `version`, and every fetching source under `s
 ```bash
 repowise plugins --format json
 repowise plugins check [--format json]   # each plugin's implementations against their seam contracts
+repowise plugins new <seam> [--name NAME] [--dir PATH] [--format json]   # write a starter plugin package
 ```
 
 | Flag | What it does | Default |
@@ -2601,6 +2602,12 @@ repowise plugins check [--format json]   # each plugin's implementations against
 
 `check` prints a status for each registration and, for a failure, the rule that broke and how to fix it. It
 exits 1 if a check fails or a plugin fails to load. See the [plugin author guide](PLUGINS.md#check-the-contracts).
+
+`new` writes an installable plugin package for `issue-source`, `evidence-source` or `authorizer` into `--dir`
+(default `./repowise-<name>`, which must be empty or absent): a `pyproject.toml` with the entry point and the
+`repowise-plugin` keyword, a module whose stub passes `check`, a contract test, a README and an `AGENTS.md` with the
+steps to finish, install, verify and configure it. It ends with the next three commands to run; `--format json`
+lists the files written and those commands. An unknown seam is refused with the supported list.
 
 ### `repowise attribution`
 
