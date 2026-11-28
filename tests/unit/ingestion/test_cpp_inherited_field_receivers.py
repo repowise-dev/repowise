@@ -71,3 +71,68 @@ class TestCppInheritedFieldReceiver:
         )
         callees = _callees(tmp_path, "src/child.cc::Child::Parse")
         assert callees == {"src/other.cc::Other::ReadToken"}
+
+
+_SPECS_H = (
+    "#pragma once\n"
+    "class basic_specs {\n public:\n  void set_alt() { data_ |= 1; }\n"
+    "  void set_type(int t) { data_ = t; }\n private:\n  int data_;\n};\n"
+    "struct format_specs : basic_specs {\n  int width;\n};\n"
+    "template <typename Char = char> struct dynamic_format_specs : format_specs {\n"
+    "  int width_ref;\n};\n"
+)
+
+
+def _specs_repo(root: Path, body: str) -> None:
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "specs.h").write_text(_SPECS_H)
+    (root / "src" / "use.h").write_text(f'#pragma once\n#include "specs.h"\n{body}')
+
+
+class TestCppTemplatedReceiverScopes:
+    def test_a_local_class_field_leaves_the_parameter_typed(self, tmp_path: Path) -> None:
+        _specs_repo(
+            tmp_path,
+            "template <typename Char>\n"
+            "void parse(dynamic_format_specs<Char>& specs, int t) {\n"
+            "  struct {\n    format_specs& specs;\n"
+            "    void operator()(int s) { specs.set_type(s); }\n"
+            "  } handler{specs};\n"
+            "  specs.set_alt();\n}\n",
+        )
+        callees = _callees(tmp_path, "src/use.h::parse")
+        assert callees == {"src/specs.h::basic_specs::set_alt"}
+
+    def test_a_partial_specialization_types_its_own_field(self, tmp_path: Path) -> None:
+        _specs_repo(
+            tmp_path,
+            "template <typename T, typename Char = char> struct formatter;\n"
+            "template <typename Char> struct formatter<int, Char> {\n"
+            " private:\n  format_specs specs_;\n"
+            " public:\n  void set() { specs_.set_alt(); }\n};\n",
+        )
+        callees = _callees(tmp_path, "src/use.h::formatter<int, Char>::set")
+        assert callees == {"src/specs.h::basic_specs::set_alt"}
+
+    def test_a_specialization_is_a_class_its_members_hang_on(self, tmp_path: Path) -> None:
+        _specs_repo(
+            tmp_path,
+            "template <typename T> struct formatter;\n"
+            "template <> struct formatter<\n    long> {\n  void set();\n};\n",
+        )
+        builder = GraphBuilder(repo_path=tmp_path)
+        parser = ASTParser()
+        for fi in FileTraverser(tmp_path).traverse():
+            builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+        graph = builder.build()
+        assert graph.nodes["src/use.h::formatter<long>"]["kind"] == "struct"
+        assert graph.has_edge("src/use.h::formatter<long>", "src/use.h::formatter<long>::set")
+
+    def test_a_local_on_the_field_line_keeps_the_name_ambiguous(self, tmp_path: Path) -> None:
+        _specs_repo(
+            tmp_path,
+            "struct Other {\n  void other_m();\n};\n"
+            "void g(format_specs x) {\n  {\n"
+            "    struct S { Other x; }; S x;\n    x.set_alt();\n  }\n}\n",
+        )
+        assert _callees(tmp_path, "src/use.h::g") == set()

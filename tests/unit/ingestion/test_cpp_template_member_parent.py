@@ -84,7 +84,11 @@ class TestOutOfLineTemplateMember:
                 "template <typename T> void Box<T*, long>::g() {}\n",
             )
         ]
-        assert ids == ["box.h::Box<T*, int>::f", "box.h::Box<T*, long>::g"]
+        assert ids == [
+            "box.h::Box<T*, int>",
+            "box.h::Box<T*, int>::f",
+            "box.h::Box<T*, long>::g",
+        ]
 
 
 def test_a_receiver_typed_by_the_class_reaches_the_out_of_line_member(tmp_path: Path) -> None:
