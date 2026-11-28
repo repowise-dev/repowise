@@ -445,6 +445,7 @@ def _load_report(repo_path: Path, opts: _Options) -> tuple[Any, set[str], dict[s
         return _recompute_report(
             repo_path,
             persist=opts.fmt == "table" and not opts.file_filter and not opts.module_filter,
+            status=err_console if opts.fmt != "table" else console,
         )
     stored = _load_stored_report(repo_path)
     if stored is None:
@@ -773,14 +774,39 @@ def _render_findings_table(findings: list[Any]) -> None:
         console.print(f"[dim]{line}[/dim]")
 
 
-def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str], dict[str, str]]:
+def _recompute_report(
+    repo_path: Path, *, persist: bool, status: Any = None
+) -> tuple[Any, set[str], dict[str, str]]:
     """Analyze the working tree in-process: ``(report, hotspot paths, language by path)``.
 
     ``persist`` writes the result to the index, as ``init`` would, so the
     dashboard, MCP tools and ``repowise status`` see the same numbers.
+
+    Only a checkout with its own index is written to: the result and the
+    analysis caches go under its ``.repowise/``. A linked worktree without one
+    reads its stored inputs (coverage) from the main checkout's index, as the
+    hooks and MCP do, and writes nothing; any other checkout without an index
+    is analyzed without stored inputs. Neither gets a ``.repowise/``, which
+    would read as an index of its own from then on.
     """
+    from repowise.cli._helpers.paths import borrowed_index_base
     from repowise.core.analysis.communities import file_community_labels
     from repowise.core.analysis.health import HealthAnalyzer
+    from repowise.core.persistence.database import has_db_store
+
+    own_index = has_db_store(repo_path)
+    index_root = repo_path if own_index else borrowed_index_base(Path(repo_path))
+    if not own_index and status is not None:
+        if index_root is not None:
+            status.print(
+                "[dim]No index in this worktree: using the main checkout's stored "
+                f"coverage from {index_root}, and saving nothing here.[/dim]"
+            )
+        else:
+            status.print(
+                "[dim]No index here, so the analysis has no stored coverage and is "
+                "not saved. Run `repowise init` to keep it.[/dim]"
+            )
     graph_builder, parsed_files = _parse_tree(repo_path)
     git_meta_map: dict = {}
     try:
@@ -798,8 +824,8 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
         community_label_map=file_community_labels(graph_builder),
         # Coverage folds in from whatever `repowise coverage add` (or index-time
         # ingest) persisted; ingestion lives solely in the `coverage` group.
-        coverage_map=_load_persisted_coverage_map(repo_path),
-        duplication_cache_dir=Path(repo_path) / ".repowise",
+        coverage_map=_load_persisted_coverage_map(index_root) if index_root is not None else {},
+        duplication_cache_dir=Path(repo_path) / ".repowise" if own_index else None,
         repo_root=repo_path,
     )
     from .live_score import analyzer_config
@@ -807,7 +833,7 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
     report = analyzer.analyze(
         analyzer_config(repo_path, [pf.file_info.path for pf in parsed_files])
     )
-    if persist:
+    if persist and own_index:
         _persist_health(repo_path, report=report)
     hotspots = {p for p, m in git_meta_map.items() if m.get("is_hotspot")}
     return report, hotspots, {pf.file_info.path: pf.file_info.language for pf in parsed_files}

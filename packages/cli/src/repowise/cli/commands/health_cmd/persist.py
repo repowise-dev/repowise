@@ -20,31 +20,18 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
 
     Reads whatever ``repowise coverage add`` (or index-time ingest) stored in
     ``coverage_files`` so ``repowise health`` reflects it without a flag.
-    Best-effort: no repo row / no rows / any DB error yields an empty map.
+    Best-effort: no store / no repo row / no rows / any DB error yields an
+    empty map. A missing store is not created.
     """
-    from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        get_session,
-    )
-    from repowise.core.persistence.crud import (
-        get_repository_by_path,
-        load_coverage_map,
-    )
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud import load_coverage_map
 
     async def _do() -> dict[str, dict]:
-        url = get_db_url_for_repo(repo_path)
-        # Without this the ORM's `no such column` on a store one repowise
-        # older is swallowed below and reads as "no coverage".
-        await reconcile_schema_best_effort(url)
-        engine = create_engine(url)
-        sf = create_session_factory(engine)
-        async with get_session(sf) as session:
-            repo = await get_repository_by_path(session, str(repo_path))
-            if repo is None:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
                 return {}
-            return await load_coverage_map(session, repo.id)
+            session, repo_id = opened
+            return await load_coverage_map(session, repo_id)
 
     try:
         return run_async(_do())
@@ -236,30 +223,28 @@ def _load_recommendations(
     metrics: Sequence[Any],
     findings: Sequence[Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Canonical CLI recommendations, enriched from the local store in bulk."""
-    from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
+    """Canonical CLI recommendations, enriched from the local store in bulk.
+
+    Without a store they are built from the report alone; a missing store is
+    not created.
+    """
+    from repowise.cli.helpers import repo_index_session
     from repowise.core.analysis.health.refactoring.recommendations import (
         build_recommendations,
         serialize_recommendations,
     )
-    from repowise.core.persistence import create_engine, create_session_factory, get_session
-    from repowise.core.persistence.crud import get_repository_by_path
     from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
         hydrate_recommendations,
     )
 
     async def _do() -> list[dict[str, Any]]:
-        url = get_db_url_for_repo(repo_path)
-        await reconcile_schema_best_effort(url)
-        engine = create_engine(url)
-        sf = create_session_factory(engine)
-        async with get_session(sf) as session:
-            repo = await get_repository_by_path(session, str(repo_path))
-            if repo is None:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
                 return []
+            session, repo_id = opened
             recommendations = await hydrate_recommendations(
                 session,
-                repo.id,
+                repo_id,
                 suggestions,
                 metric_rows=metrics,
                 findings=findings,
