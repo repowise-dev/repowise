@@ -27,6 +27,9 @@ SPEC = LanguageSpec(
         "asgi.py",
     ),
     manifest_files=("pyproject.toml", "setup.py", "setup.cfg"),
+    # A pip application declares its dependencies in requirements files and no
+    # distribution: ``backend/requirements.txt`` beside ``backend/app.py``.
+    manifest_globs=("requirements*.txt",),
     lock_files=("poetry.lock", "uv.lock"),
     generated_suffixes=("_pb2.py", "_pb2_grpc.py"),
     shebang_tokens=("python",),

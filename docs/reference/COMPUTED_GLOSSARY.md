@@ -72,6 +72,8 @@ workspace overlays, MCP responses, and CLI output.
 | Symbol node | Graph node for an extracted symbol. | `GraphBuilder.add_file()` | `{node_type: "symbol", kind: "function", name: "main"}` |
 | External node | Node for third-party or unresolvable dependencies. | Import resolution paths | `external:react` |
 | Synthetic module symbol | Symbol node for top-level calls in a file. | `GraphBuilder.add_file()` | `src/app.py::__module__` |
+| File count | The "files" figure on `repowise status`, the dashboard, Stats and workspace views: one per file the index read, in any language. Import-target nodes (third-party packages, and paths an import names that traversal never parsed) are not counted. Health's "code files" is the code-language subset of these, inside the health exclude rules. | `count_files()` | `6,363 files` |
+| Symbol count | The "symbols" figure on `repowise status`, the dashboard, workspace views and `get_overview`: one per distinct symbol id in the symbol index. An overload set counts once, and the synthetic module symbol is not counted. | `count_symbols()` | `76,924 symbols` |
 | `defines` edge | File-to-symbol containment. | `GraphBuilder.add_file()` | `src/app.py -> src/app.py::main` |
 | `imports` edge | File-to-file import relationship. | `GraphBuilder.build()` | `src/app.py -> src/settings.py` |
 | `imported_names` edge payload | Names imported along an import edge. | `GraphBuilder.build()` | `["Settings", "load_config"]` |
@@ -84,12 +86,14 @@ workspace overlays, MCP responses, and CLI output.
 | `framework` edge | Synthetic edge from framework conventions. | `framework_edges.py` | `urls.py -> views.py`, `app.py -> routers/users.py` |
 | Dynamic edge | Edge inferred from runtime/dynamic patterns. | `dynamic_hints/*` and `GraphBuilder.add_dynamic_edges()` | `{edge_type: "dynamic_imports", hint_source: "django", weight: 1.0}` |
 | `co_changes` edge | File-to-file historical coupling edge. | `GraphBuilder.add_co_change_edges()` from git metadata | `src/a.py -> src/b.py` with `weight: 4.2` |
+| `documents` edge | A Markdown document links to or names a repository file. Not a dependency. | `GraphBuilder._resolve_document_edges()` via doc drift `extract()`/`resolve()` | `{edge_type: "documents", hint_source: "doc_link", confidence: 1.0}`; a backticked path is `doc_path`, `0.8` |
 | Stem map | Import-stem to candidate file path lookup used for import resolution. | `GraphBuilder._build_stem_map()` | `{"models": ["src/models.py", "tests/models.py"]}` |
-| File subgraph | File-only graph used for PageRank and betweenness. | `GraphBuilder.file_subgraph()` | All file/external nodes, excluding `co_changes` edges |
+| File subgraph | File-only graph used for PageRank and betweenness. | `GraphBuilder.file_subgraph()` | All file/external nodes, excluding self-loops, `co_changes` and `documents` edges |
 | PageRank | File centrality in the import graph. | `GraphBuilder.pagerank()` | `0.01842` |
 | Betweenness | How often a file sits on shortest paths. | `GraphBuilder.betweenness_centrality()` | `0.0067` |
-| SCC | Strongly connected component, used to detect dependency cycles. | `GraphBuilder.strongly_connected_components()` | `{"src/a.py", "src/b.py"}` |
-| SCC page group | Non-singleton SCC that gets a cycle page. | `PageGenerator.generate_all()` | `scc-3` |
+| SCC | Strongly connected component, used to detect static import cycles. | `GraphBuilder.strongly_connected_components()` | `{"src/a.py", "src/b.py"}` |
+| Static import cycle | Two or more files whose import statements, read from the source without running it, form a loop (a non-singleton SCC). Type-only imports, imports deferred into a function body and imports guarded by `except ImportError` cannot close one. It means the files are coupled, not that importing them fails at run time. Every surface that counts or titles cycles uses this term. | `GraphBuilder.strongly_connected_components()` | `src/a.py -> src/b.py -> src/a.py` |
+| SCC page group | Non-singleton SCC that gets a static import cycle page. | `PageGenerator.generate_all()` | `scc-3` |
 | Graph JSON | Node-link serialization of the graph. | `GraphBuilder.to_json()` | `{"directed": true, "nodes": [...], "links": [...]}` |
 
 ## Communities And Execution Flows
@@ -167,9 +171,9 @@ workspace overlays, MCP responses, and CLI output.
 | Term | Definition | Computed by | Example |
 | --- | --- | --- | --- |
 | File page context | Template data for one important source file. | `ContextAssembler.assemble_file_page()` | `{file_path, symbols, imports, dependencies, pagerank_score}` |
-| Symbol spotlight context | Template data for a top public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, source body, callers |
+| Symbol spotlight context | Template data for a most-called public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, docstring, resolved callers |
 | Module page context | Aggregate context for top-level directory/module. | `assemble_module_page()` | `{module_path: "packages/core", total_symbols: 780}` |
-| SCC page context | Context for a circular dependency cycle. | `assemble_scc_page()` | `cycle_description: "Circular dependency cycle: a.py -> b.py"` |
+| SCC page context | Context for a static import cycle. | `assemble_scc_page()` | `cycle_description: "Static import cycle: a.py -> b.py"` |
 | Repo overview context | Whole-repo summary context. | `assemble_repo_overview()` | `language_distribution`, `top_files_by_pagerank`, `circular_dependency_count` |
 | API contract context | Raw API contract plus endpoint/schema hints. | `assemble_api_contract()` | `endpoints: ["GET /users"]`, `schemas: ["User"]` |
 | Infra page context | Raw infra file plus target names. | `assemble_infra_page()` | `Dockerfile`, `Makefile`, `terraform` files |
@@ -324,7 +328,7 @@ workspace overlays, MCP responses, and CLI output.
 | Contract confidence | Extraction strategy confidence. | Extractors and contract matching | `0.8` |
 | Service boundary | Monorepo service path assigned to contracts. | `workspace/extractors/service_boundary.py` | `services/billing` |
 | Normalized contract ID | Lowercase/canonical ID used for matching. | `normalize_contract_id()` | `http::GET::/Api/Users/ -> http::GET::/api/users` |
-| Contract link | Matched provider-consumer pair across repos/services. | `match_contracts()` | `{provider_repo: "api", consumer_repo: "web", match_type: "exact"}` |
+| Contract link | Matched provider-consumer pair across repos/services. Its `match_type` is `exact`, `candidate` or `manual`, derived from the matching strategy (`workspace/origins.py`, `match_type_for()`). | `match_contracts()` | `{provider_repo: "api", consumer_repo: "web", match_type: "exact"}` |
 | Manual contract link | Workspace-configured provider/consumer link. | `_build_manual_links()` | `{match_type: "manual", confidence: 1.0}` |
 | Contract store | JSON payload saved as `contracts.json`. | `run_contract_extraction()` | `{contracts: [...], contract_links: [...]}` |
 
@@ -360,18 +364,38 @@ workspace overlays, MCP responses, and CLI output.
 
 ## MCP And API-Visible Computed Payloads
 
+The ten default tools:
+
 | Tool or endpoint concept | Definition | Example |
 | --- | --- | --- |
-| `get_answer` | RAG answer with citations, confidence, fallback targets, retrieval metadata, and answer-cache support. | `{answer: "...", confidence: "medium", citations: [...]}` |
-| `search_codebase` | Wiki search using vector/FTS and federated workspace RRF when requested. | `{results: [{title, relevance_score, confidence_score}]}` |
-| `get_context` | Compact page, symbol, freshness, dependency, git, and cross-repo context for targets. | `{targets: {"src/app.py": {docs, graph, freshness}}}` |
-| `get_overview` | Repo or workspace overview, module map, entry points, git health, communities, and workspace footer. | `{summary, modules, git_health, community_summary}` |
-| `get_why` | Decision/governance lookup, file origin story, alignment, and decision health modes. | `{decisions: [...], target_context: {...}}` |
-| `get_risk` | Per-file risk, trend, risk type, owners, co-change partners, test gaps, security signals, top hotspots, optional PR blast radius. | `{results: [{risk_summary, hotspot_score}], top_hotspots: [...]}` |
-| `get_dead_code` | Tiered, grouped, and summarized dead-code findings. | `{summary: {total_findings: 12}, tiers: {...}}` |
-| `get_dependency_path` | Dependency-path or bridge context between files/symbols. | `{path: ["src/a.py", "src/b.py"]}` |
-| `get_symbol` | Exact symbol metadata and source slice. | `{name: "create_app", signature: "def create_app(...)"}` |
-| `get_execution_flows` | Entry-point traces through call edges. | `{flows: [{entry_point, trace, crosses_community}]}` |
+| `get_answer` | Answers one how, where or why question in one evidence-grounded call: an answer with citations, a confidence grade and candidate files worth opening. | `{answer: "...", confidence: "medium", citations: [...]}` |
+| `search_codebase` | Hybrid codebase search by concept, symbol or path; identifier, literal and regex queries return `lines` read from live files, with `complete` when they are every match. | `{lines: [{path, line, kind, text}], complete: true}` |
+| `get_context` | Triage card for files, modules or symbols: summary, signatures with lines, hotspot, fix history and decision titles, plus callers, references or files on request. | `{targets: {"src/app.py": {...}}}` |
+| `get_symbol` | Follow-up read of one symbol whose id another response gave: its metadata and source. | `{name: "create_app", signature: "def create_app(...)"}` |
+| `get_overview` | Orientation for an unfamiliar repo: packages, entry points, riskiest files and top actions. | `{packages: [...], next_actions: [...]}` |
+| `get_why` | Why code is shaped the way it is: the decision records in force and their evidence commits. | `{decisions: [...], target_context: {...}}` |
+| `get_risk` | What history says about touching files: bug fixes, churn, owners, co-change partners and test gaps. | `{results: [{risk_summary, hotspot_score}], top_hotspots: [...]}` |
+| `get_change_risk` | Reviews a commit, a `base..head` range or uncommitted work: size and spread, health before and after, and the tests to run. | `{health_delta: [...], ...}` |
+| `get_dead_code` | Unused exports, unreachable files and zombie packages, tiered by confidence. | `{summary: {total_findings: 12}, tiers: {...}}` |
+| `get_health` | Code-health scores and findings from the stored analysis. | `{kpis: {production_average: 7.4}, ...}` |
+
+In a workspace, `list_repos` is served too:
+
+| Tool or endpoint concept | Definition | Example |
+| --- | --- | --- |
+| `list_repos` | Every configured repository's alias, config-relative path and absolute path; any of them can be passed as `repo` to the other tools. | `{repos: [{alias: "api", path, absolute_path, is_default}]}` |
+
+The seven opt-in tools, and the computed payloads behind other endpoints:
+
+| Tool or endpoint concept | Definition | Example |
+| --- | --- | --- |
+| `generate_refactoring_code` | Refactored code and a unified diff for one refactoring plan (calls the model). | `{suggestion_id, plan, generation: {...}}` |
+| `set_finding_status` | Records a durable disposition on one refactoring plan. | `{id, status: "acknowledged", status_reason}` |
+| `get_architecture` | Workspace architecture metrics: coupling, core and a 1-10 score. | `{score: 7, core_ratio, cycle_count}` |
+| `get_blast_radius` | Cross-repo blast radius: the downstream services structurally reachable from a change. | `{impacted: [...], total_impacted: 3}` |
+| `get_conformance` | Architecture conformance: dependency-rule violations and cycles. | `{violations: [...], cycles: [...]}` |
+| `get_dependency_path` | How two files or modules are connected in the dependency graph. | `{path: ["src/a.py", "src/b.py"]}` |
+| `get_execution_flows` | How the codebase executes: top entry points and their call traces. | `{flows: [{entry_point, trace, crosses_community}]}` |
 | Blast radius API | Direct structural weights, transitive affected files, historical co-change warnings, reviewers, test gaps, and an uncalibrated 0-10 structural-impact heuristic. Deprecated `overall_risk_score` is an exact alias. | `{structural_impact_score: 7.25, structural_impact_band: "broad", overall_risk_score: 7.25}` |
 | Knowledge map API | Top owners, knowledge silos, onboarding targets. | `{top_owners: [...], knowledge_silos: [...]}` |
 | Cost summary API | Grouped costs and totals. | `{groups: [...], total_cost_usd: 3.21}` |
@@ -389,12 +413,12 @@ workspace overlays, MCP responses, and CLI output.
 | Dead-code status | `open`, `acknowledged`, `resolved`, `false_positive` |
 | Security severity | `high`, `med`, `low` |
 | Security kind | `eval_call`, `exec_call`, `pickle_loads`, `subprocess_shell_true`, `os_system`, `hardcoded_password`, `hardcoded_secret`, `fstring_sql`, `concat_sql`, `tls_verify_false`, `weak_hash`, `security_sensitive_symbol` |
-| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `dispatches_to`, `co_changes`, `framework`, `framework_binds`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route`, `references`; all 17, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py`. `reads` is file-to-file only; its former symbol-level producer emits `framework_binds` |
+| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `dispatches_to`, `co_changes`, `framework`, `framework_binds`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route`, `references`, `documents`; all 18, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py`. `reads` is file-to-file only; its former symbol-level producer emits `framework_binds` |
 | Node type | `file`, `symbol`, `external` |
 | Search type | `vector`, `fulltext` |
 | Contract type | `http`, `grpc`, `topic` |
 | Contract role | `provider`, `consumer` |
-| Contract link match type | `exact`, `manual` |
+| Contract link match type | `exact`, `candidate` (an ambiguous path, a stripped prefix, a parameter segment or a host-only match), `manual` |
 | Risk trend | `increasing`, `stable`, `decreasing`, `unknown` |
 | Risk type | `bug-prone`, `churn-heavy`, `bus-factor-risk`, `high-coupling`, `stable`, `unknown` |
 | Change pattern | `feature-active`, `primarily refactored`, `fix-heavy`, `dependency-churn`, `mixed-activity`, `uncategorized` |

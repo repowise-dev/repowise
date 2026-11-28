@@ -6,7 +6,7 @@ import { ChevronRight } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { cn } from "../lib/cn";
-import { disambiguateBasenames, formatDate, formatDateTime } from "../lib/format";
+import { disambiguateBasenames, formatDate, formatDateTime, formatNumber } from "../lib/format";
 import { couplingClaim, isSamePair, peakConfidence, type CouplingPair } from "./claim";
 import type { CouplingEdge } from "@repowise-dev/types/coupling";
 
@@ -207,7 +207,7 @@ export function CouplingTable({
         <EmptyState
           tone="positive"
           title="No couplings detected"
-          description={`No files change together often enough to flag, across ${historyFiles.toLocaleString()} files with commit history.`}
+          description={`No files change together often enough to flag, across ${formatNumber(historyFiles)} files with commit history.`}
         />
       );
     }
@@ -316,7 +316,7 @@ export function CouplingTable({
         <div className="flex items-center gap-2 min-w-[100px]">
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
             <div
-              className="h-full rounded-full bg-[var(--color-accent-primary)]"
+              className="h-full rounded-full bg-[var(--color-progress-fill)]"
               style={{ width: `${Math.max(6, Math.round((e.strength / maxStrength) * 100))}%` }}
             />
           </div>

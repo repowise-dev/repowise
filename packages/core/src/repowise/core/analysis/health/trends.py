@@ -423,19 +423,48 @@ def _point(snap: Any, attr: str) -> float | None:
     return round(float(value), 2) if value is not None else None
 
 
+def latest_per_day(history: Sequence[Any]) -> list[Any]:
+    """The newest snapshot of each calendar day, oldest first, for a drawn series.
+
+    Two indexes on one day (a re-run, a deeper history pass) are one day of
+    the trend: a chart or table showing both reads as a repeated point. Only
+    the series a reader looks at collapses; what the store keeps is unchanged
+    (its newest ``HEALTH_SNAPSHOT_RETENTION`` runs), and the deltas and alerts
+    still compare against the run before. *history* is
+    oldest first; a snapshot with no ``taken_at`` is kept as it is.
+    """
+    out: list[Any] = []
+    for snap in history:
+        taken = getattr(snap, "taken_at", None)
+        prev = getattr(out[-1], "taken_at", None) if out else None
+        if taken is not None and prev is not None and taken.date() == prev.date():
+            out[-1] = snap
+        else:
+            out.append(snap)
+    return out
+
+
 def recent_kpis(
-    history: list[Any], limit: int = 10, *, doc_drift: bool = False
+    history: list[Any],
+    limit: int = 10,
+    *,
+    doc_drift: bool = False,
+    analyzer_version: bool = False,
+    per_day: bool = True,
 ) -> list[dict[str, Any]]:
-    """Serialize the most-recent *limit* snapshots for CLI / API consumers.
+    """Serialize the most-recent *limit* days of snapshots for CLI / API consumers,
+    one row per day (:func:`latest_per_day`). ``per_day=False`` keeps every run,
+    for a table of runs rather than a trend.
 
     Newest first (so the CLI table reads top-down chronologically when
     flipped, which matches user expectation for "recent runs"). Each row
-    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count``;
-    off by default so agent-facing trend rows stay as they were.
+    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count`` and
+    *analyzer_version* the row's ``analyzer_version``; both off by default so
+    agent-facing trend rows stay as they were.
     """
     if not history:
         return []
-    tail = history[-limit:]
+    tail = (latest_per_day(history) if per_day else history)[-limit:]
     rows: list[dict[str, Any]] = []
     for snap in reversed(tail):
         rows.append(
@@ -460,6 +489,8 @@ def recent_kpis(
         )
         if doc_drift:
             rows[-1]["doc_drift_count"] = getattr(snap, "doc_drift_count", None)
+        if analyzer_version:
+            rows[-1]["analyzer_version"] = getattr(snap, "analyzer_version", None)
     return rows
 
 

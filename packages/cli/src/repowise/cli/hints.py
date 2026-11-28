@@ -5,6 +5,8 @@ Rules that keep it from being a nag:
 * stderr only, one dim line plus its link, never in ``--format json`` runs;
 * at most one hint per command run, and each hint at most once every 7 days;
 * never from ``mcp``, ``serve``, ``watch``, hooks, or anything an agent reads;
+* never ``init_success`` on a first index, which ends on its own findings
+  (``init_cmd.reporting.completion_hint``);
 * off in CI and tests, when stderr is not a terminal, for signed-in users,
   with ``REPOWISE_NO_HINTS=1``, ``repowise config hints off`` or ``DO_NOT_TRACK``.
 
@@ -149,6 +151,30 @@ def should_show(hint_id: str, *, fmt: str = "text") -> bool:
     if not sys.stderr.isatty():
         return False
     return not _signed_in() and _due(hint_id, datetime.now(UTC))
+
+
+#: Set once ``init`` has shown the PR bot line; it is never shown again.
+_PR_BOT_KEY = "pr_bot_line_shown"
+
+
+def pr_bot_link_once() -> str | None:
+    """The PR bot install link for the ``init`` finish panel, the first time only.
+
+    One line, once per machine, under the same switches as the hints (and off
+    in CI, where every run is a first). Marked shown when picked, so a run that
+    picks it is the run that shows it. Never raises.
+    """
+    try:
+        from repowise.cli.platform import store
+        from repowise.cli.platform.links import site_link
+        from repowise.cli.platform.telemetry.environment import is_ci
+
+        if is_ci() or not is_enabled() or store.load().get(_PR_BOT_KEY):
+            return None
+        store.update(**{_PR_BOT_KEY: True})
+        return site_link("bot/install", "cli-init")
+    except Exception:
+        return None
 
 
 def maybe_hint(hint_id: str, *, fmt: str = "text") -> bool:

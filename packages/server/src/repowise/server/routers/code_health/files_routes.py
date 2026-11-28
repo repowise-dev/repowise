@@ -120,6 +120,8 @@ async def list_health_files(
     queued = {r.file_path: r.queued for r in await crud.performance_file_rollups(session, repo_id)}
     lang_by_path = await crud.get_file_language_map(session, repo_id)
     perf_langs = supported_perf_languages()
+    # Read once per request, like the MCP rows; only the full row carries it.
+    short_history = set() if summary else await crud.get_short_history_paths(session, repo_id)
     return {
         "total": total,
         "offset": offset,
@@ -132,6 +134,7 @@ async def list_health_files(
                     perf_opportunities=queued.get(m.file_path, 0),
                     perf_analyzed=lang_by_path.get(m.file_path) in perf_langs,
                     summary=summary,
+                    history_basis="short" if m.file_path in short_history else None,
                 ),
                 m,
             )

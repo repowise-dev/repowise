@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from pathlib import Path
 
 from repowise.core.fs_walk import walk_repo
@@ -68,13 +69,16 @@ _ADR_STATUS_MAP = {
 }
 
 
-def find_adr_files(repo_path: Path) -> list[Path]:
+def find_adr_files(
+    repo_path: Path, restrict_to_files: Collection[str] | None = None
+) -> list[Path]:
     """Collect candidate ADR files from the conventional dirs + name match.
 
     One :func:`walk_repo` pass answers both halves: files directly under a
     conventional ADR directory (root-anchored or nested) rank ahead of loose
     ``*adr*.md`` name matches, and the cap is applied to the two buckets in
-    that order.
+    that order. When restricted, only the named repo-relative files count
+    toward the cap.
 
     Ignored paths are excluded. :mod:`repowise.core.fs_walk` prunes junk
     dirs and nested repos but deliberately reads no ignore files, so
@@ -83,6 +87,7 @@ def find_adr_files(repo_path: Path) -> list[Path]:
     decision records citing files no clone of the repo contains.
     """
     ignore = load_gitignore_spec(repo_path)
+    wanted = set(restrict_to_files) if restrict_to_files is not None else None
     conventional: list[Path] = []
     loose: list[Path] = []
     for dirpath, dirnames, filenames in walk_repo(
@@ -101,13 +106,16 @@ def find_adr_files(repo_path: Path) -> list[Path]:
 
         in_adr_dir = _is_adr_dir(rel_dir)
         for fname in filenames:
+            relative = f"{rel_dir}/{fname}" if rel_dir else fname
+            if wanted is not None and relative not in wanted:
+                continue
             bucket = _adr_bucket(fname, in_adr_dir, conventional, loose)
             if bucket is None:
                 continue
             # A full loose bucket can never reach the output, so skip it.
             if bucket is loose and len(loose) >= _MAX_ADR_FILES:
                 continue
-            if ignore.match_file(f"{rel_dir}/{fname}" if rel_dir else fname):
+            if ignore.match_file(relative):
                 continue
             bucket.append(dirpath / fname)
 

@@ -220,6 +220,9 @@ def register_provider(name: str, factory: Callable[..., BaseProvider]) -> None:
             "Choose a different name."
         )
     _custom_providers[name] = factory
+    from repowise.core.registry.plugins import note_registration
+
+    note_registration("llm-provider", name)
 
 
 def get_provider(
@@ -248,7 +251,9 @@ def get_provider(
 
     Raises:
         ValueError: If the provider name is not registered.
-        ImportError: If the provider's optional dependency is not installed.
+        ImportError: If the provider's optional dependency is not installed
+                     (``MissingExtraError`` naming the install command when it
+                     ships as a ``repowise[<extra>]``).
 
     Example:
         provider = get_provider(
@@ -258,6 +263,11 @@ def get_provider(
         )
         response = await provider.generate(system_prompt="...", user_prompt="...")
     """
+    if name not in _custom_providers and name not in PROVIDER_SPECS:
+        # Deferred: a built-in name never pays plugin discovery.
+        from repowise.core.registry.plugins import load_plugins
+
+        load_plugins()  # a plugin package may register it
     if name in _custom_providers:
         return _custom_providers[name](**kwargs)
 
@@ -270,6 +280,10 @@ def get_provider(
     if with_rate_limiter and spec.rate_limit is not None and "rate_limiter" not in kwargs:
         kwargs["rate_limiter"] = RateLimiter(rate_limit_config or spec.rate_limit)
 
+    if spec.extra:
+        from repowise.core.extras import require
+
+        require(spec.extra, f"The {name} provider")
     try:
         module = importlib.import_module(spec.module_path)
     except ImportError as exc:
@@ -285,11 +299,24 @@ def get_provider(
     return cls(**kwargs)
 
 
+def provider_missing_extra(name: str) -> str | None:
+    """The ``repowise[<extra>]`` *name* ships in when it is not installed here, else None."""
+    spec = PROVIDER_SPECS.get(name)
+    if spec is None or not spec.extra:
+        return None
+    from repowise.core.extras import is_installed
+
+    return None if is_installed(spec.extra) else spec.extra
+
+
 def list_providers() -> list[str]:
     """Return a sorted list of all available provider names.
 
     Includes both built-in and runtime-registered custom providers.
     """
+    from repowise.core.registry.plugins import load_plugins
+
+    load_plugins()
     return sorted(set(_BUILTIN_PROVIDERS) | set(_custom_providers))
 
 

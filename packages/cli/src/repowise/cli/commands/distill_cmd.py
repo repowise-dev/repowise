@@ -23,15 +23,16 @@ command and be run as the program.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.agent_adapters.base import SHELL_POSIX, dialect_for_hook_source
 from repowise.cli.helpers import find_repowise_repo_root
+from repowise.core.command_runner import UnrenderableCommandError, render_command
 
 
 @click.command(
@@ -82,7 +83,7 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
         and len(command) == 1
     )
     try:
-        command_str = _render_command(command)
+        command_str = render_command(command)
     except UnrenderableCommandError as exc:
         # Refusing is the safe half of the trade: running a command the user
         # did not type is worse than not running one they did.
@@ -178,91 +179,11 @@ def _under_system32(path: str) -> bool:
         return False
 
 
-# cmd.exe consumes these before the child ever sees them. ``^`` escapes each
-# one for exactly one round of parsing, which is all ``cmd /c`` does.
-_CMD_METACHARS = frozenset('"&|<>^()')
-
-# A ``%NAME%`` pair cmd.exe would expand. Percent expansion happens in a pass
-# before caret handling, so there is nothing to escape it with.
-_CMD_VAR_RE = re.compile(r"%(\w+)%")
-
-
-class UnrenderableCommandError(Exception):
-    """A token cmd.exe cannot be handed over without changing the command."""
-
-
-def _render_command(tokens: tuple[str, ...]) -> str:
-    """Rejoin click's pre-split tokens into one shell command string.
-
-    A single token is passed through untouched: the user quoted the whole
-    command themselves, so shell syntax in it is what they asked for.
-
-    Multiple tokens are an argv the shell must not reinterpret.
-    ``list2cmdline`` alone is not enough on Windows: it quotes for the C
-    runtime's argv parser, which only cares about spaces and quotes, so a
-    token like ``--grep=a&whoami`` comes back unquoted and cmd.exe reads the
-    ``&`` as a command separator.
-
-    So the arguments are caret-escaped — cmd strips one layer and hands the
-    literal text to the child, and because every ``"`` is escaped too, cmd
-    never enters a quoted state where the carets would stop working. The
-    executable is the exception: it keeps real grouping quotes, because cmd
-    resolves the program name before caret processing and a caret-escaped
-    quote is not a grouping quote, which would split ``C:\\Program
-    Files\\...`` at its first space.
-
-    Two shapes cannot be rendered at all and raise rather than run something
-    the user did not type. Both are rejected, not escaped, because cmd offers
-    no escape for either:
-
-    - ``%NAME%`` naming a variable that exists. cmd substitutes it and then
-      re-parses the result, so a value carrying a metacharacter is command
-      execution, not just substitution. Undefined names pass through
-      untouched, which is what keeps ``git log --format=%h%n%s`` working.
-    - A newline or carriage return. cmd truncates the command line at a
-      newline and silently drops a bare CR, so the child would receive a
-      quietly different argv.
-    """
-    if len(tokens) == 1:
-        return tokens[0]
-    if sys.platform != "win32":
-        import shlex
-
-        return shlex.join(tokens)
-
-    for token in tokens:
-        if "\n" in token or "\r" in token:
-            raise UnrenderableCommandError(
-                "cmd.exe cannot carry a newline inside an argument; "
-                "quote the whole command as one argument to run it verbatim"
-            )
-        for name in _CMD_VAR_RE.findall(token):
-            if name in os.environ:
-                raise UnrenderableCommandError(
-                    f"cmd.exe would expand %{name}% and change this command; "
-                    "quote the whole command as one argument to run it verbatim"
-                )
-
-    exe = tokens[0]
-    # Windows paths cannot contain `"`, so plain quoting is unambiguous. A `/`
-    # is quoted too: unquoted, cmd reads `./.venv/Scripts/python.exe` (the
-    # spelling a Git Bash command arrives in) as the program `.` and a switch.
-    if '"' not in exe and (
-        any(ch.isspace() for ch in exe) or any(ch in _CMD_METACHARS or ch == "/" for ch in exe)
-    ):
-        head = f'"{exe}"'
-    else:
-        head = _caret_escape(subprocess.list2cmdline([exe]))
-    rest = _caret_escape(subprocess.list2cmdline(tokens[1:]))
-    return f"{head} {rest}" if rest else head
-
-
-def _caret_escape(rendered: str) -> str:
-    return "".join("^" + ch if ch in _CMD_METACHARS else ch for ch in rendered)
-
-
 def _distill_or_raw(output: str, command_str: str, exit_code: int, source: str = "cli") -> str:
     """Distill *output*, honoring the repo's ``distill:`` config block."""
+    # The engine logs a filter that falls back to raw at debug level. Left
+    # unconfigured, structlog prints that line into the output the agent reads.
+    configure_cli_logging(verbose=False)
     try:
         repo_root = find_repowise_repo_root()
         enabled, disabled, (ttl_days, max_mb) = _load_distill_config(repo_root)
@@ -304,9 +225,13 @@ def _load_distill_config(
     cfg = load_repo_config(repo_root).get("distill") or {}
     if not isinstance(cfg, dict):
         return True, (), omission_store_settings(None)
-    enabled = bool(cfg.get("enabled", True))
+    from repowise.core.settings.model import flag
+
+    enabled = flag(cfg.get("enabled"), True)
     commands_cfg = cfg.get("commands") or {}
     raw_disabled = commands_cfg.get("disabled_filters") if isinstance(commands_cfg, dict) else None
+    if isinstance(raw_disabled, str):
+        raw_disabled = [raw_disabled]  # one bare name is a list of one
     disabled = tuple(str(name) for name in raw_disabled) if isinstance(raw_disabled, list) else ()
     return enabled, disabled, omission_store_settings(cfg)
 

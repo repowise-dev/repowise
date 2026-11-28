@@ -402,7 +402,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         }}
         onAiPrompt={(plan) => setPromptFor({ kind: "plan", id: plan.id, filePath: plan.file_path })}
         onGenerateCode={onGenerateCode}
-        settingsHref={`${prefix}/settings`}
+        settingsHref={providerSetupHref(repoId)}
         modelSetting={modelSetting}
         fileHref={fileHref}
       />

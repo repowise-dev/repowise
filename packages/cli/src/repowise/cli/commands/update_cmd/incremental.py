@@ -7,6 +7,7 @@ routing core log output through the CLI ``console``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ def _build_update_vector_store(
     degraded: list[str] | None = None,
     *,
     required: bool = False,
+    summaries: bool = False,
 ) -> Any | None:
     """Build the shared page/decision vector store for the update path.
 
@@ -33,13 +35,26 @@ def _build_update_vector_store(
     it. A failure is recorded in *degraded* (when given) so the run's degraded
     panel says why semantic dedup is off instead of silently skipping it
     (issue #1370).
+
+    *summaries*: page generation reads earlier summaries from this store, so a
+    keyless embedder still gets one (see ``build_vector_store``).
     """
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
+        from repowise.cli.providers.vector_store import _mock_would_clobber
+        from repowise.core.providers.embedding import is_semantic_embedder
 
-        embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
-        store = build_vector_store(repo_path, embedder)
-        if required and store is None and (Path(repo_path) / ".repowise" / "lancedb").exists():
+        embedder = build_embedder(resolve_embedder(cfg.get("embedder"), repo_path=repo_path), repo_path)
+        store = build_vector_store(repo_path, embedder, summaries=summaries)
+        # A keyless run gets no store by design, and a keyless-width store it
+        # leaves alone needs no refresh; a refused write into a real one does.
+        lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+        if (
+            required
+            and store is None
+            and lance_dir.exists()
+            and (is_semantic_embedder(embedder) or _mock_would_clobber(lance_dir, embedder))
+        ):
             raise RuntimeError(
                 "the configured embedder cannot safely refresh the existing vector index"
             )
@@ -98,6 +113,7 @@ def _rebuild_graph_and_git(
     force_full_git: bool = False,
     git_summary_sink: list[Any] | None = None,
     timings: PhaseTimings | None = None,
+    fresh_communities: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -123,6 +139,7 @@ def _rebuild_graph_and_git(
     file_count, git_meta_map)``.
     """
     from repowise.core.pipeline.incremental import rebuild_graph_and_git
+    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
 
     return run_async(
         rebuild_graph_and_git(
@@ -138,6 +155,10 @@ def _rebuild_graph_and_git(
             git_summary_sink=git_summary_sink,
             log=console.print,
             timings=timings,
+            # Re-resolve only the changed files when that is
+            # provably equivalent to a rebuild (see pipeline.incremental.surface).
+            patch_graph=incremental_graph_enabled(),
+            fresh_communities=fresh_communities,
         )
     )
 
@@ -150,6 +171,7 @@ def _refresh_knowledge_graph(
     git_meta_map: dict,
     dead_code_report: Any,
     prior_fingerprint: str | None,
+    changed_paths: list[str],
 ) -> Any | None:
     """Rebuild the KG skeleton + curation when the graph shape changed.
 
@@ -168,6 +190,7 @@ def _refresh_knowledge_graph(
             git_meta_map,
             dead_code_report,
             prior_fingerprint=prior_fingerprint,
+            changed_paths=changed_paths,
             log=console.print,
         )
     )
@@ -219,6 +242,7 @@ def _run_partial_analysis(
     repo_function_mod_p80: int | None = None,
     timings: PhaseTimings | None = None,
     dead_code: bool = True,
+    base_ref: str | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -250,6 +274,7 @@ def _run_partial_analysis(
         log=console.print,
         timings=timings,
         dead_code=dead_code,
+        base_ref=base_ref,
     )
 
 
@@ -260,7 +285,7 @@ def _run_doc_drift_partial(
     repo_path: Any | None = None,
     timings: PhaseTimings | None = None,
     base_ref: str | None = None,
-    file_diffs: list[Any] = (),
+    file_diffs: Sequence[Any] = (),
 ) -> Any | None:
     """Re-check the repo's markdown against the tree. Delegates to core."""
     from repowise.core.pipeline.incremental import DocDriftUpdate, run_doc_drift_partial

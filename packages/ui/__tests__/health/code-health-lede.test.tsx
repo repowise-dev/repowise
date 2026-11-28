@@ -65,6 +65,13 @@ describe("CodeHealthLede — how many scores the first screen carries", () => {
     expect(container.textContent).toContain("Performance, fix now4");
   });
 
+  it("shows an older summary's open count instead of a fix-now zero", () => {
+    const { performance_causes: _causes, ...older } = summary({ performance_findings: 942 });
+    const { container } = render(<CodeHealthLede summary={older} />);
+    expect(container.textContent).toContain("Performance risk942");
+    expect(container.textContent).not.toContain("Performance, fix now");
+  });
+
   it("says nothing when the split was never recorded", () => {
     const { container } = render(
       <CodeHealthLede summary={summary({ structure_average: null, history_average: null })} />,

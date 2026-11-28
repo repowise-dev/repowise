@@ -48,6 +48,9 @@ ATTRIBUTION_CONFIDENCE: dict[str, str] = {
     "unknown": "low",
 }
 
+#: Bases that place a finding away from the lines the change wrote.
+INCIDENTAL_BASES = frozenset({"file_change", "context_change", "unknown"})
+
 SEVERITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 #: Documentation or configuration: skipped, but no code went unexamined.
@@ -75,6 +78,29 @@ SkipReason = Literal[
     "parse_failed",
     "too_large",
 ]
+
+
+#: How a symbol changed: written by the change, edited in place, removed, or
+#: carried from another file (``moved_from`` names where).
+SymbolChange = Literal["added", "edited", "deleted", "moved"]
+
+
+@dataclass(frozen=True, slots=True)
+class ChangedSymbol:
+    """One symbol the diff touches, whether or not any finding sits in it.
+
+    *path* and the line span are on the head side, or on the base side for a
+    ``deleted`` symbol. *symbol* is the in-file identity (``Class::method``);
+    *moved_from* is ``(path, name)`` with the bare name the move map pairs on.
+    """
+
+    path: str
+    symbol: str
+    kind: str
+    change: SymbolChange
+    start_line: int
+    end_line: int
+    moved_from: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +178,9 @@ class ChangeFinding:
     #: ``{"path", "symbol"}`` the finding's code was moved from, when it moved.
     moved_from: dict[str, str] | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
+    #: The head finding's line-free public id (``finding_public_id``), the same
+    #: id the index gives it, so it holds across commits and comparisons.
+    finding_id: str = ""
 
 
 @dataclass(slots=True)
@@ -204,6 +233,8 @@ class ChangeHealthDelta:
     context: str = "changed_files"
     #: Per-file scores on both sides, largest structure move first.
     files: list[FileScoreDelta] = field(default_factory=list)
+    #: Every symbol the diff touches, by path then line; not only those with findings.
+    changed_symbols: list[ChangedSymbol] = field(default_factory=list)
 
     @property
     def introduced_total(self) -> int:

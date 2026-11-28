@@ -28,6 +28,13 @@ _PY_SQL_LITERAL_RE = re.compile(
     r"^[rRuUbBfF]*[\"']+\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP|ALTER|PRAGMA)\b",
     re.IGNORECASE,
 )
+# Schema statements run once per table, index or setting the code names, however
+# many rows those tables hold: a loop of them is no N+1 and has no batch form.
+_PY_SCHEMA_SQL_RE = re.compile(
+    r"^[rRuUbBfF]*[\"']+\s*(?:CREATE|DROP|ALTER|TRUNCATE|PRAGMA|VACUUM|REINDEX|ANALYZE"
+    r"|COMMENT\s+ON|GRANT|REVOKE)\b",
+    re.IGNORECASE,
+)
 PY_DB_AMBIGUOUS: frozenset[str] = frozenset({"all", "first", "one", "one_or_none"})
 PY_SUBPROC_METHODS: frozenset[str] = frozenset(
     {"run", "call", "check_call", "check_output", "Popen"}
@@ -38,9 +45,9 @@ PY_UNBOUNDED_READ_BOUND_METHODS: frozenset[str] = frozenset(
     {"limit", "range", "single", "maybe_single", "first", "count", "head", "aggregate"}
 )
 
-# Matched on the method name alone: only ``pathlib.Path`` spells these, and the
-# receiver is usually a local (``src_path.read_text()``) that ``io_names`` cannot
-# classify. Metadata calls (``exists`` / ``stat`` / ``glob``) are cheap and left out.
+# Pathlib round trips. Streams and terminals spell them too (``IOStream.read_bytes``),
+# so a call counts only on a receiver shown to be a path (``python_paths.py``).
+# Metadata calls (``exists`` / ``stat`` / ``glob``) are cheap and left out.
 PY_FS_METHODS: frozenset[str] = frozenset(
     {"read_text", "read_bytes", "write_text", "write_bytes"}
 )

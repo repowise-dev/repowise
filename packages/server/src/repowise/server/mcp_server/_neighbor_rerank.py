@@ -203,6 +203,7 @@ async def expand_via_neighbor_rerank(
     hits: list[dict],
     question: str,
     ctx: Any,
+    exclude_spec: Any = None,
 ) -> list[dict]:
     """Surface the top hits' most relevant graph neighbours into ``hits``.
 
@@ -219,7 +220,7 @@ async def expand_via_neighbor_rerank(
     if not seed_paths:
         return hits
 
-    adj = await file_adjacency(session, repo_id)
+    adj = await file_adjacency(session, repo_id, exclude_spec)
     pool = _walk_neighborhood(adj, seed_paths) if adj else set()
     if not pool:
         return hits

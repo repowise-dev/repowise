@@ -59,7 +59,8 @@ COPY pyproject.toml README.md LICENSE MANIFEST.in ./
 COPY packages/core/ packages/core/
 COPY packages/cli/ packages/cli/
 COPY packages/server/ packages/server/
-RUN pip install --no-cache-dir ".[all]"
+# The image keeps every provider selectable from the web UI, litellm included.
+RUN pip install --no-cache-dir ".[litellm]"
 
 # Copy built Next.js standalone output
 COPY --from=frontend-builder /app/packages/web/.next/standalone /app/web

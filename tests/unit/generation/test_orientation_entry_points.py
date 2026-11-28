@@ -149,7 +149,6 @@ def _onboarding_entry_points(slot: str) -> list[str]:
         external_systems=({"name": "fastapi", "ecosystem": "pypi", "is_dev_dep": False},),
         completed_page_summaries={},
         tour_stops=({"title": "Entry Point", "nodeIds": ["file:src/main.py"]},),
-        layer_order=("app",),
     )
     ctx = spec.build_context(signals)
     assert ctx is not None, f"{slot} declined to build; the fixture no longer feeds its gate"

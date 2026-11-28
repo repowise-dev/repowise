@@ -17,6 +17,7 @@ import { healthBand, SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "../
 import { ProportionBar } from "../shared/proportion-bar";
 import { formatScore, type HealthBand, type PerformanceCauses } from "@repowise-dev/types/health";
 import { Sparkline } from "../health/sparkline";
+import { formatNumber } from "../lib/format";
 
 export interface HealthOverviewPoint {
   taken_at: string | null;
@@ -45,6 +46,11 @@ export interface HealthOverviewData {
   /** Open performance causes: worth fixing now (the default queue), in
    *  production code, and overall. */
   performance_causes?: PerformanceCauses | null;
+  /**
+   * @deprecated Every open performance finding, as payloads from the previous
+   * release carry it. Shown only when `performance_causes` is absent.
+   */
+  performance_findings?: number | null;
   /** Snapshot history, oldest→newest, for the trend sparkline. */
   history: HealthOverviewPoint[];
   snapshot_count: number;
@@ -134,12 +140,12 @@ function FindingsLine({
           key: s.key,
           label: SEVERITY_LABEL[s.key],
           value: s.count,
-          detail: s.count.toLocaleString(),
+          detail: formatNumber(s.count),
           color: SEVERITY_SEGMENT[s.key],
         }))}
       />
       <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
-        {count.toLocaleString()}
+        {formatNumber(count)}
       </span>
     </a>
   );
@@ -384,6 +390,7 @@ export function HealthOverviewCard({
                   href={`${reportHref}?pillar=performance`}
                   score={data.performance_average ?? null}
                   causes={data.performance_causes ?? null}
+                  open={data.performance_findings ?? null}
                 />
               </div>
             )}
@@ -443,13 +450,17 @@ function PerformancePillarStat({
   href,
   score,
   causes,
+  open,
 }: {
   href: string;
   score: number | null;
   causes: PerformanceCauses | null;
+  /** The raw open count an older payload carries in place of `causes`. */
+  open: number | null;
 }) {
-  const now = causes?.now ?? 0;
-  const production = causes?.production ?? 0;
+  const openOnly = causes == null ? open : null;
+  const now = causes?.now ?? openOnly ?? 0;
+  const production = causes?.production ?? openOnly ?? 0;
   const clear = score != null && now === 0 && production === 0;
   return (
     <a
@@ -467,11 +478,13 @@ function PerformancePillarStat({
       ) : (
         <span className="flex items-baseline gap-1.5">
           <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-text-primary)]">
-            {now.toLocaleString()}
+            {formatNumber(now)}
           </span>
-          <span className="text-xs text-[var(--color-text-secondary)]">worth fixing now</span>
+          <span className="text-xs text-[var(--color-text-secondary)]">
+            {openOnly != null ? "open" : "worth fixing now"}
+          </span>
           <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-            · {production.toLocaleString()} in production · {formatScore(score)}/10
+            {openOnly == null && <>· {formatNumber(production)} in production </>}· {formatScore(score)}/10
           </span>
         </span>
       )}

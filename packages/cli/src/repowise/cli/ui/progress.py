@@ -94,6 +94,7 @@ _PHASE_LABELS: dict[str, str] = {
     "graph.dotnet_index": "  ↳ Indexing .NET projects",
     "graph.go_index": "  ↳ Indexing Go packages",
     "graph.rust_targets": "  ↳ Reading Rust crate targets",
+    "graph.ruby_gems": "  ↳ Finding Ruby gem entry points",
     "graph.cpp_index": "  ↳ Indexing C and C++ includes",
     "graph.swift_entry": "  ↳ Finding Swift entry points",
     "graph.composer_files": "  ↳ Reading Composer autoload rules",
@@ -105,6 +106,8 @@ _PHASE_LABELS: dict[str, str] = {
     "graph.flows": "  ↳ Tracing execution flows",
     "external_systems": "Parsing external dependency manifests…",
     "git": "Indexing file history…",
+    "git.history": "  ↳ Reading commit history",
+    "git.blame_index": "  ↳ Writing the commit graph for blame",
     "co_change": "Analyzing co-changes…",
     "dead_code": "Detecting dead code…",
     "health": "Scoring code health…",
@@ -124,6 +127,7 @@ _PHASE_LABELS: dict[str, str] = {
     "state": "Writing index state…",
     "views": "Refreshing agent views…",
     "editor_files": "Writing editor files…",
+    "first_look": "Writing the repo report…",
 }
 
 # What a phase counts, so every number on screen has a unit. A phase missing
@@ -138,6 +142,7 @@ _PHASE_UNITS: dict[str, str] = {
     "graph.metrics": "algorithms",
     "graph.communities": "algorithms",
     "git": "files",
+    "git.history": "commits",
     "co_change": "commits",
     "dead_code": "checks",
     "health": "checks",
@@ -242,6 +247,13 @@ class RichProgressCallback:
 
     def on_phase_start(self, phase: str, total: int | None) -> None:
         label = checklist.running_label(_PHASE_LABELS.get(phase, f"{phase}…"))
+        # A pipe or log file never sees the live row, so a long step would
+        # leave no trace until its done row: print a line when one begins.
+        begins = phase not in self._tasks or phase in self._done
+        if begins and not self._progress.console.is_terminal:
+            self._print_above_live(
+                lambda: self._progress.console.print(checklist.start_line(label), highlight=False)
+            )
         self._done.discard(phase)
         self._done_counts.pop(phase, None)
         # If phase already has a task, update its total and make visible
@@ -305,7 +317,11 @@ class RichProgressCallback:
         self._print_above_live(lambda: self._progress.console.print(line, highlight=False))
 
     def on_phase_failed(self, phase: str) -> None:
-        """Hide a step that did not finish, with no done row: its warning says why."""
+        """Hide a step that did not finish, with no done row: its warning says why.
+
+        A done report that follows (for timings and hooks) prints nothing.
+        """
+        self._done.add(phase)
         task_id = self._tasks.get(phase)
         if task_id is not None:
             with contextlib.suppress(Exception):

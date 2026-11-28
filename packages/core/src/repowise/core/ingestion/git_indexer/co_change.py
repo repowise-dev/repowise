@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import subprocess
 import time
 from collections import defaultdict
 from collections.abc import Callable
@@ -25,6 +26,7 @@ from typing import Any
 
 import structlog
 
+from ...analysis.git_cli import run_git
 from ...co_change import canonical_pair
 from ._constants import (
     _CO_CHANGE_COMMIT_DECAY_TAU,
@@ -39,7 +41,7 @@ from .records import RenameTrail, name_status_path
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["CoChangeWalk", "compute_co_changes_and_entropy"]
+__all__ = ["CoChangeWalk", "compute_co_changes_and_entropy", "windowed_partners"]
 
 
 @dataclass
@@ -357,3 +359,117 @@ def compute_co_changes_and_entropy(
         partner_count=dict(partner_count),
         partner_mass={fp: round(mass, 6) for fp, mass in partner_mass.items()},
     )
+
+
+# A query-time walk serves one tool call: a git that takes longer than this is
+# stuck, not slow, on any repository this has been run against.
+_WINDOW_GIT_TIMEOUT_SECONDS = 20.0
+
+
+def _git_log(repo_root: str, args: list[str]) -> str | None:
+    """One ``git log``'s stdout, or ``None`` when git could not run it."""
+    try:
+        proc = run_git(args, repo_root, timeout=_WINDOW_GIT_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _commit_blocks(raw: str) -> list[tuple[int, str]]:
+    """``(timestamp, block)`` per commit of a ``%x00%ct`` log, in its order."""
+    blocks = []
+    for chunk in raw.split("\x00")[1:]:
+        stamp = chunk.split("\n", 1)[0].strip()
+        blocks.append((int(stamp) if stamp.isdigit() else 0, "\x00" + chunk))
+    return blocks
+
+
+def _interleave(touched: str, renames: str) -> str:
+    """Both logs as one newest-first stream.
+
+    On a tie the touching commit goes first, so a commit in both logs resolves
+    its own paths before its renames are recorded (``RenameTrail``). A
+    rename-only block never touches the target, so the tally skips it.
+    """
+    merged = sorted(
+        [(-ts, 0, i, b) for i, (ts, b) in enumerate(_commit_blocks(touched))]
+        + [(-ts, 1, i, b) for i, (ts, b) in enumerate(_commit_blocks(renames))]
+    )
+    return "".join(b if b.endswith("\n") else b + "\n" for *_, b in merged)
+
+
+@dataclass
+class _TargetTally(_WalkTally):
+    """A tally that folds only the commits touching ``target``."""
+
+    target: str = ""
+
+    def add_commit(self, current: set[str], current_ts: int, current_ordinal: int) -> None:
+        if self.target in current:
+            super().add_commit(current, current_ts, current_ordinal)
+
+
+def windowed_partners(
+    repo_root: str, target: str, since: str, all_files: set[str]
+) -> tuple[list[dict], int] | None:
+    """Co-change partners of *target* over the commits since *since*, counted plainly.
+
+    The stored partners are a recency-decayed mass over the whole indexed walk,
+    which cannot be cut back to a window. This walks the commits that touched
+    *target* since the git date *since*, with every file each one changed
+    (``--full-diff``), under the indexer's rules: merges skipped, renamed paths
+    filed under HEAD's name, mass-edit commits dropped, and pairs below
+    ``MIN_CO_CHANGE_SUPPORT`` shared commits left out. The window's renames are
+    read in a second, rename-only walk and interleaved newest first, so a
+    partner renamed in a commit that does not touch *target* still has its
+    older commits filed under its name at HEAD.
+
+    The pathspec keeps git's history simplification: a change merged in from
+    side branches (backports) counts once, as on the mainline, not once per
+    branch. It names *target* at HEAD, so *target*'s own commits from before
+    a rename of it inside the window are not walked.
+
+    Records have the persisted shape, so :func:`~repowise.core.co_change.parse_partners`
+    reads them. ``co_change_count`` and ``frequency`` are both the plain number
+    of shared commits in the window, so the strongest partner is the one that
+    changed with *target* most often there; ties go to the more recent pair.
+    ``partner_commits`` is left out: this walk sees only *target*'s commits.
+
+    Returns ``(records, target_commits)``, or ``None`` when git cannot walk
+    (no checkout, no git binary, a bad date, a timeout).
+    """
+    # Paths relative to the checkout the index names, which can sit below the
+    # git top level (``git_cli.checkout_relative``).
+    base = ["log", f"--since={since}", "-M", "--name-status", "--no-merges", "--relative"]
+    touched = _git_log(
+        repo_root, [*base, "--full-diff", "--format=%x00%ct", "--", f":(literal){target}"]
+    )
+    renames = _git_log(repo_root, [*base, "--diff-filter=R", "--format=%x00%ct"])
+    if touched is None or renames is None:
+        return None
+
+    tally = _TargetTally(now_ts=0.0, target=target)
+    _walk_commits(_interleave(touched, renames), all_files | {target}, tally, None)
+    target_commits = tally.file_commits.get(target, 0)
+
+    ranked: list[tuple[int, int, str, dict]] = []
+    for pair, support in tally.pair_support.items():
+        if target not in pair or support < _MIN_CO_CHANGE_SUPPORT:
+            continue
+        other = pair[1] if pair[0] == target else pair[0]
+        last_ts = tally.pair_last_date.get(pair, 0)
+        record = {
+            "file_path": other,
+            "co_change_count": float(support),
+            "frequency": support,
+            "focused_frequency": tally.pair_focused.get(pair, 0),
+            "self_commits": target_commits,
+            "last_co_change": (
+                datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d")
+                if last_ts > 0
+                else None
+            ),
+        }
+        ranked.append((-support, -last_ts, other, record))
+    ranked.sort(key=lambda r: r[:3])
+    return [r[3] for r in ranked], target_commits

@@ -7,10 +7,12 @@ replace the list, and the existing primary stays unless the user picked one.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import click
@@ -58,6 +60,39 @@ def build_workspace_config(pick: WorkspacePick, *, console: Console, ask: bool) 
     keep_primary = not replace and not pick.primary_picked
     primary = _primary(existing.default_repo, repos, clashed, pick.primary_alias, keep_primary)
     return _finish(existing, repos, primary)
+
+
+def kept_primary(pick: WorkspacePick, *, ask: bool) -> WorkspacePick:
+    """*pick* with the primary :func:`build_workspace_config` will keep, read ahead of it.
+
+    An existing config's primary stays unless the user picked one. A primary
+    the user did not select this run stays too, except where an interactive
+    run may drop it (*ask*) or a picked repo took its alias.
+    """
+    existing = None if pick.primary_picked else _read_quietly(pick.root)
+    old = existing.get_repo(existing.default_repo) if existing and existing.default_repo else None
+    if old is None:
+        return pick
+    key = _key(pick.root, old.path)
+    repo = next((r for r in pick.selected if _key(pick.root, r.path) == key), None)
+    if repo is None:
+        path = (pick.root / old.path).resolve()
+        if ask or not path.is_dir() or any(r.alias == old.alias for r in pick.selected):
+            return pick
+        repo = SimpleNamespace(path=path, name=path.name, alias=old.alias)
+    return dataclasses.replace(pick, primary_alias=repo.alias, primary_repo=repo)
+
+
+def _read_quietly(root: Path) -> Any | None:
+    """The existing config, or ``None``; :func:`_load_existing` reports a bad one later."""
+    from repowise.core.workspace import WORKSPACE_CONFIG_FILENAME, WorkspaceConfig
+
+    if not (root / WORKSPACE_CONFIG_FILENAME).is_file():
+        return None
+    try:
+        return WorkspaceConfig.load(root)
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        return None
 
 
 def _picked_entries(pick: WorkspacePick, previous: dict[str, Any]) -> dict[str, Any]:

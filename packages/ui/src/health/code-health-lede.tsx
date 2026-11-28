@@ -39,7 +39,7 @@ import { Info } from "lucide-react";
 
 /** The lede's two quiet toggles: "Breakdown" under the figure, "How it is scored" under the prose. */
 const DISCLOSURE =
-  "inline-flex cursor-pointer list-none items-center gap-1 rounded text-[11px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden";
+  "inline-flex cursor-pointer list-none items-center gap-1 rounded text-[11px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden";
 
 const HEALTH_HINT =
   "Fitted against real bug history to predict where defects appear. Built from " +
@@ -77,6 +77,12 @@ function performanceHint(causes: PerformanceCauses | null | undefined): string {
     " Never blended into the health score."
   );
 }
+
+/** For a summary that predates `performance_causes` and carries only the raw count. */
+const OPEN_PERFORMANCE_HINT =
+  "A count of open performance risks, not a score. Each one is a database, " +
+  "network, filesystem or subprocess call inside a loop, traced across function " +
+  "boundaries. Never blended into the health score.";
 
 const HOTSPOT_HINT =
   "Code health averaged over the repo's churn hotspots — the files you change " +
@@ -155,6 +161,9 @@ export function CodeHealthLede({
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
   const perfCauses = summary.performance_causes;
+  // An older summary carries only the raw open count; show it under its own
+  // label rather than a "fix now" zero.
+  const perfOpen = perfCauses == null ? (summary.performance_findings ?? null) : null;
   const hotspot = summary.hotspot_health;
   const worstTestPath = summary.worst_test_path;
   const worstTestScore = summary.worst_test_score;
@@ -201,11 +210,17 @@ export function CodeHealthLede({
       // the page was describing something else.
       highlighted: pillar === "maintainability",
     },
-    {
-      label: "Performance, fix now",
-      value: perf == null ? "" : formatNumber(perfCauses?.now ?? 0),
-      hint: performanceHint(perfCauses),
-    },
+    perfOpen != null
+      ? {
+          label: "Performance risk",
+          value: perf == null ? "" : formatNumber(perfOpen),
+          hint: OPEN_PERFORMANCE_HINT,
+        }
+      : {
+          label: "Performance, fix now",
+          value: perf == null ? "" : formatNumber(perfCauses?.now ?? 0),
+          hint: performanceHint(perfCauses),
+        },
     {
       label: "Hotspot health",
       value: hotspot == null ? "" : formatScore(hotspot),
@@ -369,7 +384,7 @@ export function CodeHealthLede({
 
   return (
     <details className="group/lede">
-      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden">
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Code health
         </span>

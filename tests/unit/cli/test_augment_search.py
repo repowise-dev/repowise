@@ -532,20 +532,27 @@ def _flood(files: int, per_file: int) -> str:
     )
 
 
+def _digest(repo, flood: str) -> str | None:
+    groups = augment_cmd.search._flood_groups(flood)
+    return None if groups is None else augment_cmd.search._grep_flood_digest(repo, groups)
+
+
 class TestFloodDigest:
     def test_digest_on_big_flood(self, repowise_cwd) -> None:
-        """>= _DIGEST_THRESHOLD parseable lines across >= 3 files → digest."""
-        out = _call("Grep", "auth", _flood(files=8, per_file=10), repowise_cwd)
+        """>= 3 parseable files render a digest; the hook only serves it."""
+        out = _digest(repowise_cwd, _flood(files=8, per_file=10))
         assert out is not None
         assert "compact digest" in out
         # No wiki.db in the fixture repo → ordering falls back to match count.
         assert "match count" in out
         assert "80 matches in 8 files" in out
 
-    def test_digest_fires_even_for_path_patterns(self, repowise_cwd) -> None:
-        """The digest summarizes results, so the concept-vs-path gate is moot."""
-        out = _call("Grep", "src/file0.py", _flood(files=8, per_file=10), repowise_cwd)
-        assert out is not None and "compact digest" in out
+    def test_unserved_flood_adds_nothing(self, repowise_cwd) -> None:
+        """Opt-in off: no appended digest, and triage does not run either."""
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
+            assert _call("Grep", "auth", _flood(files=8, per_file=10), repowise_cwd) is None
+            assert _call("Grep", "src/file0.py", _flood(files=8, per_file=10), repowise_cwd) is None
+            enrich.assert_not_called()
 
     def test_few_files_fall_through_to_triage(self, repowise_cwd) -> None:
         """A flood concentrated in 1-2 files is already navigable — no digest."""
@@ -576,7 +583,7 @@ class TestFloodDigest:
             + [f"src/warm.py:{j}:hit" for j in range(1, 11)]
             + [f"src/cold{i}.py:1:hit" for i in range(5)]
         )
-        out = _call("Grep", "auth", flood, repowise_cwd)
+        out = _digest(repowise_cwd, flood)
         assert out is not None
         file_lines = [ln for ln in out.splitlines() if "matches)" in ln]
         assert file_lines[0].strip().startswith("src/hot.py")

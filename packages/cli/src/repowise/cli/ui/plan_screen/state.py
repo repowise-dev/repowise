@@ -152,9 +152,12 @@ def build_offer(detected: dict[str, str], prefer: tuple[str, ...], shape: RunSha
     """
     from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
-    if not detected:
+    # An agent CLI whose sign-in was not confirmed (offer=False) stays pickable
+    # by hand but is never the default this line names.
+    names = [p for p, how in detected.items() if getattr(how, "offer", True)]
+    if not names:
         return ModelOffer()
-    name = next((p for p in prefer if p in detected), next(iter(detected)))
+    name = next((p for p in prefer if p in names), names[0])
     runtime = "openai" if name == "openai_compatible" else name
     spec = PROVIDER_SPECS.get(runtime)
     model = spec.default_model if spec is not None else ""

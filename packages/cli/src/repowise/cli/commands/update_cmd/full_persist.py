@@ -17,6 +17,8 @@ from typing import Any
 import structlog
 
 from repowise.core.pipeline.incremental.persist_index import (
+    BUILD_UNITS_STEP,
+    EXTERNAL_CALLS_STEP,
     IncrementalPersist,
     capture_commits,
     mark_tombstones,
@@ -25,14 +27,18 @@ from repowise.core.pipeline.incremental.persist_index import (
     persist_git,
     persist_health,
     persist_knowledge_graph,
+    persist_plugin_records,
     persist_security,
     persist_symbols,
     prune_deleted,
     rebuild_tree,
     reconcile_generation_scope,
     reconcile_scope,
+    refresh_git_rollups,
+    save_graph_snapshot,
     sweep_retired,
 )
+from repowise.core.pipeline.index_persistence import publish_index_persistence
 from repowise.core.pipeline.phase_timing import timed
 from repowise.core.pipeline.step_runner import Step, run_steps
 
@@ -198,7 +204,7 @@ async def upsert_decisions(ctx: FullUpdatePersist) -> None:
                 provider=ctx.provider,
             )
     if ctx.git_meta_map:
-        await recompute_decision_staleness(session, repo_id, ctx.git_meta_map)
+        await recompute_decision_staleness(session, repo_id, ctx.git_meta_map, ctx.repo_path)
 
 
 DECISION_STEPS: tuple[Step, ...] = (
@@ -260,6 +266,20 @@ async def refresh_externals(ctx: FullUpdatePersist) -> None:
 
     with timed(ctx.timings, "persist.external_systems"):
         await refresh_external_systems(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs)
+
+
+async def refresh_route_table(ctx: FullUpdatePersist) -> None:
+    from repowise.core.pipeline.incremental import refresh_routes
+
+    with timed(ctx.timings, "persist.routes"):
+        await refresh_routes(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs)
+
+
+async def refresh_statement_site_index(ctx: FullUpdatePersist) -> None:
+    from repowise.core.pipeline.incremental import refresh_sites
+
+    with timed(ctx.timings, "persist.statement_sites"):
+        await refresh_sites(ctx.session, ctx.repo_id, ctx.repo_path, ctx.file_diffs)
 
 
 async def record_generation_job(ctx: FullUpdatePersist) -> None:
@@ -345,8 +365,7 @@ FULL_UPDATE_STEPS: tuple[Step, ...] = (
         persist_git,
         when=_has_git_input,
         range_scoped=True,
-        reraise=lambda ctx: ctx.require_config_rebuild_success
-        or ctx.full_git_summary is not None,
+        reraise=lambda ctx: ctx.require_config_rebuild_success or ctx.full_git_summary is not None,
     ),
     Step("Commit capture", capture_commits, when=_has_git_input),
     Step("Decisions", persist_decisions, guarded=False),
@@ -374,13 +393,20 @@ FULL_UPDATE_STEPS: tuple[Step, ...] = (
     Step("Symbol persist", persist_symbols, range_scoped=True),
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
+    BUILD_UNITS_STEP,
+    EXTERNAL_CALLS_STEP,
     Step("External systems refresh", refresh_externals, range_scoped=True),
     # Last of the store writes: the steps above upsert rows for deleted paths
     # too. Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    # After the prune, so a handler never binds to a deleted file's symbol.
+    Step("Route table refresh", refresh_route_table),
+    Step("Statement site refresh", refresh_statement_site_index),
+    Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step("Generation job record", record_generation_job),
     Step("Page count", count_pages),
     Step("Config rebuild check", check_config_rebuild, guarded=False),
+    Step("Plugin records", persist_plugin_records, guarded=False),
 )
 
 
@@ -405,7 +431,7 @@ async def index_full_text(ctx: FullUpdatePersist) -> None:
 async def delete_vectors(ctx: FullUpdatePersist) -> None:
     from repowise.core.pipeline.cleanup_debt import clear_cleanup_debt
 
-    await ctx.decision_vector_store.delete_many(sorted(ctx.vector_cleanup_ids))
+    await _drop_vectors(ctx, sorted(ctx.vector_cleanup_ids))
     clear_cleanup_debt(Path(ctx.repo_path), "vectors", ctx.vector_cleanup_ids)
 
 
@@ -432,8 +458,7 @@ FULL_UPDATE_CLEANUP: tuple[Step, ...] = (
     Step(
         "Deferred vector cleanup",
         delete_vectors,
-        when=lambda ctx: bool(ctx.vector_cleanup_ids)
-        and ctx.decision_vector_store is not None,
+        when=lambda ctx: bool(ctx.vector_cleanup_ids) and ctx.decision_vector_store is not None,
         on_error=_record_vector_debt,
         reraise=_requires_rebuild,
     ),
@@ -487,12 +512,16 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
         from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
         with timed(timings, "persist.commit_health"):
-            await refresh_commit_health_after_update(sf, ctx.repo_id, str(ctx.repo_path))
+            await refresh_commit_health_after_update(
+                sf, ctx.repo_id, str(ctx.repo_path), background=True
+            )
         with timed(timings, "persist.planner_stats"):
             await refresh_planner_stats(ctx.engine)
-        return ctx.total_pages
     finally:
         await ctx.engine.dispose()
+    await save_graph_snapshot(ctx)
+    await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))
+    return ctx.total_pages
 
 
 __all__ = [

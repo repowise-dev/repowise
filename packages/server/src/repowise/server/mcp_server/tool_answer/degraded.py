@@ -7,10 +7,22 @@ with no LLM; body selection matches the question's identifiers, not prose.
 
 from __future__ import annotations
 
+import logging
 import time
 
+from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server._code_rationale import can_lead_answer
-from repowise.server.mcp_server._meta import _normalize_target_path
+from repowise.server.mcp_server._entry_trace import (
+    _PATH_MAX_ROWS,
+    call_path,
+    call_route,
+    is_call_path_question,
+    names_destination,
+    route_ends,
+    symbol_at,
+    symbols_named,
+)
+from repowise.server.mcp_server._meta import _normalize_target_path, served_root
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import keyless_note_meta as _keyless_note_meta
@@ -26,9 +38,12 @@ from repowise.server.mcp_server.tool_answer.callers import (
 from repowise.server.mcp_server.tool_answer.confidence import (
     _degraded_confidence,
     _retrieval_quality,
+    body_leaves_out,
     file_hybrid_rank,
+    hit_stems,
     lead_leaves_retrieval,
 )
+from repowise.server.mcp_server.tool_answer.config import _BODY_NOTE, _RATIONALE_NOTE
 from repowise.server.mcp_server.tool_answer.evidence import (
     _drop_already_surfaced,
     _first_resolvable_id,
@@ -43,6 +58,7 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     serialize_hits as _serialize_hits,
 )
 
+_log = logging.getLogger("repowise.mcp.answer")
 
 def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> str:
     """The ``answer`` sentence a synthesis-less payload states about itself.
@@ -124,8 +140,9 @@ async def _degraded_payload(
     repo_root = _repo_root(ctx)
     # A named body that leaves out the rest of the question is served as
     # evidence, never as the answer the payload leads with.
+    body_candidates = _gather_body_candidates(hits, "", anchor_names=question_ids or set())
     symbol_bodies, served_named_body = _build_symbol_bodies(
-        _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
+        body_candidates,
         repo_root,
         question=question,
         hits=hits,
@@ -164,11 +181,18 @@ async def _degraded_payload(
         lead = best_guesses[0]["file"]
     else:
         lead = next((r.get("path") for r in code_rationale[:1] if can_lead_answer(r)), None)
+    lead_outside_top = lead_leaves_retrieval(hits, lead)
+    body_answered = (
+        served_named_body
+        and not lead_outside_top
+        and _lead_answers_by_name(question, question_ids, symbol_bodies, body_candidates, hits)
+    )
     confidence = _degraded_confidence(
         reason,
         retrieval_quality,
-        lead_outside_top=lead_leaves_retrieval(hits, lead),
+        lead_outside_top=lead_outside_top,
         graph_answered=graph_callers.graph_answered,
+        body_answered=body_answered,
     )
 
     payload: dict = {
@@ -186,10 +210,7 @@ async def _degraded_payload(
     attach_graph_callers(payload, graph_callers)
     if code_rationale:
         payload["code_rationale"] = code_rationale
-        payload["note"] += (
-            " code_rationale carries rationale comments mined from the candidate "
-            "source — they may already answer the question."
-        )
+        payload["note"] += _RATIONALE_NOTE
     if symbol_bodies:
         payload["symbol_bodies"] = symbol_bodies
     if served_named_body:
@@ -197,17 +218,7 @@ async def _degraded_payload(
         payload["next_action_hint"] = await _degraded_next_action(
             symbol_bodies, ctx, repository, exclude_spec
         )
-        payload["note"] += (
-            " symbol_bodies carries the live body of the symbol(s) you named, so "
-            "answer from that rather than re-reading the file."
-        )
-    elif best_guesses and retrieval_quality != "weak":
-        # Not on a weak retrieval, where `_meta.hint` says to refine the query
-        # and two disagreeing hints are worse than one.
-        payload["next_action_hint"] = (
-            f"Start from {best_guesses[0]['file']} — it ranked highest, and "
-            "best_guesses says why each candidate is in the running."
-        )
+        payload["note"] += _BODY_NOTE
     payload["_meta"] = {
         **_build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
@@ -216,14 +227,201 @@ async def _degraded_payload(
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
                 has_bodies=served_named_body,
+                body_answers=body_answered,
             ),
             repository=repository,
             targets=[*citations, *fallback_targets],
         ),
         "degraded": reason,
-        **(_keyless_note_meta() if reason == "no-llm-provider" else {}),
     }
+    # The upgrade line rides on the weak keyless replies only: a body or a
+    # medium grade already gives the agent something to act on.
+    if reason == "no-llm-provider" and (confidence == "low" or not symbol_bodies):
+        payload["_meta"].update(
+            await _keyless_note_meta(
+                served_root(repository),
+                session_factory=getattr(ctx, "session_factory", None),
+                repo_id=getattr(repository, "id", None),
+            )
+        )
+    await _attach_call_path(
+        payload,
+        question,
+        question_ids or set(),
+        symbol_bodies,
+        ctx,
+        repository,
+        exclude_spec,
+        lifted_by_body=body_answered and retrieval_quality == "weak",
+    )
     return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
+
+
+async def _attach_call_path(
+    payload: dict, question: str, question_ids: set[str], symbol_bodies: list[dict],
+    ctx, repository, exclude_spec, *, lifted_by_body: bool = False,
+) -> None:
+    """Swap the named body for the call path when the question asks how a call travels.
+
+    The trust hint is re-read without bodies, and the upgrade line a body
+    held back is added, so ``_meta`` describes the reply served. A grade the
+    body lifted over a weak retrieval goes back to "low" with the body.
+    """
+    start, hops = await _call_path_from_named(
+        payload["degraded"], question, question_ids, symbol_bodies, ctx, repository, exclude_spec
+    )
+    if not hops:
+        return
+    _serve_call_path(payload, start, hops)
+    if lifted_by_body:
+        payload["confidence"] = "low"
+    meta = payload["_meta"]
+    meta["hint"] = _answer_hint(
+        payload["confidence"],
+        degraded=payload["degraded"],
+        retrieval_quality=payload.get("retrieval_quality"),
+        has_bodies=False,
+    )
+    if "keyless_note" not in meta:
+        meta.update(
+            await _keyless_note_meta(
+                served_root(repository),
+                session_factory=getattr(ctx, "session_factory", None),
+                repo_id=getattr(repository, "id", None),
+            )
+        )
+
+
+def _lead_answers_by_name(
+    question: str,
+    question_ids: set[str] | None,
+    symbol_bodies: list[dict],
+    body_candidates: list[tuple[int, int, int, str, dict]],
+    hits: list[dict],
+) -> bool:
+    """Is the body the reply leads with the code the question names, carrying the rest?
+
+    A body anchored some other way (a value line, a concept) is evidence, and a
+    named body that leaves out the rest of the question is only the place asked
+    about; neither answers it. The owner's name counts as named, as when the
+    body was selected (the served entry does not carry it).
+    """
+    lead = symbol_bodies[0] if symbol_bodies else None
+    if lead is None or _named_body([lead], question_ids or set()) is None:
+        return False
+    owner = next(
+        (
+            sym.get("parent_name")
+            for _tier, _kind, start, path, sym in body_candidates
+            if (path, sym.get("name"), start) == (lead["path"], lead["name"], lead["lines"][0])
+        ),
+        None,
+    )
+    return not body_leaves_out(question, {**lead, "parent_name": owner}, hit_stems(hits))
+
+
+def _named_body(symbol_bodies: list[dict], question_ids: set[str]) -> dict | None:
+    """The first served body whose symbol the question names."""
+    wanted = {q.lower() for q in question_ids} | {q.rsplit(".", 1)[-1].lower() for q in question_ids}
+    for body in symbol_bodies:
+        name = str(body.get("name") or "")
+        if name.lower() in wanted or name.rsplit(".", 1)[-1].lower() in wanted:
+            return body
+    return None
+
+
+async def _call_path_from_named(
+    reason: str, question: str, question_ids: set[str], symbol_bodies: list[dict],
+    ctx, repository, exclude_spec,
+) -> tuple[str, list[str]]:
+    """``(where the hops run, hops)`` for a keyless question about how a named call travels on.
+
+    Without a model, the body of the symbol the question starts from answers
+    "what is it", not "where does it go"; the hops do. A question that names
+    both ends ("how does X reach Y") gets the route between them. Otherwise,
+    or when the graph holds no such route, the hops out of (or into) the named
+    symbol whose body was served, when there are at least two. Empty unless
+    the question has that shape.
+    """
+    if reason != "no-llm-provider" or ctx is None:
+        return "", []
+    ends = route_ends(question, question_ids)
+    if ends is None and not is_call_path_question(question):
+        return "", []
+    no_route = ""
+    if ends is not None:
+        start, wanted = ends
+        try:
+            async with get_session(ctx.session_factory) as session:
+                route, reached = await _route_between(
+                    session, repository.id, start, wanted, exclude_spec
+                )
+        except Exception:  # the walk below still answers
+            _log.debug("get_answer: call route failed", exc_info=True)
+            route, reached = None, []
+        if route:
+            return f"on the route from {start} to {', '.join(reached)}", route
+        if route is not None:
+            no_route = f" (no route to {', '.join(wanted)} found)"
+    body = _named_body(symbol_bodies, question_ids)
+    if body is None or not is_call_path_question(question):
+        return "", []
+    try:
+        async with get_session(ctx.session_factory) as session:
+            way, hops = await _hops_around(session, repository.id, body, question, exclude_spec)
+            if len(hops) >= 2:
+                return f"{way} {body['name']} {body['path']}:{body['lines'][0]}{no_route}", hops
+    except Exception:  # the body stays the reply
+        _log.debug("get_answer: call path failed", exc_info=True)
+    return "", []
+
+
+async def _route_between(
+    session, repo_id: str, start: str, wanted: list[str], exclude_spec
+) -> tuple[list[str] | None, list[str]]:
+    """``(rows, names reached)``: the route from *start* to each name in *wanted*,
+    shared hops once, at most as many rows as the walk serves.
+
+    Rows are ``None`` when *start* names no indexed symbol, empty when no route is found.
+    """
+    starts = await symbols_named(session, repo_id, start)
+    if not starts:
+        return None, []
+    rows: dict[str, None] = {}
+    reached: list[str] = []
+    for name in wanted:
+        finals = await symbols_named(session, repo_id, name)
+        route = await call_route(session, repo_id, starts, finals, exclude_spec)
+        if route:
+            reached.append(name)
+            rows.update(dict.fromkeys(route))
+    return list(rows)[:_PATH_MAX_ROWS], reached
+
+
+async def _hops_around(session, repo_id: str, body: dict, question: str, exclude_spec) -> tuple[str, list[str]]:
+    """``("out of" | "into", hops)`` walked from the symbol *body* defines."""
+    if not isinstance(body.get("lines"), list):
+        return "", []
+    root = await symbol_at(session, repo_id, body["path"], body["lines"][0])
+    if root is None:
+        return "", []
+    upstream = names_destination(question, str(body.get("name") or ""))
+    hops = await call_path(session, repo_id, root, exclude_spec, upstream=upstream, question=question)
+    return ("into" if upstream else "out of"), hops
+
+
+def _serve_call_path(payload: dict, start: str, hops: list[str]) -> None:
+    """Serve the hops in place of the named body and the rationale."""
+    payload["call_path"] = hops
+    for key in ("symbol_bodies", "code_rationale", "grounding"):
+        payload.pop(key, None)
+    payload["call_path_from"] = start
+    # The caller's note stays; the sentences about what the hops replaced go.
+    note = str(payload.get("note") or "")
+    for gone in (_RATIONALE_NOTE, _BODY_NOTE):
+        note = note.replace(gone, "")
+    payload["note"] = note
+    payload["next_action_hint"] = "Read the hops the question asks about at their lines."
 
 
 async def _degraded_next_action(symbol_bodies: list[dict], ctx, repository, exclude_spec) -> str:

@@ -158,27 +158,27 @@ def test_rescope_summary_recounts_one_context() -> None:
 _SEEDS: list[dict[str, Any]] = [
     {"execution_context": "production", "boundary_kind": "db", "evidence_confidence": "high",
      "actionability_state": "plan_ready", "plan_state": "available", "file_path": "a.py",
-     "affected_call_sites_total": 4, "observations_total": 9, "cost_proof": "proven", "execution_role": "request"},
+     "affected_call_sites_total": 4, "observations_total": 9, "cost_proof": "proven", "static_cost": "grows_with_data", "execution_role": "request"},
     {"execution_context": "production", "boundary_kind": None, "evidence_confidence": "medium",
      "actionability_state": "advisory", "plan_state": "no_safe_plan", "file_path": "b.py",
-     "affected_call_sites_total": 4, "observations_total": 2, "cost_proof": "unproven", "execution_role": "cli"},
+     "affected_call_sites_total": 4, "observations_total": 2, "cost_proof": "unproven", "static_cost": "size_unknown", "execution_role": "cli"},
     {"execution_context": "test", "boundary_kind": "network", "evidence_confidence": "low",
      "actionability_state": "advisory", "plan_state": "not_persisted", "file_path": "a.py",
-     "affected_call_sites_total": 7, "observations_total": 2, "cost_proof": "proven", "execution_role": "test"},
+     "affected_call_sites_total": 7, "observations_total": 2, "cost_proof": "proven", "static_cost": "bounded", "execution_role": "test"},
     {"execution_context": "tooling", "boundary_kind": None, "evidence_confidence": "high",
      "actionability_state": "expected", "plan_state": "no_safe_plan", "file_path": "c.py",
-     "affected_call_sites_total": 1, "observations_total": 9, "cost_proof": "unproven", "execution_role": "tooling"},
+     "affected_call_sites_total": 1, "observations_total": 9, "cost_proof": "unproven", "static_cost": "size_unknown", "execution_role": "tooling"},
     {"execution_context": "production", "boundary_kind": "db", "evidence_confidence": "high",
      "actionability_state": "investigate", "plan_state": "no_safe_plan", "file_path": "c.py",
-     "affected_call_sites_total": 0, "observations_total": 5, "cost_proof": "proven", "execution_role": "scheduled_job"},
+     "affected_call_sites_total": 0, "observations_total": 5, "cost_proof": "proven", "static_cost": "per_call_reached", "execution_role": "scheduled_job"},
     {"execution_context": "unknown", "boundary_kind": "filesystem", "evidence_confidence": "medium",
      "actionability_state": "plan_ready", "plan_state": "available", "file_path": "b.py",
-     "affected_call_sites_total": 7, "observations_total": 1, "cost_proof": "proven", "execution_role": "unknown"},
+     "affected_call_sites_total": 7, "observations_total": 1, "cost_proof": "proven", "static_cost": "grows_with_data", "execution_role": "unknown"},
     # Resolved: in no queue and no facet.
     {"execution_context": "production", "boundary_kind": "db", "evidence_confidence": "high",
      "actionability_state": "plan_ready", "plan_state": "available", "file_path": "a.py",
      "affected_call_sites_total": 99, "observations_total": 99, "status": "resolved",
-     "cost_proof": "proven", "execution_role": "request"},
+     "cost_proof": "proven", "static_cost": "grows_with_data", "execution_role": "request"},
 ]
 
 _QUERIES: list[dict[str, Any]] = [
@@ -197,6 +197,8 @@ _QUERIES: list[dict[str, Any]] = [
     {"context": "all", "role": "all"},
     {"role": "cli"},
     {"context": "all", "role": "scheduled_job", "actionability": "investigate"},
+    {"static_cost": "grows_with_data"},
+    {"context": "all", "static_cost": "size_unknown", "proof": "unproven"},
 ]
 
 
@@ -276,6 +278,7 @@ async def test_keep_and_sort_agree_with_the_store(store, args, sort) -> None:
         confidence=query.confidence,
         actionabilities=query.actionabilities,
         proofs=query.proofs,
+        static_costs=query.static_costs,
         roles=query.roles,
         queue_eligible=query.queue_eligible,
         file_paths=query.file_paths,
@@ -362,6 +365,9 @@ _SCOPES = [
     {"context": "all", "actionability": "all", "proof": "all", "role": "all"},
     {"context": "all", "actionability": "all", "proof": "all", "role": "all", "boundary": "db"},
     {"context": "test", "actionability": "all", "proof": "all", "role": "all"},
+    {"static_cost": "grows_with_data"},
+    {"context": "all", "actionability": "all", "proof": "all", "role": "all",
+     "static_cost": "size_unknown"},
 ]
 
 #: Facet name and the query attribute that narrows it.
@@ -371,6 +377,7 @@ _OWN = {
     "confidence": "confidence",
     "actionability": "actionability",
     "proof": "proof",
+    "static_cost": "static_cost",
     "role": "role",
 }
 
@@ -400,6 +407,23 @@ async def test_scoped_facets_sum_to_the_rows_the_scope_returns(store, args) -> N
             assert sum(counts.values()) == total, name
         else:
             assert counts.get(chosen, 0) == total, name
+
+
+async def test_static_cost_is_a_dashboard_facet_only(store) -> None:
+    """The agent surface's unscoped facets keep their keys; the dashboard's
+    scoped facets add the code's part of the cost."""
+    from repowise.core.persistence.crud.analysis.performance import performance_facet_counts
+
+    session, repository_id = store
+    query, ignored = parse_query(static_cost="nonsense")
+    assert query.static_cost is None
+    assert set(ignored) == {"performance_static_cost"}
+    unscoped = fold_facets(await performance_facet_counts(session, repository_id), query)
+    assert "static_cost" not in unscoped
+    scoped = fold_scoped_facets(
+        await performance_facet_counts(session, repository_id, scoped=True), query
+    )
+    assert {entry["value"] for entry in scoped["static_cost"]} <= {"grows_with_data"}
 
 
 def test_all_lifts_the_default_state_and_proof() -> None:

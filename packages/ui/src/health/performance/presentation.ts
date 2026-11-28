@@ -7,12 +7,14 @@ import {
   type PerformanceOpportunity,
   type PerformanceOpportunityConfidence,
   type PerformanceOpportunitySibling,
+  type PerformanceStaticCost,
   type PerformanceWhyRanked,
 } from "@repowise-dev/types/health";
 import type { C4IoKind } from "@repowise-dev/types/external-systems";
 
 import { biomarkerLabel } from "../biomarker-glossary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL } from "../labels";
+import { formatNumber } from "../../lib/format";
 
 /**
  * Display derivations for the performance queue. Everything here reads fields
@@ -75,13 +77,26 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
   actionability: "Actionability",
   plan_state: "Plan",
   proof: "Cost",
+  static_cost: "Loop size",
   role: "Runs in",
 };
 
 const PROOF_LABEL: Record<PerformanceCostProof, string> = {
-  proven: "Measured",
+  // The code shows how the cost scales, or a run measured it; the static part
+  // alone is the "Loop size" facet (STATIC_COST_LABEL).
+  proven: "Loop size known or measured",
   unproven: "Unproven: loop size unknown",
   background_unproven: "Unproven: scheduled job, growth not shown",
+};
+
+// What the code alone shows. Nothing timed it, so none of these says "measured".
+const STATIC_COST_LABEL: Record<PerformanceStaticCost, string> = {
+  grows_with_data: "Grows with the data",
+  grows_by_shape: "Grows by its shape",
+  per_call_reached: "Per call, entry point reaches it",
+  per_call_unreached: "Per call, no entry point reaches it",
+  bounded: "Bounded",
+  size_unknown: "Unknown in the code",
 };
 
 // "Stored plan", not "Plan ready": that name belongs to the actionability
@@ -203,6 +218,8 @@ export function facetValueLabel(facet: PerformanceFacetKey, value: string): stri
   if (facet === "actionability")
     return ACTIONABILITY_LABEL[value as PerformanceActionabilityState] ?? humanizeToken(value);
   if (facet === "proof") return PROOF_LABEL[value as PerformanceCostProof] ?? humanizeToken(value);
+  if (facet === "static_cost")
+    return STATIC_COST_LABEL[value as PerformanceStaticCost] ?? humanizeToken(value);
   if (facet === "role") return humanizeToken(value);
   return PLAN_STATE_LABEL[value] ?? humanizeToken(value);
 }
@@ -220,6 +237,8 @@ const CAUSE_BY_MARKER: Record<string, (boundary: C4IoKind | null) => string> = {
   blocking_io_under_lock: (b) => `${b ? boundaryNoun(b) : "I/O"} call made while a lock is held`,
   resource_construction_in_loop: (b) =>
     `${b ? boundaryNoun(b) : "Resource"} client constructed on every iteration`,
+  // No static finding: a leading run measured the function above the lead bar.
+  measured_hotspot: () => "Measured hotspot with no static cause",
 };
 
 /** The cause in words: "Database call inside a loop". */
@@ -238,10 +257,15 @@ export function opportunityCause(opportunity: PerformanceOpportunity): string {
  */
 export function opportunitySubject(opportunity: PerformanceOpportunity): string {
   const symbol = opportunity.intervention_symbol?.trim();
-  if (symbol) return moduleScopeLabel(symbol, true) ?? symbol.split("::").pop() ?? symbol;
+  if (symbol) return symbolSubject(symbol);
   const first = opportunity.evidence[0]?.function_name;
   if (first) return first;
   return opportunity.file_path.split("/").pop() ?? opportunity.file_path;
+}
+
+/** A symbol id's short name, without its path: `render_block`. */
+export function symbolSubject(symbolId: string): string {
+  return moduleScopeLabel(symbolId, true) ?? symbolId.split("::").pop() ?? symbolId;
 }
 
 /**
@@ -267,12 +291,27 @@ export function opportunityEvidenceLine(opportunity: PerformanceOpportunity): st
   return opportunity.file_path;
 }
 
+/**
+ * A cause a leading run measured above the lead bar with no static finding
+ * behind it. Its stored observations are empty: the run is its evidence.
+ */
+export function isMeasuredHotspot(opportunity: PerformanceOpportunity): boolean {
+  return opportunity.biomarker_type === "measured_hotspot";
+}
+
+/** `3 observations`, or `measured run` for a cause no static finding backs. */
+export function observationsText(opportunity: PerformanceOpportunity): string {
+  if (isMeasuredHotspot(opportunity)) return "measured run";
+  const n = opportunity.observations_total;
+  return `${formatNumber(n)} observation${n === 1 ? "" : "s"}`;
+}
+
 /** `12 call sites across 3 files`, with the singulars right. */
 export function affectedSummary(opportunity: PerformanceOpportunity): string {
   const sites = opportunity.affected_call_sites_total;
   const files = opportunity.affected_files_total;
-  const sitePart = `${sites.toLocaleString()} call site${sites === 1 ? "" : "s"}`;
-  const filePart = `${files.toLocaleString()} file${files === 1 ? "" : "s"}`;
+  const sitePart = `${formatNumber(sites)} call site${sites === 1 ? "" : "s"}`;
+  const filePart = `${formatNumber(files)} file${files === 1 ? "" : "s"}`;
   return `${sitePart} across ${filePart}`;
 }
 
@@ -299,7 +338,7 @@ export function whyRankedPhrase(factor: PerformanceWhyRanked): string {
   switch (factor.factor) {
     case "affected_call_sites":
       return typeof value === "number"
-        ? `${value.toLocaleString()} call site${value === 1 ? "" : "s"}`
+        ? `${formatNumber(value)} call site${value === 1 ? "" : "s"}`
         : "several call sites";
     case "boundary_kind":
       return !value || value === NO_BOUNDARY
@@ -317,6 +356,8 @@ export function whyRankedPhrase(factor: PerformanceWhyRanked): string {
       return value === "grows_with_data" ? "grows with the data" : humanizeToken(String(value));
     case "provenance":
       return value === "call-site" ? "seen at the call site" : humanizeToken(String(value));
+    case "measured_rank":
+      return typeof value === "number" ? `place ${value} in its measured run` : "a measured run";
     default:
       return whyRankedLabel(factor);
   }
@@ -329,7 +370,7 @@ export function whyRankedLabel(factor: PerformanceWhyRanked): string {
   if (factor.value === null || factor.value === "" || typeof factor.value === "boolean") {
     return `${name} (${sign}${factor.points})`;
   }
-  const value = typeof factor.value === "number" ? factor.value.toLocaleString() : humanizeToken(String(factor.value));
+  const value = typeof factor.value === "number" ? formatNumber(factor.value) : humanizeToken(String(factor.value));
   return `${name}: ${value} (${sign}${factor.points})`;
 }
 
@@ -376,7 +417,9 @@ function asSentence(text: string): string {
 export function causeStandingText(opportunity: PerformanceOpportunity): string {
   const plan = planPresentation(opportunity);
   return [
-    `${ACTIONABILITY_LABEL[opportunity.actionability_state]}: ${humanizeToken(opportunity.actionability_reason)}`,
+    opportunity.actionability_reason
+      ? `${ACTIONABILITY_LABEL[opportunity.actionability_state]}: ${humanizeToken(opportunity.actionability_reason)}`
+      : ACTIONABILITY_LABEL[opportunity.actionability_state],
     plan.detail.trim() ? `${plan.label}: ${plan.detail}` : plan.label,
     `The call path resolved with ${CONFIDENCE_LABEL[opportunity.confidence].toLowerCase()} confidence`,
   ]
@@ -393,6 +436,7 @@ const FIX_STRATEGY_LABEL: Record<string, string> = {
   shrink_lock_scope: "Move the work out of the lock",
   push_reduction_into_query: "Do the reduction in the query",
   eager_load_relationship: "Load the relationship eagerly",
+  reduce_measured_self_time: "Find and cut the work the run measured",
 };
 
 export function fixStrategyLabel(strategy: string): string {

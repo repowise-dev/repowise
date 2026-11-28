@@ -26,10 +26,20 @@ Python dynamic-import hints extractor
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterable
 from pathlib import PurePosixPath
 
 _PY_SUFFIXES = (".py", ".pyi")
+
+# Stdlib top-level names, independent of the indexer's own Python: the running
+# interpreter's set drops modules removed in 3.12/3.13 that older code imports.
+STDLIB_NAMES = sys.stdlib_module_names | {
+    "asynchat", "asyncore", "distutils", "imp", "smtpd",  # removed in 3.12
+    "aifc", "audioop", "cgi", "cgitb", "chunk", "crypt", "imghdr", "mailcap",
+    "msilib", "nis", "nntplib", "ossaudiodev", "pipes", "sndhdr", "spwd",
+    "sunau", "telnetlib", "uu", "xdrlib", "lib2to3",  # removed in 3.13
+}  # fmt: skip
 
 # Path segments that mark a file as a low-value resolution target. Mirrors
 # the stem-disambiguation policy in ``graph/_stem.py``: a loose module under
@@ -143,6 +153,62 @@ def dotted_module_for(path: str, path_set: frozenset[str] | set[str]) -> str | N
     return ".".join(parts)
 
 
+def source_roots(path_set: frozenset[str] | set[str]) -> set[str]:
+    """Directories a Python import root sits at, as the package layout shows.
+
+    The directory above each top-level regular package (one with an
+    ``__init__.py`` whose parent has none), and every ``src`` directory that
+    is not itself a package. ``""`` is the repository root.
+    """
+    roots: set[str] = set()
+    for path in path_set:
+        p = PurePosixPath(path)
+        if p.name != "__init__.py":
+            continue
+        parent = p.parent.parent.as_posix()
+        parent = "" if parent == "." else parent
+        if not _is_package_dir(parent, path_set):
+            roots.add(parent)
+        for i, part in enumerate(p.parts[:-1]):
+            if part == "src":
+                src = "/".join(p.parts[: i + 1])
+                if not _is_package_dir(src, path_set):
+                    roots.add(src)
+    return roots
+
+
+def _namespace_names(path_set: frozenset[str] | set[str]) -> dict[str, str]:
+    """PEP 420 names: each Python file named from every source root above it.
+
+    A module in a directory with no ``__init__.py`` (``backend/middleware/jwt.py``)
+    is still importable as ``middleware.jwt`` when ``backend`` is an import root,
+    and ``backend/scripts/tools/x.py`` in a regular package ``tools`` is also
+    ``scripts.tools.x`` from that root. A bare top-level name is left to the
+    resolver, which knows the importer's own roots. A name whose first segment
+    is a stdlib module is skipped: an inferred root never shadows the stdlib.
+    """
+    roots = source_roots(path_set)
+    names: dict[str, str] = {}
+    for path in path_set:
+        if PurePosixPath(path).suffix not in _PY_SUFFIXES:
+            continue
+        parts = module_parts(path)
+        regular = dotted_module_for(path, path_set)
+        for depth in range(len(parts) - 1):
+            if "/".join(parts[:depth]) not in roots:
+                continue
+            comps = parts[depth:]
+            if comps[0] in STDLIB_NAMES or not all(c.isidentifier() for c in comps):
+                continue
+            dotted = ".".join(comps)
+            if dotted == regular:
+                continue
+            current = names.get(dotted)
+            if current is None or _index_priority(path) < _index_priority(current):
+                names[dotted] = path
+    return names
+
+
 def build_python_module_index(paths: Iterable[str]) -> dict[str, str]:
     """Map dotted module name → repo-relative file path for every Python file.
 
@@ -150,7 +216,9 @@ def build_python_module_index(paths: Iterable[str]) -> dict[str, str]:
     like-named loose module under ``tests/`` / ``fixtures/``, or namespace
     packages split across roots) the higher-priority path wins
     deterministically — see :func:`_index_priority` — so resolution never
-    depends on iteration order.
+    depends on iteration order. A regular-package name always beats a
+    namespace-package name (:func:`_namespace_names`), and is listed after
+    it, so a reverse map built by iterating the index keeps the regular name.
     """
     path_set = paths if isinstance(paths, (set, frozenset)) else set(paths)
     index: dict[str, str] = {}
@@ -161,4 +229,5 @@ def build_python_module_index(paths: Iterable[str]) -> dict[str, str]:
         current = index.get(dotted)
         if current is None or _index_priority(p) < _index_priority(current):
             index[dotted] = p
-    return index
+    namespace = {k: v for k, v in _namespace_names(path_set).items() if k not in index}
+    return {**namespace, **index}

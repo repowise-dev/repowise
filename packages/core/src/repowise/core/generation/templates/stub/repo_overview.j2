@@ -9,7 +9,7 @@
 -#}
 # Repository Overview: {{ ctx.repo_name }}
 
-**Files:** {{ ctx.total_files }} | **Lines:** {{ ctx.total_loc }}{% if ctx.is_monorepo %} | **Monorepo:** {{ ctx.packages | length }} packages{% endif %}{% if ctx.circular_dependency_count > 0 %} | **Import cycles:** {{ ctx.circular_dependency_count }}{% endif %}
+**Files:** {{ ctx.total_files }} | **Lines:** {{ ctx.total_loc }}{% if ctx.is_monorepo %} | **Monorepo:** {{ ctx.packages | length }} packages{% endif %}{% if ctx.circular_dependency_count > 0 %} | **Static import cycles:** {{ ctx.circular_dependency_count }}{% endif %}
 
 ## Project Summary
 

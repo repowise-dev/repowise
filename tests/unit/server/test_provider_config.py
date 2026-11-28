@@ -296,6 +296,25 @@ def test_set_api_key_rejects_newline_in_value(clean_env, tmp_path):
         pc.set_api_key("anthropic", "sk-ant\nEVIL=1", repo_path=str(repo))
 
 
+def test_set_api_key_rejects_a_trailing_newline_rather_than_stripping_it(clean_env, tmp_path):
+    # The newline check runs before the strip, so this is still refused.
+    with pytest.raises(ValueError, match="newline"):
+        pc.set_api_key("anthropic", "sk-ant-xyz\n")
+
+
+def test_set_api_key_rejects_blank_value_before_writing(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    pc.set_api_key("anthropic", "sk-ant-xyz", repo_path=str(repo))
+
+    with pytest.raises(ValueError, match="empty"):
+        pc.set_api_key("anthropic", "   ", repo_path=str(repo))
+
+    from repowise.core.repo_config import load_repo_env
+
+    assert pc._get_key_for_provider("anthropic") == "sk-ant-xyz"
+    assert load_repo_env(repo)["ANTHROPIC_API_KEY"] == "sk-ant-xyz"
+
+
 def test_config_path_defaults_to_home(monkeypatch, tmp_path):
     # No REPOWISE_CONFIG_DIR: the store lives in ~/.repowise, not the CWD.
     monkeypatch.setattr(pc.os, "environ", {})
@@ -316,6 +335,78 @@ def test_list_provider_status_carries_setup_facts_from_the_specs(clean_env, tmp_
     assert "codex login" in by_id["codex_cli"]["setup_hint"]
     assert "mock" not in by_id
     assert status["flag_only_providers"] == ["mock"]
+
+
+def test_list_provider_status_names_where_a_key_was_found(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", env="OPENAI_API_KEY=sk-from-repo-env\n")
+    clean_env["GEMINI_API_KEY"] = "from-process-env"
+    pc.set_api_key("anthropic", "sk-ant-stored")
+
+    by_id = {p["id"]: p for p in pc.list_provider_status(repo_path=str(repo))["providers"]}
+
+    assert by_id["openai"]["detected"] == "env"
+    assert by_id["gemini"]["detected"] == "env"
+    assert by_id["anthropic"]["detected"] == "saved"
+    assert by_id["deepseek"]["detected"] is None
+    # Keyless providers name nothing; agent CLIs only when asked to detect.
+    assert by_id["ollama"]["detected"] is None
+    assert by_id["claude_cli"]["detected"] is None
+
+
+def test_detect_names_signed_in_agent_clis(clean_env, monkeypatch):
+    from repowise.core.agents.identity import AgentIdentity
+
+    calls: list[str] = []
+
+    def is_logged_in(self):
+        calls.append(self.slug)
+        return self.slug == "claude_code"
+
+    monkeypatch.setattr(AgentIdentity, "is_logged_in", is_logged_in)
+
+    assert {p["detected"] for p in pc.list_provider_status()["providers"]} == {None}
+    assert calls == []
+
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["claude_cli"]["detected"] == "signed_in"
+    assert by_id["codex_cli"]["detected"] is None
+    assert "codex" in calls
+
+
+def test_detect_never_reports_signed_in_for_an_agent_without_a_login_check(clean_env, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/bin/{name}")
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["opencode"]["detected"] == "installed"
+    assert by_id["copilot_cli"]["detected"] == "installed"
+
+
+def test_detect_does_not_run_login_checks_when_the_network_is_off(clean_env, monkeypatch):
+    import shutil
+    import subprocess
+
+    clean_env["DO_NOT_TRACK"] = "1"
+    monkeypatch.setattr(shutil, "which", lambda name: f"/bin/{name}")
+
+    def fail(*args, **kwargs):
+        raise AssertionError("a login check was spawned with DO_NOT_TRACK set")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["claude_cli"]["detected"] == "installed"
+    assert by_id["codex_cli"]["detected"] == "installed"
+
+
+def test_a_broken_login_check_counts_as_not_signed_in(clean_env, monkeypatch):
+    from repowise.core.agents.identity import AgentIdentity
+
+    def is_logged_in(self):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(AgentIdentity, "is_logged_in", is_logged_in)
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["claude_cli"]["detected"] is None
 
 
 def test_list_provider_status_carries_the_embedder_registry(clean_env, tmp_path, monkeypatch):
@@ -369,8 +460,10 @@ def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
             "requires_key",
             "accepts_base_url",
             "local_server",
+            "local_model",
             "env_vars",
             "setup_hint",
+            "detected",
         }
         assert "key" not in provider
         assert "api_key" not in provider
@@ -456,6 +549,26 @@ def test_legacy_json_selection_moves_into_an_empty_config_yaml(clean_env, tmp_pa
     cfg = load_repo_config(repo)
     assert (cfg["provider"], cfg["model"], cfg["embedder"]) == ("openai", "gpt-5.4", "mock")
     assert "repos" not in pc._load_config()
+
+
+async def test_preflight_probe_sees_a_legacy_only_selection(clean_env, tmp_path):
+    """The preflight resolves with the repo id, as the index job does, so a
+    choice left only in the legacy per-repo store is probed, not skipped."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from repowise.server.routers._repo_pricing import probe_provider
+
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    _write_store(tmp_path, {"repos": {"r1": {"provider": "openai", "model": "gpt-5.4"}}})
+    built = SimpleNamespace(
+        provider_name="openai", model_name="gpt-5.4", generate=AsyncMock(return_value="OK")
+    )
+    with patch("repowise.core.providers.llm.registry.get_provider", return_value=built):
+        result = await probe_provider(str(repo), "r1")
+
+    assert result["configured"] is True
+    assert (result["ok"], result["name"], result["model"]) == (True, "openai", "gpt-5.4")
 
 
 def test_legacy_json_selection_is_dropped_when_yaml_has_a_provider(clean_env, tmp_path):

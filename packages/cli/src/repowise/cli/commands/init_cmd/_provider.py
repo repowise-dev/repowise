@@ -14,6 +14,7 @@ from repowise.cli.ui import MODEL, OK, VALUE, WARN
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mascot import owl_status
 from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, model_name, written_by
+from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
 
 from ._options import InitRun
 
@@ -67,13 +68,13 @@ def _resolve_or_fall_back(run: InitRun) -> None:
         console.print(
             f"[{WARN}]No model configured.[/] Building documentation from "
             "code instead (no key, no spend).\n"
-            "[dim]Set a key (or pass --provider) and run [bold]repowise "
-            "update --full[/bold] to have a model write it.[/dim]"
+            f"[dim]Set a key (or pass --provider) and run [bold]{MODEL_COMMAND}"
+            "[/bold] to have a model write it.[/dim]"
         )
         # A provider that was configured but could not be built is a different
         # problem from none being configured, and the message above would send
         # the user to set a key they have already set.
-        if "Could not set up" in str(exc):
+        if "Could not set up" in str(exc) or getattr(exc, "extra", None):
             console.print(f"  [dim]{exc}[/dim]")
 
 
@@ -91,7 +92,9 @@ def note_subscription_cli(run: InitRun) -> None:
     offered = {n: auth for n, auth in logged_in_agent_providers().items() if auth.offer}
     if not offered:
         return
-    note = subscription_note(tuple(offered), next(iter(offered.values())))
+    # An Index only run has no pages for generate to write yet.
+    command = FAST_TO_FULL_COMMAND if run.opts.run_mode == "fast" else MODEL_COMMAND
+    note = subscription_note(tuple(offered), command, next(iter(offered.values())))
     if note:
         console.print(f"  [dim]{note}[/dim]")
 
@@ -131,7 +134,9 @@ def _stated_embedder(run: InitRun) -> str:
             name, reason = keyless, "keyless run"
     if name == "mock":
         return f"mock ({reason}, semantic search off)"
-    return f"{name} ({reason})"
+    from repowise.cli.providers.embedders import embedder_label
+
+    return f"{embedder_label(name, run.repo_path)} ({reason})"
 
 
 def _verify_provider(provider: Any, reasoning: str) -> None:
@@ -166,7 +171,9 @@ def resolve_docs_provider(run: InitRun) -> None:
     # Re-resolve the embedder so the display and the embed path honor the key
     # the user just pasted, rather than the pre-prompt "mock" fallback.
     run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(
-        run.opts.embedder_name
+        run.opts.embedder_name,
+        repo_path=run.repo_path,
+        provider=getattr(run.provider, "provider_name", None),
     )
     _print_provider_summary(run)
     # Nothing to verify when there is no provider: this run renders from

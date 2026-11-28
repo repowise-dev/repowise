@@ -9,6 +9,7 @@
 
 import {
   bandForScore,
+  formatScore,
   HEALTH_BAND_LABEL,
   type HealthBand,
 } from "@repowise-dev/types/health";
@@ -245,6 +246,29 @@ export function healthBand100(score100: number): HealthBand {
 export function healthBand(score: number): { color: string; label: string } {
   const band = bandForScore(score);
   return { color: HEALTH_BAND_VAR[band], label: HEALTH_BAND_LABEL[band] };
+}
+
+export interface HealthMark {
+  /** The score at one decimal, floored so it never crosses a band edge. */
+  value: string;
+  band: HealthBand;
+  label: string;
+  color: string;
+}
+
+/**
+ * A 1-10 score as a health mark: figure, word and colour on the five bands,
+ * the same reading every other score in the product takes, so a repository
+ * row, a system map node and a file pill never disagree about one number.
+ */
+export function healthMark(score: number): HealthMark {
+  const band = bandForScore(score);
+  return {
+    value: formatScore(score),
+    band,
+    label: HEALTH_BAND_LABEL[band],
+    color: HEALTH_BAND_VAR[band],
+  };
 }
 
 export function riskInk(risk01: number): string {

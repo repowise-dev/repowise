@@ -7,6 +7,7 @@ import { Input } from "../ui/input";
 import { cn } from "../lib/cn";
 import { useDebounce } from "../hooks/use-debounce";
 import { PromptForRowsButton } from "../health/row-prompt-action";
+import { formatNumber } from "../lib/format";
 
 /** Wait after the last keystroke before the search goes to the server. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -109,15 +110,15 @@ export function HotspotToolbar({
               className={cn(
                 "px-2.5 py-1.5 font-medium transition-colors",
                 filter === c.key
-                  ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+                  ? "bg-[var(--color-control-selected)] text-[var(--color-control-selected-text)]"
                   : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
               )}
             >
               {c.label}
               <span className="ml-1.5 tabular-nums text-[10px] opacity-70">
                 {c.key === "all"
-                  ? c.count.toLocaleString()
-                  : `${c.count.toLocaleString()} of ${facets.total.toLocaleString()}`}
+                  ? formatNumber(c.count)
+                  : `${formatNumber(c.count)} of ${formatNumber(facets.total)}`}
               </span>
             </button>
           ))}

@@ -19,6 +19,7 @@ from repowise.core.ingestion.framework_routes import (
 )
 
 from ..base import line_at
+from ..calls import outside_comments
 from ..langs import JAVA, KOTLIN
 from .dialect import build_provider_contract
 from .mounts import compose_prefix
@@ -32,15 +33,14 @@ if TYPE_CHECKING:
 class SpringDialect:
     name = "spring"
     extensions = JAVA | KOTLIN
+    requires = ("Mapping",)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if "Mapping" not in content:
-            return []
         annotations = micronaut_annotations(content)
         class_paths = spring_class_paths(content, annotations)
         out: list[Contract] = []
-        for route in spring_routes(content, annotations):
+        for route in outside_comments(ctx, spring_routes(content, annotations)):
             # An unrestricted `@RequestMapping` serves every verb, which the
             # contract layer has no method for; an unreadable path is refused.
             if route.verb not in HTTP_METHODS or route.path is None:
@@ -49,7 +49,8 @@ class SpringDialect:
                 c = build_provider_contract(
                     ctx,
                     method=route.verb,
-                    path_raw=compose_prefix(prefix, route.path),
+                    # An empty mapping on an unmapped class is the root route.
+                    path_raw=compose_prefix(prefix, route.path) or "/",
                     framework="spring",
                     line=line_at(content, route.offset),
                 )

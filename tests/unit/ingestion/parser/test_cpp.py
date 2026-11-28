@@ -1143,3 +1143,49 @@ struct API Fwd;
             (symbol.name, symbol.kind, symbol.start_line, symbol.is_declaration)
             for symbol in result.symbols
         } == expected_symbols
+
+
+CPP_UNEXPANDED_MACRO_FREE_FUNCTIONS = b"""LIB_ALWAYS_INLINE uintptr_t
+box_encode(box_contents_t contents) {
+    return 0;
+}
+
+LIB_ALWAYS_INLINE box_contents_t
+box_decode(uintptr_t bits) {
+    box_contents_t contents;
+    return contents;
+}
+
+struct Foo { int bar(); };
+int Foo::bar() { return 1; }
+"""
+
+
+class TestCppUnexpandedMacroScope:
+    """An unexpanded macro before a return type must not become a scope."""
+
+    def test_free_function_after_macro_and_return_type_stays_a_function(
+        self, parser: ASTParser
+    ) -> None:
+        fi = _make_file_info("box.h", "cpp")
+        result = parser.parse_file(fi, CPP_UNEXPANDED_MACRO_FREE_FUNCTIONS)
+        symbols = {
+            (symbol.parent_name, symbol.name): symbol.kind
+            for symbol in result.symbols
+        }
+
+        assert symbols[(None, "box_decode")] == "function"
+        assert symbols[(None, "box_encode")] == "function"
+
+    def test_genuine_out_of_line_definition_keeps_its_class_parent(
+        self, parser: ASTParser
+    ) -> None:
+        fi = _make_file_info("box.h", "cpp")
+        result = parser.parse_file(fi, CPP_UNEXPANDED_MACRO_FREE_FUNCTIONS)
+        symbols = {
+            (symbol.parent_name, symbol.name): symbol.kind
+            for symbol in result.symbols
+        }
+
+        assert symbols[("Foo", "bar")] == "method"
+        assert ("box_contents_t", "box_decode") not in symbols

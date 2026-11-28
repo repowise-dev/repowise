@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from ..models import (
     GraphEdge,
@@ -19,7 +22,8 @@ from ..models import (
     GraphNodeMembership,
     _new_uuid,
 )
-from ._shared import _BATCH_SIZE, UpsertGate, _batch_upsert_keyed
+from . import _graph_edge_sync as _edge_sync
+from ._shared import _BATCH_SIZE, UpsertGate, _batch_upsert_keyed, _column_values
 
 # ---------------------------------------------------------------------------
 # Graph CRUD (batch)
@@ -100,6 +104,12 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     deferred = edge_data.get("deferred")
     if deferred is not None:
         existing.deferred = bool(deferred)
+    guarded = edge_data.get("guarded")
+    if guarded is not None:
+        existing.guarded = bool(guarded)
+    module_form = edge_data.get("module_form")
+    if module_form is not None:
+        existing.module_form = bool(module_form)
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
@@ -115,9 +125,12 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
 
 def _edge_values(repository_id: str, e: dict) -> dict:
     """Column values for a new ``graph_edges`` row built from an edge payload."""
+    return {"id": _new_uuid(), "repository_id": repository_id, **_edge_content_values(e)}
+
+
+def _edge_content_values(e: dict) -> dict:
+    """The payload-derived columns of a ``graph_edges`` row (no id, no repo)."""
     return {
-        "id": _new_uuid(),
-        "repository_id": repository_id,
         "source_node_id": e.get("source_node_id", ""),
         "target_node_id": e.get("target_node_id", ""),
         "imported_names_json": e.get("imported_names_json", "[]"),
@@ -128,6 +141,8 @@ def _edge_values(repository_id: str, e: dict) -> dict:
         "call_lines_json": e.get("call_lines_json", "[]"),
         "type_only": bool(e.get("type_only", False)),
         "deferred": bool(e.get("deferred", False)),
+        "guarded": bool(e.get("guarded", False)),
+        "module_form": bool(e.get("module_form", False)),
     }
 
 
@@ -189,6 +204,24 @@ async def batch_upsert_graph_nodes(
     )
 
 
+async def delete_graph_nodes(
+    session: AsyncSession,
+    repository_id: str,
+    node_ids: Sequence[str],
+) -> None:
+    """Remove selected nodes and their memberships in the caller's transaction.
+
+    Callers own liveness and edge reconciliation. Membership has no foreign-key
+    cascade from graph nodes, so retiring a node must remove both rows together.
+    """
+    for i in range(0, len(node_ids), _BATCH_SIZE):
+        batch = node_ids[i : i + _BATCH_SIZE]
+        for model in (GraphNodeMembership, GraphNode):
+            await session.execute(
+                delete(model).where(model.repository_id == repository_id, model.node_id.in_(batch))
+            )
+
+
 async def batch_upsert_graph_edges(
     session: AsyncSession,
     repository_id: str,
@@ -228,9 +261,14 @@ async def reconcile_edges_for_files(
     session: AsyncSession,
     repository_id: str,
     source_file_paths: list[str],
-    edges: list[dict],  # fresh edges whose source belongs to those files
+    edges: list[dict],  # fresh edges those files own (see below)
+    *,
+    keep_edge_types: frozenset[str] = frozenset(),
 ) -> int:
     """Make ``graph_edges`` outgoing from *source_file_paths* match a fresh parse.
+
+    Stored rows of a type in *keep_edge_types* are left as they are, for a
+    caller whose fresh set does not cover that type.
 
     Sibling of :func:`reconcile_symbols_for_files` for the edge table. The
     incremental update path rebuilds the in-memory graph, but only the full-init
@@ -240,13 +278,13 @@ async def reconcile_edges_for_files(
     from this table). This deletes every edge whose source node belongs to one
     of *source_file_paths* — both the file node and its symbol nodes, including
     symbols the change deleted whose node rows the incremental path never prunes
-    — then inserts the fresh set. Edges *into* a changed file from an unchanged
-    one are owned by that other file and left untouched, the same file-scoping
-    the symbol reconciler uses; a full reindex reconciles those. The exception
-    is an edge whose fact sits at its target (``TARGET_OWNED_HINTS``), which
-    the target's file owns too.
+    — then inserts the fresh set, writing only the rows that differ. Edges *into*
+    one of the files from a file outside the list are owned by that other file
+    and left untouched, the same file-scoping the symbol reconciler uses. The
+    exception is an edge whose fact sits at its target (``TARGET_OWNED_HINTS``),
+    which the target's file owns too.
 
-    Returns the number of deleted rows.
+    Returns the number of deleted rows (removed or rewritten).
     """
     from repowise.core.ingestion.models import TARGET_OWNED_HINTS
 
@@ -280,37 +318,41 @@ async def reconcile_edges_for_files(
             .all()
         )
         source_ids.update(rows)
-    # Union in the fresh edges' own sources so a brand-new node's edges are still
-    # rewritten cleanly even if the node-row read above raced its insert.
-    source_ids.update(e.get("source_node_id", "") for e in edges)
+    # Union in the fresh edges' ends in these files, so a brand-new node's edges
+    # are rewritten even if the node-row read above raced its insert. Never an
+    # end in another file: every edge out of it would read as stale here.
+    scope = set(scoped)
+    for e in edges:
+        ends = [e.get("source_node_id")]
+        if e.get("hint_source") in TARGET_OWNED_HINTS:
+            ends.append(e.get("target_node_id"))
+        source_ids.update(n for n in ends if n and file_of_symbol(n) in scope)
     source_ids.discard("")
     if not source_ids:
         return 0
 
-    id_list = list(source_ids)
-    deleted = 0
-    for i in range(0, len(id_list), _EDGE_RECONCILE_CHUNK):
-        batch = id_list[i : i + _EDGE_RECONCILE_CHUNK]
-        res = await session.execute(
-            delete(GraphEdge).where(
-                GraphEdge.repository_id == repository_id,
-                or_(
-                    GraphEdge.source_node_id.in_(batch),
-                    and_(
-                        GraphEdge.hint_source.in_(TARGET_OWNED_HINTS),
-                        GraphEdge.target_node_id.in_(batch),
-                    ),
-                ),
-            )
-        )
-        deleted += res.rowcount or 0
-
-    # Every fresh edge's source was just cleared, so these are all plain inserts
-    # — no need for the repo-wide upsert (which reloads every edge row).
-    for e in edges:
-        session.add(GraphEdge(**_edge_values(repository_id, e)))
-    await session.flush()
-    return deleted
+    # Diff instead of delete-all-then-insert: an update reconciles every file,
+    # and nearly all of its rows come back unchanged.
+    stored = await _edge_sync.load_owned_edges(
+        session,
+        repository_id,
+        list(source_ids),
+        frozenset(TARGET_OWNED_HINTS),
+        _EDGE_RECONCILE_CHUNK,
+    )
+    if keep_edge_types:
+        stored = {key: row for key, row in stored.items() if key[2] not in keep_edge_types}
+    stale_ids, inserts = _edge_sync.diff_edges(
+        stored,
+        [_edge_content_values(e) for e in edges],
+        lambda values: _column_values(
+            GraphEdge, {"id": _new_uuid(), "repository_id": repository_id, **values}
+        ),
+    )
+    await _edge_sync.apply_edge_diff(
+        session, repository_id, stale_ids, inserts, _EDGE_RECONCILE_CHUNK
+    )
+    return len(stale_ids)
 
 
 async def batch_upsert_graph_metrics(
@@ -455,6 +497,52 @@ async def get_scc_members(
     return out
 
 
+async def get_static_only_scc_ids(
+    session: AsyncSession,
+    repository_id: str,
+    sccs: dict[int, list[str]],
+) -> set[int]:
+    """The ids in *sccs* (as :func:`get_scc_members` reads them) whose cycle is
+    static only (:func:`~repowise.core.ingestion.cohesion.is_static_only_cycle`).
+
+    Read off the stored edges between each cycle's own files, with the same
+    edge filter the cycle pass used, so the tier always matches the stored
+    cycles.
+    """
+    from repowise.core.ingestion.cohesion import is_static_only_cycle
+    from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
+
+    scc_of = {node: scc_id for scc_id, members in sccs.items() for node in members}
+    edges: dict[int, list[dict]] = {scc_id: [] for scc_id in sccs}
+    nodes = sorted(scc_of)
+    for start in range(0, len(nodes), _BATCH_SIZE):
+        rows = await session.execute(
+            select(
+                GraphEdge.source_node_id,
+                GraphEdge.target_node_id,
+                GraphEdge.edge_type,
+                GraphEdge.hint_source,
+                GraphEdge.type_only,
+                GraphEdge.deferred,
+                GraphEdge.guarded,
+                GraphEdge.module_form,
+            ).where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.source_node_id.in_(nodes[start : start + _BATCH_SIZE]),
+            )
+        )
+        for row in rows:
+            scc_id = scc_of[row.source_node_id]
+            if (
+                row.source_node_id == row.target_node_id
+                or scc_of.get(row.target_node_id) != scc_id
+                or row.edge_type in NON_CODE_EDGE_TYPES
+            ):
+                continue
+            edges[scc_id].append(dict(row._mapping))
+    return {scc_id for scc_id, found in edges.items() if is_static_only_cycle(found)}
+
+
 async def get_graph_metrics(
     session: AsyncSession,
     repository_id: str,
@@ -551,9 +639,28 @@ async def get_all_graph_edges(
                 "call_lines": call_lines,
                 "type_only": bool(row.type_only),
                 "deferred": bool(row.deferred),
+                "guarded": bool(row.guarded),
+                "module_form": bool(row.module_form),
             }
         )
     return edges
+
+
+async def get_file_import_edges(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[tuple[str, str]]:
+    """``(src, dst)`` for every persisted import edge between two files.
+
+    Two columns rather than whole rows, for callers that only need the
+    direction of the file import graph.
+    """
+    result = await session.execute(
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+            GraphEdge.repository_id == repository_id, GraphEdge.edge_type == "imports"
+        )
+    )
+    return [(u, v) for u, v in result.tuples().all() if "::" not in u and "::" not in v]
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +683,36 @@ async def get_graph_node(
     return result.scalar_one_or_none()
 
 
+def _entity_edge_endpoints(row: Any) -> tuple[str, str]:
+    return row[0].source_node_id, row[0].target_node_id
+
+
+async def _allowed_edge_pairs(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+    edge_types: list[str] | None,
+    exclude_spec: Any,
+    *columns: Any,
+) -> list:
+    """*columns* of every edge touching *node_id* with no excluded endpoint.
+
+    For degree counts under exclude rules: the rules are path globs SQL cannot
+    match, so the node's edges are read and judged here. The read is bounded by
+    this one node's degree.
+    """
+    from repowise.core.exclusion import edge_is_excluded
+
+    q = select(GraphEdge.source_node_id, GraphEdge.target_node_id, *columns).where(
+        GraphEdge.repository_id == repository_id,
+        or_(GraphEdge.source_node_id == node_id, GraphEdge.target_node_id == node_id),
+    )
+    if edge_types:
+        q = q.where(GraphEdge.edge_type.in_(edge_types))
+    rows = (await session.execute(q)).all()
+    return [r for r in rows if not edge_is_excluded(r[0], r[1], exclude_spec)]
+
+
 async def get_graph_edges_for_node(
     session: AsyncSession,
     repository_id: str,
@@ -584,6 +721,7 @@ async def get_graph_edges_for_node(
     direction: str = "both",
     edge_types: list[str] | None = None,
     limit: int = 50,
+    exclude_spec: Any = None,
 ) -> list[GraphEdge]:
     """Return edges adjacent to *node_id*.
 
@@ -626,7 +764,13 @@ async def get_graph_edges_for_node(
         because it was already scanning. The fix is an index on
         ``(repository_id, target_node_id)``, which ``GraphEdge`` now declares
         as ``ix_graph_edges_repo_target``.
+    exclude_spec:
+        The repo's query-time exclude rules. An edge whose other end is in an
+        excluded file is dropped before the per-direction cap, so stale rows
+        never take an allowed edge's slot.
     """
+    from repowise.core.exclusion import fetch_allowed_edges
+
     results: list[GraphEdge] = []
 
     if direction in ("callers", "both"):
@@ -636,11 +780,11 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.order_by(
-            GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.edge_type
-        ).limit(limit)
-        res = await session.execute(q)
-        results.extend(res.scalars().all())
+        q = q.order_by(GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.edge_type)
+        rows = await fetch_allowed_edges(
+            session, q, exclude_spec, limit=limit, endpoints=_entity_edge_endpoints
+        )
+        results.extend(row[0] for row in rows)
 
     if direction in ("callees", "both"):
         q = select(GraphEdge).where(
@@ -649,11 +793,11 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.order_by(
-            GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type
-        ).limit(limit)
-        res = await session.execute(q)
-        results.extend(res.scalars().all())
+        q = q.order_by(GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type)
+        rows = await fetch_allowed_edges(
+            session, q, exclude_spec, limit=limit, endpoints=_entity_edge_endpoints
+        )
+        results.extend(row[0] for row in rows)
 
     return results
 
@@ -815,12 +959,19 @@ async def get_cross_community_edges(
     session: AsyncSession,
     repository_id: str,
     community_id: int,
+    *,
+    exclude_spec: Any = None,
 ) -> list[dict]:
     """Count edges crossing from *community_id* to other communities.
 
     Returns a list of ``{"target_community_id": int, "edge_count": int}``.
-    Uses a join through ``graph_nodes`` to resolve target community.
+    Uses a join through ``graph_nodes`` to resolve target community. With
+    *exclude_spec*, an edge with an endpoint in an excluded file is not
+    counted: the rows are read and counted here, since the rules are path
+    globs SQL cannot match.
     """
+    from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
+
     # Alias for the target node lookup
     target_node = GraphNode.__table__.alias("tn")
     source_node = GraphNode.__table__.alias("sn")
@@ -850,10 +1001,30 @@ async def get_cross_community_edges(
             # Only count file-level edges for meaningful community crossing
             source_node.c.node_type == "file",
             target_node.c.node_type == "file",
+            # A doc link or co-change into another community is not coupling to it.
+            GraphEdge.__table__.c.edge_type.not_in(NON_CODE_EDGE_TYPES),
         )
         .group_by(target_node.c.community_id)
         .order_by(func.count().desc())
     )
+    if exclude_spec:
+        from repowise.core.exclusion import edge_is_excluded
+
+        rows = await session.execute(
+            q.with_only_columns(
+                target_node.c.community_id,
+                GraphEdge.__table__.c.source_node_id,
+                GraphEdge.__table__.c.target_node_id,
+            )
+            .group_by(None)
+            .order_by(None)
+        )
+        counts: dict[int, int] = {}
+        for cid, src, dst in rows.all():
+            if not edge_is_excluded(src, dst, exclude_spec):
+                counts[cid] = counts.get(cid, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return [{"target_community_id": c, "edge_count": n} for c, n in ranked]
     result = await session.execute(q)
     return [
         {"target_community_id": row.target_community_id, "edge_count": row.edge_count}
@@ -867,32 +1038,54 @@ async def get_top_entry_points(
     *,
     min_score: float = 0.3,
     limit: int = 20,
+    exclude_spec: Any = None,
 ) -> list[GraphNode]:
     """Return symbol nodes with stored entry_point_score >= *min_score*.
 
-    Scores are stored inside ``community_meta_json``. Since the count of
-    symbol nodes is typically < 5000, an in-memory filter is acceptable.
+    Scores are stored inside ``community_meta_json``, so they are read in
+    memory: the scan reads only the id and that blob, for the symbols whose
+    blob names a score, and loads whole rows for the *limit* winners alone.
+    Hydrating every symbol node was seconds per call on a 28k-symbol repo.
+    A symbol in a file *exclude_spec* matches is skipped before the *limit*
+    cut, so it never takes an allowed entry point's place.
     """
-    result = await session.execute(
-        select(GraphNode).where(
+    from repowise.core.exclusion import node_is_excluded
+
+    rows = await session.execute(
+        select(GraphNode.node_id, GraphNode.community_meta_json).where(
             GraphNode.repository_id == repository_id,
             GraphNode.node_type == "symbol",
+            GraphNode.community_meta_json.contains("entry_point_score"),
         )
     )
-    all_symbols = result.scalars().all()
 
-    scored: list[tuple[float, GraphNode]] = []
-    for node in all_symbols:
+    scored: list[tuple[float, str]] = []
+    for node_id, meta_json in rows.tuples().all():
         try:
-            meta = json.loads(node.community_meta_json or "{}")
+            meta = json.loads(meta_json or "{}")
         except (json.JSONDecodeError, TypeError):
             continue
         score = meta.get("entry_point_score")
         if score is not None and score >= min_score:
-            scored.append((score, node))
+            if node_is_excluded(node_id, exclude_spec):
+                continue
+            scored.append((score, node_id))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [node for _, node in scored[:limit]]
+    top = [node_id for _, node_id in scored[:limit]]
+    if not top:
+        return []
+    nodes = (
+        await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_type == "symbol",
+                GraphNode.node_id.in_(top),
+            )
+        )
+    ).scalars()
+    by_id = {node.node_id: node for node in nodes}
+    return [by_id[node_id] for node_id in top if node_id in by_id]
 
 
 async def get_node_degree_counts(
@@ -901,6 +1094,7 @@ async def get_node_degree_counts(
     node_id: str,
     *,
     edge_types: list[str] | None = None,
+    exclude_spec: Any = None,
 ) -> dict[str, int]:
     """Return in-degree and out-degree for a node from edge counts.
 
@@ -910,7 +1104,20 @@ async def get_node_degree_counts(
     count and the list describe different graphs — a file's unfiltered
     in-degree is rendered as "Dependents (N)" above a dependents list, and
     the two disagreed by the file's own symbol count.
+
+    With *exclude_spec*, an edge with an endpoint in an excluded file is not
+    counted, so the degree matches a neighbour list filtered by the same rules.
     """
+    if exclude_spec:
+        counts = {"in_degree": 0, "out_degree": 0}
+        for src, dst in await _allowed_edge_pairs(
+            session, repository_id, node_id, edge_types, exclude_spec
+        ):
+            if dst == node_id:
+                counts["in_degree"] += 1
+            if src == node_id:
+                counts["out_degree"] += 1
+        return counts
     in_q = select(func.count()).select_from(GraphEdge).where(
         GraphEdge.repository_id == repository_id,
         GraphEdge.target_node_id == node_id,
@@ -936,6 +1143,7 @@ async def get_node_degree_by_edge_type(
     node_id: str,
     *,
     edge_types: list[str] | None = None,
+    exclude_spec: Any = None,
 ) -> dict[str, dict[str, int]]:
     """Return ``edge_type -> {in_degree, out_degree}`` for one node.
 
@@ -946,8 +1154,20 @@ async def get_node_degree_by_edge_type(
 
     Edge types with no edges in either direction are absent rather than zero,
     so the caller can treat the mapping as "what this node actually has".
+    With *exclude_spec*, edges with an endpoint in an excluded file are not
+    counted, as in :func:`get_node_degree_counts`.
     """
     counts: dict[str, dict[str, int]] = {}
+    if exclude_spec:
+        for src, dst, edge_type in await _allowed_edge_pairs(
+            session, repository_id, node_id, edge_types, exclude_spec, GraphEdge.edge_type
+        ):
+            entry = counts.setdefault(edge_type, {"in_degree": 0, "out_degree": 0})
+            if dst == node_id:
+                entry["in_degree"] += 1
+            if src == node_id:
+                entry["out_degree"] += 1
+        return counts
     for direction, column in (
         ("in_degree", GraphEdge.target_node_id),
         ("out_degree", GraphEdge.source_node_id),

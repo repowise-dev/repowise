@@ -35,12 +35,18 @@ REASON_LIMIT = 3
 MOVED_TO_LIMIT = 10
 #: Per-file score rows carried in ``health_delta.files``.
 FILE_ROWS_LIMIT = 10
+#: Changed symbols listed under ``include=["findings"]``; the total counts all.
+CHANGED_SYMBOLS_LIMIT = 50
 
 #: Findings whose next-action is carried in the default response.
 _ACTIONABLE_FINDINGS = 2
 
 #: Test ids rendered into a single run command.
 _TESTS_SHOWN = 3
+
+#: Actions that restate a status field (``health_delta.skipped``,
+#: ``impacted_tests.status``) and name nothing in the diff: not rendered.
+_STATUS_ONLY_ACTIONS = frozenset({"review_skipped_files", "establish_test_coverage"})
 
 
 def directive(delta: ChangeHealthDelta, tests: dict[str, Any] | None) -> dict[str, Any]:
@@ -90,6 +96,8 @@ def _render_actions(decided: ReviewDirective) -> list[str]:
 
 
 def _render_action(action: ReviewAction, inspected: int) -> str | None:
+    if action.kind in _STATUS_ONLY_ACTIONS:
+        return None
     if action.kind == "inspect_finding":
         if inspected >= _ACTIONABLE_FINDINGS:
             return None
@@ -104,11 +112,9 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
 
     Names the scope and the tests to extend from the rows' hints, riskiest
     file first, so the agent writes the missing test where the suite already
-    exercises the code. Files changed since the coverage was measured lead
-    instead: they carry no figure until the tests run again.
+    exercises the code. Files changed since the coverage was measured carry no
+    figure; ``patch_coverage.freshness`` and ``file_counts.stale_file`` say so.
     """
-    if stale := _stale_action(block):
-        return stale
     uncovered = block["coverable_line_count"] - block["covered_line_count"] if block else 0
     if uncovered <= 0:
         return _partial_action(block)
@@ -119,18 +125,6 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
     if tests:
         return text + f"extend {', '.join(tests[:_TESTS_SHOWN])}"
     return text + "add tests for them (patch_coverage.files)"
-
-
-def _stale_action(block: dict[str, Any] | None) -> str | None:
-    """Re-measure first when changed files have no figure because they changed since."""
-    stale = ((block or {}).get("file_counts") or {}).get("stale_file", 0)
-    if not stale:
-        return None
-    return (
-        "Stored coverage predates this change: re-run the tests with coverage, then "
-        "`repowise coverage add` (the hook does it automatically) and call again "
-        f"({stale} changed file{'' if stale == 1 else 's'} not measured until then)"
-    )
 
 
 def _partial_action(block: dict[str, Any] | None) -> str | None:
@@ -231,6 +225,27 @@ def _file_scores(rows: list[FileScoreDelta], *, full: bool = False) -> dict[str,
     if change is not None:
         out["score_change"] = change.as_dict()
     return out
+
+
+def changed_symbol_rows(delta: ChangeHealthDelta) -> dict[str, Any]:
+    """Every symbol the diff added, edited, deleted or moved, findings or not.
+
+    Empty when the comparison touched no symbol, so the block does not grow.
+    """
+    if not delta.changed_symbols:
+        return {}
+    rows = []
+    for changed in delta.changed_symbols[:CHANGED_SYMBOLS_LIMIT]:
+        row: dict[str, Any] = {
+            "path": changed.path,
+            "symbol": changed.symbol,
+            "change": changed.change,
+            "lines": [changed.start_line, changed.end_line],
+        }
+        if changed.moved_from:
+            row["moved_from"] = {"path": changed.moved_from[0], "symbol": changed.moved_from[1]}
+        rows.append(row)
+    return {"changed_symbols": rows, "changed_symbols_total": len(delta.changed_symbols)}
 
 
 def finding_row(

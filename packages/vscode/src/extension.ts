@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { existsSync } from "node:fs";
 import { Commands, REPO_DIR, WORKSPACE_DIR } from "./constants";
 import { createLogger } from "./core/log";
+import { registerFeature } from "./core/registerFeature";
 import { createApi } from "./core/api";
 import { createCache } from "@repowise-dev/api-client/cache";
 import { createCliRunner } from "./core/cliRunner";
@@ -24,7 +25,6 @@ import { registerChangeIntel } from "./features/changeIntel";
 import { registerStaleness } from "./features/staleness";
 import { registerRefactoringLens } from "./features/refactoringLens";
 import { registerAgentHandoff } from "./features/agentHandoff";
-import { registerLmTools } from "./features/lmTools";
 import { registerDocs } from "./features/docs";
 import { registerWebviews } from "./core/webviews";
 import { registerDashboards } from "./features/dashboards";
@@ -81,29 +81,34 @@ export function activate(extCtx: vscode.ExtensionContext): void {
   // Features. Each returns a Disposable and owns its own commands. All data
   // features are event-driven: registration only wires providers and
   // listeners; nothing fetches until a surface becomes visible while ready.
-  extCtx.subscriptions.push(
-    registerStatusBar(ctx),
-    registerOnboarding(ctx),
-    registerHosted(ctx, extCtx.globalState),
-    registerServerManager(ctx),
-    registerMcp(ctx),
-    registerDiagnostics(ctx),
-    registerDocDriftDiagnostics(ctx),
-    registerGutterHeat(ctx),
-    registerHovers(ctx),
-    registerFileDecorations(ctx),
-    registerFileScoreStatus(ctx),
-    registerTrees(ctx),
-    registerBranchRisk(ctx),
-    registerChangeIntel(ctx),
-    registerStaleness(ctx),
-    registerRefactoringLens(ctx),
-    registerAgentHandoff(ctx),
-    registerLmTools(ctx),
-    registerDocs(ctx),
-    registerWebviews(ctx, extCtx.extensionUri),
-    registerDashboards(ctx),
-  );
+  // Each registers on its own, so an API one editor lacks costs that feature
+  // alone, never the activation.
+  const features: Array<[string, () => vscode.Disposable]> = [
+    ["statusBar", () => registerStatusBar(ctx)],
+    ["onboarding", () => registerOnboarding(ctx)],
+    ["hosted", () => registerHosted(ctx, extCtx.globalState)],
+    ["serverManager", () => registerServerManager(ctx)],
+    ["mcp", () => registerMcp(ctx)],
+    ["diagnostics", () => registerDiagnostics(ctx)],
+    ["docDriftDiagnostics", () => registerDocDriftDiagnostics(ctx)],
+    ["gutterHeat", () => registerGutterHeat(ctx)],
+    ["hovers", () => registerHovers(ctx)],
+    ["fileDecorations", () => registerFileDecorations(ctx)],
+    ["fileScoreStatus", () => registerFileScoreStatus(ctx)],
+    ["trees", () => registerTrees(ctx)],
+    ["branchRisk", () => registerBranchRisk(ctx)],
+    ["changeIntel", () => registerChangeIntel(ctx)],
+    ["staleness", () => registerStaleness(ctx)],
+    ["refactoringLens", () => registerRefactoringLens(ctx)],
+    ["agentHandoff", () => registerAgentHandoff(ctx)],
+    ["docs", () => registerDocs(ctx)],
+    ["webviews", () => registerWebviews(ctx, extCtx.extensionUri)],
+    ["dashboards", () => registerDashboards(ctx)],
+  ];
+  for (const [name, register] of features) {
+    const disposable = registerFeature(name, register, log);
+    if (disposable) extCtx.subscriptions.push(disposable);
+  }
 
   // Workspace-folder changes are handled by the server manager, which owns
   // rescan + rediscovery; a second listener here would race it on the shared

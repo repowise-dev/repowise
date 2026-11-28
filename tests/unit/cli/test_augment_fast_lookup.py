@@ -113,9 +113,59 @@ class TestEquivalence:
         assert fast == asyncio.run(_pagerank_file_order(indexed_repo, paths))
         assert fast == ["src/a.py", "src/b.py"]
 
-    def test_zero_result_rescue_is_never_served_here(self, indexed_repo: Path) -> None:
-        """It keeps the ORM: 45% of its queries fall through to FTS."""
-        assert _fast_search_enrich(indexed_repo, "parse_yaml", "rescue", 0, None) is _ORM
+    @pytest.mark.parametrize("pattern", ["parse_yaml", "PARSEYAML", "yaml", "parse%", "e_y"])
+    def test_zero_result_rescue_symbol_hit_says_what_the_orm_says(
+        self, indexed_repo: Path, pattern: str
+    ) -> None:
+        fast = _fast_search_enrich(indexed_repo, pattern, "rescue", 0, None)
+        assert fast is not _ORM
+        assert fast == _orm(indexed_repo, pattern, "rescue", None)
+
+    def test_zero_result_rescue_without_a_symbol_hit_keeps_the_orm(
+        self, indexed_repo: Path
+    ) -> None:
+        """No symbol means the FTS leg, which only the ORM path serves."""
+        assert _fast_search_enrich(indexed_repo, "subcommand dispatch", "rescue", 0, None) is _ORM
+
+
+class TestLockedIndex:
+    """Another process holding wiki.db: one bounded wait, then silence."""
+
+    @pytest.fixture
+    def locked(self, indexed_repo: Path):
+        import sqlite3
+
+        holder = sqlite3.connect(
+            indexed_repo / ".repowise" / "wiki.db", timeout=0, isolation_level=None
+        )
+        holder.execute("PRAGMA locking_mode=EXCLUSIVE")
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            yield indexed_repo
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+
+    def test_probe_reports_the_lock(self, locked: Path, monkeypatch) -> None:
+        monkeypatch.setattr(fast_lookup, "sqlite_wait_s", lambda cap: 0.0)
+        assert fast_lookup.index_locked(locked)
+
+    def test_probe_is_false_when_unlocked_or_unindexed(
+        self, indexed_repo: Path, tmp_path: Path
+    ) -> None:
+        assert not fast_lookup.index_locked(indexed_repo)
+        assert not fast_lookup.index_locked(tmp_path / "nowhere")
+
+    def test_wait_budget_is_shared_by_the_process(self, monkeypatch) -> None:
+        from repowise.cli.commands.augment_cmd import _shared
+
+        monkeypatch.setattr(_shared, "_elapsed_ms", lambda: 0)
+        assert _shared.sqlite_wait_s(1) == 1
+        monkeypatch.setattr(_shared, "_elapsed_ms", lambda: _shared._SQLITE_WAIT_BUDGET_MS - 600)
+        assert _shared.sqlite_wait_s(1) == pytest.approx(0.6)
+        # A spent budget still leaves the floor, so a brief commit is waited out.
+        monkeypatch.setattr(_shared, "_elapsed_ms", lambda: _shared._SQLITE_WAIT_BUDGET_MS + 1)
+        assert _shared.sqlite_wait_s(30) == _shared._SQLITE_WAIT_FLOOR_S
 
 
 class TestFallsBackToTheOrm:

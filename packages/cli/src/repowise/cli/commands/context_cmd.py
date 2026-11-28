@@ -15,6 +15,7 @@ _INCLUDE_BLOCKS = (
     "callers",
     "callees",
     "references",
+    "references+",
     "metrics",
     "community",
     "decisions",
@@ -23,9 +24,11 @@ _INCLUDE_BLOCKS = (
     "skeleton+",
     "doc_drift",
     "symbols",
+    "facts",
     "changes",
     "provenance",
     "suspects",
+    "files",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
@@ -189,7 +192,7 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
 @click.option(
     "--symptom",
     default=None,
-    help="Issue text, an error or a stack trace for --include suspects to rank against.",
+    help="Issue text, an error or a stack trace to rank suspects against; adds --include suspects.",
 )
 @_ta.target_options
 def context_command(
@@ -219,17 +222,19 @@ def context_command(
         command="context",
     )
 
+    arguments = {
+        "targets": list(targets),
+        "include": list(include) or None,
+        "compact": not no_compact,
+        "symptom": symptom,
+    }
+
     def _factory():
         from repowise.server.mcp_server.tool_context import get_context
 
-        return get_context(
-            targets=list(targets),
-            include=list(include) or None,
-            compact=not no_compact,
-            symptom=symptom,
-        )
+        return get_context(**arguments)
 
-    payload = _ta.run(repo_path, _factory, "get_context")
+    payload = _ta.run(repo_path, _factory, "get_context", arguments=arguments)
 
     if full:
         _ta.emit_full(payload)
@@ -241,6 +246,18 @@ def context_command(
         return
     _render(projected)
     _ta.print_index_note(payload, fmt)
+
+
+def _fix_signal(fix: dict) -> str:
+    """The card's fix-history signal with its window, or "" when it has none."""
+    if not fix.get("fix_count"):
+        return ""
+    magnet = " (bug magnet)" if fix.get("bug_magnet") else ""
+    window = f" in {fix['window']}" if fix.get("window") else ""
+    return (
+        f"{fix['fix_count']} bug fixes{window}, "
+        f"last {fix.get('last_fix_days_ago', '?')}d ago{magnet}"
+    )
 
 
 def _render(projected: dict) -> None:
@@ -286,12 +303,9 @@ def _render(projected: dict) -> None:
         signals = []
         if card.get("hotspot"):
             signals.append("hotspot")
-        fix = card.get("fix_history") or {}
-        if fix.get("fix_count"):
-            magnet = " (bug magnet)" if fix.get("bug_magnet") else ""
-            signals.append(
-                f"{fix['fix_count']} bug fixes, last {fix.get('last_fix_days_ago', '?')}d ago{magnet}"
-            )
+        fix_signal = _fix_signal(card.get("fix_history") or {})
+        if fix_signal:
+            signals.append(fix_signal)
         if card.get("stale"):
             signals.append("docs stale")
         if card.get("episodes"):

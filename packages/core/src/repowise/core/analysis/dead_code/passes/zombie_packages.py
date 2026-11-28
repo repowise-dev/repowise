@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -189,7 +189,7 @@ class ZombiePackagePass:
             pkg_owner = max(owner_counts, key=lambda k: owner_counts[k])
         pkg_age_days: int | None = None
         if pkg_last_commit:
-            pkg_age_days = (datetime.now(UTC) - pkg_last_commit).days
+            pkg_age_days = self.ctx.days_since(pkg_last_commit)
         return {
             "last_commit_at": pkg_last_commit,
             "commit_count_90d": pkg_total_commits_90d,

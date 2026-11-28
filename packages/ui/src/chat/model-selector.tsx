@@ -160,9 +160,11 @@ export function ModelSelector({
         aria-expanded={open}
         aria-haspopup="dialog"
         className={cn(
-          "flex min-h-7 items-center gap-1.5 rounded px-1.5 py-0.5 text-xs",
+          "flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs",
           "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
-          "hover:bg-[var(--color-bg-elevated)] transition-colors",
+          "hover:bg-[var(--color-bg-elevated)] transition-colors motion-reduce:transition-none",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
+          open && "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]",
         )}
       >
         {/* The model name is the longest string in a crowded row. Below `sm`

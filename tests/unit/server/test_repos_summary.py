@@ -22,7 +22,7 @@ from repowise.core.persistence.models import (
     GraphNode,
     HealthSnapshot,
 )
-from tests.unit.persistence.helpers import make_page_kwargs
+from tests.unit.persistence.helpers import make_page_kwargs, make_wiki_symbol
 
 
 async def _register(client: AsyncClient, name: str) -> dict:
@@ -51,16 +51,29 @@ async def _seed(session, repo_id: str, *, files: int, symbols_per_file: int = 3)
             )
         )
         # Symbol nodes share the table with file nodes. They are what makes the
-        # unscoped count wrong, so every fixture carries some.
-        for j in range(symbols_per_file):
+        # unscoped count wrong, so every fixture carries some, plus the per-file
+        # synthetic `__module__` node, which is not a symbol.
+        for name in [f"sym{j}" for j in range(symbols_per_file)] + ["__module__"]:
             session.add(
                 GraphNode(
                     repository_id=repo_id,
-                    node_id=f"src/mod{i}.py::sym{j}",
+                    node_id=f"src/mod{i}.py::{name}",
                     node_type="symbol",
                     symbol_count=0,
                 )
             )
+        session.add_all(
+            make_wiki_symbol(repo_id, f"src/mod{i}.py", f"sym{j}") for j in range(symbols_per_file)
+        )
+        # An import target per file, also stored as a file row: not a file the index read.
+        session.add(
+            GraphNode(
+                repository_id=repo_id,
+                node_id=f"external:pkg{i}",
+                node_type="file",
+                language="external",
+            )
+        )
         session.add(
             GitMetadata(
                 repository_id=repo_id,
@@ -133,8 +146,8 @@ async def test_file_count_excludes_symbol_nodes(client: AsyncClient, session) ->
     assert resp.status_code == 200
     row = resp.json()["repos"][0]
 
-    assert row["file_count"] == 4  # not 16
-    assert row["symbol_count"] == 12
+    assert row["file_count"] == 4  # not 24: symbol and import-target rows are not files
+    assert row["symbol_count"] == 12  # not 16: `__module__` nodes are not symbols
     assert row["entry_point_count"] == 1
 
 
@@ -254,10 +267,10 @@ async def test_query_count_does_not_grow_with_repo_count(
         f"query count grew from {two_repos} (2 repos) to {six_repos} (6 repos) — "
         "something in the route is running per repository again"
     )
-    # One repo list plus five grouped aggregates. Pinned so "flat" has a value:
+    # One repo list plus six grouped aggregates. Pinned so "flat" has a value:
     # a change that merges or splits an aggregate should be a deliberate edit
     # here, not a silent drift.
-    assert six_repos == 6
+    assert six_repos == 7
 
 
 async def _count_queries(client: AsyncClient, statements: list[str]) -> list[str]:

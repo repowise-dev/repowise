@@ -11,6 +11,8 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
+from repowise.core.ingestion.git_indexer._constants import PRIOR_DEFECT_WINDOW_LABEL
+
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
 #: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
 _BUG_PRONE_FIXES = 3
@@ -111,7 +113,9 @@ def fix_annotation(meta: Any, now: datetime | None = None) -> dict | None:
     if count <= 0:
         return None
 
-    out: dict[str, Any] = {"fix_count": count}
+    # The window rides with the count: a bare total beside 90-day churn reads
+    # as a 90-day figure.
+    out: dict[str, Any] = {"fix_count": count, "window": PRIOR_DEFECT_WINDOW_LABEL}
     last_fix_at = getattr(meta, "last_fix_at", None)
     if isinstance(last_fix_at, datetime):
         # Rows are stored naive-UTC; compare on the same footing.
@@ -139,7 +143,7 @@ def _fix_clause(profile: dict | None) -> str:
     n = profile["fix_count"]
     magnet = " (bug magnet)" if profile.get("bug_magnet") else ""
     return (
-        f"{n} bug fix{'es' if n != 1 else ''} in 6mo, "
+        f"{n} bug fix{'es' if n != 1 else ''} in {profile['window']}, "
         f"last {profile['last_fix_days_ago']}d before the indexed commit{magnet}, "
     )
 
@@ -170,7 +174,6 @@ def _defect_profile(meta: Any, now: datetime | None = None) -> dict | None:
     profile = fix_annotation(meta, now=now)
     if profile is None:
         return None
-    profile["window"] = "6 months"
 
     symbols = _top_fix_symbols(getattr(meta, "fix_symbol_counts_json", None))
     if symbols:
@@ -294,11 +297,13 @@ def risk_summary(
     defect_profile: dict | None,
     dep_count: int,
     co_changes_total: int,
+    co_change_since: str | None = None,
 ) -> str:
     """One-line ``risk_summary`` for a scored card.
 
     Leads with counted bug fixes, the better grounded defect signal, so the
     first clause agrees with ``risk_type``; churn follows for hotspot files.
+    *co_change_since* is the date a ``since`` window counted partners from.
     """
     capped_note = (
         " (history truncated — actual count may be higher)" if card["commit_count_capped"] else ""
@@ -311,7 +316,8 @@ def risk_summary(
         f"{target} — {_fix_clause(defect_profile)}"
         f"{_churn_clause(card['hotspot_score'], card['is_hotspot'], card['trend'])}"
         f"{dep_count} direct dependents, {card['risk_type']}, {card['change_pattern']}, "
-        f"{co_changes_total} co-change partners, "
+        f"{co_changes_total} co-change partners"
+        f"{f' since {co_change_since}' if co_change_since else ''}, "
         f"{_owner_clause(owner, card['owner_pct'], card['owner_line_pct'])}"
         f"{bus_note}{capped_note}"
     )

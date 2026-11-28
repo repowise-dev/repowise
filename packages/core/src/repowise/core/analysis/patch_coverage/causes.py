@@ -55,14 +55,14 @@ def _test_causes(
 
 
 def name_causes(
-    files: Iterable[str], changed: Collection[str], deleted: Collection[str]
+    files: Iterable[str], changed: Collection[str], deleted: Collection[str], indexed_files: Collection[str] = ()
 ) -> dict[str, tuple[IndirectCause, ...]]:
     """``{file: causes}`` from git alone: changed tests named for each file."""
     from ..test_reachability import tests_matching_by_name
 
     tests = [p for p in changed if is_test_related_path(p)]
     files = list(files)
-    matched = tests_matching_by_name(files, tests)
+    matched = tests_matching_by_name(files, tests, set(indexed_files) | set(changed))
     return {
         f: tuple(
             _test_causes(matched[f].all_tests or matched[f].tests, tests, deleted, "name")
@@ -100,11 +100,15 @@ async def read_indirect_causes(
         return {}
     try:
         found = await _read(session, repository_id, files[:MAX_TARGETS], changed, deleted)
+        from ..test_reachability import cached_file_paths
+
+        by_name = name_causes(
+            files, changed, deleted, await cached_file_paths(session, repository_id)
+        )
     except Exception:
         # Advice never breaks the caller: any failure is logged and reads as unassessed.
         log.warning("indirect_coverage_causes_failed", exc_info=True)
         return None
-    by_name = name_causes(files, changed, deleted)
     return {f: _merge(found.get(f, ()), by_name[f]) for f in files}
 
 

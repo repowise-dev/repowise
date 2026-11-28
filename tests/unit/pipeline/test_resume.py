@@ -13,14 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.persistence import get_session
+from repowise.core.persistence._interfaces.job_store import ABANDONED_JOB_ERROR, JobState
 from repowise.core.persistence.crud import upsert_git_metadata_bulk, upsert_repository
 from repowise.core.persistence.database import init_db
+from repowise.core.persistence.stores.sql_job_store import SqlJobStore
 from repowise.core.pipeline.resume import (
     ResumeController,
     ResumeLedger,
     ResumePhase,
     rehydrate_git_meta_map,
 )
+from repowise.core.pipeline.resume.rehydrate import stored_git_meta_for
 
 
 @pytest.fixture
@@ -67,6 +70,68 @@ async def test_ledger_completion_survives_a_fresh_ledger(sf):
 
     fresh = ResumeLedger(sf, repo_id)
     assert ResumePhase.INDEX in await fresh.completed_phases()
+
+
+async def _jobs_by_phase(sf, repo_id: str) -> dict[str, list]:
+    async with get_session(sf) as session:
+        jobs = await SqlJobStore(session).list_jobs(repository_id=repo_id)
+    grouped: dict[str, list] = {}
+    for job in jobs:
+        grouped.setdefault(job.phase, []).append(job)
+    return grouped
+
+
+async def test_ledger_marks_a_dead_runs_open_job_failed(sf):
+    """A run killed mid-phase leaves its row RUNNING; the next run closes it."""
+    repo_id = await _make_repo(sf)
+    await ResumeLedger(sf, repo_id).mark_started(ResumePhase.ANALYSIS)
+
+    await ResumeLedger(sf, repo_id, reap_abandoned=True).mark_started(ResumePhase.INDEX)
+
+    jobs = await _jobs_by_phase(sf, repo_id)
+    [abandoned] = jobs["analysis"]
+    assert abandoned.state == JobState.FAILED
+    assert abandoned.error == ABANDONED_JOB_ERROR
+    [current] = jobs["index"]
+    assert current.state == JobState.RUNNING
+
+
+async def test_ledger_without_the_init_lock_leaves_open_jobs_alone(sf):
+    """An overlapping init that lost the lock must not fail the owner's live row."""
+    repo_id = await _make_repo(sf)
+    await ResumeLedger(sf, repo_id, reap_abandoned=True).mark_started(ResumePhase.ANALYSIS)
+
+    await ResumeLedger(sf, repo_id).mark_started(ResumePhase.INDEX)
+
+    jobs = await _jobs_by_phase(sf, repo_id)
+    assert [job.state for job in jobs["analysis"]] == [JobState.RUNNING]
+    assert [job.state for job in jobs["index"]] == [JobState.RUNNING]
+
+
+async def test_ledger_does_not_reap_its_own_open_jobs(sf):
+    repo_id = await _make_repo(sf)
+    ledger = ResumeLedger(sf, repo_id, reap_abandoned=True)
+    await ledger.mark_started(ResumePhase.INDEX)
+
+    await ledger.mark_started(ResumePhase.ANALYSIS)
+
+    jobs = await _jobs_by_phase(sf, repo_id)
+    assert [job.state for job in jobs["index"]] == [JobState.RUNNING]
+    assert [job.state for job in jobs["analysis"]] == [JobState.RUNNING]
+
+
+async def test_ledger_ignores_open_jobs_of_other_phases(sf):
+    """The git backfill runs under its own lock; init must not close its row."""
+    repo_id = await _make_repo(sf)
+    async with get_session(sf) as session:
+        store = SqlJobStore(session)
+        backfill = await store.create_job(repository_id=repo_id, phase="git.backfill")
+        await store.update_state(backfill.id, JobState.RUNNING)
+
+    await ResumeLedger(sf, repo_id, reap_abandoned=True).mark_started(ResumePhase.INDEX)
+
+    jobs = await _jobs_by_phase(sf, repo_id)
+    assert [job.state for job in jobs["git.backfill"]] == [JobState.RUNNING]
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +397,80 @@ async def test_index_checkpoint_is_timed(sf, monkeypatch):
     assert recorder._inner.phases == [("start", "checkpoint.index"), ("done", "checkpoint.index")]
 
 
+async def test_index_checkpoint_times_the_scan_and_the_change_rebuild(sf, monkeypatch):
+    """The security scan and the git walk get their own keys inside the checkpoint.
+
+    They ran under ``persist.checkpoint`` with no name, so a 12 s "saving" row
+    was mostly a scan and a history walk. The real persisters run here; only
+    the heavy bodies are stubbed.
+    """
+    from types import SimpleNamespace
+
+    import networkx as nx
+
+    from repowise.core.pipeline.phase_timing import PhaseTimingRecorder
+
+    repo_id = await _make_repo(sf)
+    scanned: list[bool] = []
+    rebuilt: list[bool] = []
+
+    async def _noop(*_a: object, **_k: object) -> None:
+        return None
+
+    async def _scan(*_a: object, **_k: object) -> None:
+        scanned.append(True)
+
+    async def _rebuild(*_a: object, **_k: object) -> None:
+        rebuilt.append(True)
+
+    monkeypatch.setattr("repowise.core.pipeline.persist.persist_graph_nodes", _noop)
+    monkeypatch.setattr("repowise.core.pipeline.persist.persist_security_findings", _scan)
+    monkeypatch.setattr("repowise.core.pipeline.persist.git._rebuild_changes", _rebuild)
+
+    recorder = PhaseTimingRecorder(_RecordingProgress())
+    await ResumeController(sf, repo_id, resume=False).checkpoint_index(
+        parsed_files=[],
+        graph_builder=SimpleNamespace(graph=nx.DiGraph),
+        git_metadata_list=[],
+        git_summary=SimpleNamespace(),
+        progress=recorder,
+    )
+
+    assert scanned and rebuilt, "the checkpoint no longer ran the scan or the rebuild"
+    assert "persist.security_scan" in recorder.timings
+    assert "persist.changes" in recorder.timings
+    assert "persist.checkpoint" in recorder.timings
+
+
+async def test_security_scan_runs_off_the_event_loop(monkeypatch):
+    """``scan_source_map`` is CPU-bound; it must not block the loop thread."""
+    import threading
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline.persist.security import persist_security_findings
+
+    seen: dict[str, int] = {}
+
+    def _scan(parsed_files, source_map):
+        seen["thread"] = threading.get_ident()
+        return {}, []
+
+    class _Scanner:
+        def __init__(self, *_a: object, **_k: object) -> None: ...
+
+        async def replace_findings(self, *_a: object, **_k: object) -> None:
+            return None
+
+    monkeypatch.setattr("repowise.core.analysis.security_scan.scan_source_map", _scan)
+    monkeypatch.setattr("repowise.core.analysis.security_scan.SecurityScanner", _Scanner)
+
+    await persist_security_findings(
+        SimpleNamespace(parsed_files=[], source_map={}), object(), "repo-1"
+    )
+
+    assert seen["thread"] != threading.get_ident()
+
+
 async def test_failed_symbol_analysis_reconciliation_keeps_analysis_retryable(sf, monkeypatch):
     """ANALYSIS cannot complete while post-health symbol state is stale."""
     repo_id = await _make_repo(sf)
@@ -411,3 +550,27 @@ async def test_decision_extraction_completion_tracking(sf, monkeypatch):
 
     assert await ctrl2.has_completed_decision_extraction() is True
 
+
+async def test_stored_git_meta_for_reads_only_the_paths(sf):
+    repo_id = await _make_repo(sf)
+    async with get_session(sf) as session:
+        await upsert_git_metadata_bulk(
+            session,
+            repo_id,
+            [{"file_path": "src/a.py"}, {"file_path": "src/b.py"}],
+        )
+
+    async with get_session(sf) as session:
+        meta = await stored_git_meta_for(session, repo_id, ["src/b.py", "src/gone.py"])
+
+    assert set(meta) == {"src/b.py"}
+
+
+def test_only_the_init_holding_the_lock_owns_it(tmp_path):
+    from repowise.core.update_lock import holds_init_lock, init_in_progress
+
+    (tmp_path / ".repowise").mkdir()
+    assert not holds_init_lock(tmp_path)
+    with init_in_progress(tmp_path):
+        assert holds_init_lock(tmp_path)
+    assert not holds_init_lock(tmp_path)

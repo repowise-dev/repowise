@@ -35,10 +35,13 @@ from dataclasses import dataclass
 class DuplicationLimits:
     """Tunable safety bounds for :func:`detect_clones`.
 
-    Defaults are deliberately generous: they never trip on hand-written
-    source (human code averages well under 100 bytes/line and rarely
-    exceeds a few thousand tokens per file) but cut off generated/minified
-    inputs decisively. Override per-call for tests or special repos.
+    The per-file defaults are deliberately generous: they never trip on
+    hand-written source (human code averages well under 100 bytes/line and
+    rarely exceeds a few thousand tokens per file) but cut off
+    generated/minified inputs decisively. The repo-wide window budget can trip
+    on a large hand-written repo; collection reads production code first, so
+    the files it leaves unread are tests and other non-production code.
+    Override per-call for tests or special repos.
     """
 
     # --- minified / generated detection (pre-tokenize) ---
@@ -55,7 +58,8 @@ class DuplicationLimits:
     # is not a meaningful clone signal; comparing it only adds cost.
     max_tokens_per_file: int = 100_000
     # Stop collecting once the repo-wide window count crosses this. Bounds
-    # peak memory and bucketing time on very large repos.
+    # peak memory and bucketing time on very large repos. Files are collected
+    # production first (``budget_cut.collection_order``).
     max_total_windows: int = 5_000_000
 
     # --- bucket all-pairs guard (the O(k^2) cap) ---

@@ -221,7 +221,7 @@ export function HealthWorkItemCard({
           type="button"
           data-work-item-header=""
           onClick={onSelect ? () => onSelect(target) : undefined}
-          className="group/file flex w-full items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:cursor-default"
+          className="group/file flex w-full items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:cursor-default"
           disabled={!onSelect}
           title={onSelect ? "Open file health drawer" : undefined}
         >
@@ -269,7 +269,7 @@ export function HealthWorkItemCard({
             type="button"
             onClick={toggle}
             aria-expanded={expanded}
-            className="flex w-full items-center gap-2 border-t border-[var(--color-border-default)] px-4 py-2 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)]"
+            className="flex w-full items-center gap-2 border-t border-[var(--color-border-default)] px-4 py-2 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)]"
           >
             {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
             {expanded ? "Hide" : "Show"} all {target.finding_count} findings

@@ -53,18 +53,12 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
     store skips it. A store still behind after it raises :class:`StaleIndexError`,
     since every answer read from it would be missing what it lacks.
     """
-    from sqlalchemy import select
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.cli import helpers as _facade  # patch point for tests
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
-    from repowise.core.persistence.database import (
-        get_configured_db_url,
-        has_db_store,
-        schema_behind,
-    )
-    from repowise.core.persistence.models import Repository
+    from repowise.core.persistence.database import has_db_store, schema_behind
 
     # The configured store, which may live outside the repo (REPOWISE_DB_URL).
     if not has_db_store(root):
@@ -84,19 +78,23 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
                     raise StaleIndexError
             factory = create_session_factory(engine)
             session = await stack.enter_async_context(get_session(factory))
+            # Adopts a moved or copied store's only row when it is this checkout's.
             repo = await get_repository_by_path(session, str(root))
-            if repo is None and get_configured_db_url() is None:
-                # A moved repo carries its local store but retains the old
-                # local_path. Never infer identity in a configured/shared store
-                # or when the local store contains more than one repository.
-                repos = (await session.scalars(select(Repository).limit(2))).all()
-                if len(repos) == 1:
-                    repo = repos[0]
             if repo is not None:
                 opened = (session, repo.id)
         except (SQLAlchemyError, OSError, LookupError):
             opened = None
         yield opened
+
+
+async def adopt_moved_repo_best_effort(root: Path) -> bool:
+    """Point a moved or copied checkout's only repository row at *root*.
+
+    See :func:`repowise.core.persistence.crud.adopt_moved_repository_best_effort`.
+    """
+    from repowise.core.persistence.crud import adopt_moved_repository_best_effort
+
+    return await adopt_moved_repository_best_effort(root)
 
 
 #: Busy timeout for the reconcile's own connection. The engine default is 30s,
@@ -137,16 +135,25 @@ async def reconcile_schema_best_effort(db_url: str) -> None:
     Never CREATES a store. ``init_db`` on a fresh path would materialise a
     42-table file, so a read command run in a repo that was never indexed would
     leave a database behind where the user expects "not indexed yet".
+
+    A plugin storage revision that failed or changed after it applied is a
+    defect in the plugin, not a store this command cannot write, so that error
+    still reaches the caller.
     """
     from repowise.core.persistence import create_engine, init_db
+    from repowise.core.registry.storage_migrations import StorageMigrationError
 
     if _missing_sqlite_file(db_url):
         return
 
     engine = create_engine(db_url, busy_timeout_ms=_RECONCILE_BUSY_TIMEOUT_MS)
     try:
-        with contextlib.suppress(Exception):
+        try:
             await init_db(engine)
+        except StorageMigrationError:
+            raise
+        except Exception:
+            pass
     finally:
         with contextlib.suppress(Exception):
             await engine.dispose()

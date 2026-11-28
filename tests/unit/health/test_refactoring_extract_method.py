@@ -12,6 +12,7 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import analyze_file, find_extractions
+from repowise.core.analysis.health.gain import removal_gain
 from repowise.core.analysis.health.refactoring import detect_refactorings
 from repowise.core.analysis.health.refactoring.extract_method import (
     ExtractMethodDetector,
@@ -760,7 +761,8 @@ def test_detector_emits_suggestion_for_flagged_function():
     fn = _first(_PROCESS)
     share = s.evidence["ccn_removed"] / fn.ccn
     assert 0 < share < 1
-    assert s.impact_delta == round(1.5 * share, 3)
+    assert s.evidence["recovered_share"] == round(share, 3)
+    assert s.impact_delta == removal_gain(findings, [(findings[0], share)]) > 0
     # Plan shape is the locked schema.
     assert set(s.plan) == {
         "span",
@@ -787,7 +789,7 @@ def test_detector_emits_suggestion_for_flagged_function():
     }
     assert s.plan["call_site"]["replace_span"] == s.plan["span"]
     assert set(s.plan["span"]) == {"start", "end"}
-    assert set(s.evidence) == {"slice_nloc", "ccn_removed"}
+    assert set(s.evidence) == {"slice_nloc", "ccn_removed", "recovered_share"}
     # A categorical claim, not a count: extraction is local, so there is nothing
     # to measure. The old ``{"callers_count": 0}`` was a hardcoded literal that
     # no consumer could tell apart from a measured zero.
@@ -914,6 +916,26 @@ def test_a_helper_inheriting_the_finding_undiminished_is_not_worth_it():
     assert not _worth_extracting(_Shape(13, 36), _Span(12, 30), {"complex_method"})
     # CCN 25 (critical) -> helper CCN 9 (medium): a real partial step.
     assert _worth_extracting(_Shape(25, 117), _Span(8, 40), {"complex_method"})
+
+
+def test_dispatch_heavy_function_judged_severity_refuses_helper_of_same_severity():
+    from repowise.core.analysis.health.models import Severity
+
+    # Repro for #4148:
+    # Function with raw CCN 30, but judged severity is MEDIUM due to dispatch.
+    # A span removing 12 points yields helper CCN 13 (which rule grades as MEDIUM).
+    # Since helper (MEDIUM) is not better than the finding's judged severity (MEDIUM),
+    # the extraction must be refused.
+    fn = _Shape(30, 80)
+    span = _Span(12, 30)
+
+    # When judged severity is MEDIUM (as in dispatch-heavy function):
+    assert not _worth_extracting(fn, span, {"complex_method": Severity.MEDIUM})
+
+    # On a plain function where raw CCN 30 yields CRITICAL severity:
+    # A helper of MEDIUM is an improvement over CRITICAL, so it is offered.
+    assert _worth_extracting(fn, span, {"complex_method": Severity.CRITICAL})
+    assert _worth_extracting(fn, span, {"complex_method"})
 
 
 def test_detector_offers_the_next_best_span_when_the_best_misses_the_floor():
@@ -1063,16 +1085,17 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
                   "fn_node": None}
     )()
     assert not _worth_extracting(fn, trivial, {"complex_method"})
+    findings = [_Finding("complex_method", "f", 1, 1.2)]
     ctx = RefactoringContext(
         file_path="m.py",
         language="python",
         nloc=100,
-        findings=[_Finding("complex_method", "f", 1, 1.2)],
+        findings=findings,
         function_analyses=[analysis],
     )
     (s,) = ExtractMethodDetector().detect(ctx)
     assert s.plan["span"] == {"start": 20, "end": 27}
-    assert s.impact_delta == round(1.2 * 3 / 12, 3)
+    assert s.impact_delta == removal_gain(findings, [(findings[0], 3 / 12)])
 
 
 # A plan that names the extracted loop's own counter as a parameter cannot

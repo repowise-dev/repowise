@@ -25,6 +25,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from repowise.core.providers.embedding.registry import (
     list_embedders,
 )
 from repowise.core.providers.llm.resolve import (
+    GLOBAL_CONFIG_FILENAME,
     UNSET,
     LLMSelection,
     global_config_path,
@@ -72,6 +74,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "accepts_base_url": bool(spec.base_url_envs),
         # Can point at a local OpenAI-compatible server and run with no key.
         "local_server": spec.keyless_on_loopback,
+        # A model that runs on this machine (not an agent CLI).
+        "local_model": spec.local and not spec.agent,
         # What a user sets to make it usable, and how to install it.
         "env_vars": list(spec.required_envs),
         "setup_hint": spec.setup_hint,
@@ -240,7 +244,11 @@ def _migrate_repo_selection(repo_id: str | None, repo_path: str | Path | None) -
 
 
 def _write_migrated_selection(repo_path: str | Path, selection: Mapping[str, Any]) -> None:
-    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
+    from repowise.core.repo_config import (
+        carry_config_fingerprints,
+        config_dependency_fingerprints,
+        config_fingerprint,
+    )
 
     before = (config_fingerprint(repo_path), config_dependency_fingerprints(repo_path))
     base_url = validate_base_url(selection.get("base_url"))
@@ -252,38 +260,7 @@ def _write_migrated_selection(repo_path: str | Path, selection: Mapping[str, Any
     )
     if base_url:
         trust_base_url(repo_path, base_url)
-    _carry_fingerprints(repo_path, before)
-
-
-def _carry_fingerprints(repo_path: str | Path, before: tuple[str, dict[str, str]]) -> None:
-    """Move state.json's config fingerprints past the migration's own write.
-
-    Only a fingerprint that still matched the pre-migration config moves, so a
-    real config change waiting for the next update is still seen.
-    """
-    from repowise.core.fsutils import atomic_write_text
-    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
-
-    state_path = Path(repo_path) / ".repowise" / "state.json"
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    if not isinstance(state, dict):
-        return
-    old_fp, old_deps = before
-    changed = False
-    if state.get("config_fingerprint") == old_fp:
-        state["config_fingerprint"] = config_fingerprint(repo_path)
-        changed = True
-    stored = state.get("config_dependency_fingerprints")
-    if isinstance(stored, dict):
-        for bucket, value in config_dependency_fingerprints(repo_path).items():
-            if stored.get(bucket) == old_deps.get(bucket) and value != old_deps.get(bucket):
-                stored[bucket] = value
-                changed = True
-    if changed:
-        atomic_write_text(state_path, json.dumps(state, indent=2))
+    carry_config_fingerprints(repo_path, before)
 
 
 def resolve_for_repo(
@@ -308,19 +285,78 @@ def resolve_for_repo(
     )
 
 
+def _logged_in(identity: Any) -> bool | None:
+    """One CLI's login check: ``None`` when it cannot say; a broken check is ``False``."""
+    try:
+        state = identity.is_logged_in()
+        return None if state is None else bool(state)
+    except Exception:
+        logger.debug("Login check for %s failed", identity.slug, exc_info=True)
+        return False
+
+
+def _agent_login_states() -> dict[str, bool | None]:
+    """Login state of each catalog provider's agent CLI: ``True`` signed in,
+    ``None`` installed but unknown, ``False`` otherwise.
+
+    Each check is a short subprocess (the CLI's own login query), so they run
+    side by side.
+    """
+    from repowise.core.agents.identity import get_identity
+
+    agents = {
+        p["id"]: identity
+        for p in PROVIDER_CATALOG
+        if (agent := PROVIDER_SPECS[p["id"]].agent) and (identity := get_identity(agent))
+    }
+    if not agents:
+        return {}
+    with ThreadPoolExecutor(max_workers=len(agents)) as pool:
+        states = list(pool.map(_logged_in, agents.values()))
+    return dict(zip(agents, states, strict=True))
+
+
+def _detected_source(
+    provider_id: str, repo_path: str | Path | None, login_states: dict[str, bool | None] | None
+) -> str | None:
+    """What on this machine makes *provider_id* usable without setup.
+
+    ``signed_in``: its agent CLI is signed in. ``installed``: the CLI is on
+    PATH but cannot say (no login query, or the network-off switch is set).
+    Both only when *login_states* is given. ``env``: a key in the process env or the repo's
+    ``.repowise/.env``. ``saved``: a key stored on this server.
+    """
+    if PROVIDER_SPECS[provider_id].agent:
+        state = login_states.get(provider_id, False) if login_states is not None else False
+        if state is None:
+            return "installed"
+        return "signed_in" if state else None
+    if not _CATALOG_BY_ID[provider_id]["requires_key"]:
+        return None
+    source = resolve_api_key(provider_id, repo_path)[1]
+    if source is None:
+        return None
+    return "saved" if source == GLOBAL_CONFIG_FILENAME else "env"
+
+
 def list_provider_status(
     repo_id: str | None = None,
     repo_path: str | Path | None = None,
+    *,
+    detect: bool = False,
 ) -> dict[str, Any]:
     """Return provider catalog + the active selection for the repo.
 
     With ``repo_path`` the active provider/model/base URL are what that repo's
     chat will use, each with the layer it came from (``provenance``). A
     configured model missing from the static catalog is added to that
-    provider's ``models`` so the picker can show it.
+    provider's ``models`` so the picker can show it. Each provider's
+    ``detected`` names a key found for it; with *detect* it also names a
+    signed-in agent CLI, which costs one subprocess per agent provider.
     """
     selection = resolve_for_repo(repo_id, repo_path)
     active_id, model = selection.provider, selection.model
+    login_states = _agent_login_states() if detect else None
 
     providers = []
     for p in PROVIDER_CATALOG:
@@ -339,8 +375,10 @@ def list_provider_status(
                 "requires_key": p["requires_key"],
                 "accepts_base_url": p["accepts_base_url"],
                 "local_server": p["local_server"],
+                "local_model": p["local_model"],
                 "env_vars": p["env_vars"],
                 "setup_hint": p["setup_hint"],
+                "detected": _detected_source(p["id"], repo_path, login_states),
             }
         )
 
@@ -426,6 +464,7 @@ def set_active_provider(
     """
     if provider_id not in _CATALOG_BY_ID:
         raise UnknownProviderError(f"Unknown provider: {provider_id}")
+    _refuse_missing_extra(provider_id)
     choice = _Choice(
         provider_id,
         (model or "").strip() or None,
@@ -435,6 +474,20 @@ def set_active_provider(
         _save_repo_choice(choice, repo_id, repo_path)
     else:
         update_global_config(choice.apply_global)
+
+
+def _refuse_missing_extra(provider_id: str) -> None:
+    """Refuse a provider whose ``repowise[<extra>]`` is not installed, naming the command.
+
+    The server never installs packages itself: the person runs the command
+    where repowise is installed, then picks the provider again.
+    """
+    from repowise.core.extras import missing_message
+    from repowise.core.providers.llm.registry import provider_missing_extra
+
+    extra = provider_missing_extra(provider_id)
+    if extra:
+        raise ValueError(missing_message(extra, f"The {provider_id} provider"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,7 +533,9 @@ def set_api_key(
     key is *also* mirrored into that repo's ``.repowise/.env`` under the
     provider's canonical env var, so a later ``repowise`` CLI run in that repo
     (which reads ``.env``, not the server store) picks up a key added from the
-    web UI. A ``None`` key removes it from both places.
+    web UI. A ``None`` key removes it from both places. A string key is
+    stripped first, and one that is empty after stripping is rejected, so a
+    blank paste cannot silently replace a working key.
 
     Writing ``.env`` is a deliberately OSS-server-only step: a hosted
     deployment resolves keys from its own vault, so it never passes
@@ -494,6 +549,13 @@ def set_api_key(
         # Reject before writing anything so a bad value can't inject extra env
         # lines nor leave a partial store update. A real key has no newline.
         raise ValueError("API key must not contain a newline")
+    if key is not None:
+        # Every reader strips keys, so a blank value would read as "no key":
+        # reject it rather than let it overwrite the stored one.
+        key = key.strip()
+        if not key:
+            raise ValueError("API key must not be empty")
+
     def change(config: dict[str, Any]) -> None:
         keys = config.setdefault("keys", {})
         if key:

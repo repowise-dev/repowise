@@ -1,0 +1,21 @@
+{"Time":"2026-11-26T01:09:33.8132603+05:30","Action":"start","Package":"example.com/gobench/strs"}
+{"Time":"2026-11-26T01:09:34.3442593+05:30","Action":"run","Package":"example.com/gobench/strs","Test":"TestJoin"}
+{"Time":"2026-11-26T01:09:34.3442593+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestJoin","Output":"=== RUN   TestJoin\n"}
+{"Time":"2026-11-26T01:09:34.3458452+05:30","Action":"run","Package":"example.com/gobench/strs","Test":"TestJoin/1"}
+{"Time":"2026-11-26T01:09:34.3458452+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestJoin/1","Output":"=== RUN   TestJoin/1\n"}
+{"Time":"2026-11-26T01:09:34.3458452+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestJoin/1","Output":"--- PASS: TestJoin/1 (0.00s)\n"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"pass","Package":"example.com/gobench/strs","Test":"TestJoin/1","Elapsed":0}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"run","Package":"example.com/gobench/strs","Test":"TestJoin/2"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestJoin/2","Output":"=== RUN   TestJoin/2\n"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestJoin/2","Output":"--- PASS: TestJoin/2 (0.00s)\n"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"pass","Package":"example.com/gobench/strs","Test":"TestJoin/2","Elapsed":0}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestJoin","Output":"--- PASS: TestJoin (0.00s)\n"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"pass","Package":"example.com/gobench/strs","Test":"TestJoin","Elapsed":0}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"run","Package":"example.com/gobench/strs","Test":"TestSkipped"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestSkipped","Output":"=== RUN   TestSkipped\n"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestSkipped","Output":"    join_test.go:37: not on this platform\n"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"TestSkipped","Output":"--- SKIP: TestSkipped (0.00s)\n"}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"skip","Package":"example.com/gobench/strs","Test":"TestSkipped","Elapsed":0}
+{"Time":"2026-11-26T01:09:34.3463717+05:30","Action":"output","Package":"example.com/gobench/strs","Output":"PASS\n"}
+{"Time":"2026-11-26T01:09:34.3468979+05:30","Action":"output","Package":"example.com/gobench/strs","Output":"ok  \texample.com/gobench/strs\t0.530s\n"}
+{"Time":"2026-11-26T01:09:34.3468979+05:30","Action":"pass","Package":"example.com/gobench/strs","Elapsed":0.534}

@@ -11,9 +11,11 @@ from repowise.server.services.c4_builder.models import (
     ArchNode,
     ArchSubGroup,
     ArchTourStep,
+    ExternalSystemView,
 )
 from repowise.server.services.zoom_builder import assemble_zoom_map
 from repowise.server.services.zoom_builder.calls import keep_projected_edge
+from repowise.server.services.zoom_builder.containers import container_kind
 from repowise.server.services.zoom_builder.metrics import rollup_health, rollup_metrics
 from repowise.server.services.zoom_builder.models import ZoomNode
 from repowise.server.services.zoom_builder.relations import aggregate_relations
@@ -710,3 +712,203 @@ def test_compute_file_signals_keeps_import_reachability_when_calls_are_absent():
         stats, [("a.py", "b.py", "imports")], entry_points=["a.py"], tour_paths=set()
     )
     assert signals["b.py"].on_flow is True
+
+
+# ---------------------------------------------------------------------------
+# external systems, containers, technologies
+# ---------------------------------------------------------------------------
+
+
+def _boundary_view() -> ArchitectureView:
+    """Two deployables (a Python CLI at the root, a Next app under web/) that
+    reach one database and a framework; a test reaches the database too."""
+    files = {
+        "pyproject.toml": "toml",
+        "app/cli/main.py": "python",
+        "app/store.py": "python",
+        "tests/test_store.py": "python",
+        "web/package.json": "json",
+        "web/app/page.tsx": "typescript",
+    }
+    nodes = [
+        _node(path, language=lang, is_test=path.startswith("tests/"))
+        for path, lang in files.items()
+    ]
+    nodes += [
+        _node("external:sqlalchemy.orm", language="external"),
+        _node("external:next/link", language="external"),
+        _node("external:pytest", language="external"),
+    ]
+    code = [p for p in files if not p.endswith((".toml", ".json"))]
+    layers = [
+        ArchLayer(
+            id="layer:app",
+            name="App",
+            description="",
+            node_ids=code,
+            file_count=len(code),
+            complexity_distribution={},
+            health_score=None,
+            sub_groups=[],
+            display_order=0,
+        )
+    ]
+    edges = [
+        ArchEdge("app/cli/main.py", "app/store.py", "imports", "forward", 1.0, 1.0),
+        ArchEdge("app/store.py", "external:sqlalchemy.orm", "imports", "forward", 1.0, 1.0),
+        ArchEdge("tests/test_store.py", "external:sqlalchemy.orm", "imports", "forward", 1.0, 1.0),
+        ArchEdge("tests/test_store.py", "external:pytest", "imports", "forward", 1.0, 1.0),
+        ArchEdge("web/app/page.tsx", "external:next/link", "imports", "forward", 1.0, 1.0),
+    ]
+    externals = [
+        ExternalSystemView(
+            "ext:sqlalchemy", "sqlalchemy", "SQLAlchemy", "service", "pypi", io_kind="db"
+        ),
+        ExternalSystemView("ext:next", "next", "Next", "framework", "npm"),
+        ExternalSystemView("ext:pytest", "pytest", "Pytest", "tool", "pypi"),
+    ]
+    return replace(
+        _view(),
+        layers=layers,
+        nodes=nodes,
+        edges=edges,
+        tour=[],
+        external_systems=externals,
+        entry_points=["app/cli/main.py"],
+    )
+
+
+def test_externals_are_runtime_systems_production_code_imports():
+    zoom = assemble_zoom_map(_boundary_view())
+    assert [e.id for e in zoom.externals] == ["ext:sqlalchemy"]
+    ext = zoom.externals[0]
+    assert (ext.kind, ext.display_name, ext.ecosystem) == ("db", "SQLAlchemy", "pypi")
+    # The test's import is not the system's dependency.
+    assert (ext.file_count, ext.edge_count) == (1, 1)
+
+
+def test_external_relations_link_every_level_down_to_the_importing_file():
+    zoom = assemble_zoom_map(_boundary_view())
+    store = file_id("app/store.py")
+    chain = []
+    node = zoom.nodes[store]
+    while node.parent_id is not None:
+        chain.append((node.parent_id, node.id))
+        node = zoom.nodes[node.parent_id]
+    links = {(r.parent_id, r.source_id) for r in zoom.external_relations}
+    assert links == set(chain)
+    assert all(
+        r.target_id == "ext:sqlalchemy" and r.label == "imports" for r in zoom.external_relations
+    )
+
+
+def test_containers_carry_kind_technologies_and_tag_the_tree():
+    zoom = assemble_zoom_map(_boundary_view())
+    by_path = {c.path: c for c in zoom.containers}
+    assert set(by_path) == {"", "web"}
+    assert (by_path[""].kind, by_path[""].name) == ("cli", "proj")
+    assert by_path["web"].kind == "web_app"
+    assert by_path["web"].technologies == ("Next", "TypeScript")
+    assert zoom.nodes[file_id("web/app/page.tsx")].container_ids == ("pkg:web",)
+    root = zoom.nodes[zoom.root_id]
+    assert root.container_ids == ("pkg:.", "pkg:web")
+    assert root.technologies[0] == "Python"
+    # Leaves carry ``language``, not technologies.
+    assert zoom.nodes[file_id("app/store.py")].technologies == ()
+
+
+def test_boundaries_follow_a_focused_subtree():
+    full = assemble_zoom_map(_boundary_view())
+    web = next(n for n in full.nodes.values() if n.kind == "folder" and n.path == "web/app")
+    focused = assemble_zoom_map(_boundary_view(), focus=web.id)
+    assert focused.externals == ()
+    assert focused.external_relations == ()
+    assert [c.path for c in focused.containers] == ["web"]
+
+
+def test_a_view_without_externals_degrades_to_empty_lists():
+    zoom = assemble_zoom_map(_view())
+    assert zoom.externals == () and zoom.external_relations == ()
+    # No manifest anywhere: the top-level directory stands in for a container.
+    assert [c.id for c in zoom.containers] == ["pkg:pkg"]
+    assert zoom.nodes[zoom.root_id].technologies == ("Python",)
+
+
+def test_container_kind_precedence():
+    assert container_kind({"react", "next"}, True, {"cli"}) == "extension"
+    assert container_kind({"next", "fastapi"}, False, set()) == "web_app"
+    assert container_kind({"fastapi"}, False, {"cli"}) == "api"
+    assert container_kind({"react"}, False, {"worker"}) == "worker"
+    assert container_kind({"react"}, False, set()) == "library"
+
+
+def test_zoom_response_serializes_the_boundaries():
+    from repowise.server.routers.c4 import _zoom_response
+
+    body = _zoom_response(assemble_zoom_map(_boundary_view())).model_dump()
+    assert body["externals"][0]["id"] == "ext:sqlalchemy"
+    assert body["external_relations"][0]["target_id"] == "ext:sqlalchemy"
+    assert {c["kind"] for c in body["containers"]} == {"cli", "web_app"}
+    root = next(n for n in body["nodes"] if n["id"] == body["root_id"])
+    assert root["container_ids"] == ["pkg:.", "pkg:web"]
+
+
+def test_container_kind_ignores_declared_name_case():
+    assert container_kind({"Django"}, False, set()) == "api"
+
+
+def test_a_layer_card_reads_its_curated_description():
+    view = _view()
+    view = replace(view, layers=[replace(view.layers[0], description="Runs the service.")])
+    zoom = assemble_zoom_map(view)
+    layer = next(n for n in zoom.nodes.values() if n.kind == "layer")
+    assert layer.summary == "Runs the service."
+
+
+def test_evolve_copies_like_replace():
+    from repowise.server.services.zoom_builder.models import ZoomMetrics, evolve
+
+    node = ZoomNode(id="zm:a/b.py", parent_id="zm:a", level=3, kind="file", name="b.py")
+    changes = {"metrics": ZoomMetrics(file_count=1), "importance": 0.5, "sibling_rank": 2}
+    assert evolve(node, **changes) == replace(node, **changes)
+    assert node.importance == 0.0
+
+
+def test_response_models_name_every_builder_field():
+    """_zoom_response reads these dataclasses by attribute, so their fields must match."""
+    from dataclasses import fields
+
+    from repowise.server.schemas import (
+        ZoomContainerResponse,
+        ZoomExternalResponse,
+        ZoomMetricsResponse,
+        ZoomRelationResponse,
+    )
+    from repowise.server.services.zoom_builder.models import (
+        ZoomContainer,
+        ZoomExternal,
+        ZoomMetrics,
+        ZoomRelation,
+    )
+
+    for data, model in (
+        (ZoomContainer, ZoomContainerResponse),
+        (ZoomExternal, ZoomExternalResponse),
+        (ZoomMetrics, ZoomMetricsResponse),
+        (ZoomRelation, ZoomRelationResponse),
+    ):
+        assert {f.name for f in fields(data)} == set(model.model_fields), model.__name__
+
+
+def test_only_production_code_reaching_an_editor_host_makes_an_extension():
+    view = _boundary_view()
+    host = _node("external:vscode", language="external")
+    from_test = ArchEdge("tests/test_store.py", "external:vscode", "imports", "forward", 1.0, 1.0)
+    view = replace(view, nodes=[*view.nodes, host], edges=[*view.edges, from_test])
+    root = next(c for c in assemble_zoom_map(view).containers if c.path == "")
+    assert root.kind == "cli"
+
+    from_code = replace(from_test, source="app/store.py")
+    view = replace(view, edges=[*view.edges, from_code])
+    root = next(c for c in assemble_zoom_map(view).containers if c.path == "")
+    assert root.kind == "extension"

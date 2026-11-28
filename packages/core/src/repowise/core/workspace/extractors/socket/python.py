@@ -18,6 +18,7 @@ PYTHON_SOCKETS = SocketDialect(
             label="@app.websocket",
             extensions=PYTHON,
             name=Arg(keys=("path",), pos=0),
+            requires=("websocket", "Websocket", "WebSocket"),
         ),
     ),
 )

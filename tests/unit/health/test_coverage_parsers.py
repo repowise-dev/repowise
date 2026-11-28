@@ -298,6 +298,17 @@ def test_is_test_file(path: str, expected: bool) -> None:
     assert is_test_file(path) is expected
 
 
+def test_is_test_file_honours_pytest_roots() -> None:
+    from repowise.core.pytest_roots import read_pytest_roots
+
+    roots = read_pytest_roots(
+        [("pyproject.toml", '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')]
+    )
+    assert is_test_file("core/test_selection.py") is True
+    assert is_test_file("core/test_selection.py", roots=roots) is False
+    assert is_test_file("tests/test_selection.py", roots=roots) is True
+
+
 def test_is_test_file_uses_source_imports() -> None:
     src = "import pytest\n\ndef test_x():\n    pass\n"
     assert is_test_file("weird/path/name.py", src) is True

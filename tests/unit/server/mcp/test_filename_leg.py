@@ -168,7 +168,9 @@ async def test_prose_query_returns_a_file_that_has_no_page(pageless_mcp, questio
     assert row["symbols"][0].endswith(":12")
     assert {"filename", "symbol"} & set(row["sources"])
     assert "page_id" not in row
-    assert path in [c["path"] for c in result.get("candidates", [])]
+    # ``candidates`` is left out when it only repeats the result paths.
+    openable = result.get("candidates") or result["results"]
+    assert path in [c.get("path") for c in openable]
 
 
 @pytest.mark.asyncio
@@ -245,11 +247,12 @@ async def test_identifier_query_is_unchanged_by_pageless_rows(pageless_mcp, monk
 
 def test_reset_cache_frees_the_lock_from_its_event_loop():
     async def contend() -> None:
-        async with _graph_files._LOCK:
-            waiter = asyncio.ensure_future(_graph_files._LOCK.acquire())
+        lock = _graph_files._lock_for("search_file_paths")
+        async with lock:
+            waiter = asyncio.ensure_future(lock.acquire())
             await asyncio.sleep(0)
         await waiter
-        _graph_files._LOCK.release()
+        lock.release()
 
     asyncio.run(contend())
     _graph_files.reset_cache()

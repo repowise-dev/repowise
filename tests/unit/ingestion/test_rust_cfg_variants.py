@@ -128,13 +128,18 @@ class TestControls:
         assert "lib.rs::k#cfg(unix)" in ids
         assert "lib.rs::k#cfg(not(unix))" in ids
 
-    def test_a_variant_calling_itself_draws_no_edge(self, tmp_path: Path) -> None:
+    def test_a_variant_calling_itself_recurses_without_reaching_its_sibling(
+        self, tmp_path: Path
+    ) -> None:
         text = (
-            "#[cfg(unix)]\nfn r() -> u32 { r() }\n"
-            "#[cfg(not(unix))]\nfn r() -> u32 { 2 }\n"
+            "pub struct T;\nimpl T {\n"
+            "    #[cfg(unix)]\n    pub fn r(n: u32) -> u32 { T::r(n) }\n"
+            "    #[cfg(not(unix))]\n    pub fn r(n: u32) -> u32 { n }\n"
+            "}\n"
         )
         edges = _edges(tmp_path, {"lib.rs": text})
-        assert not any(caller == callee for caller, callee in edges)
+        assert edges == {("lib.rs::T::r#cfg(unix)", "lib.rs::T::r#cfg(unix)")}
+
 
 def test_rust_cfg_normalization_preserves_string_whitespace() -> None:
     spaced = _normalize_cfg_whitespace('cfg(feature = "foo bar")')

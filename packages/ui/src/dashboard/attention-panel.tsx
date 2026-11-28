@@ -3,7 +3,6 @@
 import { useState } from "react";
 import {
   AlertTriangle,
-  CheckCircle2,
   Trash2,
   Users,
   FileWarning,
@@ -15,7 +14,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
-import { stripMarkdown } from "../lib/format";
+import { formatNumber, stripMarkdown } from "../lib/format";
 import { EmptyState } from "../shared/empty-state";
 import { fileEntityPath } from "../shared/entity/routes";
 import { AiPromptButton } from "../health/ai-prompt-button";
@@ -130,7 +129,7 @@ export function AttentionPanel({
       <Card>
         <CardContent className="p-2">
           <EmptyState
-            icon={<CheckCircle2 className="h-8 w-8 text-[var(--color-success)]" />}
+            tone="positive"
             title="Nothing needs attention"
             description="No hotspots, risky files, or stale docs right now."
           />
@@ -214,12 +213,12 @@ export function AttentionPanel({
               <Lightbulb className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
               <span className="min-w-0 flex-1 text-xs text-[var(--color-text-secondary)]">
                 <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
-                  {proposed.length.toLocaleString()}
+                  {formatNumber(proposed.length)}
                 </span>{" "}
-                auto-proposed decision{proposed.length === 1 ? "" : "s"} awaiting review
+                background decision record{proposed.length === 1 ? "" : "s"}
               </span>
               <span className="shrink-0 text-xs text-[var(--color-accent-primary)] group-hover:underline">
-                Review →
+                Open →
               </span>
             </a>
           )}

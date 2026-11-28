@@ -6,6 +6,7 @@ the controls that keep the gate from withholding everything.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import networkx as nx
@@ -92,10 +93,51 @@ def test_docs_site_snippet_tree_is_never_deletion_ready(tmp_path):
     assert _says(finding, "Documentation or example code")
 
 
+def _framework_repo(tmp_path, deps: dict[str, str]):
+    (tmp_path / "mail").mkdir()
+    (tmp_path / "mail" / "package.json").write_text(json.dumps({"devDependencies": deps}))
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    ("deps", "path"),
+    [
+        ({"react-email": "6"}, "mail/emails/auth/welcome.tsx"),
+        ({"nuxt": "3"}, "mail/components/Card.ts"),  # auto-imported by name
+        ({"nuxt": "4"}, "mail/app/composables/useThing.ts"),  # Nuxt 4 srcDir
+        ({"next": "14"}, "mail/src/pages/index.tsx"),
+    ],
+)
+def test_export_a_framework_loads_by_convention_is_never_deletion_ready(tmp_path, deps, path):
+    repo = _framework_repo(tmp_path, deps)
+    finding = _gate(_finding(path), _graph(path, "typescript"), repo_root=repo)
+    assert not finding.safe_to_delete
+    assert finding.confidence == 1.0
+    assert _says(finding, "by convention (mail/package.json depends on")
+
+
+def test_convention_path_without_the_framework_stays_deletion_ready(tmp_path):
+    repo = _framework_repo(tmp_path, {"react": "18"})
+    path = "mail/emails/auth/welcome.tsx"
+    assert _gate(_finding(path), _graph(path, "typescript"), repo_root=repo).safe_to_delete
+
+
 def test_export_only_finding_is_never_deletion_ready():
     finding = _gate(_finding(export_only=True))
     assert not finding.safe_to_delete
     assert _says(finding, "remove the export, not the symbol")
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [DeadCodeKind.UNREACHABLE_FILE, DeadCodeKind.ZOMBIE_PACKAGE, DeadCodeKind.UNUSED_INTERNAL],
+)
+def test_review_only_kinds_are_never_deletion_ready_at_any_confidence(kind):
+    """Pinned by kind, not by today's base confidence sitting under the bar."""
+    finding = _gate(_finding(kind=kind, confidence=1.0))
+    assert not finding.safe_to_delete
+    assert _says(finding, f"A {kind} finding is a review candidate")
+    assert not effective_safe_to_delete(1.0, "lib/util.py", True, str(kind))
 
 
 def test_language_with_partial_import_support_is_never_deletion_ready():

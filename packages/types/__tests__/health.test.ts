@@ -14,6 +14,7 @@ import {
   FAIR_MIN,
   GOOD_MIN,
   HEALTH_BAND_LABEL,
+  HEALTH_BAND_MIN,
   HEALTH_BAND_ORDER,
   HEALTH_BAND_RANGE_LABEL,
   HEALTH_DIMENSIONS,
@@ -37,6 +38,13 @@ describe("health band cutoffs", () => {
     for (const band of HEALTH_BAND_ORDER) {
       expect(HEALTH_BAND_LABEL[band]).toBeTruthy();
       expect(HEALTH_BAND_RANGE_LABEL[band]).toBeTruthy();
+    }
+  });
+
+  it("key each band's lower edge on the same cutoffs", () => {
+    expect(HEALTH_BAND_ORDER.map((b) => HEALTH_BAND_MIN[b])).toEqual([0, 4, 5.5, 7, 8.5]);
+    for (const band of HEALTH_BAND_ORDER) {
+      expect(bandForScore(Math.max(HEALTH_BAND_MIN[band], 0.1))).toBe(band);
     }
   });
 });

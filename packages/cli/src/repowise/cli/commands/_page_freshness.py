@@ -1,0 +1,83 @@
+"""Read the persisted documentation freshness for CLI consumers."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
+
+from repowise.cli.helpers import db_configured, get_db_url_for_repo
+from repowise.core.generation.models import (
+    MODEL_FREE_PAGE_TYPES,
+    MODEL_WRITTEN_PAGE_TYPES,
+    is_model_free,
+)
+from repowise.core.generation.page_selection import STALE_STATUSES
+from repowise.core.persistence import (
+    create_engine,
+    create_session_factory,
+    get_repository_by_path,
+    get_session,
+)
+from repowise.core.persistence.models import Page
+
+# What ``repowise update --full`` does when ``stale_remedy`` returns ``model``.
+WHOLE_WIKI_REMEDY = "writes the whole wiki with a model, and prices it first"
+
+
+def stale_remedy(state: Mapping[str, Any] | None, repo_path: Path) -> str:
+    """What ``repowise update --full`` does to this repo's stale pages.
+
+    ``llm``: a model wrote the wiki, so it prices and rewrites the stale model
+    pages. Otherwise the wiki was built from code and ``--full`` is the upgrade:
+    ``code`` only when nothing names a provider (it rebuilds from code, no model
+    calls), the test ``_resolve_upgrade_provider`` falls back on. Otherwise
+    ``model``: it writes the whole wiki, priced first, and a named provider that
+    cannot be set up (no key) stops it with that error, never a code rebuild.
+    """
+    from repowise.core.docs_mode import resolve_docs_mode
+    from repowise.core.providers.llm import resolve
+
+    if resolve_docs_mode(state) == "llm":
+        return "llm"
+    return "model" if resolve.resolve_llm(repo_path).provider is not None else "code"
+
+
+async def stale_page_count(repo_path: Path, *, model_written: bool | None = None) -> int | None:
+    """Count stale pages without loading their bodies; None means unreadable.
+
+    *model_written* narrows the count to the pages a model writes (True) or to
+    the structural ones (False). A model-free page (``is_model_free``) is structural.
+    """
+    if not (repo_path / ".repowise" / "wiki.db").exists() and not db_configured():
+        return 0
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return 0
+            stale = (Page.repository_id == repo.id, Page.freshness_status.in_(STALE_STATUSES))
+            query = select(func.count()).select_from(Page).where(*stale)
+            if model_written is None:
+                return int((await session.execute(query)).scalar_one())
+            written = Page.page_type.in_(MODEL_WRITTEN_PAGE_TYPES)
+            query = query.where(written if model_written else ~written)
+            count = int((await session.execute(query)).scalar_one())
+            free = await _stale_model_free_count(session, stale)
+            return count - free if model_written else count + free
+    except SQLAlchemyError:
+        return None
+    finally:
+        await engine.dispose()
+
+
+async def _stale_model_free_count(session: Any, stale: tuple) -> int:
+    """Stale model-free pages: metadata is read only for the types that can be one."""
+    rows = await session.execute(
+        select(Page.metadata_json).where(*stale, Page.page_type.in_(MODEL_FREE_PAGE_TYPES))
+    )
+    return sum(map(is_model_free, rows.scalars()))

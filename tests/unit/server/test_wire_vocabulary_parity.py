@@ -1,8 +1,9 @@
 """The closed vocabularies cross a language boundary, so pin both ends.
 
-``ResolutionOrigin``, ``FlowTermination``, ``UnmatchedReason`` and
-``AttentionItemType`` are declared in Python and copied into ``packages/types``
-(and ``packages/ui``) for the web surfaces. Nothing else
+``ResolutionOrigin``, ``FlowTermination``, ``UnmatchedReason``,
+``AttentionItemType`` and the workspace link vocabularies (``LinkStrategy``,
+``ContractOrigin``, edge kind, match type) are declared in Python and copied
+into ``packages/types`` (and ``packages/ui``) for the web surfaces. Nothing else
 makes the copies agree: a word added on one side renders as "unrecognised"
 forever on the other, silently, because both sides degrade rather than throw.
 
@@ -19,6 +20,8 @@ from repowise.core.analysis.attention import AREA_ORDER, ATTENTION_ITEM_TYPES
 from repowise.core.analysis.execution_flows import FLOW_TERMINATION_VALUES
 from repowise.core.ingestion.models import HERITAGE_KIND_VALUES, RESOLUTION_ORIGIN_VALUES
 from repowise.core.workspace.diagnostics import UNMATCHED_REASON_VALUES
+from repowise.core.workspace.origins import ContractOrigin, LinkStrategy
+from repowise.core.workspace.system_graph import _MATCH_TYPE_RANK, EDGE_KINDS
 
 _PACKAGES = pathlib.Path(__file__).resolve().parents[3] / "packages"
 _TYPES_SRC = _PACKAGES / "types/src"
@@ -42,6 +45,42 @@ def test_flow_termination_union_matches_python() -> None:
 
 def test_unmatched_reason_union_matches_python() -> None:
     assert _union_members("UnmatchedReason", "workspace.ts") == set(UNMATCHED_REASON_VALUES)
+
+
+def _assert_mirror(declared: set[str], owned: set[str], what: str, edit: str) -> None:
+    """Equal sets, or a message naming each stray value and the file to edit."""
+    missing, extra = sorted(owned - declared), sorted(declared - owned)
+    assert not missing, f"{what} lacks {missing}: add them to {edit}"
+    assert not extra, f"{what} has {extra}, which core no longer declares: remove them from {edit}"
+
+
+def test_workspace_link_vocabularies_match_python() -> None:
+    """Strategy, origin, edge kind and match type: core owns each closed set."""
+    pairs = (
+        ("LinkStrategy", {s.value for s in LinkStrategy}),
+        ("ContractOrigin", {o.value for o in ContractOrigin}),
+        ("SystemEdgeKind", set(EDGE_KINDS)),
+        ("SystemEdgeMatchType", set(_MATCH_TYPE_RANK)),
+    )
+    for alias, owned in pairs:
+        _assert_mirror(
+            _union_members(alias, "workspace.ts"), owned, alias, "packages/types/src/workspace.ts"
+        )
+
+
+def test_every_link_strategy_and_origin_has_a_label() -> None:
+    """An unlabelled value renders as a humanised token with "does not describe"."""
+    text = (_PACKAGES / "ui/src/workspace/link-provenance.ts").read_text(encoding="utf-8")
+    for table, enum in (("STRATEGIES", LinkStrategy), ("ORIGINS", ContractOrigin)):
+        match = re.search(rf"const {table} = \{{(.*?)\n\}} as const", text, re.DOTALL)
+        assert match, f"{table} is not declared in link-provenance.ts"
+        labelled = set(re.findall(r"^  ([a-z_]+): \{", match.group(1), re.MULTILINE))
+        _assert_mirror(
+            labelled,
+            {v.value for v in enum},
+            f"{table} labels",
+            "packages/ui/src/workspace/link-provenance.ts",
+        )
 
 
 def test_heritage_kind_differs_from_python_only_where_documented() -> None:
@@ -143,10 +182,22 @@ def test_every_surface_counts_in_the_one_reason_vocabulary() -> None:
     assert set(FIX_EXCLUSIONS) | set(DEFAULT_QUEUE_EXCLUSIONS) == set(REASONS)
 
 
+def test_performance_evidence_states_match_python() -> None:
+    from repowise.core.analysis.health.perf.serving import EVIDENCE_STATES
+
+    assert _union_members("PerformanceEvidenceState", "health.ts") == set(EVIDENCE_STATES)
+
+
 def test_performance_cost_proofs_match_python() -> None:
     from repowise.core.analysis.health.queue.eligibility import QUEUE_PROOFS
 
     assert _union_members("PerformanceCostProof", "health.ts") == set(QUEUE_PROOFS)
+
+
+def test_performance_static_costs_match_python() -> None:
+    from repowise.core.analysis.health.worth import STATIC_COSTS
+
+    assert _union_members("PerformanceStaticCost", "health.ts") == set(STATIC_COSTS)
 
 
 def test_performance_execution_roles_match_python() -> None:
@@ -239,3 +290,73 @@ def test_queue_count_vocabulary_matches_python() -> None:
     assert _union_members("QueueReason", "queue.ts") == {*REASONS, *STORED_REASONS}
     assert _union_members("QueueUnit", "queue.ts") == set(UNITS)
     assert _interface_fields("QueueCounts", "queue.ts") == {f.name for f in fields(QueueCounts)}
+
+
+def test_first_look_vocabularies_and_shapes_match_python() -> None:
+    """The first-look report crosses as core's JSON: its closed sets, its item,
+    section, stamp and staleness fields, and the section cap are pinned here."""
+    from repowise.core.report.first_look import model
+    from repowise.core.report.first_look.staleness import compare
+
+    def unions(alias: str) -> set[str]:
+        return _union_members(alias, "first-look.ts")
+
+    assert unions("FirstLookSectionKey") == set(model.SECTIONS)
+    assert unions("FirstLookBasis") == set(model.BASES)
+    assert unions("FirstLookSeverity") == set(model.SEVERITIES)
+    assert unions("FirstLookConfidence") == set(model.CONFIDENCES)
+    assert unions("FirstLookRouteKey") == set(model.ROUTE_KEYS)
+    assert unions("FirstLookPromptRenderer") == set(model.PROMPT_RENDERERS)
+    efforts = re.search(r"export type FirstLookEffort =(.*?);", (_TYPES_SRC / "first-look.ts").read_text(encoding="utf-8"))
+    assert efforts and set(re.findall(r'"(\w+)"', efforts.group(1))) == set(model.EFFORTS)
+
+    item = model.Item(
+        id="fl_x", section="hygiene", rule="r", title_facts={}, locations=(model.Location("a"),),
+        confidence="high", basis="inferred", severity="plan", effort="S",
+        link=model.file_link("a"), prompt=model.PromptRef("first_look_item"), fingerprint="f",
+    )
+    report = model.FirstLookReport(
+        stamp=model.Stamp("c", None, "2026-11-20T00:00:00+00:00"), repo={},
+        sections=(model.SectionBlock("hygiene", (item,)),),
+        setup=(model.SetupStep("a", "r", "t"),),
+    )
+    shapes = {
+        "FirstLookItem": item.to_json(),
+        "FirstLookLocation": item.locations[0].to_json(),
+        "FirstLookSection": report.sections[0].to_json(),
+        "FirstLookSetupStep": report.setup[0].to_json(),
+        "FirstLookStamp": report.stamp.to_json(),
+        "FirstLookReport": report.to_json(),
+        "FirstLookStaleness": compare(report, ()).to_json(),
+    }
+    for name, payload in shapes.items():
+        assert _interface_fields(name, "first-look.ts") == set(payload), name
+    cap = re.search(r"FIRST_LOOK_SECTION_CAP = (\d+);", (_TYPES_SRC / "first-look.ts").read_text(encoding="utf-8"))
+    assert cap and int(cap.group(1)) == model.SECTION_CAP
+
+
+def test_living_first_look_shapes_match_python() -> None:
+    """The living report's statuses, marks, member stores and the fields each item gains."""
+    from repowise.core.report.first_look import marks, model
+    from repowise.core.report.first_look.marks import ItemStatus
+
+    def unions(alias: str) -> set[str]:
+        return _union_members(alias, "first-look.ts")
+
+    assert unions("FirstLookItemStatus") == set(marks.ITEM_STATUSES)
+    assert unions("FirstLookMark") == set(marks.MARK_STATUSES)
+    assert unions("FirstLookMemberStore") == set(model.MEMBER_STORES)
+    assert _interface_fields("FirstLookMember", "first-look.ts") == set(model.Member("action", "a").to_json())
+    assert _interface_fields("FirstLookLiving", "first-look.ts") == {*ItemStatus().to_json(), "change"}
+    assert _interface_fields("FirstLookBaseline", "first-look.ts") == {"stamp", "resolved"}
+    report = model.FirstLookReport(model.Stamp("c", None, "2026-11-20T00:00:00+00:00"), {}, ())
+    assert _interface_fields("FirstLookProseSource", "first-look.ts") == set(report.prose_source())
+
+    from typing import get_args
+
+    from repowise.server.schemas.reports import FirstLookMarkRequest, FirstLookMarkResponse
+
+    request = FirstLookMarkRequest.model_fields["status"].annotation
+    response = FirstLookMarkResponse.model_fields["status"].annotation
+    assert set(get_args(request)) == set(marks.MARK_STATUSES)
+    assert set(get_args(response)) == set(marks.ITEM_STATUSES)

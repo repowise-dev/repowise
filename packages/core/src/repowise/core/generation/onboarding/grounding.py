@@ -80,6 +80,9 @@ _CODE_EXTENSIONS = frozenset(
         "astro",
         "m",
         "mm",
+        "cls",
+        "trigger",
+        "apex",
     }
 )
 _DOCUMENT_EXTENSIONS = frozenset(

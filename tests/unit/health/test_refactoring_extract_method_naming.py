@@ -245,6 +245,10 @@ def test_the_placeholder_follows_the_files_casing():
     assert _name(_RUST, "rust", "rs") == "extracted_helper"
 
 
+def test_an_astro_placeholder_is_camel_case_as_in_typescript():
+    assert _name(f"---{_TS}---\n<p>hi</p>\n", "astro", "astro") == "extractedHelper"
+
+
 def test_go_exported_and_unexported_spellings_collide():
     src = _GO + "\nfunc ExtractedHelper(xs []int) int {\n    return 0\n}\n"
     assert _names(src, "go", "go") == [("process", "extractedHelper2")]

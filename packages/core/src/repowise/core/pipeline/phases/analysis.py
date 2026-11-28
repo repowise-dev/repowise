@@ -20,13 +20,16 @@ from repowise.core.analysis.decisions.discovery import (
     DiscoveryReport,
     run_update_discovery,
 )
+from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
 from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
 
 # Shown for the model-only decision sources of a deterministic run, which may
 # well have a key configured.
-STRUCTURAL_RUN_REASON = "this run builds from code; repowise generate adds them"
+STRUCTURAL_RUN_REASON = f"this run builds from code; {MODEL_COMMAND} adds them"
+# The same for a fast run, which writes no pages for `generate` to work on.
+INDEX_ONLY_RUN_REASON = f"this run writes no documentation; {FAST_TO_FULL_COMMAND} adds them"
 
 logger = structlog.get_logger(__name__)
 
@@ -145,6 +148,7 @@ async def _run_doc_drift_analysis(
             symbols=(
                 SymbolOptions(graph_symbol_names(graph_builder.graph())) if graph_builder else None
             ),
+            cache_dir=Path(repo_path) / ".repowise" if repo_path else None,
         )
 
         def _step(_stage: str) -> None:
@@ -189,6 +193,7 @@ def _build_pipeline_coverage(
         from repowise.core.analysis.health.coverage import (
             CoverageConfig,
             build_coverage_map,
+            prefix_hint,
         )
         from repowise.core.repo_config import load_repo_config
 
@@ -216,25 +221,29 @@ def _build_pipeline_coverage(
             more = f" (+{len(report_paths) - 3} more)" if len(report_paths) > 3 else ""
             progress.on_message(
                 "info",
-                f"→ coverage: {resolved.matched} files matched from {names}{more}",
+                f"→ coverage: {0 if resolved.withheld else resolved.matched} files "
+                f"matched from {names}{more}",
             )
             skipped = len(resolved.unmatched) + len(resolved.ambiguous)
-            if skipped:
-                sample = ", ".join((resolved.unmatched + resolved.ambiguous)[:3])
+            sample = ", ".join((resolved.unmatched + resolved.ambiguous)[:3])
+            if resolved.withheld:
+                progress.on_message(
+                    "warning",
+                    f"  ↳ {skipped} report file(s) did not map (e.g. {sample}), more "
+                    "than half the report, so no coverage was kept; "
+                    f"{prefix_hint(resolved.suggested_prefixes)}.",
+                )
+            elif skipped:
                 progress.on_message(
                     "warning",
                     f"  ↳ {skipped} report file(s) did not map to the repo tree "
                     f"(e.g. {sample}). Set coverage.strip_prefix in "
                     f".repowise/config.yaml if paths are off.",
                 )
-            if resolved.mapping_partial:
-                progress.on_message(
-                    "warning",
-                    "  ↳ more than half the report did not map: the stored "
-                    "coverage is a fragment, not the whole repository.",
-                )
             for path, err in errors:
                 progress.on_message("warning", f"  ↳ coverage {path.name}: {err}")
+            if stale := resolved.alignment.warning():
+                progress.on_message("warning", f"  ↳ coverage: {stale}")
 
         return (
             resolved.coverage_map,

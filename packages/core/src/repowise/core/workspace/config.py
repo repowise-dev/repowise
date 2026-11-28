@@ -6,14 +6,18 @@ Pure data module with no CLI or DB dependencies. Handles the
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from repowise.core.workspace.grouping import declared_group
 
 _log = logging.getLogger("repowise.workspace.config")
 
@@ -50,6 +54,8 @@ class RepoEntry:
     # Free-form labels (e.g. "frontend", "tier:edge", "legacy") that group repos
     # for architecture conformance rules. A rule like ``frontend !-> db`` matches
     # by tag via ``tag:<name>``; every service node in this repo inherits these.
+    # On a large estate a ``group:<name>`` tag also names the system the repo's
+    # services are grouped under (see ``grouping.py``); other tags never do.
     tags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -120,29 +126,46 @@ def _valid_pattern(value: Any) -> str:
     return str(value)
 
 
+#: The cross-repo pass a contract setting feeds, declared on each
+#: :class:`ContractConfig` field. Changing an extraction setting re-extracts
+#: every repo; changing a matching setting re-links the stored contracts and
+#: reads no repo. A new setting declares one or a test fails.
+STAGE_EXTRACTION = "extraction"
+STAGE_MATCHING = "matching"
+_EXTRACTION = {"stage": STAGE_EXTRACTION}
+_MATCHING = {"stage": STAGE_MATCHING}
+
+
 @dataclass
 class ContractConfig:
     """Configuration for contract detection (Phase 4)."""
 
-    detect_http: bool = True
-    detect_grpc: bool = True
-    detect_socket: bool = True
-    detect_topics: bool = True
-    detect_data: bool = True
+    detect_http: bool = field(default=True, metadata=_EXTRACTION)
+    detect_grpc: bool = field(default=True, metadata=_EXTRACTION)
+    detect_socket: bool = field(default=True, metadata=_EXTRACTION)
+    detect_topics: bool = field(default=True, metadata=_EXTRACTION)
+    detect_data: bool = field(default=True, metadata=_EXTRACTION)
     #: A library's public API as a contract (``contract_type="code"``).
-    detect_code_api: bool = True
-    manual_links: list[ManualContractLink] = field(default_factory=list)
+    detect_code_api: bool = field(default=True, metadata=_EXTRACTION)
+    manual_links: list[ManualContractLink] = field(default_factory=list, metadata=_MATCHING)
     # Map a consumer base token or absolute host to the repo alias it targets,
     # so a ``fetch(`${API_BASE}/users`)`` whose base resolves to ``backend`` links
     # to that service as an exact match. Keys are env-var identifiers
     # (``API_BASE``, ``VITE_API_URL``) or hosts (``api.example.com``).
-    service_bases: dict[str, str] = field(default_factory=dict)
+    service_bases: dict[str, str] = field(default_factory=dict, metadata=_MATCHING)
     # Extra glob patterns (added to the built-in test/spec defaults) whose files
     # are skipped during contract extraction.
-    exclude_globs: list[str] = field(default_factory=list)
+    exclude_globs: list[str] = field(default_factory=list, metadata=_EXTRACTION)
     # A directory name matching this regex (in full, ignoring case) marks a .NET
     # project whose types are MassTransit message contracts.
-    contract_project_pattern: str = DEFAULT_CONTRACT_PROJECT_PATTERN
+    contract_project_pattern: str = field(
+        default=DEFAULT_CONTRACT_PROJECT_PATTERN, metadata=_EXTRACTION
+    )
+
+    def stage_dict(self, stage: str) -> dict[str, Any]:
+        """The :meth:`to_dict` entries whose field declares *stage*."""
+        stages = {f.name: f.metadata.get("stage") for f in fields(self)}
+        return {k: v for k, v in self.to_dict().items() if stages[k] == stage}
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -261,22 +284,10 @@ class WorkspaceConfig:
             "default_repo": self.default_repo,
             "repos": [r.to_dict() for r in self.repos],
         }
-        # Only include contracts section if non-default
+        # Only include contracts section if non-default. Compared whole, so a
+        # setting added later is never dropped from the file on save.
         contracts_d = self.contracts.to_dict()
-        if (
-            self.contracts.manual_links
-            or self.contracts.service_bases
-            or self.contracts.exclude_globs
-            or not all(
-                [
-                    self.contracts.detect_http,
-                    self.contracts.detect_grpc,
-                    self.contracts.detect_socket,
-                    self.contracts.detect_topics,
-                    self.contracts.detect_data,
-                ]
-            )
-        ):
+        if contracts_d != ContractConfig().to_dict():
             d["contracts"] = contracts_d
         # Only include conformance section when rules are declared.
         if self.conformance.rules:
@@ -303,6 +314,20 @@ class WorkspaceConfig:
             contracts=contracts,
             conformance=conformance,
         )
+
+    def analysis_fingerprint(self) -> str:
+        """Hash of the settings the cross-repo analysis reads.
+
+        Compared with the one the last analysis run stamped, so editing the
+        ``contracts:`` or ``conformance:`` block, or a repo's declared service
+        group (its ``group:<name>`` tag), re-runs it with no repo changed. Other
+        tags stay out, so editing a conformance tag never forces a re-analysis.
+        """
+        payload: list[Any] = [self.contracts.to_dict(), self.conformance.to_dict()]
+        groups = {r.alias: name for r in self.repos if (name := declared_group(r.tags))}
+        if groups:  # only when declared, so every other workspace keeps its stamp
+            payload.append(groups)
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
     def save(self, workspace_root: Path) -> Path:
         """Write config to ``workspace_root / .repowise-workspace.yaml``.
@@ -396,6 +421,12 @@ class WorkspaceConfig:
         """Return all repo aliases in order."""
         return [r.alias for r in self.repos]
 
+    def alias_for_path(self, workspace_root: Path, repo_path: Path | str) -> str | None:
+        """The alias of the member checked out at *repo_path*, or ``None``."""
+        target = Path(repo_path).resolve()
+        root = Path(workspace_root)
+        return next((e.alias for e in self.repos if (root / e.path).resolve() == target), None)
+
     # ------------------------------------------------------------------
     # Mutation helpers
     # ------------------------------------------------------------------
@@ -422,26 +453,51 @@ class WorkspaceConfig:
 # ---------------------------------------------------------------------------
 
 
-def find_workspace_root(start: Path | None = None) -> Path | None:
+def find_workspace_root(start: Path | None = None, *, any_repo: bool = False) -> Path | None:
     """Walk up from *start* (default: cwd) looking for ``.repowise-workspace.yaml``.
 
     Returns the directory containing the file, or ``None`` if not found.
     Stops at the filesystem root, or at the directory named by the
     ``REPOWISE_WORKSPACE_CEILING`` environment variable: the ceiling
     directory itself is still checked, but the walk does not ascend past it.
+
+    A git repository of its own wins over a workspace above it: when the
+    nearest enclosing git root sits below the workspace root and is not one
+    of its members, *start* belongs to that repository and this returns
+    ``None``. A member, a git repo holding members, or a directory under the
+    workspace root's own git checkout, still resolves to the workspace.
+    ``any_repo=True`` skips that rule, for commands that manage the
+    workspace itself (adding the repo you stand in, for one).
     """
     ceiling = os.environ.get(WORKSPACE_CEILING_ENV_VAR)
     ceiling_dir = Path(ceiling).resolve() if ceiling else None
     current = (start or Path.cwd()).resolve()
+    git_root: Path | None = None
     while True:
         if (current / WORKSPACE_CONFIG_FILENAME).is_file():
-            return current
+            return current if any_repo or _owns_git_root(current, git_root) else None
+        if git_root is None and (current / ".git").exists():
+            git_root = current
         if ceiling_dir is not None and current == ceiling_dir:
             return None  # ceiling: the directory itself was checked
         parent = current.parent
         if parent == current:
             return None  # reached filesystem root
         current = parent
+
+
+def _owns_git_root(ws_root: Path, git_root: Path | None) -> bool:
+    """Whether the workspace at *ws_root* covers the nearest *git_root* below it."""
+    if git_root is None or git_root == ws_root:
+        return True
+    try:
+        config = WorkspaceConfig.load(ws_root)
+    except Exception:  # any broken config: callers report it as before
+        return True
+    # The git root is a member, or a monorepo whose subfolders are members.
+    return any(
+        (ws_root / e.path).resolve().is_relative_to(git_root) for e in config.repos
+    )
 
 
 def ensure_workspace_data_dir(workspace_root: Path) -> Path:

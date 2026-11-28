@@ -115,25 +115,70 @@ def _load_queue_counts(repo_path: object) -> dict[str, Any] | None:
         return None
 
 
-def _load_short_history(repo_path: object) -> set[str]:
-    """Files whose recorded history is too thin to count; empty when the store cannot answer."""
+def _read_beside_score(repo_path: object, read: Any, empty: Any) -> Any:
+    """``read(session, repo_id)`` off the index; *empty* when the store cannot answer."""
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.cli.helpers import repo_index_session
-    from repowise.core.persistence.crud import get_short_history_paths
 
-    async def _do() -> set[str]:
+    async def _do() -> Any:
         async with repo_index_session(Path(str(repo_path))) as opened:
             if opened is None:
-                return set()
-            session, repo_id = opened
-            return await get_short_history_paths(session, repo_id)
+                return empty
+            return await read(*opened)
 
     try:
         return run_async(_do())
     except (SQLAlchemyError, OSError):
         # A marker beside the score, never a reason to fail the report.
-        return set()
+        return empty
+
+
+def _load_short_history(repo_path: object) -> set[str]:
+    """Files whose recorded history is too thin to count; empty when the store cannot answer."""
+    from repowise.core.persistence.crud import get_short_history_paths
+
+    return _read_beside_score(repo_path, get_short_history_paths, set())
+
+
+def _load_stored_analyzer_version(repo_path: object) -> int | None:
+    """The analyzer version the stored scores were snapshotted under; ``None`` if unrecorded."""
+    from repowise.core.persistence.crud import get_latest_snapshot_analyzer_version
+
+    return _read_beside_score(repo_path, get_latest_snapshot_analyzer_version, None)
+
+
+def _load_measured_costs(repo_path: object) -> dict[str, Any] | None:
+    """The measured-cost view (``crud.measured_costs``); ``None`` without
+    ranked evidence or when the store cannot answer.
+
+    Best effort like the performance headline: the view sits beside the
+    report and never fails it.
+    """
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud import measured_costs
+
+    async def _do() -> Any:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
+                return None
+            return await measured_costs(*opened)
+
+    try:
+        return run_async(_do())
+    except Exception:
+        return None
+
+
+def _load_evidence_freshness(repo_path: object) -> dict[str, Any] | None:
+    """The stored evidence freshness block; ``None`` when the store cannot answer.
+    Best effort, like the measured-cost view beside it."""
+    from repowise.cli.commands._evidence_freshness import stored_freshness
+
+    try:
+        return stored_freshness(Path(str(repo_path)))
+    except Exception:
+        return None
 
 
 def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str]] | None:

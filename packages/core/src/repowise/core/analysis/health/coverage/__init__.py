@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .apex import parse_apex, parse_apex_contexts
 from .clover import parse_clover
 from .cobertura import parse_cobertura
 from .contexts import (
@@ -31,10 +32,19 @@ from .discovery import (
     expand_report_args,
     expand_report_patterns,
     normalize_report_path,
+    oldest_report_time,
+    prefix_hint,
+    report_origin_dir,
     resolve_reports,
     resolve_test_reports,
+    suggest_prefixes,
 )
-from .freshness import FreshnessStatus, coverage_freshness
+from .freshness import (
+    FreshnessStatus,
+    coverage_freshness,
+    live_head_commit,
+    measurement_commit,
+)
 from .goprofile import parse_go_coverprofile
 from .jacoco import parse_jacoco
 from .lcov import parse_lcov
@@ -74,9 +84,14 @@ __all__ = [
     "expand_report_patterns",
     "file_coverage",
     "is_test_file",
+    "live_head_commit",
+    "measurement_commit",
     "measurement_ref",
     "normalize_report_path",
+    "oldest_report_time",
     "parse",
+    "parse_apex",
+    "parse_apex_contexts",
     "parse_clover",
     "parse_cobertura",
     "parse_contexts_file",
@@ -86,6 +101,9 @@ __all__ = [
     "parse_lcov",
     "parse_lcov_contexts",
     "parse_repowise_json",
+    "prefix_hint",
+    "report_origin_dir",
     "resolve_reports",
     "resolve_test_reports",
+    "suggest_prefixes",
 ]

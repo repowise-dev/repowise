@@ -175,11 +175,7 @@ def _add_csharp_extension_edges(
 
 class _AspNetHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        aspnet_in_stack = any(
-            token in dctx.stack_lower
-            for token in ("aspnet", "asp.net", "aspnetcore", "asp.net core")
-        )
-        return aspnet_in_stack or _has_aspnet_imports(dctx.parsed_files)
+        return dctx.uses("ASP.NET Core") or _has_aspnet_imports(dctx.parsed_files)
 
     def add_edges(
         self,

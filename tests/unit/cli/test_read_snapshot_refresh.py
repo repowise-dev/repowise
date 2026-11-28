@@ -40,13 +40,13 @@ def test_index_writes_and_update_restores_the_snapshots(tmp_path: Path) -> None:
     (repo / ".repowise").mkdir()
 
     asyncio.run(index_repo_full(repo))
-    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts"]
+    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts", "test_masks"]
     counts = _payload(repo, "fix_first_counts")
 
     with sqlite3.connect(repo / ".repowise" / "wiki.db") as db:
         db.execute("DELETE FROM read_snapshots")
     refresh_read_snapshots(repo)
-    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts"]
+    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts", "test_masks"]
     # The restored item counts are the ones the index stored.
     assert _payload(repo, "fix_first_counts") == counts
 

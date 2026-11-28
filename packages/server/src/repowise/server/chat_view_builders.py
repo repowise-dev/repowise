@@ -475,7 +475,7 @@ def dead_code_by_kind_view(artifact: ViewArtifact, options: Mapping[str, Any]) -
 def risk_hotspots_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     hotspots = artifact.data.get("global_hotspots")
     if not isinstance(hotspots, list) or not hotspots:
-        raise ViewError("this result has no global hotspots")
+        raise ViewError('this result has no global hotspots; call get_risk with include=["hotspots"]')
     usable = [h for h in hotspots if isinstance(h, Mapping) and h.get("file_path")]
     shown = usable[: _limit(options, cap=100)]
     rows = [
@@ -484,9 +484,12 @@ def risk_hotspots_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> di
     ]
     total = artifact.data.get("global_hotspots_total")
     total = max(total, len(usable)) if isinstance(total, int) else len(usable)
+    # The rows share one window; name it so the counts never read as 90-day churn.
+    window = next((h["window"] for h in shown if h.get("window")), None)
+    over = f" in the last {window}" if window else ""
     return _chart(
         title="Bug fixes on top hotspots",
-        summary=f"Bug-fix commits on {len(rows)} hotspot files.",
+        summary=f"Bug-fix commits{over} on {len(rows)} hotspot files.",
         basis=_basis("measured", "git history"),
         x=("file", "File"),
         series=[("fix_count", "Bug-fix commits")],

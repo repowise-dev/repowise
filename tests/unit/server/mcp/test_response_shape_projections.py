@@ -105,8 +105,7 @@ def test_a_card_that_disagrees_with_its_key_keeps_its_target():
     assert targets["alias"]["target"] == "src/a.py"
 
 
-def test_the_restore_hint_still_names_both_recovery_routes():
-    """The CLI route is also in the omission marker; the ``get_symbol`` route
-    is only here, and it is how a shell-less client recovers."""
-    assert "repowise expand" in _RESTORE_HINT
-    assert 'get_symbol("repowise#<ref>"' in _RESTORE_HINT
+def test_the_restore_hint_leads_with_the_mcp_route():
+    """A client reading the hint has the MCP tools and may have no shell."""
+    assert _RESTORE_HINT.startswith('get_symbol("repowise#<ref>"')
+    assert "repowise expand <ref>" in _RESTORE_HINT

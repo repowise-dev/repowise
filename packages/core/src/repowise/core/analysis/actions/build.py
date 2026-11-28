@@ -21,7 +21,8 @@ Row shapes (the field names are the SQL columns):
     ``file_path``, ``fix_sha``, ``committed_at``, ``shape_kind``, ``attribution``.
 ``health_findings``
     ``file_path``, ``biomarker_type``, ``severity``, ``function_name``,
-    ``line_start``, ``reason``, ``health_impact``, ``status`` (absent = open).
+    ``line_start``, ``reason``, ``health_impact``, ``status`` (absent = open);
+    a lead also reads ``line_end`` and ``details_json``, which measure its function.
 ``authors``
     ``author_name``, ``author_email``, ``committed_at``: one row per commit, or
     per identity with its latest commit.
@@ -42,17 +43,24 @@ Row shapes (the field names are the SQL columns):
     ``file_path``, ``kind``, ``target``, ``raw``, ``line_number``, ``reason``,
     ``confidence``; ``known_paths`` is every path the repository's history held.
 ``dead_code``
-    ``id``, ``file_path``, ``symbol_name``, ``lines``, ``kind``,
-    ``safe_to_delete`` (the stored verdict), ``status`` (absent = open).
+    ``id``, ``file_path``, ``symbol_name``, ``lines``, ``kind``, ``confidence``,
+    ``safe_to_delete``, ``status`` (absent = open); in a workspace, rows from
+    ``serve_findings`` so the cross-repo cut applies. Readiness is re-derived
+    (``dead_code.serving.is_safe``), never the stored flag alone.
 ``decisions``
     One mapping: ``stale_decisions`` (rows with ``id``, ``title``) and
     ``summary`` (``proposed``, ``active`` counts).
 ``coverage``
     One mapping: ``files_measured``, ``ingested_at``, ``ingested_commit_sha``,
     ``partial``.
+``runtime``
+    One mapping: ``runs`` (stored evidence runs), ``ingested_at`` and
+    ``commit_sha`` of the newest, and ``targets`` (the workload classes the
+    index holds something to run for).
 ``test_map``
     One mapping of path to ``total`` (test files that reach it in the code
-    graph) and ``via`` (the walk), for :func:`reach_paths`; see
+    graph) and ``via`` (the walk, or ``mocked-only`` with a total of 0 when
+    only tests replacing the file reach it), for :func:`reach_paths`; see
     ``repowise.core.analysis.test_reachability.any_tests_reaching``.
 """
 
@@ -66,13 +74,17 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
+from repowise.core.analysis.dead_code.serving import is_safe
 from repowise.core.analysis.finding_registry import excluded_types, is_served
+from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.analysis.health.fix_first import build_fix_first
-from repowise.core.analysis.health.models import primary_finding, split_by_origin
+from repowise.core.analysis.health.models import lead_and_worth, split_by_origin
 from repowise.core.analysis.health.queue.eligibility import perf_confident_verdict
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
+from repowise.core.analysis.owners import people_resolver
 from repowise.core.author_identity import author_identity_key
+from repowise.core.test_paths import is_test_related_path
 
 from .context import WEEK, build_context
 from .facts import (
@@ -84,6 +96,7 @@ from .facts import (
     LeadFinding,
     RecentFinding,
     RepoFacts,
+    RuntimeState,
     SecretFacts,
 )
 from .rules.code import FIX_FIRST_ACTIONS, is_fragile
@@ -121,17 +134,12 @@ def _open(row: Any) -> bool:
     return (field(row, "status") or "open") == "open"
 
 
-def _is_test(path: str, files: Mapping[str, FileFacts]) -> bool:
-    f = files.get(path)
-    return f is not None and f.is_test
-
-
-def _test_path(path: str | None) -> bool:
-    lowered = (path or "").lower()
-    return any(
-        seg in lowered
-        for seg in ("/tests/", "/test/", "__tests__", "/fixtures/", ".test.", ".spec.", "_test.")
-    ) or lowered.startswith(("tests/", "test/"))
+def _is_test(path: str | None, files: Mapping[str, FileFacts]) -> bool:
+    """The stored test flag, or the shared classifier for a file the index lacks."""
+    f = files.get(path or "")
+    if f is not None:
+        return f.is_test
+    return bool(path) and is_test_related_path(path)
 
 
 # --- files --------------------------------------------------------------------
@@ -215,7 +223,7 @@ def with_leads(files: Mapping[str, FileFacts], findings: Rows) -> dict[str, File
     out = dict(files)
     for path, found in by_path.items():
         shape, _history = split_by_origin(found)
-        lead = primary_finding(shape)
+        lead, worth = lead_and_worth(shape)
         if lead is not None:
             out[path] = replace(
                 out[path],
@@ -225,6 +233,7 @@ def with_leads(files: Mapping[str, FileFacts], findings: Rows) -> dict[str, File
                     function=field(lead, "function_name"),
                     line=field(lead, "line_start"),
                     reason=field(lead, "reason") or "",
+                    worth=worth,
                 ),
             )
     return out
@@ -267,24 +276,41 @@ def with_test_reach(
 
 
 def build_authors(rows: Rows, *, since: datetime | None) -> dict[str, Any]:
+    """Each person's last commit and how many were active since *since*.
+
+    People come from the shared resolver, so one person's emails and names are
+    one author. ``author_last_commit`` is keyed on every email folded into a
+    person, so a file owner's stored email finds them under any of them.
+    """
+    rows = list(rows)
+    resolve = people_resolver(commit_rows=rows)
     last: dict[str, datetime] = {}
     active: set[str] = set()
     for r in rows:
         latest = _when(field(r, "committed_at"))
         if latest is None:
             continue
-        key = author_identity_key(field(r, "author_name"), field(r, "author_email"))
+        key = resolve(field(r, "author_name"), field(r, "author_email"))
+        if not key:
+            continue
         if key not in last or latest > last[key]:
             last[key] = latest
         if since is not None and latest >= since:
             active.add(key)
-    return {"author_last_commit": last, "active_authors_90d": len(active)}
+    # A name-only person is found the way ``owner_key`` spells them.
+    by_email = {
+        email: when
+        for key, when in last.items()
+        for email in resolve.aliases(key)[1] or [key.removeprefix("name:").strip().lower()]
+    }
+    return {"author_last_commit": by_email, "active_authors_90d": len(active)}
 
 
 #: Markers that read a measured coverage report, so "worsened" is coverage the
 #: change lost. ``untested_hotspot`` is left out: without a report it fires on a
-#: missing test file, which no commit's lines decide.
-COVERAGE_MARKERS = frozenset({"coverage_gap", "coverage_gradient"})
+#: missing test file, which no commit's lines decide. ``untested_complexity``
+#: reaches the serious severities only on measured coverage.
+COVERAGE_MARKERS = frozenset({"coverage_gap", "coverage_gradient", "untested_complexity"})
 
 #: Commit-health rows a loader reads: the authored kinds, at a severity that
 #: counts, or a performance marker of any severity (its proof is the cause's
@@ -453,7 +479,6 @@ def build_secrets(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
             and field(r, "severity") == "high"
             and field(r, "kind") in kinds
             and not _is_test(field(r, "file_path"), files)
-            and not _test_path(field(r, "file_path"))
         )
     }
 
@@ -490,10 +515,9 @@ def build_dead(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
             )
             for r in rows
             if _open(r)
-            and field(r, "safe_to_delete")
+            and is_safe(r)
             and is_served("dead_code", field(r, "kind"), field(r, "file_path"), skipped)
             and not _is_test(field(r, "file_path"), files)
-            and not _test_path(field(r, "file_path"))
         )
     }
 
@@ -505,7 +529,6 @@ def build_decisions(summary: Mapping[str, Any]) -> dict[str, Any]:
             DecisionFacts(field(d, "id"), field(d, "title"))
             for d in summary.get("stale_decisions") or []
         ),
-        "proposed_decisions": int(counts.get("proposed") or 0),
         "accepted_decisions": int(counts.get("active") or 0),
     }
 
@@ -521,6 +544,25 @@ def build_coverage(row: Mapping[str, Any], head_sha: str | None) -> dict[str, An
     return {
         "coverage": CoverageState(
             status, _when(row.get("ingested_at")), int(count), bool(row.get("partial"))
+        )
+    }
+
+
+def build_runtime(row: Mapping[str, Any], head_sha: str | None) -> dict[str, Any]:
+    """Runtime evidence as the rules read it; fresh or stale by the one rule
+    every evidence surface uses (``coverage_freshness``)."""
+    targets = tuple(row.get("targets") or ())
+    if not row.get("runs"):
+        return {"runtime": RuntimeState("unknown", targets=targets)}
+    sha = row.get("commit_sha")
+    stale = coverage_freshness(sha, head_sha) == "stale"
+    return {
+        "runtime": RuntimeState(
+            "stale" if stale else "measured",
+            _when(row.get("ingested_at")),
+            sha,
+            int(row["runs"]),
+            targets,
         )
     }
 
@@ -545,6 +587,7 @@ def build_repo_facts(
     dead_code: Rows | None = None,
     decisions: Mapping[str, Any] | None = None,
     coverage: Mapping[str, Any] | None = None,
+    runtime: Mapping[str, Any] | None = None,
     test_map: Mapping[str, Any] | None = None,
     history_commits: int | None = None,
     unavailable: Mapping[str, str] | None = None,
@@ -603,6 +646,7 @@ def build_repo_facts(
     build("dead_code", dead_code, lambda rows: build_dead(rows, known_files))
     build("decisions", decisions, build_decisions)
     build("coverage", coverage, lambda row: build_coverage(row, head_sha))
+    build("runtime", runtime, lambda row: build_runtime(row, head_sha))
     values["unavailable"] = {**missing, **(unavailable or {})}
     return RepoFacts(**values)
 
@@ -624,6 +668,7 @@ __all__ = [
     "build_fix_first_store",
     "build_recent",
     "build_repo_facts",
+    "build_runtime",
     "build_secrets",
     "lead_paths",
     "proven_performance",

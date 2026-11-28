@@ -111,7 +111,7 @@ class TestParityGoldens:
         camel = REGISTRY.camel_test_res_by_extension()
         assert set(camel) == {
             ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
-            ".hs", ".lhs", ".vb", ".m", ".mm",
+            ".hs", ".lhs", ".vb", ".m", ".mm", ".cls", ".trigger", ".apex",
         }
         assert camel[".java"].pattern == r"(?<=[a-z0-9])(?:Tests|Test|IT)$"
         assert camel[".scala"].pattern == r"(?<=[a-z0-9])(?:Suite|Spec|Test)$"
@@ -159,8 +159,12 @@ class TestParityGoldens:
 _FULL = {
     # astro projects its frontmatter and <script> bodies to TypeScript
     # through the same SFC pass as svelte, so its imports are ordinary ESM.
+    # Markup <script src>/<link href> are imports too, via resolvers/astro.py:
+    # a /-rooted value under the nearest public/, then /src/... from the root.
     "astro",
     "c",
+    # COPY members resolve to copybooks by stem, nearest first.
+    "cobol",
     "cpp",
     "csharp",
     # dart promoted with the tree-sitter grammar (the regex tier stays as
@@ -176,6 +180,8 @@ _FULL = {
     "java",
     "javascript",
     "kotlin",
+    # uses units resolve through .dpr in-paths and .dproj/.lpi search paths.
+    "pascal",
     # php + swift promoted after live validation (Slim, Alamofire).
     "php",
     "python",
@@ -207,6 +213,8 @@ _PARTIAL = {
     "sql",
     # source ./lib.sh + $SCRIPT_DIR / dirname idioms.
     "shell",
+    # use Foo::Bar by @INC-style suffix match; require "x.pl" by path.
+    "perl",
     # <script src>/<link href> as document-/root-relative asset paths. Partial
     # rather than full because template dialects (Django, Jinja, Go templates,
     # ERB, Handlebars) are invisible to an HTML grammar and yield nothing.
@@ -214,6 +222,9 @@ _PARTIAL = {
     # import QtQuick / import "components": module specs via the qmldir
     # index, quoted references relative to the importing file (#727).
     "qml",
+    # Ansible playbook/role wiring via the lightweight tier: real edges
+    # inside Ansible projects, nothing claimed for plain YAML config (#4397).
+    "yaml",
 }
 
 
@@ -262,7 +273,8 @@ class TestImportSupportTiers:
     def test_unknown_language_reports_none(self) -> None:
         assert REGISTRY.import_support_for("klingon") == "none"
 
-    def test_cobol_is_exempt_from_static_dead_code_claims(self) -> None:
+    def test_runtime_entered_languages_are_exempt_from_static_dead_code_claims(self) -> None:
+        # Apex models its platform entry points instead (apex_reachability).
         assert REGISTRY.dead_code_exempt_languages() == frozenset({"cobol"})
 
 
@@ -327,9 +339,9 @@ class TestDriftManifests:
     def test_code_suffixes_are_the_non_infra_code_derivation(self) -> None:
         assert REGISTRY.non_infra_code_extensions() == _CODE_SUFFIXES
         # The 32 once-missing extensions are protected now …
-        assert {".dart", ".hs", ".clj", ".erl", ".nim", ".m", ".luau"} <= _CODE_SUFFIXES
-        # … infra languages stay promotable, and the perl orphan is gone.
-        assert {".sh", ".bash", ".zsh", ".tf", ".hcl", ".pl"} & _CODE_SUFFIXES == set()
+        assert {".dart", ".hs", ".clj", ".erl", ".nim", ".m", ".luau", ".pl", ".pm"} <= _CODE_SUFFIXES
+        # … and infra languages stay promotable.
+        assert {".sh", ".bash", ".zsh", ".tf", ".hcl"} & _CODE_SUFFIXES == set()
 
     def test_non_code_languages_are_config_plus_infra_plus_aliases(self) -> None:
         assert (

@@ -21,7 +21,7 @@ def runner():
 
 def test_generate_state_preserves_sync_commit_when_head_is_unavailable():
     state = {"last_sync_commit": "known-good-commit"}
-    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0)
+    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0, generated_pages=[])
     provider = SimpleNamespace(provider_name="mock", model_name="mock")
 
     with (
@@ -157,9 +157,14 @@ class TestErrorCases:
         the test below covers.
         """
         self._clear_provider_env_impl(monkeypatch)
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "No model configured" in result.output
+        # Built from code: `generate` is the model step, not the fast-to-full one.
+        out = " ".join(result.output.split())
+        assert "run repowise generate to have a model write it" in out
+        assert "update --full" not in out
 
     def test_init_explicit_provider_still_errors(self, runner, tmp_path, monkeypatch):
         """A named --provider that cannot resolve is a real error, not a fallback.
@@ -179,6 +184,7 @@ class TestErrorCases:
         """
         self._clear_provider_env_impl(monkeypatch)
         monkeypatch.setenv("REPOWISE_PROVIDER", "")
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "Unknown provider" not in result.output
@@ -437,6 +443,14 @@ class TestBuildRepoGraph:
             return real_parse(self, fi, source)
 
         monkeypatch.setattr(ASTParser, "parse_file", _maybe_raise)
+        # The patch above cannot reach a spawned parse worker, so run the
+        # pool's in-process fallback, where it applies.
+        from repowise.core.pipeline.phases import ingestion as ing
+
+        def _no_pool(*_args, **_kwargs):
+            raise OSError("no pool in this test")
+
+        monkeypatch.setattr(ing, "run_with_deadline", _no_pool)
 
         printed: list[str] = []
 
@@ -467,7 +481,7 @@ class TestBuildRepoGraph:
         (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
 
         monkeypatch.setattr(
-            "repowise.core.generation.editor_files.tech_stack.detect_tech_stack",
+            "repowise.core.ingestion.tech_stack.detect_tech_stack",
             lambda _p: [],
         )
 

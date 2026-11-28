@@ -21,8 +21,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING
 
 from repowise.core.ingestion.framework_routes import GroupMatch
+
+if TYPE_CHECKING:
+    from ..calls import FileStrings
 
 # A ``prefix="..."`` / ``prefix='...'`` keyword argument inside a constructor call.
 _PREFIX_KW_RE = re.compile(r"""prefix\s*=\s*['"]([^'"]+)['"]""")
@@ -145,3 +149,74 @@ def group_prefixes(groups: Iterable[GroupMatch]) -> dict[str, str]:
     for var in edges:
         resolve(var, frozenset())
     return resolved
+
+
+# Module mounts nest a few levels deep; a longer chain is a cycle.
+_MAX_MODULE_DEPTH = 16
+
+
+def add_mounts(out: dict[str, str], entries: Mapping[str, str]) -> None:
+    """Add *entries* to one file's mount map; a key the file already gave a
+    different value becomes unreadable, as two files disagreeing does in
+    :func:`merge_mount_maps`."""
+    for key, value in entries.items():
+        out[key] = _UNREADABLE if key in out and out[key] != value else value
+
+
+def declare_alias_mount(namespace: str, spec: str) -> dict[str, str]:
+    """Record that a module was mounted through a spec this cannot resolve
+    (``@/routes``, a bundler or tsconfig alias), by its last path segment."""
+    return declare_mount(f"{namespace}-alias:{spec.rstrip('/').rsplit('/', 1)[-1]}", "")
+
+
+def alias_mounted(mounts: Mapping[str, str], namespace: str, module: str) -> bool:
+    """Whether a module named like *module* was mounted through an unresolved
+    alias, so where it is served cannot be told from here."""
+    name = module.rsplit("/", 1)[-1]
+    return declared_mount(mounts, f"{namespace}-alias:{name}")[0]
+
+
+def declare_module_mount(
+    namespace: str, module: str, prefix: str | None, parent: str
+) -> dict[str, str]:
+    """The mount entries saying *module* is served at *prefix* under *parent*.
+
+    For frameworks that mount a whole module from another (a hapi plugin, a
+    Koa router module): *parent* is the mounting module, itself perhaps
+    mounted. A module mounted at two prefixes or under two parents reads as
+    unreadable, so its routes are left out rather than placed at one guess.
+    """
+    return {
+        **declare_mount(f"{namespace}:{module}", prefix),
+        **declare_mount(f"{namespace}-in:{module}", parent),
+    }
+
+
+def module_prefix(
+    mounts: Mapping[str, str], namespace: str, module: str, depth: int = 0
+) -> tuple[bool, str | None]:
+    """``(mounted, full prefix)`` of *module*; the prefix is None when unreadable."""
+    declared, value = declared_mount(mounts, f"{namespace}:{module}")
+    if not declared:
+        return False, ""
+    has_parent, parent = declared_mount(mounts, f"{namespace}-in:{module}")
+    if value is None or (has_parent and parent is None) or depth > _MAX_MODULE_DEPTH:
+        return True, None
+    if not parent:
+        return True, value
+    _mounted, outer = module_prefix(mounts, namespace, parent, depth + 1)
+    return True, None if outer is None else compose_prefix(outer, value)
+
+
+def prefix_text(strings: FileStrings | None, expr: str | None) -> str | None:
+    """A prefix or path expression read through the file's constants.
+
+    "" for no expression; None for an unreadable one (None) or one that does
+    not resolve to a whole string.
+    """
+    if expr is None:
+        return None
+    if not expr:
+        return ""
+    text = strings.text(expr) if strings is not None else None
+    return None if text is None or "${" in text else text

@@ -129,8 +129,8 @@ async def test_degraded_selects_only_symbols_the_question_named(tmp_path):
     assert payload["citations"] == []
     # A hint is still given — it just cannot be a body hint, because no body was
     # served. Nothing here may name symbol_bodies or tell the caller to read one.
-    assert "symbol_bodies" not in payload["next_action_hint"]
-    assert "body" not in payload["next_action_hint"]
+    assert "symbol_bodies" not in payload.get("next_action_hint", "")
+    assert "body" not in payload.get("next_action_hint", "")
 
 
 async def test_degraded_keeps_the_truncation_contract(tmp_path):
@@ -508,11 +508,16 @@ async def test_degraded_carries_the_candidate_justifications(tmp_path):
 
 
 async def test_degraded_names_where_to_start_when_it_has_no_body(tmp_path):
-    """A payload with no body still owes the caller one next step."""
+    """A payload with no body still owes the caller one next step: the projection
+    names the top-ranked file to verify."""
+    from repowise.server.mcp_server.tool_answer.projection import project_answer_payload
+
     ctx = _tree(tmp_path)
     payload = await _degraded(ctx, _hits(end_line=6), {"Blueprint"})
+    out = project_answer_payload(payload, question="where is Blueprint registered")
 
-    assert payload["next_action_hint"].startswith("Start from src/flask/app.py")
+    step = out.get("next_action_hint") or out["answer"]
+    assert "Verify by reading" in step and "src/flask/app.py" in step
 
 
 async def test_degraded_body_hint_still_wins_over_the_candidate_hint(tmp_path):
@@ -676,9 +681,8 @@ async def test_degraded_does_not_ship_the_excerpt_twice(tmp_path):
     hits[0]["excerpt"] = "x" * 1500
     payload = await _degraded(ctx, hits, {"Blueprint"})
 
-    external = project_answer_payload(
-        payload, question="what is Blueprint", include=["evidence"]
-    )
+    keyed = {**payload, "degraded": "synthesis-failed"}
+    external = project_answer_payload(keyed, question="what is Blueprint", include=["evidence"])
     assert external["best_guesses"][0]["excerpt"] == "x" * 1500
     # The default low shape serves the guess without its excerpt.
     compact = project_answer_payload(payload, question="what is Blueprint")
@@ -1009,3 +1013,159 @@ async def test_an_unranked_duplicate_does_not_hide_its_files_rank(tmp_path, monk
         "src/other.ts",
         "src/hub.ts",
     ]
+
+
+def test_a_body_the_question_named_grades_medium_over_a_weak_retrieval():
+    """The served body was found by exact name, not by the ranking that rated weak.
+
+    A body outside the hybrid top still grades low, as any lead does, and only
+    the no-provider reply lifts: a failed provider can still be retried.
+    """
+    assert _degraded_confidence("no-llm-provider", "weak", body_answered=True) == "medium"
+    assert (
+        _degraded_confidence("no-llm-provider", "weak", lead_outside_top=True, body_answered=True)
+        == "low"
+    )
+    assert _degraded_confidence("synthesis-failed", "weak", body_answered=True) == "low"
+
+
+async def test_a_weak_retrieval_with_the_named_body_served_grades_medium(tmp_path):
+    """Two near-tied hits rate weak; the served `Flask` body still answers the question."""
+    ctx = _tree(tmp_path)
+    hits = _hits(end_line=6)
+    hits.append({**hits[0], "target_path": "src/flask/other.py", "_anchor_symbols": []})
+    hits[1]["score"] = hits[0]["score"] - 0.1
+
+    payload = await _degraded(ctx, hits, {"Flask"})
+
+    assert payload["retrieval_quality"] == "weak"
+    assert payload["grounding"] == "symbol_body"
+    assert payload["confidence"] == "medium"
+    # The hint points at the body, not at a fresh search.
+    assert "symbol_bodies" in payload["_meta"]["hint"]
+
+
+async def test_a_weak_retrieval_without_a_named_body_stays_low(tmp_path):
+    """The control: same retrieval, a question naming nothing indexed."""
+    ctx = _tree(tmp_path)
+    hits = _hits(end_line=6)
+    hits.append({**hits[0], "target_path": "src/flask/other.py", "_anchor_symbols": []})
+    hits[1]["score"] = hits[0]["score"] - 0.1
+
+    payload = await _degraded(ctx, hits, {"Blueprint"})
+
+    assert payload["retrieval_quality"] == "weak"
+    assert "symbol_bodies" not in payload
+    assert payload["confidence"] == "low"
+
+
+def _method_tree(tmp_path) -> SimpleNamespace:
+    src = tmp_path / "src" / "flask"
+    src.mkdir(parents=True)
+    (src / "app.py").write_text(
+        "class Flask:\n    def run(self):\n        start = 1\n        return start\n",
+        encoding="utf-8",
+    )
+    return SimpleNamespace(path=str(tmp_path), session_factory=None)
+
+
+def _method_hits() -> list[dict]:
+    method = {
+        "name": "run",
+        "kind": "method",
+        "parent_name": "Flask",
+        "start_line": 2,
+        "end_line": 4,
+    }
+    top = {
+        "target_path": "src/flask/app.py",
+        "title": "app",
+        "summary": "the app module",
+        "score": 4.0,
+        "_anchor_symbols": [method],
+    }
+    return [top, {**top, "target_path": "src/flask/other.py", "score": 3.9, "_anchor_symbols": []}]
+
+
+async def test_a_method_named_with_its_class_lifts_like_its_selection(tmp_path):
+    """The class word is the method's owner, not a word its body leaves out."""
+    payload = await _degraded(
+        _method_tree(tmp_path), _method_hits(), {"run"}, question="what does Flask run do"
+    )
+
+    assert payload["grounding"] == "symbol_body"
+    assert payload["retrieval_quality"] == "weak"
+    assert payload["confidence"] == "medium"
+
+
+def test_only_the_body_the_reply_leads_with_can_lift():
+    """A named body further down does not lift a reply that leads with another."""
+    from repowise.server.mcp_server.tool_answer.degraded import _lead_answers_by_name
+
+    bodies = [
+        {"path": "a.py", "name": "helper", "lines": [1, 2], "source": "def helper(): pass"},
+        {"path": "b.py", "name": "run", "lines": [1, 2], "source": "def run(): pass"},
+    ]
+    assert not _lead_answers_by_name("what does run do", {"run"}, bodies, [], [])
+    assert _lead_answers_by_name("what does run do", {"run"}, bodies[1:], [], [])
+
+
+def test_the_owner_is_read_from_the_definition_that_was_served():
+    """Two same-named methods in one file: the lead's own class counts as named."""
+    from repowise.server.mcp_server.tool_answer.degraded import _lead_answers_by_name
+
+    lead = {"path": "a.py", "name": "run", "lines": [10, 12], "source": "def run(self): pass"}
+    cands = [
+        (0, 0, 2, "a.py", {"name": "run", "parent_name": "Other"}),
+        (0, 0, 10, "a.py", {"name": "run", "parent_name": "Flask"}),
+    ]
+    hits = [{"target_path": "a.py", "title": "Flask Other", "summary": "Flask Other"}]
+    assert _lead_answers_by_name("what does Flask run do", {"run"}, [lead], cands, hits)
+    assert not _lead_answers_by_name("what does Other run do", {"run"}, [lead], cands, hits)
+
+
+async def test_a_body_that_does_not_lift_keeps_the_refine_hint(tmp_path):
+    """Hint and grade agree: a body lead outside the hybrid top stays low, refine-search."""
+    hits = _hits(end_line=6)
+    hits[0]["_hybrid_rank"] = 7
+    hits.append({**hits[0], "target_path": "src/flask/other.py", "_anchor_symbols": []})
+    hits[1]["score"] = hits[0]["score"] - 0.1
+
+    payload = await _degraded(_tree(tmp_path), hits, {"Flask"})
+
+    assert payload["retrieval_quality"] == "weak"
+    assert payload["confidence"] == "low"
+    assert "retrieval was weak" in payload["_meta"]["hint"]
+
+
+@pytest.mark.parametrize(("lifted", "expected"), [(True, "low"), (False, "medium")])
+async def test_a_call_path_that_replaces_the_lifting_body_drops_its_lift(
+    monkeypatch, lifted: bool, expected: str
+):
+    """The hops replace the body, so a grade only the body earned goes with it."""
+    from repowise.server.mcp_server.tool_answer import degraded
+
+    async def _hops(*_a, **_k):
+        return "out of run src/flask/app.py:2", ["run -> start"]
+
+    async def _no_note(*_a, **_k):
+        return {}
+
+    monkeypatch.setattr(degraded, "_call_path_from_named", _hops)
+    monkeypatch.setattr(degraded, "_keyless_note_meta", _no_note)
+    payload = {
+        "confidence": "medium",
+        "degraded": "no-llm-provider",
+        "retrieval_quality": "weak",
+        "symbol_bodies": [{"name": "run", "path": "src/flask/app.py", "lines": [2, 4]}],
+        "note": "",
+        "_meta": {},
+    }
+
+    await degraded._attach_call_path(
+        payload, "how does run call start", {"run"}, payload["symbol_bodies"], None, None, None,
+        lifted_by_body=lifted,
+    )
+
+    assert payload["call_path"] == ["run -> start"]
+    assert payload["confidence"] == expected

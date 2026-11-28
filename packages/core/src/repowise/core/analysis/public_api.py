@@ -27,6 +27,7 @@ from repowise.core.ingestion.languages.python_modules import (
     dotted_module_for,
 )
 from repowise.core.ingestion.package_roots import module_for, package_roots_from_paths
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 from repowise.core.pyparse import parse_python
 from repowise.core.workspace.code_api import dunder_all
 
@@ -314,7 +315,11 @@ class _Resolver:
 
 
 def compute_public_api(
-    material: Iterable[str], parsed: Mapping[str, Any], package_roots: set[str]
+    material: Iterable[str],
+    parsed: Mapping[str, Any],
+    package_roots: set[str],
+    *,
+    resolver: _Resolver | None = None,
 ) -> list[dict]:
     """``[{name, id, kind, file, signature, doc}]`` a page's files publish, entry order.
 
@@ -322,8 +327,14 @@ def compute_public_api(
     again with ``alias_of`` and no excerpt. Ceiling: ``export { default as X }``,
     computed ``__all__`` values, computed lazy-export maps, and an ``import``
     followed by a bare ``export { X }`` are not followed.
+
+    *resolver*, built over the same *parsed*, saves rebuilding the module index
+    and re-walking re-exports on every call. Sharing it is exact: a walk that
+    met a cycle is never memoized, so a memoized file reaches no file a later
+    walk could still be visiting.
     """
-    resolver = _Resolver(parsed)
+    if resolver is None:
+        resolver = _Resolver(parsed)
     first_name: dict[tuple[str, str], str] = {}  # (file, symbol) -> first public name
     seen: set[tuple[str, str, str]] = set()
     api: list[dict] = []
@@ -416,10 +427,39 @@ def _sibling_owner(
     for sibling in package_files.get(path, ()):
         if sibling == path:
             continue
-        owner = out.get(f"{sibling}::{parent_name}")
+        owner = out.get(make_symbol_id(sibling, parent_name))
         if owner is not None:
             return path if path in roots else owner
     return None
+
+
+def _enclosing_ruby_owner(
+    sym: Any, out: Mapping[str, str], containers: Sequence[Any]
+) -> str | None:
+    """The export root of the Ruby module or class that encloses *sym* in its file.
+
+    A Ruby symbol's id names only its immediate parent, so a method of
+    ``Mygem::Client`` is ``<file>::Client::get`` while the class is
+    ``<file>::Mygem::Client``, and ``<file>::<parent>`` is not a symbol. The
+    enclosing container is found by name and extent instead: the innermost one
+    whose lines hold *sym*, which also tells two ``Client`` classes in different
+    namespaces apart.
+    """
+    parent = (sym.parent_name or "").rsplit("::", 1)[-1]
+    best = None
+    for container in containers:
+        if (
+            container.name == parent
+            and container is not sym
+            and container.start_line <= sym.start_line
+            and container.end_line >= sym.end_line
+            and (
+                best is None
+                or container.end_line - container.start_line < best.end_line - best.start_line
+            )
+        ):
+            best = container
+    return out.get(best.id) if best is not None else None
 
 
 def _local_id(sym: Any, path: str) -> str:
@@ -471,7 +511,7 @@ def _publish_partial_fragments(
                 continue
             local = _local_id(sym, path)
             for other in sorted(others):
-                twin = next((s for s in parsed[other].symbols if s.id == f"{other}::{local}"), None)
+                twin = next((s for s in parsed[other].symbols if s.id == make_symbol_id(other, local)), None)
                 if twin is not None and "partial" in twin.modifiers and twin.id in out:
                     out[sym.id] = path
                     break
@@ -508,8 +548,19 @@ def public_symbols(
         _publish_partial_fragments(parsed, fragments, out)
 
     for path, pf in parsed.items():
-        for sym in pf.symbols:
-            owner = out.get(f"{path}::{sym.parent_name}") if sym.parent_name else None
+        symbols: Sequence[Any] = pf.symbols
+        containers: list[Any] = []
+        if pf.file_info.language == "ruby":
+            # Parents before their members, so a nested class is exported
+            # before the methods it holds are looked up.
+            symbols = sorted(pf.symbols, key=lambda s: (s.start_line, -s.end_line))
+            containers = [s for s in symbols if s.kind in ("class", "module")]
+        for sym in symbols:
+            owner = None
+            if containers and sym.parent_name:
+                owner = _enclosing_ruby_owner(sym, out, containers)
+            if owner is None and sym.parent_name:
+                owner = out.get(make_symbol_id(path, sym.parent_name))
             if owner is None and sym.parent_name and package_files:
                 owner = _sibling_owner(path, sym.parent_name, out, root_set, package_files)
             if owner is not None and sym.visibility == "public":
@@ -533,6 +584,39 @@ def _partial_fragments(graph: Any, parsed: Mapping[str, Any]) -> dict[str, set[s
     return out
 
 
+def _ruby_gem_files(graph: Any, parsed: Mapping[str, Any]) -> set[str]:
+    """The files a gem publishes: its entry and what that requires inside its own ``lib``.
+
+    The Ruby warmup stamps each gem's ``lib/<name>.rb`` with the ``lib`` root it
+    sits in (``ruby_gem_lib``). Requires are not resolved at warmup time, so the
+    closure is taken here over ``Import.resolved_file``. A file nothing in the
+    gem requires is not part of its surface, nor is a test file or anything
+    another gem's ``lib`` holds.
+    """
+    out: set[str] = set()
+    for entry in sorted(parsed):
+        lib_root = graph.nodes.get(entry, {}).get("ruby_gem_lib")
+        if not lib_root:
+            continue
+        prefix = f"{lib_root}/"
+        reached = {entry}
+        pending = [entry]
+        while pending:
+            for imp in parsed[pending.pop()].imports:
+                target = imp.resolved_file
+                if (
+                    target in reached
+                    or target not in parsed
+                    or not target.startswith(prefix)
+                    or parsed[target].file_info.is_test
+                ):
+                    continue
+                reached.add(target)
+                pending.append(target)
+        out |= reached
+    return out
+
+
 def stamp_public_api(
     graph: Any,
     parsed: Mapping[str, Any],
@@ -542,6 +626,7 @@ def stamp_public_api(
     entries = {
         path for path in parsed if graph.nodes.get(path, {}).get("package_export")
     }
+    entries |= _ruby_gem_files(graph, parsed)
     exported = public_symbols(parsed, entries, package_files, _partial_fragments(graph, parsed))
     for pf in parsed.values():
         for sym in pf.symbols:
