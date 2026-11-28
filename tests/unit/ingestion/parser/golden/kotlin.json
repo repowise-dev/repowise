@@ -88,7 +88,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -108,7 +109,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -128,7 +130,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -148,7 +151,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -168,7 +172,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -188,7 +193,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -208,7 +214,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -228,7 +235,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -248,7 +256,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -268,7 +277,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -288,7 +298,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -308,7 +319,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -328,7 +340,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -348,7 +361,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -368,7 +382,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -388,7 +403,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -408,7 +424,8 @@
           "Int",
           "Int"
         ],
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -431,7 +448,8 @@
         "argument_names": [
           "x",
           null
-        ]
+        ],
+        "is_construction": false
       }
     ],
     "heritage": [],

@@ -178,7 +178,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEqual",
@@ -195,7 +196,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertTrue",
@@ -212,7 +214,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "do_work",
@@ -229,7 +232,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -561,7 +565,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -1428,7 +1433,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "select",
@@ -1445,7 +1451,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "run",
@@ -1462,7 +1469,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1479,7 +1487,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1496,7 +1505,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "sleep",
@@ -1513,7 +1523,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1530,7 +1541,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "execute",
@@ -1547,7 +1559,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "scalars",
@@ -1568,7 +1581,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "process",
@@ -1585,7 +1599,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "run",
@@ -1602,7 +1617,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1619,7 +1635,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "select",
@@ -1636,7 +1653,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "where",
@@ -1657,7 +1675,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "compute",
@@ -1674,7 +1693,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "execute",
@@ -1691,7 +1711,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1712,7 +1733,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -2073,7 +2095,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Client",
@@ -2090,7 +2113,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],

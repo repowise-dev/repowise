@@ -137,7 +137,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertTrue",
@@ -154,7 +155,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertFalse",
@@ -171,7 +173,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertNotNull",
@@ -188,7 +191,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertGreaterThan",
@@ -205,7 +209,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -222,7 +227,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertNotNull",
@@ -239,7 +245,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [
@@ -763,7 +770,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -1089,7 +1097,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "array_map",
@@ -1106,7 +1115,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "file_get_contents",
@@ -1123,7 +1133,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Exception",
@@ -1140,7 +1151,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "getMessage",
@@ -1157,7 +1169,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "getMessage",
@@ -1174,7 +1187,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
