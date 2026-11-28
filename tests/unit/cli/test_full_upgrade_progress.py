@@ -81,7 +81,7 @@ def test_full_upgrade_fts_cleanup_retries_after_failure(
     indexed: list[str] = []
 
     class _FakeFts:
-        def __init__(self, _engine) -> None:
+        def __init__(self, _engine, **_kwargs) -> None:
             pass
 
         async def ensure_index(self) -> None:
@@ -113,6 +113,7 @@ def test_full_upgrade_fts_cleanup_retries_after_failure(
         asyncio.run(
             upgrade_flow._sync_authoritative_fts(
                 engine=object(),
+                repo_id="repo",
                 repo_path=tmp_path,
                 generated_pages=[page],
                 retired_page_ids=["file_page:obsolete.py"],
@@ -126,6 +127,7 @@ def test_full_upgrade_fts_cleanup_retries_after_failure(
     asyncio.run(
         upgrade_flow._sync_authoritative_fts(
             engine=object(),
+            repo_id="repo",
             repo_path=tmp_path,
             generated_pages=[page],
             retired_page_ids=[],

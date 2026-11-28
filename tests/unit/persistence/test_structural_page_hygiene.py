@@ -196,15 +196,15 @@ class TestTemplateModelNames:
 
         assert await clear_template_model_names(async_session, repo_id) == 1
 
-        assert (await async_session.get(Page, template)).model_name == ""
-        assert (await async_session.get(Page, written)).model_name == "gpt-old"
+        assert (await async_session.get(Page, (repo_id, template))).model_name == ""
+        assert (await async_session.get(Page, (repo_id, written))).model_name == "gpt-old"
 
 
 @pytest.mark.asyncio
 class TestExpiredTombstones:
     async def _tombstone(self, async_session, repo_id, path, successors=(), age_days=0):
         page_id = await _add(async_session, repo_id, "file_page", path)
-        page = await async_session.get(Page, page_id)
+        page = await async_session.get(Page, (repo_id, page_id))
         page.freshness_status = "tombstone"
         stamped = datetime.now(UTC) - timedelta(days=age_days)
         page.metadata_json = json.dumps(
@@ -229,7 +229,7 @@ class TestExpiredTombstones:
 
         await mark_tombstone_pages(async_session, repo_id, [("src/deleted.py", [])])
 
-        meta = json.loads((await async_session.get(Page, page_id)).metadata_json)
+        meta = json.loads((await async_session.get(Page, (repo_id, page_id))).metadata_json)
         assert datetime.fromisoformat(meta["tombstoned_at"]) > datetime.now(UTC) - timedelta(
             minutes=5
         )

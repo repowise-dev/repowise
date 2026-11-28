@@ -43,7 +43,7 @@ async def test_mcp_lifespan_uses_cli_database_env_var(monkeypatch):
             return None
 
     class DummyFts:
-        def __init__(self, engine) -> None:
+        def __init__(self, engine, **_kwargs) -> None:
             self.engine = engine
 
         async def ensure_index(self) -> None:

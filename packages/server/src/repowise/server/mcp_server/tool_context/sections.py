@@ -216,7 +216,8 @@ async def _parent_page_section(card: CardState) -> None:
     page = card.page
     if page is None or not page.parent_page_id:
         return
-    parent = await card.session.get(Page, page.parent_page_id)
+    # A parent is in the child's repository; the key says so.
+    parent = await card.session.get(Page, (page.repository_id, page.parent_page_id))
     if (
         parent is not None
         and parent.repository_id == card.repo_id
@@ -758,7 +759,7 @@ async def _freshness_section(card: CardState) -> None:
     file_path = card.resolved.file_path
     page = card.page
     if not page and card.resolved.target_type == "symbol" and file_path:
-        page = await card.session.get(Page, f"file_page:{file_path}")
+        page = await card.session.get(Page, (card.repo_id, f"file_page:{file_path}"))
     freshness = _page_freshness(page)
     if file_path and uncommitted_targets(
         served_root(card.query.repository, card.query.repo_root), [file_path]

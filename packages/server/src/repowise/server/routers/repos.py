@@ -411,7 +411,8 @@ async def delete_repo(
     # repo's own FTS instance when it lives in a per-repo database.
     repo_fts = getattr(app_state, "workspace_fts", {}).get(repo_id) or fts
     if repo_fts is not None:
-        await repo_fts.delete_many(page_ids)
+        # Scoped: another repository sharing the store may hold the same ids.
+        await repo_fts.delete_many(page_ids, repository_id=repo_id)
 
     # Delete repository — CASCADE handles all child ORM tables
     await crud.delete_repository(session, repo_id)

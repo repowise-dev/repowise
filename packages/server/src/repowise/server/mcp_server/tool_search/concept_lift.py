@@ -139,7 +139,7 @@ async def entry_point_rows(ctx: Any, query: str) -> list[dict]:
             if narrowing:
                 ids = [p for p in ids if narrowing <= _words(p)]
             ids = ids[:_MAX_LIFTED]
-            pages = await _file_pages(session, ids) if ids else {}
+            pages = await _file_pages(session, repository.id, ids) if ids else {}
     except Exception:
         _log.debug("search_codebase: entry point lookup failed", exc_info=True)
         return []

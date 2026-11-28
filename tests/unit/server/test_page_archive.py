@@ -26,7 +26,7 @@ async def _retired_repo(session_factory):
         )
         await crud.upsert_page(session, **kwargs)
         await crud.upsert_page(session, **{**kwargs, "content": "Complete retired prose"})
-        old = await crud.get_page(session, OLD_ID)
+        old = await crud.get_page(session, OLD_ID, repository_id=repo.id)
         old.human_notes = "Original human notes"
         await session.flush()
         await crud.upsert_page(

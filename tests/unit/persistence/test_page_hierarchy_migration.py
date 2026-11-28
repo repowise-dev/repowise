@@ -91,12 +91,12 @@ async def test_the_existing_page_survives_the_upgrade(legacy_store):
     before the wiki had a tree, and it is what keeps the page serving instead
     of 404ing while the rollout is half-done.
     """
-    engine, _ = legacy_store
+    engine, repo_id = legacy_store
     await init_db(engine)
 
     sf = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with sf() as session:
-        page = await get_page(session, _PAGE_ID)
+        page = await get_page(session, _PAGE_ID, repository_id=repo_id)
 
     assert page is not None
     assert page.title == "app.py"
@@ -131,7 +131,7 @@ async def test_an_upgraded_store_accepts_hierarchy_writes(legacy_store):
         await session.commit()
 
     async with sf() as session:
-        page = await get_page(session, _PAGE_ID)
+        page = await get_page(session, _PAGE_ID, repository_id=repo_id)
 
     assert page.parent_page_id == "module_page:src"
     assert page.display_order == 2

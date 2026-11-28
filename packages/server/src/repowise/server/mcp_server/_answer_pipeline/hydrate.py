@@ -18,8 +18,15 @@ _PAGERANK_BIAS_MAX = 0.3
 
 
 async def _page_meta_by_id(ctx: Any, page_ids: list[str]) -> dict[str, dict[str, str]]:
-    """Path, summary, type and freshness of each page id that has a page row."""
+    """Path, summary, type and freshness of each page id that has a page row.
+
+    Read from the served repository's pages: an id alone can name another
+    repository's page in a store several repositories share.
+    """
+    from repowise.server.mcp_server._helpers import _get_repo
+
     async with get_session(ctx.session_factory) as session:
+        repo_id = (await _get_repo(session)).id
         res = await session.execute(
             select(
                 Page.id,
@@ -27,7 +34,7 @@ async def _page_meta_by_id(ctx: Any, page_ids: list[str]) -> dict[str, dict[str,
                 Page.summary,
                 Page.page_type,
                 Page.freshness_status,
-            ).where(Page.id.in_(page_ids))
+            ).where(Page.repository_id == repo_id, Page.id.in_(page_ids))
         )
         return {
             row[0]: {

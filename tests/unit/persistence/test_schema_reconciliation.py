@@ -653,6 +653,9 @@ def test_postgres_reconcile_ignores_pgvector_type_warning(monkeypatch: pytest.Mo
         def get_indexes(self, _name: str) -> list[dict[str, Any]]:
             return [{"name": i.name} for i in table.indexes]
 
+        def get_pk_constraint(self, _name: str) -> dict[str, Any]:
+            return {"constrained_columns": [c.name for c in table.primary_key.columns]}
+
     monkeypatch.setattr(db_module, "inspect", lambda _conn: Inspector())
     connection = SimpleNamespace(dialect=postgresql.dialect(), execute=lambda _stmt: None)
     with warnings.catch_warnings():

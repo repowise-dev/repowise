@@ -203,7 +203,9 @@ class TestPersistenceStoreRetrieve:
 
         async with sf() as session:
             for page in pages:
-                stored = await get_page(session, page.page_id)
+                stored = await get_page(
+                    session, page.page_id, repository_id=persisted["repo_id"]
+                )
                 assert stored is not None, f"Page {page.page_id!r} not found in DB"
 
     async def test_stored_page_fields_match_generated_page(self, persisted, sf):
@@ -212,7 +214,7 @@ class TestPersistenceStoreRetrieve:
         gp = pages[0]
 
         async with sf() as session:
-            stored = await get_page(session, gp.page_id)
+            stored = await get_page(session, gp.page_id, repository_id=persisted["repo_id"])
 
         assert stored is not None
         assert stored.title == gp.title
@@ -247,7 +249,9 @@ class TestPersistenceStoreRetrieve:
     async def test_stored_page_version_is_1_on_first_insert(self, persisted, sf):
         pages = persisted["pages"]
         async with sf() as session:
-            stored = await get_page(session, pages[0].page_id)
+            stored = await get_page(
+                session, pages[0].page_id, repository_id=persisted["repo_id"]
+            )
         assert stored.version == 1
 
 
@@ -282,7 +286,7 @@ class TestVersionHistory:
             await session.commit()
 
         async with sf() as session:
-            versions = await get_page_versions(session, gp.page_id)
+            versions = await get_page_versions(session, gp.page_id, repository_id=repo_id)
 
         assert len(versions) == 1
         assert versions[0].version == 1
@@ -294,7 +298,7 @@ class TestVersionHistory:
         gp = pages[0]
 
         async with sf() as session:
-            stored = await get_page(session, gp.page_id)
+            stored = await get_page(session, gp.page_id, repository_id=persisted["repo_id"])
 
         # version is at least 2 (first upsert + re-upsert in previous test)
         assert stored.version >= 2
@@ -305,7 +309,7 @@ class TestVersionHistory:
         gp = pages[0]
 
         async with sf() as session:
-            stored = await get_page(session, gp.page_id)
+            stored = await get_page(session, gp.page_id, repository_id=persisted["repo_id"])
 
         assert stored.created_at is not None
         # The original page was stored from the generated page's created_at
@@ -346,8 +350,8 @@ class TestVersionHistory:
             await session.commit()
 
         async with sf() as session:
-            stored = await get_page(session, pid)
-            versions = await get_page_versions(session, pid)
+            stored = await get_page(session, pid, repository_id=repo_id)
+            versions = await get_page_versions(session, pid, repository_id=repo_id)
         assert stored.version == 1
         assert versions == []
 
@@ -356,8 +360,8 @@ class TestVersionHistory:
             await upsert_page(session, **{**fields, "content": "changed content"})
             await session.commit()
         async with sf() as session:
-            stored2 = await get_page(session, pid)
-            versions2 = await get_page_versions(session, pid)
+            stored2 = await get_page(session, pid, repository_id=repo_id)
+            versions2 = await get_page_versions(session, pid, repository_id=repo_id)
         assert stored2.version == 2
         assert len(versions2) == 1
 

@@ -111,8 +111,23 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     # it out of both indexes, and doctor counts its vector as an orphan that
     # ``--repair`` deletes. Embedding it here put every tombstone back, so a
     # reindex followed by ``doctor --repair`` never converged.
+    # Only this repository's pages: the vector index is per repository on disk,
+    # and a store several repositories share holds theirs under the same ids.
+    # In the same statement, so a read stays one query. Without a row at this
+    # path the store is read whole, as before; reindex never adopts a moved
+    # row the way ``get_repository_by_path`` may.
+    from sqlalchemy import exists, or_
+
+    from repowise.core.persistence.models import Repository
+
+    here = select(Repository.id).where(Repository.local_path == str(repo_path))
     async with factory() as session:
-        result = await session.execute(select(Page).where(Page.freshness_status != "tombstone"))
+        result = await session.execute(
+            select(Page).where(
+                Page.freshness_status != "tombstone",
+                or_(~exists(here), Page.repository_id.in_(here)),
+            )
+        )
         pages = list(result.scalars().all())
 
     # --- Load decision records ---

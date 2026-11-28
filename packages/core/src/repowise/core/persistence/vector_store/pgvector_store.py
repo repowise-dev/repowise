@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.providers.embedding.base import Embedder
 
@@ -37,6 +37,20 @@ def _summary_payload(content: object, metadata: object) -> dict:
     return {"summary": str(content or "")[:500], "key_exports": key_exports}
 
 
+def _vector_result(r: Any) -> SearchResult:
+    """A search row ``(id, title, content, page_type, target_path, score, repository_id)``."""
+    return SearchResult(
+        page_id=r[0],
+        title=r[1],
+        page_type=r[3],
+        target_path=r[4],
+        score=float(r[5]),
+        snippet=str(r[2])[:200].rstrip(),
+        search_type="vector",
+        repository_id=r[6],
+    )
+
+
 class PgVectorStore(VectorStore):
     """Vector store that writes embeddings to the ``wiki_pages.embedding`` column.
 
@@ -55,9 +69,30 @@ class PgVectorStore(VectorStore):
         self,
         session_factory: async_sessionmaker[AsyncSession],
         embedder: Embedder,
+        *,
+        repository_id: str | None = None,
     ) -> None:
+        """*repository_id* scopes every read and write to that repository's
+        pages. A page id names a page only within one repository, so a store
+        several repositories share needs it; without it the store reads and
+        writes every repository's rows, which is exact only for one."""
         self._session_factory = session_factory
         self._embedder = embedder
+        self._repository_id = repository_id
+
+    def _scope(self, params: dict | list[dict]) -> tuple[str, dict | list[dict]]:
+        """``AND repository_id = :repo`` and the params carrying it, when scoped."""
+        if self._repository_id is None:
+            return "", params
+        if isinstance(params, list):
+            return " AND repository_id = :repo", [
+                {**p, "repo": self._repository_id} for p in params
+            ]
+        return " AND repository_id = :repo", {**params, "repo": self._repository_id}
+
+    def _set_embedding_sql(self) -> str:
+        scope, _ = self._scope({})
+        return f"UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid{scope}"
 
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         vectors = await self._embedder.embed([cap_embed_text(page_id, text)])
@@ -65,11 +100,9 @@ class PgVectorStore(VectorStore):
 
         from sqlalchemy.sql import text as sa_text
 
+        _, params = self._scope({"emb": vec_str, "pid": page_id})
         async with self._session_factory() as session:
-            await session.execute(
-                sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"),
-                {"emb": vec_str, "pid": page_id},
-            )
+            await session.execute(sa_text(self._set_embedding_sql()), params)
             await session.commit()
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
@@ -78,16 +111,18 @@ class PgVectorStore(VectorStore):
 
         from sqlalchemy.sql import text as sa_text
 
-        stmt = sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid")
+        stmt = sa_text(self._set_embedding_sql())
         # Chunked: one embedder request per slice (a whole generation level
         # in one request blew OpenAI's 300k-token cap), then one executemany
         # round-trip per slice.
         for chunk, texts in iter_embed_chunks(items):
             vectors = await self._embedder.embed(texts)
-            params = [
-                {"emb": _encode(vector), "pid": page_id}
-                for (page_id, _text, _meta), vector in zip(chunk, vectors, strict=True)
-            ]
+            _, params = self._scope(
+                [
+                    {"emb": _encode(vector), "pid": page_id}
+                    for (page_id, _text, _meta), vector in zip(chunk, vectors, strict=True)
+                ]
+            )
             async with self._session_factory() as session:
                 await session.execute(stmt, params)
                 await session.commit()
@@ -104,11 +139,13 @@ class PgVectorStore(VectorStore):
 
         from sqlalchemy.sql import text as sa_text
 
-        stmt = sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid")
-        params = [
-            {"emb": _encode([float(v) for v in vector]), "pid": page_id}
-            for page_id, vector, _meta in items
-        ]
+        stmt = sa_text(self._set_embedding_sql())
+        _, params = self._scope(
+            [
+                {"emb": _encode([float(v) for v in vector]), "pid": page_id}
+                for page_id, vector, _meta in items
+            ]
+        )
         async with self._session_factory() as session:
             await session.execute(stmt, params)
             await session.commit()
@@ -125,32 +162,23 @@ class PgVectorStore(VectorStore):
 
         from sqlalchemy.sql import text as sa_text
 
+        scope, params = self._scope({"q": vec_str, "lim": limit})
         async with self._session_factory() as session:
-            rows = await session.execute(
-                sa_text(
-                    "SELECT id, title, content, page_type, target_path, "
-                    "  1 - (embedding <=> CAST(:q AS vector)) AS score "
-                    "FROM wiki_pages "
-                    "WHERE embedding IS NOT NULL "
-                    "ORDER BY embedding <=> CAST(:q AS vector) "
-                    "LIMIT :lim"
-                ),
-                {"q": vec_str, "lim": limit},
-            )
+            rows = await session.execute(sa_text(self._search_sql(scope)), params)
             raw = rows.fetchall()
 
-        return [
-            SearchResult(
-                page_id=r[0],
-                title=r[1],
-                page_type=r[3],
-                target_path=r[4],
-                score=float(r[5]),
-                snippet=str(r[2])[:200].rstrip(),
-                search_type="vector",
-            )
-            for r in raw
-        ]
+        return [_vector_result(r) for r in raw]
+
+    @staticmethod
+    def _search_sql(scope: str) -> str:
+        return (
+            "SELECT id, title, content, page_type, target_path, "
+            "  1 - (embedding <=> CAST(:q AS vector)) AS score, repository_id "
+            "FROM wiki_pages "
+            f"WHERE embedding IS NOT NULL{scope} "
+            "ORDER BY embedding <=> CAST(:q AS vector) "
+            "LIMIT :lim"
+        )
 
     async def search_many(
         self, queries: list[str], limit: int = 10, *, kind: str = "query"
@@ -162,48 +190,23 @@ class PgVectorStore(VectorStore):
 
         from sqlalchemy.sql import text as sa_text
 
-        stmt = sa_text(
-            "SELECT id, title, content, page_type, target_path, "
-            "  1 - (embedding <=> CAST(:q AS vector)) AS score "
-            "FROM wiki_pages "
-            "WHERE embedding IS NOT NULL "
-            "ORDER BY embedding <=> CAST(:q AS vector) "
-            "LIMIT :lim"
-        )
+        scope, _ = self._scope({})
+        stmt = sa_text(self._search_sql(scope))
         out: list[list[SearchResult]] = []
         async with self._session_factory() as session:
             for q_vec in q_vecs:
+                _, params = self._scope({"q": _encode(q_vec), "lim": limit})
                 try:
-                    rows = await session.execute(stmt, {"q": _encode(q_vec), "lim": limit})
+                    rows = await session.execute(stmt, params)
                     raw = rows.fetchall()
                 except Exception:
                     out.append([])
                     continue
-                out.append(
-                    [
-                        SearchResult(
-                            page_id=r[0],
-                            title=r[1],
-                            page_type=r[3],
-                            target_path=r[4],
-                            score=float(r[5]),
-                            snippet=str(r[2])[:200].rstrip(),
-                            search_type="vector",
-                        )
-                        for r in raw
-                    ]
-                )
+                out.append([_vector_result(r) for r in raw])
         return out
 
     async def delete(self, page_id: str) -> None:
-        from sqlalchemy.sql import text as sa_text
-
-        async with self._session_factory() as session:
-            await session.execute(
-                sa_text("UPDATE wiki_pages SET embedding = NULL WHERE id = :pid"),
-                {"pid": page_id},
-            )
-            await session.commit()
+        await self.delete_many([page_id])
 
     async def delete_many(self, page_ids: list[str]) -> None:
         if not page_ids:
@@ -211,12 +214,13 @@ class PgVectorStore(VectorStore):
         from sqlalchemy import bindparam
         from sqlalchemy.sql import text as sa_text
 
-        stmt = sa_text("UPDATE wiki_pages SET embedding = NULL WHERE id IN :ids").bindparams(
-            bindparam("ids", expanding=True)
-        )
+        scope, params = self._scope({"ids": list(page_ids)})
+        stmt = sa_text(
+            f"UPDATE wiki_pages SET embedding = NULL WHERE id IN :ids{scope}"
+        ).bindparams(bindparam("ids", expanding=True))
 
         async with self._session_factory() as session:
-            await session.execute(stmt, {"ids": list(page_ids)})
+            await session.execute(stmt, params)
             await session.commit()
 
     async def close(self) -> None:
@@ -225,9 +229,10 @@ class PgVectorStore(VectorStore):
     async def list_page_ids(self) -> set[str]:
         from sqlalchemy.sql import text as sa_text
 
+        scope, params = self._scope({})
         async with self._session_factory() as session:
             rows = await session.execute(
-                sa_text("SELECT id FROM wiki_pages WHERE embedding IS NOT NULL")
+                sa_text(f"SELECT id FROM wiki_pages WHERE embedding IS NOT NULL{scope}"), params
             )
             return {r[0] for r in rows.fetchall()}
 
@@ -240,12 +245,14 @@ class PgVectorStore(VectorStore):
         """
         from sqlalchemy.sql import text as sa_text
 
+        scope, params = self._scope({"path": path})
         async with self._session_factory() as session:
             rows = await session.execute(
                 sa_text(
-                    "SELECT content, metadata FROM wiki_pages WHERE target_path = :path LIMIT 1"
+                    "SELECT content, metadata FROM wiki_pages "
+                    f"WHERE target_path = :path{scope} LIMIT 1"
                 ),
-                {"path": path},
+                params,
             )
             row = rows.fetchone()
 
@@ -267,12 +274,14 @@ class PgVectorStore(VectorStore):
         from sqlalchemy import bindparam
         from sqlalchemy.sql import text as sa_text
 
+        scope, params = self._scope({"paths": list(paths)})
         stmt = sa_text(
-            "SELECT target_path, content, metadata FROM wiki_pages WHERE target_path IN :paths"
+            "SELECT target_path, content, metadata FROM wiki_pages "
+            f"WHERE target_path IN :paths{scope}"
         ).bindparams(bindparam("paths", expanding=True))
 
         async with self._session_factory() as session:
-            rows = await session.execute(stmt, {"paths": list(paths)})
+            rows = await session.execute(stmt, params)
             raw = rows.fetchall()
 
         out: dict[str, dict] = {}

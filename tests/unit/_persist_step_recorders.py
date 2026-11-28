@@ -69,16 +69,16 @@ class StepRecorder:
         rec = self
 
         class _FTS:
-            def __init__(self, _engine: Any) -> None:
+            def __init__(self, _engine: Any, **_kwargs: Any) -> None:
                 pass
 
             async def ensure_index(self) -> None:
                 rec._record("fts.ensure_index", (), {}, None)
 
-            async def index_pages(self, pages: Any) -> None:
+            async def index_pages(self, pages: Any, **_kwargs: Any) -> None:
                 rec._record("fts.index_pages", (list(pages),), {}, None)
 
-            async def delete_many(self, page_ids: Any) -> None:
+            async def delete_many(self, page_ids: Any, **_kwargs: Any) -> None:
                 rec._record("fts.delete_many", (list(page_ids),), {}, None)
 
         return _FTS

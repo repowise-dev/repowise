@@ -289,20 +289,9 @@ async def pin_file_doc(
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 
     page_id = f"file_page:{file_path}"
-    page = await crud.get_page(session, page_id)
-    if page is not None and page.repository_id != repo_id:
-        # ``Page.id`` is ``"{page_type}:{target_path}"`` and therefore global, so
-        # two repositories holding the same path share one id. The doc tab
-        # already refuses to read the other repository's row
-        # (``file_detail``); pinning it was still possible, which let one
-        # repository's Doc tab mark another repository's page as pinned.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"A page for {file_path} already belongs to a different "
-                "repository; refusing to pin it"
-            ),
-        )
+    # Pages are keyed by (repository, id), so this is this repository's row
+    # even when another repository sharing the store has a page at the path.
+    page = await crud.get_page(session, page_id, repository_id=repo_id)
     if page is None:
         # Lightweight "wanted" row: template provenance means it reads as
         # unwritten (so the heuristics know there is nothing yet), and the
@@ -328,7 +317,7 @@ async def pin_file_doc(
         # so the old doc is revived as stale: selection picks it up and
         # regenerates it.
         page.freshness_status = "stale"
-    page = await crud.set_page_pinned(session, page_id, True)
+    page = await crud.set_page_pinned(session, page_id, True, repository_id=repo_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
     await session.commit()
@@ -391,14 +380,11 @@ async def file_detail(
         raise HTTPException(status_code=404, detail=f"File not indexed: {file_path}")
 
     # --- Wiki page ref ----------------------------------------------------
-    # A primary-key get, not a three-column filter: ``Page.id`` *is*
-    # ``"{page_type}:{target_path}"`` (see the model docstring), so the row this
-    # predicate described was always reachable by key. The repo check stays
-    # because one database can hold several repositories while the page id is
-    # unique across the table.
-    page_row = await session.get(Page, f"file_page:{file_path}")
-    if page_row is not None and page_row.repository_id != repo_id:
-        page_row = None
+    # A primary-key get, not a three-column filter: the key is
+    # ``(repository_id, id)`` and ``id`` *is* ``"{page_type}:{target_path}"``
+    # (see the model docstring), so the row this predicate described is
+    # reachable by key.
+    page_row = await session.get(Page, (repo_id, f"file_page:{file_path}"))
     wiki_page = (
         {
             "id": page_row.id,

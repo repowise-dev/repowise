@@ -227,8 +227,8 @@ async def test_start_files_rank_on_exact_words_not_page_length(tmp_path):
     engine, factory = await open_repo_db(repo)
     async with factory() as session:
         # long.py: more characters, fewer words; short.py: fewer characters, more words
-        (await session.get(Page, "file_page:long.py")).content = "x" * 40
-        (await session.get(Page, "file_page:short.py")).content = "a b c d e"
+        (await session.get(Page, ("repo-web", "file_page:long.py"))).content = "x" * 40
+        (await session.get(Page, ("repo-web", "file_page:short.py"))).content = "a b c d e"
         await session.commit()
         rows = await _targets(session, "repo-web")
     await engine.dispose()

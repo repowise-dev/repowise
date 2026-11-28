@@ -188,7 +188,7 @@ async def _card(target: str, include: list[str]) -> dict:
 async def test_retirement_records_its_reason(setup_mcp, session):
     repo_id = setup_mcp
     assert await _retire(session, repo_id, f"file_page:{_SERVICE}") == [f"file_page:{_SERVICE}"]
-    page = await session.get(Page, f"file_page:{_SERVICE}")
+    page = await session.get(Page, (repo_id, f"file_page:{_SERVICE}"))
     await session.refresh(page)
     assert page.freshness_status == "tombstone"
     assert json.loads(page.metadata_json)["tombstone_reason"] == "retired"
@@ -233,7 +233,7 @@ async def test_a_regrouped_module_page_is_not_reported_deleted(setup_mcp, sessio
 @pytest.mark.asyncio
 async def test_a_deselected_spotlight_serves_the_file_page_entry(setup_mcp, session):
     repo_id = setup_mcp
-    file_page = await session.get(Page, f"file_page:{_SERVICE}")
+    file_page = await session.get(Page, (repo_id, f"file_page:{_SERVICE}"))
     file_page.content = "# service.py\n\n- `class AuthService`: Signs users in.\n"
     session.add(
         _page(repo_id, "symbol_spotlight", f"{_SERVICE}::AuthService", "AuthService", "# OLD")

@@ -111,7 +111,7 @@ async def test_native_page_pruning_preserves_complete_history(async_session):
         await async_session.execute(select(versions).where(versions.c.archive_id == archived["id"]))
     ).mappings().all()
     assert [json.loads(row["record_json"]) for row in rows] == [previous]
-    assert await async_session.get(Page, page_id) is None
+    assert await async_session.get(Page, (repo.id, page_id)) is None
 
 
 @pytest.mark.parametrize(
@@ -136,7 +136,7 @@ async def test_each_sweep_preserves_complete_retired_records(async_session, swee
 
         from repowise.core.pipeline.persist import TOMBSTONE_RETENTION
 
-        page = await session.get(Page, page_id)
+        page = await session.get(Page, (repo.id, page_id))
         page.freshness_status = "tombstone"
         page.metadata_json = json.dumps(
             {"tombstoned_at": (NOW - TOMBSTONE_RETENTION - timedelta(days=1)).isoformat()}
@@ -289,8 +289,10 @@ async def test_reused_live_identity_does_not_inherit_retired_history(async_sessi
         model_name="new",
         provider_name="new",
     )
-    assert (await crud.get_page(session, "module_page:old")).version == 1
-    assert await crud.get_page_versions(session, "module_page:old") == []
+    assert (await crud.get_page(session, "module_page:old", repository_id=repo.id)).version == 1
+    assert (
+        await crud.get_page_versions(session, "module_page:old", repository_id=repo.id) == []
+    )
     assert (
         json.loads((await _archived(session, "module_page:old"))["record_json"])["content"]
         == "Unique original prose"
@@ -310,8 +312,13 @@ async def test_caller_rollback_keeps_live_data_and_removes_retirement(session_fa
             await crud.retire_pages(session, repo.id, ["module_page:old"], "deselected")
             raise RuntimeError("abort persistence")
     async with get_session(session_factory) as session:
-        assert (await crud.get_page(session, "module_page:old")).content == "Unique original prose"
-        assert len(await crud.get_page_versions(session, "module_page:old")) == 1
+        assert (
+            await crud.get_page(session, "module_page:old", repository_id=repo.id)
+        ).content == "Unique original prose"
+        assert (
+            len(await crud.get_page_versions(session, "module_page:old", repository_id=repo.id))
+            == 1
+        )
         assert (await session.execute(select(PageArchive.id))).all() == []
 
 
@@ -337,7 +344,9 @@ async def test_successor_relationship_requires_a_live_same_repository_target(
     )
     assert (await _archived(session, "module_page:old"))["superseded_by"] is None
     if target_exists_elsewhere:
-        assert (await crud.get_page(session, "module_page:target")).human_notes == "Foreign notes"
+        assert (
+            await crud.get_page(session, "module_page:target", repository_id=other.id)
+        ).human_notes == "Foreign notes"
 
 
 @pytest.mark.parametrize("tied", [False, True])

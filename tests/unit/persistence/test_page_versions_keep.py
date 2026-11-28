@@ -71,22 +71,32 @@ async def test_a_write_never_trims_another_repositorys_history(async_session, tm
     first = await insert_repo(async_session, local_path=str(tmp_path / "a"))
     second = await insert_repo(async_session, name="b", local_path=str(tmp_path / "b"))
     a = make_page_kwargs(first.id, page_id="file_page:shared.py")
-    await _rewrite(async_session, a, 5)
-    # The same global page id, written by the other repository whose cap is 1.
-    await _rewrite(async_session, dict(a, repository_id=second.id), 2, start=5)
-    assert await _count(async_session, a["page_id"]) == 6
+    b = dict(a, repository_id=second.id)
 
-    # The owner's cap still holds for snapshots another repository's writes take.
+    async def held(repo_id: str) -> int:
+        query = select(func.count()).select_from(PageVersion).where(
+            PageVersion.repository_id == repo_id, PageVersion.page_id == a["page_id"]
+        )
+        return (await async_session.execute(query)).scalar_one()
+
+    await _rewrite(async_session, a, 5)
+    # The same page id in the other repository, whose cap is 1, is its own page.
+    await _rewrite(async_session, b, 3, start=5)
+    assert (await held(first.id), await held(second.id)) == (4, 1)
+
+    # Each repository's cap holds for its own page alone.
     _write_keep(tmp_path / "a", 3)
-    await _rewrite(async_session, dict(a, repository_id=second.id), 2, start=7)
-    assert await _count(async_session, a["page_id"]) == 3
+    await _rewrite(async_session, a, 1, start=8)
+    assert (await held(first.id), await held(second.id)) == (3, 1)
 
 
 async def test_a_loaded_snapshot_leaves_the_session_when_trimmed(async_session):
     repo = await insert_repo(async_session)
     kwargs = make_page_kwargs(repo.id)
     await _rewrite(async_session, kwargs, 4)
-    oldest = (await get_page_versions(async_session, kwargs["page_id"]))[-1]
+    oldest = (
+        await get_page_versions(async_session, kwargs["page_id"], repository_id=repo.id)
+    )[-1]
     await prune_page_versions(async_session, 1, repository_id=repo.id)
     await async_session.flush()
     assert await async_session.get(PageVersion, oldest.id) is None
@@ -97,8 +107,8 @@ async def test_a_rewrite_keeps_only_the_newest_versions(async_session):
     kwargs = make_page_kwargs(repo.id)
     await _rewrite(async_session, kwargs, DEFAULT_PAGE_VERSIONS_KEEP + 6)
 
-    versions = await get_page_versions(async_session, kwargs["page_id"])
-    page = await get_page(async_session, kwargs["page_id"])
+    versions = await get_page_versions(async_session, kwargs["page_id"], repository_id=repo.id)
+    page = await get_page(async_session, kwargs["page_id"], repository_id=repo.id)
     assert len(versions) == DEFAULT_PAGE_VERSIONS_KEEP
     # The newest ones survive, ending right below the live page.
     assert [v.version for v in versions] == list(
@@ -115,7 +125,10 @@ async def test_the_repo_config_sets_the_cap(async_session, tmp_path):
     await _rewrite(async_session, kwargs, 6)
     await _rewrite(async_session, other, 4)
 
-    assert [v.version for v in await get_page_versions(async_session, kwargs["page_id"])] == [5, 4]
+    assert [
+        v.version
+        for v in await get_page_versions(async_session, kwargs["page_id"], repository_id=repo.id)
+    ] == [5, 4]
     assert await _count(async_session, other["page_id"]) == 2
 
 
@@ -163,7 +176,9 @@ async def test_the_batch_write_trims_every_page_it_snapshotted(async_session, tm
         await async_session.commit()
 
     for pid in ids:
-        assert [v.version for v in await get_page_versions(async_session, pid)] == [4, 3]
+        assert [
+            v.version for v in await get_page_versions(async_session, pid, repository_id=repo.id)
+        ] == [4, 3]
 
 
 async def test_a_full_prune_trims_old_history_and_is_idempotent(async_session, tmp_path):
@@ -176,7 +191,10 @@ async def test_a_full_prune_trims_old_history_and_is_idempotent(async_session, t
 
     assert await prune_page_versions(async_session, 3, repository_id=repo.id) == 4
     await async_session.commit()
-    assert [v.version for v in await get_page_versions(async_session, kwargs["page_id"])] == [
+    assert [
+        v.version
+        for v in await get_page_versions(async_session, kwargs["page_id"], repository_id=repo.id)
+    ] == [
         7,
         6,
         5,
@@ -185,8 +203,12 @@ async def test_a_full_prune_trims_old_history_and_is_idempotent(async_session, t
 
     assert await prune_page_versions(async_session, 3, repository_id=repo.id) == 0
     # The live pages are untouched.
-    assert (await get_page(async_session, kwargs["page_id"])).content == "body 7"
-    assert (await get_page(async_session, other["page_id"])).content == "body 2"
+    assert (
+        await get_page(async_session, kwargs["page_id"], repository_id=repo.id)
+    ).content == "body 7"
+    assert (
+        await get_page(async_session, other["page_id"], repository_id=repo.id)
+    ).content == "body 2"
 
 
 async def test_a_full_prune_leaves_other_repositories_alone(async_session, tmp_path):

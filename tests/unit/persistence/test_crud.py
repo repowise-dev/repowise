@@ -189,7 +189,9 @@ async def test_upsert_page_creates_version_on_second_upsert(async_session):
     await upsert_page(async_session, **kwargs2)
     await async_session.commit()
 
-    versions = await get_page_versions(async_session, "file_page:src/main.py")
+    versions = await get_page_versions(
+        async_session, "file_page:src/main.py", repository_id=repo.id
+    )
     assert len(versions) == 1
     assert versions[0].version == 1
     assert versions[0].content == "# Main module\n\nEntry point for the application."
@@ -204,7 +206,7 @@ async def test_upsert_page_increments_version_field(async_session):
     await upsert_page(async_session, **dict(kwargs, source_hash="v2"))
     await async_session.commit()
 
-    page = await get_page(async_session, "file_page:src/main.py")
+    page = await get_page(async_session, "file_page:src/main.py", repository_id=repo.id)
     assert page is not None
     assert page.version == 2
 
@@ -221,7 +223,7 @@ async def test_upsert_page_preserves_created_at(async_session):
     await upsert_page(async_session, **dict(kwargs, source_hash="v2"))
     await async_session.commit()
 
-    page = await get_page(async_session, "file_page:src/main.py")
+    page = await get_page(async_session, "file_page:src/main.py", repository_id=repo.id)
     assert page is not None
     # created_at must not change on update.
     # SQLite may strip timezone info on round-trip, so compare naive UTC.
@@ -233,7 +235,8 @@ async def test_upsert_page_preserves_created_at(async_session):
 
 
 async def test_get_page_returns_none_for_missing(async_session):
-    assert await get_page(async_session, "missing:page") is None
+    repo = await insert_repo(async_session)
+    assert await get_page(async_session, "missing:page", repository_id=repo.id) is None
 
 
 async def test_list_pages_returns_all_for_repo(async_session):
@@ -327,7 +330,7 @@ async def test_get_page_versions_returns_ordered_desc(async_session):
     await upsert_page(async_session, **dict(kwargs, source_hash="v3"))
     await async_session.commit()
 
-    versions = await get_page_versions(async_session, kwargs["page_id"])
+    versions = await get_page_versions(async_session, kwargs["page_id"], repository_id=repo.id)
     assert len(versions) == 2
     assert versions[0].version > versions[1].version  # descending
 

@@ -800,6 +800,19 @@ def _reconcile_schema(connection: object) -> None:
                 lambda index=index: CreateIndex(index),
             )
 
+    # --- Page identity -----------------------------------------------------
+    # A key change, which the additive walk above never makes. After it, so
+    # both page tables already carry every column the rebuilt shape copies.
+    # Starts with an UPDATE, so on SQLite the renames and copies that follow
+    # share one transaction and a failure part-way rolls all of them back.
+    if "wiki_pages" in db_tables:
+        from .page_identity_migration import rekey_pages
+
+        def _rekey() -> None:
+            rekey_pages(connection, inspector)
+
+        _run("wiki_pages:composite_key", _rekey)
+
     if failures:
         what = ", ".join(name for name, _ in failures)
         log.warning(
@@ -812,7 +825,8 @@ def _reconcile_schema(connection: object) -> None:
 
 #: Bump when ``_reconcile_schema`` learns a repair the model shape alone does
 #: not reveal, so stores stamped by the old code reconcile again.
-_RECONCILE_LOGIC_VERSION = 1
+#: 2: wiki pages keyed by ``(repository_id, id)`` (``page_identity_migration``).
+_RECONCILE_LOGIC_VERSION = 2
 
 
 @functools.cache

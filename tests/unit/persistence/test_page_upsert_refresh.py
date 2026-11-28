@@ -56,7 +56,7 @@ async def test_the_second_upsert_really_takes_the_touch_branch(async_session, re
     await _upsert(async_session, repository_id=repo_id, title="Code Ingestion")
     await async_session.commit()
 
-    page = await get_page(async_session, _PAGE_ID)
+    page = await get_page(async_session, _PAGE_ID, repository_id=repo_id)
     # No version bump and no snapshot means the touch branch ran, not the
     # archive-then-update branch.
     assert page.version == 1
@@ -76,7 +76,7 @@ async def test_title_is_refreshed_when_only_the_title_changed(async_session, rep
     await _upsert(async_session, repository_id=repo_id, title="Code Ingestion")
     await async_session.commit()
 
-    page = await get_page(async_session, _PAGE_ID)
+    page = await get_page(async_session, _PAGE_ID, repository_id=repo_id)
     assert page.title == "Code Ingestion"
 
 
@@ -87,7 +87,7 @@ async def test_repeated_upsert_of_an_unchanged_page_is_still_a_no_op(async_sessi
     await _upsert(async_session, repository_id=repo_id, title="Ingestion Pipeline")
     await async_session.commit()
 
-    page = await get_page(async_session, _PAGE_ID)
+    page = await get_page(async_session, _PAGE_ID, repository_id=repo_id)
     assert page.version == 1
     assert page.title == "Ingestion Pipeline"
 
@@ -121,7 +121,7 @@ async def test_hierarchy_fields_are_refreshed_when_only_they_changed(async_sessi
     )
     await async_session.commit()
 
-    page = await get_page(async_session, _PAGE_ID)
+    page = await get_page(async_session, _PAGE_ID, repository_id=repo_id)
     assert page.version == 1, "must have taken the touch branch"
     assert page.parent_page_id == "layer_page:layer:ingest"
     assert page.display_order == 5
@@ -136,7 +136,7 @@ async def test_hierarchy_fields_default_for_a_page_that_has_no_place_yet(
     await _upsert(async_session, repository_id=repo_id, title="Ingestion Pipeline")
     await async_session.commit()
 
-    page = await get_page(async_session, _PAGE_ID)
+    page = await get_page(async_session, _PAGE_ID, repository_id=repo_id)
     assert page.parent_page_id is None
     assert page.section_number is None
     assert page.structural_key is None
@@ -155,6 +155,6 @@ async def test_content_change_still_archives_a_version(async_session, repo_id):
     )
     await async_session.commit()
 
-    page = await get_page(async_session, _PAGE_ID)
+    page = await get_page(async_session, _PAGE_ID, repository_id=repo_id)
     assert page.version == 2
     assert page.content == "A different body."

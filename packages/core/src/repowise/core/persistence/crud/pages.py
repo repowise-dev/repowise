@@ -288,7 +288,12 @@ async def upsert_page(
     now = _now_utc()
     meta_json = json.dumps(metadata or {})
 
-    existing_result = await session.execute(select(Page).where(Page.id == page_id))
+    # Scoped to the repository: another repository sharing the store has its
+    # own row under the same id, which this write must neither version nor
+    # overwrite.
+    existing_result = await session.execute(
+        select(Page).where(Page.repository_id == repository_id, Page.id == page_id)
+    )
     existing = existing_result.scalar_one_or_none()
 
     snapshotted: list[tuple[str, str]] = []
@@ -499,7 +504,7 @@ async def prune_page_versions(
         recency = (
             func.row_number()
             .over(
-                partition_by=PageVersion.page_id,
+                partition_by=(PageVersion.repository_id, PageVersion.page_id),
                 order_by=(
                     PageVersion.version.desc(),
                     PageVersion.archived_at.desc(),
@@ -527,9 +532,8 @@ async def prune_page_versions(
 async def _trim_snapshotted(session: AsyncSession, snapshotted: list[tuple[str, str]]) -> None:
     """Hold each page that just took a snapshot to its owning repository's cap.
 
-    Page ids are global, so a write can resolve a page another repository
-    owns; the snapshot belongs to that owner and is trimmed by the owner's
-    cap, never by the writer's.
+    A snapshot is grouped by the repository that owns the page, and each group
+    is trimmed by that repository's cap and only within that repository.
     """
     by_owner: dict[str, list[str]] = {}
     for page_id, owner in snapshotted:
@@ -597,13 +601,24 @@ async def upsert_pages_from_generated(
 
     # Resolve all existing rows up front. page_id (== Page.id) is unique per
     # page within the run and each row is resolved independently, so one SELECT
-    # is equivalent to the per-page loop's fresh SELECT-per-page. No repo filter
-    # here, matching ``upsert_page``'s ``WHERE Page.id == page_id``.
+    # is equivalent to the per-page loop's fresh SELECT-per-page. Scoped to the
+    # repository, like ``upsert_page``: another repository sharing the store
+    # owns its own row under the same id.
     ids = [gp.page_id for gp in pages]
     existing_by_id: dict[str, Page] = {}
     for start in range(0, len(ids), _PAGE_SELECT_CHUNK):
         chunk = ids[start : start + _PAGE_SELECT_CHUNK]
-        rows = (await session.execute(select(Page).where(Page.id.in_(chunk)))).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    select(Page).where(
+                        Page.repository_id == repository_id, Page.id.in_(chunk)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         for row in rows:
             existing_by_id[row.id] = row
 
@@ -776,12 +791,30 @@ async def backfill_related_pages(
     return changed
 
 
-async def get_page(session: AsyncSession, page_id: str) -> Page | None:
-    """Return a Page by its page_id, or None."""
-    return await session.get(Page, page_id)
+async def get_page(session: AsyncSession, page_id: str, *, repository_id: str) -> Page | None:
+    """Return *repository_id*'s page *page_id*, or None.
+
+    A page id names a page only within one repository: several repositories
+    sharing a database each hold their own ``file_page:src/main.py``.
+    """
+    return await session.get(Page, (repository_id, page_id))
 
 
-async def set_page_pinned(session: AsyncSession, page_id: str, pinned: bool) -> Page | None:
+async def page_repository_ids(session: AsyncSession, page_id: str) -> list[str]:
+    """The repositories holding a page called *page_id*, sorted.
+
+    For a caller that has only the id: one entry names the page, several mean
+    the id is ambiguous in this store and the caller has to say which.
+    """
+    rows = await session.execute(
+        select(Page.repository_id).where(Page.id == page_id).order_by(Page.repository_id)
+    )
+    return list(rows.scalars().all())
+
+
+async def set_page_pinned(
+    session: AsyncSession, page_id: str, pinned: bool, *, repository_id: str
+) -> Page | None:
     """Set the user-requested pin on a page (issue #812).
 
     A pinned page is regenerated on every reindex regardless of the normal
@@ -789,7 +822,7 @@ async def set_page_pinned(session: AsyncSession, page_id: str, pinned: bool) -> 
     code instead of silently disappearing again. Returns None when no such
     page exists.
     """
-    page = await get_page(session, page_id)
+    page = await get_page(session, page_id, repository_id=repository_id)
     if page is None:
         return None
     page.pinned = pinned
@@ -935,7 +968,10 @@ async def list_page_summaries(
             func.length(Page.content).label("content_chars"),
             case((mentions_key, Page.metadata_json), else_=None).label("metadata_json"),
         )
-        .where(Page.id.in_(window.scalar_subquery()))
+        .where(
+            Page.repository_id == repository_id,
+            Page.id.in_(window.scalar_subquery()),
+        )
         .order_by(*_listing_order(listing.sort_by, listing.order))
     )
     return list((await session.execute(q)).all())
@@ -974,12 +1010,13 @@ async def get_page_versions(
     session: AsyncSession,
     page_id: str,
     *,
+    repository_id: str,
     limit: int = 50,
 ) -> list[PageVersion]:
-    """Return historical versions of a page, newest first."""
+    """Return historical versions of *repository_id*'s page, newest first."""
     result = await session.execute(
         select(PageVersion)
-        .where(PageVersion.page_id == page_id)
+        .where(PageVersion.repository_id == repository_id, PageVersion.page_id == page_id)
         .order_by(
             PageVersion.version.desc(),
             PageVersion.archived_at.desc(),

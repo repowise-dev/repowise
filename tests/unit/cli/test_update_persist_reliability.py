@@ -175,7 +175,7 @@ def test_failed_fts_cleanup_debt_retries_on_next_persist(tmp_path: Path, monkeyp
             if len(attempts) == 1:
                 raise RuntimeError("fts unavailable")
 
-    monkeypatch.setattr(persistence, "FullTextSearch", lambda _engine: _FailOnceFTS())
+    monkeypatch.setattr(persistence, "FullTextSearch", lambda _engine, **_kw: _FailOnceFTS())
 
     async def _persist_once() -> None:
         await _persist_full_update_async(

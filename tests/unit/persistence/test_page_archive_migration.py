@@ -93,7 +93,7 @@ def test_populated_archive_recovers_after_schema_downgrade(tmp_path: Path) -> No
                 kwargs = make_page_kwargs(repo.id, content="Original retained prose")
                 await crud.upsert_page(session, **kwargs)
                 await crud.upsert_page(session, **{**kwargs, "content": "Retired current prose"})
-                page = await crud.get_page(session, kwargs["page_id"])
+                page = await crud.get_page(session, kwargs["page_id"], repository_id=repo.id)
                 page.human_notes = "Retained human insight"
                 await session.flush()
                 await crud.retire_pages(session, repo.id, [page.id], "superseded")
@@ -127,7 +127,10 @@ def test_populated_archive_recovers_after_schema_downgrade(tmp_path: Path) -> No
                 assert detail["page"]["content"] == "Retired current prose"
                 assert detail["page"]["human_notes"] == "Retained human insight"
                 assert [row["content"] for row in detail["versions"]] == ["Original retained prose"]
-                assert await crud.get_page(session, "file_page:src/main.py") is None
+                assert (
+                    await crud.get_page(session, "file_page:src/main.py", repository_id=repo_id)
+                    is None
+                )
         finally:
             await engine.dispose()
 

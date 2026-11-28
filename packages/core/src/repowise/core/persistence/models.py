@@ -23,8 +23,10 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -188,14 +190,23 @@ class GenerationJob(Base):
 class Page(Base):
     """A generated wiki page.
 
-    The primary key is page_id: "{page_type}:{target_path}" — same format as
-    GeneratedPage.page_id. This is a natural key so callers can upsert without
-    knowing the database row ID.
+    ``id`` is the page id: "{page_type}:{target_path}" — same format as
+    GeneratedPage.page_id. It is a natural key so callers can upsert without
+    knowing the database row ID, and it says nothing about the repository: two
+    repositories sharing one database have a ``file_page:src/main.py`` each.
+    So the primary key is ``(repository_id, id)``, and every lookup by id
+    names the repository too.
     """
 
     __tablename__ = "wiki_pages"
+    __table_args__ = (
+        PrimaryKeyConstraint("repository_id", "id", name="wiki_pages_pkey"),
+        # The few reads that start from an id alone (resolving which
+        # repositories hold it) use this rather than scanning the table.
+        Index("ix_wiki_pages_id", "id"),
+    )
 
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[str] = mapped_column(Text, nullable=False)
     repository_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
@@ -274,13 +285,19 @@ class PageVersion(Base):
     __tablename__ = "wiki_page_versions"
     # Each update asks whether any of a repository's pages is over the
     # version cap; this answers it from the index alone.
-    __table_args__ = (Index("ix_wiki_page_versions_repo_page", "repository_id", "page_id"),)
+    # The (repository_id, page_id) index also serves the foreign key's check
+    # when a page is deleted.
+    __table_args__ = (
+        Index("ix_wiki_page_versions_repo_page", "repository_id", "page_id"),
+        ForeignKeyConstraint(
+            ["repository_id", "page_id"],
+            ["wiki_pages.repository_id", "wiki_pages.id"],
+            name="fk_wiki_page_versions_page",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
-    # Indexed so deleting a page does not scan every version for the FK check.
-    page_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("wiki_pages.id"), nullable=False, index=True
-    )
+    page_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     repository_id: Mapped[str] = mapped_column(String(32), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     page_type: Mapped[str] = mapped_column(String(64), nullable=False)

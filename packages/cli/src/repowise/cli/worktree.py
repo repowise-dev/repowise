@@ -133,8 +133,16 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
         from repowise.core.persistence.crud import repo_level_page_rekey_statements
 
         has_fts = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'page_fts'").fetchone()
+        # A seed copied from an older install may predate page_fts.repository_id.
+        fts_scoped = has_fts is not None and conn.execute(
+            "SELECT 1 FROM pragma_table_info('page_fts') WHERE name = 'repository_id'"
+        ).fetchone() is not None
         for sql, params in repo_level_page_rekey_statements(
-            repo_id, old_name, dest_repo.name, has_page_fts=has_fts is not None
+            repo_id,
+            old_name,
+            dest_repo.name,
+            has_page_fts=has_fts is not None,
+            page_fts_scoped=fts_scoped,
         ):
             conn.execute(sql, params)
         conn.commit()

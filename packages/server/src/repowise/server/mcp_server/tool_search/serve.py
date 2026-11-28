@@ -233,17 +233,21 @@ def _drop_internal_ranking_fields(results: list[dict]) -> None:
 
 
 async def _load_page_info(
-    session, output: list[dict], *, with_git: bool = False
+    session, output: list[dict], repository_id: str, *, with_git: bool = False
 ) -> tuple[dict, set, dict]:
-    """Batch-load target paths, tombstones, and git.
+    """Batch-load target paths, tombstones, and git for *repository_id*'s pages.
 
     Returns ``(page_info, tombstoned, git_map)`` where ``page_info`` maps
     page_id -> target_path, ``tombstoned`` is the set of tombstoned page_ids,
     and ``git_map`` maps file_path -> GitMetadata (empty unless ``with_git``).
+    Scoped to the repository because a page id or path alone can name another
+    repository's row in a store several repositories share.
     """
     page_ids = [item["page_id"] for item in output]
     res = await session.execute(
-        select(Page.id, Page.target_path, Page.freshness_status).where(Page.id.in_(page_ids))
+        select(Page.id, Page.target_path, Page.freshness_status).where(
+            Page.repository_id == repository_id, Page.id.in_(page_ids)
+        )
     )
     rows = res.all()
     page_info = {row[0]: row[1] for row in rows}
@@ -254,7 +258,10 @@ async def _load_page_info(
         target_paths = [tp for tp in page_info.values() if tp]
         if target_paths:
             git_res = await session.execute(
-                select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repository_id,
+                    GitMetadata.file_path.in_(target_paths),
+                )
             )
             git_map = {g.file_path: g for g in git_res.scalars().all()}
     return page_info, tombstoned, git_map

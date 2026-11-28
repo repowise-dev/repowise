@@ -252,7 +252,7 @@ async def test_an_empty_plan_retires_nothing(session, repo_id):
 async def test_a_row_with_no_membership_or_a_stub_is_left_alone(session, repo_id):
     await _add(session, repo_id, "module_page:src/bare", "module_page", [])
     await _add(session, repo_id, "module_page:src/stub", "module_page", ["src/a.py"])
-    stub = await session.get(Page, "module_page:src/stub")
+    stub = await session.get(Page, (repo_id, "module_page:src/stub"))
     stub.metadata_json = json.dumps({"file_paths": ["src/a.py"], STUB_FALLBACK_ERROR: "boom"})
     await session.flush()
     swept = await sweep_unyielded_module_pages(

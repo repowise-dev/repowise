@@ -134,7 +134,7 @@ async def _run_restyle(
         await upsert_pages_from_generated(session, generated_pages, repo_id)
 
     try:
-        fts = FullTextSearch(engine)
+        fts = FullTextSearch(engine, repository_id=repo_id)
         await fts.ensure_index()
         await fts.index_pages(generated_pages)
     except Exception:

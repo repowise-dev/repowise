@@ -172,11 +172,13 @@ async def _vector_ids(lance_dir: _DoctorPath) -> tuple[set[str], str | None]:
         return set(), f"{type(exc).__name__}: {exc}; to fix: {store_open_fix_hint(exc)}"
 
 
-async def _fts_ids(engine) -> set[str]:
+async def _fts_ids(engine, repo_id: str) -> set[str]:
+    """*repo_id*'s indexed page ids. Another repository's rows in a shared
+    store are neither missing nor orphaned from this one's point of view."""
     from repowise.core.persistence import FullTextSearch
 
     try:
-        return await FullTextSearch(engine).list_indexed_ids()
+        return await FullTextSearch(engine, repository_id=repo_id).list_indexed_ids()
     except Exception:
         return set()
 
@@ -204,7 +206,7 @@ async def _reconcile(
 
     lance_dir = repowise_dir / "lancedb"
     vs_ids, vs_error = await _vector_ids(lance_dir)
-    fts_ids = await _fts_ids(engine)
+    fts_ids = await _fts_ids(engine, repo.id)
     await engine.dispose()
     vectors_expected = lance_dir.exists() or _real_embedder_configured(repo_path)
     missing_from_vector = (
@@ -220,6 +222,7 @@ async def _reconcile(
             orphaned_vector=vs_ids - sql.vector_sql_ids,
             missing_from_fts=sql.indexable_ids - fts_ids if fts_ids else set(),
             orphaned_fts=fts_ids - sql.sql_ids if fts_ids else set(),
+            repository_id=repo.id,
             vector_store_empty=(
                 (lance_dir.exists() or bool(missing_from_vector))
                 and vs_error is None

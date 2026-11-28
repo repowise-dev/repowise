@@ -384,6 +384,22 @@ async def _open_store(db_url: str) -> Any:
     return engine
 
 
+async def _served_repository_id(session_factory: Any) -> str | None:
+    """The served repository's id, or None when the store cannot name one.
+
+    None leaves full-text search unscoped, which is exact for a store holding
+    one repository and is what an empty or unreadable store gets.
+    """
+    from repowise.server.mcp_server._helpers import _get_repo
+
+    try:
+        async with session_factory() as session:
+            return (await _get_repo(session)).id
+    except Exception:
+        _log.debug("repowise MCP: no served repository to scope search to", exc_info=True)
+        return None
+
+
 async def _open_single_repo_store(
     configured_db_url: str | None,
 ) -> tuple[Any, StoreUnavailableError | None]:
@@ -766,7 +782,11 @@ async def _lifespan(server: FastMCP):
 
     await _state.publish_served_repo_id(_state._session_factory)
 
-    _state._fts = FullTextSearch(engine)
+    # Scoped to the served repository, so a store several repositories share
+    # (``REPOWISE_DB_URL``) answers keyword search with this one's pages.
+    _state._fts = FullTextSearch(
+        engine, repository_id=await _served_repository_id(_state._session_factory)
+    )
     try:
         await _state._fts.ensure_index()
     except Exception:

@@ -186,7 +186,7 @@ async def test_fast_reinit_reconciles_source_and_search_without_generating_pages
                 page.id: page.content for page in (await session.execute(select(Page))).scalars()
             }
             if already_tombstoned:
-                page = await session.get(Page, "file_page:gone.py")
+                page = await session.get(Page, (repo_id, "file_page:gone.py"))
                 page.freshness_status = "tombstone"
         fts = FullTextSearch(engine)
         await fts.ensure_index()
@@ -263,11 +263,11 @@ async def test_fast_reinit_retries_failed_search_cleanup(tmp_path, monkeypatch, 
     repo_path.mkdir()
     (repo_path / "kept.py").write_text("x", encoding="utf-8")
     await _seed_file_pages(repo_path, "kept.py", "gone.py")
-    engine, sf, _ = await open_repo_db(repo_path, repo_name="r")
+    engine, sf, repo_id = await open_repo_db(repo_path, repo_name="r")
     try:
         if already_tombstoned:
             async with get_session(sf) as session:
-                page = await session.get(Page, "file_page:gone.py")
+                page = await session.get(Page, (repo_id, "file_page:gone.py"))
                 page.freshness_status = "tombstone"
         fts = FullTextSearch(engine)
         await fts.ensure_index()
@@ -283,7 +283,7 @@ async def test_fast_reinit_retries_failed_search_cleanup(tmp_path, monkeypatch, 
 
     original_delete = FullTextSearch.delete_many
 
-    async def unavailable(self, page_ids):
+    async def unavailable(self, page_ids, **_kwargs):
         raise RuntimeError("search cleanup unavailable")
 
     with monkeypatch.context() as patcher:
@@ -314,10 +314,10 @@ async def test_fast_reinit_closes_delete_only_store_when_cleanup_fails(
     (repo_path / "kept.py").write_text("x", encoding="utf-8")
     await _seed_file_pages(repo_path, "kept.py", "gone.py")
     if already_tombstoned:
-        engine, sf, _ = await open_repo_db(repo_path, repo_name="r")
+        engine, sf, repo_id = await open_repo_db(repo_path, repo_name="r")
         try:
             async with get_session(sf) as session:
-                page = await session.get(Page, "file_page:gone.py")
+                page = await session.get(Page, (repo_id, "file_page:gone.py"))
                 page.freshness_status = "tombstone"
         finally:
             await engine.dispose()

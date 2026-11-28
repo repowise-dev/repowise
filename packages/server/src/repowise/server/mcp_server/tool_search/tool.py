@@ -140,7 +140,9 @@ async def _issue_files(repo: str | None, query: str, names: set[str]) -> IssueFi
 async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id: Any) -> list[dict]:
     """Drop tombstoned and excluded pages, then boost, demote and dedupe the rest."""
     async with get_session(ctx.session_factory) as session:
-        page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
+        page_info, tombstoned, git_map = await _load_page_info(
+            session, output, repo_id, with_git=True
+        )
         path_index = await file_path_index(session, repo_id)
         minor = await _minor_spotlights(session, output, query, repo_id)
         origins = await file_origins(session, repo_id, page_info.values())

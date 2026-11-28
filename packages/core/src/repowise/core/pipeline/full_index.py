@@ -117,7 +117,7 @@ async def index_repo_full(
             from repowise.core.persistence.search import FullTextSearch
 
             try:
-                fts = FullTextSearch(engine)
+                fts = FullTextSearch(engine, repository_id=repo.id)
                 await fts.ensure_index()
                 await fts.delete_many(sorted(fts_cleanup_ids))
                 clear_cleanup_debt(repo_path, "fts", fts_cleanup_ids)

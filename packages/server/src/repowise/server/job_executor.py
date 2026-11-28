@@ -664,7 +664,7 @@ async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
     swept_page_ids = await _persist_index_result(run, result, incremental_pages)
 
     all_pages = (result.generated_pages or []) + incremental_pages
-    await _refresh_fts(run.fts, swept_page_ids, all_pages)
+    await _refresh_fts(run.fts, swept_page_ids, all_pages, spec.repo_id)
     await refresh_planner_stats(run.session_factory.kw["bind"])
     await publish_index_persistence(spec.repo_id, Path(spec.repo_path))
 
@@ -779,14 +779,15 @@ async def _persist_index_result(run: _JobRun, result: Any, incremental_pages: li
     return swept_page_ids
 
 
-async def _refresh_fts(fts: Any, swept_page_ids: Any, pages: list) -> None:
+async def _refresh_fts(fts: Any, swept_page_ids: Any, pages: list, repo_id: str) -> None:
     """FTS writes, after the session closes: the index can share its SQLite
-    file, whose write lock the session would hold."""
+    file, whose write lock the session would hold. Scoped to *repo_id*: the
+    primary index can hold other repositories' pages under the same ids."""
     if fts is None:
         return
     if swept_page_ids:
-        await fts.delete_many(swept_page_ids)
-    await fts.index_pages(pages)
+        await fts.delete_many(swept_page_ids, repository_id=repo_id)
+    await fts.index_pages(pages, repository_id=repo_id)
 
 
 def _provider_failed_to_load(run: _JobRun) -> bool:

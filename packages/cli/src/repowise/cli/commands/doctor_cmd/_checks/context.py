@@ -19,6 +19,9 @@ class StoreDrift:
     # An index on disk holding no vectors at all. Repairing that is a whole
     # reindex, which doctor does not start on a hosted embedder unasked.
     vector_store_empty: bool = False
+    # The repository the ids belong to. A store several repositories share
+    # holds the same ids for each, so a repair touches only this one's.
+    repository_id: str | None = None
 
     def has_mismatches(self) -> bool:
         return bool(

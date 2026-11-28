@@ -265,11 +265,12 @@ async def _persist_authoritative_pages(
 async def _sync_authoritative_fts(
     *,
     engine: Any,
+    repo_id: str,
     repo_path: Path,
     generated_pages: list[Any],
     retired_page_ids: list[str],
 ) -> None:
-    """Replace full-run FTS content and durably retry retired-id cleanup."""
+    """Replace *repo_id*'s full-run FTS content and durably retry retired-id cleanup."""
     from repowise.core.persistence.search import FullTextSearch
     from repowise.core.pipeline.cleanup_debt import (
         clear_cleanup_debt,
@@ -279,7 +280,7 @@ async def _sync_authoritative_fts(
 
     cleanup_ids = set(retired_page_ids) | load_cleanup_debt(repo_path)["fts"]
     try:
-        fts = FullTextSearch(engine)
+        fts = FullTextSearch(engine, repository_id=repo_id)
         await fts.ensure_index()
         if cleanup_ids:
             await fts.delete_many(sorted(cleanup_ids))
@@ -416,6 +417,7 @@ async def _run_upgrade(
     try:
         await _sync_authoritative_fts(
             engine=engine,
+            repo_id=repo_id,
             repo_path=repo_path,
             generated_pages=generated_pages,
             retired_page_ids=retired_page_ids,

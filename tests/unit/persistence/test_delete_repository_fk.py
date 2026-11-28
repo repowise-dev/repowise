@@ -66,7 +66,9 @@ async def test_delete_repository_with_archived_page_versions(fk_session):
     await upsert_page(fk_session, **{**kwargs, "content": "# Rewritten\n\nSecond pass."})
     await fk_session.commit()
 
-    assert await get_page_versions(fk_session, page.id), "expected an archived snapshot"
+    assert await get_page_versions(
+        fk_session, page.id, repository_id=repo.id
+    ), "expected an archived snapshot"
 
     deleted = await delete_repository(fk_session, repo.id)
     await fk_session.commit()

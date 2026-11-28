@@ -36,6 +36,7 @@ def repo_level_page_rekey_statements(
     new_name: str,
     *,
     has_page_fts: bool = True,
+    page_fts_scoped: bool = True,
 ) -> list[tuple[str, dict[str, Any]]]:
     """The statements that move repo-level pages from *old_name* to *new_name*.
 
@@ -67,7 +68,8 @@ def repo_level_page_rekey_statements(
         )
         statements.append(
             (
-                "UPDATE wiki_page_versions SET page_id = :new_id WHERE page_id = :old_id",
+                "UPDATE wiki_page_versions SET page_id = :new_id "
+                "WHERE repository_id = :repo_id AND page_id = :old_id",
                 params,
             )
         )
@@ -81,10 +83,19 @@ def repo_level_page_rekey_statements(
             )
         )
         if has_page_fts:
+            # An index from before ``page_fts.repository_id`` existed is
+            # rebuilt by ``FullTextSearch.ensure_index``; until then it can
+            # only be matched by id. A row naming no repository belongs to
+            # nobody and moves too, as ``search._OWN_ROWS`` treats it.
+            scope = (
+                " AND (repository_id = :repo_id OR repository_id IS NULL)"
+                if page_fts_scoped
+                else ""
+            )
             statements.append(
                 (
                     "UPDATE page_fts SET page_id = :new_id, target_path = :new_target "
-                    "WHERE page_id = :old_id",
+                    f"WHERE page_id = :old_id{scope}",
                     params,
                 )
             )
@@ -101,8 +112,8 @@ async def rekey_repo_level_pages(
     """Move *repository_id*'s repo-level pages to the ids *new_name* builds.
 
     No-op when the name is unchanged or empty. The store's connections run
-    with ``foreign_keys=ON`` and ``wiki_page_versions.page_id`` references
-    ``wiki_pages.id``, so neither side of the swap can move first: the
+    with ``foreign_keys=ON`` and ``wiki_page_versions (repository_id, page_id)``
+    references ``wiki_pages (repository_id, id)``, so neither side of the swap can move first: the
     constraints are deferred to commit, where every pair has landed.
     """
     if not old_name or old_name == new_name:
@@ -110,8 +121,17 @@ async def rekey_repo_level_pages(
     has_page_fts = (
         await session.execute(text("SELECT 1 FROM sqlite_master WHERE name = 'page_fts'"))
     ).first() is not None
+    page_fts_scoped = has_page_fts and (
+        await session.execute(
+            text("SELECT 1 FROM pragma_table_info('page_fts') WHERE name = 'repository_id'")
+        )
+    ).first() is not None
     statements = repo_level_page_rekey_statements(
-        repository_id, old_name, new_name, has_page_fts=has_page_fts
+        repository_id,
+        old_name,
+        new_name,
+        has_page_fts=has_page_fts,
+        page_fts_scoped=page_fts_scoped,
     )
     if not statements:
         return

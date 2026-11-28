@@ -447,7 +447,7 @@ async def symbol_backed_pages(
         return []
 
     async with get_session(ctx.session_factory) as session:
-        by_path = await _file_pages(session, paths)
+        by_path = await _file_pages(session, (await _get_repo(session)).id, paths)
     # Without ``pageless`` a file with no page is dropped: the caller only
     # ranks pages.
     out = [
@@ -462,10 +462,11 @@ async def symbol_backed_pages(
     return out
 
 
-async def _file_pages(session, paths: list[str]) -> dict[str, dict]:
-    """The live file page of each of *paths* that has one, by path."""
+async def _file_pages(session, repo_id: str, paths: list[str]) -> dict[str, dict]:
+    """*repo_id*'s live file page of each of *paths* that has one, by path."""
     res = await session.execute(
         select(Page.id, Page.target_path, Page.title, Page.summary, Page.page_type).where(
+            Page.repository_id == repo_id,
             Page.target_path.in_(paths),
             Page.page_type == "file_page",
             Page.freshness_status != "tombstone",
@@ -568,7 +569,7 @@ async def filename_backed_pages(
             :max_files
         ]
         ranked_paths = [index.paths[i] for i in ranked]
-        by_path = await _file_pages(session, ranked_paths)
+        by_path = await _file_pages(session, repository.id, ranked_paths)
         deleted = await deleted_file_paths(session, repository.id, ranked_paths)
     rows = []
     for i in ranked:

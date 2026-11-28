@@ -666,8 +666,11 @@ async def test_page_lookup_outside_scope_is_404(client, session_factory, tokens_
     url = f"/api/pages/lookup?page_id=file_page:b.py&repo_id={alpha}"
     scoped = await client.get(url, headers={"Authorization": f"Bearer {SCOPED}"})
     assert scoped.status_code == 404
-    # Unrestricted callers are unchanged.
-    assert (await client.get(url, headers={"Authorization": "Bearer ops-token"})).status_code == 200
+    # Unrestricted callers reach the page in the repository that owns it; the
+    # request above names alpha, which has no such page.
+    own = f"/api/pages/lookup?page_id=file_page:b.py&repo_id={beta}"
+    assert (await client.get(own, headers={"Authorization": "Bearer ops-token"})).status_code == 200
+    assert (await client.get(url, headers={"Authorization": "Bearer ops-token"})).status_code == 404
 
 
 async def test_job_stream_refuses_tool_scoped_bearer(client, session_factory, tokens_file) -> None:

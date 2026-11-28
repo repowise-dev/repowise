@@ -147,12 +147,12 @@ async def _spotlight(session, repo_id: str, target: str) -> str:
     return page_id
 
 
-async def _status(session, page_id: str) -> tuple[str, list[str] | None]:
+async def _status(session, repo_id: str, page_id: str) -> tuple[str, list[str] | None]:
     import json
 
     from repowise.core.persistence.models import Page
 
-    page = await session.get(Page, page_id)
+    page = await session.get(Page, (repo_id, page_id))
     return page.freshness_status, json.loads(page.metadata_json or "{}").get("successor_paths")
 
 
@@ -169,8 +169,8 @@ async def test_a_deleted_files_spotlight_pages_are_tombstoned_and_returned(sessi
     marked = await mark_tombstone_pages(session, repo_id, [("pkg/gone.py", ["pkg/new.py"])])
 
     assert sorted(marked) == ["file_page:pkg/gone.py", gone]
-    assert await _status(session, gone) == ("tombstone", ["pkg/new.py"])
-    assert (await _status(session, sibling))[0] == "fresh"
+    assert await _status(session, repo_id, gone) == ("tombstone", ["pkg/new.py"])
+    assert (await _status(session, repo_id, sibling))[0] == "fresh"
 
 
 async def test_a_path_is_matched_literally_not_as_a_like_pattern(session, engine):
@@ -186,7 +186,7 @@ async def test_a_path_is_matched_literally_not_as_a_like_pattern(session, engine
     marked = await mark_tombstone_pages(session, repo_id, [("pkg/a_b.py", [])])
 
     assert sorted(marked) == ["file_page:pkg/a_b.py", gone]
-    assert (await _status(session, other))[0] == "fresh"
+    assert (await _status(session, repo_id, other))[0] == "fresh"
 
 
 async def test_a_case_only_sibling_keeps_its_spotlight_pages(session, engine):
@@ -202,7 +202,7 @@ async def test_a_case_only_sibling_keeps_its_spotlight_pages(session, engine):
     marked = await mark_tombstone_pages(session, repo_id, [("pkg/Foo.py", [])])
 
     assert sorted(marked) == ["file_page:pkg/Foo.py", gone]
-    assert (await _status(session, kept))[0] == "fresh"
+    assert (await _status(session, repo_id, kept))[0] == "fresh"
 
 
 async def test_api_contract_page_is_tombstoned_and_returned_with_file_page(session, engine):
@@ -240,8 +240,8 @@ async def test_api_contract_page_is_tombstoned_and_returned_with_file_page(sessi
     marked = await mark_tombstone_pages(session, repo.id, [(path, [])])
 
     assert sorted(marked) == [f"api_contract:{path}", f"file_page:{path}"]
-    assert (await _status(session, f"file_page:{path}"))[0] == "tombstone"
-    assert (await _status(session, f"api_contract:{path}"))[0] == "tombstone"
+    assert (await _status(session, repo.id, f"file_page:{path}"))[0] == "tombstone"
+    assert (await _status(session, repo.id, f"api_contract:{path}"))[0] == "tombstone"
 
 
 async def test_postgresql_fts_queries_exclude_tombstoned_pages():

@@ -465,7 +465,7 @@ def _generate_docs_for_added_repo(
                 local_path=str(repo_path),
             )
             await upsert_pages_from_generated(session, pages, repo.id)
-        fts = FullTextSearch(engine)
+        fts = FullTextSearch(engine, repository_id=repo.id)
         await fts.ensure_index()
         await fts.index_pages(pages)
         await engine.dispose()

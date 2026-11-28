@@ -74,8 +74,10 @@ async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any
 _FTS_BACKFILL_CHUNK = 200
 
 
-async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str] | None) -> None:
-    """Full-text index the pages a resumed run kept rather than regenerated.
+async def _index_preserved_pages(
+    sf: Any, fts: Any, preserved_page_ids: set[str] | None, repo_id: str
+) -> None:
+    """Full-text index *repo_id*'s pages a resumed run kept rather than regenerated.
 
     ``page_fts`` is a standalone FTS5 table with no triggers: a row appears
     only when something calls :meth:`FullTextSearch.index`. The incremental
@@ -112,7 +114,11 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
                             Page.summary,
                             Page.target_path,
                             Page.digest,
-                        ).where(Page.id.in_(batch), Page.freshness_status != "tombstone")
+                        ).where(
+                            Page.repository_id == repo_id,
+                            Page.id.in_(batch),
+                            Page.freshness_status != "tombstone",
+                        )
                     )
                 ).all()
             await fts.index_many(
@@ -126,7 +132,8 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
                         digest or "",
                     )
                     for page_id, title, content, summary, target_path, digest in rows
-                ]
+                ],
+                repository_id=repo_id,
             )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
@@ -416,11 +423,13 @@ async def persist_result(
                 fts = FullTextSearch(engine)
                 await fts.ensure_index()
             if fts is not None and cleanup_ids:
-                await fts.delete_many(sorted(cleanup_ids))
+                await fts.delete_many(sorted(cleanup_ids), repository_id=persisted_repo_id)
                 clear_cleanup_debt(repo_path, "fts", cleanup_ids)
             if fts is not None and result.generated_pages:
-                await fts.index_pages(result.generated_pages)
-            await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
+                await fts.index_pages(result.generated_pages, repository_id=persisted_repo_id)
+            await _index_preserved_pages(
+                sf, fts, getattr(result, "preserved_page_ids", None), persisted_repo_id
+            )
     except Exception:
         await engine.dispose()
         raise

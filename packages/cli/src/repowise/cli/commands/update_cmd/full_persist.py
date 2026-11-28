@@ -420,7 +420,7 @@ async def index_full_text(ctx: FullUpdatePersist) -> None:
     from repowise.core.pipeline.cleanup_debt import clear_cleanup_debt
 
     with timed(ctx.timings, "persist.fts"):
-        fts = FullTextSearch(ctx.engine)
+        fts = FullTextSearch(ctx.engine, repository_id=ctx.repo_id)
         await fts.ensure_index()
         await fts.index_pages(ctx.generated_pages)
         if ctx.fts_cleanup_ids:

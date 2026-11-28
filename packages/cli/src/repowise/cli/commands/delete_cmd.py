@@ -171,7 +171,7 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
         async with get_session(sf) as session:
             page_ids = await list_page_ids(session, rid)
 
-            fts = FullTextSearch(engine)
+            fts = FullTextSearch(engine, repository_id=rid)
             await fts.delete_many(page_ids)
 
             await delete_repository(session, rid)

@@ -634,7 +634,7 @@ async def delete_fts_rows(ctx: IncrementalPersist) -> None:
     from repowise.core.persistence.search import FullTextSearch
     from repowise.core.pipeline.cleanup_debt import clear_cleanup_debt
 
-    fts = FullTextSearch(ctx.engine)
+    fts = FullTextSearch(ctx.engine, repository_id=ctx.repo_id or None)
     with timed(ctx.timings, "persist.fts"):
         await fts.ensure_index()
         await fts.delete_many(sorted(ctx.fts_cleanup_ids))

@@ -13,7 +13,7 @@ async def _repair_fts(engine, sf, drift: StoreDrift) -> int:
     """Re-index missing pages and delete orphans; returns entries repaired."""
     from repowise.core.persistence import FullTextSearch, get_session
 
-    fts = FullTextSearch(engine)
+    fts = FullTextSearch(engine, repository_id=drift.repository_id)
     try:
         await fts.ensure_index()
     except Exception as exc:
@@ -36,9 +36,10 @@ async def _repair_fts(engine, sf, drift: StoreDrift) -> int:
 
             from repowise.core.persistence.models import Page
 
-            rows = await session.execute(
-                select(Page).where(Page.id.in_(list(drift.missing_from_fts)))
-            )
+            query = select(Page).where(Page.id.in_(list(drift.missing_from_fts)))
+            if drift.repository_id is not None:
+                query = query.where(Page.repository_id == drift.repository_id)
+            rows = await session.execute(query)
             # ORM rows key on ``id``, not ``page_id``, so they go to
             # index_many as tuples rather than to index_pages.
             batch = [
@@ -73,8 +74,11 @@ def _announce_embedding(drift: StoreDrift, embedder_name: str) -> bool:
     return reindex_instead
 
 
-async def _embed_missing(sf, vs, missing: set[str]):
-    """Yield once per page embedded, so a later failure keeps the count so far."""
+async def _embed_missing(sf, vs, missing: set[str], repository_id: str | None = None):
+    """Yield once per page embedded, so a later failure keeps the count so far.
+
+    *repository_id* keeps another repository's page under the same id out.
+    """
     from sqlalchemy import select
 
     from repowise.core.persistence import get_session
@@ -82,7 +86,10 @@ async def _embed_missing(sf, vs, missing: set[str]):
     from repowise.core.persistence.vector_store import embed_item
 
     async with get_session(sf) as session:
-        rows = await session.execute(select(Page).where(Page.id.in_(list(missing))))
+        query = select(Page).where(Page.id.in_(list(missing)))
+        if repository_id is not None:
+            query = query.where(Page.repository_id == repository_id)
+        rows = await session.execute(query)
         for page in rows.scalars().all():
             if not (page.title or "").strip():
                 # A vector no search can reach by name is not a repair; leave
@@ -135,7 +142,9 @@ async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
                 "set an embedder key and run `repowise reindex`"
             )
         if drift.missing_from_vector and not reindex_instead:
-            async for _page_id in _embed_missing(sf, vs, drift.missing_from_vector):
+            async for _page_id in _embed_missing(
+                sf, vs, drift.missing_from_vector, drift.repository_id
+            ):
                 repaired += 1
         for pid in drift.orphaned_vector:
             await vs.delete(pid)

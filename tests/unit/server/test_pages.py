@@ -96,7 +96,7 @@ async def test_list_pages_encodes_rows_as_the_generic_encoder_would(
 
     repo_id, _ = await _create_page(client, app.state.session_factory)
     async with get_session(app.state.session_factory) as session:
-        page = await crud.get_page(session, "file_page:src/main.py")
+        page = await crud.get_page(session, "file_page:src/main.py", repository_id=repo_id)
         rows = await crud.list_page_summaries(session, repo_id, crud.PageListing())
         expected_full = jsonable_encoder([PageResponse.from_orm(page)])
         expected_summary = jsonable_encoder([PageSummaryResponse.from_row(rows[0])])
@@ -297,7 +297,7 @@ async def test_a_row_is_named_in_its_place_whichever_window_lists_it(
                 provider_name="mock",
             )
             if parent:
-                row = await crud.get_page(session, page_id)
+                row = await crud.get_page(session, page_id, repository_id=repo_id)
                 row.parent_page_id = parent
 
     labels = {}
@@ -666,7 +666,7 @@ async def test_a_retired_file_page_serves_the_page_that_superseded_it(
     assert resp.headers["x-repowise-redirected-from"] == page_id
 
     async with get_session(app.state.session_factory) as session:
-        await session.delete(await session.get(Page, contract_id))
+        await session.delete(await session.get(Page, (repo_id, contract_id)))
         await mark_tombstone_pages(session, repo_id, [("src/main.py", [])])
     resp = await client.get(f"/api/pages/{page_id}")
     assert resp.json()["id"] == page_id

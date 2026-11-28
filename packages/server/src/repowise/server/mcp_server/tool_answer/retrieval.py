@@ -295,8 +295,13 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
         return len(top)
     try:
         async with get_session(ctx.session_factory) as session:
+            from repowise.server.mcp_server._helpers import _get_repo
+
+            repo_id = (await _get_repo(session)).id
             res = await session.execute(
-                select(Page.id, Page.content, Page.digest).where(Page.id.in_(page_ids))
+                select(Page.id, Page.content, Page.digest).where(
+                    Page.repository_id == repo_id, Page.id.in_(page_ids)
+                )
             )
             content_by_id = {row[0]: _page_excerpt(row[1], row[2]) for row in res.all()}
     except Exception:

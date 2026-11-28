@@ -340,8 +340,8 @@ async def execute_scoped_generation(
     if fts is not None:
         try:
             if swept_page_ids:
-                await fts.delete_many(swept_page_ids)
-            await fts.index_pages(generated_pages)
+                await fts.delete_many(swept_page_ids, repository_id=repo_id)
+            await fts.index_pages(generated_pages, repository_id=repo_id)
         except Exception as exc:
             logger.debug("fts_index_skipped", error=str(exc))
 

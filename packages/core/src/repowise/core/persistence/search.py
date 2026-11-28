@@ -50,6 +50,9 @@ class SearchResult:
     score: float
     snippet: str
     search_type: Literal["vector", "fulltext"]
+    # The repository the page belongs to, where the backend knows it. A page
+    # id alone is ambiguous in a store several repositories share.
+    repository_id: str | None = None
 
 
 _SNIPPET_LEN = 200
@@ -61,8 +64,10 @@ _SNIPPET_EDGE_SLACK = 20
 # Markdown heading lines and blank lines at the start of a text.
 _LEADING_HEADINGS = re.compile(r"\A(?:[ \t]*(?:#{1,6}(?:[ \t][^\n]*)?)?[ \t]*\r?\n)+")
 
-# Every column of ``page_fts``, in table order. ``page_id`` is stored but not
-# indexed — it is the join key, never a thing to match on.
+# Every column of ``page_fts``, in table order. ``page_id`` and
+# ``repository_id`` are stored but not indexed — together they are the join
+# key, never a thing to match on. A page id names a page only within one
+# repository, so the pair is what identifies a row in a shared store.
 #
 # ``summary`` and ``target_path`` are indexed because both decide whether a
 # page is the right answer while being unable to make it a candidate. The
@@ -82,6 +87,7 @@ _LEADING_HEADINGS = re.compile(r"\A(?:[ \t]*(?:#{1,6}(?:[ \t][^\n]*)?)?[ \t]*\r?
 # so retrieval still finds the page by those words.
 PAGE_FTS_COLUMNS = (
     "page_id",
+    "repository_id",
     "title",
     "content",
     "summary",
@@ -92,13 +98,19 @@ PAGE_FTS_COLUMNS = (
 
 PAGE_FTS_DDL = (
     "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
-    "USING fts5(page_id UNINDEXED, title, content, summary, target_path, vocabulary, digest)"
+    "USING fts5(page_id UNINDEXED, repository_id UNINDEXED, "
+    "title, content, summary, target_path, vocabulary, digest)"
 )
 
 _PAGE_FTS_INSERT_SQL = (
-    "INSERT INTO page_fts(page_id, title, content, summary, target_path, vocabulary, digest) "
-    "VALUES (:pid, :title, :content, :summary, :target_path, :vocabulary, :digest)"
+    "INSERT INTO page_fts"
+    "(page_id, repository_id, title, content, summary, target_path, vocabulary, digest) "
+    "VALUES (:pid, :repo, :title, :content, :summary, :target_path, :vocabulary, :digest)"
 )
+
+
+class AmbiguousPageIdError(ValueError):
+    """A page id held by several repositories, written without naming one."""
 
 # Page-metadata key for a file page's vocabulary (field names, string
 # literals, comment prose). Indexed for search, never rendered on the page.
@@ -117,49 +129,109 @@ _VOCABULARY_SQL = (
 _ID_CHUNK = 500
 
 
-async def _delete_page_ids(conn: Any, page_ids: Sequence[str]) -> None:
+# The rows a repository-scoped delete or listing covers: its own, plus rows
+# that name no repository. Those were indexed for an id no page held at the
+# time, so they belong to nobody and are orphans to every repository.
+_OWN_ROWS = "(repository_id = :repo OR repository_id IS NULL)"
+
+
+async def _fts_has_repository(conn: Any) -> bool:
+    """Whether this SQLite store's ``page_fts`` has the ``repository_id`` column.
+
+    An index written before the column existed keeps its old shape until
+    :meth:`FullTextSearch.ensure_index` rebuilds it, and some callers (a
+    repository delete, doctor's drift check) never run that. Their deletes and
+    reads fall back to matching by id there rather than failing outright.
+    """
+    row = await conn.execute(
+        text("SELECT 1 FROM pragma_table_info('page_fts') WHERE name = 'repository_id'")
+    )
+    return row.first() is not None
+
+
+async def _delete_page_ids(
+    conn: Any, page_ids: Sequence[str], repository_id: str | None = None
+) -> None:
     """Delete the rows for *page_ids* on an already-open connection.
 
     Takes the connection rather than opening one so a caller that also
-    inserts can put both halves in the same transaction.
+    inserts can put both halves in the same transaction. With
+    *repository_id* only that repository's rows go; without it every row
+    with the id does, which is exact only in a single-repository store. An
+    index not yet rebuilt with the column (see :func:`_fts_has_repository`)
+    can only be matched by id.
     """
+    if repository_id is not None and not await _fts_has_repository(conn):
+        repository_id = None
+    scope = f" AND {_OWN_ROWS}" if repository_id is not None else ""
     for start in range(0, len(page_ids), _ID_CHUNK):
         chunk = page_ids[start : start + _ID_CHUNK]
         placeholders = ", ".join(f":p{i}" for i in range(len(chunk)))
-        params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+        params: dict[str, Any] = {f"p{i}": pid for i, pid in enumerate(chunk)}
+        if repository_id is not None:
+            params["repo"] = repository_id
         await conn.execute(
-            text(f"DELETE FROM page_fts WHERE page_id IN ({placeholders})"),
+            text(f"DELETE FROM page_fts WHERE page_id IN ({placeholders}){scope}"),
             params,
         )
 
 
-async def _stored_vocabulary(conn: Any, page_ids: Sequence[str]) -> dict[str, str]:
-    """``page_id -> vocabulary`` from ``wiki_pages``; ``{}`` without that table."""
+async def _stored_vocabulary(
+    conn: Any, page_ids: Sequence[str], repository_id: str | None = None
+) -> dict[str, tuple[str, str]]:
+    """``page_id -> (repository_id, vocabulary)`` from ``wiki_pages``.
+
+    ``{}`` without that table. With *repository_id* only that repository's
+    rows are read. Without it each id must belong to one repository: an id
+    two repositories hold cannot say whose page is being indexed, so it
+    raises :class:`AmbiguousPageIdError` rather than guess.
+    """
     if not await FullTextSearch._page_table_exists(conn):
         return {}
-    found: dict[str, str] = {}
+    scope = " AND repository_id = :repo" if repository_id is not None else ""
+    found: dict[str, tuple[str, str]] = {}
     for start in range(0, len(page_ids), _ID_CHUNK):
         chunk = page_ids[start : start + _ID_CHUNK]
         placeholders = ", ".join(f":p{i}" for i in range(len(chunk)))
-        params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+        params: dict[str, Any] = {f"p{i}": pid for i, pid in enumerate(chunk)}
+        if repository_id is not None:
+            params["repo"] = repository_id
         rows = await conn.execute(
-            text(f"SELECT id, {_VOCABULARY_SQL} FROM wiki_pages WHERE id IN ({placeholders})"),
+            text(
+                f"SELECT id, repository_id, {_VOCABULARY_SQL} FROM wiki_pages "
+                f"WHERE id IN ({placeholders}){scope}"
+            ),
             params,
         )
-        found.update({r[0]: r[1] or "" for r in rows.fetchall()})
+        for pid, repo, vocabulary in rows.fetchall():
+            if pid in found and found[pid][0] != repo:
+                raise AmbiguousPageIdError(
+                    f"page id {pid!r} belongs to several repositories; "
+                    "index it with a repository_id"
+                )
+            found[pid] = (repo, vocabulary or "")
     return found
 
 
 # An indexed row whose page is gone from ``wiki_pages``. Counting and deleting
 # share the predicate so the number reported is exactly the number removed.
-# ``NOT EXISTS`` rather than ``NOT IN``: the subquery's column is a primary key
-# and can never be NULL today, but ``NOT IN`` returns no rows at all the day one
+# ``NOT EXISTS`` rather than ``NOT IN``: the subquery's columns are the primary
+# key and can never be NULL, but ``NOT IN`` returns no rows at all the day one
 # is, which would turn this into a silent no-op instead of a visible failure.
+# A row indexed with no repository (its page did not exist when it was written)
+# matches no page and counts as an orphan, as it always did.
 _ORPHAN_PREDICATE = (
-    "NOT EXISTS (SELECT 1 FROM wiki_pages p WHERE p.id = page_fts.page_id)"
+    "NOT EXISTS (SELECT 1 FROM wiki_pages p WHERE p.id = page_fts.page_id "
+    "AND p.repository_id = page_fts.repository_id)"
 )
 _ORPHAN_COUNT_SQL = f"SELECT count(*) FROM page_fts WHERE {_ORPHAN_PREDICATE}"
 _ORPHAN_DELETE_SQL = f"DELETE FROM page_fts WHERE {_ORPHAN_PREDICATE}"
+# An index from before ``repository_id`` was a column can only be matched by id.
+# Read once, while deciding whether that index needs rebuilding.
+_LEGACY_ORPHAN_COUNT_SQL = (
+    "SELECT count(*) FROM page_fts WHERE "
+    "NOT EXISTS (SELECT 1 FROM wiki_pages p WHERE p.id = page_fts.page_id)"
+)
 
 # The text PostgreSQL indexes and searches. The GIN index built by the Alembic
 # migration uses this exact expression: any drift between the two silently
@@ -189,13 +261,13 @@ _SCORE_EPSILON = 1e-6
 
 # Per-column bm25 weights, in ``PAGE_FTS_COLUMNS`` order: title and
 # target_path name the file a page is about, content and summary only mention
-# it, and ``digest`` weighs like the prose it indexes. ``page_id`` is
-# UNINDEXED and contributes nothing, but bm25() takes one weight per column,
-# so it still needs one. bm25() ignores a weight past the
+# it, and ``digest`` weighs like the prose it indexes. ``page_id`` and
+# ``repository_id`` are UNINDEXED and contribute nothing, but bm25() takes one
+# weight per column, so each still needs one. bm25() ignores a weight past the
 # last column and defaults a missing one to 1.0, so the arity is checked by
 # test_search_fts_columns rather than by anything raising here. The vocabulary
 # is a bag of words, so it counts for less than prose written about the file.
-_BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0, 0.5, 1.0)
+_BM25_COLUMN_WEIGHTS = (0.0, 0.0, 4.0, 1.0, 1.0, 3.0, 0.5, 1.0)
 _BM25_SCORE = "bm25(page_fts, " + ", ".join(str(w) for w in _BM25_COLUMN_WEIGHTS) + ")"
 
 
@@ -441,7 +513,9 @@ class FullTextSearch:
             indexed_count = int(indexed_rows.scalar() or 0)
             page_rows = await conn.execute(text("SELECT count(*) FROM wiki_pages"))
             page_count = int(page_rows.scalar() or 0)
-            orphan_count = await self._count_orphans(conn)
+            orphan_count = await self._count_orphans(
+                conn, legacy="repository_id" not in columns
+            )
 
         # The rebuild is a delete followed by a refill from a different table,
         # so an index holding more rows than ``wiki_pages`` used to be refused
@@ -485,8 +559,9 @@ class FullTextSearch:
             await conn.execute(
                 text(
                     "INSERT INTO page_fts"
-                    "(page_id, title, content, summary, target_path, vocabulary, digest) "
-                    "SELECT id, COALESCE(title,''), COALESCE(content,''), "
+                    "(page_id, repository_id, title, content, summary, target_path, "
+                    "vocabulary, digest) "
+                    "SELECT id, repository_id, COALESCE(title,''), COALESCE(content,''), "
                     "       COALESCE(summary,''), COALESCE(target_path,''), "
                     f"      {_VOCABULARY_SQL}, COALESCE(digest,'') "
                     "FROM wiki_pages"
@@ -509,9 +584,12 @@ class FullTextSearch:
         return row.scalar() is not None
 
     @staticmethod
-    async def _count_orphans(conn) -> int:
-        """How many indexed rows name a page ``wiki_pages`` no longer has."""
-        row = await conn.execute(text(_ORPHAN_COUNT_SQL))
+    async def _count_orphans(conn, *, legacy: bool = False) -> int:
+        """How many indexed rows name a page ``wiki_pages`` no longer has.
+
+        *legacy* for an index without a ``repository_id`` column, matched by id.
+        """
+        row = await conn.execute(text(_LEGACY_ORPHAN_COUNT_SQL if legacy else _ORPHAN_COUNT_SQL))
         return int(row.scalar() or 0)
 
     async def prune_orphans(self) -> int:
@@ -568,8 +646,13 @@ class FullTextSearch:
         summary: str | None = None,
         target_path: str | None = None,
         digest: str = "",
+        *,
+        repository_id: str | None = None,
     ) -> None:
         """Add or replace a page in the FTS index.
+
+        *repository_id* (else the instance's) names whose page this is; see
+        :meth:`index_many`.
 
         *summary* and *target_path* are optional so a caller written against
         the older three-column index keeps working, but omitting them is
@@ -588,9 +671,14 @@ class FullTextSearch:
         exclude, and nothing would report the disagreement. The page itself is
         untouched: it stays in ``wiki_pages`` and stays a valid link target.
         """
-        await self.index_many([(page_id, title, content, summary, target_path, digest)])
+        await self.index_many(
+            [(page_id, title, content, summary, target_path, digest)],
+            repository_id=repository_id,
+        )
 
-    async def index_pages(self, pages: Iterable[Any]) -> None:
+    async def index_pages(
+        self, pages: Iterable[Any], *, repository_id: str | None = None
+    ) -> None:
         """Index generated pages, one :meth:`index_many` transaction per chunk.
 
         Each entry needs ``page_id``, ``title``, ``content``, ``summary``,
@@ -605,12 +693,19 @@ class FullTextSearch:
                 [
                     (p.page_id, p.title, p.content, p.summary, p.target_path, p.digest)
                     for p in chunk
-                ]
+                ],
+                repository_id=repository_id,
             )
+
+    def _repo(self, repository_id: str | None) -> str | None:
+        """The repository a write applies to: the call's, else the instance's."""
+        return repository_id if repository_id is not None else self._repository_id
 
     async def index_many(
         self,
         pages: Sequence[tuple[str, str, str, str | None, str | None, str]],
+        *,
+        repository_id: str | None = None,
     ) -> None:
         """Add or replace many pages in a single transaction.
 
@@ -623,9 +718,16 @@ class FullTextSearch:
 
         A page id repeated inside *pages* keeps its last entry, which is what
         the per-page loop this replaces would have left on disk.
+
+        Every page belongs to *repository_id* (else the instance's): only that
+        repository's rows are replaced. With neither, each page's repository
+        is read from ``wiki_pages``, which is exact in a store of one
+        repository and raises :class:`AmbiguousPageIdError` for an id several
+        repositories hold.
         """
         if not pages:
             return
+        repository_id = self._repo(repository_id)
 
         # The accounting runs on every dialect, because a call site that
         # forgets a field or writes a page too thin to index is wrong wherever
@@ -637,7 +739,7 @@ class FullTextSearch:
         # it had, or the exclusion only ever applies to pages that never
         # existed.
         deletions: dict[str, None] = {}
-        insertions: dict[str, dict[str, str]] = {}
+        insertions: dict[str, dict[str, str | None]] = {}
         for page_id, title, content, summary, target_path, digest in pages:
             deletions[page_id] = None
             if summary is None or target_path is None:
@@ -645,6 +747,7 @@ class FullTextSearch:
             if meets_information_floor(content, digest=digest or ""):
                 insertions[page_id] = {
                     "pid": page_id,
+                    "repo": repository_id,
                     "title": title,
                     "content": content,
                     "summary": summary or "",
@@ -662,10 +765,22 @@ class FullTextSearch:
             return
 
         async with self._engine.begin() as conn:
-            await _delete_page_ids(conn, list(deletions))
+            stored = await _stored_vocabulary(conn, list(deletions), repository_id)
+            if repository_id is None:
+                # Delete per owning repository, so another repository's row
+                # under the same id survives. An id with no page row has no
+                # owner to scope by and goes by id, as it always did.
+                by_owner: dict[str | None, list[str]] = {}
+                for pid in deletions:
+                    by_owner.setdefault(stored.get(pid, (None, ""))[0], []).append(pid)
+                for owner, ids in by_owner.items():
+                    await _delete_page_ids(conn, ids, owner)
+            else:
+                await _delete_page_ids(conn, list(deletions), repository_id)
             if insertions:
-                for pid, vocabulary in (await _stored_vocabulary(conn, list(insertions))).items():
-                    insertions[pid]["vocabulary"] = vocabulary
+                for pid, row in insertions.items():
+                    if pid in stored:
+                        row["repo"], row["vocabulary"] = stored[pid]
                 await conn.execute(text(_PAGE_FTS_INSERT_SQL), list(insertions.values()))
 
     def _count_skipped_below_floor(self, page_id: str, content: str) -> None:
@@ -719,39 +834,63 @@ class FullTextSearch:
             " or ".join(omitted),
         )
 
-    async def delete(self, page_id: str) -> None:
-        """Remove a page from the FTS index."""
-        if self._dialect == "sqlite":
-            async with self._engine.begin() as conn:
-                await conn.execute(
-                    text("DELETE FROM page_fts WHERE page_id = :pid"),
-                    {"pid": page_id},
-                )
+    async def delete(self, page_id: str, *, repository_id: str | None = None) -> None:
+        """Remove a page from the FTS index.
 
-    async def delete_many(self, page_ids: list[str]) -> None:
-        """Remove multiple pages from the FTS index in a single transaction."""
+        Scoped to *repository_id* (else the instance's); with neither, every
+        row with the id goes, which is exact only in a single-repository store.
+        """
+        await self.delete_many([page_id], repository_id=repository_id)
+
+    async def delete_many(
+        self, page_ids: list[str], *, repository_id: str | None = None
+    ) -> None:
+        """Remove multiple pages from the FTS index in a single transaction.
+
+        Scoped like :meth:`delete`.
+        """
         if not page_ids:
             return
         if self._dialect == "sqlite":
             async with self._engine.begin() as conn:
-                await _delete_page_ids(conn, page_ids)
+                await _delete_page_ids(conn, page_ids, self._repo(repository_id))
         # PostgreSQL: rows deleted via CASCADE automatically remove from GIN index.
 
-    async def list_indexed_ids(self) -> set[str]:
+    async def list_indexed_ids(self, *, repository_id: str | None = None) -> set[str]:
         """Return the set of page IDs currently in the FTS index.
 
         Used by ``repowise doctor --repair`` to detect three-store
-        inconsistencies.
+        inconsistencies. Scoped to *repository_id* (else the instance's);
+        with neither, every repository's ids are returned together.
         """
+        repository_id = self._repo(repository_id)
+        params = {} if repository_id is None else {"repo": repository_id}
         if self._dialect == "sqlite":
             async with self._engine.connect() as conn:
-                rows = await conn.execute(text("SELECT page_id FROM page_fts"))
+                if repository_id is not None and not await _fts_has_repository(conn):
+                    # A legacy index cannot say whose a row is; the pages can.
+                    # A row no repository's page claims is an orphan, and stays
+                    # listed so doctor still reports it.
+                    rows = await conn.execute(
+                        text(
+                            "SELECT f.page_id FROM page_fts f WHERE EXISTS ("
+                            "SELECT 1 FROM wiki_pages p "
+                            "WHERE p.id = f.page_id AND p.repository_id = :repo"
+                            ") OR NOT EXISTS (SELECT 1 FROM wiki_pages p WHERE p.id = f.page_id)"
+                        ),
+                        params,
+                    )
+                    return {r[0] for r in rows.fetchall()}
+                scope = "" if repository_id is None else f" WHERE {_OWN_ROWS}"
+                rows = await conn.execute(text(f"SELECT page_id FROM page_fts{scope}"), params)
                 return {r[0] for r in rows.fetchall()}
         # PostgreSQL: all live wiki_pages rows are automatically indexed via GIN,
         # excluding tombstones retained for stale-path tracking.
+        scope = "" if repository_id is None else " AND repository_id = :repo"
         async with self._engine.connect() as conn:
             rows = await conn.execute(
-                text("SELECT id FROM wiki_pages WHERE freshness_status != 'tombstone'")
+                text(f"SELECT id FROM wiki_pages WHERE freshness_status != 'tombstone'{scope}"),
+                params,
             )
             return {r[0] for r in rows.fetchall()}
 
@@ -850,10 +989,11 @@ class FullTextSearch:
         if repository_id is not None:
             rows = await conn.execute(
                 text(
-                    f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
+                    f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE}, f.repository_id "
                     "FROM page_fts f "
-                    "JOIN wiki_pages p ON p.id = f.page_id "
-                    f"WHERE page_fts MATCH :q AND p.repository_id = :repo_id{scoped} "
+                    "JOIN wiki_pages p "
+                    "  ON p.id = f.page_id AND p.repository_id = f.repository_id "
+                    f"WHERE page_fts MATCH :q AND f.repository_id = :repo_id{scoped} "
                     f"ORDER BY {_BM25_SCORE} "
                     "LIMIT :lim"
                 ),
@@ -862,7 +1002,7 @@ class FullTextSearch:
         else:
             rows = await conn.execute(
                 text(
-                    f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
+                    f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE}, f.repository_id "
                     "FROM page_fts f "
                     f"WHERE page_fts MATCH :q{scoped} "
                     f"ORDER BY {_BM25_SCORE} "
@@ -897,7 +1037,7 @@ class FullTextSearch:
             if len(raw) < limit:
                 widened = _build_fts5_query(query)
                 if widened != fts_query:
-                    seen = {r[0] for r in raw}
+                    seen = {(r[4], r[0]) for r in raw}
                     extra = [
                         r
                         for r in await self._matching_rows(
@@ -907,7 +1047,7 @@ class FullTextSearch:
                             repository_id=repository_id,
                             path_prefix=path_prefix,
                         )
-                        if r[0] not in seen
+                        if (r[4], r[0]) not in seen
                     ]
                     if extra:
                         _log.debug(
@@ -922,22 +1062,21 @@ class FullTextSearch:
         if not raw:
             return []
 
-        page_ids = [r[0] for r in raw]
-        rank_by_id = {r[0]: r[3] for r in raw}
-        content_by_id = {r[0]: r[2] for r in raw}
-        title_by_id = {r[0]: r[1] for r in raw}
+        # A hit is a (repository, page id) pair: in a shared store two
+        # repositories' pages can match under one id.
+        page_ids = list(dict.fromkeys(r[0] for r in raw))
 
         async with self._engine.connect() as conn:
             placeholders = ", ".join(f":id{i}" for i in range(len(page_ids)))
             params = {f"id{i}": pid for i, pid in enumerate(page_ids)}
             page_rows = await conn.execute(
                 text(
-                    f"SELECT id, page_type, target_path FROM wiki_pages "
+                    f"SELECT repository_id, id, page_type, target_path FROM wiki_pages "
                     f"WHERE id IN ({placeholders})"
                 ),
                 params,
             )
-            meta = {r[0]: (r[1], r[2]) for r in page_rows.fetchall()}
+            meta = {(r[0], r[1]): (r[2], r[3]) for r in page_rows.fetchall()}
 
         results = []
         # Rows can come from two MATCH expressions, whose BM25 scales are not
@@ -946,21 +1085,22 @@ class FullTextSearch:
         # keeping a caller that sorts by score in agreement with one that reads
         # the list in order.
         previous: float | None = None
-        for pid in page_ids:
-            page_type, target_path = meta.get(pid, ("", ""))
-            score = -(rank_by_id[pid] or 0.0)  # FTS5 rank is negative
+        for pid, title, content, rank, repo in raw:
+            page_type, target_path = meta.get((repo, pid), ("", ""))
+            score = -(rank or 0.0)  # FTS5 rank is negative
             if previous is not None and score > previous:
                 score = previous * (1 - _SCORE_EPSILON)
             previous = score
             results.append(
                 SearchResult(
                     page_id=pid,
-                    title=title_by_id[pid],
+                    title=title,
                     page_type=page_type,
                     target_path=target_path,
                     score=score,
-                    snippet=snippet_around(content_by_id[pid], query),
+                    snippet=snippet_around(content, query),
                     search_type="fulltext",
+                    repository_id=repo,
                 )
             )
         return results
@@ -1046,7 +1186,8 @@ class FullTextSearch:
                 rows = await conn.execute(
                     text(
                         f"SELECT id, title, content, page_type, target_path, "
-                        f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
+                        f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank, "
+                        f"  repository_id "
                         f"FROM wiki_pages "
                         f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
                         f"  AND freshness_status != 'tombstone' "
@@ -1060,7 +1201,8 @@ class FullTextSearch:
                 rows = await conn.execute(
                     text(
                         f"SELECT id, title, content, page_type, target_path, "
-                        f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
+                        f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank, "
+                        f"  repository_id "
                         f"FROM wiki_pages "
                         f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
                         f"  AND freshness_status != 'tombstone'{scoped} "
@@ -1080,6 +1222,7 @@ class FullTextSearch:
                 score=float(r[5]),
                 snippet=snippet_around(r[2], query),
                 search_type="fulltext",
+                repository_id=r[6],
             )
             for r in raw
         ]

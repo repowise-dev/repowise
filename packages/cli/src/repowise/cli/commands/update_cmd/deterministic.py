@@ -78,10 +78,16 @@ async def _load_prior_page_ids(
     try:
         from sqlalchemy import select as sa_select
 
+        from repowise.core.persistence.crud import get_repository_by_path
         from repowise.core.persistence.models import Page
 
         async with get_session(create_session_factory(engine)) as session:
-            query = sa_select(Page.id, Page.target_path)
+            # This repository's pages only: a store several repositories share
+            # holds theirs under the same ids.
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return {}
+            query = sa_select(Page.id, Page.target_path).where(Page.repository_id == repo.id)
             if page_types is not None:
                 query = query.where(Page.page_type.in_(tuple(page_types)))
             rows = (await session.execute(query)).all()
@@ -465,7 +471,7 @@ async def _persist_async(
                 degraded.append(f"Page count: {exc}")
 
         try:
-            fts = FullTextSearch(engine)
+            fts = FullTextSearch(engine, repository_id=repo_id)
             await fts.ensure_index()
             await fts.index_pages(generated_pages)
         except Exception as exc:
@@ -533,11 +539,17 @@ async def _load_file_page_render_keys(repo_path: Path) -> dict[str, str]:
         from sqlalchemy import select as sa_select
 
         from repowise.core.generation.page_generator.structural import RENDER_KEY
+        from repowise.core.persistence.crud import get_repository_by_path
         from repowise.core.persistence.models import Page
 
         async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return {}
             rows = await session.execute(
-                sa_select(Page.id, Page.metadata_json).where(Page.page_type == "file_page")
+                sa_select(Page.id, Page.metadata_json).where(
+                    Page.repository_id == repo.id, Page.page_type == "file_page"
+                )
             )
             keys: dict[str, str] = {}
             for pid, meta_json in rows:
@@ -649,12 +661,16 @@ async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
         from sqlalchemy import select as sa_select
 
         from repowise.core.generation.page_generator.structural import RENDER_KEY
+        from repowise.core.persistence.crud import get_repository_by_path
         from repowise.core.persistence.models import Page
 
         async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return {}
             rows = await session.execute(
                 sa_select(Page.target_path, Page.metadata_json).where(
-                    Page.page_type == "symbol_spotlight"
+                    Page.repository_id == repo.id, Page.page_type == "symbol_spotlight"
                 )
             )
             keys: dict[str, list[str]] = {}

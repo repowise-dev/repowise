@@ -353,7 +353,7 @@ async def test_delete_workspace_repo_drops_routing_and_registry_row(
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "deleted_pages": 1}
-    repo_fts.delete_many.assert_awaited_once_with(["module_page:src"])
+    repo_fts.delete_many.assert_awaited_once_with(["module_page:src"], repository_id=repo_id)
     assert repo_id not in app.state.workspace_sessions
     assert repo_id not in app.state.workspace_fts
     async with get_session(app.state.session_factory) as primary:

@@ -31,7 +31,7 @@ async def test_pin_creates_a_wanted_row_for_an_undocumented_file(
     assert resp.json()["pinned"] is True
 
     async with get_session(app.state.session_factory) as session:
-        page = await session.get(Page, "file_page:src/missing.py")
+        page = await session.get(Page, (repo["id"], "file_page:src/missing.py"))
         assert page is not None
         assert page.pinned is True
         assert page.provider_name == "template"  # reads as unwritten
@@ -67,7 +67,7 @@ async def test_pin_marks_an_existing_page(client: AsyncClient, app) -> None:
     assert resp.json()["pinned"] is True
 
     async with get_session(app.state.session_factory) as session:
-        page = await session.get(Page, "file_page:src/known.py")
+        page = await session.get(Page, (repo["id"], "file_page:src/known.py"))
         assert page is not None
         assert page.pinned is True
         assert page.content == "real prose"  # untouched
@@ -112,14 +112,15 @@ async def test_pin_refuses_a_path_outside_the_checkout(client: AsyncClient) -> N
 
 
 @pytest.mark.asyncio
-async def test_pin_refuses_a_page_belonging_to_another_repository(
+async def test_pin_leaves_another_repositorys_page_at_the_same_path_alone(
     client: AsyncClient, app
 ) -> None:
-    """``Page.id`` is global, so two repositories sharing a path share an id.
+    """Two repositories sharing a path share a page id, but not a page.
 
-    ``file_detail`` already refuses to *read* the other repository's row; this
-    endpoint used to pin it, which let one repository's Doc tab mark another
-    repository's page.
+    Pages are keyed by ``(repository_id, id)``. Pinning the second
+    repository's file writes and pins its own page; the first repository's
+    page at the same path stays unpinned. (This endpoint once pinned the other
+    repository's row, then refused with a 409 while ids were global.)
     """
     from datetime import UTC, datetime
 
@@ -148,12 +149,16 @@ async def test_pin_refuses_a_page_belonging_to_another_repository(
     resp = await client.post(
         f"/api/repos/{second['id']}/files/src/shared.py/pin-doc"
     )
-    assert resp.status_code == 409
+    assert resp.status_code == 200
 
     async with get_session(app.state.session_factory) as session:
-        page = await session.get(Page, "file_page:src/shared.py")
+        page = await session.get(Page, (first["id"], "file_page:src/shared.py"))
         assert page is not None
         assert page.pinned in (False, None), "the other repository's page was pinned"
+        assert page.content == "belongs to the first repo"
+        own = await session.get(Page, (second["id"], "file_page:src/shared.py"))
+        assert own is not None
+        assert own.pinned is True
 
 
 @pytest.mark.asyncio
@@ -187,7 +192,7 @@ async def test_pin_revives_a_tombstoned_page(client: AsyncClient, app) -> None:
     assert resp.status_code == 200
 
     async with get_session(app.state.session_factory) as session:
-        page = await session.get(Page, "file_page:src/back.py")
+        page = await session.get(Page, (repo["id"], "file_page:src/back.py"))
         assert page is not None
         assert page.pinned is True
         assert page.freshness_status == "stale"

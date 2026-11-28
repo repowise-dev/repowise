@@ -538,7 +538,8 @@ async def _symbol_documentation(
 async def _spotlight_page(card: CardState, sym: Any) -> Page | None:
     """The spotlight page written for *sym*, if one was and *sym* owns it."""
     page = await card.session.get(
-        Page, compute_page_id("symbol_spotlight", f"{sym.file_path}::{sym.name}")
+        Page,
+        (card.repo_id, compute_page_id("symbol_spotlight", f"{sym.file_path}::{sym.name}")),
     )
     # A tombstoned spotlight was deselected or its file is gone; either way its
     # body is no longer this symbol's documentation.

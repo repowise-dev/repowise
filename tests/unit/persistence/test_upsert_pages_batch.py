@@ -58,10 +58,13 @@ async def test_batch_inserts_new_pages_at_version_1(async_session):
 
     assert len(result) == 3
     for i in range(3):
-        row = await get_page(async_session, f"file_page:m{i}.py")
+        row = await get_page(async_session, f"file_page:m{i}.py", repository_id=repo.id)
         assert row is not None
         assert row.version == 1
-        assert await get_page_versions(async_session, f"file_page:m{i}.py") == []
+        assert (
+            await get_page_versions(async_session, f"file_page:m{i}.py", repository_id=repo.id)
+            == []
+        )
 
 
 async def test_batch_idempotent_no_version_bump(async_session):
@@ -74,9 +77,9 @@ async def test_batch_idempotent_no_version_bump(async_session):
     await upsert_pages_from_generated(async_session, pages, repo.id)
     await async_session.commit()
 
-    row = await get_page(async_session, "file_page:a.py")
+    row = await get_page(async_session, "file_page:a.py", repository_id=repo.id)
     assert row.version == 1
-    assert await get_page_versions(async_session, "file_page:a.py") == []
+    assert await get_page_versions(async_session, "file_page:a.py", repository_id=repo.id) == []
 
 
 async def test_batch_metadata_only_change_no_version_bump(async_session):
@@ -93,9 +96,11 @@ async def test_batch_metadata_only_change_no_version_bump(async_session):
     await upsert_pages_from_generated(async_session, [p2], repo.id)
     await async_session.commit()
 
-    row = await get_page(async_session, "file_page:a.py")
+    row = await get_page(async_session, "file_page:a.py", repository_id=repo.id)
     assert row.version == 1  # no bump
-    assert await get_page_versions(async_session, "file_page:a.py") == []  # no snapshot
+    assert (
+        await get_page_versions(async_session, "file_page:a.py", repository_id=repo.id) == []
+    )  # no snapshot
     assert '"wiki_links"' in row.metadata_json  # enrichment persisted
 
 
@@ -110,10 +115,10 @@ async def test_batch_content_change_snapshots_and_bumps(async_session):
     await upsert_pages_from_generated(async_session, [p2], repo.id)
     await async_session.commit()
 
-    row = await get_page(async_session, "file_page:a.py")
+    row = await get_page(async_session, "file_page:a.py", repository_id=repo.id)
     assert row.version == 2
     assert row.content == "v2"
-    versions = await get_page_versions(async_session, "file_page:a.py")
+    versions = await get_page_versions(async_session, "file_page:a.py", repository_id=repo.id)
     assert len(versions) == 1
     assert versions[0].content == "v1"  # prior state archived
 
@@ -182,8 +187,8 @@ async def test_batch_equivalent_to_per_page_loop():
     ids = [f"file_page:m{i}.py" for i in range(6)]
     async with get_session(sf_a) as sa, get_session(sf_b) as sb:
         for pid in ids:
-            ra = await get_page(sa, pid)
-            rb = await get_page(sb, pid)
+            ra = await get_page(sa, pid, repository_id=rid_a)
+            rb = await get_page(sb, pid, repository_id=rid_b)
             assert (ra is None) == (rb is None), pid
             if ra is None:
                 continue
@@ -191,8 +196,8 @@ async def test_batch_equivalent_to_per_page_loop():
             assert ra.content == rb.content, f"{pid} content"
             assert ra.source_hash == rb.source_hash, f"{pid} hash"
             assert ra.metadata_json == rb.metadata_json, f"{pid} metadata"
-            va = await get_page_versions(sa, pid)
-            vb = await get_page_versions(sb, pid)
+            va = await get_page_versions(sa, pid, repository_id=rid_a)
+            vb = await get_page_versions(sb, pid, repository_id=rid_b)
             assert len(va) == len(vb), f"{pid} snapshot count"
 
     await eng_a.dispose()

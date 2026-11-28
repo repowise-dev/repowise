@@ -49,9 +49,9 @@ def test_persist_indexes_pages_in_fixed_size_chunks(repo_dir, monkeypatch):
     calls: list[int] = []
     original = FullTextSearch.index_many
 
-    async def _spy(self, pages):
+    async def _spy(self, pages, **kwargs):
         calls.append(len(pages))
-        await original(self, pages)
+        await original(self, pages, **kwargs)
 
     monkeypatch.setattr(FullTextSearch, "index_many", _spy)
 

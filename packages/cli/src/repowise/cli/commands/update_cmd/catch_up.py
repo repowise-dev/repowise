@@ -172,7 +172,7 @@ async def _retire(repo_path: Path, page_ids: set[str]) -> list[str]:
                 record_cleanup_debt(repo_path, kind, set(retired))
             # Search skips a retired page anyway; this only frees its fetch slot.
             with contextlib.suppress(Exception):
-                await FullTextSearch(engine).delete_many(retired)
+                await FullTextSearch(engine, repository_id=repo.id).delete_many(retired)
         return retired
     finally:
         await engine.dispose()
