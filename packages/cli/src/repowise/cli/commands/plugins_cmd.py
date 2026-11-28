@@ -177,11 +177,12 @@ def _source_rows(rows: list[dict], config: dict) -> list[dict]:
     from repowise.core.source_sync import LEDGER_KEY, not_configured, plan_sources, sync_command
     from repowise.core.workspace.state import read_repo_state
 
-    ledger = read_repo_state(Path.cwd()).get(LEDGER_KEY)
+    root = Path.cwd()
+    ledger = read_repo_state(root).get(LEDGER_KEY)
     ledger = ledger if isinstance(ledger, dict) else {}
     owner = {seam: r["name"] for r in rows for seam in r["seams"]}
     out = []
-    for p in plan_sources(config):
+    for p in plan_sources(config, root=root):
         refusal = None if p.configured else not_configured(p)
         out.append(
             {

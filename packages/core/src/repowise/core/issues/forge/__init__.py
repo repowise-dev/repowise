@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -95,6 +96,30 @@ def first_closers(candidates: Iterable[tuple[str, IssueLink]]) -> list[IssueLink
     return out
 
 
+def _unread_remote(remote: Any) -> tuple[str, str] | None:
+    """``(why, next command)`` when *remote* is not a GitHub or GitLab project, else None."""
+    from repowise.core.forges.base import ForgeKind
+    from repowise.core.forges.registry import get_forge
+
+    if remote is None:
+        return (
+            "this repository has no origin or upstream remote, so there is no "
+            "GitHub or GitLab project to read issues from.",
+            "git remote add origin <url>",
+        )
+    if remote.forge in _MODULES:
+        return None
+    why = (
+        f"the forge issue source reads GitHub and GitLab, and this repository's "
+        f"remote is on {get_forge(remote.forge).label}. For a self-managed GitHub or "
+        "GitLab, map its host in forges.hosts."
+    )
+    if remote.forge is ForgeKind.GENERIC:
+        return why, f"export REPOWISE_FORGE_HOSTS={remote.host}=<forge>"
+    # A tracker on another forge (Azure Boards, Bitbucket) needs a plugin of its own.
+    return why, "repowise plugins new issue-source"
+
+
 def _checked(api_url: str, remote: Any) -> str:
     """*api_url* when it is https on the remote's host (or its ``api.`` host).
 
@@ -123,28 +148,26 @@ class ForgeIssues:
     def __init__(self, transport: Any = None) -> None:
         self._transport = transport
 
-    def fetch(self, request: IssueRequest) -> Iterator[IssueLink]:
-        from repowise.core.forges.registry import get_forge
+    def not_applicable(self, repo_path: Path) -> tuple[str, str] | None:
+        """``(why, next command)`` when *repo_path*'s remote is not on GitHub or GitLab.
 
+        Such a repository has no project to read issues from, so the source
+        is not set up there however the token is set, and update skips it.
+        """
+        from repowise.core.forges.detect import read_remote_ref
+
+        return _unread_remote(read_remote_ref(repo_path))
+
+    def fetch(self, request: IssueRequest) -> Iterator[IssueLink]:
         remote = request.remote
-        if remote is None:
-            raise SourceRefused(
-                "this repository has no origin or upstream remote, so there is no "
-                "GitHub or GitLab project to read issues from."
-            )
+        off_forge = _unread_remote(remote)
+        if off_forge is not None:
+            raise SourceRefused(off_forge[0])
         settings = request.settings or {}
         token = (request.credentials or {}).get(FORGE_TOKEN.key, "")
         api_url = str(settings.get(FORGE_API_URL.key) or "").strip()
         labels = settings.get(FORGE_BUG_LABELS.key, FORGE_BUG_LABELS.default)
-        module = _MODULES.get(remote.forge)
-        if module is None:
-            label = get_forge(remote.forge).label
-            raise SourceRefused(
-                f"the forge issue source reads GitHub and GitLab, and this repository's "
-                f"remote is on {label}. For a self-managed GitHub or GitLab, map its host "
-                "in forges.hosts."
-            )
-        forge_api = import_module(f"{__name__}.{module}")
+        forge_api = import_module(f"{__name__}.{_MODULES[remote.forge]}")
         yield from forge_api.fetch_links(
             request.commits,
             remote,
