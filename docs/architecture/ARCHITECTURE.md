@@ -162,7 +162,7 @@ Key tables:
 |-------|---------|
 | `repos` | Registered repositories, sync state, provider config |
 | `wiki_pages` | All generated wiki pages with content, metadata, confidence score, and a short LLM-extracted `summary` (1–3 sentences) used by `get_context` to keep responses bounded |
-| `page_versions` | Full version history of every page (for diff view) |
+| `page_versions` | The newest earlier versions of each page, for the diff view (`wiki.page_versions_keep`, default 10) |
 | `symbols` | Symbol index: every function, class, method across all files |
 | `answer_cache` | Memoised `get_answer` responses keyed by `(repository_id, question_hash)` plus the provider/model used. Repeated questions return at zero LLM cost; cache entries are invalidated by repository re-indexing. |
 | `generation_jobs` | Job state machine with checkpoint fields for resumability |

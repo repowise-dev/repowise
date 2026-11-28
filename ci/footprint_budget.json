@@ -1,0 +1,209 @@
+{
+  "about": "Budgets for scripts/check_footprint.py, run by the footprint job in .github/workflows/ci.yml. Raise a number only in the pull request that needs it, and say why in its description. install: a default `uv pip install .` (no extras, pinned to uv.lock) into a fresh Python 3.12 venv on ubuntu-latest, summed from every distribution's RECORD. startup_paths: each runs in a fresh interpreter inside a small indexed repository ({repo} in a payload is its path) and must not load any module in its forbidden list; before: payloads run first, as earlier tool calls in the same session. env: variables for that path. expect_stdout, when set, shows a hook reached its real code path.",
+  "install": {
+    "size_mb": 541,
+    "size_tolerance_pct": 3,
+    "distributions": 108,
+    "distributions_tolerance": 2
+  },
+  "startup_paths": [
+    {
+      "name": "CLI",
+      "module": "repowise.cli.main",
+      "forbidden": [
+        "scipy",
+        "numpy",
+        "lancedb",
+        "pyarrow",
+        "litellm",
+        "openai",
+        "anthropic",
+        "google.genai"
+      ]
+    },
+    {
+      "name": "MCP server",
+      "module": "repowise.server.mcp_server._server",
+      "forbidden": [
+        "scipy",
+        "numpy",
+        "lancedb",
+        "pyarrow",
+        "litellm",
+        "openai",
+        "anthropic",
+        "google.genai"
+      ]
+    },
+    {
+      "name": "repowise serve",
+      "module": "repowise.server.app",
+      "forbidden": [
+        "scipy",
+        "numpy",
+        "lancedb",
+        "pyarrow",
+        "litellm",
+        "openai",
+        "anthropic",
+        "google.genai"
+      ]
+    },
+    {
+      "name": "PreToolUse rewrite hook",
+      "module": "repowise.cli.rewrite_hook",
+      "call": "main",
+      "stdin": {
+        "session_id": "s1",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "pytest tests -q"
+        }
+      },
+      "expect_stdout": "repowise distill",
+      "forbidden": [
+        "scipy",
+        "numpy",
+        "lancedb",
+        "pyarrow",
+        "litellm",
+        "openai",
+        "anthropic",
+        "google.genai",
+        "networkx",
+        "sqlalchemy",
+        "pydantic",
+        "tree_sitter",
+        "rich"
+      ]
+    },
+    {
+      "name": "PostToolUse augment hook (Read after an Edit)",
+      "module": "repowise.cli.augment_hook",
+      "call": "main",
+      "stdin": {
+        "session_id": "s1",
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "{repo}/app.py"
+        },
+        "tool_response": {
+          "type": "text",
+          "file": {
+            "filePath": "{repo}/app.py",
+            "content": "def add(a, b):\n    return a + b\n"
+          }
+        }
+      },
+      "before": [
+        {
+          "session_id": "s1",
+          "hook_event_name": "PostToolUse",
+          "tool_name": "Read",
+          "tool_input": {
+            "file_path": "{repo}/app.py"
+          },
+          "tool_response": {
+            "type": "text",
+            "file": {
+              "filePath": "{repo}/app.py",
+              "content": "def add(a, b):\n    return a + b\n"
+            }
+          }
+        },
+        {
+          "session_id": "s1",
+          "hook_event_name": "PostToolUse",
+          "tool_name": "Edit",
+          "tool_input": {
+            "file_path": "{repo}/app.py",
+            "old_string": "a + b",
+            "new_string": "b + a"
+          },
+          "tool_response": {
+            "filePath": "{repo}/app.py"
+          }
+        }
+      ],
+      "expect_stdout": "after your previous read",
+      "forbidden": [
+        "scipy",
+        "numpy",
+        "lancedb",
+        "pyarrow",
+        "litellm",
+        "openai",
+        "anthropic",
+        "google.genai",
+        "networkx",
+        "sqlalchemy",
+        "pydantic",
+        "tree_sitter",
+        "rich"
+      ]
+    },
+    {
+      "name": "SessionStart augment hook",
+      "module": "repowise.cli.augment_hook",
+      "call": "main",
+      "stdin": {
+        "session_id": "s1",
+        "hook_event_name": "SessionStart",
+        "source": "startup"
+      },
+      "expect_stdout": "SessionStart",
+      "forbidden": [
+        "scipy",
+        "numpy",
+        "lancedb",
+        "pyarrow",
+        "litellm",
+        "openai",
+        "anthropic",
+        "google.genai",
+        "networkx",
+        "sqlalchemy",
+        "pydantic",
+        "tree_sitter",
+        "rich"
+      ]
+    },
+    {
+      "name": "PreToolUse health gate hook",
+      "module": "repowise.cli.augment_hook",
+      "call": "main",
+      "argv": [
+        "--health-gate"
+      ],
+      "stdin": {
+        "session_id": "s1",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "git commit -m change"
+        }
+      },
+      "env": {
+        "REPOWISE_HOOK_HEALTH_GATE": "1"
+      },
+      "expect_stdout": "repowise health gate",
+      "forbidden": [
+        "scipy",
+        "numpy",
+        "lancedb",
+        "pyarrow",
+        "litellm",
+        "openai",
+        "anthropic",
+        "google.genai",
+        "networkx",
+        "sqlalchemy",
+        "pydantic",
+        "tree_sitter",
+        "rich"
+      ]
+    }
+  ]
+}

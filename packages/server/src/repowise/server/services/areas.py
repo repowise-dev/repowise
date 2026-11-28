@@ -191,6 +191,7 @@ async def _build(session: AsyncSession, repo_id: str, held: frozenset[str]) -> A
         owners=file_owners(git_rows, await _commit_rows(session, repo_id)),
         findings=findings,
         deductions=await crud.get_deduction_by_path(session, repo_id),
+        held_origins=held,
     )
     weights = nloc_weights(metrics)
     counts = _held_counts(every)

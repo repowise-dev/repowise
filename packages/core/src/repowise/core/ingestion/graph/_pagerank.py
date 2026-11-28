@@ -9,10 +9,44 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
+try:
+    # networkx's own power iteration, without the scipy sparse solver that
+    # nx.pagerank dispatches to. Same arguments and scores (to float rounding),
+    # pure Python. It is private but unchanged across networkx 3.3 to 3.6; if a
+    # release removes it, nx.pagerank (which needs scipy installed) takes over.
+    from networkx.algorithms.link_analysis.pagerank_alg import (
+        _pagerank_python as _power_iteration,
+    )
+except ImportError:
+    _power_iteration = nx.pagerank
+
+
+def pagerank(
+    g: nx.Graph,
+    alpha: float = 0.85,
+    personalization: dict[Any, float] | None = None,
+    max_iter: int = 100,
+    tol: float = 1.0e-6,
+    nstart: dict[Any, float] | None = None,
+    weight: str | None = "weight",
+    dangling: dict[Any, float] | None = None,
+) -> dict[Any, float]:
+    """``nx.pagerank`` without scipy: the same arguments, defaults and errors."""
+    return _power_iteration(
+        g,
+        alpha=alpha,
+        personalization=personalization,
+        max_iter=max_iter,
+        tol=tol,
+        nstart=nstart,
+        weight=weight,
+        dangling=dangling,
+    )
+
 
 def _compute(g: nx.DiGraph, alpha: float, kind: str) -> dict[str, float]:
     try:
-        return nx.pagerank(g, alpha=alpha)
+        return pagerank(g, alpha=alpha)
     except nx.PowerIterationFailedConvergence:
         log.warning("pagerank_did_not_converge_using_uniform_scores", kind=kind)
         n = g.number_of_nodes()
@@ -20,7 +54,7 @@ def _compute(g: nx.DiGraph, alpha: float, kind: str) -> dict[str, float]:
 
 
 def _is_unweighted(g: nx.DiGraph) -> bool:
-    # The signature hashes structure only, but nx.pagerank reads edge weights.
+    # The signature hashes structure only, but PageRank reads edge weights.
     # Every metric edge weighs 1 today; a graph that breaks that is not cached.
     return all(d.get("weight", 1) == 1 for _, _, d in g.edges(data=True))
 

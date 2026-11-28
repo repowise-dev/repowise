@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path as _DoctorPath
 
+from repowise.cli.commands._page_freshness import WHOLE_WIKI_REMEDY
 from repowise.cli.helpers import run_async
 
 from .._types import DoctorCheck, _check
@@ -27,8 +28,20 @@ async def _stale_page_counts(session: object, repo_id: str) -> dict[str, int]:
     return {str(page_type): int(count) for page_type, count in result.all()}
 
 
-def _stale_page_guidance(counts: dict[str, int]) -> str:
-    """Describe stale work by owner and name commands that can clear it."""
+# What `repowise update --full` does, by `stale_remedy`. A model wiki's text is
+# completed in `_stale_page_guidance`, only when a model-written page is stale.
+_STALE_REMEDY = {
+    "llm": "refreshes them",
+    "model": WHOLE_WIKI_REMEDY,
+    "code": "rebuilds them from code, with no model calls",
+}
+
+
+def _stale_page_guidance(counts: dict[str, int], remedy: str | None) -> str:
+    """Describe stale work by owner and name commands that can clear it.
+
+    ``remedy`` is ``stale_remedy``'s answer, or ``None`` to name no command.
+    """
     from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 
     total = sum(counts.values())
@@ -38,7 +51,9 @@ def _stale_page_guidance(counts: dict[str, int]) -> str:
     structural = total - model_written
     categories = []
     if model_written:
-        categories.append(f"{model_written} model-written")
+        # Only a wiki a model wrote has pages a model wrote.
+        label = "model-written" if remedy == "llm" else "of a type a model writes"
+        categories.append(f"{model_written} {label}")
     if structural:
         categories.append(f"{structural} structural")
 
@@ -46,10 +61,11 @@ def _stale_page_guidance(counts: dict[str, int]) -> str:
         f"{total} stale ({', '.join(categories)}) — content no longer matches its "
         "current inputs or generation selection."
     )
-    detail += " `repowise update --full` refreshes them"
-    if model_written:
-        detail += ", pricing the model-written ones before it rewrites them"
-    detail += "."
+    if remedy:
+        detail += f" `repowise update --full` {_STALE_REMEDY[remedy]}"
+        if model_written and remedy == "llm":
+            detail += ", pricing the model-written ones before it rewrites them"
+        detail += "."
     return detail + " `--repair` only fixes store drift."
 
 
@@ -91,10 +107,40 @@ def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
     # Keyless operation is supported, so this is informational rather than a
     # failing health check.  The detail tells users what init will actually do.
     checks.append(_check("LLM provider", True, llm_detail, check_id="llm-provider"))
+    extra_row = _provider_extra_check(repo_path)
+    if extra_row is not None:
+        checks.append(extra_row)
     embedder_row = _embedder_package_check(repo_path)
     if embedder_row is not None:
         checks.append(embedder_row)
     return checks
+
+
+def _provider_extra_check(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """A failing row when the chosen provider's ``repowise[<extra>]`` is missing, else none.
+
+    An upgrade that moved a provider's package out of the default install
+    leaves the saved choice in place and the package gone; the row names the
+    one command that brings it back.
+    """
+    from repowise.core.extras import missing_message, plan_install
+    from repowise.core.providers.llm.registry import provider_missing_extra
+    from repowise.core.providers.llm.resolve import resolve_llm
+
+    try:
+        provider = resolve_llm(repo_path).provider
+    except Exception:
+        return None  # the provider-config row reports a broken config
+    extra = provider_missing_extra(provider) if provider else None
+    if extra is None:
+        return None
+    return _check(
+        "LLM provider package",
+        False,
+        missing_message(extra, f"The {provider} provider"),
+        check_id="provider-extra",
+        fix=plan_install(extra).command,
+    )
 
 
 def _embedder_package_check(repo_path: _DoctorPath) -> DoctorCheck | None:
@@ -177,13 +223,17 @@ async def _read_stale_counts(repo_path: _DoctorPath) -> dict[str, int]:
 
 
 def _stale_pages_row(ctx: CheckContext) -> DoctorCheck:
-    """Sets ``ctx.stale_counts`` and ``ctx.stale_count`` for ``--repair``."""
+    """Sets ``ctx.stale_guidance`` for ``--repair``."""
     name, check_id = "Stale pages", "stale-pages"
     try:
-        ctx.stale_counts = run_async(_read_stale_counts(ctx.repo_path))
-        ctx.stale_count = sum(ctx.stale_counts.values())
-        if ctx.stale_count:
-            return _check(name, False, _stale_page_guidance(ctx.stale_counts), check_id=check_id)
+        counts = run_async(_read_stale_counts(ctx.repo_path))
+        if sum(counts.values()):
+            from ..._page_freshness import stale_remedy
+
+            # Without a readable state.json `update --full` stops; the state.json row names the fix.
+            remedy = stale_remedy(ctx.state, ctx.repo_path) if ctx.state_ok else None
+            ctx.stale_guidance = _stale_page_guidance(counts, remedy)
+            return _check(name, False, ctx.stale_guidance, check_id=check_id)
         return _check(name, True, "0 stale", check_id=check_id)
     except Exception:
         return _check(name, True, "Could not check", check_id=check_id, warn=True)

@@ -37,4 +37,11 @@ Rails.application.routes.draw do
   scope "/v1" do
     get "/status" => "status#show"
   end
+
+  concern :account_resources do
+    resources :followers, only: [:index]
+  end
+
+  resources :users, only: [:show], concerns: :account_resources
+  draw(:api)
 end

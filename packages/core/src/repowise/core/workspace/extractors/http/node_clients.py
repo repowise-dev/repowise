@@ -48,6 +48,7 @@ from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
 from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument, method_from_options
 from .commonjs import imported_exports
 from .dialect import build_consumer_contract
+from .url_builders import settle_url_builders
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
@@ -133,9 +134,10 @@ class _Client:
     direct: bool = False  # the library itself, not an instance of it
 
 
-# `import x from 'm'`, `import x, { a, b as c } from 'm'`, `import { a } from 'm'`.
+# `import x from 'm'`, `import x, { a, b as c } from 'm'`, `import { a } from 'm'`, `import * as x from 'm'`.
 _IMPORT_RE = re.compile(
     r"""import(?<![\w$]import)\s+(?:type\s+)?(?:(?P<default>[A-Za-z_$][\w$]*)\s*,?\s*)?"""
+    r"""(?:\*\s+as\s+(?P<star>[A-Za-z_$][\w$]*)\s*,?\s*)?"""
     r"""(?:\{(?P<named>[^{}]*)\}\s*)?from\s*['"](?P<spec>[^'"]+)['"]"""
 )
 # `const x = require('m')`, the binding read back from the `require`.
@@ -177,6 +179,8 @@ def _imports(content: str) -> list[tuple[str, str, str]]:
         for m in _IMPORT_RE.finditer(content):
             if m.group("default"):
                 out.append((m.group("default"), "default", m.group("spec")))
+            if m.group("star"):
+                out.append((m.group("star"), "*", m.group("spec")))
             out.extend((alias, name, m.group("spec")) for name, alias in _named(m.group("named") or ""))
     if "require" in content:
         for m in _REQUIRE_RE.finditer(content):
@@ -392,18 +396,45 @@ class FieldScope:
     def __init__(self, strings: FileStrings) -> None:
         self._strings = strings
         self._classes: list[ClassFields] | None = None
+        self._cache: dict[tuple[int, bool], dict[str, str]] = {}
         self._current: dict[str, str] | None = None
 
     def raw(self, name: str) -> str | None:
         """The source text the class entered last sets field *name* (``this.x``) to."""
         return self._current.get(name) if self._current else None
 
+    def _resolve_fields(self, found: ClassFields, is_static: bool) -> dict[str, str]:
+        chain = [found]
+        seen = {found.name}
+        current = found
+        while current.base_name:
+            if current.base_name in seen:
+                break
+            seen.add(current.base_name)
+            base = next((c for c in self._classes or () if c.name == current.base_name), None)
+            if base is None:
+                break
+            chain.append(base)
+            current = base
+        merged: dict[str, str] = {}
+        for cls in reversed(chain):
+            merged.update(cls.static_fields if is_static else cls.fields)
+        return merged
+
     def enter(self, pos: int) -> None:
         if self._classes is None:
             self._classes = js_class_fields(self._strings.content)
+            self._cache = {}
         found = next((c for c in self._classes if c.start <= pos < c.end), None)
-        fields = found.fields_at(pos) if found is not None else None
-        if fields is self._current:
+        if found is None:
+            fields = None
+        else:
+            is_static = any(a <= pos < b for a, b in found.static_spans)
+            key = (found.start, is_static)
+            if key not in self._cache:
+                self._cache[key] = self._resolve_fields(found, is_static)
+            fields = self._cache[key]
+        if fields == self._current:
             return
         settled = self._strings.settled
         for name in self._current or ():
@@ -433,6 +464,7 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
     imports = _imports(content)
     strings.settled.update(imported_environment(ctx, imports))
     strings.settled.update(imported_exports(ctx, imports))
+    settle_url_builders(ctx, imports, strings)
     clients = _file_clients(ctx, imports, strings).callable
     # `ofetch(url)` is a fetch call the fetch reader already reads.
     names = tuple(n for n, c in clients.items() if not (c.direct and not c.library.verbs))

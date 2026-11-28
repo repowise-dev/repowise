@@ -600,6 +600,7 @@ def _committed_ids(repo_path: Path | str) -> set[str] | None:
         out = subprocess.run(
             ["git", "show", f"HEAD:.repowise/{MANIFEST_FILENAME}"],
             cwd=repo_path,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",

@@ -80,7 +80,13 @@ executing line per frame follows Go.
    `qualified_name` for the fixture's symbols before writing the grammar; the
    indexer's spelling per language decides the comparison. A frame without the
    field ends as `no_second_signal`, one that disagrees as
-   `second_signal_mismatch`. The span alone never joins.
+   `second_signal_mismatch`. The span alone never joins. `_rust` is the
+   name-only example: pprof-rs writes v0 names (`<Type as Trait>::m`,
+   `{closure#0}`) and line 0 for some inlined code, and an attribute macro's
+   code runs on the attribute line above the `fn`. Anything read past the
+   span (an attribute line, a lineless frame's one `fn` of that name) is
+   checked in the source through `lines`, never inferred from the index,
+   which can drop one of two methods that share an id.
 3. **Folding.** A closure, block or lambda the index has no symbol for is
    charged to the function around it and returns `(symbol, True)`. Go
    recognises the compiler's suffixes (`_GO_CLOSURE_RE`: `.func1`, `.gowrap1`,
@@ -139,7 +145,7 @@ ones; a new reason also needs the list in
 | `no_span` | your join | no indexed function holds the line |
 | `ambiguous` | `_javascript`, `_name_join` | two indexed functions start on the line, or several fit the name and nothing picks one |
 | `no_second_signal` | your join | the frame lacks the field the join checks |
-| `no_source` | `_javascript` | the source line could not be read |
+| `no_source` | `_javascript`, `_pascal` | the source could not be read |
 | `second_signal_mismatch` | your join | the field disagrees with the symbol |
 
 ### Generated and vendored code
@@ -185,8 +191,8 @@ ran in; that directory is the `root` the test passes.
 
 ### How a stack declares a report
 
-Python, Node, Maven, Gradle and Go (`go test -json`, read as test timings
-too) set a report today; `_rust`, `_dotnet`, `_ruby` and `_php` do not. Each
+Python, Node, Maven, Gradle, Go (`go test -json`, read as test timings
+too) and Rust (`cargo-nextest` JUnit) set a report today; `_dotnet`, `_ruby` and `_php` do not. Each
 stack is built by one function in
 `packages/core/src/repowise/core/test_runners/stacks.py`, listed in
 `_BUILDERS` (`_python`, `_go`, `_rust`, `_dotnet`, `_ruby`, `_php`, ...), and
@@ -264,7 +270,7 @@ and assert each entry's `test_id` and `test_file` after `place_test_entries`.
   "Must not change" line.
 - Run the test files named above locally; CI runs the full suite on the PR.
 - Update `docs/`: the sentences naming the joined languages (Python, Go,
-  JavaScript, Java and Kotlin) in [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md#accuracy-and-limits)
+  JavaScript, Java, Kotlin, Rust and Pascal) in [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md#accuracy-and-limits)
   and [LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md#runtime-evidence),
   and that page's table.
   The maintainers update the docs site.

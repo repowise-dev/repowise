@@ -49,6 +49,10 @@ def _extract_imports(
 
         raw = node_text(stmt_node, src).strip()
         dedup_key = rules.dedup_key(stmt_node, raw, src) if rules.dedup_key else raw
+        if rules.per_module:
+            # The module's offset in the statement tells ``import a, b``'s two
+            # matches apart while a repeat of the statement still folds.
+            dedup_key += f"\0{module_nodes[0].start_byte - stmt_node.start_byte}"
         kind = import_load_kind(stmt_node, language, src)
         scopes = python_import_scope(stmt_node) if language == "python" else None
         if dedup_key in seen_imports:

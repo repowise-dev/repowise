@@ -660,3 +660,41 @@ def test_no_measured_hotspot_with_a_step_leaves_the_order_alone() -> None:
         performance=[_hotspot("perf4_c", "nostep", 0.5, False)],
     )
     assert queue.lead.kind == "finding"
+
+
+def test_measured_hotspots_without_a_step_are_listed_by_self_share() -> None:
+    # Ties in value and worth fall to the item id: whichever way the shares
+    # sit, the run's measurement orders the stepless items (F-NS-5).
+    names = ("get_tags", "search", "top_menu")
+    for shares in ((0.04, 0.09, 0.10), (0.10, 0.09, 0.04), (0.09, 0.04, 0.10)):
+        queue = build_fix_first(
+            metrics=[_metric("src/repo.py")],
+            performance=[
+                _hotspot(f"perf4_{n}", n, s, False) for n, s in zip(names, shares, strict=True)
+            ],
+        )
+        want = [n for _, n in sorted(zip(shares, names, strict=True), reverse=True)]
+        assert [i.target.symbol for i in queue.items] == want
+
+
+def test_a_measured_hotspot_with_a_step_still_leads_stepless_ones_by_share() -> None:
+    for low, high in (("b_fn", "c_fn"), ("c_fn", "b_fn")):
+        queue = build_fix_first(
+            metrics=[_metric("src/repo.py")],
+            performance=[
+                _hotspot("perf4_a", "stepped", 0.03, True),
+                _hotspot(f"perf4_{low}", low, 0.04, False),
+                _hotspot(f"perf4_{high}", high, 0.10, False),
+            ],
+        )
+        assert [i.target.symbol for i in queue.items] == ["stepped", high, low]
+
+
+def test_share_never_moves_a_stepless_item_across_tiers() -> None:
+    sure = _hotspot("perf4_sure", "sure", 0.04, False)
+    unsure = _hotspot("perf4_unsure", "unsure", 0.10, False)
+    unsure["details"]["facets"]["actionability_confidence"] = "low"
+    queue = build_fix_first(metrics=[_metric("src/repo.py")], performance=[sure, unsure])
+    tiers = {i.target.symbol: i.tier for i in queue.items}
+    assert tiers["sure"] != tiers["unsure"]
+    assert [i.target.symbol for i in queue.items] == ["sure", "unsure"]

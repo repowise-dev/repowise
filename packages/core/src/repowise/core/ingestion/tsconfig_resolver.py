@@ -71,6 +71,34 @@ _INDEX_FILES = (
     "index.svelte",
     "index.astro",
 )
+# The source extensions the compiler tries for each extension it emits, in its
+# order (``tryAddingExtensions`` of the compiler). TypeScript's ESM convention
+# writes the emitted extension, so ``store.js`` names ``store.ts``.
+_SOURCES_OF_EMITTED = {
+    ".js": (".ts", ".tsx"),
+    ".jsx": (".tsx", ".ts"),
+    ".mjs": (".mts",),
+    ".cjs": (".cts",),
+}
+
+
+def source_names_of_written(path: str) -> tuple[str, ...]:
+    """The source files a path written with an emitted extension may name, in probe order.
+
+    ``store.js`` gives ``store.ts`` and ``store.tsx``; ``store.jsx`` gives ``store.tsx``
+    and ``store.ts``; ``store.mjs`` gives ``store.mts`` only and ``store.cjs`` gives
+    ``store.cts`` only, as the compiler pairs them. The caller probes them after the
+    path as written, so a real ``store.js`` wins. Any other extension (``socket.io-client``,
+    ``close.svg``) and a leading dot alone (``.env``) give nothing: the part after the last
+    dot is then no emitted extension, and a real multi-dot stem (``foo.config``) is never
+    cut short.
+    """
+    head, slash, name = path.rpartition("/")
+    stem, dot, extension = name.rpartition(".")
+    if not (dot and stem):
+        return ()
+    sources = _SOURCES_OF_EMITTED.get(f".{extension}", ())
+    return tuple(f"{head}{slash}{stem}{ext}" for ext in sources)
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +223,8 @@ class TsconfigResolver:
         1. Find applicable config by walking up from the importer's directory.
         2. Try alias patterns (exact first, then wildcards by specificity).
         3. For each match try candidate templates left-to-right.
-        4. For each template try file extensions + index files.
+        4. For each template try file extensions + index files, then the
+           source file of an emitted extension (``x.js`` is ``x.ts``).
         5. If no alias matched but ``baseUrl`` is set, try ``baseUrl + specifier``.
         6. Then the nearest Vite config's ``resolve.alias`` entries, the same way.
         7. Return the first hit found in ``path_set``, or ``None``.
@@ -690,6 +719,12 @@ class TsconfigResolver:
         # 3. Index files (base is a directory).
         for index in _INDEX_FILES:
             rel = self._probe(base, index)
+            if rel is not None:
+                return rel
+
+        # 4. The source file an emitted extension names (``store.js``).
+        for source in source_names_of_written(name):
+            rel = self._probe(parent, source)
             if rel is not None:
                 return rel
 

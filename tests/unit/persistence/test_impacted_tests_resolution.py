@@ -867,12 +867,22 @@ async def test_a_reaching_fixture_nobody_requests_selects_only_the_import_check(
 
 
 async def test_narrow_scopes_resolves_a_reached_conftest_as_the_selection_does(
-    async_session, tmp_path
+    async_session, tmp_path, monkeypatch
 ) -> None:
-    """A few-hop walk that stopped at the conftest gets the test that can break."""
+    """A few-hop walk that stopped at the conftest gets the test that can break.
+
+    It reads only the candidates, so it never pays for the helper scan, which
+    reads every test file.
+    """
     import subprocess
 
+    from repowise.core.analysis import test_collection
     from repowise.core.analysis.test_collection import narrow_scopes
+
+    def _scanned(*_args, **_kwargs):
+        raise AssertionError("narrow_scopes scanned for helper readers")
+
+    monkeypatch.setattr(test_collection, "_unimported_helper_readers", _scanned)
 
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests/conftest.py").write_text(_CONFTEST, encoding="utf-8")

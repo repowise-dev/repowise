@@ -6,7 +6,7 @@ import {
   getHealthMap,
   listHealthFiles,
 } from "@repowise-dev/api-client/code-health";
-import { getFileDetail } from "@repowise-dev/api-client/files";
+import { getFileContent, getFileDetail } from "@repowise-dev/api-client/files";
 import {
   getArchitectureCommunityGraph,
   getCommunities,
@@ -25,23 +25,43 @@ import {
   getRefactoringOpportunities,
   getRefactoringOpportunity,
   getRefactoringPlan,
-  getRefactoringTargets,
+  updateRefactoringOpportunityStatus,
 } from "@repowise-dev/api-client/refactoring";
-import { listDecisions } from "@repowise-dev/api-client/decisions";
-import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
-import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
+import {
+  createDecision,
+  getDecision,
+  getDecisionAgentPrompt,
+  getDecisionCounts,
+  getDecisionEvidence,
+  getDecisionHealth,
+  getDecisionLaneCounts,
+  getDecisionLineage,
+  listDecisions,
+  patchDecision,
+  reaffirmDecision,
+  setDecisionPinned,
+} from "@repowise-dev/api-client/decisions";
+import { listEpisodes } from "@repowise-dev/api-client/episodes";
+import { listModuleHealth } from "@repowise-dev/api-client/modules";
+import { getPageById, listPageTree } from "@repowise-dev/api-client/pages";
+import {
+  analyzeBlastRadius,
+  analyzeChangeBlastRadius,
+  checkChangeHealth,
+  listBlastRadiusChanges,
+} from "@repowise-dev/api-client/blast-radius";
+import { getHotspots } from "@repowise-dev/api-client/git";
+import { search } from "@repowise-dev/api-client/search";
 import { CONFIG_SECTION } from "../constants";
 import {
   SETTING_KEYS,
   type HomeSummary,
   type HostApi,
-  type RiskRangeReport,
   type SettingKey,
   type SettingsValues,
   type SettingValue,
 } from "../shared/webviewMessages";
 import type { RepowiseContext } from "./context";
-import { analyzeChange } from "./changeAnalysis";
 import { commitsMatch, getCurrentBranchName, resolveLiveHead } from "./gitApi";
 import { opportunityPrompt, planPrompt } from "./planPrompt";
 
@@ -80,7 +100,6 @@ const SETTING_DEFAULTS: SettingsValues = {
   "server.autoStart": "ask",
   "server.port": null,
   "cliPath": "",
-  "risk.baseBranch": "",
   "changeIntel.cochangeNudge": true,
   "changeIntel.cochangeMinScore": 4,
   "agentHandoff.enabled": true,
@@ -109,7 +128,6 @@ const SETTING_VALIDATORS: Record<SettingKey, (v: SettingValue) => SettingValue> 
   "server.autoStart": (v) => expectEnum(v, ["ask", "always", "never"]),
   "server.port": expectNullablePort,
   "cliPath": expectString,
-  "risk.baseBranch": expectString,
   "changeIntel.cochangeNudge": expectBoolean,
   "changeIntel.cochangeMinScore": (v) => expectNumberInRange(v, 0, 100),
   "agentHandoff.enabled": expectBoolean,
@@ -176,6 +194,12 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     return id;
   }
 
+  // The head commit (and base) each listed change was at, so its analysis can
+  // be cached on that commit and recomputed once the change moves. Ceiling: a
+  // branch's base is keyed by name, so a fetch that moves the base branch is
+  // seen at the next index refresh (which clears the cache), not at once.
+  const changeHeads = new Map<string, string | null>();
+
   // Concurrent callers of the same key share one request instead of racing
   // (two panels opening together, or one view fanning out related slices).
   const inFlight = new Map<string, Promise<unknown>>();
@@ -204,8 +228,8 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
   /**
    * Aggregates the sidebar Home payload. Sub-fetches go through the same
    * cached() keys the dashboards use (limits included), so opening a dashboard
-   * after the sidebar costs nothing extra. Refactoring uses the lighter
-   * medium-confidence query, not the panel's unfiltered multi-megabyte one.
+   * after the sidebar costs nothing extra. Refactoring asks for one
+   * opportunity and reads the page total, so the count costs one small row.
    * allSettled: one failing endpoint degrades its section to null.
    */
   async function homeSummary(): Promise<HomeSummary> {
@@ -214,8 +238,10 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       await Promise.allSettled([
         cached("health:overview:25", () => getHealthOverview(id, 25)),
         cached("health:trend:20", () => getHealthTrend(id, 20)),
+        // One row and the page total: the same opportunities the Refactoring
+        // panel lists, without downloading every plan to count them.
         cached("home:refactor", () =>
-          getRefactoringTargets(id, { minConfidence: "medium" }),
+          getRefactoringOpportunities(id, { stepPreview: 0, limit: 1 }),
         ),
         cached("decisions:timeline", () =>
           listDecisions(id, { include_proposed: true, limit: 500 }),
@@ -251,8 +277,8 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
           }
         : null,
       counts: {
-        refactoringPlans:
-          refactor.status === "fulfilled" ? refactor.value.plans.length : null,
+        refactoringOpportunities:
+          refactor.status === "fulfilled" ? refactor.value.total : null,
         decisions: decisions.status === "fulfilled" ? decisions.value.length : null,
       },
       freshness: {
@@ -310,25 +336,21 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     // Knowledge graph
     zoomMap: () => cached("graph:zoom", (id) => getZoomMap(id)),
 
-    // Refactoring
-    refactoringOpportunities: (filePath) =>
-      cached(`refactor:opps:${filePath ?? ""}`, (id) =>
-        getRefactoringOpportunities(id, {
-          ...(filePath ? { filePath } : {}),
-          // The row renders counts, not steps; the detail call carries those.
-          stepPreview: 0,
-          limit: 100,
-        }),
-      ),
+    // Refactoring. The board and the open opportunity are read live: a triage
+    // write changes them without moving the head commit the cache is tagged by.
+    refactoringOpportunities: (query) => getRefactoringOpportunities(repoId(), query),
     refactoringOpportunity: (opportunityId) =>
-      cached(`refactor:opp:${opportunityId}`, (id) =>
-        getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
-      ),
+      getRefactoringOpportunity(repoId(), opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
+    fileContent: (filePath) => getFileContent(repoId(), filePath),
+    setRefactoringOpportunityStatus: async (opportunityId, status) => {
+      await updateRefactoringOpportunityStatus(repoId(), opportunityId, status);
+    },
     refactoringOpportunityPrompt: (opportunityId, flavor) =>
       opportunityPrompt(ctx, opportunityId, flavor, async () => {
-        const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
-          getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
-        );
+        const detail = await getRefactoringOpportunity(repoId(), opportunityId, {
+          stepLimit: 50,
+          evidenceLimit: 20,
+        });
         if (!detail.found) {
           throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
         }
@@ -343,37 +365,71 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       return planPrompt(ctx, plan, flavor);
     },
 
-    // Decisions
-    decisionsList: () =>
-      cached("decisions:timeline", (id) => listDecisions(id, { include_proposed: true, limit: 500 })),
+    // Decisions. A review write changes the records, their lanes, the counts
+    // and what the agent prompts list, so every read a write can move is live:
+    // the head-commit tag would keep serving the rows from before the review.
+    listDecisions: (query) => listDecisions(repoId(), query),
+    decisionLaneCounts: () => getDecisionLaneCounts(repoId()),
+    decisionCounts: () => getDecisionCounts(repoId(), { include_proposed: true }),
+    decisionHealth: () => getDecisionHealth(repoId()),
+    decisionAgentPrompt: (kind, decisionId) =>
+      getDecisionAgentPrompt(repoId(), kind, decisionId),
+    decision: (decisionId) => getDecision(repoId(), decisionId),
+    decisionLineage: (decisionId) => getDecisionLineage(repoId(), decisionId),
+    decisionEvidence: (decisionId) => getDecisionEvidence(repoId(), decisionId),
+    createDecision: (input) => createDecision(repoId(), input),
+    patchDecision: (decisionId, patch) => patchDecision(repoId(), decisionId, patch),
+    reaffirmDecision: (decisionId) => reaffirmDecision(repoId(), decisionId),
+    setDecisionPinned: (decisionId, pinned) => setDecisionPinned(repoId(), decisionId, pinned),
+    // Derived at index time, so the head-commit tag is the right key for both.
+    checkoutFacts: () =>
+      cached("decisions:facts", (id) => listEpisodes(id, { tier: "structural", limit: 50 })),
+    moduleSuggestions: () =>
+      cached("decisions:modules", (id) =>
+        listModuleHealth(id, { sort: "file_count", limit: 500 }).then((m) =>
+          m.items.map((x) => x.module_path),
+        ),
+      ),
 
-    // Docs
-    pagesList: () => cached("docs:pages", (id) => listAllPages(id)),
+    // Docs. The tree's listing carries no bodies (tens of megabytes on a large
+    // wiki); the reader fetches the one page it shows.
+    pageTree: () => cached("docs:tree", (id) => listPageTree(id)),
+    searchPages: async (query) => {
+      const id = repoId();
+      const [fulltext, semantic] = await Promise.all([
+        search(query, { repo_id: id, limit: 20, search_type: "fulltext" }),
+        // A server without an embedder refuses semantic search; the title,
+        // path and full-text matches still answer.
+        search(query, { repo_id: id, limit: 20, search_type: "semantic" }).catch(() => []),
+      ]);
+      return [...fulltext, ...semantic];
+    },
     pageById: (pageId) =>
       cached(`docs:page:${pageId}`, (id) => getPageById(pageId, id)),
     fileDetail: (relPath) => cached(`docs:file:${relPath}`, (id) => getFileDetail(id, relPath)),
 
-    // Branch risk
-    riskRange: async (): Promise<RiskRangeReport> => {
-      const id = repoId();
-      const configured = vscode.workspace
-        .getConfiguration(CONFIG_SECTION)
-        .get<string>("risk.baseBranch", "")
-        .trim();
-      const base = configured || ctx.repo?.default_branch || "main";
-      const range = { base, head: "HEAD" };
-      const [result, patchCoverage] = await Promise.all([
-        getRiskRange(id, range),
-        getPatchCoverage(id, range).catch(() => null),
-      ]);
-      const branch = await getCurrentBranchName(ctx.workspace.repoRoot ?? "");
-      return { base, branch, result, patchCoverage };
+    // Change risk: the web Review page's reads. The change list and the
+    // health check read the checkout, so they are always live; a listed
+    // change's analysis is cached on the commit it was listed at.
+    hotspots: (limit) => cached(`review:hotspots:${limit}`, (id) => getHotspots(id, limit)),
+    blastRadius: (body) => analyzeBlastRadius(repoId(), body),
+    reviewChanges: async () => {
+      const list = await listBlastRadiusChanges(repoId());
+      for (const change of list.changes) {
+        const base = change.base_sha ?? change.base ?? "";
+        changeHeads.set(change.id, change.head_sha ? `${change.head_sha}:${base}` : null);
+      }
+      return list;
     },
-
-    // Change impact: reads the working tree, so it tracks the live change set
-    // rather than the indexed commit. analyzeChange owns caching by change-set
-    // signature, so this never re-fetches for an unchanged file set.
-    changeImpact: () => analyzeChange(ctx, "branch"),
+    changeBlastRadius: (body) => {
+      const head = changeHeads.get(body.change_id);
+      // Work in progress has no commit to key on: it changes with every save.
+      if (!head) return analyzeChangeBlastRadius(repoId(), body);
+      return cached(`review:change:${head}:${JSON.stringify(body)}`, (id) =>
+        analyzeChangeBlastRadius(id, body),
+      );
+    },
+    changeHealthCheck: (changeId) => checkChangeHealth(repoId(), changeId),
 
     // Sidebar home
     homeSummary,

@@ -69,6 +69,13 @@ an unused export's name written somewhere else in the repository, or a name that
 appears in a file Repowise could not index. Each cap adds a line to the
 finding's evidence saying why.
 
+Git age never lifts an unreachable file above `0.50` when its missing importer
+says little: production code of the same language writes the file's stem or
+module name (a test or a doc naming it does not count), or its language resolves some references to
+no file. That second case is every language without full import support plus
+PHP, Ruby and Swift; the list is in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#known-gaps).
+
 ### Tiers
 
 | Tier | Confidence | Meaning |

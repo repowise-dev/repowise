@@ -205,6 +205,37 @@ async def test_include_brings_one_held_origin_back(app, client):
     assert detail["area"]["file_count"] == 1
 
 
+async def test_area_hotspot_count_follows_the_readers_held_scope(app, client):
+    repo_id = await _seed_origins(app, client)
+    paths = ("src/a.py", "tests/test_a.py", "src/gen_pb2.py")
+    async with app.state.session_factory() as session:
+        for path in paths:
+            await crud.upsert_git_metadata(
+                session,
+                repository_id=repo_id,
+                file_path=path,
+                primary_owner_name="Alice",
+                primary_owner_email="alice@example.com",
+                is_hotspot=True,
+                bus_factor=1,
+            )
+        await session.commit()
+
+    whole = (await client.get(f"/api/repos/{repo_id}/areas/tree")).json()
+    assert whole["root"]["hotspot_count"] == 3
+    held = (
+        await client.get(
+            f"/api/repos/{repo_id}/areas/tree", params={"hold": "map", "depth": 2}
+        )
+    ).json()
+    assert held["root"]["hotspot_count"] == 1
+    params = {"hold": "map", "include": "test", "depth": 2}
+    included = (await client.get(f"/api/repos/{repo_id}/areas/tree", params=params)).json()
+    assert included["root"]["hotspot_count"] == 2
+    detail = (await client.get(f"/api/repos/{repo_id}/areas/tests", params=params)).json()
+    assert detail["area"]["hotspot_count"] == detail["hotspots"]["total"] == 1
+
+
 async def test_without_hold_the_root_equals_the_page_headline(app, client):
     # The page's "All code" scope and the map's everything-included view are
     # the same files, so the root and the headline are one number.

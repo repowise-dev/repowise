@@ -125,3 +125,32 @@ def test_dry_run_prices_the_cli_it_would_use(keyless, monkeypatch) -> None:
     result = CliRunner().invoke(generate_command.generate_command, [str(keyless), "--dry-run"])
     assert result.exit_code == 0, result.output
     assert seen["provider"] == "claude_cli"
+
+
+def test_generate_passes_its_provider_to_the_embedder_choice(keyless, monkeypatch) -> None:
+    """An ollama generate run must reach the local_embedder rule, like init does."""
+    from types import SimpleNamespace
+
+    save_state(keyless, {"docs_mode": "deterministic"})
+    seen: dict[str, object] = {}
+
+    async def _has_docs(_repo):
+        return True
+
+    async def _run(*_a, **_k):
+        return None
+
+    def _embedder(_pinned, *_a, **kwargs):
+        seen["provider"] = kwargs.get("provider")
+        return None, "mock", False
+
+    monkeypatch.setattr(generate_command, "has_documentation", _has_docs)
+    monkeypatch.setattr(
+        generate_command,
+        "_generate_provider",
+        lambda *_a, **_k: SimpleNamespace(provider_name="ollama", model_name="gemma4:26b"),
+    )
+    monkeypatch.setattr(generate_command, "run_scoped_generation", _run)
+    monkeypatch.setattr(generate_command, "model_run_embedder", _embedder)
+    CliRunner().invoke(generate_command.generate_command, [str(keyless), "--yes"])
+    assert seen["provider"] == "ollama"

@@ -33,21 +33,16 @@ straight from the CLI.
 
 ## Know before you push
 
-**Analyze Change Risk** (Source Control title bar or command palette) scores
-your uncommitted work against its base branch and opens a panel with the whole
-story of the change:
+**Review Change** (Source Control title bar or command palette) opens the
+**Review** panel, the same Review page as the web UI. It opens on the most
+relevant change, your uncommitted work or else the checked-out branch, and you
+can pick another branch or commit. For that change it shows:
 
-- A summary strip up top: how many files are affected downstream, how many
-  usual companion files you have not touched, and the test recommendations or
-  unavailable/partial/stale analysis state. Each chip jumps to its section.
-- **Riskiest files in this change**: your changed files ranked by how risky
-  history and structure say they are, so you review in the right order. Files
-  that change unusually often are marked as hotspots.
-- **Downstream of your changes**: the files that depend on what you edited.
-- **Usually changes together**: companion files your history says belong to
-  this change but are untouched. Advisory, not a rule.
-- **Test impact** with measured coverage evidence kept separate from inferred
-  candidates, and **suggested reviewers** with one-click copy for the PR description.
+- The findings and the files to look at first.
+- Its risk rank beside its review priority.
+- Where the change reaches downstream, which tests to run, and who to ask.
+
+Files open in an editor column.
 
 While you edit, a quiet co-change hint can appear in the status bar when the
 files you are touching have a strong history of changing together with a file
@@ -56,7 +51,7 @@ tunable or off in settings (`repowise.changeIntel.*`). Plenty of edits
 legitimately touch only part of a cluster, so it informs without nagging.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/change-risk-panel.png" alt="The Change Risk panel: an 8.8/10 score, downstream and missing-test chips, and the riskiest files in the change ranked by hotspot" width="90%" />
+  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/change-risk-panel.png" alt="The Review panel: an 8.8/10 score, downstream and missing-test chips, and the riskiest files in the change ranked by hotspot" width="90%" />
 </p>
 
 ## Editor-native signals
@@ -150,7 +145,6 @@ covering every surface with plain-language descriptions. The full list:
 | `repowise.codeLens.enabled` | `true` | Show refactoring plan lenses |
 | `repowise.hover.enabled` | `true` | Show health context on hover |
 | `repowise.hover.symbolDetail` | `true` | Callers, ownership, and decisions on symbol hover |
-| `repowise.risk.baseBranch` | default branch | Base branch change risk is scored against |
 | `repowise.changeIntel.cochangeNudge` | `true` | Show the quiet "usually change together" status-bar hint |
 | `repowise.changeIntel.cochangeMinScore` | `4` | Minimum historical co-change count before a related file is surfaced |
 
