@@ -126,6 +126,13 @@ SETTINGS: tuple[Setting, ...] = (
         "SQL dialect for parsing .sql files (a sqlglot name such as postgres).",
     ),
     _s(
+        "compile_commands",
+        "str",
+        None,
+        "Where compile_commands.json is, for C and C++ include paths: the file or its "
+        "folder, relative to the repo root or absolute. Unset: the repo root, then build/.",
+    ),
+    _s(
         "forges.hosts",
         "mapping",
         {},

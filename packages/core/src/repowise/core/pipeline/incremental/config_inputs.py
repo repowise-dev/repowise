@@ -79,6 +79,8 @@ _READ_GLOBS = (
     "*.gemspec", "phpstan*.neon", "phpstan*.neon.dist", "*.tf",
     "*.uid", "*.pro", "*.vcxproj", "*.rc", "*.cmake", "*.bzl",
     "*.dproj", "*.lpi", "*.dpr", "*.dpk", "*.lpr",
+    # response files a compile_commands.json entry names with ``@``
+    "*.rsp",
     "*.xml", "*.xaml", "*.axaml", "*.asax", "*.aspx", "*.ascx", "*.ashx", "*.asmx", "*.master",
     "*.imports", "*.properties", "*.flexipage", "*.quickaction", "*.tab",
 )
