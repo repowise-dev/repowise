@@ -772,7 +772,13 @@ is counted there as `unplaced`.
   database call above it. A database step says "N+1" only when a static
   `io_in_loop` finding in production code loops over the function or its main
   driver; a static finding on the function itself becomes the `why` when its
-  boundary agrees with the callee.
+  boundary agrees with the callee. In Python, a value built as a `setdefault`
+  default (`d.setdefault(key, Tracker())` builds one on every call, even when
+  the key is there) gets "build it only when the key is missing" when that
+  build holds at least half of the function's time, or, on the constructor's
+  own row, when the function building it drives at least half of its time; the
+  index reads that shape per function, so an index built before 0.63 learns it
+  on its next update.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
   `libraries` (a library frame runs below the innermost repo frame, or on a
   stack with no repo frame: a dependency, including Go's module cache, or the

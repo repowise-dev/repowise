@@ -505,13 +505,36 @@ async def measured_callers(
     return {sid: found for sid, found in out.items() if found}
 
 
+async def _eager_defaults(
+    session: AsyncSession, repository_id: str, symbols: list[str]
+) -> list[dict[str, Any]]:
+    """The eager default facts of the *symbols* whose walk found one
+    (:func:`~repowise.core.evidence.next_step.eager_default_fact`)."""
+    from ....evidence.next_step import eager_default_fact
+    from ...models import FunctionFact
+
+    out: list[dict[str, Any]] = []
+    for i in range(0, len(symbols), _BATCH_SIZE):
+        result = await session.execute(
+            select(FunctionFact.symbol_id, FunctionFact.eager_defaults_json).where(
+                FunctionFact.repository_id == repository_id,
+                FunctionFact.symbol_id.in_(symbols[i : i + _BATCH_SIZE]),
+                FunctionFact.eager_defaults_json.is_not(None),
+            )
+        )
+        out.extend(filter(None, (eager_default_fact(sid, raw) for sid, raw in result.all())))
+    return sorted(out, key=lambda f: f["symbol"])
+
+
 async def step_findings(
     session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
 ) -> list[dict[str, Any]]:
     """The open performance findings a next step reads for *rows*
     (``evidence.next_step``): those in the rows' files and their drivers' files,
     and those whose call path names a row or a driver, as
-    :func:`~repowise.core.evidence.next_step.static_finding` dicts. Findings in
+    :func:`~repowise.core.evidence.next_step.static_finding` dicts, then the
+    eager ``setdefault`` defaults the rows and drivers build
+    (:func:`~repowise.core.evidence.next_step.eager_default_fact`). Facts in
     files that are not production code (``code_origin``) are left out, so a loop
     in a test never reads as an N+1."""
     import json
@@ -555,14 +578,17 @@ async def step_findings(
             )
         )
         found.update({f.id: f for f in result.scalars()})
-    origins = await load_origins(session, repository_id, {f.file_path for f in found.values()})
-    return [
+    eager = await _eager_defaults(session, repository_id, named)
+    paths = {f.file_path for f in found.values()} | {f["file_path"] for f in eager}
+    origins = await load_origins(session, repository_id, paths)
+    out = [
         static_finding(
             f.file_path, f.function_name, f.biomarker_type, f.reason, json.loads(f.details_json or "{}")
         )
         for f in sorted(found.values(), key=lambda f: (f.file_path, f.line_start or 0, f.id))
         if origins.get(f.file_path) == "production"
     ]
+    return out + [f for f in eager if origins.get(f["file_path"]) == "production"]
 
 
 async def ranked_by_workload(
