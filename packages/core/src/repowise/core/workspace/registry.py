@@ -13,6 +13,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -285,6 +286,11 @@ async def publishable(db_path: str | Path) -> Publishability:
 # ---------------------------------------------------------------------------
 
 
+#: The member the calling MCP session works in, read from its roots; None
+#: falls back to the configured default. Set per tool call by the MCP server.
+caller_alias: ContextVar[str | None] = ContextVar("caller_alias", default=None)
+
+
 class RepoRegistry:
     """Manages multiple ``RepoContext`` instances for a workspace.
 
@@ -375,7 +381,10 @@ class RepoRegistry:
         return [r.alias for r in self._ws_config.repos]
 
     def get_default_alias(self) -> str:
-        """Return the alias of the default/primary repo."""
+        """Return the alias of the calling session's repo, else the default/primary repo."""
+        caller = caller_alias.get()
+        if caller is not None and self._ws_config.get_repo(caller) is not None:
+            return caller
         primary = self._ws_config.get_primary()
         if primary:
             return primary.alias

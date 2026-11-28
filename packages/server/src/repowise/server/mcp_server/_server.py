@@ -889,12 +889,22 @@ class _RepowiseMCP(FastMCP):
             denial = call_denial(principal, name, arguments)
             if denial is not None:
                 raise ToolError(denial)
+        from repowise.core.workspace.registry import caller_alias
         from repowise.server.auth import current_principal
 
+        alias = None
+        if _state._registry is not None:
+            from repowise.server.mcp_server._caller_repo import session_alias
+
+            with contextlib.suppress(LookupError):  # no request in flight
+                session = self._mcp_server.request_context.session
+                alias = await session_alias(session, _state._registry)
         reset = current_principal.set(principal)
+        reset_alias = caller_alias.set(alias)
         try:
             return await super().call_tool(name, arguments)
         finally:
+            caller_alias.reset(reset_alias)
             current_principal.reset(reset)
 
 
