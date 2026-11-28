@@ -1281,6 +1281,21 @@ class TestWorkspaceMetrics:
         assert "acyclic structure" in result.output
         assert "Rule violations" not in result.output
 
+    @pytest.mark.parametrize(
+        ("score", "expected_color"),
+        [
+            (9.0, "green"),
+            (7.5, "green"),
+            (6.0, "yellow"),
+            (4.5, "dark_orange"),
+            (3.0, "red"),
+        ],
+    )
+    def test_metrics_score_color_matches_health_bands(self, score, expected_color):
+        from repowise.core.analysis.health.grading import BAND_TERMINAL_COLOR, band_for
+
+        assert BAND_TERMINAL_COLOR[band_for(score)] == expected_color
+
     def test_metrics_format_json(self, runner, tmp_path):
         import json
 
