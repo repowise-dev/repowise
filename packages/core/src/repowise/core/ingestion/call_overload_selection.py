@@ -518,6 +518,11 @@ def _could_recurse(symbol: Symbol | None, argument_count: int | None) -> bool:
     return symbol.language not in ("java", "csharp", "cpp") or _takes(symbol, argument_count)
 
 
+# ``va_list ap, aq`` up to the end of its declaration or parameter list.
+_VA_LIST_DECLARATION = re.compile(r"\b(?:__builtin_)?va_list\b([^;(){}]*)")
+_VA_LIST_DECLARATOR = re.compile(r"\s*[&*]*\s*(\w+)\s*(?:=.*)?$", re.S)
+
+
 def _refuses_without_va_list(
     symbol: Symbol, argument_count: int, argument_types: _ArgumentTypes
 ) -> bool:
@@ -1011,7 +1016,8 @@ class OverloadSelectionMixin:
         self, found: list[str], argument_types: _ArgumentTypes, *, expanded: bool
     ) -> list[str]:
         """*found* narrowed to the one member its typed arguments fit closest, if one does."""
-        if len(found) < 2 or not argument_types:
+        # A C++ argument type is only ever ``va_list``, which the phases already read.
+        if len(found) < 2 or not argument_types or self._symbols_by_id[found[0]].language == "cpp":
             return found
         if self._symbols_by_id[found[0]].language == "csharp":
             return self._csharp_takers(found, argument_types)
@@ -1200,19 +1206,33 @@ class OverloadSelectionMixin:
         """``va_list`` at each argument the caller declares one, else None; None when none is.
 
         The only C++ argument type overload choice reads (``_refuses_without_va_list``).
-        Ceiling: a later declarator (``va_list a, b;``) is missed.
         """
         if not call.argument_names:
             return None
-        start, end = self._spans_for(file_path).get(call.caller_symbol_id or "", (1, 0))
-        body = "\n".join(self._text_of(file_path).splitlines()[start - 1 : end])
-        types = tuple(
-            "va_list"
-            if name and re.search(rf"\bva_list\s*&?\s*{re.escape(name)}\b", body)
-            else None
-            for name in call.argument_names
-        )
+        declared = self._cpp_va_list_names(file_path, call.caller_symbol_id or "")
+        types = tuple("va_list" if name in declared else None for name in call.argument_names)
         return types if any(types) else None
+
+    def _cpp_va_list_names(self, file_path: str, caller_id: str) -> frozenset[str]:
+        """The names *caller_id* declares ``va_list``, parameters included (``va_list ap, aq;``).
+
+        Ceiling: a field or a ``typedef`` of ``va_list`` is not read.
+        """
+        key = (file_path, caller_id)
+        found = self._cpp_va_lists.get(key)
+        if found is None:
+            start, end = self._spans_for(file_path).get(caller_id, (1, 0))
+            body = "\n".join(self._text_of(file_path).splitlines()[start - 1 : end])
+            names: set[str] = set()
+            for declarators in _VA_LIST_DECLARATION.findall(body):
+                for declarator in declarators.split(","):
+                    # ``va_list ap, int n)``: a second word starts the next parameter.
+                    named = _VA_LIST_DECLARATOR.match(declarator)
+                    if named is None:
+                        break
+                    names.add(named.group(1))
+            found = self._cpp_va_lists[key] = frozenset(names)
+        return found
 
     def _csharp_arguments(self, file_path: str, call: CallSite) -> tuple[str | None, ...] | None:
         """The receiver (``""`` when chained, None when bare), its type, then each argument's shape or type.

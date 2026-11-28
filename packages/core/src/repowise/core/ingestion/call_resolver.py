@@ -403,7 +403,8 @@ class CallResolver(
         # C++: {file: files its includes reach}, {class id: template parameter names}.
         self._cpp_include_closures: dict[str, frozenset[str]] = {}
         self._cpp_template_names: dict[str, frozenset[str]] = {}
-        self._cpp_namespace_blocks: dict[str, tuple[tuple[str, int, int], ...]] = {}
+        self._cpp_namespace_blocks: dict[str, dict[str, tuple[tuple[int, int], ...]]] = {}
+        self._cpp_va_lists: dict[tuple[str, str], frozenset[str]] = {}
         self._mros: dict[str, tuple[str, ...] | None] = {}
         # {type name: [(file, identity, arity)]}, filled by ``_declared_types_named``.
         self._declared_types: dict[str, list[tuple[str, tuple[str, ...], int]]] = {}

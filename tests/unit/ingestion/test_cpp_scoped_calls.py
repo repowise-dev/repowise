@@ -254,6 +254,10 @@ class TestVariadicOverloadTakesTheCall:
             "  va_end(ap);\n"
             "}\n"
             "void Report(const char* msg, va_list args) { Error(msg, args); }\n"
+            "void Copy(const char* msg) {\n"
+            "  va_list first, copy;\n"
+            "  Error(msg, copy);\n"
+            "}\n"
         )
         (root / "main.cc").write_text(
             '#include "util.h"\nvoid Run(const char* err) {\n  Error("%s", err);\n}\n'
@@ -272,3 +276,8 @@ class TestVariadicOverloadTakesTheCall:
         self._repo(tmp_path)
         edges = _edges(_build(tmp_path))
         assert ("util.cc::Report", "util.cc::Error#2(char*,va_list)") in edges
+
+    def test_a_later_va_list_declarator_calls_the_va_list_overload(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        edges = _edges(_build(tmp_path))
+        assert ("util.cc::Copy", "util.cc::Error#2(char*,va_list)") in edges

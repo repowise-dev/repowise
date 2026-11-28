@@ -871,7 +871,7 @@ class LanguageStrategiesMixin:
         scope = call.scope_name
         if not scope or self._language_of(file_path) != "cpp" or self._cpp_names_type(scope):
             return False
-        return self._cpp_namespaces_named(bare_type_name(scope)) != ()
+        return bool(self._cpp_namespaces_named(bare_type_name(scope)))
 
     def _cpp_names_type(self, scope: str) -> bool:
         """Does qualifier *scope* name a repository class, struct, enum or type alias?"""
@@ -881,22 +881,28 @@ class LanguageStrategiesMixin:
             for sym_id in self._global_symbols.get(name, ())
         )
 
-    def _cpp_namespaces_named(self, name: str) -> tuple[tuple[str, int, int], ...]:
-        """``(file, start, end)`` of each C++ namespace block the repository opens as *name*.
+    def _cpp_namespaces_named(self, name: str) -> dict[str, tuple[tuple[int, int], ...]]:
+        """``{file: ((start, end), ..)}`` of the C++ namespace blocks the repository opens as *name*.
 
         Read from the parsed symbols: the blocks one file reopens share an id.
+        Ceiling: a block is matched by its own name, so ``a::detail`` and
+        ``b::detail`` are one namespace here.
         """
         blocks = self._cpp_namespace_blocks.get(name)
         if blocks is None:
             paths = {
                 self._symbol_paths_by_id[sym_id] for sym_id in self._global_symbols.get(name, ())
             }
-            blocks = self._cpp_namespace_blocks[name] = tuple(
-                (path, symbol.start_line, symbol.end_line)
-                for path in sorted(paths)
-                for symbol in getattr(self._parsed_files.get(path), "symbols", ())
-                if symbol.name == name and symbol.kind == "module" and symbol.language == "cpp"
-            )
+            blocks = {}
+            for path in paths:
+                spans = tuple(
+                    (symbol.start_line, symbol.end_line)
+                    for symbol in getattr(self._parsed_files.get(path), "symbols", ())
+                    if symbol.name == name and symbol.kind == "module" and symbol.language == "cpp"
+                )
+                if spans:
+                    blocks[path] = spans
+            self._cpp_namespace_blocks[name] = blocks
         return blocks
 
     def _cpp_in_namespace(self, sym_id: str, namespace: str) -> bool:
@@ -909,11 +915,9 @@ class LanguageStrategiesMixin:
             return False
         if symbol.parent_name and bare_type_name(symbol.parent_name) == namespace:
             return True
-        path = self._symbol_paths_by_id.get(sym_id)
-        return any(
-            block_path == path and start <= symbol.start_line <= end
-            for block_path, start, end in self._cpp_namespaces_named(namespace)
-        )
+        path = self._symbol_paths_by_id.get(sym_id, "")
+        spans = self._cpp_namespaces_named(namespace).get(path, ())
+        return any(start <= symbol.start_line <= end for start, end in spans)
 
     def _is_cpp_member_function(self, symbol: Symbol | None) -> bool:
         """Is *symbol* a member function a bare call from outside its class cannot reach?
