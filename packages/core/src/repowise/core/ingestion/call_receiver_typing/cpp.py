@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import NamedTuple
 
 from tree_sitter import Node, Parser, Query
@@ -141,28 +142,44 @@ class CppFieldOwners:
         for _ in range(16):
             if target is None or target[1] is None:
                 return None
-            path, written = target
-            head, _, bare = written.rpartition("::")
-            if head.partition("::")[0] == "std":
-                return None
-            host = head.rpartition("::")[2]
-            members = self._cpp_member_aliases(host, bare, reach) if head else set()
-            if members:
-                target = members.pop() if len(members) == 1 else None
-                continue
-            declared = self._declared_types_named(bare)
-            if declared:
-                files = {file for file, _, _ in declared} & reach
-                if len({identity for _, identity, _ in declared}) != 1 or not files:
-                    return None
-                # Ceiling: the qualifier is matched against the namespaces the
-                # class's file opens, not the one that encloses the class.
-                opened = re.compile(rf"\bnamespace\s+(?:\w+::)*{re.escape(host)}\b")
-                if head and not any(opened.search(self._text_of(f)) for f in files):
-                    return None
-                return bare
-            target = self._cpp_visible_alias(path, bare, 0)
+            found, target = self._cpp_alias_hop(target[0], target[1], reach)
+            if found is not None:
+                return found or None
         return None
+
+    def _cpp_alias_hop(
+        self, path: str, written: str, reach: frozenset[str]
+    ) -> tuple[str | None, tuple[str, str | None] | None]:
+        """One hop of ``_cpp_alias_class`` from the target *written* in *path*.
+
+        ``(class, None)`` at the chain's end, with ``""`` for a refusal, else
+        ``(None, next target)``.
+        """
+        head, _, bare = written.rpartition("::")
+        if head.partition("::")[0] == "std":
+            return "", None
+        members = self._cpp_member_aliases(head.rpartition("::")[2], bare, reach) if head else set()
+        if members:
+            return None, members.pop() if len(members) == 1 else None
+        declared = self._declared_types_named(bare)
+        if declared:
+            return (bare if self._cpp_qualified_class(declared, head, reach) else ""), None
+        return None, self._cpp_visible_alias(path, bare, 0)
+
+    def _cpp_qualified_class(
+        self, declared: list[tuple[str, tuple[str, ...], int]], head: str, reach: frozenset[str]
+    ) -> bool:
+        """Is *declared* one class *reach* sees, in a file that opens the namespace *head* names?"""
+        files = {file for file, _, _ in declared} & reach
+        if len({identity for _, identity, _ in declared}) != 1 or not files:
+            return False
+        if not head:
+            return True
+        # Ceiling: the qualifier is matched against the namespaces the class's
+        # file opens, not the one that encloses the class.
+        host = re.escape(head.rpartition("::")[2])
+        opened = re.compile(rf"\bnamespace\s+(?:\w+::)*{host}\b")
+        return any(opened.search(self._text_of(f)) for f in files)
 
     def _cpp_visible_alias(self, path: str, name: str, position: int) -> tuple[str, str] | None:
         """``(file, written target)`` of the one alias *name* means at *position* in *path*."""
@@ -171,22 +188,17 @@ class CppFieldOwners:
             for a in self._cpp_type_facts(path).aliases
             if a.name == name and (a.scope is None or a.scope[0] <= position < a.scope[1])
         ]
-        if in_scope:
-            innermost = max(a.scope[0] if a.scope else -1 for a in in_scope)
-            sites = {
-                (path, a.written if self._cpp_expandable(path, a) else None)
-                for a in in_scope
-                if (a.scope[0] if a.scope else -1) == innermost
-            }
-        else:
+        if not in_scope:
             key = (path, name)
             if key not in self._cpp_included_aliases:
                 self._cpp_included_aliases[key] = self._cpp_included_alias(path, name)
             return self._cpp_included_aliases[key]
-        if len({written for _, written in sites}) != 1:
-            return None
-        site = min(sites)
-        return None if site[1] is None else site
+        innermost = max(a.scope[0] if a.scope else -1 for a in in_scope)
+        return _one_site(
+            (path, a.written if self._cpp_expandable(path, a) else None)
+            for a in in_scope
+            if (a.scope[0] if a.scope else -1) == innermost
+        )
 
     def _cpp_included_alias(self, path: str, name: str) -> tuple[str, str] | None:
         """``(file, written target)`` of the one file- or namespace-level alias
@@ -201,16 +213,12 @@ class CppFieldOwners:
         files.discard(path)
         if not files:
             return None
-        sites = {
+        return _one_site(
             (other, a.written)
             for other in sorted(files & self._cpp_include_closure(path))
             for a in self._cpp_type_facts(other).aliases
             if a.name == name and not a.nested
-        }
-        if len({written for _, written in sites}) != 1:
-            return None
-        site = min(sites)
-        return None if site[1] is None else site
+        )
 
     def _cpp_member_aliases(
         self, host: str, name: str, reach: frozenset[str]
@@ -487,6 +495,14 @@ class CppFieldOwners:
                 names.update(sym.name for sym in candidates if _is_pure(lines, sym))
             self._pure_virtual_name_set = frozenset(names)
         return self._pure_virtual_name_set
+
+
+def _one_site(sites: Iterable[tuple[str, str | None]]) -> tuple[str, str] | None:
+    """The first site, when every one writes the same expandable target."""
+    found = sorted(set(sites), key=lambda site: (site[0], site[1] or ""))
+    if len({written for _, written in found}) != 1 or found[0][1] is None:
+        return None
+    return found[0]
 
 
 def _declared_in(
