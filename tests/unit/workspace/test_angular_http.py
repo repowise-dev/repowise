@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.core.workspace.extractors.http import HttpExtractor
+from repowise.core.workspace.extractors.http.js_clients import http_resource_calls
 from repowise.core.workspace.matching import match_contracts
 
 _IMPORT = "import { HttpClient } from '@angular/common/http';\n"
@@ -261,6 +262,100 @@ class TestClassFields:
         assert _calls(_write(tmp_path, {"src/a.ts": _service(body)})) == [
             ("angular", "GET", "/users", "base"),
         ]
+
+    def test_an_inherited_class_field_resolves(self, tmp_path: Path) -> None:
+        text = (
+            f"{_IMPORT}class Base {{\n  protected resourceUrl = '/api/items';\n}}\n"
+            "export class ItemService extends Base {\n"
+            "  constructor(private http: HttpClient) { super(); }\n"
+            "  list() { return this.http.get(this.resourceUrl); }\n}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/item.service.ts": text})) == [
+            ("angular", "GET", "/api/items", ""),
+        ]
+
+    def test_base_instance_fields_do_not_leak_into_static_members(self, tmp_path: Path) -> None:
+        text = (
+            "class Base {\n"
+            "  protected instanceUrl = '/api/instance';\n"
+            "  static staticUrl = '/api/static';\n"
+            "}\n"
+            "export class Sub extends Base {\n"
+            "  static load() { return fetch(`${this.instanceUrl}`); }\n"
+            "  static loadStatic() { return fetch(`${this.staticUrl}`); }\n"
+            "}\n"
+        )
+        _write(tmp_path, {"src/sub.ts": text})
+        paths = {c.meta["path"] for c in HttpExtractor().extract(tmp_path, "web") if c.role == "consumer"}
+        assert "/api/static" in paths
+        assert "/api/instance" not in paths
+
+
+class TestHttpResource:
+    def test_shorthand_url_property_and_arrow_shorthand(self, tmp_path: Path) -> None:
+        text = (
+            "const url = '/api/shorthand';\n"
+            "export class ItemService {\n"
+            "  res1 = httpResource({ url });\n"
+            "  res2 = httpResource(() => ({ url }));\n"
+            "}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/shorthand.ts": text})) == [
+            ("angular", "GET", "/api/shorthand", ""),
+            ("angular", "GET", "/api/shorthand", ""),
+        ]
+
+    def test_generic_and_member_named_url(self, tmp_path: Path) -> None:
+        text = (
+            "export class Service {\n"
+            "  url = '/api/from-member';\n"
+            "  res1 = httpResource<User[]>('/api/generic');\n"
+            "  res2 = httpResource(this.url);\n"
+            "  res3 = httpResource(() => this.url);\n"
+            "}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/generic.ts": text})) == [
+            ("angular", "GET", "/api/from-member", ""),
+            ("angular", "GET", "/api/from-member", ""),
+            ("angular", "GET", "/api/generic", ""),
+        ]
+
+    def test_literal_and_field_forms(self, tmp_path: Path) -> None:
+        text = (
+            "class Base { protected resourceUrl = '/api/items'; }\n"
+            "export class ItemService extends Base {\n"
+            "  res1 = httpResource({ url: '/api/other' });\n"
+            "  res2 = httpResource({ url: this.resourceUrl });\n"
+            "  res3 = httpResource(() => ({ url: this.resourceUrl }));\n"
+            "  res4 = httpResource({ url: '/api/post', method: 'POST' });\n"
+            "  res5 = httpResource(() => '/api/arrow');\n"
+            "}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/service.ts": text})) == [
+            ("angular", "GET", "/api/arrow", ""),
+            ("angular", "GET", "/api/items", ""),
+            ("angular", "GET", "/api/items", ""),
+            ("angular", "GET", "/api/other", ""),
+            ("angular", "POST", "/api/post", ""),
+        ]
+
+    def test_template_literal_interpolation_and_commas(self, tmp_path: Path) -> None:
+        text = (
+            "class Base { protected base = '/api'; }\n"
+            "export class Service extends Base {\n"
+            "  res1 = httpResource({ url: `${this.base}/items` });\n"
+            "  res2 = httpResource(() => ({ url: `${this.base}/users` }));\n"
+            "  res3 = httpResource({ url: `${this.base}/items/${id}`, method: 'POST' });\n"
+            "}\n"
+        )
+        assert _calls(_write(tmp_path, {"src/service.ts": text})) == [
+            ("angular", "GET", "/api/items", ""),
+            ("angular", "GET", "/api/users", ""),
+            ("angular", "POST", "/api/items/{param}", ""),
+        ]
+        calls = list(http_resource_calls("httpResource({ url: buildUrl(id, x), method: 'GET' })"))
+        assert len(calls) == 1
+        assert calls[0].url == "buildUrl(id, x)"
 
 
 def test_an_angular_service_links_to_nest_and_laravel(tmp_path: Path) -> None:

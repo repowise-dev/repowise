@@ -392,18 +392,45 @@ class FieldScope:
     def __init__(self, strings: FileStrings) -> None:
         self._strings = strings
         self._classes: list[ClassFields] | None = None
+        self._cache: dict[tuple[int, bool], dict[str, str]] = {}
         self._current: dict[str, str] | None = None
 
     def raw(self, name: str) -> str | None:
         """The source text the class entered last sets field *name* (``this.x``) to."""
         return self._current.get(name) if self._current else None
 
+    def _resolve_fields(self, found: ClassFields, is_static: bool) -> dict[str, str]:
+        chain = [found]
+        seen = {found.name}
+        current = found
+        while current.base_name:
+            if current.base_name in seen:
+                break
+            seen.add(current.base_name)
+            base = next((c for c in self._classes or () if c.name == current.base_name), None)
+            if base is None:
+                break
+            chain.append(base)
+            current = base
+        merged: dict[str, str] = {}
+        for cls in reversed(chain):
+            merged.update(cls.static_fields if is_static else cls.fields)
+        return merged
+
     def enter(self, pos: int) -> None:
         if self._classes is None:
             self._classes = js_class_fields(self._strings.content)
+            self._cache = {}
         found = next((c for c in self._classes if c.start <= pos < c.end), None)
-        fields = found.fields_at(pos) if found is not None else None
-        if fields is self._current:
+        if found is None:
+            fields = None
+        else:
+            is_static = any(a <= pos < b for a, b in found.static_spans)
+            key = (found.start, is_static)
+            if key not in self._cache:
+                self._cache[key] = self._resolve_fields(found, is_static)
+            fields = self._cache[key]
+        if fields == self._current:
             return
         settled = self._strings.settled
         for name in self._current or ():
