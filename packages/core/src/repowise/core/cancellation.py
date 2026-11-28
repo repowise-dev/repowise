@@ -7,9 +7,13 @@ worker keeps grinding, so the process never actually exits. That is the second
 half of issue #341: "Ctrl-C didn't return the terminal."
 
 The fix is cooperative: a process-global :class:`CancellationToken` is set by
-the CLI for the duration of a run, the long synchronous loops poll
-:func:`check_cancelled` at coarse intervals, and the first Ctrl-C flips the
-token so those loops unwind promptly with :class:`PipelineCancelled`.
+the CLI for the duration of a run, long loops poll :func:`check_cancelled`, and
+the first Ctrl-C flips the token so they unwind promptly with
+:class:`PipelineCancelled`. The poll sites are the start of every step of
+``repowise init``, parsing (per file, or every quarter second while the parse
+pool runs), the graph build's import, heritage and call passes (per file), and
+duplication detection. Graph centrality runs inside NetworkX and the
+betweenness pool, which do not poll, so a Ctrl-C there lands at the next step.
 
 :class:`PipelineCancelled` deliberately subclasses :class:`BaseException` (like
 :class:`KeyboardInterrupt` and ``asyncio.CancelledError``) so the pipeline's

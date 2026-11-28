@@ -16,12 +16,15 @@ def _h(**by_tier: int) -> dict:
 
 def test_counts_work_and_names_the_week_by_its_last_commit() -> None:
     out = summarize({"week": _h(act_now=1, plan=2, improve_signal=4), "quarter": _h()}, ANCHOR)
-    assert out["week"] == "3 things worth doing in the week to Sep 28, the last indexed commit, 1 of them now."
+    assert out["week"] == (
+        "3 things worth doing in the week to Sep 28, the last indexed commit, 1 of them now"
+        " · 4 setup steps."
+    )
 
 
 def test_no_act_now_leaves_out_the_now_clause() -> None:
     out = summarize({"week": _h(), "quarter": _h(plan=2, improve_signal=1)}, ANCHOR)
-    assert out["quarter"] == "2 things worth doing this quarter."
+    assert out["quarter"] == "2 things worth doing this quarter · 1 setup step."
 
 
 def test_a_tz_aware_anchor_names_its_own_day() -> None:
@@ -34,7 +37,7 @@ def test_a_clear_week_points_at_the_quarter() -> None:
     out = summarize({"week": _h(improve_signal=1), "quarter": _h(plan=1)}, ANCHOR)
     assert out["week"] == (
         "Nothing needs you in the week to Sep 28, the last indexed commit. "
-        "1 thing is worth planning this quarter."
+        "1 thing is worth planning this quarter. 1 setup step to finish."
     )
     assert out["quarter"] == "1 thing worth doing this quarter."
 
@@ -46,6 +49,11 @@ def test_a_clear_quarter_points_at_the_week_and_both_clear_says_so() -> None:
         "week": "Nothing stands out this week.",
         "quarter": "Nothing stands out this quarter.",
     }
+
+
+def test_setup_steps_alone_are_named_after_a_clear_window() -> None:
+    out = summarize({"week": _h(improve_signal=2), "quarter": _h(improve_signal=2)}, None)
+    assert out["week"] == "Nothing stands out this week. 2 setup steps to finish."
 
 
 def test_the_view_carries_one_sentence_per_horizon() -> None:

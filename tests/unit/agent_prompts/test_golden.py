@@ -18,8 +18,11 @@ import pytest
 from repowise.core.agent_prompts import (
     FLAVORS,
     render_action,
+    render_first_look_item,
+    render_first_look_report,
     render_fix_item,
     render_opportunity,
+    render_perf_opportunity,
     render_plan,
     render_verify_lines,
 )
@@ -36,6 +39,9 @@ _ACTIONS = _load("actions.json")["cases"]
 _ITEMS = _load("fix_items.json")["cases"]
 _PLANS = _load("refactoring.json")["plans"]
 _OPPORTUNITIES = _load("refactoring.json")["opportunities"]
+_PERF = _load("first_look.json")["perf_opportunities"]
+_FL_ITEMS = _load("first_look.json")["items"]
+_FL_REPORTS = _load("first_look.json")["reports"]
 
 
 def _render_all() -> dict:
@@ -62,6 +68,24 @@ def _render_all() -> dict:
                 lambda f, c=c: render_opportunity(c["detail"], f, c.get("repo_name"))
             )
             for c in _OPPORTUNITIES
+        },
+        "perf_opportunity": {
+            c["name"]: per_flavor(
+                lambda f, c=c: render_perf_opportunity(c["detail"], f, c.get("repo_name"))
+            )
+            for c in _PERF
+        },
+        "first_look_item": {
+            c["name"]: per_flavor(
+                lambda f, c=c: render_first_look_item(c["item"], f, c.get("repo_name"))
+            )
+            for c in _FL_ITEMS
+        },
+        "first_look_report": {
+            c["name"]: per_flavor(
+                lambda f, c=c: render_first_look_report(c["items"], f, c.get("repo_name"))
+            )
+            for c in _FL_REPORTS
         },
     }
 
@@ -97,6 +121,30 @@ def test_every_case_has_a_golden() -> None:
     assert set(_GOLDEN["fix_item"]) == {c["name"] for c in _ITEMS}
     assert set(_GOLDEN["refactoring_plan"]) == {c["name"] for c in _PLANS}
     assert set(_GOLDEN["refactoring_opportunity"]) == {c["name"] for c in _OPPORTUNITIES}
+    assert set(_GOLDEN["perf_opportunity"]) == {c["name"] for c in _PERF}
+    assert set(_GOLDEN["first_look_item"]) == {c["name"] for c in _FL_ITEMS}
+    assert set(_GOLDEN["first_look_report"]) == {c["name"] for c in _FL_REPORTS}
+
+
+@pytest.mark.parametrize("flavor", FLAVORS)
+@pytest.mark.parametrize("case", _PERF, ids=lambda c: c["name"])
+def test_perf_opportunity_matches_golden(case: dict, flavor: str) -> None:
+    text = render_perf_opportunity(case["detail"], flavor, case.get("repo_name"))
+    assert text == _GOLDEN["perf_opportunity"][case["name"]][flavor]
+
+
+@pytest.mark.parametrize("flavor", FLAVORS)
+@pytest.mark.parametrize("case", _FL_ITEMS, ids=lambda c: c["name"])
+def test_first_look_item_matches_golden(case: dict, flavor: str) -> None:
+    text = render_first_look_item(case["item"], flavor, case.get("repo_name"))
+    assert text == _GOLDEN["first_look_item"][case["name"]][flavor]
+
+
+@pytest.mark.parametrize("flavor", FLAVORS)
+@pytest.mark.parametrize("case", _FL_REPORTS, ids=lambda c: c["name"])
+def test_first_look_report_matches_golden(case: dict, flavor: str) -> None:
+    text = render_first_look_report(case["items"], flavor, case.get("repo_name"))
+    assert text == _GOLDEN["first_look_report"][case["name"]][flavor]
 
 
 @pytest.mark.parametrize("flavor", FLAVORS)
@@ -117,3 +165,35 @@ def test_refactoring_plan_spec_matches_golden(case: dict) -> None:
 def test_refactoring_opportunity_matches_golden(case: dict, flavor: str) -> None:
     text = render_opportunity(case["detail"], flavor, case.get("repo_name"))
     assert text == _GOLDEN["refactoring_opportunity"][case["name"]][flavor]
+
+
+def test_no_rendered_flavor_names_todowrite() -> None:
+    """Harness tool names drift between releases; prompts must stay neutral (#3430)."""
+
+    def _walk(node: object) -> list[str]:
+        if isinstance(node, str):
+            return [node]
+        if isinstance(node, dict):
+            return [text for value in node.values() for text in _walk(value)]
+        if isinstance(node, list):
+            return [text for value in node for text in _walk(value)]
+        return []
+
+    for text in _walk(_render_all()):
+        assert "TodoWrite" not in text
+
+
+def test_a_step_fences_code_that_spans_lines_and_lists_its_notes() -> None:
+    from repowise.core.agent_prompts.fix_first import _step
+
+    step = {
+        "order": 1, "text": "Extract it", "file_path": "a.py", "line": 9, "mechanical": False,
+        "signature": "class _Ctx:\n    a: int\n\ndef f(ctx: _Ctx):",
+        "call": "f(ctx)", "notes": ["Read a in the helper as ctx.a."],
+    }
+    assert _step(step) == (
+        "1. Extract it (`a.py:9`) [judgment]\n"
+        "   Helper:\n   ```\n   class _Ctx:\n       a: int\n\n   def f(ctx: _Ctx):\n   ```\n"
+        "   Call: `f(ctx)`\n"
+        "   Note: Read a in the helper as ctx.a."
+    )

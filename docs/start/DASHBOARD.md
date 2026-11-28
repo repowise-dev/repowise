@@ -21,21 +21,19 @@ looking at.
 
 ## Two modes, and what changes between them
 
-Repowise can index a repo without generating a wiki (`repowise init
---no-prose`, or the fast option in the setup wizard). Everything derived from
-the AST, the dependency graph, and git history works in both modes. The views
-that read generated pages are the difference:
+Without a model, `repowise init --no-prose` builds the documentation from
+code. Everything derived from the AST, the dependency graph, and git history
+works either way. The views that read written pages are the difference:
 
 | Needs a model or an embedder | Works on any indexed repo |
 |---|---|
 | Chat (needs a provider), semantic Search (needs an embedder) | Docs, Doc freshness, Present mode, Overview, Architecture, Knowledge Graph, Code Health, Refactoring, Files, Symbols, Commits, Contributors, Decisions, Stats, Usage, Settings, all Workspace views |
 
-Every indexed repo has a wiki, including one indexed without a key, so the Docs
-views are populated either way. What a keyless index lacks is model-written
-prose and semantic search: the Docs view offers to upgrade pages with
-`repowise generate`, and `repowise reindex` builds semantic search once an
-embedder is configured. Either upgrade works in place, with no re-index from
-scratch.
+An index built from code has documentation, so the Docs views are populated.
+It lacks written documentation and semantic search: `repowise generate` adds
+the first, and `repowise reindex --embedder <name>` the second. An Index only
+repo (`init --mode fast`) has no documentation until `repowise update --full`
+builds it. Every upgrade works in place, with no re-index from scratch.
 
 ## Overview
 
@@ -55,7 +53,7 @@ If a job is in flight, the progress and log stream here.
 
 **Answers:** how does this system work, in prose someone can read?
 
-<img src="../../.github/assets/dashboard/docs-page.png" alt="Repowise docs reader: page tree on the left, generated wiki page with confidence and freshness badges in the center" width="100%" />
+<img src="../../.github/assets/dashboard/docs-page.png" alt="Repowise docs reader: page tree on the left, the generated repository overview in the center, with its outline and related pages on the right" width="100%" />
 
 The generated wiki: a page tree on the left, the rendered page in the middle
 with mermaid diagrams, code blocks that link into the file views, a confidence
@@ -67,9 +65,6 @@ public API and git signals) out of the body; the **Reference** tab above the
 page shows it, and a small History card beside the page summarises owners,
 hotspots and fix history. You can attach human notes to a page,
 and those notes survive regeneration.
-
-The sidebar auto-collapses to icons here so the page gets the width, and
-restores when you leave.
 
 ### Present mode (the hidden one)
 
@@ -120,7 +115,7 @@ regenerating everything.
 
 **Answers:** what talks to what?
 
-<img src="../../.github/assets/dashboard/architecture-page.png" alt="Repowise dependency graph: detected communities laid out on the module map, sized by how much code each holds" width="100%" />
+<img src="../../.github/assets/dashboard/architecture-page.png" alt="Repowise architecture map: every file grouped into the communities it depends on most, with a band for each strong link between communities" width="100%" />
 
 Four tabs, with the view in `?view=`:
 
@@ -162,7 +157,7 @@ zoomed on one node. The older `/c4` and `/zoom` URLs redirect here.
 
 **Answers:** which files have the strongest defect indicators, and why?
 
-<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the three co-equal pillars, the health band distribution, KPI cards and the code health map" width="100%" />
+<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the overall score, how it ranks against real bug-fix history, and KPI cards for files, maintainability, performance and hotspot health" width="100%" />
 
 Tabs behind `?tab=` (the label shown, then the id):
 
@@ -192,10 +187,10 @@ work: `?tab=hotspots`, `heatmap`, `modules`, and `trend` land on Overview.
 
 Clicking any file opens the health drawer: its markers, its file signals
 (owners, churn, dependents), its score trend as a sparkline, and its **bug
-history** section (see [BUG_HISTORY.md](../layers/BUG_HISTORY.md)).
+history** section (see [Bug History](../layers/BUG_HISTORY.md)).
 
 The full scoring model is documented in
-[docs/layers/CODE_HEALTH.md](../layers/CODE_HEALTH.md). Note that the per-file
+[Code Health](../layers/CODE_HEALTH.md). Note that the per-file
 score trend lives on the file's own Health tab and in the drawer rather than as
 a separate top-level tab.
 
@@ -205,15 +200,15 @@ a separate top-level tab.
 
 **Answers:** given that this file is in trouble, what exactly do I change?
 
-A board of structured plans (Extract Class, Extract Helper, Move Method, Break
-Cycle, Split File), each rendered as a card with its split groups, the evidence
-that justifies it, its impact delta, an effort bucket, and the blast radius that
+A board of structured plans (Extract Class, Extract Method, Extract Helper,
+Move Method, Break Cycle, Split File, Performance Fix), each rendered as a
+card with its split groups, the evidence that justifies it, its impact delta, an effort bucket, and the blast radius that
 has to move with it. Filter by type with `?type=`. Two actions per card:
 **copy-to-agent**, which produces a prompt you can hand to a coding agent, and
 **Generate code**, an opt-in LLM expansion into code plus a unified diff.
 Everything except that last button is deterministic.
 
-Reference: [docs/layers/REFACTORING.md](../layers/REFACTORING.md).
+Reference: [Refactoring](../layers/REFACTORING.md).
 
 ## Files
 
@@ -261,9 +256,9 @@ score distribution, a
 code-evolution chart, commit-category breakdowns, and AI-agent provenance
 badges plus their trend over time, shown as agent, human-attested and unknown
 commits with the agent share of covered commits beside its coverage (see
-[ATTRIBUTION.md](../layers/ATTRIBUTION.md)). The
+[AI attribution](../layers/ATTRIBUTION.md)). The
 risk model is documented in
-[docs/layers/CHANGE_RISK.md](../layers/CHANGE_RISK.md).
+[Change Risk](../layers/CHANGE_RISK.md).
 
 ## Changes
 
@@ -277,7 +272,7 @@ and commits, newest first, filtered by category or by "Needs attention". Each
 row counts the attention and unknown items of the change's evidence checklist
 once it is built; the detail page builds it on first view and lists the
 commits, files, provenance and metadata of one Change Record. See
-[CHANGES.md](../layers/CHANGES.md).
+[Changes](../layers/CHANGES.md).
 
 ## Contributors
 
@@ -296,17 +291,17 @@ concentrated. Useful before a reorg, and before assuming a file has an owner.
 **Answers:** why is this code shaped this way?
 
 Architectural decisions with their evidence drawer and a decision graph.
-(Supersession lineage renders empty for now — the detector that produced those
-edges is off, see `docs/layers/DECISIONS.md`.) Decisions are mined from history
-and PR discussion and can be
-confirmed, edited, or added by hand. This is the view that keeps a "we already
+Supersession lineage shows the successors recorded with `repowise decision
+deprecate --superseded-by` and commit reversals; it is never inferred from text
+similarity (see [Decisions](../layers/DECISIONS.md)). Decisions are mined from
+history and PR discussion and can be confirmed, edited, or added by hand. This is the view that keeps a "we already
 tried that" answer from being lost.
 
 ## Chat
 
 `/repos/<id>/chat`
 
-<img src="../../.github/assets/dashboard/chat-page.png" alt="Repowise chat: a question answered against the index, with citations to the pages and files it came from and an artifacts panel" width="100%" />
+<img src="../../.github/assets/dashboard/chat-page.png" alt="Repowise chat: asked which files are riskiest to change, it answers with a table of files and the reason each is risky" width="100%" />
 
 Ask questions against the indexed repo. Answers cite the pages and files they
 came from, an artifacts panel collects code the answer produced, and you can
@@ -331,6 +326,16 @@ Daily LLM spend, a cost heatmap, provider comparison, and the savings attributed
 to `repowise distill` compressing command output before it reaches an agent's
 context window.
 
+## Setup
+
+`/repos/<id>/settings/setup`
+
+**Answers:** what is connected, and what could I add next?
+
+One row each for agents, sync, coverage and a model, with what is on now.
+Every row has a "copy prompt" that hands the step to your agent, and anything
+that needs attention rises to the top. Setup also reopens the welcome tour.
+
 ## Settings
 
 `/repos/<id>/settings` for the repo (exclusions, generation options, sync),
@@ -340,7 +345,7 @@ server config and tool toggles, display preferences).
 ## Workspace views
 
 These appear only when repowise is running over a multi-repo workspace. See
-[docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for setup.
+[Workspaces](../scale/WORKSPACES.md) for setup.
 
 - `/workspace`: repo cards across the workspace with per-repo status.
 - `/workspace/system-map`: the cross-repo dependency picture, including a
@@ -363,8 +368,8 @@ These appear only when repowise is running over a multi-repo workspace. See
 
 ## See also
 
-- [QUICKSTART.md](QUICKSTART.md): getting to a first index.
-- [USER_GUIDE.md](USER_GUIDE.md): the CLI-side workflow.
-- [docs/agent/MCP_TOOLS.md](../agent/MCP_TOOLS.md): the same data, for agents.
-- [docs/reference/CLI_REFERENCE.md](../reference/CLI_REFERENCE.md): every
+- [Quickstart](QUICKSTART.md): getting to a first index.
+- [User Guide](USER_GUIDE.md): how the CLI, agent and dashboard fit together.
+- [MCP Tools](../agent/MCP_TOOLS.md): the same data, for agents.
+- [CLI Reference](../reference/CLI_REFERENCE.md): every
   command, including `serve` flags.

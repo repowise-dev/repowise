@@ -58,7 +58,7 @@ def _add_fastapi_edges(
 
 class _FastApiHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        return "fastapi" in dctx.stack_lower or "starlette" in dctx.stack_lower
+        return dctx.uses("FastAPI", "Starlette")
 
     def add_edges(
         self,

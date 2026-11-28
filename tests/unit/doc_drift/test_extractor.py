@@ -13,6 +13,7 @@ from repowise.core.analysis.doc_drift.extractor import (
     extract,
     is_checkable_document,
     is_guide_document,
+    is_own_prose,
     prose_lines,
 )
 from repowise.core.analysis.doc_drift.models import DriftKind
@@ -129,6 +130,12 @@ def test_bare_filename_is_still_extracted_but_prose_is_not():
 )
 def test_placeholders_and_templates_are_not_paths(token: str):
     assert _targets(f"Create `{token}` now.", DriftKind.PATH) == []
+
+
+def test_an_ellipsis_placeholder_is_not_a_path_in_either_spelling():
+    """``docs/0N_....md`` and ``docs/0N_\u2026.md`` both elide part of a name."""
+    text = "See `docs/0N_....md`, `docs/0N_\u2026.md` and `docs/a.md` for details."
+    assert _targets(text, DriftKind.PATH) == ["docs/a.md"]
 
 
 def test_urls_are_never_paths_or_links():
@@ -254,6 +261,11 @@ def test_non_markdown_is_not_a_document():
     """`.rst` and `.adoc` are outside this detector's reach entirely."""
     assert not is_checkable_document("docs/index.rst")
     assert not is_checkable_document("docs/index.adoc")
+
+
+def test_own_prose_ignores_the_document_format():
+    assert is_own_prose("specs/api.pdf")
+    assert not is_own_prose("vendor/specs/api.pdf")
 
 
 def test_guide_documents_are_recognised():

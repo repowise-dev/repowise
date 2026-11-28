@@ -42,7 +42,9 @@ from repowise.core.analysis.security.credentials import (
     _ANGLE_SLOT,
     _CONSTANT_NAME,
     _CREDENTIAL_EXACT_PLACEHOLDERS,
+    _CREDENTIAL_KINDS,
     _CREDENTIAL_SUBSTRING_PLACEHOLDERS,
+    _KEPT,
     _KEY_NAME_VALUE,
     _LONG_DIGIT_RUN,
     _MARKER,
@@ -50,6 +52,7 @@ from repowise.core.analysis.security.credentials import (
     _PEM_BODY_LINE,
     _PEM_HEADER_LINE,
     _PEM_INLINE_BODY,
+    _PUBLIC_EMPTY_ASSIGNMENT,
     _PUBLIC_ENV_PATTERN,
     _PUBLIC_VALUE,
     _SCHEME_TEMPLATE_VALUE,
@@ -59,6 +62,7 @@ from repowise.core.analysis.security.credentials import (
     _TEMPLATE_VALUE,
     _UPPER_KEY_NAME_VALUE,
     _assignment_name,
+    _is_empty_public_env_assignment,
     _is_own_name_value,
     _is_plain_word,
     _is_secret_value,
@@ -71,6 +75,7 @@ from repowise.core.analysis.security.credentials import (
     _string_end,
     _value_span,
     masked_snippet,
+    shown_snippet,
 )
 from repowise.core.analysis.security.masking import (
     _BLOCK_STOP,
@@ -88,7 +93,6 @@ from repowise.core.analysis.security.masking import (
     source_lines,
 )
 from repowise.core.analysis.security.paths import (
-    _DECLARATION_SUFFIXES,
     _LOW_SEVERITY_PATH_TOKENS,
     _MACHINE_ORIGINS,
     _NON_SHIPPING_ORIGINS,
@@ -111,6 +115,7 @@ from repowise.core.analysis.security.patterns import (
     SECRET_KINDS,
     SECURITY_SCANNER_VERSION,
     SYMBOL_NAME_KINDS,
+    security_scanner_changed,
 )
 from repowise.core.analysis.security.refinements import (
     _NOT_FOR_SECURITY,

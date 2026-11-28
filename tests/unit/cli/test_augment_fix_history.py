@@ -118,7 +118,7 @@ async def test_session_cap_stops_the_drumbeat(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
     await init_db(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    paths = [f"src/f{i}.py" for i in range(decision_inject._MAX_EDIT_NOTICES + 2)]
+    paths = [f"src/f{i}.py" for i in range(decision_inject._MAX_FIX_NOTICES + 2)]
     async with factory() as session:
         session.add(Repository(id=_REPO_ID, name="repo", local_path=str(tmp_path)))
         for i, path in enumerate(paths):
@@ -135,7 +135,7 @@ async def test_session_cap_stops_the_drumbeat(tmp_path):
     await engine.dispose()
 
     fired = [decision_inject._edit_fix_history_notice(tmp_path, p, "sess-1") for p in paths]
-    assert sum(1 for line in fired if line) == decision_inject._MAX_EDIT_NOTICES
+    assert sum(1 for line in fired if line) == decision_inject._MAX_FIX_NOTICES
 
 
 def test_humanize_age_reads_like_a_person_wrote_it():

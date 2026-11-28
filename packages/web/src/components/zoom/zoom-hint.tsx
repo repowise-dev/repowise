@@ -1,11 +1,13 @@
 "use client";
 
 /**
- * A one-time coaching hint that floats over the canvas on a first visit. The
- * zoom-map interaction model (scroll to zoom, double-click a card to dive in) is
- * not obvious from a static frame, so we spell it out once and remember the
- * dismissal in localStorage. Deliberately calm: a single glass pill, no modal
- * and no backdrop, so it guides without getting in the way.
+ * A one-time coaching hint on a first visit. The zoom-map interaction model
+ * (scroll to zoom, double-click a card to dive in) is not obvious from a static
+ * frame, so we spell it out once and remember the dismissal in localStorage.
+ * Deliberately calm: a single glass pill beside the map controls, in the
+ * corner, rather than centred over the bottom row of cards it is teaching.
+ * Hidden below `sm`, where the pill would crowd the controls; touch screens do
+ * not scroll-zoom anyway.
  */
 
 import { useEffect, useState } from "react";
@@ -41,31 +43,30 @@ export function ZoomHint() {
   };
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-3">
-      <div className="pointer-events-auto flex max-w-full items-center gap-3 overflow-x-auto rounded-full border border-[var(--color-border-subtle)] bg-[var(--color-bg-glass)] py-1.5 pl-4 pr-2 text-xs text-[var(--color-text-secondary)] shadow-sm backdrop-blur">
-        <span className="flex shrink-0 items-center gap-1.5">
-          <ZoomIn className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-          {t("hint.scroll")}
-        </span>
-        <span className="text-[var(--color-border-default)]">·</span>
-        <span className="flex shrink-0 items-center gap-1.5">
-          <Move className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-          {t("hint.drag")}
-        </span>
-        <span className="text-[var(--color-border-default)]">·</span>
-        <span className="flex shrink-0 items-center gap-1.5">
-          <MousePointerClick className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-          {t("hint.doubleClick")}
-        </span>
-        <button
-          type="button"
-          onClick={dismiss}
-          aria-label={t("hint.dismiss")}
-          className="ml-1 shrink-0 rounded-full p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
+    <div className="pointer-events-auto hidden min-w-0 items-center gap-3 overflow-hidden rounded-full sm:flex border border-[var(--color-border-subtle)] bg-[var(--color-bg-glass)] py-1.5 pl-4 pr-2 text-xs text-[var(--color-text-secondary)] shadow-sm backdrop-blur">
+      <span className="flex shrink-0 items-center gap-1.5">
+        <ZoomIn className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+        {t("hint.scroll")}
+      </span>
+      <span className="text-[var(--color-border-default)]">·</span>
+      <span className="flex shrink-0 items-center gap-1.5">
+        <Move className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+        {t("hint.drag")}
+      </span>
+      <span className="text-[var(--color-border-default)]">·</span>
+      <span className="flex shrink-0 items-center gap-1.5">
+        <MousePointerClick className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+        {t("hint.doubleClick")}
+      </span>
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={dismiss}
+        aria-label={t("hint.dismiss")}
+        className="ml-1 shrink-0 rounded-full p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }

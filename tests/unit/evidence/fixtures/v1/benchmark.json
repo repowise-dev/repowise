@@ -1,0 +1,17 @@
+{
+  "format": "repowise-evidence-v1",
+  "kind": "benchmark",
+  "commit_sha": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "tool": {"name": "pytest-benchmark", "version": "4.0.0"},
+  "unit": "s",
+  "benchmarks": [
+    {"name": "test_build[small]", "path": "src/app.py", "function": "build", "exact": true,
+     "unit": "s", "lower_is_better": true, "median": 0.012, "mean": 0.013, "min": 0.011,
+     "max": 0.02, "stddev": 0.001, "rounds": 50, "iterations": 1},
+    {"name": "BenchmarkParse-8", "unit": "ns", "mean": 120.5, "allocs_per_op": 3, "bytes_per_op": 128},
+    {"name": "gen bench", "path": "gen/pb.py", "function": "decode", "mean": 1},
+    {"name": "unknown fn", "path": "src/app.py", "function": "nope", "median": 2},
+    {"name": "no values"},
+    {"name": "test_build[small]", "mean": 9}
+  ]
+}

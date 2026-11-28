@@ -216,6 +216,17 @@ class TestCHints:
         edges = CDynamicHints().extract(tmp_path)
         assert any(e.hint_source == "c:dlopen" for e in edges)
 
+    def test_static_function_in_another_c_file_is_not_a_target(self, tmp_path: Path) -> None:
+        # Internal linkage: the assignment in b.c can only mean its own handler.
+        (tmp_path / "a.c").write_text("static void handler(int x) {\n}\n")
+        (tmp_path / "b.c").write_text(
+            "void handler(int x) {\n}\nvoid setup(void) { cb = handler; }\n"
+        )
+        (tmp_path / "c.c").write_text("void setup2(void) { cb = handler; }\n")
+        targets = {(e.source, e.target) for e in CDynamicHints().extract(tmp_path)}
+        assert ("b.c", "a.c") not in targets and ("c.c", "a.c") not in targets
+        assert ("c.c", "b.c") in targets
+
 
 class TestLuauHints:
     def test_get_service(self, tmp_path: Path) -> None:
@@ -259,6 +270,30 @@ class TestGoHints:
         edges = GoDynamicHints().extract(tmp_path)
         targets = {e.target for e in edges if e.hint_source == "go:reflect_typeof"}
         assert "types.go" in targets
+
+    def test_skips_dirs_the_index_skips(self, tmp_path: Path) -> None:
+        (tmp_path / "use.go").write_text(
+            "package x\nimport \"reflect\"\nvar _ = reflect.TypeOf(Foo{})\n"
+        )
+        for d in ("vendor/github.com/x/y", "testdata/fixtures", ".yarn/cache"):
+            (tmp_path / d).mkdir(parents=True)
+            (tmp_path / d / "types.go").write_text("package y\ntype Foo struct{}\n")
+        edges = GoDynamicHints().extract(tmp_path)
+        assert not [e for e in edges if e.hint_source == "go:reflect_typeof"]
+
+    def test_reads_vendor_the_index_reincluded(self, tmp_path: Path) -> None:
+        """Fed the indexed file list, hints read a vendor tree the index kept."""
+        from repowise.core.fs_walk import WalkSnapshot
+
+        (tmp_path / "use.go").write_text(
+            "package x\nimport \"reflect\"\nvar _ = reflect.TypeOf(Foo{})\n"
+        )
+        (tmp_path / "vendor" / "y").mkdir(parents=True)
+        (tmp_path / "vendor" / "y" / "types.go").write_text("package y\ntype Foo struct{}\n")
+        ex = GoDynamicHints()
+        ex._walk_snapshot = WalkSnapshot.from_files(tmp_path, ["use.go", "vendor/y/types.go"])
+        targets = {e.target for e in ex.extract(tmp_path) if e.hint_source == "go:reflect_typeof"}
+        assert targets == {"vendor/y/types.go"}
 
     def test_plugin_open_emits_external(self, tmp_path: Path) -> None:
         (tmp_path / "main.go").write_text(

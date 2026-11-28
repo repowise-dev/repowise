@@ -23,6 +23,8 @@ from openai import AsyncOpenAI
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
+    LOCAL_CONTEXT_WINDOW,
+    LOCAL_SERVER_API_KEY,
     BaseProvider,
     CacheHint,
     ChatStreamEvent,
@@ -170,10 +172,6 @@ def _openai_temperature(model: str, requested: float) -> float:
 
 
 _OPENAI_API_URL = "https://api.openai.com/v1"
-
-#: The key sent to a local OpenAI-compatible server (LM Studio, vLLM, Ollama)
-#: when none is set. They ignore it; the SDK refuses an empty one.
-LOCAL_SERVER_API_KEY = "not-needed"
 
 
 def _openai_chat_tool_kwargs(model: str, *, has_tools: bool) -> dict[str, Any]:
@@ -345,6 +343,7 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
         self._model = model
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker
+        self._loopback = loopback
 
     @property
     def provider_name(self) -> str:
@@ -356,6 +355,11 @@ class OpenAIProvider(SdkClientOwner, BaseProvider):
 
     def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
         return ("auto", *_openai_supported_reasoning_modes(self._model))
+
+    def context_window(self) -> int | None:
+        # A local server (LM Studio, llama.cpp, vLLM) does not report the
+        # window it was started with, so assume a small one.
+        return LOCAL_CONTEXT_WINDOW if self._loopback else None
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _openai_model_options(self._api_key, self._base_url, self._model)

@@ -23,8 +23,11 @@ from . import (
     alembic_runner,
     android_manifest,
     angular,
+    apex_rest,
     aspnet,
+    aura,
     aws_lambda,
+    camel,
     django,
     dotnet_discovery,
     dotnet_roots,
@@ -37,19 +40,27 @@ from . import (
     gtest,
     hono,
     jakarta,
+    js_conventions,
     laravel,
+    lwc,
+    mainframe,
     micronaut,
     next_app,
+    pascal_forms,
     pytest_edges,
+    python_job_roots,
     quarkus,
     rails,
     remix,
     rust,
+    salesforce_metadata,
     spring,
+    symfony,
     test_path_strings,
     test_runner_setup,
     trpc,
     typo3,
+    visualforce,
     vscode_extension,
 )
 from .base import DetectionContext, FrameworkHandler, _add_edge_if_new, read_text
@@ -71,22 +82,30 @@ _HANDLERS: list[FrameworkHandler] = [
     *django.HANDLERS,
     *fastapi.HANDLERS,
     *flask.HANDLERS,
+    *python_job_roots.HANDLERS,  # Celery autodiscover and Airflow DAG modules
     *aspnet.HANDLERS,  # ASP.NET edges, then the any-C# extension-method scan
     *dotnet_discovery.HANDLERS,  # types a .NET framework finds by assembly scan
     *dotnet_roots.HANDLERS,
     *rails.HANDLERS,
     *laravel.HANDLERS,
+    *symfony.HANDLERS,
     *spring.HANDLERS,
     *jakarta.HANDLERS,
+    *camel.HANDLERS,
+    *apex_rest.HANDLERS,
     *quarkus.HANDLERS,
     *micronaut.HANDLERS,
     *android_manifest.HANDLERS,
     *flutter.HANDLERS,
     *express.HANDLERS,
     *angular.HANDLERS,
+    *lwc.HANDLERS,
+    *pascal_forms.HANDLERS,
     *next_app.HANDLERS,
     *hono.HANDLERS,
     *remix.HANDLERS,
+    # Files a JS framework declared in a package.json loads from where they sit.
+    *js_conventions.HANDLERS,
     *trpc.HANDLERS,
     *go.HANDLERS,
     # `class_name Foo` registers a project-global identifier other scripts use
@@ -97,6 +116,15 @@ _HANDLERS: list[FrameworkHandler] = [
     *rust.HANDLERS,
     *typo3.HANDLERS,
     *aws_lambda.HANDLERS,
+    # Salesforce Aura bundles: markup names its Apex controller, controller
+    # functions and child components; nothing is an import.
+    *aura.HANDLERS,
+    # Salesforce Visualforce: markup names its Apex controller and bound members.
+    *visualforce.HANDLERS,
+    # JCL steps to programs and PROCs, COBOL programs to BMS mapsets.
+    *mainframe.HANDLERS,
+    # Last, so an LWC or Aura handler's own edge to the same file wins.
+    *salesforce_metadata.HANDLERS,
 ]
 
 
@@ -108,6 +136,8 @@ def add_framework_edges(
 ) -> int:
     """Add synthetic edges for framework-mediated relationships.
 
+    *tech_stack* is the names :func:`~repowise.core.ingestion.tech_stack.detect_tech_stack`
+    returns; each handler asks it through :meth:`DetectionContext.uses`.
     Returns the number of edges added.
     """
     path_set = set(parsed_files.keys())

@@ -99,6 +99,34 @@ class TestEnrichLayers:
         assert result.layers[1]["name"] == "CLI Interface"
 
     @pytest.mark.asyncio
+    async def test_naming_prompt_counts_each_layers_files_by_folder(self):
+        layers = [
+            {
+                "id": "layer:config",
+                "name": "config",
+                "description": "",
+                "nodeIds": [
+                    "file:packages/web/a.tsx",
+                    "file:packages/web/b.tsx",
+                    "file:.github/workflows/ci.yml",
+                    "file:README.md",
+                ],
+            },
+            {"id": "layer:cli", "name": "cli", "description": "", "nodeIds": ["file:src/main.py"]},
+        ]
+        llm = _make_llm_client('{"layers": []}')
+        await enrich_knowledge_graph(
+            _make_kg_skeleton(layers=layers), llm, _make_graph_builder(), _make_repo_structure(), []
+        )
+        prompt = llm.generate.call_args_list[0].args[1]
+        assert "Files by folder: packages/web 2, .github/workflows 1, (root) 1" in prompt
+        # A single-folder layer keeps its one folder and the existing fields.
+        cli = prompt.split('Community "layer:cli"')[1]
+        assert "File count: 1" in cli
+        assert "Files by folder: src 1\n" in cli
+        assert "Top files: src/main.py" in cli
+
+    @pytest.mark.asyncio
     async def test_positional_index_responses_are_ignored(self):
         # Regression: a model answering with list positions instead of layer
         # ids must not rename anything (positional joins once shuffled every
@@ -344,15 +372,37 @@ class TestSummaryBackfill:
         core_node = next(n for n in kg.nodes if n["filePath"] == "src/core.py")
         assert core_node["summary"] == "Core business logic module"
 
-    def test_does_not_overwrite_existing(self):
+    def test_page_written_this_run_replaces_existing(self):
+        # The floor an index-only pass applied, or a summary carried from an
+        # older page, must not block the page just written.
         kg = _make_kg_skeleton(nodes=[
             {"id": "file:src/core.py", "type": "file", "filePath": "src/core.py", "summary": "Existing summary"},
+            {"id": "file:src/other.py", "type": "file", "filePath": "src/other.py", "summary": "Kept"},
         ])
         pages = [
-            SimpleNamespace(target_path="src/core.py", summary="New summary"),
+            SimpleNamespace(target_path="src/core.py", summary="New summary", page_type="file_page"),
         ]
         _backfill_summaries(kg, pages)
-        assert kg.nodes[0]["summary"] == "Existing summary"
+        assert kg.nodes[0]["summary"] == "New summary"
+        assert kg.nodes[1]["summary"] == "Kept"
+
+    def test_file_page_outranks_an_api_contract_page(self):
+        # An API file's only page is its contract page, which replaces the
+        # floor; where a file page exists too, the file page wins either order.
+        kg = _make_kg_skeleton(nodes=[
+            {"id": "file:src/api.py", "type": "file", "filePath": "src/api.py", "summary": "Floor"},
+            {"id": "file:src/a.py", "type": "file", "filePath": "src/a.py", "summary": ""},
+            {"id": "file:src/b.py", "type": "file", "filePath": "src/b.py", "summary": ""},
+        ])
+        pages = [
+            SimpleNamespace(target_path="src/api.py", summary="API surface", page_type="api_contract"),
+            SimpleNamespace(target_path="src/a.py", summary="File page", page_type="file_page"),
+            SimpleNamespace(target_path="src/a.py", summary="API surface", page_type="api_contract"),
+            SimpleNamespace(target_path="src/b.py", summary="API surface", page_type="api_contract"),
+            SimpleNamespace(target_path="src/b.py", summary="File page", page_type="file_page"),
+        ]
+        _backfill_summaries(kg, pages)
+        assert [n["summary"] for n in kg.nodes] == ["API surface", "File page", "File page"]
 
     def test_handles_no_pages(self):
         kg = _make_kg_skeleton()

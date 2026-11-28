@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
+from repowise.core.exclusion import is_excluded, spec_key
 from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.mcp_server._graph_files import (
     is_symbol_node,
     keep_projected_edge,
-    node_to_file,
     per_index,
 )
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
@@ -42,7 +43,7 @@ def _projected_pair(
     tgt = tgt or ""
     if not is_symbol_node(src) and not is_symbol_node(tgt):
         return (src or None, tgt or None)
-    src_file, tgt_file = node_to_file(src), node_to_file(tgt)
+    src_file, tgt_file = file_of_symbol(src), file_of_symbol(tgt)
     if not keep_projected_edge(src_file, tgt_file, edge_type, confidence):
         return (None, None)
     return (src_file, tgt_file)
@@ -82,19 +83,69 @@ def _hub_degree_cutoff(degree: dict[str, int]) -> int:
     return max(_HUB_DEGREE_FLOOR, values[idx])
 
 
-def _seed_neighbors(
-    pairs: list[tuple[str, str]], seed_set: set[str], existing: set[Any]
-) -> tuple[set[str], dict[str, int]]:
-    """Files one hop from a seed and not yet a candidate, plus every file's degree."""
-    neighbors: set[str] = set()
+class _ProjectedGraph(NamedTuple):
+    """The projected edges as each file's neighbours, and every file's degree."""
+
+    neighbours: dict[str, set[str]]
+    degree: dict[str, int]
+
+
+async def _projected_graph(
+    session: Any, repo_id: str, exclude_spec: Any = None
+) -> _ProjectedGraph:
+    """:func:`_projected_edges` indexed by file, so a question reads its seeds'
+    neighbours instead of walking every edge. With *exclude_spec*, a pair with
+    an excluded file is left out of both the neighbours and the degrees."""
+    neighbours: dict[str, set[str]] = {}
     degree: dict[str, int] = {}
-    for src_file, tgt_file in pairs:
+    for src_file, tgt_file in await _projected_edges(session, repo_id):
+        if is_excluded(src_file, exclude_spec) or is_excluded(tgt_file, exclude_spec):
+            continue
         degree[src_file] = degree.get(src_file, 0) + 1
         degree[tgt_file] = degree.get(tgt_file, 0) + 1
-        for mine, theirs in ((src_file, tgt_file), (tgt_file, src_file)):
-            if mine in seed_set and theirs not in existing:
-                neighbors.add(theirs)
-    return neighbors, degree
+        neighbours.setdefault(src_file, set()).add(tgt_file)
+        neighbours.setdefault(tgt_file, set()).add(src_file)
+    return _ProjectedGraph(neighbours, degree)
+
+
+async def projected_graph(
+    session: Any, repo_id: str, exclude_spec: Any = None
+) -> _ProjectedGraph:
+    """:func:`_projected_graph`, built once per index state. Read-only.
+
+    The unfiltered graph is what goes to disk. A filtered one is kept in memory
+    per rule set, so hub degrees count only edges between allowed files.
+    """
+    if not exclude_spec:
+        return await per_index(
+            session,
+            repo_id,
+            "projected_graph",
+            lambda: _projected_graph(session, repo_id),
+            persist=True,
+        )
+    return await per_index(
+        session,
+        repo_id,
+        f"projected_graph:{hash(spec_key(exclude_spec))}",
+        lambda: _projected_graph(session, repo_id, exclude_spec),
+    )
+
+
+def _seed_neighbors(
+    graph: _ProjectedGraph, seed_set: set[str], existing: set[Any], exclude_spec: Any = None
+) -> set[str]:
+    """Files one hop from a seed, not yet a candidate and not excluded.
+
+    Excluded files leave here, before hub ranking and the additions cap, so
+    they never take a slot an allowed neighbour would have filled.
+    """
+    return {
+        theirs
+        for seed in seed_set
+        for theirs in graph.neighbours.get(seed, ())
+        if theirs not in existing and not is_excluded(theirs, exclude_spec)
+    }
 
 
 async def _neighbor_pages(
@@ -159,7 +210,9 @@ def _expansion_candidates(
     return candidates
 
 
-async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dict]:
+async def expand_via_graph(
+    hits: list[dict], ctx: Any, repo_id: str, exclude_spec: Any = None
+) -> list[dict]:
     """Add up to ``_GRAPH_EXPAND_MAX_NEW`` one-hop neighbours of the top hits.
 
     Recovers the right file when retrieval landed next to it (a consumer
@@ -178,10 +231,8 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     async with get_session(ctx.session_factory) as session:
         # Every edge type, co-changes included, projected from the symbol layer
         # too so call edges reach the seeds.
-        pairs = await per_index(
-            session, repo_id, "projected_edges", lambda: _projected_edges(session, repo_id)
-        )
-        neighbors, degree = _seed_neighbors(pairs, set(seed_paths), existing)
+        graph = await projected_graph(session, repo_id, exclude_spec)
+        neighbors = _seed_neighbors(graph, set(seed_paths), existing, exclude_spec)
         if not neighbors:
             return hits
         page_rows, pr_by_path = await _neighbor_pages(session, neighbors)
@@ -189,7 +240,7 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     if not page_rows:
         return hits
 
-    page_rows = _drop_hubs(page_rows, degree)
+    page_rows = _drop_hubs(page_rows, graph.degree)
     additions = _expansion_candidates(seeds, page_rows, pr_by_path)[:_GRAPH_EXPAND_MAX_NEW]
     if not additions:
         return hits

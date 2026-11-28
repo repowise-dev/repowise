@@ -68,6 +68,14 @@ def test_a_rewrite_is_counted_under_its_family(
     assert _rows(repo) == {(REWRITTEN, "test_output"): 1}
 
 
+def test_a_rewrite_without_repowise_on_path_is_counted_as_a_bail(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", str(repo / "empty-bin"))
+    _fire(repo, "pytest -q", monkeypatch)
+    assert _rows(repo) == {(BAILED, rewrite_hook.BAIL_NO_DISTILL): 1}
+
+
 def test_an_unrecognized_command_is_counted_as_such(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

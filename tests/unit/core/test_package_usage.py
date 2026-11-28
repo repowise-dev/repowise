@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from repowise.core.components.resolve import repo_wide_when_flat
 from repowise.core.inventory.components import component_inventory
 from repowise.core.inventory.cyclonedx import cyclonedx_bom, purl
 from repowise.core.inventory.usage import package_usage, package_usages, parse_query
@@ -48,7 +49,10 @@ async def test_sites_carry_line_component_owners_and_reachability(session, tmp_p
     assert legacy["owners"] == []  # an individual CODEOWNERS entry is never named
     assert legacy["owner_counts"] == {"individual": 1}  # but it is counted
     assert "owner_counts" not in util
-    assert legacy["component"] == "src"  # the derived top-level directory
+    # Only src/ and tests/ divide the repo, so what the catalog leaves goes to
+    # the derived component for the whole repo.
+    whole = repo_wide_when_flat([], ["x.py"], tmp_path.name)[0].name
+    assert legacy["component"] == whole
 
     assert sites["tests/test_util.py"]["reachability"]["state"] == "test"
     assert doc["summary"]["reachability"] == {
@@ -57,7 +61,7 @@ async def test_sites_carry_line_component_owners_and_reachability(session, tmp_p
         "test": 1,
         "unknown": 1,
     }
-    assert [c["name"] for c in doc["components"]] == ["app", "jobs", "src", "tests"]
+    assert sorted(c["name"] for c in doc["components"]) == sorted(["app", "jobs", whole])
 
 
 async def test_import_name_alone_is_inferred_and_ecosystem_scoped(session, tmp_path):  # noqa: F811
@@ -69,16 +73,29 @@ async def test_import_name_alone_is_inferred_and_ecosystem_scoped(session, tmp_p
     assert "No manifest declares" in yaml["note"]
     assert yaml_npm["sites"] == []  # a Python file's import is not an npm package
     # Declared under its distribution name (in two spellings), imported as
-    # ``yaml``: no link, said so.
+    # ``yaml``: the stored node is unlinked, so the distribution's import name
+    # finds it as inferred.
     assert [d["package_key"] for d in pyyaml["declared"]] == ["pypi:PyYAML", "pypi:pyyaml"]
-    assert pyyaml["sites"] == []
-    assert "import name may differ" in pyyaml["note"]
+    assert [(s["path"], s["mapping"]) for s in pyyaml["sites"]] == [("src/jobs/worker.py", "inferred")]
+    assert "note" not in pyyaml
 
 
 def test_parse_query():
     assert parse_query("npm:@scope/pkg") == ("@scope/pkg", "npm")
     assert parse_query("requests") == ("requests", None)
     assert parse_query("com.google:guava") == ("com.google:guava", None)
+
+
+def test_a_maven_coordinate_answers_to_its_artifact_id():
+    from repowise.core.inventory.usage import Declaration, UsageIndex
+
+    web = Declaration(1, "maven", "org.springframework.boot:spring-boot-starter-web", None, "build.gradle", False)
+    index = UsageIndex(declarations=[web])
+    assert index.match("spring-boot-starter-web")[0] == [web]
+    assert index.match("Spring-Boot-Starter-Web", "maven")[0] == [web]
+    assert index.match("org.springframework.boot:spring-boot-starter-web")[0] == [web]
+    assert index.match("spring-boot")[0] == []
+    assert index.match("spring-boot-starter-web", "npm")[0] == []
 
 
 async def test_component_inventory(session, tmp_path):  # noqa: F811
@@ -221,3 +238,20 @@ async def test_a_resolved_dynamic_load_reaches_a_file(session, tmp_path):  # noq
     doc = await package_usage(session, REPO, tmp_path, "requests")
     worker = _by_path(doc)["src/jobs/worker.py"]
     assert worker["reachability"] == {"state": "reachable", "basis": "import_graph"}
+
+
+def test_an_undeclared_distribution_finds_the_module_it_is_imported_under():
+    from repowise.core.inventory.usage import UsageIndex
+
+    index = UsageIndex(nodes={"external:PIL": None, "external:PIL.Image": None, "external:Crypto": None})
+    assert index.match("pillow", "pypi")[1] == {"external:PIL": "inferred", "external:PIL.Image": "inferred"}
+    assert index.match("Pillow")[1] == {"external:PIL": "inferred", "external:PIL.Image": "inferred"}
+    assert index.match("pillow", "npm")[1] == {}
+
+
+def test_an_unscoped_query_takes_only_curated_import_names():
+    from repowise.core.inventory.usage import UsageIndex
+
+    index = UsageIndex(nodes={"external:date_fns": None, "external:typing_extensions": None})
+    assert index.match("date-fns")[1] == {}
+    assert index.match("typing-extensions", "pypi")[1] == {"external:typing_extensions": "inferred"}

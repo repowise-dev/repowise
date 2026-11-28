@@ -124,31 +124,31 @@ export function repoArchetype(
   if (weekend >= 45) {
     return {
       name: "Weekend Project",
-      because: `${weekend}% of commits land on ${weekendNames}. This is somebody's nights-and-weekends thing.`,
+      because: `${Math.round(weekend)}% of commits land on ${weekendNames}. This is somebody's nights-and-weekends thing.`,
     };
   }
   if (night >= 20) {
     return {
       name: "Night Shift",
-      because: `${night}% of commits are written between 10pm and 5am.`,
+      because: `${Math.round(night)}% of commits are written between 10pm and 5am.`,
     };
   }
   if (dawn >= 20) {
     return {
       name: "Dawn Patrol",
-      because: `${dawn}% of commits land before 9am, most of it shipped before the day starts.`,
+      because: `${Math.round(dawn)}% of commits land before 9am, most of it shipped before the day starts.`,
     };
   }
   if (weekend >= 28) {
     return {
       name: "Weekend Workshop",
-      because: `${weekend}% of commits land on ${weekendNames}. The week does not stop on Friday.`,
+      because: `${Math.round(weekend)}% of commits land on ${weekendNames}. The week does not stop on Friday.`,
     };
   }
   if (core >= 65 && weekend < 15) {
     return {
       name: "Office Hours",
-      because: `${core}% of commits fall inside working hours on working days.`,
+      because: `${Math.round(core)}% of commits fall inside working hours on working days.`,
     };
   }
   if (spread >= 14) {
@@ -195,18 +195,18 @@ export function contributorArchetype(
   const peak = person.peak_hour;
 
   if (night >= 25 || peak >= 22 || peak <= 4) {
-    return { name: "Night Owl", because: `${night}% of their commits land between 10pm and 5am` };
+    return { name: "Night Owl", because: `${Math.round(night)}% of their commits land between 10pm and 5am` };
   }
   if (dawn >= 25 || (peak >= 5 && peak <= 8)) {
-    return { name: "Dawn Patrol", because: `${dawn}% of their commits land before 9am` };
+    return { name: "Dawn Patrol", because: `${Math.round(dawn)}% of their commits land before 9am` };
   }
   if (weekend >= 33) {
-    return { name: "Weekend Warrior", because: `${weekend}% of their commits land at the weekend` };
+    return { name: "Weekend Warrior", because: `${Math.round(weekend)}% of their commits land at the weekend` };
   }
   if (core >= 70 && weekend < 15) {
     return {
       name: "Nine to Fiver",
-      because: `${core}% between 9am and 6pm, and almost never at the weekend`,
+      because: `${Math.round(core)}% between 9am and 6pm, and almost never at the weekend`,
     };
   }
   if (spread <= 6) {

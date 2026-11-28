@@ -172,3 +172,34 @@ def test_area_at_and_choose_depth_split_where_the_work_separates() -> None:
     # Plain paths weigh one each, and a caller can relax the thresholds.
     assert choose_depth(["a/x.py", "b/y.py"], min_areas=1, small=0) == 1
     assert choose_depth(["src/ui/a.ts", "src/web/b.ts", "x/y.py"], base="src", min_areas=1) == 2
+
+
+def test_hotspot_counts_leave_out_the_origins_the_hotspot_list_holds():
+    # A production hotspot, a test-origin one and a generated one (#6266): the
+    # hotspot list shows only the first, so the area card and its list count one.
+    metrics = [
+        _m("svc/core.py", 6.0, code_origin="production"),
+        _m("svc/test_core.py", 6.0, code_origin="test"),
+        _m("svc/core_pb2.py", 6.0, code_origin="generated"),
+        # Stamped before ``code_origin``: read off ``is_test``.
+        {**_m("svc/test_old.py", 6.0), "is_test": True},
+    ]
+    git = [{"file_path": m["file_path"], "is_hotspot": True, "bus_factor": 1} for m in metrics]
+    index = build_area_index(metrics, git_rows=git)
+    assert index.nodes["svc"]["hotspot_count"] == 1
+    detail = area_detail(index, "svc")
+    assert detail["hotspots"]["total"] == 1
+    assert [f["path"] for f in detail["hotspots"]["files"]] == ["svc/core.py"]
+
+
+def test_hotspot_count_uses_the_readers_held_scope():
+    metrics = [
+        _m("svc/core.py", 6.0, code_origin="production"),
+        _m("svc/test_core.py", 6.0, code_origin="test"),
+        _m("svc/core_pb2.py", 6.0, code_origin="generated"),
+    ]
+    git = [{"file_path": m["file_path"], "is_hotspot": True, "bus_factor": 1} for m in metrics]
+    index = build_area_index(metrics, git_rows=git, held_origins=frozenset())
+    assert index.nodes["svc"]["hotspot_count"] == 3
+    detail = area_detail(index, "svc")
+    assert detail["hotspots"]["total"] == 3

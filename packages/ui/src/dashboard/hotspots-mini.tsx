@@ -4,6 +4,7 @@ import { EmptyState } from "../shared/empty-state";
 import { FilePath } from "../shared/file-path";
 import { fileEntityPath } from "../shared/entity/routes";
 import type { Hotspot } from "@repowise-dev/types/git";
+import { formatNumber } from "../lib/format";
 
 interface HotspotsMiniProps {
   hotspots: Hotspot[];
@@ -62,7 +63,7 @@ export function HotspotsMini({
             <Flame className="h-4 w-4 text-[var(--color-error)]" />
             Top Hotspots
             <span className="text-[10px] font-normal text-[var(--color-text-tertiary)] tabular-nums">
-              {top.length} of {fullCount.toLocaleString()}
+              {top.length} of {formatNumber(fullCount)}
             </span>
           </span>
           <a

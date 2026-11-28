@@ -1,4 +1,4 @@
-"""Did we actually look â€” the knowledge term behind a dead-code confidence.
+"""Did we actually look — the knowledge term behind a dead-code confidence.
 
 Every other input to a dead-code confidence scores *how strong the evidence
 for deadness is*. None of them asks the second question a confidence has to
@@ -6,7 +6,7 @@ answer before a user can act on it without checking: **would a use have been
 visible to us at all?**
 
 ``_detect_unused_exports`` promotes a finding to the top of the scale when the
-defining file has importers â€” the argument being that our import graph
+defining file has importers — the argument being that our import graph
 demonstrably works for this file, so the symbol's absence from every importer's
 imported names means something. That argument assumes *using a symbol requires
 importing it*. It holds in Python and TypeScript. It is false for:
@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import posixpath
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
@@ -59,7 +59,9 @@ from ...ingestion.extractors.visibility import (
 )
 from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
 from ...ingestion.languages.registry import REGISTRY
+from ...ingestion.models import TS_JS_LANGUAGES
 from ...ingestion.source_mask import can_mask, mask_source
+from ...ingestion.ts_declarations import declaration_stem
 from .constants import (
     _BARE_NAME_USE_LANGUAGES,
     _NON_CODE_LANGUAGES,
@@ -71,19 +73,35 @@ from .entry_shape import export_shape
 from .jvm_name_scope import JvmNameScope
 from .models import DeadCodeFindingData, DeadCodeKind
 from .risk_factors import RISK_CAP_CONFIDENCE
+from .token_cache import scanned
 
-#: Identifier shape, matched over raw bytes so nothing has to be decoded â€” the
+#: Identifier shape, matched over raw bytes so nothing has to be decoded — the
 #: scan covers every indexed file, and decoding them all would dominate it.
 #: ASCII-only is deliberate: a non-ASCII identifier that fails to match can
 #: only under-suppress, which is the safe direction.
 IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
 
+#: Identifier shape for JavaScript / TypeScript family (.js, .ts, .jsx, .tsx, .mjs, .cjs, .svelte, .vue, .astro).
+#: Admits `$` anywhere in the identifier and allows length >= 1.
+JS_IDENTIFIER_RE = re.compile(rb"[A-Za-z_$][A-Za-z0-9_$]*")
+
 #: Shortest name this check can answer for. :data:`IDENTIFIER_RE` needs three
-#: characters, so a two-character name matches nowhere â€” including on its own
+#: characters, so a two-character name matches nowhere — including on its own
 #: declaration. Reading that as "the name appears nowhere" would turn the
 #: strongest verdict into the least reliable one, so a name this short is
 #: treated as a question we cannot ask rather than as an answer.
 MIN_ANSWERABLE_NAME_LEN = 3
+MIN_ANSWERABLE_NAME_LEN_JS = 1
+
+_JS_TS_EXTENSIONS: frozenset[str] = frozenset(
+    {".astro", ".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".svelte", ".ts", ".tsx", ".vue"}
+)
+
+
+def _is_js_ts(path: str | None) -> bool:
+    if not path:
+        return False
+    return PurePosixPath(path).suffix.lower() in _JS_TS_EXTENSIONS
 
 #: Where an unused internal lands when its own file could not be searched for
 #: it: the declaration's extent is unknown, or the name is one the scan cannot
@@ -121,24 +139,37 @@ _SPAN_UNKNOWN = _Verdict(_Answer.SPAN_UNKNOWN)
 _ABSENT = _Verdict(_Answer.ABSENT)
 
 
+def file_identifiers(blob: bytes, path: str = "") -> frozenset[bytes]:
+    """The distinct identifier tokens of *blob*, scanned once per bytes."""
+    is_js = _is_js_ts(path)
+    regex = JS_IDENTIFIER_RE if is_js else IDENTIFIER_RE
+    key = "js_identifiers" if is_js else "identifiers"
+    return scanned(key, blob, lambda: regex.findall(blob))
+
+
 def occurrence_files(
-    source_map: dict[str, bytes], names: set[bytes]
+    source_map: Mapping[str, bytes],
+    names: set[bytes],
+    identifiers: Callable[[str], frozenset[bytes]] | None = None,
 ) -> dict[bytes, set[str]]:
     """For each name in *names*, the indexed files whose source writes it.
 
     One pass over the whole indexed source. The candidate names are known
     before the scan starts, so the returned map only ever holds the few names
     some finding actually asks about rather than every identifier in the
-    repository â€” which is what keeps this affordable on a large tree.
+    repository — which is what keeps this affordable on a large tree.
+
+    *identifiers* gives a path's tokens when the map's text is not what is
+    scanned as is (see ``c_name_uses._CodeOnly``).
     """
     found: dict[bytes, set[str]] = {}
     if not names:
         return found
-    for path, blob in source_map.items():
-        for match in IDENTIFIER_RE.finditer(blob):
-            token = match.group()
-            if token in names:
-                found.setdefault(token, set()).add(path)
+    for path in source_map:
+        tokens = identifiers(path) if identifiers else file_identifiers(source_map[path], path)
+        # The intersection runs in C over the smaller of the two sets.
+        for token in names.intersection(tokens):
+            found.setdefault(token, set()).add(path)
     return found
 
 
@@ -149,7 +180,7 @@ def _uses_in_own_file(
 ) -> dict[int, _Verdict]:
     """Where each of *findings* is named in its own file outside its own span.
 
-    Reached only for a name no other file mentions â€” the same-translation-unit
+    Reached only for a name no other file mentions — the same-translation-unit
     shape, where a C++ helper struct used inside the very function below it is
     the use the import graph cannot see. A recursive call sits *inside* the
     declaration and correctly does not count; a doc comment above it sits
@@ -159,7 +190,7 @@ def _uses_in_own_file(
 
     * The split is on ``\\n`` alone. ``bytes.splitlines`` also breaks on a bare
       ``\\r`` and on the form-feed family, which the parser's row counter does
-      not â€” so a lone ``\\r`` inside a string literal (a progress-bar ``print``
+      not — so a lone ``\\r`` inside a string literal (a progress-bar ``print``
       is the common one) would shift every line after it and make a symbol's
       own recursive call land outside its recorded span.
     * A sibling declaration's *header line* is excluded as well as the judged
@@ -179,15 +210,21 @@ def _uses_in_own_file(
     if blob is None or not spanned:
         return out
 
+    is_js = _is_js_ts(path)
+    regex = JS_IDENTIFIER_RE if is_js else IDENTIFIER_RE
+
     wanted: dict[bytes, list[DeadCodeFindingData]] = {}
     headers: dict[bytes, set[int]] = {}
     for finding in spanned:
-        token = searchable_token(finding.symbol_name)
+        token = searchable_token(finding.symbol_name, path=path)
+        if not token:
+            out[id(finding)] = _NOT_SEARCHABLE
+            continue
         wanted.setdefault(token, []).append(finding)
         headers.setdefault(token, set()).add(finding.start_line)
 
     for lineno, line in enumerate(blob.split(b"\n"), start=1):
-        for match in IDENTIFIER_RE.finditer(line):
+        for match in regex.finditer(line):
             token = match.group()
             for finding in wanted.get(token, ()):
                 if out[id(finding)].answer is _Answer.USED:
@@ -283,25 +320,38 @@ def _blank(match: re.Match[str]) -> str:
 _NOT_NEWLINE = re.compile(r"[^\n]")
 
 
-def searchable_token(name: str) -> bytes:
+def searchable_token(
+    name: str,
+    path: str | None = None,
+    language: str | None = None,
+) -> bytes:
     """The searchable form of *name*, or empty when the scan cannot find it.
 
-    The one rule is that the result must be something :data:`IDENTIFIER_RE`
+    The one rule is that the result must be something the identifier scan
     would actually match, because a token the scan cannot produce is absent
-    from every file including the one that declares it â€” and reading that as
+    from every file including the one that declares it — and reading that as
     "the name appears nowhere" would turn the strongest verdict into the least
     reliable one. Two shapes fail it, for different reasons:
 
     * a non-ASCII name, since ``encode(errors="ignore")`` drops characters
-      rather than failing and would search for ``caf`` on behalf of ``cafÃ©``,
+      rather than failing and would search for ``caf`` on behalf of ``café``,
       letting an unrelated ``caf`` elsewhere read as a use;
     * a name carrying a character the identifier shape does not admit, such as
-      the ``$`` in a JVM or JavaScript synthetic name, which the scan would
-      only ever see as two shorter tokens.
+      the ``$`` in a JVM synthetic name, which the scan would only ever see as
+      two shorter tokens (JavaScript and TypeScript admit ``$``).
     """
     encoded = name.encode("ascii", "ignore")
     if encoded.decode("ascii") != name:
         return b""
+    is_js = (
+        _is_js_ts(path)
+        if path is not None
+        else (language in TS_JS_LANGUAGES if language is not None else False)
+    )
+    if is_js:
+        if len(encoded) < MIN_ANSWERABLE_NAME_LEN_JS or not JS_IDENTIFIER_RE.fullmatch(encoded):
+            return b""
+        return encoded
     if len(encoded) < MIN_ANSWERABLE_NAME_LEN or not IDENTIFIER_RE.fullmatch(encoded):
         return b""
     return encoded
@@ -310,18 +360,18 @@ def searchable_token(name: str) -> bytes:
 def _is_own_type_sibling(occurrence: str, declaring: str) -> bool:
     """True when *occurrence* is *declaring*'s own generated declaration file.
 
-    A ``.d.ts`` beside ``runtime.js`` restates that module's exports as types.
+    A ``.d.ts`` beside ``runtime.js`` (or ``.d.mts`` beside ``runtime.mjs``) restates that module's exports as types.
     It declares the same names a second time and calls none of them, so
     counting it as a use makes every symbol in a generated binding module look
-    alive â€” measured as the single largest source of lost true positives on
+    alive — measured as the single largest source of lost true positives on
     this corpus.
 
     Deliberately narrow: only the same directory and the same stem. A ``.d.ts``
     naming a symbol from *elsewhere* really is referring to it, and stays a use.
     """
-    if not occurrence.endswith(".d.ts"):
+    stem = declaration_stem(occurrence)
+    if stem is None:
         return False
-    stem = occurrence[: -len(".d.ts")]
     base = declaring.rsplit(".", 1)[0]
     return stem == base
 
@@ -363,7 +413,9 @@ def _verdicts(
     """
     # Built from the candidates alone, which is what keeps a whole-repo scan
     # affordable: the index only ever holds the names some finding asks about.
-    answerable = {searchable_token(f.symbol_name) for f in candidates} - {b""}
+    answerable = {
+        searchable_token(f.symbol_name, path=f.file_path) for f in candidates
+    } - {b""}
     occurrences = occurrence_files(source_map, answerable)
 
     out: dict[int, _Verdict] = {}
@@ -374,7 +426,7 @@ def _verdicts(
     same_file_only: dict[str, list[DeadCodeFindingData]] = {}
 
     for finding in candidates:
-        token = searchable_token(finding.symbol_name)
+        token = searchable_token(finding.symbol_name, path=finding.file_path)
         if not token:
             out[id(finding)] = _NOT_SEARCHABLE
             continue
@@ -435,15 +487,15 @@ def clamp_unverified_absence(
         name = finding.symbol_name
         # ``reason`` carries this, not only ``evidence``. The unchanged reason
         # asserts "has no importers" as the ground for the finding, which is
-        # the very inference this check has just declined to make â€” and it is
+        # the very inference this check has just declined to make — and it is
         # the field every surface renders, where the evidence list reaches
         # only the JSON ones.
         if verdict.answer is _Answer.USED:
             finding.reason = f"'{name}' is not imported, but is named elsewhere in the repo"
             detail = f"is written at {verdict.used_at}"
         else:
-            # Both remaining answers mean the same thing to a reader â€” we did
-            # not establish an absence â€” so they share a reason and differ only
+            # Both remaining answers mean the same thing to a reader — we did
+            # not establish an absence — so they share a reason and differ only
             # in the evidence line, which is where the distinction is useful.
             finding.reason = f"'{name}' is not imported, and its use could not be verified"
             detail = (
@@ -537,7 +589,9 @@ def drop_internals_used_in_own_file(
         if verdict is not None:
             if verdict.answer is _Answer.USED:
                 continue
-            if verdict.answer is _Answer.SPAN_UNKNOWN or not searchable_token(finding.symbol_name):
+            if verdict.answer is _Answer.SPAN_UNKNOWN or not searchable_token(
+                finding.symbol_name, path=finding.file_path
+            ):
                 finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
                 finding.evidence.append(
                     f"'{finding.symbol_name}' could not be checked against the rest of "
@@ -550,8 +604,12 @@ def drop_internals_used_in_own_file(
 #: A path-shaped run of bytes: what a manifest, build script or doc writes when
 #: it names a file. It must hold a ``.`` or a ``/`` (every key does), so the
 #: regex engine skips plain words instead of handing each one to Python.
-#: Whether a run names a candidate is decided by the lookup.
-_PATH_TOKEN_RE = re.compile(rb"[A-Za-z0-9_@~+\-]*[./][A-Za-z0-9_.@~+\-/]*")
+#: Whether a run names a candidate is decided by the lookup. The lookbehind and
+#: possessive run only skip starts inside a word, which can never be leftmost:
+#: same matches, without rescanning each word from every one of its letters.
+_PATH_TOKEN_RE = re.compile(
+    rb"(?<![A-Za-z0-9_@~+\-])[A-Za-z0-9_@~+\-]*+[./][A-Za-z0-9_.@~+\-/]*"
+)
 
 
 def _path_keys(path: str) -> list[str]:
@@ -608,22 +666,44 @@ def _files_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, 
     tails = {key.rpartition("/")[2] for key in wanted}
 
     named_in: dict[str, list[str]] = {}
+    # Tokens whose last segment is no target's: the same paths recur across a
+    # repository, so each is ruled out once rather than once per file.
+    unnamed: set[bytes] = set()
     for path, blob in sorted(source_map.items()):
         base = path.rpartition("/")[0]
-        for target in _targets_in(blob, wanted, tails, base) - {path}:
+        for target in _targets_in(blob, wanted, tails, base, unnamed) - {path}:
             named_in.setdefault(target, []).append(path)
     return named_in
 
 
 def _targets_in(
-    blob: bytes, wanted: dict[str, set[str]], tails: set[str], base: str
+    blob: bytes,
+    wanted: dict[str, set[str]],
+    tails: set[str],
+    base: str,
+    unnamed: set[bytes] | None = None,
 ) -> set[str]:
-    """The targets any path-shaped token of *blob*, a file in *base*, names."""
-    return {
-        target
-        for match in _PATH_TOKEN_RE.finditer(blob)
-        for target in _targets_named_by(match.group().decode("ascii"), wanted, tails, base)
-    }
+    """The targets any path-shaped token of *blob*, a file in *base*, names.
+
+    *unnamed*, shared across calls with the same *tails*, holds the tokens
+    whose tail names no target; it is read and filled here.
+    """
+    if unnamed is None:
+        unnamed = set()
+    found: set[str] = set()
+    for token in scanned("path_tokens", blob, lambda: _PATH_TOKEN_RE.findall(blob)) - unnamed:
+        text = token.decode("ascii")
+        if not _tail_wanted(text, tails):
+            unnamed.add(token)
+            continue
+        found.update(_targets_named_by(text, wanted, tails, base))
+    return found
+
+
+def _tail_wanted(token: str, tails: set[str]) -> bool:
+    """Whether *token*'s last segment, with or without its extension, is in *tails*."""
+    tail = token.strip(".").rpartition("/")[2]
+    return tail in tails or tail.rpartition(".")[0] in tails
 
 
 def _targets_named_by(
@@ -635,8 +715,7 @@ def _targets_named_by(
     writes it (``setupFiles: ["./vitest.setup.ts"]`` in ``src/vitest.config.ts``
     is ``src/vitest.setup.ts``), so that resolution is one more spelling.
     """
-    tail = token.strip(".").rpartition("/")[2]
-    if tail not in tails and tail.rpartition(".")[0] not in tails:
+    if not _tail_wanted(token, tails):
         return set()
     spellings = _token_spellings(token)
     if base and not token.startswith("/"):

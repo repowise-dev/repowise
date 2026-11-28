@@ -48,6 +48,32 @@ _EVIDENCE_STOPWORDS = frozenset(
 )
 
 
+#: Path segments that name a project's layout, not what its code does: as text
+#: they match nearly every change.
+_LAYOUT_SEGMENTS = frozenset(
+    {
+        "cmd", "core", "dist", "index", "init", "__init__", "internal", "java", "kotlin",
+        "lib", "libs", "main", "packages", "pkg", "pkgs", "py", "python", "scala",
+        "source", "sources", "src", "test", "tests",
+    }
+)
+
+
+def path_terms(target: str, quiet: frozenset[str] = frozenset()) -> str:
+    """A file or ``file::Symbol`` target as symptom text.
+
+    Directory names, file stem and symbol, without the extension, layout
+    segments or *quiet* words. A filler stem (``index.ts``) stays when nothing
+    else is left.
+    """
+    path, _, member = target.partition("::")
+    *dirs, name = path.replace("\\", "/").strip("/").split("/")
+    stem = name.rsplit(".", 1)[0] if "." in name.lstrip(".") else name
+    drop = _LAYOUT_SEGMENTS | quiet
+    words = [w for w in [*dirs, stem] if w and w.lower() not in drop] or [stem]
+    return " ".join([*words, member] if member else words)
+
+
 def path_mentions(text: str) -> list[str]:
     """Path-like tokens in free text, in order, deduped."""
     return list(dict.fromkeys(m.group(0).lstrip("/\\") for m in _PATH_TOKEN.finditer(text)))
@@ -213,14 +239,28 @@ class TraceSignal:
         if not symptom.frames:
             return {}
         trace_files = set(symptom.trace_files)
-        functions = {f.function.rsplit(".", 1)[-1] for f in symptom.frames if f.function}
+        # A frame resolved to its symbol is matched in its own file only; the
+        # rest match on the bare function name, as git's hunk headers give it.
+        functions = {
+            f.function.rsplit(".", 1)[-1]
+            for i, f in enumerate(symptom.frames)
+            if f.function and i not in symptom.resolved_frames
+        }
         out: dict[str, Hit] = {}
         for c in candidates:
+            touched = set(c.files)
+            named = [s for s in symptom.frame_symbols if s.path in touched and s.name in c.symbols]
+            named_files = {s.path for s in named}
             files = [f for f in c.files if f in trace_files]
             symbols = sorted(functions.intersection(c.symbols))
-            if files or symbols:
-                evidence = [f"frame file {f}" for f in files] + [f"frame function {s}" for s in symbols]
-                out[c.change_id] = Hit(len(files) + len(symbols), tuple(evidence[:_MAX_EVIDENCE]))
+            if files or named or symbols:
+                evidence = (
+                    [f"frame {s.symbol_id}" for s in named]
+                    + [f"frame file {f}" for f in files if f not in named_files]
+                    + [f"frame function {s}" for s in symbols]
+                )
+                score = len(set(files) | named_files) + len(named) + len(symbols)
+                out[c.change_id] = Hit(score, tuple(evidence[:_MAX_EVIDENCE]))
         return out
 
 
@@ -238,4 +278,5 @@ __all__ = [
     "TextSignal",
     "TraceSignal",
     "path_mentions",
+    "path_terms",
 ]

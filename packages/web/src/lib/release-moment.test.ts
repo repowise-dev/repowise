@@ -8,20 +8,26 @@ import {
   highlightRepoId,
   rememberRepo,
   linkPullRequests,
+  navOwnsRoute,
   previewMoment,
   readNewSurfaces,
   repoIdFromPath,
   resolveHighlightHref,
   routeMatches,
   startNewSurfaces,
+  tabOwnsRoute,
   takeUpgradeMoment,
   upgradeMoment,
   visitNewSurface,
 } from "./release-moment";
+import { GLOBAL_NAV, WORKSPACE_NAV, repoNavItems } from "@/components/layout/nav-items";
 
 const HL = (href: string | null) => ({ id: "x", title: "X", blurb: "", href });
 
-beforeEach(() => window.localStorage.clear());
+beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+});
 
 describe("upgradeMoment", () => {
   it("shows nothing on a first visit, a repeat, or a downgrade", () => {
@@ -90,6 +96,52 @@ describe("new surfaces", () => {
   });
 });
 
+// The 0.62.0 Highlights as docs/CHANGELOG.md ships them: the marks below are
+// what an upgrade to it shows.
+const HIGHLIGHTS_0_62 = `
+- **Runtime evidence on the Performance tab** · Store a profile. → /repos/:id/code-health?tab=performance
+- **A repo report after the first index** · What Repowise found. → /repos/:id/report
+- **Usage & savings, rebuilt** · How much less your agents read. → /repos/:id/costs
+- **Faster, sharper agent calls** · First answers in about half the time.
+- **Setup that finishes itself** · \`repowise next --prompt setup\` hands the steps to your agent. → /settings/setup
+`;
+
+describe("nav marks", () => {
+  const routes = [...HIGHLIGHTS_0_62.matchAll(/→ (\/\S*)/g)].map((m) => m[1]!);
+  const marked = (items: { label: string; href: string; exact?: boolean }[]) =>
+    items.filter((i) => routes.some((r) => navOwnsRoute(r, i.href, i.exact))).map((i) => i.label);
+
+  it("marks the nav entry each 0.62 highlight lives under", () => {
+    expect(routes).toHaveLength(4);
+    expect(marked(repoNavItems("abc"))).toEqual(["Code Health", "Usage & savings"]);
+    expect(marked(GLOBAL_NAV)).toEqual(["Settings"]);
+    expect(marked(WORKSPACE_NAV)).toEqual([]);
+  });
+
+  it("marks the highlighted tab, and only that one", () => {
+    const route = "/repos/:id/code-health?tab=performance";
+    expect(tabOwnsRoute(route, "/repos/abc/code-health?tab=performance")).toBe(true);
+    expect(tabOwnsRoute(route, "/repos/abc/code-health?tab=findings")).toBe(false);
+    expect(tabOwnsRoute("/repos/:id/costs", "/repos/abc/costs?tab=x")).toBe(false);
+  });
+
+  it("keeps a tab's mark until that tab is opened", () => {
+    startNewSurfaces("0.62.0", [HL("/repos/:id/code-health?tab=performance")]);
+    visitNewSurface("/repos/abc/code-health");
+    visitNewSurface("/repos/abc/code-health?tab=findings");
+    expect(activeNewRoutes(readNewSurfaces(), Date.now())).toHaveLength(1);
+    visitNewSurface("/repos/abc/code-health?tab=performance");
+    expect(activeNewRoutes(readNewSurfaces(), Date.now())).toEqual([]);
+  });
+
+  it("lets neither the root nor an exact entry claim pages beneath it", () => {
+    expect(navOwnsRoute("/settings", "/")).toBe(false);
+    expect(navOwnsRoute("/workspace/estate", "/workspace", true)).toBe(false);
+    expect(navOwnsRoute("/workspace/estate", "/workspace/estate")).toBe(true);
+    expect(navOwnsRoute("/repos/:id", "/repos/abc/chat")).toBe(false);
+  });
+});
+
 describe("links", () => {
   it("resolves repo-scoped routes for the current repository only", () => {
     expect(resolveHighlightHref("/repos/:id/chat", "my repo")).toBe("/repos/my%20repo/chat");
@@ -124,6 +176,12 @@ describe("decideMoment", () => {
     window.localStorage.setItem("repowise:last-seen-server-version", "0.56.0");
     expect(decideMoment("0.57.0", [HL("/settings")], "")).toEqual({ moment: "dialog", preview: false });
     expect(readNewSurfaces()?.routes).toEqual(["/settings"]);
+  });
+
+  it("stays quiet on a tour load and keeps the upgrade for the next session", () => {
+    window.localStorage.setItem("repowise:last-seen-server-version", "0.56.0");
+    expect(decideMoment("0.57.0", [], "?tour=1")).toEqual({ moment: "none", preview: false });
+    expect(window.localStorage.getItem("repowise:last-seen-server-version")).toBe("0.56.0");
   });
 });
 

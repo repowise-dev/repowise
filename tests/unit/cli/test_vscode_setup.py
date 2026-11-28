@@ -201,6 +201,33 @@ def test_vscode_setup_refresh_rewrites_idempotently(tmp_path: Path) -> None:
     assert (tmp_path / ".vscode" / "extensions.json").read_text(encoding="utf-8") == ext_first
 
 
+def test_vscode_setup_prints_only_when_files_are_created_or_updated(tmp_path: Path) -> None:
+    # First write creates the files and prints configuration lines
+    buf_create = StringIO()
+    console_create = Console(file=buf_create, force_terminal=False)
+    written_create = VSCodeSetup().write_project_files(
+        console_create, tmp_path, EditorSetupOptions()
+    )
+    out_create = buf_create.getvalue()
+    assert "VS Code MCP configured" in out_create
+    assert "VS Code extension recommended" in out_create
+    assert "Copilot instructions updated" in out_create
+    assert len(written_create) == 3
+
+    # Subsequent write finds files unchanged: prints nothing and returns no written paths
+    buf_noop = StringIO()
+    console_noop = Console(file=buf_noop, force_terminal=False)
+    written_noop = VSCodeSetup().write_project_files(console_noop, tmp_path, EditorSetupOptions())
+    assert buf_noop.getvalue() == ""
+    assert written_noop == []
+
+    # refresh_project_files also stays silent when unchanged
+    buf_refresh = StringIO()
+    console_refresh = Console(file=buf_refresh, force_terminal=False)
+    VSCodeSetup().refresh_project_files(console_refresh, tmp_path, EditorSetupOptions())
+    assert buf_refresh.getvalue() == ""
+
+
 def test_vscode_setup_refresh_never_creates_the_workspace_files(tmp_path: Path) -> None:
     VSCodeSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
 

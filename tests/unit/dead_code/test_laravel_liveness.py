@@ -11,8 +11,8 @@ import json
 from pathlib import Path
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+from repowise.core.ingestion.tech_stack import detect_tech_stack
 
 _FILES = {
     "routes/api.php": (

@@ -8,7 +8,7 @@ vi.mock("./client", () => ({
   apiPost: (...args: unknown[]) => apiPost(...args),
 }));
 
-import { listAllPages, regeneratePage } from "./pages";
+import { listAllPages, listPageTree, regeneratePage } from "./pages";
 
 describe("listAllPages", () => {
   beforeEach(() => {
@@ -47,6 +47,47 @@ describe("listAllPages", () => {
     apiGet.mockResolvedValue([]);
     await listAllPages("r1");
     expect(apiGet.mock.calls[0]![1]).toMatchObject({ limit: 500, fields: "full" });
+  });
+});
+
+describe("listPageTree", () => {
+  beforeEach(() => {
+    apiGet.mockReset();
+  });
+
+  it("lists summaries and merges in the full rows of the hydrated types", async () => {
+    apiGet.mockImplementation(async (_path: string, params: Record<string, unknown>) => {
+      if (params.fields === "summary") {
+        return [
+          { id: "repo_overview:r", page_type: "repo_overview" },
+          { id: "file_page:a.py", page_type: "file_page" },
+        ];
+      }
+      return params.page_type === "repo_overview"
+        ? [{ id: "repo_overview:r", page_type: "repo_overview", content: "# Overview" }]
+        : [];
+    });
+
+    const pages = await listPageTree("r1");
+
+    expect(pages).toEqual([
+      { id: "repo_overview:r", page_type: "repo_overview", content: "# Overview" },
+      { id: "file_page:a.py", page_type: "file_page" },
+    ]);
+    // Only the hydrated types are asked for in full, never the whole wiki.
+    const full = apiGet.mock.calls
+      .map((c) => c[1] as { fields: string; page_type?: string })
+      .filter((p) => p.fields === "full")
+      .map((p) => p.page_type)
+      .sort();
+    expect(full).toEqual(["architecture_diagram", "onboarding", "repo_overview", "scc_page"]);
+  });
+
+  it("asks for no full rows when the page type is not a hydrated one", async () => {
+    apiGet.mockResolvedValue([]);
+    await listPageTree("r1", "file_page");
+    expect(apiGet.mock.calls).toHaveLength(1);
+    expect(apiGet.mock.calls[0]![1]).toMatchObject({ page_type: "file_page", fields: "summary" });
   });
 });
 

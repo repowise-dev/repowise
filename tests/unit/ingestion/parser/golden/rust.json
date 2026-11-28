@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -32,7 +35,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/conditionals.rs::six_ops",
@@ -54,7 +58,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/conditionals.rs::two_ops",
@@ -76,7 +81,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -85,6 +91,7 @@
       "six_ops",
       "two_ops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -94,7 +101,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "rust/flat_match.rs": {
     "file_info": {
@@ -106,7 +115,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -129,7 +141,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/flat_match.rs::complex_match",
@@ -151,7 +164,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/flat_match.rs::multi_stmt_match",
@@ -173,11 +187,13 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -187,7 +203,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "rust/nested.rs": {
     "file_info": {
@@ -199,7 +217,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -222,7 +243,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/nested.rs::shallow",
@@ -244,11 +266,13 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -258,7 +282,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "rust/perf_io_in_loop.rs": {
     "file_info": {
@@ -270,7 +296,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -293,7 +322,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::fs_read_in_loop",
@@ -315,7 +345,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::fs_read_to_string_in_loop",
@@ -337,7 +368,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::reqwest_get_in_loop",
@@ -359,7 +391,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::regex_new_in_loop",
@@ -381,7 +414,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::pgpool_connect_in_loop",
@@ -403,7 +437,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::thread_sleep_in_async",
@@ -425,7 +460,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::fs_read_constant_loop",
@@ -447,7 +483,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::fs_read_outside_loop",
@@ -469,7 +506,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/rust/perf_io_in_loop.rs::push_str_in_loop",
@@ -491,7 +529,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [
@@ -511,6 +550,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -518,10 +558,14 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -531,11 +575,13 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 826,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -546,11 +592,13 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 844,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -561,11 +609,13 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 963,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -576,11 +626,13 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1107,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -591,11 +643,13 @@
         "line": 37,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1348,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -606,11 +660,13 @@
         "line": 43,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1460,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -621,11 +677,13 @@
         "line": 44,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1552,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -636,11 +694,13 @@
         "line": 52,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1821,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -651,11 +711,13 @@
         "line": 57,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1923,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -666,11 +728,13 @@
         "line": 64,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2145,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -681,11 +745,13 @@
         "line": 69,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2266,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -696,11 +762,13 @@
         "line": 73,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 2393,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -711,11 +779,13 @@
         "line": 75,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2431,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -746,11 +816,13 @@
         "line": 18,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 854,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -761,14 +833,18 @@
         "line": 57,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1929,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
-    ]
+    ],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

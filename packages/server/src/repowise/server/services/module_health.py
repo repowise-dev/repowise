@@ -9,11 +9,9 @@ views ``module_path`` is the path prefix the caller passed in.
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
 
+from sqlalchemy import and_, select
 from sqlalchemy import func as sa_func
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis import module_health as _fold
@@ -43,11 +41,16 @@ top_level_module = module_label
 async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, ModuleAccumulator]:
     """Fetch the four inputs for *repo_id* and fold them by top-level module."""
 
+    # Each git row carries its file's stored origin, so the fold counts hotspots
+    # in the hotspot list's scope (a file with no health row reads production).
+    g, h = GitMetadata, HealthFileMetric
     files = (
-        (await session.execute(select(GitMetadata).where(code_file_rows(repo_id))))
-        .scalars()
-        .all()
-    )
+        await session.execute(
+            select(*g.__table__.columns, h.code_origin, h.is_test)
+            .outerjoin(h, and_(h.repository_id == g.repository_id, h.file_path == g.file_path))
+            .where(code_file_rows(repo_id))
+        )
+    ).all()
     sym_rows = (
         await session.execute(
             select(WikiSymbol.file_path, WikiSymbol.docstring).where(
@@ -72,37 +75,6 @@ async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, Mo
         )
     ).all()
     return _fold.aggregate_modules(files, sym_rows, dead_rows, decisions)
-
-
-def read_repo_health_score(db_path: Path) -> float | None:
-    """Return the canonical repo health score from a repo-local wiki.db."""
-    if not db_path.exists():
-        return None
-    # Aggregate in SQL rather than reading every row. A workspace calls this once
-    # per repo, and the fetchall() this replaces read ~6,000 rows per repo to
-    # produce one number: 61.6ms against 33.2ms across six large repos, and the
-    # row count grows with the repo. MAX(CAST(..), 1) reproduces the previous
-    # `max(int(nloc or 0), 1)` weight, truncation included; verified identical on
-    # 109 real databases.
-    try:
-        with sqlite3.connect(str(db_path)) as conn:
-            row = conn.execute(
-                "SELECT SUM(score * w), SUM(w) FROM ("
-                "  SELECT score, MAX(CAST(COALESCE(nloc, 0) AS INTEGER), 1) AS w"
-                "  FROM health_file_metrics WHERE score IS NOT NULL"
-                ")"
-            ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    except Exception:
-        return None
-
-    if not row or not row[1]:
-        return None
-
-    weighted_sum, total_weight = row
-    average = float(weighted_sum) / float(total_weight)
-    return max(0.0, min(100.0, round(average * 10.0, 1)))
 
 
 async def build_single_file_health(
@@ -251,7 +223,6 @@ __all__ = [
     "aggregate_modules",
     "build_single_file_health",
     "detail_extras",
-    "read_repo_health_score",
     "summarize",
     "top_level_module",
 ]

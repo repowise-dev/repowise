@@ -196,7 +196,8 @@ def test_comprehension_filter_does_not_inflate_nesting():
 
 def test_match_case_guard_does_not_inflate_nesting():
     # A ``case ... if guard:`` also parses as an ``if_clause``; the guard is a
-    # branch point but must not open a nesting level beyond match + case.
+    # branch point but must not open a nesting level beyond the match's one
+    # (its case arms open none).
     ccn, max_nesting, _cog, _b, _c = _walk(
         "python",
         "def f(v):\n"
@@ -204,7 +205,7 @@ def test_match_case_guard_does_not_inflate_nesting():
         "        case 1 if v > 0:\n            return 1\n"
         "        case _:\n            return 0\n",
     )
-    assert max_nesting == 2
+    assert max_nesting == 1
     # The guard still counts toward CCN.
     assert ccn >= 3
 

@@ -20,7 +20,7 @@ def _print_repo_result(result: Any) -> None:
     copies of this is what let the deferral line drift into saying only that
     something else was running, without saying for how long.
     """
-    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+    from repowise.core.update_lock import format_lock_age, lock_is_suspect
 
     if result.error:
         console.print(f"    [red]✗ {result.alias}: {result.error}[/red]")
@@ -31,11 +31,7 @@ def _print_repo_result(result: Any) -> None:
         # a normal overlap apart from an update that has stopped progressing.
         age = result.lock_age_seconds
         held = format_lock_age(age)
-        note = (
-            ""
-            if age is None or age <= UPDATE_LOCK_SUSPECT_AFTER_SECONDS
-            else " That is long enough to be worth checking on."
-        )
+        note = " That is long enough to be worth checking on." if lock_is_suspect(age) else ""
         console.print(
             f"    [yellow]↻ {result.alias}: another update has held the lock "
             f"{held}; this commit was queued for it to pick up.{note}[/yellow]"
@@ -90,7 +86,7 @@ def _workspace_update(
         # but guard against misuse so the error message is clear.
         raise click.ClickException("_workspace_update called without a workspace target.")
 
-    console.print(f"[bold]repowise update[/bold] \u2014 workspace: {ws_root.name}")
+    console.print(f"[bold]repowise update[/bold]: workspace {ws_root.name}")
     console.print()
 
     # Staleness reads the workspace config, and an "up to date" repo has its DB
@@ -108,11 +104,12 @@ def _workspace_update(
         verbose=verbose,
     )
     if not dry_run and scan.up_to_date_repos:
-        _reconcile_up_to_date(scan.up_to_date_repos)
+        _reconcile_up_to_date(ws_root, scan.up_to_date_repos)
 
     if scan.stale_count == 0:
         console.print("[green]All repos are up to date.[/green]")
         if not dry_run:
+            _rerun_analysis_if_config_changed(ws_root, ws_config, started_at)
             _refresh_workspace_editor_project_files(
                 ws_root=ws_root,
                 ws_config=ws_config,
@@ -122,9 +119,7 @@ def _workspace_update(
         return
 
     if dry_run:
-        console.print(
-            f"[yellow]Dry run \u2014 {scan.stale_count} repo(s) would be updated.[/yellow]"
-        )
+        console.print(f"[yellow]Dry run: {scan.stale_count} repo(s) would be updated.[/yellow]")
         return
 
     # Repos that want docs take the full single-repo docs path; an all
@@ -161,6 +156,29 @@ def _workspace_update(
         agents_md=agents_md,
         include_working_tree=include_working_tree,
     )
+
+
+def _rerun_analysis_if_config_changed(ws_root: Path, ws_config: Any, started_at: datetime) -> None:
+    """Re-run the cross-repo analysis when only its settings changed.
+
+    An edited ``contracts:`` or ``conformance:`` block moves no repo, so the
+    staleness scan alone would leave the edit without effect until some repo
+    changed. Settings that only affect matching re-link the stored contracts
+    without reading any repo.
+    """
+    from repowise.core.workspace.update import analysis_config_changed, run_cross_repo_hooks
+
+    if not analysis_config_changed(ws_config, ws_root):
+        return
+    console.print("Workspace settings changed: re-running cross-repo analysis...")
+    try:
+        run_async(run_cross_repo_hooks(ws_config, ws_root, []))
+    except Exception as exc:
+        # The editor files still refresh; the next update retries the analysis.
+        console.print(f"[yellow]Cross-repo analysis failed: {exc}[/yellow]")
+        return
+    console.print("[green]Cross-repo analysis updated.[/green]")
+    _print_breaking_changes(ws_root, started_at)
 
 
 @dataclass
@@ -245,17 +263,28 @@ def _repo_staleness(
         indexed and not is_stale and include_working_tree and has_working_tree_changes(abs_path)
     )
     is_stale = is_stale or dirty
-    if not indexed:
-        status = "[dim]not indexed[/dim]"
-    elif config_stale and not behind:
-        status = "[yellow]config changed[/yellow]"
-    elif dirty:
-        status = "[yellow]uncommitted changes[/yellow]"
-    elif is_stale:
-        status = f"[yellow]{behind} new commit(s)[/yellow]"
-    else:
-        status = "[green]up to date[/green]"
+    status = _staleness_label(
+        indexed=indexed, config_stale=config_stale, dirty=dirty, behind=behind, is_stale=is_stale
+    )
     return _RepoStaleness(indexed, is_stale, head, status, repo_state)
+
+
+def _staleness_label(
+    *, indexed: bool, config_stale: bool, dirty: bool, behind: int, is_stale: bool
+) -> str:
+    """The scan line's status for one repo, most specific reason first."""
+    if not indexed:
+        return "[dim]not indexed[/dim]"
+    if config_stale and not behind:
+        return "[yellow]config changed[/yellow]"
+    if dirty:
+        return "[yellow]uncommitted changes[/yellow]"
+    if behind:
+        return f"[yellow]{behind} new commit(s)[/yellow]"
+    if is_stale:
+        # HEAD unmoved: a moved version stamp or a stale page owes the work.
+        return "[yellow]stale[/yellow]"
+    return "[green]up to date[/green]"
 
 
 def _wants_docs_update(
@@ -274,17 +303,26 @@ def _wants_docs_update(
     return resolve_docs_mode(repo_state) == "deterministic"
 
 
-def _reconcile_up_to_date(up_to_date_repos: list[tuple[Path, str]]) -> None:
+def _reconcile_up_to_date(ws_root: Path, up_to_date_repos: list[tuple[Path, str]]) -> None:
     """Reconcile the DB freshness stamp of up-to-date repos.
 
     Staleness is measured against the workspace config, but the server and the
     MCP freshness check read each repo DB's head_commit, which the all-up-to-date
-    path would otherwise never touch. Only writes on drift.
+    path would otherwise never touch. A repo nothing has moved since the last
+    refresh (see :mod:`.member_refresh`) already carries today's stamp, so only
+    the others are opened.
     """
     from repowise.core.workspace import reconcile_repo_head_commit
 
+    from .member_refresh import is_unchanged, load_member_stamps
+
+    stamps = load_member_stamps(ws_root)
+    moved = [(path, head) for path, head in up_to_date_repos if not is_unchanged(path, stamps)]
+    if not moved:
+        return
+
     async def _reconcile() -> None:
-        for repo_path, head in up_to_date_repos:
+        for repo_path, head in moved:
             await reconcile_repo_head_commit(repo_path, head)
 
     run_async(_reconcile())
@@ -313,6 +351,8 @@ def _workspace_index_only_update(
             repo_filter=repo_alias,
             dry_run=False,
             include_working_tree=include_working_tree,
+            # _reconcile_up_to_date restamped the members that moved.
+            restamp_up_to_date=False,
             on_repo_start=_on_start,
             on_repo_done=_print_repo_result,
         )
@@ -474,6 +514,7 @@ def _workspace_docs_update(
 
     from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
     from repowise.core.workspace.update import (
+        analysis_config_changed,
         run_cross_repo_hooks,
         sync_workspace_state_from_disk,
     )
@@ -525,8 +566,11 @@ def _workspace_docs_update(
         with suppress(Exception):
             inherit_workspace_distill_verdict((ws_root / entry.path).resolve())
 
-    # Cross-repo hooks once, over the union of index-only and docs repos.
-    if changed_aliases and len(ws_config.repos) >= 2:
+    # Cross-repo hooks once, over the union of index-only and docs repos, or
+    # for an edited contracts: or conformance: block with no repo changed.
+    if len(ws_config.repos) >= 2 and (
+        changed_aliases or analysis_config_changed(ws_config, ws_root)
+    ):
         console.print("Running cross-repo analysis...")
         with suppress(Exception):
             run_async(run_cross_repo_hooks(ws_config, ws_root, changed_aliases))
@@ -576,6 +620,8 @@ def _update_core_members(
             run_hooks=False,
             dry_run=False,
             include_working_tree=include_working_tree,
+            # _reconcile_up_to_date restamped the members that moved.
+            restamp_up_to_date=False,
             on_repo_start=_on_start,
             on_repo_done=_print_repo_result,
         )
@@ -662,11 +708,11 @@ def _deferred_tail(core_results: list[Any]) -> str:
     The oldest lock is the run most likely to have stopped progressing; "still
     running" with no age is what leaves a wedged update looking healthy.
     """
-    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+    from repowise.core.update_lock import format_lock_age, lock_is_suspect
 
     ages = [r.lock_age_seconds for r in core_results if r.lock_age_seconds is not None]
     oldest = max(ages) if ages else None
-    if oldest is not None and oldest > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
+    if lock_is_suspect(oldest):
         return (
             f"An update has held the lock {format_lock_age(oldest)}, which is "
             "longer than an update normally takes. Check "
@@ -700,26 +746,50 @@ def _refresh_workspace_editor_project_files(
     whole refresh: doing so froze the CLAUDE.md stamp for every workspace user
     who never passed ``--agents-md`` (the default), making the index look stale
     long after it was current. Mirrors the single-repo update path.
+
+    A repo whose fingerprint has not moved since its last refresh is skipped
+    (see :mod:`.member_refresh`), so a no-change update costs O(changed repos).
+    An explicit ``agents_md`` refreshes every repo, as it may change the files.
     """
     from repowise.cli.commands._index_outcome import refresh_read_snapshots
     from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
     from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
+
+    from .member_refresh import (
+        is_unchanged,
+        load_member_stamps,
+        member_fingerprint,
+        save_member_stamps,
+    )
 
     options: EditorSetupOptions | None = None
     if agents_md is not None:
         options = EditorSetupOptions(
             project_file_overrides=get_default_project_file_overrides(agents_md=agents_md),
         )
+    stamps = load_member_stamps(ws_root)
+    recorded = dict(stamps)
     for entry in ws_config.repos:
         if repo_filter and entry.alias != repo_filter:
             continue
         repo_path = (ws_root / entry.path).resolve()
         if not (repo_path / ".repowise").is_dir():
             continue
-        refresh_read_snapshots(repo_path)
+        if options is None and is_unchanged(repo_path, stamps):
+            continue
+        # A failed step drops the stamp, so the next update retries this repo.
+        stamps.pop(str(repo_path), None)
+        snapshots_written = refresh_read_snapshots(repo_path)
         try:
             refresh_editor_project_files(console, repo_path, options=options)
         except Exception as exc:
             console.print(
                 f"  [yellow]{entry.alias}: editor project-file refresh skipped: {exc}[/yellow]"
             )
+            continue
+        # Taken after the writes, so it describes the state they left.
+        fingerprint = member_fingerprint(repo_path) if snapshots_written else None
+        if fingerprint is not None:
+            stamps[str(repo_path)] = fingerprint
+    if stamps != recorded:
+        save_member_stamps(ws_root, stamps)

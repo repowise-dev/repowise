@@ -14,16 +14,22 @@ import sys
 from typing import Any
 
 import click
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.markup import escape
 
+from repowise.cli.commands._page_freshness import WHOLE_WIKI_REMEDY
 from repowise.cli.helpers import console
 from repowise.cli.ui import (
-    BRAND_STYLE,
-    OWL_SPINNER,
-    MaybeCountColumn,
     build_completion_panel,
     format_elapsed,
 )
+from repowise.cli.ui.mode_names import (
+    TITLE_INDEX_UPDATED,
+    TITLE_UPDATED_BUILT_FROM_CODE,
+    pages,
+    provider_model,
+)
+from repowise.cli.ui.result_panels import serve_step
+from repowise.core.index_scope import MODEL_COMMAND
 
 # Status -> display color, shared by the changed-file summary.
 _STATUS_COLOR = {"added": "green", "deleted": "red", "modified": "yellow", "renamed": "blue"}
@@ -75,52 +81,53 @@ def render_changed_files(file_diffs: list, *, verbose: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+# The structural and the model page counts, by `stale_remedy`. `model` says
+# nothing per count: there `--full` writes the whole wiki, in one priced run.
+_STRUCTURAL_PAGES = "{n} structural pages"
+_CASCADE_PAGES = {
+    "llm": (
+        f"{_STRUCTURAL_PAGES}, no model needed",
+        "{n} pages written by a model, priced before they are rewritten",
+    ),
+    "model": (_STRUCTURAL_PAGES, "{n} pages of the types a model writes"),
+    "code": (
+        f"{_STRUCTURAL_PAGES}, no model needed",
+        "{n} pages of the types a model writes, rebuilt from code with no model calls",
+    ),
+}
+_WHOLE_WIKI_NOTE = f" It {WHOLE_WIKI_REMEDY}."
+
+
 def render_cascade_budget_warning(
-    budget: int, skipped_files: int, split: tuple[int, int] | None
+    budget: int,
+    skipped_files: int,
+    split: tuple[int, int] | None,
+    command: str,
+    remedy: str,
 ) -> None:
-    """Warn that the cascade budget left pages stale, and how each kind catches up.
+    """Warn that the cascade budget left pages stale, and the one command that catches up.
 
     ``split`` is ``(model_pages, structural_pages)``; ``None`` prints the
-    unsplit warning.
+    unsplit warning. ``command`` is ``repowise update --full``, aimed at the
+    repo in a workspace. ``remedy`` is ``stale_remedy``'s answer for the repo.
     """
-    full = f"--cascade-budget {budget + skipped_files}"
     console.print(
         f"\n[yellow]⚠ Cascade budget of {budget} pages was reached. {skipped_files} "
         "dependent files were skipped and their pages marked stale.[/yellow]"
     )
-    if split is None:
-        console.print(f"[yellow]  Pass `{full}` to regenerate them all.[/yellow]\n")
-        return
-    model, structural = split
-    if structural:
-        console.print(
-            f"  {structural} structural pages (file / cycle) refresh on the next "
-            "[cyan]repowise update[/cyan], no model needed."
-        )
-    if model:
-        console.print(
-            f"  {model} model-written pages: run [cyan]repowise generate --stale[/cyan] "
-            f"to rewrite them (it estimates the cost first), or pass `{full}` "
-            "to regenerate everything in this run."
-        )
-    else:
-        console.print(f"  Pass `{full}` to regenerate them in this run.")
-    console.print()
-
-
-def make_generation_progress() -> Progress:
-    """Build the live page-generation progress bar (owl spinner + running cost),
-    matching the columns ``init`` uses for its generation phase.
-    """
-    return Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MaybeCountColumn(),
-        TimeElapsedColumn(),
-        TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
-        console=console,
+    model, structural = split or (0, 0)
+    structural_pages, model_pages = _CASCADE_PAGES[remedy]
+    kinds = [
+        structural_pages.format(n=structural) if structural else "",
+        model_pages.format(n=model) if model else "",
+    ]
+    detail = "; ".join(k for k in kinds if k)
+    console.print(
+        f"  Run [cyan]{command}[/cyan] to refresh them"
+        + (f": {detail}." if detail else ".")
+        + (_WHOLE_WIKI_NOTE if remedy == "model" else "")
     )
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -165,22 +172,25 @@ class JsonProgressEmitter:
         duration_s: float,
         degraded: list[str] | None = None,
         outcome: str | None = None,
+        docs_deferred: bool = False,
+        stale_pages: int | None = None,
     ) -> None:
         # ``outcome`` lets a supervising agent tell a real regeneration apart
         # from a run that only deferred to an in-flight update or found nothing
         # to do — all three otherwise emit ``ok=True, pages_generated=0``.
         # Mirrors the ``UpdateOutcome`` values in ``command.py``.
-        self._emit(
-            {
-                "event": "done",
-                "ok": ok,
-                "outcome": outcome,
-                "pages_generated": pages_generated,
-                "cost_usd": cost_usd,
-                "duration_s": duration_s,
-                "degraded": degraded or [],
-            }
-        )
+        event = {
+            "event": "done",
+            "ok": ok,
+            "outcome": outcome,
+            "pages_generated": pages_generated,
+            "cost_usd": cost_usd,
+            "duration_s": duration_s,
+            "degraded": degraded or [],
+        }
+        if docs_deferred:
+            event.update(docs_deferred=True, stale_pages=stale_pages)
+        self._emit(event)
 
     def error(self, message: str) -> None:
         self._emit({"event": "error", "message": message})
@@ -274,7 +284,11 @@ def _dead_code_counts(
     if changed_paths is not None:
         scope = set(changed_paths)
         findings = [f for f in findings if f.file_path in scope]
-    unreachable = sum(1 for f in findings if f.kind.value == "unreachable_file")
+    from repowise.core.analysis.dead_code.serving import headline_unreachable
+
+    # No stored origins in hand here: the path decides, as it does in init
+    # for a file without a health row.
+    unreachable = headline_unreachable(findings, {})
     unused = sum(1 for f in findings if f.kind.value == "unused_export")
     return unreachable, unused
 
@@ -317,14 +331,14 @@ def show_full_completion(
     if tokens:
         metrics.append(("Total tokens", f"{tokens:,}"))
     if provider is not None:
-        metrics.append(("Provider", f"{provider.provider_name} / {provider.model_name}"))
+        metrics.append(("Provider", provider_model(provider.provider_name, provider.model_name)))
     if cost:
         metrics.append(("Cost", f"${cost:.3f}"))
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
-        ("repowise serve", "browse the updated wiki at localhost:3000"),
-        ("repowise search <query>", "search the wiki"),
+        serve_step("updated documentation"),
+        ("repowise search <query>", "search the documentation"),
     ]
     console.print()
     console.print(
@@ -345,6 +359,7 @@ def show_index_only_completion(
     pages_rendered: int = 0,
     template_wiki: bool = False,
     changed_paths: list[str] | None = None,
+    upgrade_command: str | None = None,
 ) -> None:
     """Render the completion panel for an index-only update (no LLM regen).
 
@@ -360,7 +375,7 @@ def show_index_only_completion(
         ("Dead code", _dead_code_line(dead_code_report, changed_paths)),
     ]
     if pages_rendered:
-        metrics.append(("Wiki pages", f"{pages_rendered} re-rendered from structure"))
+        metrics.append(("Documentation", f"{pages(pages_rendered)} rebuilt from code"))
     if degraded:
         metrics.append(("Degraded", f"{len(degraded)} step(s)"))
     if git_files:
@@ -368,20 +383,27 @@ def show_index_only_completion(
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
-        ("repowise serve", "browse the index at localhost:3000"),
+        serve_step(),
     ]
     if template_wiki:
         # The scoped, cost-gated upgrade path — a coverage, a directory or one
         # page at a time — not the all-or-nothing `update --full`.
         next_steps.append(
-            ("repowise generate", "upgrade the wiki to model-written prose (needs a key)")
+            (MODEL_COMMAND, "write the documentation with a model (needs a key)")
+        )
+    elif upgrade_command:
+        # Index only: there are no docs to regenerate.
+        next_steps.append(
+            (upgrade_command, "build documentation from code and the full git history (no key)")
         )
     else:
         next_steps.append(("repowise update --docs", "regenerate docs for the changed files"))
     console.print()
     console.print(
         build_completion_panel(
-            "repowise index-only update complete", metrics, next_steps=next_steps
+            TITLE_UPDATED_BUILT_FROM_CODE if template_wiki else TITLE_INDEX_UPDATED,
+            metrics,
+            next_steps=next_steps,
         )
     )
     console.print()
@@ -414,8 +436,8 @@ def show_workspace_completion(
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
+        serve_step("workspace dashboard"),
         ("repowise status --workspace", "show workspace status"),
-        ("repowise serve", "browse a repo wiki at localhost:3000"),
     ]
     console.print()
     console.print(
@@ -427,6 +449,35 @@ def show_workspace_completion(
 
 #: An update slower than this is one a hosted index would have saved.
 _SLOW_UPDATE_SECONDS = 60
+
+
+def render_slower(repo_path: Any) -> None:
+    """One line when a workload's newest stored run is slower than its band of
+    earlier runs (``evidence.compare``), naming the commits that changed what it
+    ran; nothing otherwise. Best effort: an update never fails on it."""
+    from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.evidence.compare import comparison_line
+    from repowise.core.evidence.compare_history import load_comparisons
+
+    async def read() -> list[Any]:
+        async with repo_index_session(repo_path) as opened:
+            if opened is None:
+                return []
+            session, repo_id = opened
+            return await load_comparisons(session, repo_id, repo_path)
+
+    try:
+        slower = [c for c in run_async(read()) if c.verdict == "slower"]
+    except Exception:  # the update itself succeeded
+        return
+    if not slower:
+        return
+    more = (
+        f" ({len(slower) - 1} more workload(s): repowise evidence status --compare)"
+        if len(slower) > 1
+        else ""
+    )
+    console.print(f"[yellow]Slower: {escape(comparison_line(slower[0]))}{more}[/yellow]")
 
 
 def _slow_update_hint(elapsed: float) -> None:

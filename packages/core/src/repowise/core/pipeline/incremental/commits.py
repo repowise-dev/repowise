@@ -25,6 +25,7 @@ async def persist_incremental_commits(
     from repowise.core.persistence.crud import (
         clear_attribution_if_disabled,
         get_latest_commit_committed_at,
+        get_latest_commit_shas_at_timestamp,
         get_repository,
         update_repo_git_totals,
         upsert_git_commit_files_bulk,
@@ -46,6 +47,7 @@ async def persist_incremental_commits(
     )
     newest = await get_latest_commit_committed_at(session, repo_id)
     since_ts: int | None = None
+    known_shas: set[str] | None = None
     if newest is not None:
         # SQLite drops tzinfo, so a naive read must be interpreted as UTC (the
         # column is stored tz-aware) rather than local time.
@@ -53,6 +55,7 @@ async def persist_incremental_commits(
 
         dt = newest if newest.tzinfo is not None else newest.replace(tzinfo=UTC)
         since_ts = int(dt.timestamp())
+        known_shas = await get_latest_commit_shas_at_timestamp(session, repo_id, newest)
     with timed(timings, "persist.commits.capture"):
         # One walk fills both, so they describe the same commit set.
         file_rows: list[dict] = []
@@ -61,6 +64,7 @@ async def persist_incremental_commits(
                 indexer.capture_new_commit_rows,
                 since_ts=since_ts,
                 file_rows_sink=file_rows,
+                known_shas=known_shas,
             )
         )
         if rows:
@@ -82,7 +86,9 @@ async def persist_incremental_commits(
     with timed(timings, "persist.commits.changes"):
         from repowise.core.changes.store import reconcile_categories, refresh_changes
 
-        await refresh_changes(session, repo_id, repo_path, rebuild=False)
+        await refresh_changes(
+            session, repo_id, repo_path, rebuild=False, commit_limit=indexer.commit_limit
+        )
         try:
             await reconcile_categories(session, repo_id)
         except Exception as exc:
@@ -351,12 +357,5 @@ async def persist_incremental_fix_events(session: Any, repo_id: str, indexer: An
     if tracked:
         await prune_fix_events_for_missing_paths(session, repo_id, tracked)
     await prune_fix_events_for_shas(session, repo_id, retracted)
-
-    # Recompute over the whole stored window, not just the rows this update
-    # appended: decay ages every file's mass whether or not the file changed.
-    try:
-        from repowise.core.pipeline.fix_rollups import apply_fix_rollups
-
-        await apply_fix_rollups(session, repo_id)
-    except Exception as exc:
-        logger.debug("fix_rollups_failed", error=str(exc))
+    # The rollups over these rows run later in the write (``refresh_git_rollups``),
+    # once the changed files' symbols are stored.

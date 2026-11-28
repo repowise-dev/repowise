@@ -3,6 +3,7 @@
 import useSWR from "swr";
 import {
   getWorkspaceSystemGraph,
+  getWorkspaceDiagnostics,
   getWorkspaceGraph,
   getWorkspaceBlastRadius,
   getWorkspaceBreakingChanges,
@@ -10,6 +11,7 @@ import {
   getWorkspaceArchitecture,
 } from "@/lib/api/workspace";
 import type {
+  ExtractionDiagnostics,
   WorkspaceSystemGraphResponse,
   WorkspaceGraphResponse,
   WorkspaceBlastRadiusResponse,
@@ -18,10 +20,25 @@ import type {
   WorkspaceArchitectureResponse,
 } from "@/lib/api/types";
 
-export function useWorkspaceSystemGraph() {
+/**
+ * The system graph. ``view="map"`` asks for the map's lean view, which leaves
+ * the diagnostics to ``useWorkspaceDiagnostics``; a server without that view
+ * answers with the full graph, diagnostics included.
+ */
+export function useWorkspaceSystemGraph(view?: "map") {
   const { data, error, isLoading } = useSWR<WorkspaceSystemGraphResponse>(
-    "workspace:system-graph",
-    () => getWorkspaceSystemGraph(),
+    view ? `workspace:system-graph:${view}` : "workspace:system-graph",
+    () => getWorkspaceSystemGraph(undefined, view ? { view } : undefined),
+    { revalidateOnFocus: false },
+  );
+  return { data: data ?? null, isLoading, error };
+}
+
+/** Extraction diagnostics. Pass ``enabled=false`` to defer the request. */
+export function useWorkspaceDiagnostics(enabled = true) {
+  const { data, error, isLoading } = useSWR<ExtractionDiagnostics>(
+    enabled ? "workspace:diagnostics" : null,
+    () => getWorkspaceDiagnostics(),
     { revalidateOnFocus: false },
   );
   return { data: data ?? null, isLoading, error };

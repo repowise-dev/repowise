@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from repowise.core.persistence.models import (
+    CoverageFile,
     DeadCodeFinding,
     GitMetadata,
     GraphEdge,
@@ -68,6 +69,16 @@ async def _seed(session, repo_id: str) -> None:
                 file_path=path,
                 biomarker_type="complexity",
                 severity="low",
+            )
+        )
+        session.add(
+            CoverageFile(
+                repository_id=repo_id,
+                file_path=path,
+                source_format="lcov",
+                line_coverage_pct=50.0,
+                covered_lines_json="[]",
+                total_coverable_lines=10,
             )
         )
         session.add(GitMetadata(repository_id=repo_id, file_path=path))
@@ -134,6 +145,7 @@ async def test_prune_removes_stale_file_rows(async_session):
         KEPT
     }
     assert await _paths(async_session, HealthFinding, HealthFinding.file_path, repo.id) == {KEPT}
+    assert await _paths(async_session, CoverageFile, CoverageFile.file_path, repo.id) == {KEPT}
     assert await _paths(async_session, GitMetadata, GitMetadata.file_path, repo.id) == {KEPT}
 
 

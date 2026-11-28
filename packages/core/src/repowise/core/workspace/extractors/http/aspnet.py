@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from repowise.core.ingestion.framework_routes import aspnet_groups, aspnet_routes
 
 from ..base import line_at
+from ..calls import code_matches, outside_comments
 from ..langs import CSHARP
 from .dialect import build_provider_contract, nearest_prefix
 from .mounts import compose_prefix, group_prefixes
@@ -284,6 +285,8 @@ def _compose_aspnet_path(prefix: str, action_path: str) -> str:
 class AspNetDialect:
     name = "aspnet"
     extensions = CSHARP
+    # `[HttpGet(...)]` and `.MapGet(...)`, read without regard to case.
+    requires = ("Http", "http", "HTTP", "MapGet", "MapPost", "MapPut", "MapDelete", "MapPatch")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
@@ -293,7 +296,7 @@ class AspNetDialect:
         out: list[Contract] = []
 
         # Action method attribute routing
-        for m in _ASPNET_VERB_ATTR_RE.finditer(content):
+        for m in code_matches(ctx, _ASPNET_VERB_ATTR_RE):
             block = _find_attribute_block(content, m.start(), spans)
             if block is None:
                 continue
@@ -323,7 +326,7 @@ class AspNetDialect:
         # Minimal API — the prefix comes from the MapGroup chain its receiver
         # is bound to, not from a class [Route(...)].
         prefixes = group_prefixes(aspnet_groups(content))
-        for route in aspnet_routes(content):
+        for route in outside_comments(ctx, aspnet_routes(content)):
             c = build_provider_contract(
                 ctx,
                 method=route.verb,

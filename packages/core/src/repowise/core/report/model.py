@@ -134,6 +134,10 @@ class ReportContext:
     #: ``None`` is the default request: the 90 days before the newest
     #: indexed commit, building what is missing.
     period: PeriodRequest | None = None
+    #: ``lookup`` and ``alias`` for the dead-code cross-repo cut
+    #: (``dead_code.serving.serve_findings``) when the repository is a workspace
+    #: member; ``None`` reads stored values.
+    cross_repo: dict[str, Any] | None = None
     _cache: dict[str, Any] = field(default_factory=dict)
 
     async def components(self) -> Any:
@@ -171,19 +175,122 @@ class ReportContext:
         return self._cache["rollups"]
 
 
+@dataclass
+class WorkspaceReportContext:
+    """A workspace's stored cross-repo artifacts, loaded once and shared by its sections.
+
+    Reads only what ``repowise update --workspace`` wrote under
+    ``.repowise-workspace/``; nothing is extracted or matched again here.
+    """
+
+    ws_root: Path
+    #: The document's ``repos`` entries, one per configured repository
+    #: (``head_commit`` when indexed, ``indexed: False`` otherwise).
+    repos: list[dict[str, Any]] = field(default_factory=list)
+    _cache: dict[str, Any] = field(default_factory=dict)
+
+    def _load(self, key: str, loader: Callable[[], Any]) -> Any:
+        if key not in self._cache:
+            self._cache[key] = loader()
+        return self._cache[key]
+
+    def config(self) -> Any:
+        """The workspace config (:class:`~repowise.core.workspace.config.WorkspaceConfig`)."""
+        from repowise.core.workspace.config import WorkspaceConfig
+
+        return self._load("config", lambda: WorkspaceConfig.load(self.ws_root))
+
+    def system_graph(self) -> Any:
+        """The stored system graph, or ``None`` when none was built."""
+        from repowise.core.workspace.system_graph import load_system_graph
+
+        return self._load("graph", lambda: load_system_graph(self.ws_root))
+
+    def contract_store(self) -> Any:
+        """The stored contract store, or ``None`` when none was extracted."""
+        from repowise.core.workspace.contracts import load_contract_store
+
+        return self._load("contracts", lambda: load_contract_store(self.ws_root))
+
+    def evidence(self) -> Any:
+        """The graph's evidence state (:class:`GraphEvidence`), ``None`` without a graph."""
+        from repowise.core.workspace.graph_evidence import graph_evidence
+
+        graph = self.system_graph()
+        return self._load("evidence", lambda: graph_evidence(graph) if graph else None)
+
+    def repo_health(self) -> dict[str, dict[str, Any]] | None:
+        """Each member's stored health headline from ``workspace.db``, ``None`` without one."""
+        from repowise.core.workspace.store import read_repo_health, store_path
+
+        return self._load("health", lambda: read_repo_health(store_path(self.ws_root)))
+
+    async def each_index(
+        self, key: str, read: Callable[[Any, str], Awaitable[Any]]
+    ) -> dict[str, Any]:
+        """``alias -> await read(session, repository_id)`` over every member with an
+        index, cached under *key*. A member whose index cannot be opened or read
+        maps to the exception instead, so a section can say which one it missed.
+        """
+        if key in self._cache:
+            return self._cache[key]
+        from repowise.core.workspace.registry import open_repo_db, repo_db_path
+        from repowise.core.workspace.repo_index import checkout_repository
+
+        out: dict[str, Any] = {}
+        for entry in self.config().repos:
+            root = (self.ws_root / entry.path).resolve()
+            if not repo_db_path(root).is_file():
+                continue
+            try:
+                engine, sessions = await open_repo_db(root)
+            except Exception as exc:  # one unreadable index must not lose the rest
+                out[entry.alias] = exc
+                continue
+            try:
+                async with sessions() as session:
+                    repo = await checkout_repository(session, root)
+                    out[entry.alias] = (
+                        await read(session, repo.id)
+                        if repo is not None
+                        else LookupError("the index holds no repository row")
+                    )
+            except Exception as exc:
+                out[entry.alias] = exc
+            finally:
+                await engine.dispose()
+        self._cache[key] = out
+        return out
+
+
+#: Where a section runs: once per repository, or once per workspace.
+SCOPES = ("repo", "workspace")
+
+
 @dataclass(frozen=True)
 class Section:
     """A report section: *collect* returns its checks, or ``None`` when the
-    section does not apply to this repository (it is then left out)."""
+    section does not apply (it is then left out).
+
+    A ``repo`` section gets a :class:`ReportContext` per repository. A
+    ``workspace`` section gets one :class:`WorkspaceReportContext` and runs
+    once, only when the report covers a whole workspace.
+    """
 
     title: str
     #: One line saying what the section measures; the documentation ``short``.
     summary: str
-    collect: Callable[[ReportContext], Awaitable[list[dict[str, Any]] | None]]
+    collect: Callable[[Any], Awaitable[list[dict[str, Any]] | None]]
     #: Sections are listed by this, then by name.
     order: int = 100
-    #: The report kind the section belongs to (``assessment``, ``changes``).
+    #: The report kind the section belongs to (``assessment``, ``changes``, ``estate``).
     report: str = "assessment"
+    #: One of :data:`SCOPES`.
+    scope: str = "repo"
+
+    def __post_init__(self) -> None:
+        if self.scope not in SCOPES:
+            raise ValueError(f"unknown section scope {self.scope!r}; expected one of {SCOPES}")
 
 
 report_sections: SeamRegistry[Section] = SeamRegistry("report-section")

@@ -74,6 +74,90 @@ class TestExtractSentences:
     def test_empty_input(self) -> None:
         assert _extract_sentences("", max_sentences=3) == ""
 
+    def test_drops_thematic_break(self) -> None:
+        text = "---\n\nThe accounts module manages authentication and sessions."
+        got = _extract_sentences(text, max_sentences=1)
+        assert got == "The accounts module manages authentication and sessions."
+
+    def test_drops_meta_badge_rows(self) -> None:
+        text = (
+            "**Language:** python | **Files:** 9 | **Public symbols:** 5 / 5\n\n"
+            "The accounts module manages authentication and sessions."
+        )
+        got = _extract_sentences(text, max_sentences=1)
+        assert got == "The accounts module manages authentication and sessions."
+
+    def test_joins_new_lines_into_spaces(self) -> None:
+        text = (
+            "The accounts module manages\n"
+            "authentication and active user\n"
+            "sessions across requests."
+        )
+        got = _extract_sentences(text, max_sentences=1)
+        assert "\n" not in got
+        assert got == (
+            "The accounts module manages authentication and active "
+            "user sessions across requests."
+        )
+
+    def test_keeps_a_single_bold_label_sentence(self) -> None:
+        text = "**Note:** Handles invoicing and payment retries."
+        assert _extract_sentences(text, max_sentences=1) == text
+
+    def test_drops_all_emphasis_footer(self) -> None:
+        text = (
+            "The accounts module manages authentication and sessions.\n\n"
+            "*Built from the code's structure. It states what is there, not why it is that\n"
+            "way. The explanatory prose is a separate, model-written layer.*\n"
+        )
+        got = _extract_sentences(text, max_sentences=4)
+        assert got == "The accounts module manages authentication and sessions."
+
+    def test_drops_thematic_break_and_all_emphasis_footer(self) -> None:
+        text = (
+            "---\n\n"
+            "*Built from the code's structure. It states what is there, not why it is that\n"
+            "way. The explanatory prose is a separate, model-written layer.*\n"
+        )
+        assert _extract_sentences(text, max_sentences=2) == ""
+
+    def test_keeps_prose_that_starts_and_ends_with_bold(self) -> None:
+        text = "**Billing** is used by **reports**"
+        assert _extract_sentences(text, max_sentences=1) == text
+
+    def test_skip_preamble_starts_at_first_section(self) -> None:
+        text = (
+            "# billing\n\n`billing`\n\n"
+            "**Language:** python | **Files:** 6\n\n"
+            "Covers the 6 source files in billing.\n\n"
+            "## Overview\n\n"
+            "billing covers 6 python files, exposing 5 public symbols.\n"
+        )
+        got = _extract_sentences(text, max_sentences=1, skip_preamble=True)
+        assert got == "billing covers 6 python files, exposing 5 public symbols."
+
+    def test_skip_preamble_without_a_section_returns_empty(self) -> None:
+        text = "# billing\n\n**Language:** python | **Files:** 6\n\nCovers the 6 files."
+        assert _extract_sentences(text, max_sentences=1, skip_preamble=True) == ""
+
+    def test_preamble_prose_is_kept_by_default(self) -> None:
+        text = "# Billing\n\nHandles invoicing and payment retries.\n\n## Details\n\nMore."
+        assert _extract_sentences(text, max_sentences=1) == (
+            "Handles invoicing and payment retries."
+        )
+
+    def test_skip_preamble_passes_over_a_list_only_section(self) -> None:
+        text = (
+            "# billing\n\nCovers the 6 files.\n\n"
+            "## Parts of this subsystem\n\n"
+            "- `billing/a.py` handles invoices\n"
+            "- `billing/b.py` handles refunds\n\n"
+            "## Overview\n\n"
+            "billing covers 6 python files, exposing 5 public symbols.\n"
+        )
+        got = _extract_sentences(text, max_sentences=1, skip_preamble=True)
+        assert got == "billing covers 6 python files, exposing 5 public symbols."
+
 
 class TestTruncateAtWord:
     def test_short_text_unchanged(self) -> None:

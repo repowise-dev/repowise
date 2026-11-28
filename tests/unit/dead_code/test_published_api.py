@@ -10,6 +10,7 @@ from repowise.core.analysis.dead_code.published_api import (
     BuildFacts,
     demote_published_api,
 )
+from repowise.core.analysis.published_packages import _python_package_dirs
 from repowise.core.ingestion.resolvers.dotnet.index import build_index
 
 
@@ -47,6 +48,32 @@ def _demote(root: Path, *findings: DeadCodeFindingData) -> list[DeadCodeFindingD
 def _facts(root: Path) -> BuildFacts:
     return BuildFacts(repo_root=root, dotnet_index=build_index(root))
 
+
+
+def test_the_declared_package_dirs_are_used_when_they_exist(tmp_path: Path) -> None:
+    """The dirs the build declares are the answer while they are in the tree."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[build-system]\nrequires = ["setuptools"]\n'
+                '[project]\nname = "my-lib"\n'
+                '[tool.setuptools]\npackages = ["my_lib"]\n'
+            ),
+            "my_lib/api.py": "",
+        },
+    )
+    data = {"tool": {"setuptools": {"packages": ["my_lib"]}}}
+
+    assert _python_package_dirs(_facts(tmp_path), "", data, "my-lib") == ["my_lib"]
+
+
+def test_the_declared_package_dirs_that_are_gone_fall_back_to_the_name(tmp_path: Path) -> None:
+    """Stale declared dirs leave the name guess as the fallback."""
+    _write(tmp_path, {"src/my_lib/api.py": ""})
+    data = {"tool": {"setuptools": {"packages": ["my_lib_gone"]}}}
+
+    assert _python_package_dirs(_facts(tmp_path), "", data, "my-lib") == ["src/my_lib"]
 
 def test_a_packable_project_publishes_its_public_types(tmp_path: Path) -> None:
     _project(tmp_path, "src/Lib/Lib.csproj", "<PackageId>Acme.Lib</PackageId>")
@@ -91,3 +118,256 @@ def test_a_project_nested_in_a_packaged_one_is_judged_on_its_own(tmp_path: Path)
     _demote(tmp_path, sample, library)
     assert sample.confidence == 0.6 and sample.evidence == []
     assert library.confidence == PUBLISHED_API_CONFIDENCE
+
+
+# --- Other ecosystems: one rule table, read from each build's own manifest ---
+
+
+def _write(root: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+def _demoted(root: Path, language: str, *paths: str) -> list[bool]:
+    findings = [_export(p, "Thing") for p in paths]
+    demote_published_api(findings, dict.fromkeys(paths, language), BuildFacts(repo_root=root))
+    return [f.confidence == PUBLISHED_API_CONFIDENCE for f in findings]
+
+
+def test_a_go_library_publishes_its_importable_packages(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "go.mod": "module example.com/lib\n",
+            "lib.go": "package lib\n",
+            "parser/parse.go": "package parser\n",
+            "internal/util/util.go": "package util\n",
+            "cmd/tool/main.go": "package main\n",
+        },
+    )
+    assert _demoted(
+        tmp_path, "go", "lib.go", "parser/parse.go", "internal/util/util.go", "cmd/tool/main.go"
+    ) == [True, True, False, False]
+
+
+def test_a_go_program_module_is_left_alone(tmp_path: Path) -> None:
+    """A module whose root is ``package main`` is an app, whatever else it holds."""
+    _write(
+        tmp_path,
+        {"go.mod": "module example.com/app\n", "main.go": "package main\n", "pkg/x/x.go": "package x\n"},
+    )
+    assert _demoted(tmp_path, "go", "pkg/x/x.go") == [False]
+
+
+def test_a_rust_library_crate_publishes_but_a_binary_crate_does_not(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n',
+            "crates/lib/Cargo.toml": (
+                '[package]\nname = "lib"\n[[bin]]\nname = "x"\npath = "src/cli/x.rs"\n'
+            ),
+            "crates/lib/src/lib.rs": "",
+            "crates/lib/src/bin/tool.rs": "",
+            "crates/app/Cargo.toml": '[package]\nname = "app"\n',
+            "crates/app/src/main.rs": "",
+            "crates/internal/Cargo.toml": '[package]\nname = "internal"\npublish = false\n',
+            "crates/internal/src/lib.rs": "",
+        },
+    )
+    assert _demoted(
+        tmp_path,
+        "rust",
+        "crates/lib/src/walk.rs",
+        "crates/lib/src/bin/tool.rs",
+        "crates/lib/src/cli/x.rs",
+        "crates/app/src/cli.rs",
+        "crates/internal/src/x.rs",
+    ) == [True, False, False, False, False]
+
+
+def test_a_maven_module_publishes_only_with_deploy_evidence(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "lib/pom.xml": "<project><artifactId>lib</artifactId>"
+            "<distributionManagement></distributionManagement></project>",
+            "app/pom.xml": "<project><artifactId>app</artifactId>"
+            "<build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId>"
+            "</plugin></plugins></build></project>",
+            "plain/pom.xml": "<project><artifactId>plain</artifactId></project>",
+        },
+    )
+    assert _demoted(
+        tmp_path, "java", "lib/src/main/java/A.java", "app/src/main/java/B.java", "plain/src/main/java/C.java"
+    ) == [True, False, False]
+
+
+def test_a_gradle_module_publishes_through_its_root_build(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "build.gradle": "subprojects { apply plugin: 'maven-publish' }\n",
+            "core/build.gradle.kts": 'plugins { `java-library` }\n',
+            "sample/build.gradle.kts": "plugins { application }\n",
+        },
+    )
+    assert _demoted(
+        tmp_path, "kotlin", "core/src/main/kotlin/A.kt", "sample/src/main/kotlin/B.kt"
+    ) == [True, False]
+
+
+def test_a_python_distribution_publishes_its_public_modules(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": '[build-system]\nrequires = ["hatchling"]\n[project]\nname = "my-lib"\n',
+            "src/my_lib/__init__.py": "",
+            "src/my_lib/api.py": "",
+            "src/my_lib/_impl.py": "",
+            "src/my_lib/_impl.pyi": "",
+            "src/my_lib/_vendor/x.py": "",
+            "tests/test_api.py": "",
+        },
+    )
+    assert _demoted(
+        tmp_path,
+        "python",
+        "src/my_lib/api.py",
+        "src/my_lib/_impl.py",
+        "src/my_lib/_impl.pyi",
+        "src/my_lib/_vendor/x.py",
+        "tests/test_api.py",
+    ) == [True, False, False, False, False]
+
+
+def test_a_python_app_is_left_alone(tmp_path: Path) -> None:
+    """No build backend is how an app pyproject reads (``uv init`` without ``--lib``)."""
+    _write(tmp_path, {"pyproject.toml": '[project]\nname = "app"\n', "app/__init__.py": ""})
+    assert _demoted(tmp_path, "python", "app/views.py") == [False]
+
+
+_FLIT_PYPROJECT = (
+    '[build-system]\nrequires = ["flit_core>=3.4"]\nbuild-backend = "flit_core.buildapi"\n'
+    '[project]\nname = "acme-providers-ftp"\n'
+    '[tool.flit.module]\nname = "acme.providers.ftp"\n'
+)
+
+_UV_BUILD_PYPROJECT = (
+    '[build-system]\nrequires = ["uv_build"]\nbuild-backend = "uv_build"\n'
+    '[project]\nname = "acme-providers-ftp"\n'
+    '[tool.uv.build-backend]\nmodule-name = "acme.providers.ftp"\n'
+)
+
+
+def test_a_flit_namespace_module_publishes_its_package(tmp_path: Path) -> None:
+    """flit ships the module it names; the distribution name spells no such dir."""
+    _write(
+        tmp_path,
+        {
+            "providers/ftp/pyproject.toml": _FLIT_PYPROJECT,
+            "providers/ftp/src/acme/providers/ftp/sensors/ftp.py": "",
+        },
+    )
+    assert _demoted(
+        tmp_path, "python", "providers/ftp/src/acme/providers/ftp/sensors/ftp.py"
+    ) == [True]
+
+
+def test_a_flit_module_beside_the_manifest_publishes(tmp_path: Path) -> None:
+    """flit also allows the module next to the pyproject, with no ``src/``."""
+    _write(
+        tmp_path,
+        {"pyproject.toml": _FLIT_PYPROJECT, "acme/providers/ftp/sensors/ftp.py": ""},
+    )
+    assert _demoted(tmp_path, "python", "acme/providers/ftp/sensors/ftp.py") == [True]
+
+
+def test_a_uv_build_module_name_publishes_its_package(tmp_path: Path) -> None:
+    """uv_build's ``module-name`` defaults to a ``src/`` layout."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": _UV_BUILD_PYPROJECT,
+            "src/acme/providers/ftp/sensors/ftp.py": "",
+        },
+    )
+    assert _demoted(tmp_path, "python", "src/acme/providers/ftp/sensors/ftp.py") == [True]
+
+
+def test_a_uv_build_module_root_is_honoured(tmp_path: Path) -> None:
+    """``module-root`` moves the same module off the default ``src/``."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[build-system]\nrequires = ["uv_build"]\nbuild-backend = "uv_build"\n'
+                '[project]\nname = "acme-providers-ftp"\n'
+                '[tool.uv.build-backend]\nmodule-name = "acme.providers.ftp"\n'
+                'module-root = "lib"\n'
+            ),
+            "lib/acme/providers/ftp/sensors/ftp.py": "",
+        },
+    )
+    assert _demoted(tmp_path, "python", "lib/acme/providers/ftp/sensors/ftp.py") == [True]
+
+
+def test_declared_dirs_that_do_not_exist_fall_back_to_the_name(tmp_path: Path) -> None:
+    """A stale ``packages`` list must not leave the project unpublished."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[build-system]\nrequires = ["setuptools"]\n'
+                '[project]\nname = "my-lib"\n'
+                '[tool.setuptools]\npackages = ["my_lib_gone"]\n'
+            ),
+            "src/my_lib/api.py": "",
+        },
+    )
+    assert _demoted(tmp_path, "python", "src/my_lib/api.py") == [True]
+
+
+def test_a_private_flit_project_stays_unpublished(tmp_path: Path) -> None:
+    """``Private :: Do Not Upload`` outranks a declared flit module."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[build-system]\nrequires = ["flit_core>=3.4"]\n'
+                'build-backend = "flit_core.buildapi"\n'
+                '[project]\nname = "acme-providers-ftp"\n'
+                'classifiers = ["Private :: Do Not Upload"]\n'
+                '[tool.flit.module]\nname = "acme.providers.ftp"\n'
+            ),
+            "src/acme/providers/ftp/sensors/ftp.py": "",
+        },
+    )
+    assert _demoted(tmp_path, "python", "src/acme/providers/ftp/sensors/ftp.py") == [False]
+
+
+def test_an_npm_package_publishes_unless_private(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "package.json": '{"name": "root", "private": true}',
+            "packages/lib/package.json": '{"name": "lib", "exports": "./src/index.ts"}',
+            "packages/lib/src/esm/package.json": '{"type": "module"}',
+            "packages/site/package.json": '{"name": "site", "private": true, "main": "x.js"}',
+            "packages/cli/package.json": '{"name": "cli", "bin": "cli.js"}',
+            "packages/server/package.json": '{"name": "server", "main": "dist/main.js"}',
+            "packages/old/package.json": '{"name": "old", "main": "index.js", "files": ["lib"]}',
+        },
+    )
+    assert _demoted(
+        tmp_path,
+        "typescript",
+        "packages/lib/src/esm/util.ts",
+        "packages/site/src/a.ts",
+        "packages/cli/src/b.ts",
+        "src/c.ts",
+        "packages/server/src/app.ts",
+        "packages/old/lib/d.js",
+    ) == [True, False, False, False, False, True]

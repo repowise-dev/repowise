@@ -1,8 +1,9 @@
 """Per-file base and head scores for a change, read off both in-memory passes.
 
 The passes see only the changed files' bytes, with no git history or coverage,
-so each score is the code-shape reading, ``10 - structure`` (``structure_only``,
-as ``counts="code_shape"`` reads the index): comparable side to side.
+so each score is ``10 - structure`` over those bytes: comparable side to side.
+It is not the index's ``counts="code_shape"`` score, whose structure half also
+holds coverage markers and clones with files outside the change.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 from ..health import HealthFileMetricData
 from ..health.counts import code_shape_score
 
+#: Name kept for compatibility: code shape of the changed bytes, no coverage.
 SCORE_BASIS = "structure_only"
 
 

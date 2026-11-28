@@ -6,6 +6,8 @@ from ..languages.receiver_types import (
     RangeClause,
     RangeScan,
     clauses_in_span,
+    external_type_name,
+    go_named_container,
     range_element_types,
     scan_ranges,
     types_in_span,
@@ -19,13 +21,19 @@ from ._shared import _SOURCE_CACHE_FILES, _TYPE_KINDS, _store_capped
 def _is_its_own_container(type_name: str | None, spelling: str | None, language: str) -> bool:
     """Whether *type_name*, a name's value type, is just the head of its container.
 
-    Dart types ``List<Repo> repos`` as a ``List`` value as well as a container
-    of ``Repo``; the two agree, so the container still answers. Go types a
-    slice as no value at all, so for it any value type is a conflict.
+    Dart and C# type ``List<Repo> repos`` as a ``List`` value as well as a
+    container of ``Repo``; the two agree, so the container still answers. Go
+    types a slice as no value at all, so for it any value type is a conflict.
     """
-    if language != "dart" or type_name is None or spelling is None:
+    if language == "go" or type_name is None or spelling is None:
         return False
-    return strip_type_arguments(spelling).strip() == type_name
+    # A marked builtin (``external:Item[]``) is still the spelling it marks:
+    # compare its spelling, brackets stripped like the container side.
+    marked = external_type_name(type_name)
+    if marked is not None:
+        type_name = strip_type_arguments(marked).strip()
+    # A C# generic value type carries its arity: ``List`1``.
+    return strip_type_arguments(spelling).strip() == type_name.partition("`")[0]
 
 
 class RangeVariableTypes:
@@ -37,6 +45,7 @@ class RangeVariableTypes:
         language: str,
         span: tuple[int, int],
         types: dict[str, str | None],
+        caller_id: str,
     ) -> None:
         """Add each ``range`` variable in one body to *types*, the body's own.
 
@@ -55,8 +64,10 @@ class RangeVariableTypes:
         declared = frozenset(types)
         for clause in clauses:
             spelling, written_in = self._ranged_container(
-                file_path, language, clause, types, containers
+                file_path, language, clause, types, containers, caller_id
             )
+            if language == "go":
+                spelling, written_in = self._go_underlying_container(spelling, written_in)
             external = self._externally_bound_names(written_in)
             elements = range_element_types(spelling, language, external) or (None, None)
             for name, type_name in zip((clause.key, clause.value), elements, strict=True):
@@ -70,6 +81,7 @@ class RangeVariableTypes:
         clause: RangeClause,
         types: dict[str, str | None],
         containers: dict[str, str | None],
+        caller_id: str,
     ) -> tuple[str | None, str]:
         """How the container one range clause walks is spelled, and in which file.
 
@@ -78,10 +90,22 @@ class RangeVariableTypes:
         typed as a value. ``h.field`` and ``h.Method()`` are read off the one
         class ``h``'s type names: the field's declaration, or the method's
         declared return type. Ceiling: a method declared in another file of
-        the class's package is not found, which costs the edge.
+        the class's package is not found, which costs the edge. A C# bare
+        name the body never binds, or ``this.name``, is a field or property of
+        the caller's class.
         """
+        field = (
+            self._csharp_field_walked(file_path, caller_id, clause, {**types, **containers})
+            if language == "csharp"
+            else None
+        )
+        if field is not None:
+            return self._caller_field_container(file_path, caller_id, language, field)
         if not clause.member:
             spelling = containers.get(clause.head)
+            if language == "go" and spelling is None and clause.head not in containers:
+                # A Go value of a named type, which may name a container.
+                return types.get(clause.head), file_path
             if clause.head in types and not _is_its_own_container(
                 types[clause.head], spelling, language
             ):
@@ -98,7 +122,64 @@ class RangeVariableTypes:
             spelling = None if symbol is None else declared_return_type(symbol.signature or "")
             return spelling, class_file
         fields = self._container_fields_in(class_file, language).get(class_id, {})
+        if language == "go" and clause.member not in fields:
+            # A field of a named type, which may name a container.
+            fields = self._field_types_in(class_file, language).get(class_id, {})
         return fields.get(clause.member), class_file
+
+    def _go_underlying_container(
+        self, spelling: str | None, written_in: str
+    ) -> tuple[str | None, str]:
+        """The container a Go named type stands for, and the file that spells it.
+
+        ``engine.trees`` is a ``methodTrees``; ``type methodTrees []methodTree``
+        makes ranging over it yield a ``methodTree``. An unqualified type name
+        is declared in its own package, which in Go is the directory: the one
+        type of that name there answers, read off its declaration line
+        (``languages.receiver_types.go_named_container``). Any other spelling,
+        two types of the name, or a declaration that is no container shape
+        keeps *spelling* as it was, which yields nothing.
+        """
+        if not spelling or not spelling.isidentifier():
+            return spelling, written_in
+        package = written_in.rpartition("/")[0]
+        declared = [
+            symbol
+            for sym_id in self._global_symbols.get(spelling, ())
+            if (symbol := self._symbols_by_id.get(sym_id)) is not None
+            and (symbol.kind == "type_alias" or symbol.kind in _TYPE_KINDS)
+            and (path := self._symbol_paths_by_id.get(sym_id)) is not None
+            and path.rpartition("/")[0] == package
+            and symbol_id_language(self._parsed_files, sym_id) == "go"
+        ]
+        if len(declared) != 1 or declared[0].kind != "type_alias":
+            return spelling, written_in
+        alias = declared[0]
+        alias_file = self._symbol_paths_by_id[alias.id]
+        lines = self._text_of(alias_file).splitlines()
+        if not 0 < alias.start_line <= len(lines):
+            return spelling, written_in
+        underlying = go_named_container(lines[alias.start_line - 1], spelling)
+        return (underlying, alias_file) if underlying else (spelling, written_in)
+
+    def _csharp_field_walked(
+        self,
+        file_path: str,
+        caller_id: str,
+        clause: RangeClause,
+        declared: dict[str, str | None],
+    ) -> str | None:
+        """The caller class's field a C# clause walks: ``this.name``, or a name the body never binds.
+
+        *declared* is every name the body types, as a value or as a container.
+        """
+        if clause.head == "this":
+            return None if clause.call else clause.member
+        if clause.member or clause.head in declared:
+            return None
+        if self._body_binds(file_path, caller_id, "csharp", clause.head):
+            return None
+        return clause.head
 
     def _range_class(self, file_path: str, type_name: str, language: str) -> str | None:
         """The id of the one class *type_name* names, seen from *file_path*.

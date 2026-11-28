@@ -5,9 +5,12 @@ import {
   affectedSummary,
   agentHandoffCall,
   boundaryLabel,
+  causeStandingText,
   facetValueLabel,
+  fixStrategyLabel,
   humanizeToken,
   moduleScopeLabel,
+  observationsText,
   opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
@@ -48,6 +51,30 @@ describe("performance presentation", () => {
       expect(title.length, marker).toBeGreaterThan(0);
       expect(title[0], marker).toBe(title[0]!.toUpperCase());
     }
+  });
+
+  it("titles a measured hotspot by what found it, not as a static cause", () => {
+    const hotspot = opportunity({
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "pkg/coverage_map.py::_decode_lines",
+    });
+    expect(opportunityTitle(hotspot)).toBe(
+      "Measured hotspot with no static cause in _decode_lines",
+    );
+    expect(whyRankedPhrase({ factor: "measured_rank", value: 1, points: 3 })).toBe(
+      "place 1 in its measured run",
+    );
+    expect(fixStrategyLabel("reduce_measured_self_time")).toBe(
+      "Find and cut the work the run measured",
+    );
+  });
+
+  it("counts a measured hotspot's run, never zero observations", () => {
+    const hotspot = opportunity({ biomarker_type: "measured_hotspot", observations_total: 0 });
+    expect(observationsText(hotspot)).toBe("measured run");
+    expect(observationsText(opportunity({ observations_total: 1 }))).toBe("1 observation");
+    expect(observationsText(opportunity({ observations_total: 1234 }))).toBe("1,234 observations");
   });
 
   it("names an absent boundary rather than leaving it blank", () => {
@@ -96,6 +123,13 @@ describe("performance presentation", () => {
     expect(facetValueLabel("confidence", "high")).toBe("High");
     expect(facetValueLabel("plan_state", "no_safe_plan")).toBe("No safe plan");
     expect(facetValueLabel("boundary", "none")).toBe("In-process");
+  });
+
+  it("names a proven cost as known or measured, and a static cost never as measured", () => {
+    expect(facetValueLabel("proof", "proven")).toBe("Loop size known or measured");
+    expect(facetValueLabel("proof", "unproven")).toBe("Unproven: loop size unknown");
+    expect(facetValueLabel("static_cost", "size_unknown")).toBe("Unknown in the code");
+    expect(facetValueLabel("static_cost", "grows_with_data")).toBe("Grows with the data");
   });
 
   it("separates a plan that exists from one that needs a refresh and from none", () => {
@@ -165,5 +199,22 @@ describe("module scope", () => {
     expect(opportunityTitle(top)).toBe("Database call inside a loop in module scope of jobs.py");
     expect(opportunityEvidenceLine(top)).toBe("module scope of src/jobs.py");
   });
-});
 
+  it("phrases a row's secondary facts as sentences from the server's values", () => {
+    const text = causeStandingText(
+      opportunity({
+        actionability_state: "advisory",
+        actionability_reason: "strategy_requires_validation",
+        plan_status: "no_safe_plan",
+        plan_id: null,
+        plan_reason: "No stored plan addresses this cause",
+        confidence: "medium",
+      }),
+    );
+    expect(text).toBe(
+      "Advisory: Strategy requires validation. No safe plan: No stored plan addresses this cause. The call path resolved with medium confidence.",
+    );
+    // A reason that already ends a sentence is not given a second stop.
+    expect(causeStandingText(opportunity({ plan_reason: "Stored." }))).toContain("Stored plan: Stored. ");
+  });
+});

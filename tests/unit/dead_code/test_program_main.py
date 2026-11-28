@@ -126,5 +126,13 @@ def test_defines_main_reads_the_name_and_the_launcher_shape():
     assert kotlin(kind="function", signature="function main()")
     assert kotlin(kind="method", parent_name="Obj", decorators=["@JvmStatic"])
     assert not kotlin(kind="method", parent_name="K", decorators=[])
-    # Only JVM files.
+    def csharp(**sym) -> bool:
+        return defines_main(_graph("P.cs", {"kind": "method", "name": "Main", **sym}), "P.cs")
+
+    assert csharp(modifiers=("static",))
+    assert csharp(modifiers=("private", "static", "async"))
+    assert not csharp(modifiers=())
+    assert not csharp(modifiers=None)
+    assert not csharp(name="main", modifiers=("static",))
+    # Only JVM and C# files.
     assert not defines_main(_graph("m.py", {"kind": "function", "name": "main"}), "m.py")

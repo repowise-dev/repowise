@@ -60,7 +60,7 @@ async def test_one_invocation_produces_exactly_one_event(repo: Path) -> None:
     assert event["operation"] == "get_context"
     assert event["result_state"] == "success"
     assert event["is_usable"] == 1
-    assert event["estimator"] == "chars_per_token_floor_v1"
+    assert event["estimator"] == "chars_per_token_floor_v3"
     assert event["token_unit"] == "estimated_tokens"
     assert event["schema_version"] == 1
 
@@ -215,10 +215,25 @@ async def test_attribution_is_unknown_without_an_announced_client(repo: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_a_repository_without_a_sidecar_records_nothing(
+async def test_an_indexed_repository_without_a_sidecar_records_its_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An absent sidecar is an opt-out, and a tool call must still succeed."""
+    """A repo indexed before the sidecar existed creates it on its first call."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
+
+    async def get_overview() -> dict:
+        return {"summary": "x", "_meta": {}}
+
+    await tool_middleware(get_overview)()
+    assert len(_events(tmp_path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_directory_without_repowise_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``.repowise/`` is an opt-out, and a tool call must still succeed."""
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
 
     async def get_overview() -> dict:
@@ -297,6 +312,50 @@ async def test_the_raw_size_is_observed_before_anything_is_shed(repo: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_metadata_the_lean_pass_trims_is_not_a_drop(repo: Path) -> None:
+    """A reply the budget never cut drops nothing.
+
+    The raw size used to be taken before the trust envelope and the lean pass,
+    so the debug ``_meta`` and empty fields they remove counted as a measured
+    saving on every call, an empty reply included.
+    """
+
+    async def search_codebase(query: str) -> dict:
+        return {
+            "results": [],
+            "note": None,
+            "card": {"context": "", "lineage": []},
+            "_meta": {"timing_ms": 12.5, "index_age_days": 3, "completeness": {"shown": 0}},
+        }
+
+    await tool_middleware(search_codebase)("nothing")
+
+    event = _events(repo)[0]
+    assert event["pre_budget_input_tokens"] == event["delivered_input_tokens"]
+    assert event["dropped_input_tokens"] == 0
+    assert event["saved_input_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_cut_is_still_measured_in_the_delivered_shape(repo: Path) -> None:
+    async def get_context(targets: list[str]) -> dict:
+        return {
+            "targets": {targets[0]: {"skeleton": {"tokens": 200, "full_tokens": 4000}}},
+            "filler": ["y" * 400 for _ in range(60)],
+            "_meta": {"timing_ms": 12.5, "index_age_days": 3},
+        }
+
+    await tool_middleware(get_context)(["a.py"])
+
+    event = _events(repo)[0]
+    # 60 x 400 chars of filler is about 6,000 tokens; most of it was shed.
+    assert event["dropped_input_tokens"] > 4_000
+    assert event["dropped_input_tokens"] == (
+        event["pre_budget_input_tokens"] - event["delivered_input_tokens"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_truncated_response_links_its_recovery_reference(repo: Path) -> None:
     """The event points at what was dropped, and dropping it is not optional.
 
@@ -356,7 +415,7 @@ async def test_a_budget_truncated_response_is_partial_not_a_plain_success(
         }
 
     out = await tool_middleware(get_context)(["a.py"])
-    assert out["_meta"]["state"]["truncated"], "expected the budgeter to have shed content"
+    assert out["_meta"]["omitted"], "expected the budgeter to have shed content"
 
     event = _events(repo)[0]
     assert event["result_state"] == "partial"
@@ -389,3 +448,106 @@ async def test_the_minted_event_id_reaches_the_row(repo: Path) -> None:
         savings_event._record = original  # type: ignore[assignment]
 
     assert _events(repo)[0]["event_id"] == seen[0]
+
+
+def test_the_raw_size_is_shaped_on_a_copy() -> None:
+    from repowise.server.mcp_server._meta import lean_response
+    from repowise.server.mcp_server._savings import event as savings_event
+
+    raw = {"results": ["a"], "_meta": {"timing_ms": 12.5}}
+    shaped = savings_event.raw_response_tokens(raw, shape=lean_response)
+
+    assert raw == {"results": ["a"], "_meta": {"timing_ms": 12.5}}
+    assert shaped < savings_event.raw_response_tokens(raw)
+
+
+@pytest.mark.asyncio
+async def test_an_unpriced_call_starts_a_background_price_warm(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The call records unpriced at once; the warm prices the calls after it."""
+    from repowise.core.savings import pricing
+
+    pricing.clear_pricing_cache()
+    warmed: list[str] = []
+    monkeypatch.setattr(pricing, "warm_pricing_snapshot", lambda root: warmed.append(str(root)))
+
+    async def get_overview() -> dict:
+        return {"summary": "x", "_meta": {}}
+
+    await tool_middleware(get_overview)()
+    assert warmed == [str(repo)]
+    assert _events(repo)[0]["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_host_builds_the_payload_record_writes(repo: Path, monkeypatch) -> None:
+    """``event_payload`` is the event ``record`` writes, so a host can store it itself."""
+    from repowise.core.savings import recorder
+    from repowise.server.mcp_server._savings import event as savings_event
+
+    written: list[tuple[object, dict]] = []
+    built: list[dict] = []
+    original = savings_event._record
+
+    def capture(interaction, result):  # type: ignore[no-untyped-def]
+        built.append(
+            savings_event.event_payload(interaction, result, scope=str(interaction.repo_root))
+        )
+        return original(interaction, result)
+
+    monkeypatch.setattr(savings_event, "_record", capture)
+    monkeypatch.setattr(recorder, "record_event", lambda root, p: written.append((root, p)) or True)
+
+    async def get_context(targets: list[str], compact: bool = True) -> dict:
+        return {
+            "targets": {targets[0]: {"skeleton": {"tokens": 200, "full_tokens": 4000}}},
+            "_meta": {"timing_ms": 1.0},
+        }
+
+    await tool_middleware(get_context)(["a.py"])
+
+    assert len(written) == 1 and len(built) == 1
+    root, payload = written[0]
+    assert root == str(repo)
+    host = built[0]
+    # Stamped per build; every other field is the same event.
+    assert host.pop("occurred_at") and payload.pop("occurred_at")
+    assert host == payload
+    assert payload["estimator"] == savings_event.ESTIMATOR
+    assert payload["token_unit"] == savings_event.TOKEN_UNIT
+
+
+def test_the_public_event_names_are_the_engine_s_own() -> None:
+    from repowise.server.mcp_server._savings import event as savings_event
+    from repowise.server.mcp_server._savings.interaction import Interaction
+
+    assert savings_event._outcome is savings_event.result_state
+    assert savings_event._ESTIMATOR == savings_event.ESTIMATOR == "chars_per_token_floor_v3"
+    assert savings_event._TOKEN_UNIT == savings_event.TOKEN_UNIT == "estimated_tokens"
+    assert savings_event.result_state({"error": "x"}) == ("error", False)
+    assert savings_event.result_state({"_meta": {"omitted": {"refs": []}, "truncated": 1}}) == (
+        "partial",
+        True,
+    )
+
+    interaction = Interaction(event_id="e1", tool="get_why", agent="claude-code")
+    payload = savings_event.event_payload(
+        interaction, {"answer": "x"}, scope="repo-42", delivered_input_tokens=17
+    )
+    assert payload["delivered_input_tokens"] == 17
+    assert payload["result_state"] == "success"
+    assert "model" not in payload and payload["metadata"] is None
+
+
+def test_a_host_names_the_session_its_avoided_files_are_keyed_by(monkeypatch) -> None:
+    from repowise.server.mcp_server._savings import event as savings_event
+    from repowise.server.mcp_server._savings.interaction import Interaction
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "server-env")
+    interaction = Interaction(event_id="e1", tool="get_why", session_id="conn")
+    build = savings_event.event_payload
+    assert build(interaction, {}, scope="r")["host_session_id"] == "server-env"
+    assert build(interaction, {}, scope="r", host_session_id="caller")["host_session_id"] == (
+        "caller"
+    )

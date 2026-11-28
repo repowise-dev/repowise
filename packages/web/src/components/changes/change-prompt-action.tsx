@@ -9,20 +9,13 @@ import {
   changePromptFixes,
   type ChangePromptInput,
 } from "@repowise-dev/ui/health";
-
-/**
- * Reveal rule for a per-row prompt: hidden at rest, shown on row hover, focus
- * within the row, and where there is no hover. Rows carry `group/row`.
- */
-// Follow-up: replace the quiet branch with L-nav's RowPromptAction (ghost
-// variant) and the modal with L-perf's useAiPromptAction once both merge.
-const ROW_REVEAL =
-  "opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100";
+import { RowPromptAction } from "@repowise-dev/ui/health/row-prompt-action";
 
 /**
  * A change prompt: the shared button and dialog in their own client boundary,
- * so the page around them stays server-rendered. The filled button is the
- * page's one primary action; `quiet` is the per-file row action.
+ * so the page around them stays server-rendered. The outlined button is the
+ * page's one primary action; `quiet` is the per-file row action, revealed on
+ * row hover or focus like every other row prompt.
  */
 export function ChangePromptAction({
   change,
@@ -44,12 +37,11 @@ export function ChangePromptAction({
     : t(fixing ? "promptActionFix" : "promptAction");
   return (
     <>
-      <AiPromptButton
-        label={label}
-        variant={quiet ? "icon" : "default"}
-        className={quiet ? ROW_REVEAL : undefined}
-        onClick={() => setOpen(true)}
-      />
+      {quiet ? (
+        <RowPromptAction variant="icon" label={label} onClick={() => setOpen(true)} />
+      ) : (
+        <AiPromptButton label={label} onClick={() => setOpen(true)} />
+      )}
       <AiPromptModal
         open={open}
         onOpenChange={setOpen}

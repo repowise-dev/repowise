@@ -7,6 +7,16 @@ import { isNavItemActive, type NavGroup, type NavItem } from "./nav-items";
 
 const STORAGE_KEY = "repowise:nav:collapsed-groups";
 
+/**
+ * Nav row states, shared by the desktop sidebar and the mobile sheet. The
+ * selected row is a neutral wash with ink text and no orange: orange is kept
+ * for links, focus, "New" marks and the brand.
+ */
+export const NAV_ROW_ACTIVE =
+  "bg-[var(--color-bg-selected)] font-medium text-[var(--color-text-primary)]";
+export const NAV_ROW_IDLE =
+  "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]";
+
 const GROUP_LABEL =
   "flex w-full items-center gap-1 px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]";
 

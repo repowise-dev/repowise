@@ -7,10 +7,12 @@ import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 
 import { bulkAgentPromptLabel } from "../ai-prompt-action";
 import { AiPromptButton } from "../ai-prompt-button";
+import { hairlineCardClass } from "../../shared/hairline-card";
 import type { PerformanceViewAdapter } from "./adapter";
 import type { PerformanceAreaGroup } from "./grouping";
 import { ACTIONABILITY_LABEL } from "./presentation";
 import { OpportunityList, QUIET_LINK_CLS, type RowCallbacks } from "./queue";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The queue grouped by area: one card per directory, the area with the most
@@ -38,7 +40,7 @@ const FETCHING_CARDS = 8;
 function countsLine(group: PerformanceAreaGroup): string {
   const parts = (["plan_ready", "advisory", "investigate", "expected"] as const)
     .filter((state) => group.counts[state] > 0)
-    .map((state) => `${group.counts[state].toLocaleString()} ${ACTIONABILITY_LABEL[state].toLowerCase()}`);
+    .map((state) => `${formatNumber(group.counts[state])} ${ACTIONABILITY_LABEL[state].toLowerCase()}`);
   return parts.join(" · ");
 }
 
@@ -132,29 +134,34 @@ const AreaCard = memo(function AreaCard({
   return (
     <section
       aria-label={`${label}, ${group.total} causes`}
-      className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
+      className={hairlineCardClass("group")}
     >
       <header className="flex flex-col items-start gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-3">
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded text-left sm:w-auto sm:flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded text-left sm:w-auto sm:flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <ChevronRight
             aria-hidden="true"
             className={`h-4 w-4 shrink-0 text-[var(--color-text-tertiary)] transition-transform ${open ? "rotate-90" : ""}`}
           />
-          <span className="min-w-0 font-mono text-sm font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
+          <span className="min-w-0 font-mono text-sm font-medium text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
             {label}
           </span>
-          <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">
+          <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
             {countsLine(group)}
           </span>
         </button>
+        {/* Ghost: the tab has no scope-level prompt, so no card claims the
+            one filled prompt; the drawer holds it for a single cause. */}
         <AiPromptButton
+          variant="ghost"
           label={bulkAgentPromptLabel(rows.length)}
+          ariaLabel={`${bulkAgentPromptLabel(rows.length)} in ${label}`}
           onClick={() => onAreaPrompt(group.area, rows, rows.length < group.total)}
+          className="-mr-2 whitespace-nowrap"
         />
       </header>
       {open ? (
@@ -172,7 +179,7 @@ const AreaCard = memo(function AreaCard({
               onClick={() => onOpenArea(group.area)}
               className={`${QUIET_LINK_CLS} mt-2 px-1 text-xs`}
             >
-              Show all {group.total.toLocaleString()} in {label}
+              Show all {formatNumber(group.total)} in {label}
             </button>
           ) : null}
         </div>

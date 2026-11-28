@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -32,7 +35,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/assertions.php::AssertionsTest::testManyAsserts",
@@ -54,7 +58,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/assertions.php::AssertionsTest::testFewAsserts",
@@ -76,7 +81,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [
@@ -96,6 +102,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -103,12 +110,16 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [
       "AssertionsTest"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -118,11 +129,13 @@
         "line": 7,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 162,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -133,11 +146,13 @@
         "line": 8,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 204,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -148,11 +163,13 @@
         "line": 9,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 244,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -163,11 +180,13 @@
         "line": 10,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 285,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -178,11 +197,13 @@
         "line": 11,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 324,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -193,11 +214,13 @@
         "line": 16,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 445,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -208,11 +231,13 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 523,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -231,7 +256,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/classes.php": {
     "file_info": {
@@ -243,7 +270,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -266,7 +296,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::CohesiveClass::total",
@@ -288,7 +319,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::CohesiveClass::add",
@@ -310,7 +342,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::CohesiveClass::getTotal",
@@ -332,7 +365,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::CohesiveClass::reset",
@@ -354,7 +388,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::CohesiveClass::helper",
@@ -376,7 +411,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::SplitClass",
@@ -398,7 +434,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::SplitClass::alpha",
@@ -420,7 +457,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::SplitClass::beta",
@@ -442,7 +480,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::SplitClass::stepAlpha",
@@ -464,7 +503,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::SplitClass::getAlpha",
@@ -486,7 +526,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::SplitClass::stepBeta",
@@ -508,7 +549,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::SplitClass::getBeta",
@@ -530,7 +572,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::LoggableTrait",
@@ -552,7 +595,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::LoggableTrait::prefix",
@@ -574,7 +618,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::LoggableTrait::log",
@@ -596,7 +641,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::LoggableTrait::setPrefix",
@@ -618,7 +664,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::WorkerInterface",
@@ -640,7 +687,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::WorkerInterface::performWork",
@@ -662,7 +710,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/classes.php::Priority",
@@ -684,7 +733,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -695,6 +745,7 @@
       "WorkerInterface",
       "Priority"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -704,11 +755,13 @@
         "line": 17,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 352,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -720,7 +773,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/clean.php": {
     "file_info": {
@@ -732,7 +787,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -755,7 +813,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/clean.php::sum",
@@ -777,7 +836,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -785,6 +845,7 @@
       "greet",
       "sum"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -794,7 +855,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/nested.php": {
     "file_info": {
@@ -806,7 +869,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -829,7 +895,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/nested.php::many_branches",
@@ -851,7 +918,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/nested.php::wordy",
@@ -873,7 +941,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/nested.php::shallow",
@@ -895,7 +964,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/nested.php::lambda_and_arrow",
@@ -917,7 +987,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/nested.php::match_and_switch",
@@ -939,7 +1010,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/nested.php::try_catch_finally",
@@ -961,7 +1033,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/php/nested.php::loops_galore",
@@ -983,7 +1056,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -997,6 +1071,7 @@
       "try_catch_finally",
       "loops_galore"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1006,11 +1081,30 @@
         "line": 48,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 852,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "array_map",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/php/nested.php::lambda_and_arrow",
+        "line": 48,
+        "argument_count": 2,
+        "receiver_call": null,
+        "start_byte": 870,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1021,11 +1115,13 @@
         "line": 75,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1352,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1036,11 +1132,13 @@
         "line": 77,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1431,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1051,11 +1149,13 @@
         "line": 80,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 1542,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1066,11 +1166,13 @@
         "line": 82,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 1614,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -1082,6 +1184,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

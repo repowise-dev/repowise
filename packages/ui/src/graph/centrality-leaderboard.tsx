@@ -91,7 +91,7 @@ export function CentralityLeaderboard({
                 <button
                   type="button"
                   aria-label="What do these metrics mean?"
-                  className="inline-flex shrink-0 items-center rounded-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="inline-flex shrink-0 items-center rounded-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   <Info className="h-3 w-3" aria-hidden />
                 </button>
@@ -132,7 +132,7 @@ export function CentralityLeaderboard({
                 className={cn(
                   "flex-1 px-2 py-1.5 transition-colors",
                   metric === m
-                    ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                    ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                     : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
                 )}
               >
@@ -164,7 +164,7 @@ export function CentralityLeaderboard({
                       <NodeLabel nodeId={n.node_id} label={n.label} />
                       <div className="mt-0.5 h-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
                         <div
-                          className="h-full bg-[var(--color-accent-primary)]"
+                          className="h-full bg-[var(--color-progress-fill)]"
                           style={{ width: `${pct.toFixed(1)}%` }}
                         />
                       </div>

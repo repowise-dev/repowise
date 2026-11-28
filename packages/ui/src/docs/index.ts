@@ -5,3 +5,4 @@ export * from "./reader-persona";
 export * from "./docs-reader";
 export * from "./docs-header";
 export * from "./docs-page-actions";
+export * from "./docs-more-menu";

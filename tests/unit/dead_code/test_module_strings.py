@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData
 from repowise.core.analysis.dead_code.module_strings import drop_named_modules
@@ -182,3 +184,115 @@ def test_python_that_does_not_decode_falls_back_to_the_whole_file():
     settings = b'# -*- coding: utf-8 -*-\nB = "hc.accounts.backends.EmailBackend"\nX = "\xff"\n'
     source = {"hc/settings.py": settings, _BACKENDS: _BACKENDS_SRC}
     assert _kept(_backend_findings(), source) == {(_BACKENDS, "helper")}
+
+
+_PAIR_MODULE = "pkg/_graph_utils.py"
+_PAIR_SOURCE = b"def build_ctx(x):\n    return {'ctx': x}\n\ndef helper(): ...\n"
+_PAIR_LOADER = b"""import importlib
+_LAZY_ATTRS = {"_build_ctx": ("_graph_utils", "build_ctx")}
+def __getattr__(name):
+    module_name, attr = _LAZY_ATTRS[name]
+    return getattr(importlib.import_module(f"{__name__}.{module_name}"), attr)
+"""
+
+
+@pytest.mark.parametrize("marker", [
+    b"def __getattr__(name): ...\n",
+    b"async def __getattr__(name): ...\n",
+    b"if enabled:\n    def __getattr__(name): ...\n",
+    b"import_module(name)\n",
+])
+@pytest.mark.parametrize("pair", [
+    b'("_graph_utils", "build_ctx")',
+    b'(\n "_graph_utils", # module\n "build_ctx",\n)',
+])
+def test_loader_pair_names_only_the_defined_member(marker, pair):
+    findings = [_finding(DeadCodeKind.UNUSED_EXPORT, _PAIR_MODULE, name)
+                for name in ("build_ctx", "helper")]
+    source = {"pkg/__init__.py": marker + b"TABLE = {\"alias\": " + pair + b"}\n",
+              _PAIR_MODULE: _PAIR_SOURCE}
+    assert _kept(findings, source) == {(_PAIR_MODULE, "helper")}
+
+
+@pytest.mark.parametrize("pair", [
+    b'("_graph_utils", "missing")',
+    b'("_graph_utils", "build_ctx", "extra")',
+    b'("_graph_utils", "build_" "ctx")',
+    b'["_graph_utils", "build_ctx"]',
+    b'call("_graph_utils", "build_ctx")',
+    b'callbacks[0]("_graph_utils", "build_ctx")',
+    b'"""("_graph_utils", "build_ctx")"""',
+    b'# ("_graph_utils", "build_ctx")',
+])
+def test_invalid_or_nonexecuting_pairs_do_not_name_an_export(pair):
+    findings = [_finding(DeadCodeKind.UNUSED_EXPORT, _PAIR_MODULE, "build_ctx")]
+    source = {"pkg/__init__.py": b"def __getattr__(name): ...\n" + pair + b"\n",
+              _PAIR_MODULE: _PAIR_SOURCE}
+    assert _kept(findings, source) == {(_PAIR_MODULE, "build_ctx")}
+
+
+@pytest.mark.parametrize("path", ["pkg/table.py", "pkg/tests/test_loader.py"])
+def test_nonloader_or_test_pairs_do_not_name_an_export(path):
+    findings = [_finding(DeadCodeKind.UNUSED_EXPORT, _PAIR_MODULE, "build_ctx")]
+    blob = _PAIR_LOADER if "tests/" in path else b'TABLE = ("pkg._graph_utils", "build_ctx")\n'
+    assert _kept(findings, {path: blob, _PAIR_MODULE: _PAIR_SOURCE}) == {
+        (_PAIR_MODULE, "build_ctx")
+    }
+
+
+@pytest.mark.parametrize("table", [
+    b'{"_build_ctx": ("_graph_utils", "build_ctx")}',
+    b'dict([("_build_ctx", ("_graph_utils", "build_ctx"))])',
+])
+def test_renamed_lazy_reexport_with_the_real_graph_builder(tmp_path, table):
+    from repowise.core.pipeline.incremental import build_repo_graph
+
+    source = {
+        "pkg/__init__.py": _PAIR_LOADER.replace(
+            b'{"_build_ctx": ("_graph_utils", "build_ctx")}', table
+        ),
+        _PAIR_MODULE: _PAIR_SOURCE,
+        "app/main.py": b"from pkg import _build_ctx\n\ndef run():\n    return _build_ctx(1)\n\n"
+                       b"if __name__ == '__main__':\n    run()\n",
+    }
+    for path, blob in source.items():
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+    _, sources, builder, _, _ = build_repo_graph(
+        tmp_path, [], collect_sources=True, read_only=True
+    )
+    report = DeadCodeAnalyzer(
+        builder.graph(), {}, parsed_files=builder._parsed_files,
+        source_map=sources, repo_root=tmp_path
+    ).analyze(None)
+    unused = {(f.file_path, f.symbol_name) for f in report.findings
+              if f.kind is DeadCodeKind.UNUSED_EXPORT}
+    assert (_PAIR_MODULE, "helper") in unused
+    assert (_PAIR_MODULE, "build_ctx") not in unused
+
+
+def test_pair_cannot_reach_a_bare_module_outside_the_loader_directory():
+    other = "other/_graph_utils.py"
+    findings = [_finding(DeadCodeKind.UNUSED_EXPORT, other, "build_ctx")]
+    assert _kept(findings, {"pkg/__init__.py": _PAIR_LOADER, other: _PAIR_SOURCE}) == {
+        (other, "build_ctx")
+    }
+
+
+@pytest.mark.parametrize("marker", [
+    b'LABEL = "__getattr__"\n',
+    b'def import_module(name): ...\n',
+    b'class import_module(object): ...\n',
+    b'class Proxy:\n    def __getattr__(self, name): ...\n',
+    b'def factory():\n    def __getattr__(name): ...\n',
+    b'class Proxy:\n    async def __getattr__(self, name): ...\n',
+])
+def test_a_loader_marker_that_is_not_a_dynamic_load_does_not_enable_pairing(marker):
+    finding = _finding(DeadCodeKind.UNUSED_EXPORT, _PAIR_MODULE, "build_ctx")
+    source = {
+        "pkg/__init__.py": marker + b'TABLE = ("_graph_utils", "build_ctx")\n',
+        _PAIR_MODULE: _PAIR_SOURCE,
+    }
+    assert drop_named_modules([finding], source, ()) == [finding]
+    assert not finding.safe_to_delete

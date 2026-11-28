@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page
-from repowise.server.mcp_server._page_paths import PAGELESS_FILE, pageless_path
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE, in_scope, pageless_path
 
 _log = logging.getLogger("repowise.mcp.answer")
 
@@ -49,13 +49,18 @@ def _hit_meta(hit: dict, meta_by_id: dict[str, dict[str, str]]) -> dict[str, str
     return meta
 
 
+def drop_out_of_scope(hits: list[dict], scope: str | None) -> list[dict]:
+    """*hits* without the ones whose file is outside ``scope``; pathless hits stay."""
+    return [h for h in hits if not h.get("target_path") or in_scope(h["target_path"], scope)]
+
+
 def _apply_meta(hit: dict, meta: dict[str, str], scope: str | None) -> bool:
     """Copy *meta* onto *hit*; False when the hit is tombstoned or out of scope."""
     # Tombstoned pages describe deleted or renamed files.
     if meta.get("freshness") == "tombstone":
         return False
     target_path = meta.get("target_path", "")
-    if scope and target_path and not target_path.startswith(scope):
+    if target_path and not in_scope(target_path, scope):
         return False
     hit["target_path"] = target_path
     hit["summary"] = meta.get("summary", "")

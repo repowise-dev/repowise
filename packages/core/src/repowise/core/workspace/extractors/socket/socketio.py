@@ -23,6 +23,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..calls import call_chain, call_sites, file_strings
 from ..langs import JS_TS
 from ..strings import Arg, call_arguments, match_paren
@@ -146,11 +148,10 @@ _DEFAULT_NAMESPACE_RE = re.compile(r"(?<![\w$.])io\s*\.\s*(?:on|emit|to|in)\s*\(
 class SocketIoDialect:
     name = "socket.io"
     extensions = JS_TS
+    requires = _SOCKET_IO
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if not any(r in content for r in _SOCKET_IO):
-            return []
         strings = file_strings(ctx)
         if strings is None:
             return []
@@ -186,7 +187,7 @@ class SocketIoDialect:
                         role=_VERBS[verb],
                         transport=_TRANSPORT,
                         label=f"{recv}.{verb}",
-                        confidence=0.75,
+                        origin=ContractOrigin.CLIENT_CALL,
                         offset=offset,
                     )
                     for event in events
@@ -254,7 +255,6 @@ WEBSOCKETS = SocketDialect(
             label="new WebSocket",
             extensions=JS_TS,
             name=_FIRST,
-            confidence=0.75,
             requires=("WebSocket",),
         ),
     ),

@@ -25,9 +25,10 @@ from typing import Any, Literal, get_args
 from repowise.core.code_origin import path_origin
 from repowise.core.ingestion.framework_routes import flask_routes, next_app_router_file
 from repowise.core.ingestion.models import REGISTRATION_HINT
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import is_test_path
 
-from .execution_graph import ExecutionGraphIndex, file_of_symbol
+from .execution_graph import ExecutionGraphIndex
 
 ExecutionRole = Literal[
     "request",
@@ -52,6 +53,11 @@ user's own machine (a browser, desktop or terminal UI)."""
 
 _HOT: tuple[ExecutionRole, ...] = ("request", "event_consumer", "scheduled_job")
 _SEEDED: tuple[ExecutionRole, ...] = (*_HOT, "startup", "cli")
+
+ENTRY_ROLES = frozenset(_HOT)
+"""Roles a hot walk spreads from a handler, consumer or job seed: a function
+holding one counts as reached from an entry point, on the same evidence the
+queue ranks the role on. Startup and CLI stay out: a cold role never leads."""
 _SEEDED_LANGUAGES = frozenset({"python", "typescript", "javascript"})
 _TS_JS = frozenset({"typescript", "javascript"})
 _CALLABLE_KINDS = frozenset({"function", "method"})
@@ -494,6 +500,7 @@ def hottest_role(roles: Iterable[str | None]) -> ExecutionRole:
 
 __all__ = [
     "COLD_ROLES",
+    "ENTRY_ROLES",
     "EXECUTION_ROLES",
     "LEADING_ROLES",
     "ExecutionRole",

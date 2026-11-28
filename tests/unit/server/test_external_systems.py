@@ -833,3 +833,38 @@ async def test_usage_lists_import_sites_with_line_and_reachability(
     assert bare.json()["summary"]["files"] == 1
     missing = await client.get("/api/repos/nope/external-systems/fastapi/usage")
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_advisories_say_whether_a_document_was_imported(
+    client: AsyncClient, app, tmp_path
+) -> None:
+    from repowise.core.inventory.advisories import Advisory, PackageAdvisories
+    from repowise.core.persistence.crud.package_advisories import replace_package_advisories
+
+    repo = await create_test_repo(client, tmp_path)
+    url = f"/api/repos/{repo['id']}/external-systems/pypi:fastapi/advisories"
+    never = await client.get(url)
+    assert never.status_code == 200, never.text
+    assert never.json() == {"imported": False, "advisories": []}
+
+    async with get_session(app.state.session_factory) as session:
+        await replace_package_advisories(
+            session,
+            repo["id"],
+            [
+                PackageAdvisories(
+                    "pypi", "fastapi", ("0.1.0",), (Advisory("GHSA-x", severity="high"),)
+                )
+            ],
+            format="osv",
+            sha256=None,
+            source="osv.json",
+        )
+    data = (await client.get(url)).json()
+    assert data["imported"] is True
+    (row,) = data["advisories"]
+    # Declared nowhere, imported nowhere, may be transitive: unknown, never buried.
+    assert (row["id"], row["tier"], row["severity"]) == ("GHSA-x", "unknown", "high")
+    other = await client.get(f"/api/repos/{repo['id']}/external-systems/pypi:flask/advisories")
+    assert other.json() == {"imported": True, "advisories": []}

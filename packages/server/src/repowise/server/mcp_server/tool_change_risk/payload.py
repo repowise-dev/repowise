@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.analysis.change_risk.render import LIMITS, size_text
+from repowise.core.analysis.change_risk.render import size_text
+from repowise.core.analysis.review_directive import review_order
+from repowise.core.owned_paths import OWNED_PATTERNS
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
@@ -31,10 +33,12 @@ _SHED_ORDER = response_budget_shed_order("get_change_risk")
 
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
 #: ``diagnostics`` carries the raw model mechanics; ``findings`` lifts the
-#: top-findings cap. Both are projections, recoverable by an exact call.
+#: top-findings cap and lists the changed symbols. Both are projections,
+#: recoverable by an exact call.
 #: ``evidence`` adds the change's evidence checklist, the record ``repowise
-#: changes show`` and the REST change detail serve.
-_INCLUDE_BLOCKS = frozenset({"scales", "diagnostics", "findings", "evidence"})
+#: changes show`` and the REST change detail serve. ``tests`` adds why each
+#: listed test runs and the evidence that decided each changed file.
+_INCLUDE_BLOCKS = frozenset({"scales", "diagnostics", "findings", "evidence", "tests"})
 
 #: Score mechanics that are identical or near-identical on every call, behind
 #: ``include=["diagnostics"]`` so the action-first blocks lead. ``score`` and
@@ -104,8 +108,12 @@ def _shape_payload(result: Any, include_set: set[str], revspec: str | None) -> t
         payload["fix_history"].pop("density", None)
     else:
         diagnostics = {}
-    # Fields that only repeat the request or say nothing: an empty exclude list,
-    # a working-tree flag after an explicit revspec, a false ``is_fix``.
+    # Fields that only repeat the request or say nothing: an exclude list of
+    # repowise's own output alone, a working-tree flag after an explicit
+    # revspec, a false ``is_fix``.
+    payload["exclude_patterns"] = [
+        p for p in payload["exclude_patterns"] if p not in OWNED_PATTERNS
+    ]
     if not payload["exclude_patterns"]:
         del payload["exclude_patterns"]
     if revspec is not None:
@@ -119,20 +127,25 @@ def _attach_health(
     payload: dict, delta: Any, revspec: str | None, *, expand: bool, diagnostics: bool = False
 ) -> None:
     """Put the directive first and the compact delta second."""
-    block = _health_delta_block(delta, revspec=revspec)
+    block = _health_delta_block(delta, revspec=revspec, full=diagnostics)
     if not diagnostics:
         for key in _HEALTH_DIAGNOSTIC_FIELDS:
             block.pop(key, None)
     if expand:
-        from repowise.server.mcp_server._change_health import finding_row
+        from repowise.server.mcp_server._change_health import changed_symbol_rows, finding_row
 
-        block["top_findings"] = [finding_row(f, revspec) for f in delta.findings]
+        block["top_findings"] = [
+            finding_row(f, revspec, inspect=True) for f in review_order(delta.findings)
+        ]
         block["findings_emitted"] = len(delta.findings)
         block.pop("findings_reduced_reason", None)
         block.pop("all_findings_via", None)
+        block.update(changed_symbol_rows(delta))
     directive = _directive(delta, payload.get("impacted_tests"))
     if action := _patch_coverage_action(payload.get("patch_coverage")):
         directive["next_actions"].append(action)
+    if payload.get("patch_coverage") and not diagnostics:
+        payload["patch_coverage"] = _compact_patch_coverage(payload["patch_coverage"])
     ordered = {
         "directive": directive,
         "health_delta": block,
@@ -143,21 +156,71 @@ def _attach_health(
     payload.update(ordered)
 
 
+def _gated(block: dict) -> bool:
+    """Whether any coverage gate was set for this change, so the block is a verdict."""
+    nested = (block.get("risky") or {}, block.get("branches") or {})
+    return (
+        block.get("gate") not in (None, "not_set")
+        or bool(block.get("path_gates"))
+        or any(part.get("gate") not in (None, "not_set") for part in nested)
+    )
+
+
+def _compact_patch_coverage(block: dict) -> dict:
+    """The block as status, freshness and counts when no current gate reads it.
+
+    Ungated or stale coverage has no verdict to give, so the gate fields read
+    null or ``not_set`` and every unmeasured file reads zero; what is left is
+    whether anything was measured, how fresh it is, and the measured files.
+    ``include=["diagnostics"]`` keeps the whole block.
+    """
+    scope = block.get("scope") or {}
+    freshness = scope.get("freshness")
+    gated = _gated(block)
+    if gated and freshness == "current":
+        return block
+    counts = {status: n for status, n in (block.get("file_counts") or {}).items() if n}
+    out: dict = {
+        "status": "measured" if counts.get("measured") else "not_measured",
+        "freshness": freshness,
+    }
+    if counts.get("measured"):
+        for key in ("patch_coverage_pct", "covered_line_count", "coverable_line_count", "files"):
+            out[key] = block.get(key)
+    if counts:
+        out["file_counts"] = counts
+    if gated:
+        # A configured gate's verdict (often no_data on stale coverage) stays visible.
+        out["gate"] = block.get("gate")
+        if block.get("path_gates"):
+            out["path_gates"] = block["path_gates"]
+    if (block.get("branches") or {}).get("partial_line_count"):
+        out["branches"] = block["branches"]
+    if errors := scope.get("config_errors"):
+        out["config_errors"] = errors
+    return out
+
+
 def _diff_shape_sentence(payload: dict, diagnostics: dict) -> str:
-    """One line for what the diff-shape rank says, and what it does not."""
+    """One line for what the diff-shape rank says; its limits are in the tool docstring."""
     tail = " Mechanics: get_change_risk(include=['diagnostics'])." if diagnostics else ""
-    return f"{size_text(payload.get('risk_percentile'))}. {LIMITS}{tail}"
+    return f"{size_text(payload.get('risk_percentile'))}.{tail}"
 
 
 def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None) -> dict:
     """Expand one ephemeral change finding, or say why it is not there."""
     match = next((f for f in delta.findings if f.change_finding_id == finding_id), None)
     if match is None:
-        return {
-            "error": f"No change finding {finding_id!r} in {payload.get('ref', 'this change')}.",
-            "hint": "Ids are scoped to one comparison; re-run without finding_id to list them.",
-            "available": [f.change_finding_id for f in delta.findings[:10]],
-        }
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "not_found",
+            {
+                "error": f"No change finding {finding_id!r} in {payload.get('ref', 'this change')}.",
+                "hint": "Ids are scoped to one comparison; re-run without finding_id to list them.",
+                "available": [f.change_finding_id for f in review_order(delta.findings)[:10]],
+            },
+        )
     return {
         "finding": _finding_detail(match, revspec),
         "ref": payload.get("ref"),

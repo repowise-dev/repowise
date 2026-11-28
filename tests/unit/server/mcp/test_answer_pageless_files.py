@@ -97,7 +97,7 @@ async def test_keyed_synthesis_reads_the_pageless_file(pageless_mcp, monkeypatch
 
     async def _capture(provider, system_prompt, user_prompt, **kwargs):
         prompts.append(user_prompt)
-        return f"It is resolved in {_TS_TARGET}.", None
+        return f"It is resolved in {_TS_TARGET}.", None, None
 
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _p: _Provider())
     monkeypatch.setattr(answer_mod, "synthesize", _capture)
@@ -122,10 +122,10 @@ def _pages_only(monkeypatch) -> None:
     symbol_search = _answer_pipeline._safe_symbol_search
     name_search = _answer_pipeline._safe_filename_search
 
-    async def symbols_paged_only(ctx, q, *, pageless=False):
+    async def symbols_paged_only(ctx, q, *, pageless=False, scope=None):
         return await symbol_search(ctx, q)
 
-    async def names_paged_only(ctx, q):
+    async def names_paged_only(ctx, q, scope=None):
         return [(r, full) for r, full in await name_search(ctx, q) if r.page_type != "file"]
 
     monkeypatch.setattr(_answer_pipeline, "_safe_symbol_search", symbols_paged_only)

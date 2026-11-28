@@ -245,6 +245,99 @@ async def test_graph_candidates_are_not_capped(async_session) -> None:
     assert set(_pairs(out, "src/hub.py")) == tests
 
 
+async def test_a_package_init_reaching_the_change_reaches_every_module_under_it(
+    async_session,
+) -> None:
+    """Importing ``pkg.a.leaf`` runs ``pkg/__init__.py`` and ``pkg/a/__init__.py`` first."""
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/test_leaf.py", "tests/test_other.py", "tests/test_core.py"},
+        files={"pkg/__init__.py", "pkg/a/__init__.py", "pkg/a/leaf.py", "pkg/core.py", "other/x.py"},
+        imports=[
+            ("pkg/__init__.py", "pkg/core.py"),
+            ("tests/test_leaf.py", "pkg/a/leaf.py"),
+            ("tests/test_other.py", "other/x.py"),
+            ("tests/test_core.py", "pkg/core.py"),
+        ],
+    )
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"pkg/core.py": {1}}, set(), out)
+
+    assert _pairs(out, "pkg/core.py") == {
+        "tests/test_core.py": "import-graph",
+        "tests/test_leaf.py": "package-init",
+    }
+
+
+async def test_a_python_type_checking_import_is_no_route_but_a_typescript_one_is(
+    async_session,
+) -> None:
+    """``if TYPE_CHECKING:`` never runs; ts-jest compiles ``import type`` with the test."""
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/test_leaf.py", "tests/test_core.py", "web/a.test.ts"},
+        files={"pkg/__init__.py", "pkg/a/leaf.py", "pkg/core.py", "web/types.ts"},
+        imports=[("tests/test_leaf.py", "pkg/a/leaf.py"), ("tests/test_core.py", "pkg/core.py")],
+    )
+    await _add_edge(async_session, repo.id, "pkg/__init__.py", "pkg/core.py", "imports", type_only=True)
+    await _add_edge(async_session, repo.id, "web/a.test.ts", "web/types.ts", "imports", type_only=True)
+
+    out = _empty_result(2)
+    await _resolve_impacted(
+        async_session, repo.id, {"pkg/core.py": {1}, "web/types.ts": {1}}, set(), out
+    )
+
+    assert _pairs(out, "pkg/core.py") == {"tests/test_core.py": "import-graph"}
+    assert _pairs(out, "web/types.ts") == {"web/a.test.ts": "import-graph"}
+
+
+async def _lazy_package(session, repo_id, init_to_mid: dict, mid_to_core: dict) -> None:
+    """``pkg/__init__.py`` -> ``pkg/mid.py`` -> ``pkg/core.py`` with the given edge flags."""
+    await _graph(
+        session,
+        repo_id,
+        tests={"tests/test_leaf.py", "tests/test_pkg.py", "tests/test_far.py"},
+        files={"pkg/__init__.py", "pkg/a/leaf.py", "pkg/mid.py", "pkg/core.py", "app/caller.py"},
+        imports=[
+            ("tests/test_leaf.py", "pkg/a/leaf.py"),
+            ("tests/test_pkg.py", "pkg/__init__.py"),
+            ("tests/test_far.py", "app/caller.py"),
+        ],
+    )
+    await _add_edge(session, repo_id, "pkg/__init__.py", "pkg/mid.py", "imports", **init_to_mid)
+    await _add_edge(session, repo_id, "pkg/mid.py", "pkg/core.py", "imports", **mid_to_core)
+    await _add_edge(session, repo_id, "app/caller.py", "pkg/a/leaf.py", "imports", deferred=True)
+
+
+@pytest.mark.parametrize(
+    ("init_to_mid", "mid_to_core"),
+    [({}, {}), ({"deferred": True}, {}), ({}, {"deferred": True})],
+    ids=["eager", "lazy-in-init", "lazy-below-init"],
+)
+async def test_a_lazy_import_still_carries_a_package_edge(
+    async_session, init_to_mid, mid_to_core
+) -> None:
+    """Unlike a ``TYPE_CHECKING`` import, a lazy one runs: ``__init__.py`` may call
+    the function holding it at import time, or a test may reach a lazy
+    ``__getattr__`` through ``pkg.name`` after importing only a submodule."""
+    repo = await insert_repo(async_session)
+    await _lazy_package(async_session, repo.id, init_to_mid, mid_to_core)
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"pkg/core.py": {1}}, set(), out)
+
+    assert _pairs(out, "pkg/core.py") == {
+        "tests/test_pkg.py": "import-graph",
+        "tests/test_leaf.py": "package-init",
+        "tests/test_far.py": "package-init",
+    }
+
+
 async def test_a_file_level_lookup_also_asks_the_graph(async_session) -> None:
     """Matched by file (a deleted file, a stale map), coverage alone is not enough."""
     repo = await _seed(async_session)
@@ -323,6 +416,29 @@ async def test_data_files_are_not_routes_and_helper_importers_are_reported(
         "tests/test_a.py": "import-graph",
     }
     assert out["helper_importers"]["tests/helpers.py"] == ["tests/test_a.py"]
+    # Imported, so not read for; with no reader the selection keeps today's answer.
+    assert out["helper_readers"] == {}
+
+
+async def test_a_helper_no_test_imports_lists_the_test_code_naming_it(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/e2e/tools/client.py", "tests/test_a.py", "tests/test_b.py"},
+        files={"src/a.py"},
+        imports=[("tests/e2e/tools/client.py", "src/a.py"), ("tests/test_a.py", "src/a.py")],
+    )
+    files = {
+        "tests/e2e/tools/client.py": "import a",
+        "tests/test_a.py": "import a",
+        "tests/test_b.py": 'RUN = ["python", "tests/e2e/tools/client.py"]',
+    }
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session, repo.id, {"src/a.py": {1}}, set(), out, read_source=files.get
+    )
+    assert out["helper_readers"] == {"tests/e2e/tools/client.py": ["tests/test_b.py"]}
 
 
 _CONFTEST = '''
@@ -396,6 +512,38 @@ async def test_a_conftest_reached_through_its_imports_runs_only_the_tests_it_can
 
     assert _pairs(out, "src/app/util.py") == {"tests/test_a.py": "conftest-fixture"}
     assert any("only through its imports" in n for n in out["conftest_notes"])
+
+
+@pytest.mark.parametrize(
+    ("plugins", "narrowed"),
+    [
+        ('pytest_plugins = ("pytest_aiohttp.plugin", "pytester")\n', True),
+        ('pytest_plugins = ["pytester", "app.store"]\n', False),
+    ],
+)
+async def test_a_conftest_loading_only_installed_plugins_is_still_narrowed(
+    async_session, plugins, narrowed
+) -> None:
+    """A plugin no indexed file can be leaves the conftest's fixtures readable."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/app/util.py": None},
+        set(),
+        out,
+        pytest_texts={"tests/conftest.py": _CONFTEST + plugins},
+    )
+
+    picks = _pairs(out, "src/app/util.py")
+    if narrowed:
+        assert picks == {"tests/test_a.py": "conftest-fixture"}
+    else:
+        assert "tests/conftest.py" in picks
+        assert any("loads pytest plugins" in n for n in out["conftest_notes"])
 
 
 async def test_an_index_without_stamped_fixture_requests_keeps_every_test(async_session) -> None:
@@ -497,7 +645,58 @@ async def test_an_autouse_fixture_calling_a_function_reaches_only_what_the_funct
     if narrowed:
         assert picks == {"tests/test_a.py": "conftest-import-check"}
     else:
-        assert "tests/conftest.py" in picks
+        # A behavioural route keeps every test, each labelled as the conftest's broadcast.
+        assert picks == {
+            "tests/conftest.py": "import-graph",
+            **dict.fromkeys(
+                ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"], "conftest-broadcast"
+            ),
+        }
+
+
+@pytest.mark.parametrize("where", ["top", "fixture"])
+async def test_an_autouse_fixture_reading_a_re_exported_constant_runs_one_import_check(
+    async_session, where: str
+) -> None:
+    """``store`` re-exports ``NAMES`` from ``names``, which the change is not in."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    imports, body = "from app.store import NAMES", "assert list(NAMES)"
+    if where == "fixture":
+        imports, body = "", f"{imports}\n    {body}"
+    source = f"import pytest\n{imports}\n\n\n@pytest.fixture(autouse=True)\ndef _n():\n    {body}\n"
+    files = {
+        "src/app/store.py": "from app import util\nfrom app.names import NAMES as NAMES\n",
+        "src/app/names.py": "NAMES = ('a', 'b')\n",
+    }
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/app/util.py": None},
+        set(),
+        out,
+        pytest_texts={"tests/conftest.py": source},
+        read_source=files.get,
+    )
+
+    assert _pairs(out, "src/app/util.py") == {"tests/test_a.py": "conftest-import-check"}
+
+
+async def test_a_conftest_route_that_cannot_be_judged_keeps_every_test(async_session) -> None:
+    """No text for the conftest: unknown runs more, never fewer."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session, repo.id, {"src/app/util.py": None}, set(), out, pytest_texts={}
+    )
+
+    picks = _pairs(out, "src/app/util.py")
+    assert {"tests/test_a.py", "tests/test_b.py", "tests/test_c.py"} <= set(picks)
+    assert any("tests/conftest.py could not be read" in n for n in out["conftest_notes"])
 
 
 async def _add_edge(session, repo_id, source, target, edge_type, hint=None, **flags) -> None:
@@ -529,24 +728,55 @@ async def _narrowed(session, repo_id) -> dict[str, str]:
     return out
 
 
-async def test_a_request_the_index_cannot_record_keeps_every_test(async_session) -> None:
+async def _hide_requests(session, *tests: str) -> None:
+    """Stamp *tests*' conftest edges as asking for fixtures in a way no edge records."""
     from sqlalchemy import update
 
     from repowise.core.persistence.models import GraphEdge
 
-    repo = await insert_repo(async_session)
-    await _conftest_graph(async_session, repo.id, stamped=True)
-    await async_session.execute(
+    await session.execute(
         update(GraphEdge)
-        .where(GraphEdge.source_node_id == "tests/test_b.py")
+        .where(GraphEdge.source_node_id.in_(tests), GraphEdge.edge_type == "framework")
         .values(hint_source="pytest_conftest_unrecorded")
     )
-    await async_session.commit()
+    await session.commit()
+
+
+async def test_a_request_the_index_cannot_record_selects_only_the_file_making_it(
+    async_session,
+) -> None:
+    """``test_b`` may ask for ``db`` unseen; ``test_c``'s requests are all recorded."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    await _hide_requests(async_session, "tests/test_b.py")
 
     out = await _narrowed(async_session, repo.id)
 
-    assert "tests/conftest.py" in _pairs(out, "src/app/util.py")
-    assert any("tests/test_b.py asks for fixtures" in n for n in out["conftest_notes"])
+    assert _pairs(out, "src/app/util.py") == {
+        "tests/test_a.py": "conftest-fixture",
+        "tests/test_b.py": "conftest-fixture",
+    }
+    assert any(
+        "and tests/test_b.py asking for fixtures in a way the index cannot record" in n
+        for n in out["conftest_notes"]
+    )
+
+
+async def test_requests_hidden_everywhere_select_every_test_under_the_conftest(
+    async_session,
+) -> None:
+    """A helper asking for fixtures stamps every conftest edge: every test is a user."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    await _hide_requests(async_session, "tests/test_a.py", "tests/test_b.py", "tests/test_c.py")
+
+    out = await _narrowed(async_session, repo.id)
+
+    assert set(_pairs(out, "src/app/util.py")) == {
+        "tests/test_a.py",
+        "tests/test_b.py",
+        "tests/test_c.py",
+    }
 
 
 async def test_an_unresolved_conftest_import_keeps_every_test(async_session) -> None:
@@ -637,12 +867,22 @@ async def test_a_reaching_fixture_nobody_requests_selects_only_the_import_check(
 
 
 async def test_narrow_scopes_resolves_a_reached_conftest_as_the_selection_does(
-    async_session, tmp_path
+    async_session, tmp_path, monkeypatch
 ) -> None:
-    """A few-hop walk that stopped at the conftest gets the test that can break."""
+    """A few-hop walk that stopped at the conftest gets the test that can break.
+
+    It reads only the candidates, so it never pays for the helper scan, which
+    reads every test file.
+    """
     import subprocess
 
+    from repowise.core.analysis import test_collection
     from repowise.core.analysis.test_collection import narrow_scopes
+
+    def _scanned(*_args, **_kwargs):
+        raise AssertionError("narrow_scopes scanned for helper readers")
+
+    monkeypatch.setattr(test_collection, "_unimported_helper_readers", _scanned)
 
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests/conftest.py").write_text(_CONFTEST, encoding="utf-8")
@@ -782,3 +1022,258 @@ async def test_an_index_that_never_judged_its_jvm_tests_asks_for_an_update(async
         f"The index has not checked 2 test file(s) for reaching code outside their imports "
         f"(e.g. {_BOOT_TEST}); run `repowise update`."
     )
+
+
+async def test_an_abandoned_selection_stops_between_graph_walks(async_session) -> None:
+    """A selection its caller gave up on stops walking, and is not filed as a graph error.
+
+    The tier walks are most of a wide change's selection. A selection past its
+    budget that kept walking held the interpreter against every block the
+    reply still waited on.
+    """
+    from repowise.core.analysis.test_collection import SelectionCancelledError
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = await insert_repo(async_session)
+    for path, is_test in (("tests/test_round_trips.py", True), ("src/bar.py", False)):
+        async_session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="tests/test_round_trips.py",
+            target_node_id="src/bar.py",
+            edge_type="imports",
+        )
+    )
+    await async_session.commit()
+
+    out = _empty_result(1)
+    with pytest.raises(SelectionCancelledError):
+        await _resolve_impacted(
+            async_session, repo.id, {"src/bar.py": {5}}, _REPO_KEYS, out, cancelled=lambda: True
+        )
+    assert out["graph_error"] is None
+
+
+def _functions(path: str, start: int, end: int):
+    from repowise.core.analysis.function_hunks import Body, FileFunctions
+
+    return {path: FileFunctions(path, (Body(start, end, ("f",), (True,)),))}
+
+
+async def _seed_with_importer(async_session):
+    """``src/foo.py`` covered by ``test_a``; ``tests/test_wide.py`` only imports it."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = await _seed(async_session)
+    for path, is_test in (("tests/test_wide.py", True), ("src/foo.py", False)):
+        async_session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="tests/test_wide.py",
+            target_node_id="src/foo.py",
+            edge_type="imports",
+        )
+    )
+    await async_session.commit()
+    return repo
+
+
+async def test_a_change_inside_covered_functions_is_answered_by_their_tests(async_session) -> None:
+    """The whole body is looked up; selection reads which tests the map measured."""
+    repo = await _seed_with_importer(async_session)
+    out = _empty_result(1)
+    # Line 5 is covered by no test, but the function body (1-4) is, by test_a.
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/foo.py": {5}},
+        _REPO_KEYS,
+        out,
+        functions=_functions("src/foo.py", 1, 5),
+    )
+    assert set(out["covered"]) == {"tests/test_foo.py::test_a|run"}
+    assert out["function_covered"] == ["src/foo.py"]
+    assert out["measured_test_files"] == ["tests/test_foo.py"]
+    assert out["unknown"] == []
+
+
+async def test_a_change_inside_an_uncovered_function_asks_the_graph(async_session) -> None:
+    repo = await _seed_with_importer(async_session)
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/foo.py": {20}},
+        _REPO_KEYS,
+        out,
+        functions=_functions("src/foo.py", 20, 22),
+    )
+    assert out["covered"] == {}
+    assert out["function_covered"] == []
+    assert out["measured_test_files"] == []
+    assert out["inferred"] == [
+        {"source_file": "src/foo.py", "test_file": "tests/test_wide.py", "via": "import-graph"}
+    ]
+
+
+def _git(cwd, *args: str) -> str:
+    import subprocess
+
+    done = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return done.stdout.strip()
+
+
+async def test_a_map_measured_before_the_base_matches_by_moved_line(
+    async_session, tmp_path
+) -> None:
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.test_collection import collect
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    src = tmp_path / "src"
+    src.mkdir()
+    ten = [f"v{i} = {i}\n" for i in range(1, 11)]
+
+    def commit(lines: list[str], message: str) -> str:
+        (src / "foo.py").write_text("".join(lines), encoding="utf-8")
+        _git(tmp_path, "add", "-A")
+        _git(tmp_path, "commit", "-qm", message)
+        return _git(tmp_path, "rev-parse", "HEAD")
+
+    measured = commit(ten, "map")
+    base = ["top = 0\n"] * 3 + ten  # the map's line 8 is the base's line 11
+    commit(base, "shift")
+    commit([*base[:10], "v8 = 80\n", *base[11:]], "change")
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+
+    repo = await insert_repo(async_session)
+    await save_test_coverage(
+        async_session,
+        repo.id,
+        [
+            _rec("tests/test_foo.py::test_a|run", "src/foo.py", [1, 2, 3], "tests/test_foo.py"),
+            _rec("tests/test_foo.py::test_b|run", "src/foo.py", [8, 9], "tests/test_foo.py"),
+        ],
+        source_format="coverage.py",
+        ingested_commit_sha=measured,
+    )
+    await async_session.commit()
+
+    out = await collect(async_session, repo.id, str(tmp_path), change)
+    assert not out["map_current"]
+    assert set(out["covered"]) == {"tests/test_foo.py::test_b|run"}
+    assert out["matched_by_file"] == []
+
+
+async def test_a_module_level_change_is_answered_by_the_tests_reading_its_names(
+    async_session, tmp_path
+) -> None:
+    """A constant's new value reaches the tests running code that reads it, not every importer."""
+    import json
+
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.test_collection import collect
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    files = {
+        "src/settings.py": "LIMIT = 3\nNAMES = ('a',)\n\n\ndef helper():\n    return LIMIT\n",
+        "src/user.py": "from src.settings import LIMIT\n\n\ndef use():\n    return LIMIT\n",
+        "src/other.py": "from src.settings import NAMES\n\n\ndef names():\n    return NAMES\n",
+        "tests/test_user.py": "from src.user import use\n",
+        "tests/test_other.py": "from src.other import names\n",
+        "tests/test_settings.py": "from src.settings import helper\n",
+        # A guard reading the source as text, through a helper that walks it.
+        "tests/_tree.py": (
+            "from pathlib import Path\n\n"
+            'SRC = Path(__file__).resolve().parents[1] / "src"\n\n\n'
+            "def sources():\n"
+            '    return {p.name: p.read_text() for p in SRC.rglob("*.py")}\n'
+        ),
+        "tests/test_guard.py": "from src.other import names\nfrom tests._tree import sources\n",
+    }
+    for path, text in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text, encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    (tmp_path / "src/settings.py").write_text(
+        files["src/settings.py"].replace("LIMIT = 3", "LIMIT = 4"), encoding="utf-8"
+    )
+    _git(tmp_path, "commit", "-qam", "change")
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+
+    repo = await insert_repo(async_session)
+    await save_test_coverage(
+        async_session,
+        repo.id,
+        [
+            _rec("tests/test_settings.py::t|run", "src/settings.py", [6], "tests/test_settings.py"),
+            _rec("tests/test_user.py::t|run", "src/user.py", [5], "tests/test_user.py"),
+            _rec("tests/test_other.py::t|run", "src/other.py", [5], "tests/test_other.py"),
+            _rec("tests/test_guard.py::t|run", "src/other.py", [5], "tests/test_guard.py"),
+        ],
+        source_format="coverage.py",
+        ingested_commit_sha=base,
+    )
+    for path in files:
+        async_session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id=path,
+                node_type="file",
+                is_test=path.startswith("tests/test_"),
+            )
+        )
+    for source, target, names in (
+        ("src/user.py", "src/settings.py", ["LIMIT"]),
+        ("src/other.py", "src/settings.py", ["NAMES"]),
+        ("tests/test_settings.py", "src/settings.py", ["helper"]),
+        ("tests/test_user.py", "src/user.py", ["use"]),
+        ("tests/test_other.py", "src/other.py", ["names"]),
+        ("tests/test_guard.py", "src/other.py", ["names"]),
+        ("tests/test_guard.py", "tests/_tree.py", ["sources"]),
+    ):
+        async_session.add(
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=source,
+                target_node_id=target,
+                edge_type="imports",
+                imported_names_json=json.dumps(names),
+            )
+        )
+    await async_session.commit()
+
+    out = await collect(async_session, repo.id, str(tmp_path), change)
+    assert out["map_current"]
+    assert out["function_covered"] == []
+    assert out["module_covered"] == {
+        "src/settings.py": ["tests/test_settings.py", "tests/test_user.py"]
+    }
+    # test_guard runs no code reading LIMIT, but reads the source as text through
+    # its helper, so the map does not speak for it and it is never left out.
+    assert out["measured_test_files"] == [
+        "tests/test_other.py",
+        "tests/test_settings.py",
+        "tests/test_user.py",
+    ]
+
+    # A module-level call in the change is not a binding: the graph keeps its answer.
+    (tmp_path / "src/settings.py").write_text(
+        files["src/settings.py"].replace("LIMIT = 3", "LIMIT = 4\nprint(LIMIT)"), encoding="utf-8"
+    )
+    _git(tmp_path, "commit", "-qam", "call")
+    called = change_set(str(tmp_path), f"{base}..HEAD")
+    assert (await collect(async_session, repo.id, str(tmp_path), called))["module_covered"] == {}

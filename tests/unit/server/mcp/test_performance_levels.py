@@ -39,6 +39,7 @@ def _row(repo_id: str, caller: str, line: int) -> HealthFinding:
                 "resolution_basis": "call-site",
                 "loop_magnitude": "grows_with_data",
                 "dataflow_verified": True,
+                "execution_role": "request",
             }
         ),
         health_impact=0.0,
@@ -88,14 +89,24 @@ async def _lead_id(get_health) -> str:
 
 
 @pytest.mark.asyncio
-async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materialized):
+async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materialized, factory):
     """Performance carries no defect impact, so it used to lead nowhere.
 
-    Fix first ranks the intervention beside the code-shape work, with the call
-    that opens its plan.
+    Fix first ranks a plan-ready intervention beside the code-shape work, with
+    the call that opens its plan; an advisory one stays in the performance queue.
     """
+    from sqlalchemy import update
+
+    from repowise.core.persistence.crud.analysis.fix_first import clear_fix_first_cache
+    from repowise.core.persistence.models import PerformanceOpportunity
     from repowise.server.mcp_server import get_health
 
+    advisory = await get_health()
+    assert not [i for i in advisory["fix_first"]["items"] if i["kind"] == "perf_fix"]
+    async with factory() as s:
+        await s.execute(update(PerformanceOpportunity).values(actionability_state="plan_ready"))
+        await s.commit()
+    clear_fix_first_cache()
     result = await get_health()
     assert "performance_directive" not in result
     perf = [i for i in result["fix_first"]["items"] if i["kind"] == "perf_fix"]

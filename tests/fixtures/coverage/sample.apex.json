@@ -1,0 +1,95 @@
+{
+  "status": 100,
+  "result": {
+    "summary": {
+      "outcome": "Failed",
+      "testsRan": 3,
+      "passing": 2,
+      "failing": 1,
+      "skipped": 0,
+      "passRate": "67%",
+      "failRate": "33%",
+      "testStartTime": "2026-10-20T09:41:58.000Z",
+      "testExecutionTime": "2609 ms",
+      "testTotalTime": "2609 ms",
+      "commandTime": "366 ms",
+      "hostname": "https://example.my.salesforce.com",
+      "orgId": "00D000000000001AAA",
+      "username": "ci@example.com",
+      "testRunId": "7070000000ABCDE",
+      "userId": "005000000000001AAA",
+      "testRunCoverage": "73%",
+      "orgWideCoverage": "69%"
+    },
+    "tests": [
+      {
+        "Id": "07M000000000001AAA",
+        "QueueItemId": "709000000000001AAA",
+        "StackTrace": null,
+        "Message": null,
+        "AsyncApexJobId": "7070000000ABCDEAAA",
+        "MethodName": "testInsertsAccount",
+        "Outcome": "Pass",
+        "ApexClass": {"Id": "01p000000000003AAA", "Name": "AccountTriggerHandler_Tests", "NamespacePrefix": null},
+        "RunTime": 246,
+        "FullName": "AccountTriggerHandler_Tests.testInsertsAccount"
+      }
+    ],
+    "coverage": {
+      "coverage": [
+        {
+          "id": "01p000000000001AAA",
+          "name": "AccountTriggerHandler",
+          "totalLines": 6,
+          "lines": {"4": 1, "5": 1, "8": 1, "9": 0, "12": 1, "13": 0},
+          "totalCovered": 4,
+          "coveredPercent": 67
+        },
+        {
+          "id": "01q000000000001AAA",
+          "name": "AccountTrigger",
+          "totalLines": 2,
+          "lines": {"2": 1, "3": 1},
+          "totalCovered": 2,
+          "coveredPercent": 100
+        },
+        {
+          "id": "01p000000000002AAA",
+          "name": "IAccountService",
+          "totalLines": 0,
+          "lines": {},
+          "totalCovered": 0,
+          "coveredPercent": 0
+        }
+      ],
+      "records": [
+        {
+          "ApexTestClass": {"Id": "01p000000000003AAA", "Name": "AccountTriggerHandler_Tests"},
+          "Coverage": {"coveredLines": [4, 5, 8], "uncoveredLines": [9, 12, 13]},
+          "TestMethodName": "testInsertsAccount",
+          "NumLinesCovered": 3,
+          "ApexClassOrTrigger": {"Id": "01p000000000001AAA", "Name": "AccountTriggerHandler"},
+          "NumLinesUncovered": 3
+        },
+        {
+          "ApexTestClass": {"Id": "01p000000000003AAA", "Name": "AccountTriggerHandler_Tests"},
+          "Coverage": {"coveredLines": [2, 3], "uncoveredLines": []},
+          "TestMethodName": "testInsertsAccount",
+          "NumLinesCovered": 2,
+          "ApexClassOrTrigger": {"Id": "01q000000000001AAA", "Name": "AccountTrigger"},
+          "NumLinesUncovered": 0
+        },
+        {
+          "ApexTestClass": {"Id": "01p000000000003AAA", "Name": "AccountTriggerHandler_Tests"},
+          "Coverage": {"coveredLines": [], "uncoveredLines": [4, 5, 8, 9, 12, 13]},
+          "TestMethodName": "testFailsUpdate",
+          "NumLinesCovered": 0,
+          "ApexClassOrTrigger": {"Id": "01p000000000001AAA", "Name": "AccountTriggerHandler"},
+          "NumLinesUncovered": 6
+        }
+      ],
+      "summary": {"totalLines": 8, "coveredLines": 6, "orgWideCoverage": "69%", "testRunCoverage": "73%"}
+    }
+  },
+  "warnings": []
+}

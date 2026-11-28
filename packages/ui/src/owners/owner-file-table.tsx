@@ -2,7 +2,8 @@ import * as React from "react";
 import type { OwnerFileEntry } from "@repowise-dev/types/owners";
 import { EmptyState } from "../shared/empty-state";
 import { PathText } from "../shared/path-text";
-import { formatRelativeTimeOrNull } from "../lib/format";
+import { formatNumber } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 import { isSingleOwner } from "./knowledge-files";
 import type { OwnershipLabels } from "./labels";
 
@@ -98,7 +99,6 @@ export function OwnerFileTable({
               f.primary_owner_commit_pct != null
                 ? `${Math.round(f.primary_owner_commit_pct * 100)}%`
                 : "—";
-            const touched = formatRelativeTimeOrNull(f.last_commit_at) ?? "—";
             return (
               <tr
                 key={f.file_path}
@@ -121,15 +121,21 @@ export function OwnerFileTable({
                   {/* The four figures as one line, below `sm` only. Reads as a
                       sentence rather than as a table row that lost its header. */}
                   <span className="mt-1 hidden text-[11.5px] tabular-nums text-[var(--color-text-tertiary)] max-sm:block">
-                    {labels.fileMeta(f.commit_count_90d, Math.round(f.churn_percentile), ownPct, touched)}
+                    <RelativeTime
+                      date={f.last_commit_at}
+                      template={labels.fileMeta(f.commit_count_90d, Math.round(f.churn_percentile), ownPct, "{time}")}
+                      fallback={labels.fileMeta(f.commit_count_90d, Math.round(f.churn_percentile), ownPct, "—")}
+                    />
                   </span>
                 </td>
-                <td className={numCls}>{f.commit_count_90d.toLocaleString()}</td>
+                <td className={numCls}>{formatNumber(f.commit_count_90d)}</td>
                 <td className={`${numCls} text-[var(--color-text-tertiary)]`}>
                   {Math.round(f.churn_percentile)}
                 </td>
                 <td className={`${numCls} text-[var(--color-text-tertiary)]`}>{ownPct}</td>
-                <td className={`${numCls} text-[var(--color-text-tertiary)]`}>{touched}</td>
+                <td className={`${numCls} text-[var(--color-text-tertiary)]`}>
+                  <RelativeTime date={f.last_commit_at} fallback="—" />
+                </td>
               </tr>
             );
           })}

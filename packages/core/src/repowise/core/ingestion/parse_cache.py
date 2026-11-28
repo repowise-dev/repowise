@@ -119,6 +119,13 @@ class ParseCache:
         self._fingerprint = parser_fingerprint()
         self._entries: dict[tuple[str, str], bytes] = {}
         self._fresh: dict[tuple[str, str], bytes] = {}
+        # Parses made without their grammar: never served as hits (the grammar
+        # may load next run), but kept so the next run knows the file and
+        # can tell an unchanged one from an edit.
+        self._unparsed: dict[tuple[str, str], bytes] = {}
+        self._fresh_unparsed: dict[tuple[str, str], bytes] = {}
+        self._by_path: dict[str, list[tuple[str, str]]] | None = None
+        self._loaded_paths: set[str] = set()
         self.hits = 0
         self.misses = 0
 
@@ -135,6 +142,8 @@ class ParseCache:
             ):
                 return
             self._entries = payload.get("files", {})
+            self._unparsed = payload.get("unparsed", {})
+            self._loaded_paths = {path for path, _hash in (*self._entries, *self._unparsed)}
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unreadable / unsigned -> full parse
@@ -147,6 +156,7 @@ class ParseCache:
                 "version": _CACHE_VERSION,
                 "fingerprint": self._fingerprint,
                 "files": self._fresh,
+                "unparsed": self._fresh_unparsed,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
@@ -159,9 +169,9 @@ class ParseCache:
 
         Hits deserialize a new object graph (downstream resolution mutates
         ParsedFile in place) and rebind the current *file_info* so traversal
-        metadata (git hash, mtime) stays current. *content_hash* is
-        :func:`compute_content_hash` of the raw bytes — callers compute it
-        once and reuse it for the matching :meth:`put`.
+        metadata (git hash, mtime) stays current. *content_hash* is the
+        caller's source fingerprint, including extractor identity/version
+        when the file is plugin-extracted.
         """
         key = (file_info.path, content_hash)
         blob = self._entries.get(key)
@@ -183,6 +193,42 @@ class ParseCache:
         parsed.content_hash = content_hash
         return parsed
 
+    def known_paths(self) -> set[str]:
+        """Paths of every entry loaded from disk: what the last run parsed."""
+        return set(self._loaded_paths)
+
+    def previous_entry(self, path: str, *, exclude_hash: str) -> ParsedFile | None:
+        """The one earlier parse of *path* whose content hash is not *exclude_hash*.
+
+        A changed file misses on its new hash, but the entry the last run wrote
+        is still loaded, which gives an exact before/after of the same file.
+        ``None`` when there is no such entry or it is ambiguous (several old
+        versions), so a caller never compares against the wrong one.
+        """
+        if self._by_path is None:
+            self._by_path = {}
+            for key in (*self._entries, *self._unparsed):
+                self._by_path.setdefault(key[0], []).append(key)
+        keys = [key for key in self._by_path.get(path, ()) if key[1] != exclude_hash]
+        if len(keys) != 1:
+            return None
+        try:
+            # An entry of the cache file load_sealed_pickle verified on load.
+            blob = self._entries[keys[0]] if keys[0] in self._entries else self._unparsed[keys[0]]
+            parsed: Any = pickle.loads(blob)  # repowise-security-ignore: pickle_loads
+        except Exception as exc:
+            log.debug("parse_cache_entry_corrupt", path=path, error=str(exc))
+            return None
+        return parsed
+
+    def was_unparsed(self, path: str, content_hash: str) -> bool:
+        """Whether the last run also parsed these exact bytes without their grammar.
+
+        Such a file re-parses every run in case its grammar has loaded; when it
+        has not, the fresh parse is the one the last run made.
+        """
+        return (path, content_hash) in self._unparsed
+
     def put(self, parsed: ParsedFile, content_hash: str) -> None:
         """Snapshot *parsed* (call before any graph build mutates it)."""
         try:
@@ -191,5 +237,9 @@ class ParseCache:
             log.debug("parse_cache_put_failed", path=parsed.file_info.path, error=str(exc))
             return
         key = (parsed.file_info.path, content_hash)
+        if parsed.grammar_missing:
+            # Not a hit next run, when the grammar may have loaded.
+            self._fresh_unparsed[key] = blob
+            return
         self._entries[key] = blob
         self._fresh[key] = blob

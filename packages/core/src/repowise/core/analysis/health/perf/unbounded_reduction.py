@@ -20,7 +20,7 @@ import structlog
 from ..complexity.ast_utils import _collect_function_nodes, _find_function_entry_name
 from ..complexity.models import PerfHit
 from .dialects import PERF_DIALECTS
-from .io_boundaries import collect_io_names
+from .io_boundaries import collect_io_names, walked_io_names
 from .reduction_idioms import (
     field_text,
     ident,
@@ -106,7 +106,7 @@ def collect_unbounded_reductions(
     reader = read_source or _disk_read
     for pf, fcx in walked:
         try:
-            fcx.perf_hits.extend(_file_hits(pf, reader))
+            fcx.perf_hits.extend(_file_hits(pf, reader, walked_io_names(fcx)))
         except Exception as exc:
             log.debug("unbounded_reduction_failed", path=pf.file_info.abs_path, error=str(exc))
 
@@ -118,7 +118,9 @@ def _disk_read(abs_path: str) -> bytes | None:
         return None
 
 
-def _file_hits(pf: Any, read_source: SourceReader) -> list[PerfHit]:
+def _file_hits(
+    pf: Any, read_source: SourceReader, io_names: dict[str, str] | None = None
+) -> list[PerfHit]:
     language = pf.file_info.language
     dialect = PERF_DIALECTS.get(language)
     bound_methods = dialect.unbounded_read_bound_methods() if dialect else frozenset()
@@ -134,7 +136,7 @@ def _file_hits(pf: Any, read_source: SourceReader) -> list[PerfHit]:
     named = [(fn, _find_function_entry_name(fn, lmap)) for fn in _collect_function_nodes(root, lmap)]
     scan = _FileScan(
         dialect=dialect,
-        io_names=collect_io_names(root, language),
+        io_names=io_names if io_names is not None else collect_io_names(root, language),
         bound_methods=bound_methods,
         functions={name: fn for fn, name in reversed(named) if name},
         scopes=lmap.function_kinds | lmap.lambda_kinds,

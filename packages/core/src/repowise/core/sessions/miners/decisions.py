@@ -820,7 +820,11 @@ async def _records_by_alias(
 
     from sqlalchemy import select
 
-    from repowise.core.persistence.models import DecisionAlias, DecisionRecord
+    from repowise.core.persistence.models import (
+        SUPERSEDED_REASON,
+        DecisionAlias,
+        DecisionRecord,
+    )
 
     rows = await db_session.execute(
         select(DecisionAlias.alias_id, DecisionRecord)
@@ -829,6 +833,8 @@ async def _records_by_alias(
             DecisionAlias.alias_id.in_(alias_ids),
             DecisionAlias.repository_id == repository_id,
             DecisionRecord.repository_id == repository_id,
+            # A pre-fix supersede pointer names the successor, not this id's record.
+            DecisionAlias.reason != SUPERSEDED_REASON,
         )
     )
     return {alias_id: rec for alias_id, rec in rows.all()}
