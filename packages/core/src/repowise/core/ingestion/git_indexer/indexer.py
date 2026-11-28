@@ -57,7 +57,13 @@ from .file_history import DECAY_REFRESH_KEYS, _window_anchor, decay_meta, index_
 from .fix_shape_cache import FixShapeCache
 from .fix_walk_cache import FixWalkCache
 from .function_blame import build_blame_index
-from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
+from .prior_defects import (
+    FixWalk,
+    PriorDefects,
+    collect_fix_commits,
+    compute_prior_defects,
+    window_commits,
+)
 from .records import (
     GitIndexSummary,
     RepoTotals,
@@ -278,6 +284,7 @@ class GitIndexer:
         record_episodes: bool = False,
         max_workers: int | None = None,
         read_only: bool = False,
+        tracker_fixes: frozenset[str] = frozenset(),
     ) -> None:
         self.repo_path = Path(repo_path)
         # Normalised here, the one place every caller's config value meets
@@ -296,6 +303,10 @@ class GitIndexer:
         # never rewrites it.
         self.read_only = read_only
         self.max_workers = max_workers
+        # Commits a stored bug or incident issue names (``issue_links``): the
+        # fix walk counts them as fixes. Read from the index by the caller,
+        # never fetched here.
+        self.tracker_fixes = frozenset(tracker_fixes)
         # Read once: which forge's merge messages name a commit's PR or MR.
         self.forge = detect_forge(self.repo_path)
 
@@ -662,7 +673,12 @@ class GitIndexer:
 
     def _fix_walk_cache(self, repo: Any) -> FixWalkCache | None:
         """The fix walk's record cache in the index directory, when there is one."""
-        return FixWalkCache.load(self._window_cache_dir(), repo, writable=not self.read_only)
+        return FixWalkCache.load(
+            self._window_cache_dir(),
+            repo,
+            writable=not self.read_only,
+            tracker_fixes=self.tracker_fixes,
+        )
 
     def _window_cache_dir(self) -> Path | None:
         """Where the commit-window cache lives: the index directory, once it exists.
@@ -826,6 +842,7 @@ class GitIndexer:
             abort=_abort,
             cache_dir=self._window_cache_dir(),
             cache_writable=not self.read_only,
+            tracker_fixes=self.tracker_fixes,
         )
         # Idle files are counted too, so one whose only fix aged out drops to 0.
         prior_defects = prior_defect_stage(
@@ -1247,6 +1264,7 @@ class GitIndexer:
                 as_of_ts=self._resolve_as_of_ts(repo),
                 skip_shas=known_shas,
                 walk_cache=self._fix_walk_cache(repo),
+                tracker_fixes=self.tracker_fixes,
             )
             rows, ok = self._build_fix_events(walk)
             self._record_git_episodes(walk)
@@ -1297,6 +1315,7 @@ class GitIndexer:
                         as_of_ts=as_of_ts,
                         shape_cache=shape_cache,
                         walk_cache=self._fix_walk_cache(repo),
+                        tracker_fixes=self.tracker_fixes,
                     )
                     if not self.read_only:
                         shape_cache.save()
@@ -1428,6 +1447,21 @@ class GitIndexer:
             return _window_anchor(None)
         try:
             return _window_anchor(self._resolve_as_of_ts(repo))
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+
+    def fix_window_commits(self) -> list[tuple[str, str, str]]:
+        """``(sha, subject, body)`` of every commit the fix walk reads.
+
+        What an ``issue-source`` is asked about, so a stored link always lands
+        on a commit the defect window holds. Empty when git is unreadable.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return []
+        try:
+            return window_commits(repo, as_of_ts=self._resolve_as_of_ts(repo))
         finally:
             with contextlib.suppress(Exception):
                 repo.close()

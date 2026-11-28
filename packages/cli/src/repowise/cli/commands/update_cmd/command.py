@@ -55,6 +55,7 @@ from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_BACKFILL_REWALK,
+    GIT_HISTORY_ISSUE_LINKS_REWALK,
     GIT_HISTORY_VERSION,
     GIT_HISTORY_VERSION_KEY,
     git_history_stale,
@@ -1143,15 +1144,26 @@ def _announce_rework(run: UpdateRun) -> None:
             "re-rendering structural pages once, no model needed.[/yellow]"
         )
     if run.history_stale:
-        console.print(
-            "[yellow]Re-reading git history once to label commits from the "
-            "attribution backfill.[/yellow]"
-            if run.state.get(GIT_HISTORY_VERSION_KEY) == GIT_HISTORY_BACKFILL_REWALK
-            else "[yellow]Git history rules changed since this index was built; "
-            "re-reading the full history once.[/yellow]"
-        )
+        console.print(_history_stale_reason(run.state.get(GIT_HISTORY_VERSION_KEY)))
     if run.refresh_git:
         console.print("[yellow]Re-reading Git history within the current index scope.[/yellow]")
+
+
+def _history_stale_reason(stamp: object) -> str:
+    if stamp == GIT_HISTORY_BACKFILL_REWALK:
+        return (
+            "[yellow]Re-reading git history once to label commits from the "
+            "attribution backfill.[/yellow]"
+        )
+    if stamp == GIT_HISTORY_ISSUE_LINKS_REWALK:
+        return (
+            "[yellow]Linked bug issues changed on indexed commits; "
+            "re-reading git history once to recount fixes.[/yellow]"
+        )
+    return (
+        "[yellow]Git history rules changed since this index was built; "
+        "re-reading the full history once.[/yellow]"
+    )
 
 
 def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:

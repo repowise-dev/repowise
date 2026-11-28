@@ -34,7 +34,7 @@ Every row is listed in the [extension points catalog](#extension-points-catalog)
 | Local embedding model | `embedder` | Embeds pages with a model that runs on your machines |
 | LDAP or Okta teams | `team-directory` | Reads team membership from your directory for declared ownership |
 | SSO for `repowise serve` | `authenticator` | Accepts your identity provider's tokens on the HTTP API |
-| Jira or Linear links | `change-metadata` | Fills linked issues, reviewers and labels on change records from your tracker |
+| Jira or Linear issues | `issue-source` | Links commits to your tracker's issues, so a commit tied to a Bug counts as a fix in prior defects, change risk and health |
 | Internal vulnerability feed | `advisory-source` | Reads advisories from your own feed for `repowise packages import` |
 | Compliance report section or format | `report-section`, `report-renderer` | Adds evidence your auditors ask for, or writes the report in their text format |
 | Internal API as an agent tool | `mcp-tool` | Gives agents a read-only tool that queries an internal service |
@@ -383,6 +383,7 @@ module in the last column and call `.register(name, impl)`, for example
 | `change-metadata` | `change_metadata_sources` | one | when change records are stored, and by the `changes` report section | if a plugin source fails, repowise logs `change_metadata_failed` and stores the records with metadata from the built-in `git` source, marked `git`. If no implementation is registered under the configured name, it logs `changes_refresh_failed` and stores no new records. In the report, the `report-section` rule applies | `packages/core/src/repowise/core/changes/source.py` |
 | `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint, and any other exception (including from `sniff`) propagates; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages, not files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
 | `evidence-source` | `evidence_sources` | every; repowise syncs a source that declares `settings` once the required ones have values, and any other runs only when a host calls `run_fetch` | `repowise sources sync`, the end of `repowise update`, or a host calling `run_fetch` | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
+| `issue-source` | `issue_sources` | every; repowise syncs a source that declares `settings` once the required ones have values, and any other runs only when a host fetches itself | `repowise sources sync`, the start of `repowise update`, or a host calling `run_issue_fetch` with its own store | `SourceUnavailable` and `SourceRefused` as for `evidence-source`; any other exception, or a link that breaks the contract, fails that fetch. Links read before a failure are stored; only a complete fetch removes links it no longer returns | `packages/core/src/repowise/core/issues/sources.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
 | `document-extractors` | `document_extractors` | every; later extension claim wins | During traversal and source reads for otherwise unsupported extensions | indexing propagates with plugin name and original path; optional previews omit unavailable content | `packages/core/src/repowise/core/ingestion/document_extractors.py` |
@@ -531,6 +532,104 @@ update does exactly what it did before.
 A source with `settings = ()` needs nothing, so it runs on every sync and
 every update. A source with no `settings` attribute is never run by repowise:
 it is left to a host that calls `run_fetch` with its own credentials.
+
+### Writing an issue source
+
+An `issue-source` links commits to a tracker's issues. A commit linked to a
+`bug` or `incident` issue counts as a fix even when its message reads
+otherwise (`Handle empty carts (ENG-42)`): in `prior_defect_count`, the fix
+events, `git_commits.is_fix`, `get_context` fix history, the change-risk
+`prior_fixes` block and the health markers built on them. A link only adds a
+fix; it never removes one the commit message names. The protocol,
+`IssueSource`, is in `packages/core/src/repowise/core/issues/sources.py`. A
+complete source:
+
+```python
+import json
+import urllib.error
+import urllib.request
+
+from repowise.core.issues import (
+    IssueLink, SourceRefused, SourceUnavailable, issue_sources, tracker_keys,
+)
+
+TYPES = {"Bug": "bug", "Incident": "incident", "Story": "feature", "Task": "task"}
+
+
+class TrackerIssues:
+    name = "my-tracker"
+
+    def fetch(self, request):
+        base = request.settings["url"]
+        for commit in request.commits:
+            for key in tracker_keys(f"{commit.subject}\n{commit.body}"):
+                issue = self._issue(base, key, request.credentials)
+                if issue is not None:
+                    yield IssueLink(
+                        key=key, type=TYPES.get(issue["type"], "other"), sha=commit.sha,
+                        status=issue["status"], title=issue["title"],
+                        url=f"{base}/browse/{key}", basis=f"message names {key}",
+                    )
+
+    def _issue(self, base, key, token):
+        req = urllib.request.Request(
+            f"{base}/api/issue/{key}", headers={"Authorization": f"Bearer {token}"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            if exc.code in (401, 403):
+                raise SourceRefused("the tracker refused the token") from None
+            raise SourceUnavailable(f"the tracker answered {exc.code}") from None
+        except OSError:
+            raise SourceUnavailable("the tracker did not answer") from None
+
+
+def register():
+    issue_sources.register(TrackerIssues.name, TrackerIssues())
+```
+
+| `IssueRequest` field | Meaning |
+|----------------------|---------|
+| `repository_id`, `repository_name` | The repository the commits belong to |
+| `commits` | Every commit of the defect window: `sha`, `subject`, `body`, and `change`, the PR or MR number the message says the commit is |
+| `settings` | Plain settings such as a tracker URL or project keys. Never secrets |
+| `credentials` | The host's credentials object, passed through untouched and left out of `repr` |
+
+| `IssueLink` field | Meaning |
+|-------------------|---------|
+| `key` | The issue's key as the tracker shows it, up to 64 characters |
+| `type` | `bug`, `incident`, `feature`, `task` or `other`; map the tracker's own types onto these |
+| `sha` or `change` | The commit: one of the request's full shas, or a change number, which links every requested commit that carries it |
+| `status`, `title`, `url` | Shown where the link is quoted; titles past 200 characters are cut |
+| `basis` | How the commit names the issue, such as `message names ENG-42` or `PR #12 closes #40` |
+
+The rules a source follows, which the contract tests in
+`tests/unit/issues/test_issue_sources.py` check:
+
+- **Keys are yours to read.** Tracker key formats differ, so the source finds
+  them. `tracker_keys(text, projects=None)` reads `ENG-42` keys (pass your
+  project keys to skip look-alikes) and `number_refs(text)` reads `#42`.
+- **Credentials stay with the host**, as for `evidence-source`: never in a
+  link or an exception message.
+- **Failure.** Raise `SourceUnavailable` when the tracker is down or rate
+  limits, `SourceRefused` when it refuses the credentials or settings; the
+  host shows the message as written. Any other exception, or a link with an
+  unknown type, a sha the request did not hold, or both or neither of `sha`
+  and `change`, fails the fetch. Links read before a failure are stored, and
+  only a complete fetch removes the links it no longer returns.
+
+`repowise.core.issues.sync.sync_issues(session, repository_id, repo_path,
+source, settings=..., credentials=...)` runs a source against a local index:
+it asks about the defect window's commits and stores the links. When a bug
+or incident link comes or goes on a commit the index already holds, the next
+`repowise update` reads git history again once so the counts match a fresh
+index. A host with no checkout fetches by itself and hands the links to
+`repowise.core.persistence.crud.issue_links.store_issue_links`; indexing and
+scoring only read stored links and never fetch.
 
 ### Authenticator and authorizer
 

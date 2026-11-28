@@ -56,8 +56,11 @@ of health (see the limits below).
 
 A commit whose subject matches the fix keywords (`fix`, `bug`, `patch`,
 `resolves`, `closes #N`, `fixes #N`, and none of `docs`, `typo`, `bump`,
-`deps`, `chore`, `lint`, `format`, `style`) is a candidate. Its `-U0` diff is
-then classified, and only `code_fix` counts:
+`deps`, `chore`, `lint`, `format`, `style`) is a candidate. So is a commit an
+[issue source](../reference/PLUGINS.md#writing-an-issue-source) links to a `bug`
+or `incident` issue, whatever its subject says; `get_context` then quotes the
+issue in `fix_history.linked_issues`. Its `-U0` diff is then classified, and
+only `code_fix` counts:
 
 | Shape | Counted | Example |
 |---|---|---|
@@ -134,8 +137,9 @@ never more. To turn hooks off, see [HOOKS.md](../agent/HOOKS.md).
 - **No inducing commit is named.** Counts and recency ship; blame for the
   commit that caused a bug does not, because its precision is below the bar
   for naming a commit and an author on screen.
-- **Recall is keyword bound.** A fix whose subject does not say so is
-  invisible. The shape filter improves precision only.
+- **Recall is keyword bound** unless an issue source links your tracker. A fix
+  whose subject does not name it as one, and that no bug issue names, is invisible.
+  The shape filter improves precision only.
 - **The window is fixed.** A file fixed heavily two years ago and quiet since
   reads as clean.
 - **Per-symbol counts drift on old fixes**, because symbol spans come from the

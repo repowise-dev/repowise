@@ -44,6 +44,8 @@ class SignalPass:
     # Where run-to-run caches live; ``None`` keeps them in memory only.
     cache_dir: Path | None = None
     cache_writable: bool = False
+    # Commits a stored bug or incident issue names; the fix walk counts them.
+    tracker_fixes: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -125,7 +127,13 @@ def prior_defect_stage(
                 counted_paths,
                 as_of_ts=sp.as_of_ts,
                 shape_cache=shape_cache,
-                walk_cache=FixWalkCache.load(sp.cache_dir, sp.repo, writable=sp.cache_writable),
+                walk_cache=FixWalkCache.load(
+                    sp.cache_dir,
+                    sp.repo,
+                    writable=sp.cache_writable,
+                    tracker_fixes=sp.tracker_fixes,
+                ),
+                tracker_fixes=sp.tracker_fixes,
             )
             if sp.cache_writable:
                 shape_cache.save()

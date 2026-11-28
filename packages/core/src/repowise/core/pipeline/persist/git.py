@@ -41,6 +41,10 @@ async def persist_git(
     commit_rows = getattr(summary, "commit_rows", None)
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
+        from repowise.core.pipeline.incremental.commits import reconcile_issue_fix_flags
+
+        # A linked bug issue marks its commit a fix, as the update does.
+        await reconcile_issue_fix_flags(session, repo_id)
 
     commit_file_rows = getattr(summary, "commit_file_rows", None)
     if commit_file_rows:

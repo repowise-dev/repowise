@@ -180,13 +180,17 @@ async def _backfill_git(
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
     from repowise.core.persistence.stores.sql_job_store import SqlJobStore
 
+    async with get_session(sf) as session:
+        tracker_fixes = await load_tracker_fixes(session, repo_id)
     indexer = GitIndexer(
         repo_path,
         commit_limit=commit_limit,
         follow_renames=follow_renames,
         tier=GitIndexTier.FULL,
+        tracker_fixes=tracker_fixes,
     )
 
     async with get_session(sf) as session:
