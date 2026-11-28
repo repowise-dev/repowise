@@ -84,7 +84,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -102,7 +105,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -120,7 +126,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -138,7 +147,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -156,7 +168,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -174,7 +189,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -192,7 +210,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -210,7 +231,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -228,7 +252,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -246,7 +273,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -264,7 +294,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -282,7 +315,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -300,7 +336,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -318,7 +357,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -336,7 +378,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -354,7 +399,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -372,7 +420,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "not va_list",
+          "not va_list"
+        ],
         "argument_names": null,
         "is_construction": false
       },
@@ -390,7 +441,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          null,
+          "not va_list"
+        ],
         "argument_names": [
           "x",
           null

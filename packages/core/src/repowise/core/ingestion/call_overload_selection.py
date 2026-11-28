@@ -16,7 +16,7 @@ from types import MappingProxyType
 from .call_receiver_typing import _FUNCTION_KINDS, _TYPE_KINDS
 from .language_data import get_builtin_types
 from .languages.receiver_types import external_type_name
-from .models import CSHARP_INTEGER_CONSTANT, CallSite, ParsedFile, Symbol
+from .models import CPP_NOT_VA_LIST, CSHARP_INTEGER_CONSTANT, CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .return_types import signature_parameter_range, signature_parameters
 from .symbol_identity import (
@@ -520,6 +520,8 @@ def _could_recurse(symbol: Symbol | None, argument_count: int | None) -> bool:
 
 # ``va_list ap, aq`` up to the end of its declaration or parameter list.
 _VA_LIST_DECLARATION = re.compile(r"\b(?:__builtin_)?va_list\b([^;(){}]*)")
+# The last word of a parameter, before any array brackets: its name.
+_PARAMETER_NAME = re.compile(r"\b(\w+)\s*(?:\[[^\]]*\]\s*)*$")
 _VA_LIST_DECLARATOR = re.compile(r"\s*[&*]*\s*(\w+)\s*(?:=.*)?$", re.S)
 
 
@@ -535,19 +537,30 @@ def _declarator_names(declarators: str) -> Iterator[str]:
         yield named.group(1)
 
 
+def _parameter_names(symbol: Symbol | None) -> frozenset[str]:
+    """The names a C-family callable's parameters declare (``const char* msg`` gives ``msg``)."""
+    parameters = signature_parameters(symbol.signature or "") if symbol else None
+    return frozenset(
+        named.group(1)
+        for parameter in parameters or ()
+        if (named := _PARAMETER_NAME.search(parameter.split("=", 1)[0]))
+    )
+
+
 def _refuses_without_va_list(
     symbol: Symbol, argument_count: int, argument_types: _ArgumentTypes
 ) -> bool:
-    """Does C++ *symbol* take a ``va_list`` at an argument the call passes no ``va_list`` to?
+    """Does C++ *symbol* take a ``va_list`` at an argument that cannot be one?
 
     Only a ``va_list`` variable passes as one, so ``Error("%s", s)`` calls
     ``Error(const char*, ...)``, never its ``Error(const char*, va_list)`` twin.
+    An argument of unknown type (a field, ``*p``, a global) may be one.
     """
     if symbol.language != "cpp" or "va_list" not in (symbol.signature or ""):
         return False
     passed = argument_types or ()
     return any(
-        parameter == "va_list" and (passed[i] if i < len(passed) else None) != "va_list"
+        parameter == "va_list" and i < len(passed) and passed[i] == CPP_NOT_VA_LIST
         for i, parameter in enumerate(erased_parameter_types(symbol)[:argument_count])
     )
 
@@ -1215,14 +1228,28 @@ class OverloadSelectionMixin:
     def _cpp_va_list_arguments(
         self, file_path: str, call: CallSite
     ) -> tuple[str | None, ...] | None:
-        """``va_list`` at each argument the caller declares one, else None; None when none is.
+        """Whether each argument is a ``va_list``, cannot be one (``CPP_NOT_VA_LIST``), or is unknown.
 
         The only C++ argument type overload choice reads (``_refuses_without_va_list``).
+        A name the caller declares is a ``va_list`` or not; any other name is unknown.
         """
-        if not call.argument_names:
-            return None
-        declared = self._cpp_va_list_names(file_path, call.caller_symbol_id or "")
-        types = tuple("va_list" if name in declared else None for name in call.argument_names)
+        marks = call.argument_types or ()
+        names = call.argument_names or ()
+        if not names:
+            return marks or None
+        caller_id = call.caller_symbol_id or ""
+        va_lists = self._cpp_va_list_names(file_path, caller_id)
+        declared = self._names_declared_by(file_path, caller_id) | _parameter_names(
+            self._symbols_by_id.get(caller_id)
+        )
+        types = tuple(
+            (
+                ("va_list" if name in va_lists else CPP_NOT_VA_LIST if name in declared else None)
+                if name
+                else (marks[i] if i < len(marks) else None)
+            )
+            for i, name in enumerate(names)
+        )
         return types if any(types) else None
 
     def _cpp_va_list_names(self, file_path: str, caller_id: str) -> frozenset[str]:

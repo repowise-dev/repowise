@@ -394,6 +394,10 @@ STRING_LITERAL_RECEIVER = '""'
 #: numeric type its value fits, unlike an ``int`` value.
 CSHARP_INTEGER_CONSTANT = "int constant"
 
+#: A C++ argument that cannot be a ``va_list``: a literal, a call's result, or
+#: a name its caller declares with another type.
+CPP_NOT_VA_LIST = "not va_list"
+
 
 @dataclass
 class CallSite:

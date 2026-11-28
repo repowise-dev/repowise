@@ -281,3 +281,18 @@ class TestVariadicOverloadTakesTheCall:
         self._repo(tmp_path)
         edges = _edges(_build(tmp_path))
         assert ("util.cc::Copy", "util.cc::Error#2(char*,va_list)") in edges
+
+    def test_a_va_list_of_unknown_type_keeps_the_va_list_overload(self, tmp_path: Path) -> None:
+        """A field, a dereference or a global may hold a ``va_list``: nothing refuses it."""
+        self._repo(tmp_path)
+        (tmp_path / "fwd.cc").write_text(
+            '#include "util.h"\n'
+            "struct Ctx { va_list ap; };\n"
+            "static va_list g_ap;\n"
+            'void ByField(Ctx* ctx) { Error("%s", ctx->ap); }\n'
+            'void ByPointer(va_list* pap) { Error("%s", *pap); }\n'
+            'void ByGlobal() { Error("%s", g_ap); }\n'
+        )
+        edges = _edges(_build(tmp_path))
+        for caller in ("ByField", "ByPointer", "ByGlobal"):
+            assert (f"fwd.cc::{caller}", "util.cc::Error#2(char*,va_list)") in edges
