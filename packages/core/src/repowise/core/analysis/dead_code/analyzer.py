@@ -113,7 +113,6 @@ from .swift_reachability import (
 )
 from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
     _CPP_BUILTIN_MACROS,
-    _CPP_TYPE_DECLARATION_KINDS,
     _ENTRY_POINT_SYMBOL_NAMES,
     _LANGUAGE_NON_IMPORTABLE,
     _NON_IMPORTABLE_SYMBOL_KINDS,

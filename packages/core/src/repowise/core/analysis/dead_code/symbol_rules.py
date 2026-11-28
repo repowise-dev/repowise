@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 
+from repowise.core.ingestion.symbol_identity import is_type_forward_declaration
+
 from .constants import _FRAMEWORK_INNER_CLASS_NAMES, _IMPORT_GATED_INNER_CLASS_NAMES
 
 # Kinds no language imports by name: always reached through an enclosing
@@ -87,15 +89,6 @@ _UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
 #: namespace without an import.
 _TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
     {"class", "interface", "struct", "enum", "record", "trait", "object"}
-)
-
-#: C/C++ kinds a type forward declaration (``class Env;``) can carry.
-_CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
-    {
-        "class",
-        "struct",
-        "enum",
-    }
 )
 
 # Symbol names that are language-runtime entry points or compiler-implicit
@@ -259,11 +252,7 @@ def _is_declaration_only(sym: dict) -> bool:
         return True
     # A type forward declaration (``class Env;``) exists so its own file can
     # name the type, which makes that file its user.
-    return bool(
-        sym.get("is_declaration")
-        and sym.get("language") in ("cpp", "c")
-        and sym.get("kind") in _CPP_TYPE_DECLARATION_KINDS
-    )
+    return is_type_forward_declaration(sym)
 
 
 def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
