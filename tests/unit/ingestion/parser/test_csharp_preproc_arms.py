@@ -192,6 +192,17 @@ class TestBlanking:
         out = blank_csharp_preproc_arms(DEAD_ARM_FIRST)
         assert b"Live();" in out and b"Old();" not in out
 
+    def test_lone_if_false_arm_goes_even_when_it_balances_or_not(self, parser: ASTParser) -> None:
+        source = b"class C\n{\n#if false\n    void Old() { }\n    }\n#endif\n    void M() { }\n}\n"
+        out = blank_csharp_preproc_arms(source)
+        assert b"Old" not in out
+        assert _symbols(parser, source) == [("C", 1, 8), ("M", 7, 7)]
+
+    def test_directive_after_a_byte_order_mark(self) -> None:
+        source = b"\xef\xbb\xbf#if A\nusing X;\n#endif\nclass C { }\n"
+        out = blank_csharp_preproc_arms(source)
+        assert out.startswith(b"\xef\xbb\xbf     \n")
+
     def test_lexical_traps(self) -> None:
         out = blank_csharp_preproc_arms(LEXICAL)
         assert b"#if NOT_A_DIRECTIVE" in out
