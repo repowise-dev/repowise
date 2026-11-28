@@ -21,10 +21,12 @@ Gates, cheapest first, every one silent when it fails:
 3. The resolved decision policy has it on (mode ``off`` and ``enabled: false``
    silence it).
 4. Fewer than :data:`MAX_ASKS` asks this session so far.
-5. Enough work since the last ask (or since the session started): the hooks
-   counted (``hook_runs``) at least :data:`MIN_TOOL_CALLS` tool calls, and each
-   later ask needs :data:`SPACING` times the gap before it. A turn that made no
-   tool call never crosses it, so a trivial turn stays silent.
+5. Enough work since the last ask (or since the session started): the
+   transcript shows at least :data:`MIN_TOOL_CALLS` tool calls, and each later
+   ask needs :data:`SPACING` times the gap before it. A turn that made no tool
+   call never crosses it, so a trivial turn stays silent. Counted from the
+   transcript, read on from where the last stop left off, so two installed
+   copies of the tool hooks cannot double the count.
 6. Nothing recorded a decision since the last ask (or since the session
    started). A record moves the mark instead, so the next ask waits for more
    work after it.
@@ -42,17 +44,21 @@ from typing import TextIO
 #: The setting's leaf name, also the text pre-check in the config file.
 SWITCH = "stop_prompt"
 
-#: Tool calls the hooks counted, since the session started, before the first
-#: ask. A quick lookup or a one-question session stays unasked.
+#: Tool calls in the session's transcript before the first ask. A quick lookup or a one-question session stays unasked.
 MIN_TOOL_CALLS = 20
 
 #: Each later ask needs this many times the previous gap, so a long session is
 #: asked after 20, 80 and 260 calls rather than three times close together.
 SPACING = 3
 
-#: Asks a session at most. On this repository's own ledger (292 sessions), the
-#: rule asks 74 sessions never, 94 once, 76 twice and 48 three times.
+#: Asks a session at most. Over 130 of this repository's own session
+#: transcripts, the rule asks 23 sessions never, 15 once, 41 twice and 51
+#: three times.
 MAX_ASKS = 3
+
+#: A tool call as the transcript serializes it. Inside a tool result the same
+#: text is escaped, so only real calls match.
+_TOOL_USE = b'"type":"tool_use"'
 
 #: How far into the transcript to look for the session's first timestamp.
 _HEAD_LINES = 50
@@ -135,14 +141,20 @@ def _ask(cwd: str, session_id: str, transcript_path: object) -> str | None:
     if repo_path is None or not _policy_on(repo_path):
         return None
 
-    from repowise.cli.commands.augment_cmd.read_state import _load_shared_state
+    from repowise.cli.commands.augment_cmd.read_state import (
+        _load_shared_state,
+        _save_shared_state,
+    )
 
     state = _load_shared_state(repo_path, session_id)
     asks = _int(state.get("stop_asks"))
     if asks >= MAX_ASKS:
         return None
-    calls = tool_calls(repo_path, session_id)
+    seen = _int(state.get("stop_offset"))
+    calls = tool_calls(transcript_path, state)
     if calls - _int(state.get("stop_mark")) < MIN_TOOL_CALLS * SPACING**asks:
+        if state.get("stop_offset") != seen:
+            _save_shared_state(repo_path, state)
         return None
     since = state.get("stop_mark_at")
     if not isinstance(since, str) or not since:
@@ -196,27 +208,30 @@ def _policy_on(repo_path: Path) -> bool:
     return load_policy(repo_path).policy.stop_capture
 
 
-def tool_calls(repo_path: Path, session_id: str) -> int:
-    """Tool calls the hooks counted this session, subagents included.
+def tool_calls(transcript_path: object, state: dict) -> int:
+    """Tool calls in the main session's transcript so far.
 
-    Read from the ``hook_runs`` counter every augment hook writes; subagents
-    share the session id. No ledger reads as no work.
+    Reads only what was appended since the last stop (``stop_offset``, up to
+    the last whole line) and keeps the running count in *state*
+    (``stop_calls``), so a long session costs its new lines, not the whole
+    file. An unreadable transcript adds nothing.
     """
-    import sqlite3
-
-    from repowise.cli.hook_ledger import _open_injections
-
-    conn = _open_injections(repo_path)
-    if conn is None:
-        return 0
+    seen = _int(state.get("stop_offset"))
+    calls = _int(state.get("stop_calls"))
+    if not isinstance(transcript_path, str) or not transcript_path:
+        return calls
     try:
-        row = conn.execute(
-            "SELECT SUM(calls) FROM hook_runs WHERE session_id = ? AND event = 'PostToolUse'",
-            (session_id,),
-        ).fetchone()
-    except sqlite3.Error:
-        return 0
-    return int(row[0] or 0) if row else 0
+        with open(transcript_path, "rb") as handle:
+            handle.seek(seen)
+            chunk = handle.read()
+    except OSError:
+        return calls
+    whole = chunk.rfind(b"\n") + 1
+    if whole:
+        calls += chunk[:whole].count(_TOOL_USE)
+        state["stop_offset"] = seen + whole
+        state["stop_calls"] = calls
+    return calls
 
 
 def session_started(transcript_path: object) -> str | None:

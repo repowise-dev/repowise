@@ -196,7 +196,7 @@ coordination. With `decisions.stop_prompt: true` (off by default), the Stop
 hook asks the agent to record any durable choice it reasoned out with
 `repowise decision add`, or to reply that there is none. Claude Code runs Stop
 hooks at the end of every turn, so the ask is paced by work: the first comes
-after 20 tool calls the hooks counted, the next after 60 more, the last after
+after 20 tool calls in the session transcript, the next after 60 more, the last after
 180 more, at most three a session. A turn with no tool calls never asks, and a
 decision recorded since the last ask moves the count's start instead of asking.
 The text reaches the agent as the Stop event's `additionalContext`, so Claude

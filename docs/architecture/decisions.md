@@ -260,9 +260,10 @@ three, each once a session).
 (`repowise-augment --decision-stop`, routed before the augment package
 imports). Stop fires at every turn end, so it asks by work, as
 `hookSpecificOutput.additionalContext` rather than a block: never with
-`stop_hook_active`, only when the `hook_runs` ledger shows `MIN_TOOL_CALLS`
-calls since the last mark, each later ask needing `SPACING` times the previous
-gap, at most `MAX_ASKS` a session, and only when no `agent` or `cli` record was
+`stop_hook_active`, only when the transcript shows `MIN_TOOL_CALLS` tool
+calls since the last mark (read on from the last stop's offset), each later
+ask needing `SPACING` times the previous gap, at most `MAX_ASKS` a session, and
+only when no `agent` or `cli` record was
 created since the last mark (the transcript's first timestamp before the first
 ask). A record moves the mark without asking. The mark lives in the shared
 hook-session state; a ledger row per ask number (surface `capture`, category

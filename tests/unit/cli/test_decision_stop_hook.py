@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 from repowise.cli import decision_stop_hook
-from repowise.cli.hook_ledger import _record_hook_run
 
 _START = (datetime.now(UTC) - timedelta(hours=1)).replace(microsecond=0)
 
@@ -41,19 +40,39 @@ def _config(root: Path, text: str) -> None:
     (root / ".repowise" / "config.yaml").write_text(text, encoding="utf-8")
 
 
+def _path(root: Path, session: str) -> Path:
+    return root.parent / f"{session}.jsonl"
+
+
+def _line(entry: dict) -> str:
+    # Compact, the way the agent writes its transcript.
+    return json.dumps(entry, separators=(",", ":")) + "\n"
+
+
 def _transcript(root: Path, session: str) -> str:
-    path = root.parent / f"{session}.jsonl"
-    lines = [
-        {"type": "summary"},
-        {"type": "user", "timestamp": _START.strftime("%Y-%m-%dT%H:%M:%S.000Z")},
-    ]
-    path.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+    path = _path(root, session)
+    if not path.exists():
+        start = {"type": "user", "timestamp": _START.strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(_line({"type": "summary"}) + _line(start))
     return str(path)
 
 
+def _append(root: Path, session: str, text: str) -> None:
+    _transcript(root, session)
+    with _path(root, session).open("a", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+
 def _work(root: Path, session: str, tool: str = "Edit", calls: int = 1) -> None:
-    for _ in range(calls):
-        _record_hook_run(root, session, "PostToolUse", tool, emitted=False)
+    """Append *calls* tool calls, and their results, to the session transcript."""
+    use = {"type": "tool_use", "id": "t", "name": tool, "input": {}}
+    # A result that quotes a tool call is text, not a call.
+    quoted = {"type": "tool_result", "content": _line(use)}
+    turn = _line({"type": "assistant", "message": {"content": [use]}}) + _line(
+        {"type": "user", "message": {"content": [quoted]}}
+    )
+    _append(root, session, turn * calls)
 
 
 def _record(root: Path, source: str, at: datetime) -> None:
@@ -166,6 +185,25 @@ def test_never_on_the_stop_that_follows_an_ask(repo: Path) -> None:
 def test_quiet_when_the_session_did_little_work(repo: Path) -> None:
     _work(repo, "s1", "Read", 3)
     assert _stop(repo) is None
+
+
+def test_two_copies_of_the_tool_hooks_do_not_double_the_count(repo: Path) -> None:
+    """The count is the transcript's, not the tool hooks' run counter."""
+    from repowise.cli.hook_ledger import _record_hook_run
+
+    for _ in range(2 * _FIRST):
+        _record_hook_run(repo, "s1", "PostToolUse", "Read", emitted=False)
+    _work(repo, "s1", "Read", _FIRST - 1)
+    assert _stop(repo) is None
+
+
+def test_a_half_written_last_line_counts_once_it_is_whole(repo: Path) -> None:
+    _work(repo, "s1", "Read", _FIRST - 1)
+    use = _line({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})
+    _append(repo, "s1", use[:-1])
+    assert _stop(repo) is None
+    _append(repo, "s1", "\n")
+    assert _stop(repo) is not None
 
 
 def test_quiet_when_a_decision_was_recorded_this_session(repo: Path) -> None:
