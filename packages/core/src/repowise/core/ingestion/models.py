@@ -266,6 +266,10 @@ class Symbol:
     # C# type declarations only: how many type parameters it declares, which is
     # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
     type_parameter_count: int | None = None
+    # C++ only: the ``template <...>`` parameter lists written directly over
+    # the declaration, outermost first (``<typename T><typename U>``), else
+    # None. What tells same-signature SFINAE overloads apart.
+    template_parameters: str | None = None
     # Kotlin functions only: the bare type an extension dispatches on (``Byte``
     # for ``fun Byte.toHexString()``), None for a receiver that is its own type
     # parameter; and the receiver as the id spells it, nullable mark and type

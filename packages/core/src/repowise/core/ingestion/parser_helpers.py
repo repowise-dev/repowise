@@ -528,6 +528,25 @@ def _csharp_type_parameter_count(def_node: Node) -> int | None:
     return 0
 
 
+# Nodes between a C++ declaration's ``@symbol.def`` node and the template head over it.
+_CPP_TEMPLATE_HEAD_WRAPPERS = frozenset(
+    {"function_declarator", "pointer_declarator", "reference_declarator", "declaration", "field_declaration"}
+)
+
+
+def _cpp_template_parameters(def_node: Node, src: str) -> str | None:
+    """``<typename T><typename U>``: the template parameter lists over *def_node*, outermost first."""
+    node = def_node
+    while node.parent is not None and node.parent.type in _CPP_TEMPLATE_HEAD_WRAPPERS:
+        node = node.parent
+    lists: list[str] = []
+    while (node := node.parent) is not None and node.type == "template_declaration":
+        parameters = node.child_by_field_name("parameters")
+        if parameters is not None:
+            lists.append(node_text(parameters, src))
+    return "".join(reversed(lists)) or None
+
+
 def _kotlin_receiver_fields(def_node: Node, params: list[Node], language: str, name: str) -> dict:
     """``Symbol`` fields for the receiver a Kotlin extension function declares; {} otherwise.
 

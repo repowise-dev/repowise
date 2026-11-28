@@ -990,9 +990,9 @@ def _overloads(
 
     Empty when none has the frame's count; several when nothing tells them apart.
     """
-    from repowise.core.ingestion.symbol_identity import split_symbol_id
+    from repowise.core.ingestion.symbol_identity import overload_signature
 
-    payloads = {s.symbol_id: split_symbol_id(s.symbol_id)[1] or "" for s in found}
+    payloads = {s.symbol_id: overload_signature(s.symbol_id) or "" for s in found}
     # Narrow only when every member carries its count: an id without one is not an overload.
     if by_count and all(payloads[s.symbol_id][:1].isdigit() for s in found):
         found = [s for s in found if payloads[s.symbol_id].partition("(")[0] == str(len(params))]
@@ -1017,9 +1017,9 @@ def _params_agree(
     when its types differ from *symbol*'s and equal a sibling overload's.
     An id with no count says nothing, and a frame with no parameters is not checked.
     """
-    from repowise.core.ingestion.symbol_identity import split_symbol_id
+    from repowise.core.ingestion.symbol_identity import overload_signature
 
-    payload = split_symbol_id(symbol.symbol_id)[1]
+    payload = overload_signature(symbol.symbol_id)
     if params is None or not payload or not payload[:1].isdigit():
         return True
     if not by_count:
@@ -1042,9 +1042,9 @@ _KOTLIN_JVM_TYPES = {
 
 def _id_types(symbol: IndexedSymbol) -> tuple[str, ...] | None:
     """The parameter types *symbol*'s id spells, as a JVM frame spells them; None when it spells none."""
-    from repowise.core.ingestion.symbol_identity import split_symbol_id
+    from repowise.core.ingestion.symbol_identity import overload_signature
 
-    payload = split_symbol_id(symbol.symbol_id)[1] or ""
+    payload = overload_signature(symbol.symbol_id) or ""
     _, paren, types = payload.partition("(")
     if not paren:
         return None

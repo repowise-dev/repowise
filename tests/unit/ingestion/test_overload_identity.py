@@ -26,7 +26,7 @@ import pytest
 from repowise.core.analysis.actions.rules._text import code
 from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.graph.builder import GraphBuilder
-from repowise.core.ingestion.models import FileInfo, ParsedFile
+from repowise.core.ingestion.models import FileInfo, ParsedFile, Symbol
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.parser_helpers import _kotlin_number_type
 from repowise.core.ingestion.return_types import signature_parameter_range, signature_parameters
@@ -36,8 +36,10 @@ from repowise.core.ingestion.symbol_identity import (
     id_segment_name,
     kotlin_erased_type,
     overload_sets,
+    overload_signature,
     split_symbol_id,
     symbol_id_arity,
+    template_head,
     untyped_symbol_id,
 )
 from repowise.core.ingestion.traverser import FileTraverser
@@ -152,6 +154,8 @@ class TestIdGrammar:
             # A TypeScript private member names itself with `#`; it is no payload.
             ("a.ts::Box::#secret", "a.ts::Box::#secret", None),
             ("I.cs::IFoo`1::Validate#2", "I.cs::IFoo`1::Validate", "2"),
+            ("f.h::write#2(It,T)<T,EN(is_x<T>)>", "f.h::write", "2(It,T)<T,EN(is_x<T>)>"),
+            ("f.h::S::at#1~2", "f.h::S::at", "1~2"),
         ],
     )
     def test_split(self, symbol_id: str, base: str, payload: str | None) -> None:
@@ -507,6 +511,26 @@ int Shape::area() { return 1; }
 """
 
 
+SFINAE_H = """\
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(std::is_integral<T>::value && !std::is_same<T, bool>::value)>
+auto write(OutputIt out, T value) -> OutputIt { return format_decimal(out, value); }
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(std::is_floating_point<T>::value)>
+auto write(OutputIt out, T value) -> OutputIt { return format_float(out, value); }
+
+template <typename Char, typename OutputIt, typename T>
+auto write(OutputIt out, const T& value) -> OutputIt { return out; }
+
+template <typename Char, typename OutputIt>
+auto write(OutputIt out, const Char* s, int n) -> OutputIt { return out; }
+
+template <typename OutputIt, typename T> OutputIt format_decimal(OutputIt out, T value) { return out; }
+template <typename OutputIt, typename T> OutputIt format_float(OutputIt out, T value) { return out; }
+"""
+
+
 class TestCppOverloads:
     def test_colliding_members_get_their_parameter_count(self) -> None:
         ids = set(_ids(_parse("shapes.h", "cpp", SHAPES_H)))
@@ -633,6 +657,93 @@ class TestCppOverloads:
             ("t.h::two#1", "function"),
             ("t.h::one", "function"),
         ]
+
+    def test_sfinae_overloads_split_by_their_template_heads(self) -> None:
+        ids = _ids(_parse("w.h", "cpp", SFINAE_H))[:4]
+        head = "<Char,OutputIt,T,FMT_ENABLE_IF({})>"
+        assert ids == [
+            "w.h::write#2(OutputIt,T)" + head.format("is_integral<T>&&!is_same<T,bool>"),
+            "w.h::write#2(OutputIt,T)" + head.format("is_floating_point<T>"),
+            "w.h::write#2(OutputIt,T&)",
+            "w.h::write#3",
+        ]
+        assert {split_symbol_id(i)[0] for i in ids} == {"w.h::write"}
+        assert overload_signature(ids[0]) == "2(OutputIt,T)"
+        assert untyped_symbol_id(ids[0]) == "w.h::write#2"
+
+    def test_an_inserted_template_overload_renames_no_sibling(self) -> None:
+        inserted = (
+            "template <typename Char, typename OutputIt, typename T,\n"
+            "          FMT_ENABLE_IF(std::is_enum<T>::value)>\n"
+            "auto write(OutputIt out, T value) -> OutputIt { return out; }\n"
+        )
+        before = set(_ids(_parse("w.h", "cpp", SFINAE_H)))
+        after = set(_ids(_parse("w.h", "cpp", inserted + SFINAE_H)))
+        assert before < after
+
+    def test_calls_in_each_template_overload_keep_their_caller(self, tmp_path: Path) -> None:
+        edges = _edges(tmp_path, {"w.h": ("cpp", SFINAE_H)})
+        integral, floating = _ids(_parse("w.h", "cpp", SFINAE_H))[:2]
+        assert (integral, "w.h::format_decimal") in edges
+        assert (floating, "w.h::format_float") in edges
+        assert (integral, "w.h::format_float") not in edges
+
+    def test_a_declaration_stays_with_the_definition_of_its_head(self) -> None:
+        source = (
+            "struct S {\n"
+            "  template <typename T, enable_if_t<is_a<T>::value, int> = 0> void f(T v);\n"
+            "  template <typename T, enable_if_t<!is_a<T>::value, int> = 0> void f(T v) {}\n"
+            "};\n"
+            "template <typename T, enable_if_t<is_a<T>::value, int> = 0>\nvoid S::f(T v) {}\n"
+        )
+        by_id: dict[str, list[bool]] = {}
+        for symbol in _parse("s.h", "cpp", source).symbols:
+            by_id.setdefault(symbol.id, []).append(symbol.is_declaration)
+        assert sorted(by_id["s.h::S::f#1<T,enable_if_t<is_a<T>,int>=0>"]) == [False, True]
+        assert by_id["s.h::S::f#1<T,enable_if_t<!is_a<T>,int>=0>"] == [False]
+
+    def test_template_definitions_equal_in_head_take_an_ordinal(self) -> None:
+        source = (
+            "struct Buf {\n"
+            "  template <typename I> char& at(I i) { return d[i]; }\n"
+            "  template <typename I> const char& at(I i) const { return d[i]; }\n"
+            "  char* d;\n"
+            "};\n"
+        )
+        ids = _ids(_parse("b.h", "cpp", source))
+        assert [i for i in ids if "::at" in i] == ["b.h::Buf::at#1", "b.h::Buf::at#1~2"]
+
+    def test_non_template_build_variants_keep_one_id(self) -> None:
+        source = "#ifdef _WIN32\nint fd(int a) { return a; }\n#else\nint fd(int a) { return -a; }\n#endif\n"
+        assert _ids(_parse("v.h", "cpp", source)) == ["v.h::fd", "v.h::fd"]
+
+    @pytest.mark.parametrize(
+        ("written", "head"),
+        [
+            (
+                "<typename T, typename std::enable_if<std::is_same<T, int>::value>::type* = nullptr>",
+                "<T,enable_if<is_same<T,int>>*=nullptr>",
+            ),
+            ("<class... Args, /* pack */ int N>", "<Args[],int N>"),
+            ("<typename T><typename U>", "<T><U>"),
+            ("<bool... B>", "<bool B[]>"),
+            ("<typename T, EN(sizeof(T) == sizeof(a.b))>", "<T,EN(sizeof(T)==sizeof(a_b))>"),
+        ],
+    )
+    def test_a_template_head_compacts_to_no_name_separator(self, written: str, head: str) -> None:
+        symbol = Symbol(
+            id="h::f",
+            name="f",
+            qualified_name="h.f",
+            kind="function",
+            signature="",
+            start_line=1,
+            end_line=1,
+            docstring=None,
+            template_parameters=written,
+        )
+        assert template_head(symbol) == head
+        assert not any(sep in head for sep in (".", "/", "::", "#"))
 
     def test_operator_overloads(self) -> None:
         source = (
