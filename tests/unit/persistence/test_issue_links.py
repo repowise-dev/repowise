@@ -193,3 +193,40 @@ async def test_a_prior_defect_finding_cites_its_linked_issue(async_session):
     # No link behind the file, or not a defect finding: left as it was.
     assert rows[1]["details"] == {"n": 1}
     assert rows[2]["details"] == {}
+
+
+@pytest.mark.asyncio
+async def test_a_kept_outcomes_item_is_dropped_so_it_reads_again(async_session):
+    import json
+
+    from repowise.core.changes.collect import cached_evidence, forget_kept_outcomes
+    from repowise.core.changes.evidence import ChangeEvidence, EvidenceItem
+    from repowise.core.persistence.crud.changes import dump_evidence
+    from repowise.core.persistence.models import Change
+
+    repo = await insert_repo(async_session)
+    kept = ChangeEvidence(
+        "pr-1",
+        A,
+        "2026-01-02T00:00:00+00:00",
+        [
+            EvidenceItem("health_delta", "Health delta", "ok", "measured"),
+            EvidenceItem("outcomes", "Outcomes", "ok", "measured", value={"as_of": A, "days": 30}),
+        ],
+    )
+    row = Change(
+        repository_id=repo.id,
+        change_id="pr-1",
+        identity_kind="pr",
+        identity_value="1",
+        shape="squash",
+        head_sha=A,
+        evidence_json=dump_evidence(kept.to_dict()),
+    )
+    async_session.add(row)
+    await async_session.flush()
+
+    assert await forget_kept_outcomes(async_session, repo.id) == 1
+    assert [i.kind for i in cached_evidence(row).items] == ["health_delta"]
+    assert json.loads(row.evidence_json)["change_id"] == "pr-1"
+    assert await forget_kept_outcomes(async_session, repo.id) == 0

@@ -95,6 +95,11 @@ async def sync_issues(
 
     outcome = await run_issue_fetch(source, request, _store)
     changed = [sha for stored in outcome.stored for sha in stored.get("defect_changed", ())]
+    if changed:
+        from repowise.core.changes.collect import forget_kept_outcomes
+
+        # What counts as a fix moved with HEAD in place: kept outcomes reread.
+        await forget_kept_outcomes(session, repository_id)
     if changed and await _any_indexed(session, repository_id, repo_path, changed):
         from repowise.core.ingestion.git_indexer import (
             GIT_HISTORY_ISSUE_LINKS_REWALK,

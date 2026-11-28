@@ -516,6 +516,36 @@ async def _resolve_kept(
     return await _keep_resolved(session, repo_id, row, evidence, catalog, items)
 
 
+async def forget_kept_outcomes(session: Any, repo_id: str) -> int:
+    """Drop the ``outcomes`` item from every kept checklist; returns how many changed.
+
+    For a change in what counts as a fix with HEAD where it was (a linked bug
+    came or went): the kept item's stamp still matches, so it would never be
+    read again. Without the item a checklist reads its outcomes on next use.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud.changes import dump_evidence
+    from repowise.core.persistence.models import Change
+
+    rows = (
+        await session.execute(
+            select(Change).where(Change.repository_id == repo_id, Change.evidence_json.is_not(None))
+        )
+    ).scalars()
+    dropped = 0
+    for row in rows:
+        kept = cached_evidence(row)
+        if kept is None or kept.item("outcomes") is None:
+            continue
+        kept = replace(kept, items=[i for i in kept.items if i.kind != "outcomes"])
+        row.evidence_json = dump_evidence(kept.to_dict())
+        dropped += 1
+    if dropped:
+        await session.flush()
+    return dropped
+
+
 def cached_evidence(row: Any) -> ChangeEvidence | None:
     """The kept checklist, or ``None`` when there is none in this schema."""
     raw = getattr(row, "evidence_json", None)
