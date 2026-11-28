@@ -175,10 +175,7 @@ def _resolve_go_handler(
 
 class _GoWebHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        go_web_in_stack = any(
-            token in dctx.stack_lower for token in ("gin", "echo", "chi", "fiber", "gorilla", "grpc")
-        )
-        return go_web_in_stack or _has_go_web_imports(dctx.parsed_files)
+        return dctx.uses("gRPC") or _has_go_web_imports(dctx.parsed_files)
 
     def add_edges(
         self,

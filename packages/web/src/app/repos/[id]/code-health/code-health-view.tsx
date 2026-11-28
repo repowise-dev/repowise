@@ -29,7 +29,8 @@
 
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import useSWR, { useSWRConfig } from "swr";
 import { HeartPulse, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
@@ -55,6 +56,9 @@ import {
   type HealthScope,
 } from "@repowise-dev/types/health";
 import { TriageTab } from "@/components/code-health/triage-tab";
+import { NewMark } from "@/components/layout/new-mark";
+import { useIsNewTab } from "@/lib/hooks/use-new-surfaces";
+import { visitNewSurface } from "@/lib/release-moment";
 import { HotspotsSection } from "@/components/code-health/hotspots-section";
 import { TrendSection } from "@/components/code-health/trend-tab";
 import { getDeadCodeSummary } from "@/lib/api/dead-code";
@@ -278,6 +282,11 @@ export function CodeHealthView() {
   const badges: Partial<Record<CodeHealthTabId, number>> = {};
   if (deadCode) badges["dead-code"] = deadCode.total_findings;
 
+  // A tab the latest release highlighted carries "New" until it is opened.
+  const base = `/repos/${repoId}/code-health`;
+  const isNewTab = useIsNewTab();
+  useEffect(() => visitNewSurface(`${base}?tab=${activeTab}`), [base, activeTab]);
+
   const setTab = useCallback(
     (next: string) => {
       const sp = new URLSearchParams(searchParams.toString());
@@ -384,7 +393,12 @@ export function CodeHealthView() {
           release's version so a reader who dismissed an earlier one sees it. */}
       <ReleaseNotice
         id="health-scoring"
-        version="0.61.0"
+        version="0.62.0"
+        title={
+          <Link href={`${base}?tab=performance`} className="hover:underline">
+            {t("performanceNoticeLead")}
+          </Link>
+        }
         detail={t("coChangeNoticeBody")}
         detailLabel={t("coChangeNoticeMore")}
         hideLabel={t("coChangeNoticeLess")}
@@ -411,6 +425,7 @@ export function CodeHealthView() {
             label: t(TAB_DEFS[id].labelKey),
             icon: <Icon className="h-3.5 w-3.5" />,
             ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
+            ...(isNewTab(`${base}?tab=${id}`) ? { mark: <NewMark /> } : {}),
           };
         })}
         value={activeTab}

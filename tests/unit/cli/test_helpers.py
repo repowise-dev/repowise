@@ -634,6 +634,25 @@ class TestValidateProviderConfig:
         assert "openai" in warnings[0]
         assert "OPENAI_API_KEY" in warnings[0]
 
+    def test_ollama_on_its_default_endpoint_needs_no_base_url(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: True
+        )
+
+        assert validate_provider_config("ollama") == []
+
+    def test_ollama_not_answering_says_so_instead_of_asking_for_a_url(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: False
+        )
+
+        warnings = validate_provider_config("ollama")
+        assert len(warnings) == 1
+        assert "not answering at http://localhost:11434" in warnings[0]
+        assert "requires" not in warnings[0]
+
     def test_kimi_missing_key(self, monkeypatch):
         monkeypatch.delenv("KIMI_API_KEY", raising=False)
         monkeypatch.setenv("REPOWISE_PROVIDER", "kimi")
@@ -678,13 +697,16 @@ class TestValidateProviderConfig:
         assert len(warnings) == 1
         assert "gemini" in warnings[0]
 
-    def test_ollama_missing_url(self, monkeypatch):
+    def test_ollama_configured_but_not_running(self, monkeypatch):
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         monkeypatch.setenv("REPOWISE_PROVIDER", "ollama")
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: False
+        )
 
         warnings = validate_provider_config()
         assert len(warnings) == 1
-        assert "ollama" in warnings[0]
+        assert "not answering" in warnings[0]
         assert "OLLAMA_BASE_URL" in warnings[0]
 
     def test_unknown_provider(self, monkeypatch):

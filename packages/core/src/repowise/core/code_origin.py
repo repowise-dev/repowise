@@ -8,8 +8,8 @@ real finding that nobody should be asked to fix first.
 
 The answer is one of :data:`CODE_ORIGINS`, decided in precedence order, so a
 file has exactly one: ``generated`` beats ``vendored`` beats ``build`` beats
-``test`` beats ``docs_example`` beats ``tooling``, and everything else is
-``production``. ``build`` is decided by the file's type (a Gradle script, a
+``test`` beats ``docs_example`` beats ``tooling`` beats ``data``, and
+everything else is ``production``. ``build`` is decided by the file's type (a Gradle script, a
 ``CMakeLists.txt``, a bundler config), wherever it sits; :func:`is_build_file`
 answers it for a caller that needs only that.
 
@@ -52,7 +52,7 @@ __all__ = [
 ]
 
 CodeOrigin = Literal[
-    "production", "test", "vendored", "docs_example", "generated", "tooling", "build"
+    "production", "test", "vendored", "docs_example", "generated", "tooling", "build", "data"
 ]
 
 CODE_ORIGINS: tuple[CodeOrigin, ...] = (
@@ -63,6 +63,7 @@ CODE_ORIGINS: tuple[CodeOrigin, ...] = (
     "generated",
     "tooling",
     "build",
+    "data",
 )
 
 # --------------------------------------------------------------------------
@@ -817,6 +818,63 @@ def _is_docs_example(
     )
 
 
+# --------------------------------------------------------------------------
+# Data
+# --------------------------------------------------------------------------
+
+# A folder a repository keeps content in. Code inside one is material the
+# product reads by path (reference solutions, problem generators, inputs for a
+# sandbox), not modules it imports, when the folder is mostly data files and
+# its code spans several languages: an application does not import its own
+# modules in three languages out of one data folder, while a bank of solutions
+# per problem does. Ceiling: a bank in one language (``data/*/reference.py``
+# alone) stays production, since telling it from a data folder's own loader
+# module needs the import graph.
+_DATA_DIR_TOKENS = frozenset({"data", "datasets"})
+_DATA_MAX_CODE_SHARE = 0.2
+_DATA_MIN_LANGUAGES = 3
+
+
+def _is_content_bank_member(
+    normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
+) -> bool:
+    """Whether a data-named folder above the file is a content bank."""
+    if repo_root is None or _DATA_DIR_TOKENS.isdisjoint(dirs):
+        return False
+    parts = normalized.split("/")
+    root = os.fspath(repo_root)
+    return any(
+        d in _DATA_DIR_TOKENS and _is_content_bank(os.path.join(root, *parts[: i + 1]))
+        for i, d in enumerate(dirs)
+    )
+
+
+# Ceiling: memoised per folder for the process, like ``_is_docs_site``, so a
+# long-running process keeps a folder's first verdict until it restarts.
+# Upgrade path: key the verdict on the folder listing's mtimes.
+@lru_cache(maxsize=1024)
+def _is_content_bank(folder: str) -> bool:
+    """Whether *folder* (an absolute path) holds mostly data, and code in several languages."""
+    from .fs_walk import walk_repo
+    from .ingestion.models import EXTENSION_TO_LANGUAGE
+
+    code_suffixes = frozenset(_code_suffixes())
+    files = code = 0
+    languages: set[str] = set()
+    for _dir, _subdirs, names in walk_repo(folder):
+        for name in names:
+            files += 1
+            suffix = PurePosixPath(name).suffix.lower()
+            if suffix in code_suffixes:
+                code += 1
+                languages.add(EXTENSION_TO_LANGUAGE.get(suffix, suffix))
+    return (
+        code > 0
+        and code <= files * _DATA_MAX_CODE_SHARE
+        and len(languages) >= _DATA_MIN_LANGUAGES
+    )
+
+
 # No ``/cli/`` rule: a CLI's source ships and its findings are real work (only
 # performance treats a CLI loop as off the request path, in
 # ``perf/causal.execution_context``). Migrations join: they run once at deploy
@@ -856,7 +914,18 @@ _MIGRATION_DIR = "migrations"
 # (``src/django_test_migrations/``).
 _MIGRATION_DB_DIR = "db"
 _MIGRATION_DB_SUBDIR_SUFFIX = "_migrations"
-_MIGRATION_DIR_PAIRS = frozenset({("db", "migrate"), ("alembic", "versions")})
+_MIGRATION_DIR_PAIRS = frozenset(
+    {("db", "migrate"), ("db", "migration"), ("alembic", "versions")}
+)
+# A singular ``migration/`` directory holds migrations when its entries are
+# numbered: TypeORM's ``src/migration/1700000000000-Init.ts``, a data
+# migration's ``migration/20240101_add_x/migration.ts``. A bare ``migration/``
+# is as often a product feature (an importer that migrates a user's data from
+# another service), so the numbered child is what decides. Flyway's
+# ``db/migration`` is a pair above.
+_MIGRATION_SINGULAR_DIR = "migration"
+# A sequence or timestamp of four or more digits, then a separator.
+_NUMBERED_ENTRY_RE = re.compile(r"^\d{4,}[-_.]")
 _TOOLING_ROOT_NAMES = frozenset({"fabfile.py"})
 # Benchmarks kept beside the code they measure (abseil's
 # ``mutex_benchmark.cc``), not in a benchmarks directory.
@@ -920,9 +989,13 @@ def is_vendored_or_generated_path(path: str) -> bool:
     return _is_generated_path(name, dirs) or _is_vendored_path(name.lower(), dirs)
 
 
-def _is_migration_dir(dirs: list[str]) -> bool:
+def _is_migration(name: str, dirs: list[str]) -> bool:
     return (
         _MIGRATION_DIR in dirs
+        or any(
+            parent == _MIGRATION_SINGULAR_DIR and _NUMBERED_ENTRY_RE.match(child)
+            for parent, child in pairwise([*dirs, name])
+        )
         or any(pair in _MIGRATION_DIR_PAIRS for pair in pairwise(dirs))
         or any(
             parent == _MIGRATION_DB_DIR and child.endswith(_MIGRATION_DB_SUBDIR_SUFFIX)
@@ -935,7 +1008,7 @@ def is_migration_path(path: str) -> bool:
     """Whether *path* is a schema migration: generated once, append-only, and
     meant to stay self-contained, so no shared helper or split belongs in it."""
     split = _split(path)
-    return split is not None and _is_migration_dir(split[2])
+    return split is not None and _is_migration(split[1], split[2])
 
 
 # A ``scripts/`` folder inside a served static tree holds the browser scripts
@@ -950,6 +1023,13 @@ _SERVED_SCRIPTS_DIR = "scripts"
 _BENCHMARK_DIR = "benchmark"
 _TOOLS_DIR = "tools"
 _TOOLS_PARENT_DIRS = frozenset({"eng", "hack", "ci", "dev"})
+# ``build/`` and ``devtools/`` inside a ``src/`` tree are modules of the product:
+# Next.js ships its build pipeline from ``packages/next/src/build``, React its
+# DevTools UI from ``react-devtools-shared/src/devtools``. Outside one (a root
+# ``build/`` of scripts, ``cmd/build``, ``tools/build``) they stay tooling.
+# Ceiling: path-only, so a source tree without a ``src/`` root (Go's ``pkg/``)
+# still reads its ``build/`` as tooling.
+_SOURCE_MODULE_TOKENS = frozenset({"build", "devtools"})
 
 
 def _is_tooling_dir(i: int, d: str, dirs: list[str]) -> bool:
@@ -959,6 +1039,8 @@ def _is_tooling_dir(i: int, d: str, dirs: list[str]) -> bool:
         return i == 0
     if d == _TOOLS_DIR:
         return i == 0 or dirs[i - 1] in _TOOLS_PARENT_DIRS
+    if d in _SOURCE_MODULE_TOKENS:
+        return _SOURCE_ROOT not in dirs[:i]
     return d != _SERVED_SCRIPTS_DIR or _SERVED_DIRS.isdisjoint(dirs[:i])
 
 
@@ -966,7 +1048,7 @@ def _is_tooling(name: str, dirs: list[str]) -> bool:
     return (
         any(_is_tooling_dir(i, d, dirs) for i, d in enumerate(dirs))
         or bool(dirs and dirs[0] in _TOOLING_ROOT_DIRS)
-        or _is_migration_dir(dirs)
+        or _is_migration(name, dirs)
         or (not dirs and name in _TOOLING_ROOT_NAMES)
         or bool(_TOOLING_NAME_RE.match(name.lower()))
         or _is_benchmark_file(name)
@@ -1130,7 +1212,7 @@ def _maintained_origin(
     header: str = "",
 ) -> CodeOrigin:
     """The origin of code this repository maintains: build, test, docs or
-    examples, tooling, or production, in that precedence."""
+    examples, tooling, data, or production, in that precedence."""
     if _is_build_name(name, dirs, as_origin=True):
         return "build"
     if (
@@ -1143,6 +1225,8 @@ def _maintained_origin(
         return "docs_example"
     if _is_tooling(name, dirs):
         return "tooling"
+    if _is_content_bank_member(normalized, dirs, repo_root):
+        return "data"
     return "production"
 
 
@@ -1159,8 +1243,8 @@ def path_origin(path: str) -> CodeOrigin:
 def owes_a_test(path: str, origin: str | None = None) -> bool:
     """Whether a missing test for *path* is a gap worth naming.
 
-    Only shipped code owes one. Generated, vendored, build, tooling and docs
-    example code, and a schema migration, read "no test" as noise: every
+    Only shipped code owes one. Generated, vendored, build, tooling, docs
+    example and data code, and a schema migration, read "no test" as noise: every
     surface that says a file is untested (``pr_blast.file_tests``, the health
     biomarkers, the inventory's "Untested" filter) asks this. *origin* is the
     stored ``code_origin`` when there is one; without it the path decides.

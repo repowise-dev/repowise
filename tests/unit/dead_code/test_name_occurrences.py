@@ -111,6 +111,19 @@ class TestUsedElsewhere:
         assert finding.confidence == 1.0
         assert finding.safe_to_delete is True
 
+    def test_an_esm_declaration_sibling_is_not_a_use_either(self):
+        # TypeScript emits .d.mts beside an .mjs module, the same restatement.
+        source = _src(
+            **{
+                "runtime__runtime_mjs": "export function WindowHide() {}\n",
+                "runtime__runtime_d.mts": "export function WindowHide(): void;\n",
+            }
+        )
+        finding = _finding("WindowHide", file_path="runtime/runtime.mjs")
+        clamp_unverified_absence([finding], source)
+
+        assert finding.confidence == 1.0
+
     def test_a_declaration_file_elsewhere_is_still_a_use(self):
         # The narrowing is same-directory, same-stem only. A .d.ts naming a
         # symbol from another module really is referring to it.

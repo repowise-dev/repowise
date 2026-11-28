@@ -609,11 +609,11 @@ def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypat
 
 
 class TestInitClosingKeylessNote:
-    """A keyless index closes by naming its upgrade commands (#3105).
+    """A keyless index closes with its search note, never a model line.
 
-    The note must not depend on editor setup: the headless path has no
-    ``generate`` row in the next-steps panel, so this line is the only place
-    it hears about the upgrades.
+    The model offer moved to the setup steps (``repowise next`` and the
+    dashboard), so the closing panel no longer names ``repowise generate``.
+    The search note must not depend on editor setup.
     """
 
     def _output(self, monkeypatch, *, setup, pages, state=None, terminal=False) -> str:
@@ -663,15 +663,14 @@ class TestInitClosingKeylessNote:
     def test_note_prints_with_and_without_editor_setup(self, monkeypatch, setup):
         # At a terminal: off one, editor setup off is a server run (below).
         out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")], terminal=True)
-        # Once, as a step row: the duplicate closing sentence is gone.
-        assert out.count("repowise generate") == 1
+        assert "repowise generate" not in out
         assert "Semantic search is off: repowise reindex turns it on" in out
         assert "--embedder ..." not in out
 
-    def test_a_server_run_keeps_the_model_note_and_drops_the_reindex_hint(self, monkeypatch):
+    def test_a_server_run_drops_the_reindex_hint(self, monkeypatch):
         setup = SimpleNamespace(editor_setup_disabled=True)
         out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")])
-        assert out.count("repowise generate") == 1
+        assert "repowise generate" not in out
         assert "Semantic search is off" not in out
         assert "What's next" not in out
 
@@ -684,7 +683,6 @@ class TestInitClosingKeylessNote:
             },
         }
         out = self._output(monkeypatch, setup=None, pages=[_page("file_page:a")], state=state)
-        assert "repowise generate" in out
         assert "reindex" not in out
 
     def test_no_search_line_when_no_documentation_was_built(self, monkeypatch):

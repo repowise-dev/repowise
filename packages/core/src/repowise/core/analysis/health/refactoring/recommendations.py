@@ -57,7 +57,7 @@ DEFAULT_TEST_LIMIT = 12
 # uncertainty over a whole step set. Two tables would be two policies.
 EFFORT_COST = {"S": 1.0, "M": 2.0, "L": 3.0, "XL": 5.0}
 CONFIDENCE_RISK = {"high": 0.0, "medium": 0.5, "low": 1.25}
-_WEAK_PROVENANCE = {"name-fallback", "global_unique", "unknown"}
+_WEAK_PROVENANCE = {"name-fallback", "global_unique", "import_elsewhere", "unknown"}
 
 
 def _loads_dict(value: Any) -> dict[str, Any]:

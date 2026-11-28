@@ -111,7 +111,7 @@ export function useSetupControls(repoId: string) {
     openPrompt({
       title: text(row.title),
       description: t("promptDescription"),
-      getPrompt: (flavor) => buildSetupAiPrompt(row.prompt, flavor),
+      getPrompt: (flavor) => (row.buildPrompt ? row.buildPrompt(flavor) : buildSetupAiPrompt(row.prompt, flavor)),
     });
   }
 

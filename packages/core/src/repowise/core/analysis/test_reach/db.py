@@ -618,7 +618,7 @@ async def imported_names_by_test(
         return {}
     out: dict[str, dict[str, frozenset[str]]] = {}
     barrels: dict[str, dict[str, frozenset[str]]] = {}
-    for source, target, names in await _imported_names(session, repo_id, targets):
+    for source, target, names in await imported_names(session, repo_id, targets):
         if source in test_files:
             _add_names(out, target, source, names)
         elif PurePosixPath(source).name in BARREL_FILENAMES:
@@ -636,7 +636,7 @@ async def _add_barrel_imports(
     out: dict[str, dict[str, frozenset[str]]],
 ) -> None:
     """Credit each test importing a barrel with the names the barrel passes on from each file."""
-    for source, barrel, names in await _imported_names(session, repo_id, sorted(barrels)):
+    for source, barrel, names in await imported_names(session, repo_id, sorted(barrels)):
         if source not in test_files:
             continue
         for target, exported in barrels[barrel].items():
@@ -653,7 +653,7 @@ def _add_names(
     by_test[test] = by_test.get(test, frozenset()) | names
 
 
-async def _imported_names(
+async def imported_names(
     session: AsyncSession, repo_id: str, targets: list[str]
 ) -> list[tuple[str, str, frozenset[str]]]:
     """``(importer, imported file, names)`` for every import edge into *targets*."""
@@ -704,6 +704,23 @@ async def load_import_graph(session: AsyncSession, repo_id: str) -> ImportGraph:
     return ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()})
 
 
+async def load_time_importers(session: AsyncSession, repo_id: str) -> ImportGraph:
+    """The import edges that run when a module loads, reversed: type-only and deferred
+    (function-body) imports left out, as cycle detection leaves them out."""
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+            "WHERE repository_id = :repo_id AND edge_type = 'imports' "
+            "AND type_only = :no AND deferred = :no"
+        ),
+        {"repo_id": repo_id, "no": False},
+    )
+    importers: dict[str, list[str]] = {}
+    for source, target in rows:
+        importers.setdefault(target, []).append(source)
+    return ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()})
+
+
 async def cached_import_graphs(
     session: AsyncSession, repo_id: str
 ) -> tuple[ImportGraph, ImportGraph]:
@@ -714,6 +731,35 @@ async def cached_import_graphs(
         return _cache.get(key)
     graph = await load_import_graph(session, repo_id)
     return _cache.remember(key, (graph, graph.with_package_inits()))
+
+
+async def cached_call_importers(session: AsyncSession, repo_id: str) -> ImportGraph:
+    """Every execution edge between two files, reversed as :class:`ImportGraph` holds
+    them, read once per index state.
+
+    A call can reach a file its caller does not import (a dispatch to an
+    override, a framework binding), so a walk over files that must miss no
+    route reads these beside the imports. Name-guessed calls stay in: they
+    only add reach.
+    """
+    key = await _cache.key(session, repo_id, "call_importers")
+    if key in _cache:
+        return _cache.get(key)
+    params: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", sorted(EXECUTION_EDGE_TYPES), params)
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+            f"WHERE repository_id = :repo_id AND edge_type IN ({ets})"
+        ),
+        params,
+    )
+    importers: dict[str, set[str]] = {}
+    for source, target in rows:
+        caller, callee = file_of_symbol(source), file_of_symbol(target)
+        if caller != callee:
+            importers.setdefault(callee, set()).add(caller)
+    return _cache.remember(key, ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()}))
 
 
 async def direct_dependents(

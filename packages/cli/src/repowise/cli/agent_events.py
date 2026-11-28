@@ -12,11 +12,16 @@ and ``event``:
   ``degraded`` (exit 2), ``interrupted`` (exit 130) or ``failed`` (any other
   exit, with ``error``); then ``mode``, ``restart_required``,
   ``restart_hosts`` (``id``, ``name``), ``spend``, ``warnings``,
-  ``files_written``, ``next`` (commands, first one first), ``mcp_tools``
+  ``files_written``, ``next`` (commands in order, a long-running one last),
+  ``long_running`` (the commands in ``next`` that keep running: start them in
+  the background), ``first_prompt`` (the first question to ask the agent once
+  it has the tools, null when there is none), ``mcp_tools``
   (per wired agent: ``id``, ``name``, ``profile``, ``adjustments``,
   ``tool_count``, ``tools``, ``change_command`` and ``always_load``, null for
   a client that loads every schema up front) and ``connect`` (installed
-  agents not wired: ``id``, ``name``, ``command``).
+  agents not wired: ``id``, ``name``, ``command``) and ``report`` (the repo
+  report init wrote: ``open_items``, ``summary_command`` to relay what it found
+  to the person, ``json_command`` for its items; null when none was written).
 
 While the stream is open, human text goes to stderr, so stdout is only these lines.
 """
@@ -62,6 +67,9 @@ def summary_fields(
     mcp_tools: list[dict[str, Any]] | None = None,
     restart_hosts: list[dict[str, str]] | None = None,
     connect: list[dict[str, str]] | None = None,
+    long_running: list[str] | None = None,
+    first_prompt: str | None = None,
+    report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Every summary key, always present, so a consumer never probes for one."""
     fields: dict[str, Any] = {
@@ -74,12 +82,18 @@ def summary_fields(
         "warnings": list(warnings or []),
         "files_written": list(files_written or []),
         "next": list(next_commands or []),
+        # The commands in ``next`` that do not return: run them in the background.
+        "long_running": list(long_running or []),
+        # The question to ask first once the tools load; same text as the panel's.
+        "first_prompt": first_prompt,
         # What the finish panel's "What stood out" showed; null before it rendered.
         "findings": findings,
         # The MCP tools each wired agent is listed; empty when nothing was wired.
         "mcp_tools": list(mcp_tools or []),
         # Installed agents init did not wire, each with the command that wires it.
         "connect": list(connect or []),
+        # The repo report init wrote: open items and the commands that read it.
+        "report": report,
     }
     if error is not None:
         fields["error"] = error

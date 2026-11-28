@@ -15,7 +15,7 @@ import posixpath
 
 import structlog
 
-from repowise.core.build_units.adapters import Found
+from repowise.core.build_units.adapters import Found, linked_unit_id
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.composer import ComposerManifest, repo_composer_manifests
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -76,6 +76,7 @@ def units(ctx: ResolverContext) -> Found:
     manifests = repo_composer_manifests(ctx)
     by_root: dict[str, str] = {}
     name_by_root: dict[str, str] = {}
+    dropped: set[str] = set()
     taken: set[str] = set()
     kept: list[tuple[str, ComposerManifest]] = []
     for manifest in sorted(manifests, key=lambda m: m.rel_dir):
@@ -84,9 +85,12 @@ def units(ctx: ResolverContext) -> Found:
         # an unnamed package's id is its directory, which keeps its case.
         key = uid.lower() if manifest.name else uid
         if key in taken:
-            # A later duplicate is no unit here, so the fallback keeps its root
-            # and a path repository pointing at it links nothing.
+            # A later duplicate is no unit here, so the fallback keeps its root.
+            # A path repository pointing at it links that manifest unit.
             log.warning("build_units_duplicate_id", unit_id=uid, root=manifest.rel_dir)
+            dropped.add(manifest.rel_dir)
+            if manifest.name:
+                name_by_root[manifest.rel_dir] = manifest.name.lower()
             continue
         taken.add(key)
         by_root[manifest.rel_dir] = uid
@@ -99,12 +103,13 @@ def units(ctx: ResolverContext) -> Found:
     for uid, manifest in kept:
         requires = {name.lower() for name in manifest.requires}
         deps = {
-            target_uid
+            target
             for url in manifest.path_repositories
             if (pattern := _resolve_url(manifest.rel_dir, url)) is not None
-            for root, target_uid in by_root.items()
+            for root in (*by_root, *dropped)
             if (
-                target_uid != uid
+                (target := linked_unit_id(root, by_root, dropped)) is not None
+                and target != uid
                 and _matches(pattern, root)
                 and name_by_root.get(root) in requires
             )

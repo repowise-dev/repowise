@@ -342,7 +342,10 @@ def _emit_telemetry(
     ledger can't aggregate across installs.
     """
     from repowise.core.platform import telemetry
+    from repowise.server.mcp_server import _state
 
+    if not _state.telemetry_allowed():
+        return
     telemetry.record_event(
         "mcp_tool_call",
         _telemetry_properties(tool, result, duration_ms, cold_start=cold_start, include=include),
@@ -504,6 +507,12 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
             record_call(_state.served_path(), tool, duration_ms)
         except Exception:  # pragma: no cover - defensive; the latency log never breaks a tool
             logger.debug("mcp latency log failed for %s", tool, exc_info=True)
+        try:
+            from repowise.server.mcp_server._setup_refresh import schedule_setup_refresh
+
+            schedule_setup_refresh(result)
+        except Exception:  # the setup refresh never breaks a tool
+            logger.debug("mcp setup refresh failed for %s", tool, exc_info=True)
         return result
 
     # Preserve the original signature so FastMCP builds the correct tool schema.

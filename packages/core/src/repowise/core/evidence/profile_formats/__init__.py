@@ -8,10 +8,13 @@ works for coverage reports. A format is a :class:`ProfileFormat`: a
 turns the whole file into a :class:`ProfileRun` (frames and weighted
 stacks, nothing joined); joining frames to code and writing the
 ``repowise-evidence-v1`` document is shared (:mod:`..profile_convert`). Any
-other kind (benchmark results, test reports) has ``to_v1`` instead, which writes the v1
+other kind (benchmark results, test reports, a pg_stat_statements export) has ``to_v1`` instead, which writes the v1
 document directly: its entries name their functions, and ingest joins
-them. A new format is one module plus one ``register`` call below. A plugin adds
-one the same way from its ``register()``::
+them. A format whose tool names a package rather than a file (Go) sets
+``needs_checkout`` and gets the checkout the run used as a second argument;
+every other ``to_v1`` takes the bytes alone. A new format is one module plus one
+``register`` call below. A plugin adds one the same way from its
+``register()``::
 
     from repowise.core.evidence.profile_formats import ProfileFormat, profile_formats
 
@@ -26,11 +29,28 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, cpuprofile, hyperfine, junit, pprof, pytest_benchmark, speedscope
+from . import (
+    collapsed,
+    cpuprofile,
+    criterion,
+    go_bench,
+    go_test_json,
+    google_benchmark,
+    hyperfine,
+    jfr,
+    junit,
+    pg_stat_statements,
+    pprof,
+    pstats,
+    pytest_benchmark,
+    speedscope,
+    vitest_bench,
+)
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
@@ -38,7 +58,7 @@ from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 class ProfileFormat:
     """A format's sniffer and exactly one of its two readers.
 
-    Both readers raise ``EvidenceFormatError`` when the file cannot be read.
+    Readers raise ``EvidenceFormatError`` when the file cannot be read.
     """
 
     #: Whether a file starting with these bytes (BOM included) is this format.
@@ -46,11 +66,30 @@ class ProfileFormat:
     #: A profile: the whole file as a run, converted by :mod:`..profile_convert`.
     read: Callable[[bytes], ProfileRun] | None = None
     #: Any other kind: the whole file as a ``repowise-evidence-v1`` object.
-    to_v1: Callable[[bytes], dict[str, Any]] | None = None
+    #: Called ``to_v1(data)``, or ``to_v1(data, checkout_root)`` with *needs_checkout*.
+    to_v1: Callable[..., dict[str, Any]] | None = None
+    #: ``to_v1`` also reads the checkout the run used (Go output names packages, not files).
+    needs_checkout: bool = False
+    #: Optional v1 reader with a local path, for formats with sibling metadata.
+    to_v1_from_path: Callable[[bytes, Path], dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if (self.read is None) == (self.to_v1 is None):
             raise ValueError("a format has exactly one of read and to_v1")
+        if self.to_v1_from_path is not None and self.to_v1 is None:
+            raise ValueError("a format with to_v1_from_path also needs to_v1")
+
+    def convert_to_v1(
+        self, data: bytes, name: str | Path, checkout_root: Path | None = None
+    ) -> dict[str, Any]:
+        """Convert to v1, using the source path only for local files and the
+        checkout only for a format that sets *needs_checkout*."""
+        if self.to_v1_from_path is not None and isinstance(name, Path):
+            return self.to_v1_from_path(data, name)
+        assert self.to_v1 is not None
+        if self.needs_checkout:
+            return self.to_v1(data, checkout_root)
+        return self.to_v1(data)
 
 
 #: Format name -> format, in the order formats are sniffed and listed.
@@ -62,9 +101,35 @@ profile_formats.register(
     "pytest-benchmark",
     ProfileFormat(pytest_benchmark.sniff, to_v1=pytest_benchmark.to_v1),
 )
+# Before go-bench, which claims every test2json head: go-test-json declines a head that
+# shows a benchmark run, and hands go-bench a file whose results come later.
+profile_formats.register(
+    "go-test-json",
+    ProfileFormat(go_test_json.sniff, to_v1=go_test_json.to_v1, needs_checkout=True),
+)
+profile_formats.register(
+    "go-bench", ProfileFormat(go_bench.sniff, to_v1=go_bench.to_v1, needs_checkout=True)
+)
 profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
+profile_formats.register(
+    "vitest-bench", ProfileFormat(vitest_bench.sniff, to_v1=vitest_bench.to_v1),
+)
 profile_formats.register("junit", ProfileFormat(junit.sniff, to_v1=junit.to_v1))
+profile_formats.register(
+    "pg-stat-statements",
+    ProfileFormat(pg_stat_statements.sniff, to_v1=pg_stat_statements.to_v1),
+)
+profile_formats.register("jfr", ProfileFormat(jfr.sniff, jfr.read))
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
+profile_formats.register(
+    "google-benchmark",
+    ProfileFormat(google_benchmark.sniff, to_v1=google_benchmark.to_v1),
+)
+profile_formats.register(
+    "criterion",
+    ProfileFormat(criterion.sniff, to_v1=criterion.to_v1, to_v1_from_path=criterion.to_v1),
+)
+profile_formats.register("pstats", ProfileFormat(pstats.sniff, pstats.read))
 
 
 def detect_profile_format(head: bytes) -> str | None:

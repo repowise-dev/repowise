@@ -17,7 +17,8 @@ It also records every file each import resolved to, which a patch that adds or
 removes files compares against to find the unchanged files it re-routes, and
 the field types each file's classes declare, which another file's chained
 calls read from its source (``obj.field.method()``): an edit that changes them
-reaches every file that spells the field. A C/C++ file's record also holds
+reaches every file that spells the field. A Go named container type's
+container is recorded beside them. A C/C++ file's record also holds
 the other facts resolving another file reads from its source
 (:mod:`repowise.core.ingestion.cpp_cross_file_facts`).
 """
@@ -36,7 +37,7 @@ from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 log = structlog.get_logger(__name__)
 
 _FILENAME = "resolved_imports.pkl"
-_VERSION = 4
+_VERSION = 5
 
 _Entry = tuple[str | None, tuple[str | None, ...], tuple[str, ...]]
 
@@ -49,13 +50,29 @@ def _resolver_text(source: bytes) -> str:
     return source.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
 
 
+#: The pseudo-field a Go named container type's record keeps its container
+#: under (``type methodTrees []methodTree``); no real field spells it.
+GO_CONTAINER_FIELD = "<container>"
+
+
 def field_types(parsed: Any, source: bytes | None) -> FieldTypes | None:
-    """The field types *parsed*'s classes declare, or ``None`` without its source."""
-    from repowise.core.ingestion.call_receiver_typing import class_field_types
+    """The field types *parsed*'s classes declare, or ``None`` without its source.
+
+    A Go named container type records its container under
+    :data:`GO_CONTAINER_FIELD`: a range in another file of the package walks it.
+    """
+    from repowise.core.ingestion.call_receiver_typing import (
+        class_field_types,
+        go_named_containers,
+    )
 
     if source is None:
         return None
-    return class_field_types(parsed, _resolver_text(source))
+    text = _resolver_text(source)
+    out: FieldTypes = class_field_types(parsed, text)
+    for type_id, container in go_named_containers(parsed, text).items():
+        out.setdefault(type_id, {})[GO_CONTAINER_FIELD] = container
+    return out
 
 
 def cpp_facts(parsed: Any, source: bytes | None) -> Any:

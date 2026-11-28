@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Layers } from "lucide-react";
@@ -30,6 +30,7 @@ import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
 import { getTranslations } from "next-intl/server";
 import { WorkspaceNextActionsPanel } from "./workspace-next-actions-panel";
 import { workspaceDocFreshness } from "./doc-freshness";
+import { WorkspaceWelcomeMoment, type WorkspaceWelcomeFacts } from "@/components/welcome/workspace-welcome";
 
 const WORKSPACE_DOCS_HREF =
   "https://github.com/repowise-dev/repowise/blob/main/docs/start/QUICKSTART.md";
@@ -119,11 +120,32 @@ export default async function WorkspaceDashboardPage() {
   const docFreshness = docs.pct;
 
   const rows = repos.slice().sort(byAttention).map(toRow);
+  const lowest = lowestRepoHealth(rows);
+  // The file pair that shared the most work sessions: its count is a floor on
+  // how often the two repositories changed together (summing pairs would count
+  // one session once per file pair). init's cross-repo finding reads the same.
+  const pairs = coChanges?.co_changes ?? [];
+  const topPair = pairs.length
+    ? pairs.reduce((best, c) => (c.frequency > best.frequency ? c : best))
+    : null;
+  const indexed = repos.filter((r) => statusOf(r) === "indexed");
+  const welcome: WorkspaceWelcomeFacts = {
+    name: workspace?.workspace_name ?? null,
+    repoCount: indexed.length,
+    fileCount: totals.files,
+    contractLinks: contracts?.total_links ?? null,
+    topCoChange: topPair
+      ? { a: topPair.source_repo, b: topPair.target_repo, sessions: topPair.frequency }
+      : null,
+    lowest: lowest ? { name: lowest.name, score: lowest.score } : null,
+    notIndexed: repos.filter((r) => statusOf(r) === "needs_index").map((r) => r.alias),
+    members: indexed.map((r) => r.alias),
+  };
 
   // Files and symbols are not here: the lede sentence above already says
   // both, and the ribbon is for the signals that cut across repositories.
   const ribbon: RibbonStat[] = [
-    lowestHealthStat(lowestRepoHealth(rows), {
+    lowestHealthStat(lowest, {
       label: t("ribbon.lowestHealth"),
       sub: (low) =>
         t("ribbon.lowestHealthSub", { name: low.name, healthy: low.healthy, scored: low.scored }),
@@ -162,6 +184,10 @@ export default async function WorkspaceDashboardPage() {
       description={t("description")}
       actions={<SyncButton variant="primary" label={t("syncWorkspace")} />}
     >
+      {/* Reads the URL (`?tour=1`), so it sits behind its own boundary. */}
+      <Suspense fallback={null}>
+        <WorkspaceWelcomeMoment facts={welcome} />
+      </Suspense>
       <WorkspaceOverviewSections
         lede={
           <PageLede

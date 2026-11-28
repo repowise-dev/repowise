@@ -7,9 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.evidence.add import EvidenceRefusedError, prepare_evidence
+from repowise.core.evidence.add import (
+    EvidenceRefusedError,
+    evidence_report_dir,
+    prepare_evidence,
+    prepare_evidence_files,
+)
 from repowise.core.evidence.format_v1 import EvidenceFormatError, parse_evidence
-from repowise.core.evidence.ingest import join_entries, place_test_entries
+from repowise.core.evidence.ingest import join_entries, place_test_entries, rebase_test_entries
 from repowise.core.evidence.profile_formats import detect_profile_format, junit
 
 # pytest --junitxml, default xunit2 family: no file attribute.
@@ -53,11 +58,38 @@ JEST = b"""<testsuites name="jest tests"><testsuite name="cart">
 """
 
 
+# jest-junit as ``evidence setup`` runs it: the classname is the file, repo-relative
+# through the unit's path prefix.
+JEST_SETUP = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="3"><testsuite name="cart" tests="2">
+<testcase classname="web/src/cart.test.ts" name="cart adds an item" time="0.5" />
+<testcase classname="web/src/cart.test.ts" name="cart removes an item" time="0.1" />
+</testsuite><testsuite name="pay" tests="1">
+<testcase classname="web/src/pay.test.ts" name="pay charges" time="0.2" />
+</testsuite></testsuites>
+"""
+
+# What ``cargo llvm-cov nextest --profile ci`` wrote (cargo-nextest 0.9.152): the
+# classname is the test binary (crate, or crate::integration-test), the name the
+# test's module path inside it.
+NEXTEST = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="3" skipped="0" failures="0" errors="0" uuid="540d67c4-0fa1-4997-a004-d185cec53707" timestamp="2026-11-27T19:48:04.591+05:30" time="0.012">
+    <testsuite name="nx" tests="2" skipped="0" errors="0" failures="0">
+        <testcase name="cart::tests::totals" classname="nx" timestamp="2026-11-27T19:48:04.591+05:30" time="0.006"/>
+        <testcase name="tests::adds" classname="nx" timestamp="2026-11-27T19:48:04.591+05:30" time="0.006"/>
+    </testsuite>
+    <testsuite name="nx::basic" tests="1" skipped="0" errors="0" failures="0">
+        <testcase name="integration" classname="nx::basic" timestamp="2026-11-27T19:48:04.597+05:30" time="0.006"/>
+    </testsuite>
+</testsuites>
+"""
+
+
 def _doc(data: bytes):
     return parse_evidence(json.dumps(junit.to_v1(data)))
 
 
-@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST])
+@pytest.mark.parametrize("data", [PYTEST_XUNIT2, PYTEST_XUNIT1, SUREFIRE, VITEST, JEST, NEXTEST])
 def test_every_runner_shape_is_detected_as_junit(data: bytes) -> None:
     assert detect_profile_format(data) == "junit"
 
@@ -80,6 +112,21 @@ def test_pytest_cases_keep_their_classname_until_placed() -> None:
     assert [e["first_in_class"] for e in doc.entries] == [True, False, True, False]
 
 
+def test_nextest_cases_keep_their_binary_and_are_never_placed_by_it() -> None:
+    doc = _doc(NEXTEST)
+
+    assert doc.kind == "test_timing"
+    assert [(e["test_id"], e["outcome"], e["duration_s"]) for e in doc.entries] == [
+        ("nx::cart::tests::totals", "passed", 0.006),
+        ("nx::tests::adds", "passed", 0.006),
+        ("nx::basic::integration", "passed", 0.006),
+    ]
+    # The classname is a crate, not a module path: a file named like the crate
+    # never takes the crate's tests.
+    placed = place_test_entries(doc, ["src/nx.rs", "src/lib.rs", "src/cart.rs", "tests/basic.rs"])
+    assert [e.get("test_file") for e in placed.entries] == [None, None, None]
+
+
 def test_a_case_that_names_its_file_gets_a_path_id() -> None:
     (entry,) = _doc(PYTEST_XUNIT1).entries
 
@@ -96,6 +143,19 @@ def test_a_path_classname_is_the_file() -> None:
 
     assert entry["test_id"] == "src/cart.test.ts::cart > adds an item"
     assert entry["test_file"] == "src/cart.test.ts"
+
+
+def test_jest_junit_as_setup_runs_it_names_each_file() -> None:
+    entries = _doc(JEST_SETUP).entries
+
+    assert [e["test_id"] for e in entries] == [
+        "web/src/cart.test.ts::cart adds an item",
+        "web/src/cart.test.ts::cart removes an item",
+        "web/src/pay.test.ts::pay charges",
+    ]
+    assert {e["test_file"] for e in entries} == {"web/src/cart.test.ts", "web/src/pay.test.ts"}
+    # Setup shared by a file runs in its first test.
+    assert [e["first_in_class"] for e in entries] == [True, False, True]
 
 
 def test_placing_joins_dotted_names_to_indexed_files() -> None:
@@ -231,7 +291,6 @@ def test_an_absolute_file_falls_back_to_the_classname() -> None:
 
 
 def test_report_files_read_as_one_run_and_other_files_are_left_out(tmp_path: Path) -> None:
-    from repowise.core.evidence.add import prepare_evidence_files
 
     prepared = prepare_evidence_files(
         [
@@ -246,3 +305,48 @@ def test_report_files_read_as_one_run_and_other_files_are_left_out(tmp_path: Pat
 
     assert prepared.format == "junit"
     assert len(prepared.doc.entries) == 3
+
+
+def test_a_unit_below_the_root_names_its_tests_from_the_reports_directory() -> None:
+    # Vitest in web/ names src/cart.test.ts and writes web/junit.xml.
+    files = {"web/src/cart.test.ts", "src/other.ts"}
+
+    (entry,) = rebase_test_entries(_doc(VITEST), files, "web").entries
+
+    assert entry["test_id"] == "web/src/cart.test.ts::cart > adds an item"
+    assert (entry["test_file"], entry["location"]["path"]) == ("web/src/cart.test.ts",) * 2
+
+
+def test_the_reports_directory_wins_over_a_root_file_of_the_same_name() -> None:
+    files = {"src/cart.test.ts", "web/src/cart.test.ts"}
+    assert rebase_test_entries(_doc(VITEST), files, "web").entries[0]["test_file"] == "web/src/cart.test.ts"
+    # Only the root file: the path is kept as given.
+    assert rebase_test_entries(_doc(VITEST), {"src/cart.test.ts"}, "web").entries[0]["test_file"] == "src/cart.test.ts"
+    # Neither path indexed: nothing to rebase onto.
+    assert rebase_test_entries(_doc(VITEST), set(), "web").entries[0]["test_file"] == "src/cart.test.ts"
+
+
+def test_the_report_directory_is_where_every_file_is(tmp_path: Path) -> None:
+    web = tmp_path / "web"
+    root_report, web_report = tmp_path / "junit.xml", web / "junit.xml"
+
+    assert evidence_report_dir([web_report], tmp_path) == "web"
+    assert evidence_report_dir([web_report, web / "b.xml"], tmp_path) == "web"
+    # The root, several directories, or outside the checkout: none.
+    assert evidence_report_dir([root_report], tmp_path) == ""
+    assert evidence_report_dir([web_report, root_report], tmp_path) == ""
+    assert evidence_report_dir([web_report], tmp_path / "other") == ""
+
+
+def test_the_report_directory_is_part_of_the_run_key() -> None:
+    from repowise.core.evidence.ingest import RunProvenance, run_key
+
+    provenance = RunProvenance(
+        workload_name="w", workload_class="unit_test", commit_sha="c", checkout_root="r", dirty=False
+    )
+    keys = {run_key("x", provenance, "test_timing", "c", d) for d in ("", "web", "api")}
+    assert len(keys) == 3
+    # Only test paths are read from the directory: a profile keeps one key.
+    assert run_key("x", provenance, "profile", "c", "web") == run_key("x", provenance, "profile", "c")
+    # A run read from the root keeps the key it always had.
+    assert run_key("x", provenance, "test_timing", "c") == run_key("x", provenance, "test_timing", "c", "")

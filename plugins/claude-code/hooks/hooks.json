@@ -1,5 +1,4 @@
 {
-  "modules": ["./lens/lens.js"],
   "hooks": {
     "SessionStart": [
       {
@@ -47,6 +46,17 @@
             "command": "input=$(cat); case \"$input\" in *\"git commit\"*|*\"git pull\"*|*\"git merge\"*|*\"git rebase\"*|*\"git cherry-pick\"*) if command -v repowise-augment >/dev/null 2>&1; then printf \"%s\" \"$input\" | repowise-augment; fi;; esac",
             "timeout": 10,
             "statusMessage": "Checking for a decision to record..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment --decision-stop; fi",
+            "timeout": 10
           }
         ]
       }

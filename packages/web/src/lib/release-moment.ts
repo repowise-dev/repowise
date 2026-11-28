@@ -180,12 +180,44 @@ export function startNewSurfaces(version: string, highlights: ChangelogHighlight
   saveNewSurfaces({ version, since: Date.now(), routes, visited: [] });
 }
 
-/** `/repos/abc/chat/123` matches `/repos/:id/chat`. */
-export function routeMatches(route: string, pathname: string): boolean {
-  const want = route.split("/").filter(Boolean);
-  const have = pathname.split("/").filter(Boolean);
+function segments(path: string): string[] {
+  return path.split("/").filter(Boolean);
+}
+
+/** `/repos/abc/chat/123` matches `/repos/:id/chat`. A route that names a query
+ *  (`/repos/:id/code-health?tab=performance`) matches only a location that
+ *  carries it, so a highlighted tab is not cleared by opening another tab. */
+export function routeMatches(route: string, location: string): boolean {
+  const [routePath = "", routeQuery = ""] = route.split("?");
+  const [path = "", query = ""] = location.split("?");
+  const want = segments(routePath);
+  const have = segments(path);
   if (have.length < want.length) return false;
-  return want.every((p, i) => p === ":id" || p === have[i]);
+  if (!want.every((p, i) => p === ":id" || p === have[i])) return false;
+  const params = new URLSearchParams(query);
+  return [...new URLSearchParams(routeQuery)].every(([k, v]) => params.get(k) === v);
+}
+
+/** Whether the nav entry at `href` is where a highlighted `route` lives: its
+ *  own page, or a page or tab beneath it that has no entry of its own
+ *  (`/settings/setup` under Settings, `?tab=performance` on Code Health). The
+ *  root and `exact` entries own only their own page, so Dashboard never claims
+ *  every route and the workspace overview never claims its siblings. A route
+ *  above every entry (`/repos/:id/report`) marks none. */
+export function navOwnsRoute(route: string, href: string, exact = false): boolean {
+  const have = segments(route.split("?")[0] ?? "");
+  const want = segments(href);
+  if (have.length < want.length) return false;
+  if ((exact || want.length === 0) && have.length !== want.length) return false;
+  return want.every((p, i) => have[i] === ":id" || have[i] === p);
+}
+
+/** Whether `location` (a page plus its query, such as a tab's URL) is exactly
+ *  a highlighted route that names a query: the mark inside a page. */
+export function tabOwnsRoute(route: string, location: string): boolean {
+  if (!route.includes("?")) return false;
+  const depth = (s: string) => segments(s.split("?")[0] ?? "").length;
+  return depth(route) === depth(location) && routeMatches(route, location);
 }
 
 /** Routes still marked "New" for `now`. */
@@ -194,10 +226,11 @@ export function activeNewRoutes(value: NewSurfaces | null, now: number): string[
   return value.routes.filter((r) => !value.visited.includes(r));
 }
 
-/** Records a visit to `pathname`, clearing the mark of the route it opens. */
-export function visitNewSurface(pathname: string): void {
+/** Records a visit to `location` (a pathname, or one with its query for a
+ *  tab), clearing the mark of the route it opens. */
+export function visitNewSurface(location: string): void {
   const value = readNewSurfaces();
-  const hit = activeNewRoutes(value, Date.now()).find((r) => routeMatches(r, pathname));
+  const hit = activeNewRoutes(value, Date.now()).find((r) => routeMatches(r, location));
   if (!value || !hit) return;
   saveNewSurfaces({ ...value, visited: [...value.visited, hit] });
 }

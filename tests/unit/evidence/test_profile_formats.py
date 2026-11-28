@@ -476,17 +476,17 @@ def test_one_stack_longer_than_the_sniff_window_is_still_collapsed() -> None:
     assert detect_profile_format(deep.encode()) == "collapsed"
 
 
-def test_module_body_self_time_is_reported_unattributed_not_dropped() -> None:
+def test_module_body_self_time_is_its_import_row_not_dropped() -> None:
     doc = {**PYSPY, "shared": {"frames": [
         {"name": "<module>", "file": _f("pkg\\app.py"), "line": 35},
         {"name": "loads", "file": "C:\\Python\\json.py", "line": 3},
     ]}, "profiles": [{"type": "sampled", "unit": "none", "samples": [[0, 1], [0]],
                       "weights": [2, 1]}]}
     conv = _convert(profile_formats.get("speedscope").read(_bytes(doc)))
-    assert conv.document["symbols"] == []
+    [row] = conv.document["symbols"]
+    assert (row["path"], row["function"], row["self"]) == ("pkg/app.py", "<module>", 3.0)
     assert conv.explained == 3.0
-    assert conv.self_unattributed == {"module_body": 3.0}
-    assert conv.summary()["self_unattributed"] == {"module_body": 1.0}
+    assert conv.self_unattributed == {}
 
 
 def test_unit_none_weights_are_sample_counts() -> None:
@@ -548,12 +548,13 @@ def test_waits_charge_no_self_time_and_libraries_stay_with_their_caller() -> Non
     assert [e["function"] for e in conv.document["symbols"]] == [
         "pkg.app.App.load", "pkg.app.App.run",
     ]
-    assert (conv.repo_self, conv.waits, conv.libraries) == (2, 6, 2)
+    # The split counts the standard library (json) as a library, like sqlalchemy.
+    assert (conv.repo_self, conv.waits, conv.libraries) == (0, 6, 4)
     summary = conv.summary()
     assert (summary["repo_self_share"], summary["wait_share"], summary["library_share"]) == (
-        0.2, 0.6, 0.2,
+        0.0, 0.6, 0.4,
     )
-    assert (conv.document["repo_self"], conv.document["waits"]) == (2, 6)
+    assert (conv.document["repo_self"], conv.document["waits"]) == (0, 6)
     assert parse_evidence(json.dumps(conv.document)).waits == 6
 
 

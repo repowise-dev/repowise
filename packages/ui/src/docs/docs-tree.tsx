@@ -128,7 +128,7 @@ export const DEFAULT_DOCS_TREE_COPY: DocsTreeCopy = {
   referenceApi: "API",
   referenceFiles: "Files",
   referenceInfrastructure: "Infrastructure",
-  referenceCycles: "Dependency cycles",
+  referenceCycles: "Static import cycles",
   projectActivity: "Project activity",
 };
 
@@ -615,7 +615,8 @@ function referenceGroup(
   return { name, path: key, isDir: true, children, meta: formatNumber(pages.length) };
 }
 
-// "Circular Dependency: " and its translations: the folder already says it.
+// "Static Import Cycle: " (or an older "Circular Dependency: ") and its
+// translations: the folder already says it.
 const CYCLE_PREFIX = /^[^:]{1,40}:\s*/;
 
 /** Every deterministic page in one collapsed folder, held apart from the

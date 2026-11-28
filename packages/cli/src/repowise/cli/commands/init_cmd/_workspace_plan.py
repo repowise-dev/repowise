@@ -40,6 +40,7 @@ from repowise.cli.ui.plan_screen.workspace import (
 from repowise.cli.ui.subscription import SubscriptionContext
 
 from ._plan import outside_lines, say_no_answer
+from ._workspace_repos import default_primary
 
 
 @dataclass
@@ -98,6 +99,8 @@ class WorkspacePlan:
     sync: bool | None = None
     #: ``True`` / ``False`` answered the global MCP question; ``None`` never asked it.
     global_consent: bool | None = None
+    #: The primary the screen opened with; a different one was picked by the user.
+    primary_default: str = ""
 
 
 @dataclass
@@ -225,7 +228,7 @@ def run_workspace_plan_screen(
 
     ``None`` when nobody can answer (EOF on the first read or inside a
     question): the caller runs the non-interactive defaults, every repo
-    with the first as primary. Ctrl-C still stops the run.
+    with :func:`default_primary` as primary. Ctrl-C still stops the run.
     """
     from repowise.cli.editor_setup import is_editor_setup_disabled
     from repowise.cli.ui.provider_selection import _detect_provider_status
@@ -236,12 +239,13 @@ def run_workspace_plan_screen(
     with console.status("  Checking for a model…"):
         detected = _detect_provider_status(repos[0].path)
     work = replace(answers, exclude_patterns=list(answers.exclude_patterns))
+    primary_default = default_primary(repos)
     screen = _Screen(
         state=WorkspacePlanState(
             root=scan.root,
             repos=rows,
             selected=list(range(len(rows))),
-            primary=repos[0].alias,
+            primary=primary_default,
             plan=PlanState(
                 repo_name=repos[0].name,
                 scan=rows[0].scan,
@@ -273,4 +277,5 @@ def run_workspace_plan_screen(
         answers=work,
         sync=screen.sync if plan.editor_setup and hook is None else None,
         global_consent=(not plan.this_repo_only) if plan.can_keep_global else None,
+        primary_default=primary_default,
     )

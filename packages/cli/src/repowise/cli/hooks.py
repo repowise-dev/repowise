@@ -14,10 +14,15 @@ import contextlib
 import os
 import re
 import stat
-import subprocess
 from pathlib import Path
 
-_HOOK_MARKER = "# repowise-hook-start"
+from repowise.core.git_hooks import SYNC_HOOK_MARKER as _HOOK_MARKER
+from repowise.core.git_hooks import git_root as _git_root
+from repowise.core.git_hooks import hooks_dir as _hooks_dir
+from repowise.core.git_hooks import (
+    husky_user_hook_dir as _husky_user_hook_dir,  # noqa: F401 (tests import it here)
+)
+
 _HOOK_MARKER_END = "# repowise-hook-end"
 
 # Fingerprints of pre-marker legacy hook bodies. When ``install`` is called
@@ -90,22 +95,69 @@ _HOOK_SCRIPT = """\
     printf '\\n--- post-commit hook fired at %s for HEAD %s ---\\n' \\
       "$(date 2>/dev/null)" "$HEAD"
   } >> "$LOG" 2>/dev/null || true
+  # Coalesce a burst of commits into one update (#5353). The directory is the
+  # guard, and it is taken inside the backgrounded subshell so the trap that
+  # releases it fires when the update exits — a trap on the outer block never
+  # does, because that block exits as soon as it has backgrounded the work.
+  #
+  # The age escape is the part that matters: a run killed mid-flight leaves the
+  # directory, and without it every later commit is silently skipped. A hook
+  # that does nothing looks exactly like one that is working.
+  #
+  # A hook that finds the guard held leaves .update.hook-pending so the holder
+  # runs again for its commit. It writes the marker before it tries the guard,
+  # and the holder releases the guard before it looks for the marker, so every
+  # commit is either seen through the marker or takes the guard itself.
+  GUARD="$ROOT/.repowise/.update.lock.d"
+  PENDING="$ROOT/.repowise/.update.hook-pending"
+  : > "$PENDING" 2>/dev/null || true
+  find "$GUARD" -maxdepth 0 -mmin +120 -exec rmdir {} \\; 2>/dev/null
   (
-    cd "$ROOT" || exit 1
-    if command -v repowise >/dev/null 2>&1; then
-      repowise update >> "$LOG" 2>&1
-    elif [ -x "$ROOT/.venv/bin/repowise" ]; then
-      "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
-    elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
-      "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
+    if ! mkdir "$GUARD" 2>/dev/null; then
+      exit 0
     fi
+    trap 'rmdir "$GUARD" 2>/dev/null' EXIT
+    cd "$ROOT" || exit 1
+    run_update() {
+      if command -v repowise >/dev/null 2>&1; then
+        repowise update >> "$LOG" 2>&1
+      elif [ -x "$ROOT/.venv/bin/repowise" ]; then
+        "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
+      elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
+        "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
+      fi
+    }
+    # A commit that lands while a run is in flight cannot take the guard, and
+    # the run has already read HEAD, so it would leave that commit unindexed
+    # and, because it also clears .update.queued, silence the stale warning that
+    # would have said so. Run again until HEAD holds still (#5518). No cap on
+    # passes: a capped loop drops the commit that lands during the last one.
+    while :; do
+      rm -f "$PENDING"
+      # Refresh the guard's age so a long burst is not taken for a killed run.
+      touch "$GUARD" 2>/dev/null || :
+      before=$(git rev-parse HEAD 2>/dev/null) || before=""
+      run_update
+      after=$(git rev-parse HEAD 2>/dev/null) || after=""
+      [ "$after" != "$before" ] && continue
+      trap - EXIT
+      rmdir "$GUARD" 2>/dev/null || :
+      # A commit after the HEAD check above found the guard still held and left
+      # only the marker. Take the guard back and run for it; if that commit's
+      # own hook took the guard first, that hook runs instead.
+      [ -f "$PENDING" ] || break
+      after=$(git rev-parse HEAD 2>/dev/null) || after=""
+      [ "$after" != "$before" ] || break
+      mkdir "$GUARD" 2>/dev/null || break
+      trap 'rmdir "$GUARD" 2>/dev/null' EXIT
+    done
   ) &
 } >/dev/null 2>&1
 # repowise-hook-end
 """
 
-_PATH_LOOKUP = "    if command -v repowise >/dev/null 2>&1; then\n"
-_PINNED_RE = re.compile(r"^    if \[ -x '((?:[^']|'\"'\"')*)' \]; then$", re.MULTILINE)
+_PATH_LOOKUP = "      if command -v repowise >/dev/null 2>&1; then\n"
+_PINNED_RE = re.compile(r"^      if \[ -x '((?:[^']|'\"'\"')*)' \]; then$", re.MULTILINE)
 
 
 def _pinned_repowise() -> str:
@@ -125,7 +177,7 @@ def _hook_script() -> str:
     if "/" not in pinned and "\\" not in pinned:
         return _HOOK_SCRIPT
     quoted = "'" + pinned.replace("'", "'\"'\"'") + "'"
-    run = f'    if [ -x {quoted} ]; then\n      {quoted} update >> "$LOG" 2>&1\n    el'
+    run = f'      if [ -x {quoted} ]; then\n        {quoted} update >> "$LOG" 2>&1\n      el'
     return _HOOK_SCRIPT.replace(_PATH_LOOKUP, run + _PATH_LOOKUP.lstrip(), 1)
 
 
@@ -184,55 +236,6 @@ def _write_hook(hook_path: Path, content: str) -> None:
         hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _git_root(path: Path) -> Path | None:
-    """Walk up to find .git directory."""
-    current = path.resolve()
-    for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
-    return None
-
-
-def _hooks_dir(repo_path: Path) -> Path | None:
-    """Resolve the real hooks directory for *repo_path*.
-
-    A normal repo keeps ``.git/hooks`` under ``.git``, but a git **worktree**
-    stores ``.git`` as a *file* (``gitdir: <path>``) pointing at the shared
-    metadata dir — so ``root / ".git" / "hooks"`` is ``NotADirectoryError``
-    territory. Ask git for the real hooks path so both layouts work, and fall
-    back to the ``.git/hooks`` heuristic when git is unavailable or not a repo.
-
-    ``git rev-parse --git-path hooks`` also honours ``core.hooksPath``, which
-    husky and lefthook both set. A *global* ``core.hooksPath`` (say
-    ``~/.githooks``) resolves outside any repo, so the hook is shared:
-    ``status`` then reports installed from every repo, and ``uninstall`` run
-    in one repo removes it for all of them. Following the config is still
-    correct, because that directory is genuinely where git looks, and the
-    hook body is repo-scoped at runtime -- it resolves its own ``$ROOT`` and
-    returns early unless ``$ROOT/.repowise`` exists -- so a shared hook is
-    inert in repos with no index rather than wrong.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-path", "hooks"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            p = Path(result.stdout.strip())
-            if not p.is_absolute():
-                p = repo_path / p
-            return _husky_user_hook_dir(p)
-    except Exception:
-        pass
-    root = _git_root(repo_path)
-    if root is None:
-        return None
-    return root / ".git" / "hooks"
-
-
 def removal_blocked_reason(repo_path: Path, hooks_dir: Path) -> str | None:
     """Why the hook at *hooks_dir* must not be removed from *repo_path*, or ``None``.
 
@@ -279,42 +282,6 @@ def _is_shell_hook(content: str) -> bool:
     if not first.startswith("#!"):
         return True
     return re.search(r"\b(sh|bash|dash|zsh|ksh)\b", first) is not None
-
-
-def _husky_user_hook_dir(hooks_dir: Path) -> Path:
-    """Redirect husky's generated shim directory to its user-hook directory.
-
-    husky points ``core.hooksPath`` at ``.husky/_``, which it regenerates on
-    every install and gitignores wholesale (``.husky/_/.gitignore`` is ``*``), so
-    a hook written there is deleted by the next ``npm install``. husky's shim
-    dispatches to ``.husky/<hook-name>`` one level up, which is the committed,
-    durable location.
-
-    Dispatch does not depend on which user hooks already exist. husky writes a
-    shim for a fixed list of all 14 git hook names on every install, regardless
-    of what is in ``.husky/`` (husky 9.1.7 ``index.js``: the ``l`` array includes
-    ``post-commit``, and ``l.forEach`` writes each one unconditionally), and each
-    shim sources ``_/h``, which execs ``.husky/<name>`` when that file exists and
-    exits 0 when it does not. So a hook written here is picked up immediately
-    rather than waiting for the next ``npm install``.
-
-    The exception is a checkout where husky has never run: ``.husky/_`` does not
-    exist, ``core.hooksPath`` points at a missing directory, and git therefore
-    runs no hooks at all -- husky's own included. Writing to ``.husky/`` is still
-    the right destination, since it survives, but nothing fires until husky is
-    installed. :func:`husky_pending_reason` reports that so it is visible at
-    install time instead of looking like a working hook.
-    """
-    if hooks_dir.name != "_":
-        return hooks_dir
-    # Only remap a directory that really is husky's, not any directory named
-    # "_". The generated helpers are the strongest signal, but they are absent
-    # in a fresh worktree where husky has not been installed yet; there the
-    # parent being a ``.husky`` directory is what identifies the layout.
-    is_husky = any((hooks_dir / marker).exists() for marker in ("h", "husky.sh"))
-    if not (is_husky or hooks_dir.parent.name == ".husky"):
-        return hooks_dir
-    return hooks_dir.parent
 
 
 def husky_pending_reason(hooks_dir: Path) -> str | None:

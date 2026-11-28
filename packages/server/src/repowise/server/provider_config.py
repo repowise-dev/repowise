@@ -466,6 +466,7 @@ def set_active_provider(
     """
     if provider_id not in _CATALOG_BY_ID:
         raise UnknownProviderError(f"Unknown provider: {provider_id}")
+    _refuse_missing_extra(provider_id)
     choice = _Choice(
         provider_id,
         (model or "").strip() or None,
@@ -475,6 +476,20 @@ def set_active_provider(
         _save_repo_choice(choice, repo_id, repo_path)
     else:
         update_global_config(choice.apply_global)
+
+
+def _refuse_missing_extra(provider_id: str) -> None:
+    """Refuse a provider whose ``repowise[<extra>]`` is not installed, naming the command.
+
+    The server never installs packages itself: the person runs the command
+    where repowise is installed, then picks the provider again.
+    """
+    from repowise.core.extras import missing_message
+    from repowise.core.providers.llm.registry import provider_missing_extra
+
+    extra = provider_missing_extra(provider_id)
+    if extra:
+        raise ValueError(missing_message(extra, f"The {provider_id} provider"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,7 +535,9 @@ def set_api_key(
     key is *also* mirrored into that repo's ``.repowise/.env`` under the
     provider's canonical env var, so a later ``repowise`` CLI run in that repo
     (which reads ``.env``, not the server store) picks up a key added from the
-    web UI. A ``None`` key removes it from both places.
+    web UI. A ``None`` key removes it from both places. A string key is
+    stripped first, and one that is empty after stripping is rejected, so a
+    blank paste cannot silently replace a working key.
 
     Writing ``.env`` is a deliberately OSS-server-only step: a hosted
     deployment resolves keys from its own vault, so it never passes
@@ -534,6 +551,13 @@ def set_api_key(
         # Reject before writing anything so a bad value can't inject extra env
         # lines nor leave a partial store update. A real key has no newline.
         raise ValueError("API key must not contain a newline")
+    if key is not None:
+        # Every reader strips keys, so a blank value would read as "no key":
+        # reject it rather than let it overwrite the stored one.
+        key = key.strip()
+        if not key:
+            raise ValueError("API key must not be empty")
+
     def change(config: dict[str, Any]) -> None:
         keys = config.setdefault("keys", {})
         if key:

@@ -25,6 +25,7 @@ from repowise.core.analysis.finding_registry import (
     withheld_summary,
 )
 from repowise.core.analysis.health.rows import field
+from repowise.core.code_origin import path_origin
 from repowise.core.references import path_identity, stable_entity_id
 
 # The bands findings are tiered by, in one place: the tier descriptions quote
@@ -263,6 +264,23 @@ def is_safe(f: Any) -> bool:
     )
 
 
+def headline_unreachable(findings: list, origins: Mapping[str, str | None]) -> int:
+    """The unreachable files a headline counts: shipped code only.
+
+    Docs and example code stays listed for review (a docs build can include a
+    file by path), but a count of files nothing reaches is about the product.
+    *origins* is each file's stored ``code_origin``; a file without one falls
+    back on its path.
+    """
+    return sum(
+        1
+        for f in findings
+        if field(f, "kind") == "unreachable_file"
+        and (origins.get(field(f, "file_path")) or path_origin(field(f, "file_path")))
+        != "docs_example"
+    )
+
+
 def dead_code_finding_id(f: Any, repository: str) -> str:
     """The stable public id of one dead-code finding."""
     return stable_entity_id(
@@ -294,13 +312,33 @@ def last_meaningful_change(gm: Any) -> str | None:
     return commits[0].get("date") if commits else None
 
 
+#: Row fields a list leaves out and a lookup by ``id`` serves. A list row keeps
+#: what triage needs (where, what, how sure, how big, whose, how stale): the
+#: repository is the call's (a workspace row carries ``repo``), ``file_path``
+#: and ``symbol_name`` locate it, and ``last_commit_at`` is the staleness.
+DETAIL_FIELDS = (
+    "repository",
+    "symbol_kind",
+    "start_line",
+    "end_line",
+    "commit_count_90d",
+    "age_days",
+    "last_meaningful_change",
+)
+
+
 def serialize_finding(
     f: Any,
     git_meta_map: dict | None = None,
     *,
     repository: str = "default",
+    detail: bool = False,
 ) -> dict:
-    """Serialize one stored finding to the shape every surface emits."""
+    """Serialize one stored finding to the shape every surface emits.
+
+    A list row leaves out :data:`DETAIL_FIELDS`; ``detail`` keeps them, for the
+    one finding a lookup by id serves.
+    """
     last_commit_at = field(f, "last_commit_at")
     result = {
         "id": dead_code_finding_id(f, repository),
@@ -332,6 +370,10 @@ def serialize_finding(
     note = field(f, "cross_repo_note")
     if note:
         result["cross_repo_note"] = note
+    if not detail:
+        for name in DETAIL_FIELDS:
+            result.pop(name, None)
+        return result
     if git_meta_map:
         meaningful = last_meaningful_change(git_meta_map.get(result["file_path"]))
         if meaningful:

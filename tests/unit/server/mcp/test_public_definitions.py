@@ -30,6 +30,8 @@ async def test_public_definitions_match_the_live_server_byte_for_byte(
     monkeypatch.setattr(_state, "_repo_path", _state._repo_path)
     monkeypatch.setattr(_state, "_force_single_repo", _state._force_single_repo)
     monkeypatch.setattr(mcp._mcp_server, "instructions", mcp.instructions)
+    # Served from where it runs, as hosts launch it: no root line.
+    monkeypatch.chdir(tmp_path)
     try:
         server = create_mcp_server(str(tmp_path), tools=profile)
         listed = [
@@ -37,7 +39,7 @@ async def test_public_definitions_match_the_live_server_byte_for_byte(
             for t in await server.list_tools()
         ]
         served = [tool["name"] for tool in listed]
-        assert json.dumps(tool_definitions(served)) == json.dumps(listed)
+        assert json.dumps(tool_definitions(served, workspace=workspace)) == json.dumps(listed)
         assert server.instructions == server_instructions(served, workspace=workspace)
     finally:
         if _tool_selection._full_surface is not None:

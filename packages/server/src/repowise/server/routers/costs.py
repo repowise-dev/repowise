@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.generation.cost_tracker import billing_kind
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import LlmCost
 from repowise.server.deps import get_db_session, verify_api_key
@@ -19,6 +21,7 @@ from repowise.server.schemas import (
     CostSummaryResponse,
     SavingsAgentRow,
     SavingsBreakdownRow,
+    SavingsCheckRow,
     SavingsFilesRow,
     SavingsOpportunityRow,
     SavingsOutputCalibration,
@@ -52,25 +55,32 @@ async def get_cost_summary(
     """Return aggregate cost totals for a repository."""
     since_dt = _parse_since(since)
 
-    stmt = sa.select(
-        sa.func.count().label("calls"),
-        sa.func.sum(LlmCost.input_tokens).label("input_tokens"),
-        sa.func.sum(LlmCost.output_tokens).label("output_tokens"),
-        sa.func.sum(LlmCost.cost_usd).label("cost_usd"),
-    ).where(LlmCost.repository_id == repo_id)
+    stmt = (
+        sa.select(
+            LlmCost.model.label("model"),
+            sa.func.count().label("calls"),
+            sa.func.sum(LlmCost.input_tokens).label("input_tokens"),
+            sa.func.sum(LlmCost.output_tokens).label("output_tokens"),
+            sa.func.sum(LlmCost.cost_usd).label("cost_usd"),
+        )
+        .where(LlmCost.repository_id == repo_id)
+        .group_by(LlmCost.model)
+    )
 
     if since_dt is not None:
         stmt = stmt.where(LlmCost.ts >= since_dt)
 
     result = await session.execute(stmt)
-    row = result.one()
+    total = _fold_by_model((None, row) for row in result.fetchall()).get(None, _CostTotals())
 
     return CostSummaryResponse(
-        total_cost_usd=row.cost_usd or 0.0,
-        total_calls=row.calls or 0,
-        total_input_tokens=row.input_tokens or 0,
-        total_output_tokens=row.output_tokens or 0,
+        total_cost_usd=total.cost_usd,
+        total_calls=total.calls,
+        total_input_tokens=total.input_tokens,
+        total_output_tokens=total.output_tokens,
         since=since,
+        subscription_calls=total.subscription_calls,
+        local_calls=total.local_calls,
     )
 
 
@@ -99,32 +109,69 @@ async def list_costs(
     stmt = (
         sa.select(
             group_col.label("group"),
+            LlmCost.model.label("model"),
             sa.func.count().label("calls"),
             sa.func.sum(LlmCost.input_tokens).label("input_tokens"),
             sa.func.sum(LlmCost.output_tokens).label("output_tokens"),
             sa.func.sum(LlmCost.cost_usd).label("cost_usd"),
         )
         .where(LlmCost.repository_id == repo_id)
-        .group_by(group_col)
-        .order_by(sa.func.sum(LlmCost.cost_usd).desc())
+        .group_by(group_col, LlmCost.model)
     )
 
     if since_dt is not None:
         stmt = stmt.where(LlmCost.ts >= since_dt)
 
     result = await session.execute(stmt)
-    rows = result.fetchall()
+    groups = _fold_by_model(
+        (
+            row.group.isoformat() if isinstance(row.group, date) else row.group or "(unknown)",
+            row,
+        )
+        for row in result.fetchall()
+    )
 
     return [
-        CostGroupResponse(
-            group=row.group.isoformat() if isinstance(row.group, date) else row.group or "(unknown)",
-            calls=row.calls or 0,
-            input_tokens=row.input_tokens or 0,
-            output_tokens=row.output_tokens or 0,
-            cost_usd=row.cost_usd or 0.0,
+        CostGroupResponse(group=group, **vars(totals))
+        # Cost first; calls then name keep a page of $0 rows (subscription or
+        # local runs) in a stable, meaningful order.
+        for group, totals in sorted(
+            groups.items(), key=lambda item: (-item[1].cost_usd, -item[1].calls, str(item[0]))
         )
-        for row in rows
     ]
+
+
+@dataclass
+class _CostTotals:
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    subscription_calls: int = 0
+    local_calls: int = 0
+
+
+def _fold_by_model(rows: Iterable[tuple[Any, Any]]) -> dict[Any, _CostTotals]:
+    """Sum ``(group, per-model row)`` pairs into one total per group.
+
+    The ledger has no provider column, so how a call was paid for is read off
+    its model string; grouping by model as well keeps that to one pass over a
+    handful of rows per group.
+    """
+    out: dict[Any, _CostTotals] = {}
+    for group, row in rows:
+        totals = out.setdefault(group, _CostTotals())
+        calls = row.calls or 0
+        totals.calls += calls
+        totals.input_tokens += row.input_tokens or 0
+        totals.output_tokens += row.output_tokens or 0
+        totals.cost_usd += row.cost_usd or 0.0
+        kind = billing_kind(row.model)
+        if kind == "subscription":
+            totals.subscription_calls += calls
+        elif kind == "local":
+            totals.local_calls += calls
+    return out
 
 
 @router.get("/{repo_id}/savings", response_model=SavingsResponse)
@@ -172,7 +219,26 @@ async def get_savings(
 
     missed = scan_missed_savings(Path(repo.local_path))
     reread = scan_missed_mcp_savings(Path(repo.local_path))
+    return savings_response(report, as_of=as_of, days=days, missed=missed, reread=reread)
 
+
+def savings_response(
+    report: Any,
+    *,
+    as_of: datetime,
+    days: int | None,
+    missed: Mapping[str, Any] | None = None,
+    reread: Mapping[str, Any] | None = None,
+) -> SavingsResponse:
+    """A core savings report on the wire, as this endpoint answers it.
+
+    For a host that folds its own stored events into a report
+    (``core.savings.reporting.build_report``). *missed* and *reread* are the
+    transcript scans; a host with no agent transcripts leaves them out and
+    those fields read zero.
+    """
+    missed = missed or {}
+    reread = reread or {}
     return SavingsResponse(
         available=True,
         window_days=days,
@@ -210,11 +276,11 @@ async def get_savings(
         per_opportunity_kind=[
             SavingsOpportunityRow(**row) for row in report.per_opportunity_kind
         ],
-        missed_events=missed["events"],
-        missed_tokens_est=missed["est_saved_tokens"],
-        missed_window_days=missed["window_days"],
-        reread_events=reread["events"],
-        reread_tokens_est=reread["est_saved_tokens"],
+        missed_events=missed.get("events", 0),
+        missed_tokens_est=missed.get("est_saved_tokens", 0),
+        missed_window_days=missed.get("window_days", 0.0),
+        reread_events=reread.get("events", 0),
+        reread_tokens_est=reread.get("est_saved_tokens", 0),
         files_not_opened=report.files_not_opened,
         files_not_opened_tokens=report.files_not_opened_tokens,
         tool_calls_answered=report.tool_calls_answered,
@@ -226,6 +292,7 @@ async def get_savings(
         backfilled_saved_input_tokens=report.backfilled_saved_input_tokens,
         backfilled_input_savings_usd=report.backfilled_input_savings_usd,
         **_output_estimate_fields(report),
+        checks=[SavingsCheckRow(**row) for row in report.checks],
     )
 
 
@@ -271,6 +338,7 @@ def _breakdown(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsBreak
             group=None if row[key] is None else str(row[key]),
             events=row["events"],
             saved_input_tokens=row["saved_input_tokens"],
+            priced_input_savings_usd=row.get("priced_input_savings_usd", 0.0),
         )
         for row in rows
     ]

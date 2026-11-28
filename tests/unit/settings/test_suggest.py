@@ -13,7 +13,6 @@ import yaml
 from click.testing import CliRunner
 
 from repowise.cli.main import cli
-from repowise.cli.ui.result_panels import SUGGESTED_STEP, build_contextual_next_steps
 from repowise.core.analysis.decisions.manifest import ManifestDecision, write_manifest
 from repowise.core.settings import all_settings, get
 from repowise.core.settings.areas.generation import MIN_UNPAGED_PRODUCTION
@@ -28,6 +27,7 @@ from repowise.core.settings.areas.indexing import (
     MIN_FILES_OUTSIDE_WINDOW,
 )
 from repowise.core.settings.suggest import MIN_COPIED_DIR_FILES, RepoFacts, suggestions
+from tests.unit._timing import assert_linear_growth
 
 #: The keys ``Suggestion.to_dict`` promises.
 SUGGESTION_KEYS = {
@@ -403,17 +403,6 @@ def test_status_text_names_the_count(repo, monkeypatch):
     assert "fit this repo" not in out
 
 
-def test_init_panel_gives_suggestions_one_row_within_the_limit():
-    steps = build_contextual_next_steps(suggested=2, dead_unused=4, hotspot_count=1)
-    assert [command for command, _ in steps][1] == SUGGESTED_STEP
-    assert "2 settings fit this repo" in steps[1][1]
-    assert len(steps) == 3
-    steps = build_contextual_next_steps(dead_unused=4)
-    assert SUGGESTED_STEP not in [command for command, _ in steps]
-    fast = build_contextual_next_steps(fast_mode=True, suggested=1, dead_unused=4)
-    assert [command for command, _ in fast][2] == SUGGESTED_STEP
-
-
 # ---------------------------------------------------------------- large repositories
 
 
@@ -609,20 +598,24 @@ def test_large_repo_facts_read_the_real_schema(repo):
     assert suggestions(repo) == []
 
 
-def test_large_repo_facts_stay_cheap(repo):
-    n = 60_000
+def _large_repo(root: Path, n: int) -> Path:
+    """*n* analysed files, a third of them vendored, and pages for 7.5% of them."""
+    (root / ".repowise").mkdir(parents=True, exist_ok=True)
     rows = [
         (f"third_party/l{i % 40}/s{i % 7}/f{i}.c", "vendored")
         if i % 3 == 0
         else (f"src/a{i % 50}/b{i % 9}/m{i}.py", "production")
         for i in range(n)
     ]
-    pages = {"configured_cap": None, "effective_cap": 4500, "eligible": n, "omitted": n - 4500}
-    _state(repo, coverage=_window(), file_pages=pages)
-    _store(repo, total_commits=40_000, files=rows, pages=[p for p, _ in rows[:4500]])
-    found = {s.key for s in suggestions(repo)}
+    cap = n * 3 // 40
+    pages = {"configured_cap": None, "effective_cap": cap, "eligible": n, "omitted": n - cap}
+    _state(root, coverage=_window(), file_pages=pages)
+    _store(root, total_commits=40_000, files=rows, pages=[p for p, _ in rows[:cap]])
+    return root
+
+
+def test_large_repo_facts_grow_linearly_with_the_files(repo):
+    large = _large_repo(repo, 60_000)
+    found = {s.key for s in suggestions(large)}
     assert found == {"commit_limit", "exclude_patterns", "max_file_pages"}
-    start = time.perf_counter()
-    for _ in range(3):
-        suggestions(repo)
-    assert (time.perf_counter() - start) / 3 < 1.0
+    assert_linear_growth(suggestions, _large_repo(repo.parent / "small", 15_000), large)

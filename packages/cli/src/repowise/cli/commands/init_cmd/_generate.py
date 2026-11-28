@@ -8,6 +8,7 @@ from typing import Any
 
 from rich.table import Table
 
+from repowise.cli.commands.report_first_look_cmd import first_look_plan_line
 from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.helpers import console, load_config, warn
 from repowise.cli.ui import BRAND, VALUE, print_stage
@@ -322,6 +323,9 @@ def _run_generation_phase(
     embedding = embedding_note(est)
     if embedding:
         console.print(f"  [dim]{embedding}[/dim]")
+    first_look = first_look_plan_line(repo_path, provider)
+    if first_look:
+        console.print(f"  [dim]{first_look}[/dim]")
     if cost_gate_declined(est, yes=yes, message="  Continue?"):
         console.print("  Skipping the model. [dim]Building documentation from code instead.[/dim]")
         console.print(

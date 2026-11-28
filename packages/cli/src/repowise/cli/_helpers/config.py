@@ -270,8 +270,8 @@ def save_config_partial(
     alone, because that is the caller saying the model changed (or is no
     longer known) for whatever embedder this call names. Merely *omitting*
     ``embedding_model`` is not the same claim, so it does not clear anything
-    on its own -- ``reindex_cmd`` calls this after every reindex with only
-    ``embedder=``, having never had a model to pass, and a bare ``in extra``
+    on its own -- ``reindex_cmd`` calls this with only ``embedder=`` when the
+    embedder did not change, having no model to pass, and a bare ``in extra``
     check on ``embedder`` used to read that silence as "no model" and wipe a
     real pin on every routine reindex (#2627, caught in review on the fix
     itself). Distinguishing "not passed" from "passed as ``None``" needs the

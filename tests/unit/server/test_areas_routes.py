@@ -234,3 +234,30 @@ async def test_every_group_back_draws_generated_files_too(app, client):
     feed = (await client.get(f"/api/repos/{repo_id}/health/map", params=params)).json()
     assert "src/gen_pb2.py" in {f["file_path"] for f in feed["files"]}
     assert feed["omitted"]["held"] == 0
+
+
+async def test_area_trend_draws_one_point_per_day_over_its_full_window(app, client):
+    """Many runs on the newest day are one point, and they do not push the
+    older days out of the window."""
+    from repowise.server.services.areas import TREND_POINTS
+
+    repo_id = await _seed(app, client)
+    newest = datetime.now(UTC)  # after the seeded runs, on the seeded "today"
+    async with app.state.session_factory() as session:
+        for second in range(1, TREND_POINTS + 1):
+            await crud.save_health_snapshot(
+                session,
+                repo_id,
+                hotspot_health=None,
+                average_health=7.0,
+                worst_performer_path=None,
+                worst_performer_score=None,
+                per_file_scores={"src/core/a.py": 5.0, "src/core/b.py": 9.0},
+                taken_at=newest + timedelta(seconds=second),
+            )
+        await session.commit()
+
+    detail = (await client.get(f"/api/repos/{repo_id}/areas/src/core")).json()
+
+    # The seeded day 31 back, then today: its last run, not twenty of them.
+    assert [p["health"] for p in detail["trend"]] == [5.5, 7.0]

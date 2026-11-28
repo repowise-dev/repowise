@@ -340,7 +340,11 @@ class HistorySecurityScanner:
                 progress(f"scanned blob {idx}/{len(source_items)}")
 
             content = contents_map.get(blob_sha, "")
-            findings = await self._scanner.scan_file(path, content, [])
+            # Ceiling: the folder rules (docs site, data folder) read today's
+            # working tree, not the tree the blob was committed in.
+            findings = await self._scanner.scan_file(
+                path, content, [], repo_root=str(repo_path)
+            )
             if not findings:
                 continue
 

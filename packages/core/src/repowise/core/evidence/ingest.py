@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -21,13 +22,17 @@ from typing import Any
 from repowise.core.ingestion.symbol_identity import local_symbol_id
 from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_function
 
-from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
+from .format_v1 import EVIDENCE_FORMAT, MODULE_FUNCTION, EvidenceDocument
+from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, WORKLOAD_CLASSES, evidence_kinds
+from .route_join import RouteIndex, match_route, route_index
+from .statement_join import StatementSite, match_statement, statement_shape
+from .suite_cost import timing_summary
 
-#: Every workload class a run may carry, in the order of how far a claim may go.
-WORKLOAD_CLASSES = ("unit_test", "benchmark", "entry_point", "load_test", "production")
-#: ``production`` is set only by a verified source (a request-log or statement
-#: ingest, a connector), never by a flag someone types.
-FLAG_WORKLOAD_CLASSES = tuple(c for c in WORKLOAD_CLASSES if c != "production")
+#: Why ``--class production`` is refused, as ``evidence add`` prints it.
+PRODUCTION_FLAG_REFUSAL = (
+    "production comes only from a verified source or a production kind "
+    "(route_latency, statement_stats), never from --class; use load_test for a load test."
+)
 
 #: Origins whose code a run may spend time in but nobody here maintains.
 _UNMAINTAINED = frozenset({"generated", "vendored"})
@@ -50,8 +55,11 @@ class RunProvenance:
 
     workload_name: str
     workload_class: str
-    commit_sha: str
-    checkout_root: str
+    #: The commit measured; None only for a production-only kind whose window
+    #: spans deploys and whose source did not say which one ran.
+    commit_sha: str | None
+    #: None for a source batch of entries stored with no checkout.
+    checkout_root: str | None
     dirty: bool | None
     environment: str = "unknown"
     source: str = "cli"
@@ -101,6 +109,44 @@ def _exact(sym: IndexedSymbol, function: str) -> bool:
     return function in (sym.qualified_name, local_symbol_id(sym.symbol_id))
 
 
+_GO_RECEIVER_RE = re.compile(r"\(\*?([^)]+)\)")
+_JVM_EXTENSIONS = (".java", ".kt", ".kts", ".scala", ".groovy")
+
+
+def _normalize_go_function(path: str, function: str) -> str:
+    name = function.rsplit("/", 1)[-1]
+    name = _GO_RECEIVER_RE.sub(r"\1", name)
+    dir_name = path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in path else ""
+    if "." in name:
+        head, rest = name.split(".", 1)
+        has_receiver = "(" in function
+        if "." in rest or (not has_receiver and ("/" in function or head == dir_name)):
+            return rest
+    return name
+
+
+def _normalize_jvm_function(path: str, function: str) -> str:
+    if "/" in path and "." in function:
+        dir_dotted = path.rsplit("/", 1)[0].replace("/", ".")
+        parts = function.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            pkg = ".".join(parts[:i])
+            if dir_dotted == pkg or dir_dotted.endswith("." + pkg):
+                return ".".join(parts[i:])
+    return function
+
+
+def _normalized_function_name(path: str, function: str) -> str:
+    """Normalise Go profiler names (``pkg.(*T).M``, ``pkg.T.M``, ``imp/pkg.F``)
+    and JVM package-qualified names (``com.acme.T.m``) when the package
+    matches the file's path."""
+    if path.endswith(".go"):
+        return _normalize_go_function(path, function)
+    if path.endswith(_JVM_EXTENSIONS):
+        return _normalize_jvm_function(path, function)
+    return function
+
+
 def resolve_location(
     location: Mapping[str, Any],
     by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
@@ -115,9 +161,13 @@ def resolve_location(
     names = by_file.get(location["path"])
     if names is None:
         return None, "unknown_file"
-    found = names.get(location["function"], [])
-    by_qualified = [s for s in found if _exact(s, location["function"])]
-    if location.get("exact"):
+    raw_fn = location["function"]
+    fn = raw_fn if raw_fn in names else _normalized_function_name(location["path"], raw_fn)
+    found = names.get(fn, [])
+    by_qualified = [s for s in found if _exact(s, fn)]
+    # A name with its package stripped must still name the symbol in full:
+    # ``srv.Get`` is the package function ``Get``, never the method ``Store.Get``.
+    if location.get("exact") or fn != raw_fn:
         found = by_qualified
     line = location.get("line")
     # A bare name must also agree on the line when one is given: a method
@@ -138,23 +188,30 @@ def join_entries(
     by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
     origins: Mapping[str, str],
     changed: frozenset[str],
+    sites: Sequence[StatementSite] = (),
+    routes: Iterable[Any] = (),
 ) -> Joined:
     """Every entry of *doc* as a row of its kind's table, or a counted skip.
 
     *by_file* holds the indexed symbols of the files the entries name,
     *origins* their ``code_origin``, *changed* the files that differ from the
-    commit measured (empty when that is not known).
+    commit measured (empty when that is not known), *sites* the repository's
+    statement sites (``crud.list_statement_sites``), which a statement entry
+    and a query count with no call site join through, *routes* the
+    repository's stored routes (``crud.list_http_routes``), which a route
+    entry joins through (:mod:`.route_join`).
     """
     joined = Joined(rows=[], matched=0)
     seen: set[Any] = set()
+    index = route_index(routes) if evidence_kinds[doc.kind].join == "route" else {}
     for entry in doc.entries:
-        row, reason, path = _join(doc.kind, entry, by_file, origins, changed)
+        row, reason, path = _join(doc.kind, entry, by_file, origins, changed, sites, index)
         if row is not None and reason is not None:
             # Kept without its function: a benchmark or test is a series anyway.
             joined.unlinked[reason] += 1
             reason = None
         if row is not None:
-            key = _ROW_KEY[doc.kind](row)
+            key = evidence_kinds[doc.kind].row_key(row)
             if key in seen:
                 row, reason = None, "duplicate"
             else:
@@ -175,19 +232,35 @@ def _join(
     by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
     origins: Mapping[str, str],
     changed: frozenset[str],
+    sites: Sequence[StatementSite] = (),
+    routes: RouteIndex | None = None,
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
     """(row, reason, path) for one entry.
 
     A profile or query entry without its function is skipped for *reason*. A
     benchmark or test is a series of its own, so it keeps its row and
-    *reason* says why its function was not linked.
+    *reason* says why its function was not linked. A statement entry keeps
+    its row and names the function the statement-site join finds, with what
+    the join found (*reason* when it is not one function). A query count
+    with no call site takes the one function the join finds, else it is
+    skipped. A route entry's row is kept and names the handler of the one
+    stored route it matches (:func:`.route_join.match_route`), else none,
+    with *reason* saying why.
     """
-    optional = kind in ("benchmark", "test_timing")
-    location = entry.get("location") if optional else entry
+    spec = evidence_kinds[kind]
+    optional = spec.keeps_unlinked
+    if spec.join == "statement" or (kind == "query_count" and entry.get("path") is None):
+        return _join_by_statement(spec, entry, sites, changed)
+    if spec.join == "route":
+        match = match_route(entry["method"], entry["route"], routes or {})
+        return spec.row(entry, match.symbol_id), match.reason, None
+    if spec.join not in LOCATION_JOINS:
+        return spec.row(entry, None), None, None
+    location = spec.location(entry)
     if location is None:
         # A test named by a classname no indexed file matched (place_test_entries).
         reason = "unplaced" if entry.get("classname") else None
-        return _ROW_BUILDERS[kind](entry, None), reason, None
+        return spec.row(entry, None), reason, None
     path = location["path"]
     origin = origins.get(path)
     if origin in _UNMAINTAINED:
@@ -195,80 +268,128 @@ def _join(
         symbol_id = None
     elif path in changed:
         reason, symbol_id = "dirty_file", None
+    elif kind == "profile" and location["function"] == MODULE_FUNCTION:
+        # A module body's row: the reserved id, no symbol to look up.
+        if path in by_file:
+            symbol_id, reason = f"{path}::{MODULE_FUNCTION}", None
+        else:
+            symbol_id, reason = None, "unknown_file"
     else:
         symbol_id, reason = resolve_location(location, by_file)
     if symbol_id is None and not optional:
         return None, reason, path
-    return _ROW_BUILDERS[kind](entry, symbol_id), reason, path
+    if kind == "profile" and entry.get("drivers"):
+        entry = {
+            **entry,
+            "drivers": _joined_drivers(entry["drivers"], by_file, origins, changed),
+        }
+    return spec.row(entry, symbol_id), reason, path
 
 
-def _profile_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
-    return {
-        "symbol_id": symbol_id,
-        "line": entry["line"],
-        "self_value": entry["self_value"],
-        "total_value": entry["total_value"],
-        "self_samples": entry["self_samples"],
-        "total_samples": entry["total_samples"],
-        "call_count": entry["call_count"],
-        "resolution": "declared",
-    }
+def _join_by_statement(
+    spec: Any,
+    entry: Mapping[str, Any],
+    sites: Sequence[StatementSite],
+    changed: frozenset[str],
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """An entry that names its statement, not its call site, joined through the
+    statement sites. A statement row is kept with what the join found; a query
+    count takes the one function that issues it, or is skipped by why there is none."""
+    match = match_statement(statement_shape(entry.get("shape_text")), sites)
+    if spec.join == "statement":
+        return spec.row({**entry, "issuer": match.issuer}, match.symbol_id), match.reason, None
+    if match.issuer != "function":
+        return None, match.reason, None
+    held = [s for s in match.sites if s.symbol_id == match.symbol_id]
+    site = min(held, key=lambda s: (s.file_path, s.line))
+    if site.file_path in changed:
+        return None, "dirty_file", site.file_path
+    return spec.row({**entry, "line": site.line}, match.symbol_id), None, site.file_path
 
 
-def _benchmark_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
-    return {
-        "benchmark_key": entry["name"],
-        "symbol_id": symbol_id,
-        **{
-            k: entry[k]
-            for k in (
-                "unit", "lower_is_better", "median", "mean", "min", "max", "stddev",
-                "rounds", "iterations", "allocs_per_op", "bytes_per_op",
-            )
-        },
-    }
+def _joined_drivers(
+    drivers: Iterable[Mapping[str, Any]],
+    by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
+    origins: Mapping[str, str],
+    changed: frozenset[str],
+) -> list[dict[str, Any]]:
+    """A profile entry's ``drivers`` as stored: ``name`` and ``share``, plus the
+    caller's ``symbol`` when its location joins exactly (:func:`resolve_location`),
+    else its ``path`` when it named one. A caller in a file that differs from the
+    commit measured, or that nobody here maintains, keeps its path only, as an
+    entry there would not join."""
+    out: list[dict[str, Any]] = []
+    for driver in drivers:
+        item: dict[str, Any] = {"name": driver["function"], "share": driver["share"]}
+        path = driver.get("path")
+        if path is not None:
+            joins = path not in changed and origins.get(path) not in _UNMAINTAINED
+            symbol_id = resolve_location(driver, by_file)[0] if joins else None
+            if symbol_id is not None:
+                item["symbol"] = symbol_id
+            else:
+                item["path"] = driver["path"]
+        out.append(item)
+    return out
 
 
-def _test_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
-    return {
-        "test_id": entry["test_id"],
-        "test_file": entry["test_file"],
-        "symbol_id": symbol_id,
-        "duration_s": entry["duration_s"],
-        "outcome": entry["outcome"],
-        "first_in_class": entry["first_in_class"],
-    }
+def run_class(
+    kind: str, given: str | None, *, verified: bool = False
+) -> tuple[str | None, str | None]:
+    """``(class, None)``: the workload class a run of *kind* is stored with,
+    or ``(None, why)`` when *given* cannot be.
+
+    ``production`` is never typed: it is refused unless *verified*. A
+    production-only kind (``route_latency``, ``statement_stats``) is
+    production by what it measures, so it takes no class. Any other kind is production only when
+    *verified* (a source on the evidence-source seam, or an upload the host
+    verified, such as CI with OIDC) and the kind allows it. Every other class
+    must be named and allowed for the kind.
+    """
+    spec = evidence_kinds[kind]
+    if given == "production" and not verified:
+        return None, PRODUCTION_FLAG_REFUSAL
+    if spec.production_only:
+        if given in (None, "production"):
+            return "production", None
+        return None, f"a {kind} run is production by what it measures; leave --class out."
+    if given is None:
+        return None, "name the workload class: one of " + ", ".join(FLAG_WORKLOAD_CLASSES) + "."
+    if given not in spec.classes:
+        allowed = ", ".join(c for c in spec.classes if c != "production")
+        return None, f"{given!r} does not apply to a {kind} run; use one of {allowed}."
+    return given, None
 
 
-def _query_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
-    return {
-        "scope_kind": entry["scope_kind"],
-        "scope_id": entry["scope_id"],
-        "site_symbol_id": symbol_id,
-        "statement_fp": entry["statement_fp"],
-        "site_line": entry["line"],
-        "query_count": entry["query_count"],
-        "identical_max": entry["identical_max"],
-        "total_ms": entry["total_ms"],
-    }
+def rebase_test_entries(
+    doc: EvidenceDocument, files: Collection[str], base: str
+) -> EvidenceDocument:
+    """*doc* with each test file the index does not hold read from *base*, when the index holds that.
 
-
-_ROW_BUILDERS = {
-    "profile": _profile_row,
-    "benchmark": _benchmark_row,
-    "test_timing": _test_row,
-    "query_count": _query_row,
-}
-
-#: The stored key of a row within its run (see the evidence tables' keys).
-_ROW_KEY = {
-    "profile": lambda r: r["symbol_id"],
-    "benchmark": lambda r: r["benchmark_key"],
-    "test_timing": lambda r: r["test_id"],
-    "query_count": lambda r: (
-        r["scope_kind"], r["scope_id"], r["site_symbol_id"], r["statement_fp"]
-    ),
-}
+    *base* is the repo-relative directory the report was read from. A runner in a
+    package below the repository root names test files from where it ran and writes
+    its report there (Vitest, which has no option to prefix them). The joined path wins
+    when the index holds it, even beside a root file of the same name; a path that is
+    already repo-relative (``web/src/x.test.ts``) joins to none and is kept.
+    """
+    if doc.kind != "test_timing" or not base:
+        return doc
+    entries = []
+    for entry in doc.entries:
+        path = entry.get("test_file")
+        moved = f"{base}/{path}" if path else None
+        test_id = entry["test_id"]
+        # The id names the file first (``path::name``); one that does not is left whole.
+        if moved in files and test_id.startswith(f"{path}::"):
+            location = entry.get("location")
+            entry = {
+                **entry,
+                "test_id": moved + test_id[len(path) :],
+                "test_file": moved,
+                "location": {**location, "path": moved} if location else None,
+            }
+        entries.append(entry)
+    return replace(doc, entries=tuple(entries))
 
 
 def place_test_entries(doc: EvidenceDocument, files: Collection[str]) -> EvidenceDocument:
@@ -310,27 +431,30 @@ def cap_rows(
 ) -> tuple[list[dict[str, Any]], int]:
     """The rows kept under the cap, and how many were dropped.
 
-    A profile keeps its costliest symbols (self, the cost waits excluded,
-    then inclusive, then id, so the cut is stable): a leaf that does the work
-    outlives the frames that only call it. Other kinds keep the document's
-    order.
+    The kind's ``cap_order`` (``evidence.kinds``) says which rows a cut keeps:
+    a profile its costliest symbols, so a leaf that does the work outlives the
+    frames that only call it; a test run its slowest tests, after what every
+    test adds up to is folded (``suite_cost.timing_summary``); route and
+    statement runs their costliest by total time. Other kinds keep the
+    document's order.
     """
-    if kind == "profile":
-        limit = caps.max_symbols_per_run
-        rows = sorted(
-            rows,
-            key=lambda r: (-(r["self_value"] or 0.0), -(r["total_value"] or 0.0), r["symbol_id"]),
-        )
-    else:
-        limit = caps.max_rows_per_run
+    spec = evidence_kinds[kind]
+    limit = getattr(caps, spec.cap)
+    if spec.cap_order is not None:
+        rows = sorted(rows, key=spec.cap_order)
     return rows[:limit], max(len(rows) - limit, 0)
 
 
 def run_key(
-    text: str, provenance: RunProvenance, kind: str, index_commit: str | None = None
+    text: str,
+    provenance: RunProvenance,
+    kind: str,
+    index_commit: str | None = None,
+    report_dir: str = "",
 ) -> str:
     """One measurement's identity: its content, everything the run row records,
-    and the index it was joined against (a later index joins it afresh)."""
+    the index it was joined against (a later index joins it afresh), and the
+    directory its test paths were read from (:func:`rebase_test_entries`)."""
     digest = hashlib.blake2b(digest_size=16)
     for part in (
         kind,
@@ -338,11 +462,13 @@ def run_key(
         provenance.workload_name,
         provenance.workload_class,
         provenance.environment,
-        provenance.checkout_root,
+        provenance.checkout_root or "",
         str(provenance.dirty),
         provenance.source,
         # Only when known, so a run that never reports it keeps its key.
         *(() if provenance.tests_failed is None else (f"tests_failed={provenance.tests_failed}",)),
+        # Only test paths are read from it (rebase_test_entries), so other kinds keep their key.
+        *((f"report_dir={report_dir}",) if report_dir and kind == "test_timing" else ()),
         text,
     ):
         digest.update(part.encode("utf-8", "replace"))
@@ -395,6 +521,21 @@ def run_fields(
         "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,
         "tests_failed": provenance.tests_failed,
+        "timing_summary_json": (
+            json.dumps(timing_summary(joined.rows), separators=(",", ":"))
+            if doc.kind == "test_timing"
+            else None
+        ),
+        # Only when the file says, so a run without them keeps its fields.
+        **{
+            name: value
+            for name, value in (
+                ("window_start", doc.window_start),
+                ("window_end", doc.window_end),
+                ("base_commit_sha", doc.base_commit_sha),
+            )
+            if value is not None
+        },
     }
 
 
@@ -406,12 +547,14 @@ def unlisted_count(rows: Iterable[Mapping[str, Any]], origins: Mapping[str, str]
 
 
 def entry_paths(doc: EvidenceDocument) -> set[str]:
-    """Every file the document's entries name."""
+    """Every file the document's entries name, a profile entry's drivers included."""
     out: set[str] = set()
+    spec = evidence_kinds[doc.kind]
     for entry in doc.entries:
-        location = entry.get("location") if doc.kind in ("benchmark", "test_timing") else entry
-        if location is not None:
+        location = spec.location(entry)
+        if location is not None and location["path"] is not None:
             out.add(location["path"])
+        out.update(d["path"] for d in entry.get("drivers") or () if d.get("path"))
     return out
 
 
@@ -425,7 +568,7 @@ async def load_symbols(
     """
     from sqlalchemy import select
 
-    from repowise.core.persistence.models import WikiSymbol
+    from repowise.core.persistence.models import HealthFileMetric, WikiSymbol
 
     wanted = sorted(set(paths))
     per_file: dict[str, list[IndexedSymbol]] = {}
@@ -446,6 +589,16 @@ async def load_symbols(
             per_file.setdefault(row.file_path, []).append(
                 IndexedSymbol(row.symbol_id, row.qualified_name, row.name, row.start_line)
             )
+        # Indexed with no symbols (an ``__init__.py`` of imports): known by its
+        # health row, as ``frame_resolver.load_frame_symbols`` knows it.
+        known = await session.execute(
+            select(HealthFileMetric.file_path).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.file_path.in_(wanted[i : i + 400]),
+            )
+        )
+        for (path,) in known:
+            per_file.setdefault(path, [])
     return {path: symbol_lookup(symbols) for path, symbols in per_file.items()}
 
 
@@ -522,6 +675,7 @@ def uncommitted_paths(checkout_root: str | Path) -> frozenset[str] | None:
 
 __all__ = [
     "FLAG_WORKLOAD_CLASSES",
+    "PRODUCTION_FLAG_REFUSAL",
     "WORKLOAD_CLASSES",
     "EvidenceCaps",
     "IndexedSymbol",
@@ -533,7 +687,9 @@ __all__ = [
     "load_origins",
     "load_symbols",
     "place_test_entries",
+    "rebase_test_entries",
     "resolve_location",
+    "run_class",
     "run_fields",
     "run_key",
     "stamp_bodies",

@@ -11,8 +11,8 @@ calls. A ``.package(url: ...)`` dependency in any form (``from:``,
 nothing. A local package reached by ``file://`` URL is not linked. A path
 dependency pointing outside the repo (absolute, or ``..``/``../`` after
 normalisation) links nothing, even if an in-repo package shares the same name.
-A path dependency pointing at a directory that holds no Swift unit links
-nothing.
+A path pointing at a dropped duplicate links that root's ``manifest:`` unit;
+a path pointing at a directory that holds no package links nothing.
 
 Ceiling: this is a regex reader, not an evaluation of the manifest. It does
 not see ``#if`` conditions, computed values, or variables holding paths.
@@ -28,7 +28,7 @@ import re
 
 import structlog
 
-from repowise.core.build_units.adapters import Found
+from repowise.core.build_units.adapters import Found, linked_unit_id
 from repowise.core.build_units.adapters.manifest_roots import package_manifests
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -72,12 +72,14 @@ def _read(ctx: ResolverContext) -> dict[str, SwiftPackage]:
     return read
 
 
-def _deps(root: str, pkg: SwiftPackage, by_root: dict[str, str]) -> tuple[str, ...]:
+def _deps(
+    root: str, pkg: SwiftPackage, by_root: dict[str, str], dropped: set[str]
+) -> tuple[str, ...]:
     dep_ids: set[str] = set()
     for dep_path in pkg.path_deps:
         norm = _norm_dep_path(root, dep_path)
-        if norm is not None and norm in by_root:
-            dep_ids.add(by_root[norm])
+        if norm is not None and (uid := linked_unit_id(norm, by_root, dropped)):
+            dep_ids.add(uid)
     return tuple(sorted(dep_ids))
 
 
@@ -91,11 +93,13 @@ def units(ctx: ResolverContext) -> Found:
     read = _read(ctx)
 
     by_root: dict[str, str] = {}
+    dropped: set[str] = set()
     taken: set[str] = set()
     for root, pkg in read.items():
         uid = f"swift:{pkg.name}"
         if uid in taken:
             log.warning("build_units_duplicate_id", unit_id=uid, root=root)
+            dropped.add(root)
             continue
         taken.add(uid)
         by_root[root] = uid
@@ -110,7 +114,7 @@ def units(ctx: ResolverContext) -> Found:
             root=root,
             manifest=f"{root}/{_MANIFEST}" if root else _MANIFEST,
             source="swiftpm",
-            deps=_deps(root, pkg, by_root),
+            deps=_deps(root, pkg, by_root, dropped),
         )
         out.append((unit, ()))
 

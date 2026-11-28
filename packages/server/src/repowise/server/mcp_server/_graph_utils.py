@@ -10,19 +10,20 @@ import json
 from collections import Counter
 from typing import Any
 
+from sqlalchemy import select
+
 from repowise.core.analysis.communities import has_community
 from repowise.core.analysis.execution_flows import FlowTermination, classify_termination
 from repowise.core.analysis.execution_graph import (
     is_excluded_execution_path,
     is_walkable_execution_edge,
 )
+from repowise.core.exclusion import node_is_excluded
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 from repowise.core.ingestion.symbol_identity import file_of_symbol
-from repowise.core.persistence.crud import (
-    get_graph_edges_for_node,
-    get_graph_nodes_by_ids,
-)
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.crud import get_graph_nodes_by_ids
+from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.server.mcp_server._helpers import fetch_allowed_edges
 
 # Callee rows per hop; a stop behind this cut is an unknown, not a leaf.
 _CALLEE_FETCH_LIMIT = 20
@@ -88,6 +89,7 @@ async def bfs_trace(
     node_cache: dict[str, GraphNode] | None = None,
     hop_origins: dict[tuple[str, str], str] | None = None,
     termination: dict[str, Any] | None = None,
+    exclude_spec: Any = None,
 ) -> list[str]:
     """Trace the primary execution path from *entry_id* along ``calls`` edges.
 
@@ -105,6 +107,9 @@ async def bfs_trace(
     describe the wrong hops.
 
     *termination*, when given, is filled with ``reason`` and ``detail``.
+
+    *exclude_spec*, when given, skips a successor in a file the repo rules
+    exclude the same way as a test path, so the walk never steps through one.
     """
     if node_cache is None:
         node_cache = {}
@@ -121,23 +126,42 @@ async def bfs_trace(
     for _ in range(max_depth):
         # One row over the limit, so a node with exactly the limit reads as
         # uncut rather than as a stop we cannot explain.
-        rows = await get_graph_edges_for_node(
-            session,
-            repo_id,
-            current,
-            direction="callees",
-            edge_types=sorted(EXECUTION_EDGE_TYPES),
-            limit=_CALLEE_FETCH_LIMIT + 1,
+        # The callee ranking ``get_graph_edges_for_node`` gives, read so that
+        # excluded targets leave before the cut and never take a walkable
+        # callee's place. The excluded rows read before the cut are kept, so a
+        # node that calls only excluded files still stops as `excluded_target`.
+        stmt = (
+            select(GraphEdge)
+            .where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.source_node_id == current,
+                GraphEdge.edge_type.in_(sorted(EXECUTION_EDGE_TYPES)),
+            )
+            .order_by(GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type)
         )
-        edges = rows[:_CALLEE_FETCH_LIMIT]
+        edges = [
+            e
+            for (e,) in await fetch_allowed_edges(
+                session,
+                stmt,
+                exclude_spec,
+                limit=_CALLEE_FETCH_LIMIT + 1,
+                endpoints=lambda row: (row[0].target_node_id,),
+                keep_excluded=True,
+            )
+        ]
+        allowed = [e for e in edges if not node_is_excluded(e.target_node_id, exclude_spec)]
         # Rows arrive most-confident first, so a tail below the floor is
         # provably unwalkable and hides nothing: only a cut whose last kept row
         # is still walkable leaves a real unknown.
-        truncated = len(rows) > _CALLEE_FETCH_LIMIT and is_walkable_execution_edge(
-            edges[-1].edge_type,
-            edges[-1].resolution_origin,
-            edges[-1].confidence,
+        truncated = len(allowed) > _CALLEE_FETCH_LIMIT and is_walkable_execution_edge(
+            allowed[_CALLEE_FETCH_LIMIT - 1].edge_type,
+            allowed[_CALLEE_FETCH_LIMIT - 1].resolution_origin,
+            allowed[_CALLEE_FETCH_LIMIT - 1].confidence,
         )
+        if len(allowed) > _CALLEE_FETCH_LIMIT:
+            cut = allowed[_CALLEE_FETCH_LIMIT]
+            edges = edges[: next(i for i, e in enumerate(edges) if e is cut)]
         revisited = 0
         low_confidence = Counter()
         excluded = 0
@@ -151,7 +175,7 @@ async def bfs_trace(
             if not is_walkable_execution_edge(e.edge_type, e.resolution_origin, e.confidence):
                 low_confidence[e.resolution_origin or "unlabelled"] += 1
                 continue
-            if _node_id_is_excluded(tid):
+            if _node_id_is_excluded(tid) or node_is_excluded(tid, exclude_spec):
                 excluded += 1
                 continue
             if tid in visited:

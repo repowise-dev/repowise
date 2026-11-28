@@ -129,9 +129,11 @@ class InitRun:
     setup_outcome: Any = None
     files_written: list[Path] = field(default_factory=list)
     next_steps: list[tuple[str, str]] = field(default_factory=list)
-    #: The finish panel's findings (StoodOut) and model block (ModelUpgrade).
+    #: The finish panel's findings (StoodOut) and its first question for the agent.
     stood_out: Any = None
-    model_upgrade: Any = None
+    first_prompt: str | None = None
+    #: The repo report this run wrote or kept (``ui.finish_panel.FirstLook``); None when none.
+    first_look: Any = None
 
 
 def resolve_structural_flags(opts: InitOptions) -> InitOptions:

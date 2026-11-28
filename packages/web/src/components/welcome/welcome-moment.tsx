@@ -8,6 +8,7 @@ import { analyzeBlastRadius } from "@/lib/api/blast-radius";
 import { getHealthCoverage } from "@/lib/api/code-health";
 import { getStatsHighlights } from "@/lib/api/stats";
 import { getMetaVersion } from "@/lib/api/meta";
+import { getWorkspace } from "@/lib/api/workspace";
 import { isNewBrowser, markVersionSeen, sessionMomentTaken, takeSessionMoment } from "@/lib/release-moment";
 import {
   decideWelcome,
@@ -147,12 +148,24 @@ async function prepareWelcome({
     sessionTaken: sessionMomentTaken(),
   });
   if (mode === "none") return null;
+  // A workspace member: the workspace has its own welcome, so a member's
+  // overview opens this one only on request.
+  if (mode === "auto" && (await inWorkspace())) return null;
   if (mode === "auto") await stampAutoOpen(repoId);
   // A first look through `?tour=1` (the first-index hand-off) still counts as
   // seen; a replay from Setup changes nothing.
   else if (seen === false) await stampRepoSeen(repoId);
   const { extras, years } = await loadExtras(repoId, hotspotPath, figures.coveragePct == null);
   return { setup, lenses: welcomeLenses(figures, extras), years };
+}
+
+/** True when this server runs a workspace; false when it does not or cannot say. */
+async function inWorkspace(): Promise<boolean> {
+  try {
+    return (await getWorkspace()).is_workspace;
+  } catch {
+    return false;
+  }
 }
 
 /** Marks the repo's welcome seen on this machine. Best-effort: a failed

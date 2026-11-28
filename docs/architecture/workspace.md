@@ -150,7 +150,11 @@ links are appended after it.
    `binding_pass` (`binding_routed`); data `shared_table_pass` (`shared_table`).
    HTTP's `accepts` (`matching/http.py`) holds every pass to one rule: a generic
    operational path (`/health`, `/metrics`, the root) links only to the consumer's
-   resolved target repo, or with none to its own repo.
+   resolved target repo, or with none to its own repo when its base or host does not
+   point elsewhere (`aims_elsewhere`: an unresolved base token or an unmapped,
+   non-local host). Such a consumer also skips `candidate_pass` and `segment_pass`.
+   In the exact pass, a relative `fetch` (no host, no base) whose own service
+   declares its id links to no other service (`TypeMatcher.own_service_first`).
 5. **Service links**: `service_pass` gives each HTTP consumer whose target is a
    workspace repo, but whose path no provider serves, one `host_only` link with no
    provider file. These live in `ContractStore.service_links`, apart from
@@ -428,7 +432,7 @@ add its case to `test_graph_evidence.py`.
 
 - Only Python, JS/TS, Java, Kotlin, Go, C#, Rust, PHP, Apex, Proto and
   `.prisma` files have a comment mask (see [`_SLASH_COMMENT_SUFFIXES` and
-  `_comment_mask`](../../../packages/core/src/repowise/core/workspace/extractors/base.py));
+  `_comment_mask`](../../packages/core/src/repowise/core/workspace/extractors/base.py));
   every other suffix is read as written, so a commented-out match there is
   read. A Python docstring example is read, because the mask keeps strings.
 - A gate is a substring test: it keeps a dialect off files it can find nothing in,

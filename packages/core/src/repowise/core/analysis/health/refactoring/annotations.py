@@ -54,6 +54,8 @@ _BATCH = 500
 _GETSOURCE = re.compile(r"\bgetsource(?:lines)?\(\s*([A-Za-z_][\w.]*)\s*\)")
 #: Larger files are not read for it: generated fixtures, not tests.
 _MAX_TEST_BYTES = 1 << 20
+#: Past this the grep is abandoned and every test file is read, as before.
+_GREP_TIMEOUT_SECONDS = 10
 
 FunctionCommits = tuple[int, int, tuple[str, ...]]
 
@@ -319,9 +321,18 @@ def _sources_read(root: Path, files: Iterable[str]) -> dict[str, frozenset[str]]
     """Per test file under *root* that reads any, the ``getsource``
     arguments it passes. Read once at finalize; a file outside *root*,
     missing (a hosted index has no checkout) or too large says nothing."""
+    files = list(files)
+    if not files:
+        return {}
     base = root.resolve()
+    lacking = _lacking_getsource(root)
     out: dict[str, frozenset[str]] = {}
     for rel in files:
+        # Opening every test file the plans run took seconds a run on a cold
+        # disk; git has already said which files never name ``getsource``. A
+        # tracked link is still read: git judges its target path, not the file.
+        if rel in lacking and not (root / rel).is_symlink():
+            continue
         path = (root / rel).resolve()
         try:
             if not path.is_relative_to(base) or path.stat().st_size > _MAX_TEST_BYTES:
@@ -333,6 +344,35 @@ def _sources_read(root: Path, files: Iterable[str]) -> dict[str, frozenset[str]]
         if reads:
             out[rel] = reads
     return out
+
+
+def _lacking_getsource(root: Path) -> frozenset[str]:
+    """Tracked files under *root* (paths relative to it) whose working-tree bytes
+    never hold ``getsource``, from one ``git grep``; empty when git cannot answer,
+    so every file is read. Untracked files are never listed, so they are read.
+    Git judges an assume-unchanged or skip-worktree entry by its staged text,
+    which its file may no longer match, so those entries are read too.
+    """
+    from ....analysis.doc_drift.suggest import git_run
+
+    ran = git_run(
+        root, "grep", "-L", "-z", "-F", "--no-color", "-e", "getsource", "--",
+        timeout=_GREP_TIMEOUT_SECONDS,
+    )  # fmt: skip
+    # Exit 1 is "nothing to list": every tracked file names it.
+    if ran is None or ran[0] not in (0, 1):
+        return frozenset()
+    listed = git_run(root, "ls-files", "-v", "-z", timeout=_GREP_TIMEOUT_SECONDS)
+    if listed is None or listed[0] != 0:
+        return frozenset()
+    # ``-v`` tags an assume-unchanged entry in lower case, a skip-worktree one ``S``.
+    staged_only = {
+        entry[2:]
+        for entry in listed[1].decode("utf-8", errors="surrogateescape").split("\0")
+        if entry[:1].islower() or entry[:1] == "S"
+    }
+    lacking = ran[1].decode("utf-8", errors="surrogateescape").split("\0")
+    return frozenset(p for p in lacking if p and p not in staged_only)
 
 
 def _unaliased(read: str, text: str) -> str:
@@ -478,6 +518,7 @@ async def _function_commits(
                 blame.repository_id == repository_id,
                 blame.file_path.in_(list(files[index : index + _BATCH])),
                 blame.commit_shas_json.is_not(None),
+                blame.history_only.is_(False),
             )
         )
         for path, start, end, shas in rows:

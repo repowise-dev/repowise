@@ -91,7 +91,63 @@ def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
     # Keyless operation is supported, so this is informational rather than a
     # failing health check.  The detail tells users what init will actually do.
     checks.append(_check("LLM provider", True, llm_detail, check_id="llm-provider"))
+    extra_row = _provider_extra_check(repo_path)
+    if extra_row is not None:
+        checks.append(extra_row)
+    embedder_row = _embedder_package_check(repo_path)
+    if embedder_row is not None:
+        checks.append(embedder_row)
     return checks
+
+
+def _provider_extra_check(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """A failing row when the chosen provider's ``repowise[<extra>]`` is missing, else none.
+
+    An upgrade that moved a provider's package out of the default install
+    leaves the saved choice in place and the package gone; the row names the
+    one command that brings it back.
+    """
+    from repowise.core.extras import missing_message, plan_install
+    from repowise.core.providers.llm.registry import provider_missing_extra
+    from repowise.core.providers.llm.resolve import resolve_llm
+
+    try:
+        provider = resolve_llm(repo_path).provider
+    except Exception:
+        return None  # the provider-config row reports a broken config
+    extra = provider_missing_extra(provider) if provider else None
+    if extra is None:
+        return None
+    return _check(
+        "LLM provider package",
+        False,
+        missing_message(extra, f"The {provider} provider"),
+        check_id="provider-extra",
+        fix=plan_install(extra).command,
+    )
+
+
+def _embedder_package_check(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """A warning when the repo's embedder cannot be imported here, else no row.
+
+    An optional extra (``local-embed`` for fastembed) installed where the index
+    was built but not where the MCP server or ``update`` runs leaves search
+    without its vectors; the install line is the fix.
+    """
+    from repowise.cli.providers import resolve_embedder_for_repo
+    from repowise.core.providers.embedding.registry import (
+        _BUILTIN_EMBEDDERS,
+        import_builtin_embedder,
+    )
+
+    name = resolve_embedder_for_repo(repo_path)
+    if name not in _BUILTIN_EMBEDDERS:
+        return None
+    try:
+        import_builtin_embedder(name)
+    except ImportError as exc:
+        return _check("Embedder", True, str(exc), check_id="embedder-package", warn=True)
+    return None
 
 
 def _no_provider_detail(repo_path: _DoctorPath) -> str:
@@ -99,7 +155,7 @@ def _no_provider_detail(repo_path: _DoctorPath) -> str:
     from repowise.cli.ui.subscription import upgrade_route
     from repowise.core.index_scope import load_index_scope, upgrade_line
 
-    return f"None configured: {upgrade_line(load_index_scope(repo_path), upgrade_route(repo_path))}"
+    return f"None configured. {upgrade_line(load_index_scope(repo_path), upgrade_route(repo_path))}"
 
 
 def _hosted_account_check() -> DoctorCheck:

@@ -144,6 +144,7 @@ _HOST_VARS = (
     "VSCODE_PID",
     "VSCODE_IPC_HOOK_CLI",
     "TERM_PROGRAM",
+    "REPOWISE_CLIENT",
 )
 
 
@@ -172,6 +173,21 @@ class TestDetectClient:
         assert label in telemetry.CLIENT_LABELS
 
     def test_plain_terminal(self):
+        assert telemetry.detect_client() == "terminal"
+
+    def test_extension_launch_names_itself(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("TERM_PROGRAM", "vscode")
+        monkeypatch.setenv("REPOWISE_CLIENT", "vscode_ext")
+        assert telemetry.detect_client() == "vscode_ext"
+        assert "vscode_ext" in telemetry.CLIENT_LABELS
+
+    def test_agent_in_the_extension_terminal_is_the_agent(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("REPOWISE_CLIENT", "vscode_ext")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        assert telemetry.detect_client() == "claude_code"
+
+    def test_unknown_declared_client_is_ignored(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("REPOWISE_CLIENT", "anything-else")
         assert telemetry.detect_client() == "terminal"
 
     def test_agent_in_an_editor_terminal_is_the_agent(self, monkeypatch: pytest.MonkeyPatch):

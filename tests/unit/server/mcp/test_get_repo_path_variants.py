@@ -77,3 +77,15 @@ async def test_unknown_absolute_path_still_raises(session, repository, tmp_path)
     unknown = str(tmp_path / "elsewhere")
     with pytest.raises(LookupError, match="Repository not found"):
         await _get_repo(session, unknown)
+
+
+@pytest.mark.parametrize("dot", [".", "./"])
+async def test_dot_names_the_served_repo(session, repository, tmp_path, monkeypatch, dot):
+    other = await _second_row(session, tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", other.local_path)
+    assert (await _get_repo(session, dot)).id == other.id
+
+
+async def test_unknown_relative_name_still_raises(session, repository):
+    with pytest.raises(LookupError, match="Repository not found"):
+        await _get_repo(session, "elsewhere")

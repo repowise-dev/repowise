@@ -34,6 +34,13 @@ SETTINGS: tuple[Setting, ...] = (
     _e("REPOWISE_TELEMETRY_DISABLED", "bool", False, "Turn off anonymous usage telemetry."),
     _e("REPOWISE_TELEMETRY_DEBUG", "bool", False, "Print the telemetry payload instead of sending it."),
     _e(
+        "REPOWISE_CLIENT",
+        "str",
+        None,
+        "Names the tool that launched repowise in telemetry; the VS Code extension sets vscode_ext.",
+        internal=True,
+    ),
+    _e(
         "REPOWISE_TELEMETRY_IN_TESTS",
         "bool",
         False,

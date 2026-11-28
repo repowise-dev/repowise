@@ -55,6 +55,8 @@ function response(map: Partial<InferredTestMap> = {}): HealthCoverageResponse {
       ingested_commit_sha: null,
       report_paths: null,
       freshness: null,
+      unreported_file_count: 0,
+      unreported_files: [],
     },
     files: [],
     modules: [],

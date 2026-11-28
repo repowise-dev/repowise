@@ -43,9 +43,11 @@ def _render_card(name: str, card: dict) -> None:
     if card.get("test_gap"):
         console.print("  [yellow]No test is shown to reach this file.[/yellow]")
     for signal in card.get("security_signals") or []:
+        snippet = signal.get("snippet")
         console.print(
             f"  [red]{escape(str(signal.get('severity', '')))}[/red] "
-            f"{escape(str(signal.get('kind', '')))}: {escape(str(signal.get('snippet', '')))}"
+            f"{escape(str(signal.get('kind', '')))}"
+            + (f": {escape(str(snippet))}" if snippet else "")
         )
     _print_partners(card.get("co_change_partners") or [])
     episodes = card.get("episodes")

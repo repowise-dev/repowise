@@ -94,7 +94,7 @@
         "end_line": 23,
         "docstring": null,
         "decorators": [],
-        "visibility": "public",
+        "visibility": "private",
         "is_async": false,
         "complexity_estimate": 1,
         "language": "scala",
@@ -119,7 +119,7 @@
         "end_line": 25,
         "docstring": null,
         "decorators": [],
-        "visibility": "public",
+        "visibility": "private",
         "is_async": false,
         "complexity_estimate": 1,
         "language": "scala",
@@ -144,7 +144,7 @@
         "end_line": 27,
         "docstring": null,
         "decorators": [],
-        "visibility": "public",
+        "visibility": "private",
         "is_async": false,
         "complexity_estimate": 1,
         "language": "scala",
@@ -1220,7 +1220,7 @@
         "end_line": 95,
         "docstring": null,
         "decorators": [],
-        "visibility": "public",
+        "visibility": "private",
         "is_async": false,
         "complexity_estimate": 1,
         "language": "scala",
@@ -1261,7 +1261,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "import scala.concurrent.{Await, Future}",
@@ -1287,7 +1290,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "import scala.concurrent.{Await, Future}",
@@ -1313,7 +1319,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "import scala.concurrent.duration.Duration",
@@ -1339,7 +1348,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "import scala.io.Source",
@@ -1365,7 +1377,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [

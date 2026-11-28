@@ -31,7 +31,7 @@ from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.mcp_server._answer_pipeline import is_subsystem_query
-from repowise.server.mcp_server._helpers import is_excluded
+from repowise.server.mcp_server._helpers import edge_is_excluded, is_excluded, node_is_excluded
 from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server.tool_search_symbols import _tokens
@@ -130,22 +130,27 @@ def _name_score(name: str, weights: dict[str, float]) -> float:
 
 
 async def _callees(
-    session: Any, repo_id: str, sources: list[str]
+    session: Any, repo_id: str, sources: list[str], exclude_spec: Any = None
 ) -> dict[str, list[tuple[int, str]]]:
     """``{source: [(first call line, target), ...]}`` over walkable execution edges."""
-    return await _calls(session, repo_id, sources, upstream=False)
+    return await _calls(session, repo_id, sources, upstream=False, exclude_spec=exclude_spec)
 
 
 async def _callers(
-    session: Any, repo_id: str, targets: list[str]
+    session: Any, repo_id: str, targets: list[str], exclude_spec: Any = None
 ) -> dict[str, list[tuple[int, str]]]:
     """``{target: [(first call line in the caller, caller), ...]}``, as :func:`_callees`."""
-    return await _calls(session, repo_id, targets, upstream=True)
+    return await _calls(session, repo_id, targets, upstream=True, exclude_spec=exclude_spec)
 
 
 async def _calls(
-    session: Any, repo_id: str, nodes: list[str], *, upstream: bool
+    session: Any, repo_id: str, nodes: list[str], *, upstream: bool, exclude_spec: Any = None
 ) -> dict[str, list[tuple[int, str]]]:
+    """Walkable execution edges out of (or into) *nodes*.
+
+    An edge with an end in a file the user excluded is dropped here, so no
+    step, substep, fan-out count or route hop is ever built from one.
+    """
     if not nodes:
         return {}
     keyed = GraphEdge.target_node_id if upstream else GraphEdge.source_node_id
@@ -165,6 +170,8 @@ async def _calls(
     )
     out: dict[str, dict[str, int]] = {}
     for src, tgt, etype, origin, conf, lines_json in res.all():
+        if edge_is_excluded(src, tgt, exclude_spec):
+            continue
         if upstream:
             src, tgt = tgt, src
         if not tgt or tgt == src or is_excluded_execution_path(file_of_symbol(tgt)):
@@ -183,9 +190,11 @@ async def _calls(
     }
 
 
-async def _fanout(session: Any, repo_id: str, node_ids: list[str]) -> dict[str, int]:
+async def _fanout(
+    session: Any, repo_id: str, node_ids: list[str], exclude_spec: Any = None
+) -> dict[str, int]:
     """Walkable calls per node: the same edges the trace would show."""
-    calls = await _callees(session, repo_id, node_ids)
+    calls = await _callees(session, repo_id, node_ids, exclude_spec)
     return {node: len(targets) for node, targets in calls.items()}
 
 
@@ -200,7 +209,11 @@ def _heaviest_in_order(calls: list[tuple[int, str]], fanout: dict[str, int], cap
 
 
 async def _choose_entry(
-    session: Any, repo_id: str, seed_files: list[str], words: dict[str, float]
+    session: Any,
+    repo_id: str,
+    seed_files: list[str],
+    words: dict[str, float],
+    exclude_spec: Any = None,
 ) -> tuple[str, dict[str, list[tuple[int, str]]]] | None:
     res = await session.execute(
         select(GraphNode.node_id, GraphNode.name, GraphNode.file_path).where(
@@ -221,7 +234,7 @@ async def _choose_entry(
     }
     if not matches:
         return None
-    calls = await _callees(session, repo_id, sorted(matches))
+    calls = await _callees(session, repo_id, sorted(matches), exclude_spec)
 
     def rank(node_id: str) -> tuple:
         score, file_pos = matches[node_id]
@@ -254,24 +267,24 @@ async def expand_via_entry_trace(
     seed_files: list[str] = []
     for h in hits[:_SEED_HITS]:
         path = file_of_symbol(h.get("target_path") or "")
-        if path and path not in seed_files:
+        if path and path not in seed_files and not is_excluded(path, exclude_spec):
             seed_files.append(path)
     if not words or not seed_files:
         return hits, []
 
-    chosen = await _choose_entry(session, repo_id, seed_files, words)
+    chosen = await _choose_entry(session, repo_id, seed_files, words, exclude_spec)
     if chosen is None:
         return hits, []
     entry, calls = chosen
 
     direct = calls[entry]
-    fanout = await _fanout(session, repo_id, [tgt for _line, tgt in direct])
+    fanout = await _fanout(session, repo_id, [tgt for _line, tgt in direct], exclude_spec)
     steps = _heaviest_in_order(direct, fanout, _MAX_STEPS)
     heavy = sorted(steps, key=lambda s: -fanout.get(s, 0))[:_EXPAND_STEPS]
     heavy = [s for s in heavy if fanout.get(s, 0) >= _MIN_CALLS]
-    sub_calls = await _callees(session, repo_id, heavy)
+    sub_calls = await _callees(session, repo_id, heavy, exclude_spec)
     sub_fanout = await _fanout(
-        session, repo_id, [tgt for s in heavy for _line, tgt in sub_calls.get(s, [])]
+        session, repo_id, [tgt for s in heavy for _line, tgt in sub_calls.get(s, [])], exclude_spec
     )
 
     parts = []
@@ -463,15 +476,17 @@ async def call_path(
     take the rows a chain needs. Each level keeps the neighbours the
     question's words name, then the heaviest, and walks on from the heaviest.
     """
+    if node_is_excluded(root, exclude_spec):
+        return []
     words = _question_words(question) if question else {}
     rows: list[str] = []
     seen = {root}
     frontier = [root]
     for _depth in range(_PATH_DEPTH):
-        calls = await (_callers if upstream else _callees)(session, repo_id, frontier)
+        calls = await (_callers if upstream else _callees)(session, repo_id, frontier, exclude_spec)
         targets = [t for src in frontier for _line, t in calls.get(src, []) if t not in seen]
         starts = await _symbol_starts(session, repo_id, [*targets, *frontier])
-        fanout = await _fanout(session, repo_id, list(starts))
+        fanout = await _fanout(session, repo_id, list(starts), exclude_spec)
         walked: list[str] = []
         for src in frontier:
             steps = _shipped_steps(calls.get(src, []), starts, seen, exclude_spec)
@@ -585,7 +600,7 @@ async def _route_level(
     Returns the symbols reached (between the ends, only indexed shipped code),
     or ``None`` when the level is too wide to query.
     """
-    calls = await _calls(session, repo_id, front, upstream=upstream)
+    calls = await _calls(session, repo_id, front, upstream=upstream, exclude_spec=exclude_spec)
     found = {t: None for src in front for _line, t in calls.get(src, []) if t not in mine}
     if len(found) > _ROUTE_MAX_FOUND:
         return None
@@ -629,8 +644,13 @@ async def call_route(
     one length, the one with the most call lines wins. Empty when none is found
     within :data:`_ROUTE_DEPTH` calls.
     """
-    fwd: dict[str, tuple[str, int] | None] = dict.fromkeys(starts)
-    bwd: dict[str, tuple[str, int] | None] = dict.fromkeys(ends)
+    # An excluded end never seeds a frontier, so no route starts or stops in one.
+    fwd: dict[str, tuple[str, int] | None] = dict.fromkeys(
+        s for s in starts if not node_is_excluded(s, exclude_spec)
+    )
+    bwd: dict[str, tuple[str, int] | None] = dict.fromkeys(
+        e for e in ends if not node_is_excluded(e, exclude_spec)
+    )
     if set(fwd) & set(bwd):
         return []
     fwd_front, bwd_front = list(fwd), list(bwd)

@@ -1,20 +1,26 @@
 """Runtime targets for ``evidence setup``: what to profile in each unit, and how.
 
 A target is a real entry point, a benchmark or the unit-test suite, in that
-order: a claim may not exceed its workload class, and only the first two may
-lead. Entry points come from their owners: console scripts from the unit's
+order: a claim may not exceed its workload class, and only an entry point may
+lead (a benchmark speaks through its own results, ``evidence.benchmarks``).
+Entry points come from their owners: console scripts from the unit's
 ``pyproject.toml`` (:func:`~repowise.core.generation.flow_entries.console_scripts`),
 the stored entry-point flag ranked by
 :func:`~repowise.core.generation.entry_points.rank_entry_point_paths`, Go
 ``package main`` packages (:func:`~repowise.core.analysis.published_packages.go_main_packages`)
 and ``package.json`` ``bin`` files (:func:`~repowise.core.ingestion.always_run.own_code`).
+A Python web app's entry file that builds an ASGI app at module level is
+served under uvicorn, for the agent to drive with requests.
 Benchmarks are the stored functions :func:`~repowise.core.code_origin.is_benchmark_function`
 accepts.
 
 Every recipe needs no elevated privileges: pyinstrument in process for
-Python, ``go test -cpuprofile`` for Go, ``node --cpu-prof`` for JavaScript.
-Profiles land in ``.repowise/``. TypeScript is refused: its positions are in
-the compiled JavaScript.
+Python, ``go test -cpuprofile`` for Go, ``node --cpu-prof`` for JavaScript
+(a ``bin`` file, or the test runner's own script for the suite). Profiles
+land in ``.repowise/``. TypeScript is refused: its positions are in the
+compiled JavaScript. A Maven or Gradle unit gets one JVM target the agent
+finishes (:func:`_jvm_target`): JDK Flight Recorder through
+``JAVA_TOOL_OPTIONS`` on the run it chooses, then ``jfr print``.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ from __future__ import annotations
 import posixpath
 import re
 from collections import Counter
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -204,7 +210,9 @@ async def stored_target_classes(session: Any, repository_id: str) -> tuple[str, 
     the full load takes 200 ms. Ceiling: an entry point found only on disk
     (a console script, a ``package.json`` bin) and a stack whose test runner
     detection fails are not read here, so this can say less than setup
-    prints, never more about which language runs.
+    prints; a test file in a unit setup finds no stack for can say more.
+    Read only without the checkout: with one, the actions loader reads what
+    setup offers (:func:`~.setup.load_runtime_offer`).
     """
     from sqlalchemy import or_, select
 
@@ -334,7 +342,8 @@ def _target(
     """One runtime target, JSON-ready.
 
     *timed* is the same workload without the profiler, for ``perf measure``;
-    it rides under ``timed`` until :func:`runtime_targets` drops it.
+    it rides under ``timed`` until :func:`runtime_targets` drops it, as
+    *input_format* rides under ``format`` for :func:`offered_targets`.
 
     ``ingest`` is None when the run cannot be read yet: no commit, or
     *input_format* (what the recipe writes) is not a registered profile
@@ -360,6 +369,7 @@ def _target(
         "ingest": ingest,
         "reason": reason,
         **({"timed": timed} if command and timed else {}),
+        **({"format": input_format} if ingest and input_format else {}),
         **({"note": note} if command and note else {}),
     }
 
@@ -439,17 +449,30 @@ def _python_targets(
             continue
         run = f"sys.argv=['{module}']+sys.argv[1:];import runpy;runpy.run_module('{module}',run_name='__main__',alter_sys=True)"
         out.append(profiled("entry_point", f"python -m {module}", run))
+    out += _served_apps(stack, repo_root, inputs, commit, roots)
     out = out[:PER_CLASS]
 
     if _declares_pytest_benchmark(repo_root, root):
         out.append(_pytest_benchmark(stack, repo_root, commit))
     if stack.test:
         # The paths the unit's coverage command runs (``tests/unit`` beside
-        # ``tests/integration``), so the profile never collects slower suites.
+        # ``tests/integration``), so the profile never collects slower suites,
+        # unless the arguments name tests of their own (a directory, a ``.py``
+        # file or a node id, not an option's value as in ``--ignore tests/slow``;
+        # a file option's value such as ``--cov-config .coveragerc`` is neither):
+        # then they pick what runs. The plugin keeps the failed count for the
+        # profile (``n``). A nested unit that runs its own tests stays ignored
+        # either way: inside the recipe's double quotes only a quote, ``$``, a
+        # backtick or a backslash in its name would break the shell. Ceiling: a
+        # directory holding one of those is not ignored by the profile.
         paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
-        # The plugin keeps the failed count for the profile (``n``).
+        ignores = [f"--ignore={p}" for p in stack.test_ignores if not re.search(r"[\"'$`\\]", p)]
+        tests = "(lambda p:os.path.isdir(p) or p.endswith('.py') and os.path.isfile(p))(x.split('::')[0])"
         run = (
-            f"import pytest;sys.exit(pytest.main({paths!r}+sys.argv[1:],plugins=[type('R',(),"
+            "a=sys.argv[1:];"
+            f"import pytest;sys.exit(pytest.main(([] if any({tests} and not (j and a[j-1] in "
+            f"{sorted(_VALUE_OPTIONS)!r}) for j,x in enumerate(a)) "
+            f"else {paths!r})+{ignores!r}+a,plugins=[type('R',(),"
             "{'pytest_sessionfinish':lambda s,session:n.append(session.testsfailed)})()]))"
         )
         # A launcher outside uv whose installs do not bring pytest installs it here.
@@ -458,6 +481,74 @@ def _python_targets(
             if needs and not any(_PYTEST_WORD.search(n) for n in stack.requires) else []
         )
         out.append(profiled("unit_test", "python tests", run, extra))
+    return out
+
+
+#: pytest options whose value is the next word: a path after one is that option's, not one to run.
+_VALUE_OPTIONS = frozenset({"-k", "-m", "-p", "-c", "-o", "--ignore", "--ignore-glob", "--deselect",
+                            "--rootdir", "--confcutdir", "--basetemp", "--cov", "--junitxml"})
+#: A module-level ASGI application: ``app = FastAPI(...)`` or ``Starlette(...)``, annotated or not.
+_ASGI_APP = re.compile(
+    r"(?m)^([A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?:fastapi\.|starlette\.applications\.)?(?:FastAPI|Starlette)\s*\("
+)
+_SERVE_REASON = (
+    "Send the requests of a representative workload to the server while it runs (your client, a "
+    "load tool or the app's own scripts), then stop it with Ctrl-C; an idle server measures only "
+    "its startup."
+)
+
+
+def _asgi_apps(
+    repo_root: Path, root: str, roots: Collection[str], entry_files: Sequence[str]
+) -> list[tuple[str, str]]:
+    """``(module, app)`` for each stored entry file of the unit that builds an ASGI app at module level.
+
+    Read from disk; the entry-point flag already names a web app's ``main.py``,
+    ``app.py``, ``server.py`` and ``asgi.py``. Ceiling: an app made by a
+    factory function (``create_app()``) or under another framework is not
+    found, and the server's own settings (host, port, reload) are uvicorn's
+    defaults.
+    """
+    found: list[tuple[str, str]] = []
+    for path in entry_files:
+        rel = _owned(root, roots, path)
+        if rel is None or not rel.endswith(".py") or rel.endswith("/__main__.py"):
+            continue
+        module = rel.removeprefix("src/").removesuffix(".py").replace("/", ".")
+        if not _MODULE.fullmatch(module):
+            continue
+        try:
+            text = (repo_root / path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        # Of several apps in one file, the one named ``app`` is the one served.
+        if names := _ASGI_APP.findall(text):
+            found.append((module, "app" if "app" in names else names[0]))
+    return found[:PER_CLASS]
+
+
+def _served_apps(
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
+) -> list[dict[str, Any]]:
+    """Each module-level ASGI app of the unit, served by uvicorn under the profiler.
+
+    uvicorn imports the app by name and serves it until Ctrl-C (or SIGTERM),
+    then returns, so the profile is written as for any clean exit. The ingest
+    line stands; the reason keeps the target from leading ``next_call``, as an
+    entry point waiting for its arguments is kept.
+    """
+    root = stack.root
+    launcher, needs = _python_launcher(stack)
+    server = launcher.replace("--with pyinstrument", "--with pyinstrument --with uvicorn")
+    install = [f"{launcher} -m pip install uvicorn"] if needs else []
+    out: list[dict[str, Any]] = []
+    for module, app in _asgi_apps(repo_root, root, roots, inputs.entry_files):
+        workload, profile = _named(root, f"serve {module}:{app}", ".speedscope.json")
+        run = f"import uvicorn;uvicorn.run('{module}:{app}')"
+        target = _target("entry_point", workload, cwd=str(repo_root / root) if root else str(repo_root),
+                         command=_pyinstrument(server, _from(root, profile), run), profile=profile,
+                         commit=commit, input_format="speedscope", prerequisites=[*needs, *install])
+        out.append({**target, "reason": target["reason"] or _SERVE_REASON, "serves": True})
     return out
 
 
@@ -526,6 +617,23 @@ def _go_profiled(root: str, rel_dir: str, flags: str, name: str) -> tuple[str, s
     return workload, " ".join(p for p in parts if p), profile, " ".join(p for p in timed if p)
 
 
+def _go_bench_results(root: str, rel_dir: str, cwd: str, commit: str | None) -> dict[str, Any]:
+    """The package's benchmark results as ``go test`` prints them: time, bytes and allocations per op.
+
+    ``go test`` has no flag that writes them to a file, so the line redirects
+    its output; ``>`` reads the same in sh and PowerShell, and the converter
+    reads the UTF-16 PowerShell 5 writes. A failed build prints no result
+    lines, which ingest refuses.
+    """
+    name, results = _named(root, f"go bench results {_go_package_arg(rel_dir)}", ".txt")
+    command = (
+        f"go test '-run=^$' -bench . -benchmem -count=1 {_go_package_arg(rel_dir)} "
+        f"> {_from(root, results)}"
+    )
+    return _target("benchmark", name, cwd=cwd, command=command, profile=results, commit=commit,
+                   input_format="go-bench")
+
+
 def _go_targets(
     stack: Stack,
     repo_root: Path,
@@ -561,6 +669,7 @@ def _go_targets(
         )
         out.append(_target("benchmark", name, cwd=cwd, command=command, profile=profile, commit=commit,
                            input_format="pprof", prerequisites=[_fresh(_from(root, profile))], timed=timed))
+        out.append(_go_bench_results(root, rel_dir, cwd, commit))
     # The package with the most test files runs the most code; depth breaks ties.
     test_counts = Counter(
         posixpath.dirname(rel) for p in inputs.test_files
@@ -581,8 +690,47 @@ def _go_targets(
 # ---------------------------------------------------------------------------
 
 
+#: Why a TypeScript program or suite gets no profile.
+_TS_REASON = ("A TypeScript profile's positions are in the compiled JavaScript; "
+              "repowise does not map them back yet.")
+#: Each JavaScript test runner's own script, which ``node`` runs with the profiler flags.
+_RUNNER_SCRIPTS = {
+    "mocha": "node_modules/mocha/bin/mocha.js",
+    "jest": "node_modules/jest/bin/jest.js",
+    "vitest": "node_modules/vitest/vitest.mjs",
+}
+
+
+def _node_suite(
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
+) -> dict[str, Any] | None:
+    """The unit's test suite under ``node --cpu-prof``, from the runner's own command line
+    (:attr:`~repowise.core.test_runners.stacks.Stack.suite`); None without one.
+
+    ``node`` runs the runner's script from the unit's ``node_modules``, so the
+    profile holds the tests, not the package manager. Worker processes the
+    runner forks inherit the flags and write their own profiles into the
+    directory, which ``evidence add`` merges. Refused when most of the unit's
+    test files are TypeScript. Ceiling: a workspace that hoists the runner to
+    the root's ``node_modules`` has no script at the unit's path.
+    """
+    head, *args = stack.suite.split() or [""]
+    script = _RUNNER_SCRIPTS.get(head)
+    if script is None:
+        return None
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    name, profile = _named(root, "node tests", "")
+    tests = [p for p in inputs.test_files if _owned(root, roots, p) is not None and p.endswith((*_TS, *_JS))]
+    if sum(p.endswith(_TS) for p in tests) * 2 > len(tests):
+        return _target("unit_test", name, cwd=cwd, command=None, profile=None, commit=commit, reason=_TS_REASON)
+    command = " ".join(["node --cpu-prof", f"--cpu-prof-dir={_from(root, profile)}", script, *args])
+    return _target("unit_test", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                   input_format="cpuprofile", prerequisites=[*stack.requires, _fresh(_from(root, profile))])
+
+
 def _node_targets(
-    stack: Stack, repo_root: Path, commit: str | None, roots: Collection[str]
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
 ) -> list[dict[str, Any]]:
     from ..ingestion.always_run import own_code
 
@@ -608,15 +756,58 @@ def _node_targets(
         name, profile = _named(root, f"node {rel}", "")
         if path.endswith(_TS):
             out.append(_target("entry_point", name, cwd=cwd, command=None, profile=None, commit=commit,
-                               reason="A TypeScript profile's positions are in the compiled JavaScript; "
-                                      "repowise does not map them back yet."))
+                               reason=_TS_REASON))
             continue
         if not path.endswith(_JS):
             continue
         command = f"node --cpu-prof --cpu-prof-dir={_from(root, profile)} {rel}"
         out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
                            input_format="cpuprofile", prerequisites=[_fresh(_from(root, profile))]))
-    return out
+    suite = _node_suite(stack, repo_root, inputs, commit, roots)
+    return [*out, suite] if suite else out
+
+
+# ---------------------------------------------------------------------------
+# JVM (Maven, Gradle)
+# ---------------------------------------------------------------------------
+
+
+def _jvm_target(stack: Stack, repo_root: Path, commit: str | None) -> dict[str, Any]:
+    """A JVM run under JDK Flight Recorder, for the agent to start: never a step.
+
+    Which JVM to measure is the agent's call: a unit-test run mostly samples
+    JUnit and reflection, so a benchmark or the service under load is asked
+    for. The recorder goes in through ``JAVA_TOOL_OPTIONS``, which every JVM
+    the build starts reads, since a pom's surefire ``argLine`` is often
+    pinned. The command prints the recording's CPU samples as text
+    ``evidence add`` reads (``jfr``); the ingest line is in the reason, so
+    the target is shown but not offered (no ``ingest``) until the run exists.
+    Ceiling: a checkout path with a space splits ``JAVA_TOOL_OPTIONS``.
+    """
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    name, profile = _named(root, "jvm run", ".jfr.txt")
+    recording = profile.removesuffix(".txt")
+    command = (
+        "jfr print --events jdk.ExecutionSample --stack-depth 64 "
+        f"{_from(root, recording)} > {_from(root, profile)}"
+    )
+    options = (
+        "-XX:StartFlightRecording=filename="
+        f"{(repo_root / recording).as_posix()},settings=profile"
+    )
+    ingest = evidence_ingest_line(profile, name, "load_test", commit) if commit else None
+    reason = (
+        f"Start the JVM to measure (a benchmark, or the service under load: unit tests mostly "
+        f"measure JUnit) with JAVA_TOOL_OPTIONS={options} in its environment: every JVM reads "
+        "it, where a pom's surefire argLine is often pinned. Set it for that JVM alone, since a "
+        "build tool's own JVM would write the same file when it exits. When the run ends, run this command"
+        + (f", then: {ingest}" if ingest else "; evidence needs a git checkout for the commit.")
+    )
+    target = _target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                     input_format="jfr", reason=reason)
+    # Takes no arguments: the run it converts is the one the agent started.
+    return {**target, "serves": True}
 
 
 def runtime_targets(
@@ -633,7 +824,41 @@ def runtime_targets(
     unit's. A unit whose root a shell could misread gets none.
     """
     found = _unit_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
-    return [_awaiting_args({k: v for k, v in t.items() if k != "timed"}) for t in found]
+    return [{k: v for k, v in _awaiting_args(t).items() if k not in _INTERNAL} for t in found]
+
+
+#: Target keys for the callers in this package, never printed. ``serves``: a
+#: server driven by requests, or a JVM run the agent starts: no arguments either way.
+_INTERNAL = frozenset({"timed", "format", "serves"})
+
+
+def offered_targets(
+    stacks: Sequence[Stack],
+    repo_root: Path,
+    inputs: RuntimeInputs,
+    commit: str | None,
+    go_mains: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Every unit's runtime targets ``evidence setup`` prints an ingest line for.
+
+    The one answer to whether this repository has anything runtime to run:
+    the plan lists these targets, ``next`` asks for runtime evidence only
+    while there is one, and ``perf check`` names a benchmark target only when
+    one is here. Each keeps ``format``, what its command writes. An entry
+    point waiting for its arguments counts: the plan names it under
+    ``optional``.
+    """
+    roots = {s.root for s in stacks}
+    return [
+        t for stack in stacks
+        for t in _unit_targets(stack, repo_root, inputs, commit, go_mains, roots)
+        if is_offered(t)
+    ]
+
+
+def is_offered(target: Mapping[str, Any]) -> bool:
+    """Whether the plan offers *target*: it prints an ingest line for its run."""
+    return bool(target["ingest"])
 
 
 def _unit_targets(
@@ -651,7 +876,9 @@ def _unit_targets(
     elif stack.language == "go":
         found = _go_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
     elif stack.language == "node":
-        found = _node_targets(stack, repo_root, commit, unit_roots)
+        found = _node_targets(stack, repo_root, inputs, commit, unit_roots)
+    elif stack.language == "java":
+        found = [_jvm_target(stack, repo_root, commit)]
     else:
         found = []
     return sorted(found, key=lambda t: CLASS_ORDER.index(t["class"]))
@@ -663,7 +890,7 @@ def _awaiting_args(target: dict[str, Any]) -> dict[str, Any]:
     Its ingest line names the workload per arguments (``app <args>``), so an
     ``init`` run and an ``update`` run of one program never share a history.
     """
-    if target["class"] != "entry_point" or not target["command"]:
+    if target["class"] != "entry_point" or not target["command"] or target.get("serves"):
         return target
     ingest = target["ingest"]
     if ingest:
@@ -727,7 +954,9 @@ __all__ = [
     "PROFILE_DIR",
     "RuntimeInputs",
     "evidence_ingest_line",
+    "is_offered",
     "load_runtime_inputs",
+    "offered_targets",
     "runtime_targets",
     "stored_target_classes",
     "timed_target",

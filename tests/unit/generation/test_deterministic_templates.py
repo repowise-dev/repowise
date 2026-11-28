@@ -610,7 +610,7 @@ def test_scc_page_renders_german(german_generator):
         _scc_ctx(), "scc-001", structural_page_title("de", "scc_page", "scc-001")
     )
 
-    assert page.title == "Zyklische Abhängigkeit: scc-001"
+    assert page.title == "Statischer Importzyklus: scc-001"
     assert "**Zyklus-ID:** `scc-001`" in page.content
     assert "## Dateien im Zyklus" in page.content
     assert "## Die Schleife" in page.content

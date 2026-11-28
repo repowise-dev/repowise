@@ -45,6 +45,7 @@ def _event(
     avoided_files: tuple = (),
     host_session_id: str | None = None,
     session_id: str | None = None,
+    outcome: dict | None = None,
 ) -> None:
     event_id = new_event_id()
     payload: dict = {
@@ -67,6 +68,8 @@ def _event(
         "host_session_id": host_session_id,
         "session_id": session_id,
     }
+    if outcome is not None:
+        payload["outcome"] = outcome
     if priced:
         payload.update(
             model="claude-sonnet-4-6",
@@ -132,6 +135,14 @@ async def test_priced_and_unpriced_savings_are_reported_separately(
     assert models["claude-sonnet-4-6"]["saved_input_tokens"] == 1_000
     # The unpriced bucket is a real row, not a dropped one.
     assert models[None]["saved_input_tokens"] == 500
+    # Each bucket carries its own priced dollars; the unpriced one adds nothing.
+    assert models["claude-sonnet-4-6"]["priced_input_savings_usd"] == pytest.approx(
+        data["priced_input_savings_usd"]
+    )
+    assert models[None]["priced_input_savings_usd"] == 0.0
+    assert sum(row["priced_input_savings_usd"] for row in data["per_day"]) == pytest.approx(
+        data["priced_input_savings_usd"]
+    )
 
 
 async def test_a_dead_end_saves_nothing_and_is_not_an_answered_query(
@@ -217,6 +228,58 @@ async def test_the_window_excludes_older_events(client: AsyncClient, tmp_path: P
     assert everything["saved_input_tokens"] == 1_400
     assert recent["saved_input_tokens"] == 1_000
     assert recent["window_days"] == 1
+
+
+async def test_check_rows_follow_the_window_and_stay_null_unrecorded(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _sidecar(repo_dir)
+    _event(repo_dir, operation="get_change_risk", outcome={"level": "high"})
+    _event(repo_dir, operation="get_change_risk")
+    _event(repo_dir, operation="get_why", outcome={"decision": "accepted"})
+    _event(
+        repo_dir,
+        operation="get_why",
+        outcome={"decision": "none"},
+        occurred_at="2020-01-01T00:00:00.000000Z",
+    )
+    _event(repo_dir, operation="get_dead_code")
+
+    recent = (
+        await client.get(f"/api/repos/{repo['id']}/savings", params={"days": 1})
+    ).json()
+    rows = {row["tool"]: row for row in recent["checks"]}
+    assert list(rows) == [
+        "get_change_risk",
+        "get_why",
+        "get_risk",
+        "get_health",
+        "get_dead_code",
+    ]
+    assert rows["get_change_risk"] == {
+        "tool": "get_change_risk",
+        "calls": 2,
+        "outcome_calls": 1,
+        "high": 1,
+        "medium": 0,
+        "low": 0,
+        "decisions_accepted": None,
+        "decisions_candidate": None,
+        "decisions_none": None,
+        "findings": None,
+        "files": None,
+        "items": None,
+        "high_confidence": None,
+    }
+    assert (rows["get_why"]["calls"], rows["get_why"]["decisions_none"]) == (1, 0)
+    assert (rows["get_dead_code"]["calls"], rows["get_dead_code"]["items"]) == (1, None)
+    assert rows["get_risk"]["calls"] == 0
+
+    everything = (await client.get(f"/api/repos/{repo['id']}/savings")).json()
+    why = next(row for row in everything["checks"] if row["tool"] == "get_why")
+    assert (why["calls"], why["decisions_none"]) == (2, 1)
 
 
 async def test_unknown_repo_404(client: AsyncClient) -> None:
@@ -392,3 +455,44 @@ async def test_a_failing_output_estimate_leaves_the_rest_of_the_response_unchang
     before.pop("as_of")
     after.pop("as_of")
     assert after == before
+
+
+async def test_a_host_maps_a_report_onto_the_same_response(
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``savings_response`` is the endpoint's own mapping, for a host's own report."""
+    from datetime import UTC, datetime
+
+    from repowise.core.distill import missed, missed_mcp
+    from repowise.core.savings.service import load_report
+    from repowise.server.routers.costs import savings_response
+
+    monkeypatch.setattr(
+        missed,
+        "scan_missed_savings",
+        lambda _p: {"events": 3, "est_saved_tokens": 900, "window_days": 7.0},
+    )
+    monkeypatch.setattr(
+        missed_mcp, "scan_missed_mcp_savings", lambda _p: {"events": 2, "est_saved_tokens": 40}
+    )
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _sidecar(repo_dir)
+    _event(repo_dir, surface="mcp", baseline=1_000, priced=True, avoided_files=(("a.py", 120),))
+    _event(repo_dir, surface="hook", agent="codex", baseline=250)
+
+    data = (await client.get(f"/api/repos/{repo['id']}/savings")).json()
+    as_of = datetime.fromisoformat(data["as_of"])
+    report = load_report(repo_dir, as_of=as_of)
+    assert report is not None
+
+    scans = {
+        "missed": {"events": 3, "est_saved_tokens": 900, "window_days": 7.0},
+        "reread": {"events": 2, "est_saved_tokens": 40},
+    }
+    assert savings_response(report, as_of=as_of, days=None, **scans).model_dump(
+        mode="json"
+    ) == data
+    bare = savings_response(report, as_of=datetime.now(UTC), days=None)
+    assert (bare.missed_events, bare.reread_events, bare.missed_window_days) == (0, 0, 0.0)
+    assert bare.saved_input_tokens == data["saved_input_tokens"]

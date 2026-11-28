@@ -57,7 +57,6 @@ async def test_get_risk_multiple_targets(setup_mcp):
     result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["churn"])
     targets = result["targets"]
     assert len(targets) == 2
-    assert "global_hotspots" in result
     # Both targets should have trend and risk_type
     for t in targets.values():
         assert "trend" in t
@@ -68,7 +67,7 @@ async def test_get_risk_multiple_targets(setup_mcp):
 async def test_get_risk_global_hotspots_exclude_targets(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["src/auth/service.py", "src/db/models.py"])
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["hotspots"])
     # service.py is a hotspot but should NOT appear in global_hotspots
     for h in result["global_hotspots"]:
         assert h["file_path"] != "src/auth/service.py"
@@ -602,6 +601,50 @@ def test_pr_directive_says_when_every_test_must_run():
     assert "Every test must run" in directive["summary"]
 
 
+def test_pr_directive_runs_all_when_the_selection_holds_most_of_the_suite():
+    """A subset holding most of the suite is not targeted; the ranked head stays."""
+    import dataclasses
+
+    tests = [f"tests/test_m{i:02}.py" for i in range(12)]
+    selected = _selected(set(tests))
+    most = dataclasses.replace(
+        selected,
+        selection=dataclasses.replace(selected.selection, known_tests=(*tests, "tests/test_x.py")),
+    )
+    directive = _directive({}, tests=most)
+    assert directive["tests_run_all"] is True
+    assert directive["tests_run_all_reasons"] == [
+        "selection_covers_most_of_suite: 12 of 13 test files."
+    ]
+    assert directive["tests_to_run"] == tests[:10]
+    assert "Every test must run" in directive["summary"]
+
+    others = tuple(f"tests/test_o{i:02}.py" for i in range(12))
+    few = dataclasses.replace(
+        selected,
+        selection=dataclasses.replace(selected.selection, known_tests=(*tests, *others)),
+    )
+    directive = _directive({}, tests=few)
+    assert directive["tests_run_all"] is False
+    assert "tests_run_all_reasons" not in directive
+
+
+def test_pr_directive_summary_leads_test_gaps_with_measured_coverage():
+    blast = {
+        "test_impact": {
+            "coverage": {
+                "status": "available",
+                "changed_files_total": 1,
+                "changed_files_with_measured_tests": 0,
+            },
+            "files_without_measured_tests": ["src/core.py"],
+        }
+    }
+    directive = _directive(blast, tests=_selected({"tests/test_core.py"}))
+    assert "Measured coverage: 0 of 1 changed file(s), 0 test gap(s)." in directive["summary"]
+    assert "Showing 0 of 0" not in directive["summary"]
+
+
 def test_pr_directive_without_a_selection_names_nothing_and_says_why():
     from repowise.server.mcp_server.tool_risk.directives import ChangeTests
 
@@ -826,12 +869,43 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
 
 
 @pytest.mark.asyncio
-async def test_get_risk_omits_global_hotspots_for_a_single_target(setup_mcp):
-    """Ambient orientation earns its place across targets, not on one named file."""
+async def test_get_risk_lists_global_hotspots_only_when_asked(setup_mcp):
+    """Files nobody named cost every caller tokens, so they are opt-in."""
     from repowise.server.mcp_server import get_risk
 
+    many = ["src/auth/service.py", "src/db/models.py"]
     assert "global_hotspots" not in await get_risk(["src/auth/service.py"])
-    assert "global_hotspots" in await get_risk(["src/auth/service.py", "src/db/models.py"])
+    assert "global_hotspots" not in await get_risk(many)
+    assert "global_hotspots" in await get_risk(many, include=["hotspots"])
+    assert "global_hotspots" in await get_risk(["src/auth/service.py"], include=["hotspots"])
+
+
+@pytest.mark.asyncio
+async def test_a_card_shows_three_co_change_partners_and_counts_the_rest(setup_mcp, session):
+    import json
+
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_risk
+
+    partners = [{"file_path": f"src/p{i}.py", "count": 9 - i} for i in range(6)]
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/auth/service.py")
+        .values(co_change_partners_json=json.dumps(partners))
+    )
+    await session.flush()
+
+    card = (await get_risk(["src/auth/service.py"]))["targets"]["src/auth/service.py"]
+
+    assert [p["file_path"] for p in card["co_change_partners"]] == [
+        "src/p0.py",
+        "src/p1.py",
+        "src/p2.py",
+    ]
+    assert card["co_change_partners_total"] == 6
+    assert card["co_change_partners_truncated"] is True
 
 
 @pytest.mark.asyncio
@@ -875,7 +949,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "changes", "churn", "graph", "owners", "scales", "tests"],
+            "valid": ["blast", "changes", "churn", "graph", "hotspots", "owners", "scales", "tests"],
         }
     ]
 
@@ -1149,6 +1223,46 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
 
 
 @pytest.mark.asyncio
+async def test_a_secret_signal_carries_its_kind_only(setup_mcp, session):
+    import json
+    from datetime import UTC, datetime
+
+    from repowise.core.analysis.security_scan import masked_snippet
+    from repowise.core.persistence.models import SecurityFinding
+    from repowise.server.mcp_server.tool_risk.assessment import _get_security_signals
+
+    value = "Zq9XjW7vK3pLm2NbQ8tR"  # made up for this test
+    rows = [
+        ("hardcoded_secret", masked_snippet(f'API_KEY = "{value}"')),
+        ("pickle_loads", "pickle.loads(blob)"),
+    ]
+    for line, (kind, snippet) in enumerate(rows, start=1):
+        session.add(
+            SecurityFinding(
+                repository_id="repo1",
+                file_path="src/auth/service.py",
+                kind=kind,
+                severity="high",
+                snippet=snippet,
+                line_number=line,
+                commit_sha="",
+                detected_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+    await session.flush()
+
+    signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
+    text = json.dumps(signals)
+    assert "API_KEY" not in text and "****" not in text
+    for at in range(len(value) - 2):
+        assert value[at : at + 3] not in text
+    assert signals == [
+        {"kind": "hardcoded_secret", "severity": "high"},
+        {"kind": "pickle_loads", "severity": "high", "snippet": "pickle.loads(blob)"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_risk_serves_the_blast_radius_on_request(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
@@ -1221,3 +1335,127 @@ async def test_get_risk_history_tier_file_omits_unmeasured_signals(setup_mcp, se
         assert "owner_pct" not in card and "contributor_count" not in card
     owners = (await get_risk([path], include=["owners"]))["targets"][path]
     assert owners["owner_pct"] == 0.5
+
+
+def _co_change_paths(partners, target_origin="production", origins=None):
+    """File order ``_build_co_changes`` gives stored *partners* (heaviest first in the list)."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_risk.assessment import _build_co_changes
+
+    records = [{"file_path": p, "count": float(len(partners) - i)} for i, p in enumerate(partners)]
+    meta = SimpleNamespace(co_change_partners_json=json.dumps(records))
+    rows, _ = _build_co_changes(meta, {}, None, origins, target_origin)
+    return [r["file_path"] for r in rows]
+
+
+def test_co_change_rows_lead_with_shipped_code_then_tests():
+    """A heavier test partner ranks below every shipped partner."""
+    order = _co_change_paths(["tests/test_a.py", "docs_src/tutorial/a.py", "src/b.py", "src/c.py"])
+
+    assert order == ["src/b.py", "src/c.py", "docs_src/tutorial/a.py", "tests/test_a.py"]
+
+
+def test_a_test_files_partners_keep_tests_beside_shipped_code():
+    order = _co_change_paths(
+        ["tests/test_b.py", "docs_src/tutorial/a.py", "src/a.py"], target_origin="test"
+    )
+
+    assert order == ["tests/test_b.py", "src/a.py", "docs_src/tutorial/a.py"]
+
+
+def test_a_docs_files_partners_still_lead_with_shipped_code():
+    order = _co_change_paths(
+        ["docs_src/tutorial/b.py", "src/a.py"], target_origin="docs_example"
+    )
+
+    assert order == ["src/a.py", "docs_src/tutorial/b.py"]
+
+
+def test_co_change_rank_reads_the_stored_origin_first():
+    order = _co_change_paths(["src/gen.py", "src/b.py"], origins={"src/gen.py": "generated"})
+
+    assert order == ["src/b.py", "src/gen.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("since", ["last week", "2024-13-01", "90", ""])
+async def test_get_risk_refuses_a_since_it_cannot_read(setup_mcp, since):
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"], since=since)
+
+    assert "since must be" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_since_without_a_checkout_says_the_window_was_not_applied(setup_mcp):
+    """Stored partners stay, labelled as all history rather than passed off as recent."""
+    from repowise.server.mcp_server import get_risk
+
+    card = (await get_risk(["src/auth/service.py"], since="2024-01-01"))["targets"][
+        "src/auth/service.py"
+    ]
+
+    assert card["co_change_window"]["applied"] is False
+    assert "could not walk" in card["co_change_window"]["reason"]
+    assert card["co_change_window"]["since"] == "2024-01-01"
+    assert card["co_change_partners"]
+    assert " since " not in card["risk_summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_since_counts_partners_over_the_window(setup_mcp, tmp_path):
+    import os
+    import subprocess
+
+    from repowise.server.mcp_server import get_risk
+
+    def git(*args: str, date: str | None = None) -> None:
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "A",
+            "GIT_AUTHOR_EMAIL": "a@example.com",
+            "GIT_COMMITTER_NAME": "A",
+            "GIT_COMMITTER_EMAIL": "a@example.com",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+        }
+        if date:
+            env |= {"GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+        subprocess.run(["git", *args], cwd=tmp_path, env=env, check=True, capture_output=True)
+
+    git("init", "-q")
+    for n, (files, day) in enumerate(
+        [
+            (["src/auth/service.py", "src/auth/middleware.py"], "2020-01-01"),
+            (["src/auth/service.py", "src/auth/middleware.py"], "2020-01-02"),
+            (["src/auth/service.py", "src/db/models.py"], "2025-01-01"),
+            (["src/auth/service.py", "src/db/models.py"], "2025-01-02"),
+        ]
+    ):
+        for path in files:
+            (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+            with (tmp_path / path).open("a", encoding="utf-8") as fh:
+                fh.write(f"v{n}\n")
+        git("add", "-A")
+        git("commit", "-q", "-m", f"c{n}", date=f"{day}T12:00:00")
+
+    result = await get_risk(["src/auth/service.py"], since="2024-06-01")
+    card = result["targets"]["src/auth/service.py"]
+
+    assert card["co_change_window"] == {"since": "2024-06-01", "target_commits": 2}
+    assert [(p["file_path"], p["support"], p["conf_ab"]) for p in card["co_change_partners"]] == [
+        ("src/db/models.py", 2, 1.0)
+    ]
+    assert card["co_change_partners_total"] == 1
+    assert "1 co-change partners since 2024-06-01" in card["risk_summary"]
+
+    # The older pair is with src/auth/middleware.py, which has no git row in the
+    # fixture: a path the index does not hold is never a partner.
+    wide = (await get_risk(["src/auth/service.py"], since="2019-01-01"))["targets"][
+        "src/auth/service.py"
+    ]
+    assert wide["co_change_window"]["target_commits"] == 4
+    assert [(p["file_path"], p["support"]) for p in wide["co_change_partners"]] == [
+        ("src/db/models.py", 2)
+    ]

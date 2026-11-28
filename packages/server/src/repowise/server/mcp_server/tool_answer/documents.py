@@ -30,7 +30,7 @@ from repowise.core.support_paths import DOC_EXTENSIONS, classification_token
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _get_exclude_spec, is_excluded, read_repo_file_text
 from repowise.server.mcp_server._line_hits import _files_holding, _line_row, scan_literal
-from repowise.server.mcp_server._page_paths import PAGELESS_FILE
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE, in_scope
 from repowise.server.mcp_server._query_terms import _WORD_RE, QUESTION_FRAME_VERBS, content_terms
 from repowise.server.mcp_server.tool_answer.config import _SPECIFIC_TOKEN_MAX_FILES
 from repowise.server.mcp_server.tool_answer.symbols import place_named_files
@@ -105,7 +105,7 @@ def _is_document(path: str) -> bool:
 def _servable(alias: str | None, path: str, scope: str | None) -> bool:
     """A document worth serving: production-origin, or under the *scope* the question asks about."""
     if scope:
-        return alias is None and f"{path}/".startswith(f"{scope.rstrip('/')}/")
+        return alias is None and in_scope(path, scope)
     return path_origin(path) == "production"
 
 

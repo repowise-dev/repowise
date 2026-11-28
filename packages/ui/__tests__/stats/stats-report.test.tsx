@@ -117,6 +117,12 @@ describe("RecordsList", () => {
     expect(screen.getByText("Flow")).toBeInTheDocument();
   });
 
+  it("calls the largest cycle a static import cycle", () => {
+    render(<RecordsList records={{ largest_cycle: { files: 4, cycle_count: 2 } }} />);
+    expect(screen.getAllByText("Largest static import cycle").length).toBeGreaterThan(0);
+    expect(screen.getByText("2 static import cycles in total")).toBeInTheDocument();
+  });
+
   it("links records to their file and commit", () => {
     const path = "packages/a/very/deep/directory/structure/that/used/to/be/cut/module.py";
     render(
