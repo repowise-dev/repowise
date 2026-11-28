@@ -143,6 +143,66 @@ def test_the_repair_embeds_the_shared_recipe(tmp_path: Path, repair) -> None:
     ]
 
 
+def test_doctor_recovers_wrong_vector_with_unchanged_key_set(tmp_path: Path, monkeypatch) -> None:
+    import json
+    from uuid import uuid4
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.models import DecisionRecord
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    async def seed():
+        repo_path = await _build_repo(tmp_path, missing_title="File: packages/core/search.py")
+        repowise_dir = repo_path / ".repowise"
+        engine = create_engine(f"sqlite+aiosqlite:///{repowise_dir / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                repo_id = repo.id
+                session.add(
+                    DecisionRecord(
+                        id="actual",
+                        repository_id=repo_id,
+                        title="Retained",
+                        decision="Keep my vector",
+                    )
+                )
+        finally:
+            await engine.dispose()
+        store = LanceDBVectorStore(str(repowise_dir / "lancedb"), MockEmbedder())
+        key = "decision:actual"
+        await store.upsert_vectors(
+            [
+                (PAGE_MISSING, [0.5] * 8, {"title": "Existing page"}),
+                (key, [0.25] * 8, {"title": "Retained"}),
+            ]
+        )
+        before = await store.snapshot_vectors({key})
+        store.decision_vector_journal(repo_id).write_text(
+            json.dumps({"revision": uuid4().hex, "previous": None, "rows": before}),
+            encoding="utf-8",
+        )
+        await store.upsert_vectors([(key, [0.75] * 8, {"title": "Wrong owner"})])
+        await store.close()
+        return repo_path, before
+
+    repo_path, before = asyncio.run(seed())
+    monkeypatch.setattr("repowise.cli.providers.resolve_embedder_for_repo", lambda _: "mock")
+    repo_checks._run_repo_checks(repo_path, repair=True)
+
+    async def verify():
+        store = LanceDBVectorStore(str(repo_path / ".repowise" / "lancedb"), MockEmbedder())
+        try:
+            assert await store.snapshot_vectors({"decision:actual"}) == before
+            assert not store.decision_rekey_pending()
+        finally:
+            await store.close()
+
+    asyncio.run(verify())
+
+
 def test_the_repaired_vector_carries_the_path_and_summary(tmp_path: Path, repair) -> None:
     """Named directly, so the assertion does not rest on the helper alone."""
     repo_path = asyncio.run(_build_repo(tmp_path, missing_title="File: packages/core/search.py"))
@@ -153,6 +213,54 @@ def test_the_repaired_vector_carries_the_path_and_summary(tmp_path: Path, repair
     assert "packages/core/search.py" in text
     assert "Full-text search over the wiki index." in text
     assert meta["summary"] == "Full-text search over the wiki index."
+
+
+def test_doctor_rechecks_orphans_after_an_update_commits(tmp_path: Path, monkeypatch) -> None:
+    from repowise.cli.commands.doctor_cmd._checks import stores
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.models import DecisionRecord
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
+
+    repo_path = asyncio.run(_build_repo(tmp_path, missing_title="File: packages/core/search.py"))
+    original_vector_ids = stores._vector_ids
+    committed = False
+    decision_key = "decision:valid-after-update"
+
+    async def vector_ids_after_commit(lance_dir):
+        nonlocal committed
+        if not committed:
+            assert try_acquire_update_lock(repo_path, None) is None
+            engine = create_engine(f"sqlite+aiosqlite:///{repo_path / '.repowise' / 'wiki.db'}")
+            store = LanceDBVectorStore(str(lance_dir), MockEmbedder())
+            try:
+                async with get_session(create_session_factory(engine)) as session:
+                    repo = await get_repository_by_path(session, str(repo_path))
+                    session.add(
+                        DecisionRecord(
+                            id="valid-after-update",
+                            repository_id=repo.id,
+                            title="Keep",
+                            decision="Keep",
+                        )
+                    )
+                await store.upsert_vectors([(decision_key, [0.25] * 8, {"title": "Keep"})])
+                committed = True
+            finally:
+                await store.close()
+                await engine.dispose()
+                release_update_lock(repo_path)
+        return await original_vector_ids(lance_dir)
+
+    monkeypatch.setattr(stores, "_vector_ids", vector_ids_after_commit)
+    monkeypatch.setattr("repowise.cli.providers.resolve_embedder_for_repo", lambda _: "mock")
+    repo_checks._run_repo_checks(repo_path, repair=True)
+
+    ids, error = asyncio.run(original_vector_ids(repo_path / ".repowise" / "lancedb"))
+    assert committed and error is None
+    assert decision_key in ids
 
 
 def test_a_titleless_page_is_left_reported_missing(tmp_path: Path, repair) -> None:
@@ -166,3 +274,58 @@ def test_a_titleless_page_is_left_reported_missing(tmp_path: Path, repair) -> No
     recorder = repair(repo_path)
 
     assert recorder.items == []
+
+
+def test_doctor_preserves_a_retained_rekey_source(tmp_path: Path, monkeypatch) -> None:
+    from repowise.cli.commands.doctor_cmd._checks.stores import _vector_ids
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.models import REKEYED_REASON, DecisionAlias, DecisionRecord
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo_path = asyncio.run(_build_repo(tmp_path, missing_title="File: packages/core/search.py"))
+    lance_dir = repo_path / ".repowise" / "lancedb"
+    retained_key = "decision:retained-source"
+
+    async def seed():
+        engine = create_engine(f"sqlite+aiosqlite:///{repo_path / '.repowise' / 'wiki.db'}")
+        store = LanceDBVectorStore(str(lance_dir), MockEmbedder())
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                session.add(
+                    DecisionRecord(
+                        id="canonical",
+                        repository_id=repo.id,
+                        title="Keep",
+                        decision="Keep",
+                    )
+                )
+                await session.flush()
+                session.add(
+                    DecisionAlias(
+                        alias_id="retained-source",
+                        decision_id="canonical",
+                        repository_id=repo.id,
+                        reason=REKEYED_REASON,
+                    )
+                )
+            await store.upsert_vectors(
+                [
+                    (retained_key, [0.25] * 8, {"title": "Keep"}),
+                    ("decision:unbound", [0.75] * 8, {"title": "Orphan"}),
+                ]
+            )
+        finally:
+            await store.close()
+            await engine.dispose()
+
+    asyncio.run(seed())
+    monkeypatch.setattr("repowise.cli.providers.resolve_embedder_for_repo", lambda _: "mock")
+    repo_checks._run_repo_checks(repo_path, repair=True)
+
+    ids, error = asyncio.run(_vector_ids(lance_dir))
+    assert error is None
+    assert retained_key in ids
+    assert "decision:unbound" not in ids

@@ -140,3 +140,18 @@ async def test_repair_failures_go_to_skip_one_repair_at_a_time(monkeypatch):
         ("Decision entity migration", FAILURE),
     ]
     assert "reconcile_source_ranks" in rec.order
+
+
+async def test_pending_vector_recovery_failure_stops_decision_repair(monkeypatch):
+    from repowise.core.persistence import decision_id_migration
+
+    rec = StepRecorder(monkeypatch)
+    install_decision_chain(rec)
+
+    async def fail_recovery(*args, **kwargs):
+        raise decision_id_migration.DecisionVectorRecoveryError("Undo still pending")
+
+    monkeypatch.setattr(decision_id_migration, "apply_id_migration", fail_recovery)
+    with pytest.raises(decision_id_migration.DecisionVectorRecoveryError, match="Undo still pending"):
+        await repair_decision_store(object(), "repo-1", vector_store=_STORE)
+    assert "apply_migration" not in rec.order

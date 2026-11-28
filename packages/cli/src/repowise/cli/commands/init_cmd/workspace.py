@@ -77,6 +77,7 @@ from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 from repowise.core.index_scope import MODEL_COMMAND
+from repowise.core.update_lock import init_in_progress, release_update_lock, try_acquire_update_lock
 from repowise.core.workspace.update import stamp_workspace_entry
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
@@ -377,6 +378,26 @@ class _RepoDocs:
 
 
 def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCtx) -> _RepoOutcome:
+    """Protect a workspace member with the same writer lock as single-repo init."""
+    if ctx.dry_run:
+        return _run_workspace_member(repo, idx, total, ctx)
+
+    from repowise.cli.providers.vector_store import recover_pending_decision_vectors
+    from repowise.core.persistence.decision_id_migration import DecisionVectorRecoveryError
+
+    with init_in_progress(repo.path):
+        if try_acquire_update_lock(repo.path, None) is not None:
+            return _RepoOutcome(error="Another repowise update is writing this index. Retry init when it finishes.")
+        try:
+            run_async(recover_pending_decision_vectors(repo.path))
+            return _run_workspace_member(repo, idx, total, ctx)
+        except DecisionVectorRecoveryError as exc:
+            return _RepoOutcome(error=str(exc))
+        finally:
+            release_update_lock(repo.path)
+
+
+def _run_workspace_member(repo: Any, idx: int, total: int, ctx: _WorkspaceCtx) -> _RepoOutcome:
     """Index (and optionally generate docs for) one repo in a workspace init.
 
     On pipeline failure the outcome carries ``error`` and nothing is persisted.

@@ -90,10 +90,15 @@ async def repair_decision_store(
     # anything else reads or writes one. A random id is re-minted whenever a
     # store is rebuilt rather than updated, which strands every reference held
     # outside the row. Idempotent, and it never deletes a record.
-    try:
-        from repowise.core.persistence.decision_id_migration import apply_id_migration
+    from repowise.core.persistence.decision_id_migration import (
+        DecisionVectorRecoveryError,
+        apply_id_migration,
+    )
 
+    try:
         await apply_id_migration(session, repo_id, vector_store=vector_store)
+    except DecisionVectorRecoveryError:
+        raise
     except Exception as _id_err:
         _skipped("Decision id migration", "decision_id_migration_skipped", _id_err)
 

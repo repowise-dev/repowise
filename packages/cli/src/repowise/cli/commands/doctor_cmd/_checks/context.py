@@ -19,6 +19,7 @@ class StoreDrift:
     # An index on disk holding no vectors at all. Repairing that is a whole
     # reindex, which doctor does not start on a hosted embedder unasked.
     vector_store_empty: bool = False
+    decision_rekey_pending: bool = False
 
     def has_mismatches(self) -> bool:
         return bool(
@@ -26,6 +27,7 @@ class StoreDrift:
             or self.orphaned_fts
             or self.missing_from_vector
             or self.orphaned_vector
+            or self.decision_rekey_pending
         )
 
 

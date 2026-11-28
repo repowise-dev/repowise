@@ -1289,6 +1289,7 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
         log.debug("self_heal_skipped", reason="another update holds the lock")
         return
     try:
+        _recover_decision_vectors(repo_path)
         if opts.defer_docs and run.renderer_changed:
             from .stale_targets import defer_renderer_pages
 
@@ -1375,6 +1376,16 @@ def _tombstone_missing_stale_pages(run: UpdateRun) -> None:
     ]
     if absent:
         console.print(f"Stale pages for deleted files: [cyan]{len(absent)}[/cyan]")
+
+
+def _recover_decision_vectors(repo_path: Path) -> None:
+    from repowise.cli.providers.vector_store import recover_pending_decision_vectors
+    from repowise.core.persistence.decision_id_migration import DecisionVectorRecoveryError
+
+    try:
+        run_async(recover_pending_decision_vectors(repo_path))
+    except DecisionVectorRecoveryError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
@@ -2762,9 +2773,14 @@ def _update_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     deferred = _acquire_update_lock(run)
     if deferred is not None:
         return deferred
-    # Temp files killed cache writes left; the age guard spares one in flight.
     if not opts.dry_run:
+        # Temp files killed cache writes left; the age guard spares one in flight.
         sweep_orphan_temps(get_repowise_dir(run.repo_path))
+        try:
+            _recover_decision_vectors(run.repo_path)
+        except BaseException:
+            release_update_lock(run.repo_path)
+            raise
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")

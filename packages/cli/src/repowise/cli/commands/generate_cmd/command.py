@@ -380,33 +380,38 @@ def run_generate(
     embedder_name, embedder_upgraded = _announce_embedder(cfg, repo_path, provider)
 
     start = time.monotonic()
-    outcome = run_async(
-        run_scoped_generation(
-            repo_path,
-            provider,
-            config,
-            intent=intent,
-            cascade_mode=cascade_mode,  # type: ignore[arg-type]
-            exclude_patterns=exclude_patterns,
-            embedder_name=embedder_name,
-            yes=yes,
-            dry_run=dry_run,
-            gate_cost=_make_gate(dry_run, embedder_name or "mock"),
-            interactive=interactive,
+    from repowise.core.update_lock import holding_update_lock
+
+    with contextlib.nullcontext(True) if dry_run else holding_update_lock(repo_path) as locked:
+        if not locked:
+            raise click.ClickException("Another update is writing this index. Retry generate when it finishes.")
+        outcome = run_async(
+            run_scoped_generation(
+                repo_path,
+                provider,
+                config,
+                intent=intent,
+                cascade_mode=cascade_mode,  # type: ignore[arg-type]
+                exclude_patterns=exclude_patterns,
+                embedder_name=embedder_name,
+                yes=yes,
+                dry_run=dry_run,
+                gate_cost=_make_gate(dry_run, embedder_name or "mock"),
+                interactive=interactive,
+            )
         )
-    )
 
-    if outcome is None:
-        return None  # nothing generated, dry run, or declined — messaging already printed
+        if outcome is None:
+            return None  # nothing generated, dry run, or declined — messaging already printed
 
-    _write_state(repo_path, state, provider, outcome, embedder=embedder_name)
-    # Telemetry never ends a run whose pages are already saved.
-    with contextlib.suppress(Exception):
-        _record_written(outcome)
+        _write_state(repo_path, state, provider, outcome, embedder=embedder_name)
+        # Telemetry never ends a run whose pages are already saved.
+        with contextlib.suppress(Exception):
+            _record_written(outcome)
 
-    _report_outcome(outcome, time.monotonic() - start)
-    if embedder_upgraded:
-        _reembed_after_upgrade(repo_path, embedder_name)
+        _report_outcome(outcome, time.monotonic() - start)
+        if embedder_upgraded:
+            _reembed_after_upgrade(repo_path, embedder_name)
     if _wrote_nothing_and_failed(outcome):
         # A scheduled run must be able to tell "every page failed" (no sign-in,
         # a dead key) from success. Partial success keeps 0: its pages are kept.

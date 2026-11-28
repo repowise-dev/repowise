@@ -18,7 +18,13 @@ import click
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.exit_codes import EXIT_CODES_HELP
-from repowise.cli.helpers import console, get_head_commit, get_repowise_dir, resolve_repo_path
+from repowise.cli.helpers import (
+    console,
+    get_head_commit,
+    get_repowise_dir,
+    resolve_repo_path,
+    run_async,
+)
 from repowise.cli.ui import WARN
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.cache_seal import sweep_orphan_temps
@@ -611,6 +617,14 @@ def _run_init(opts: InitOptions) -> None:
 
 
 def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
+    from repowise.cli.providers.vector_store import recover_pending_decision_vectors
+    from repowise.core.persistence.decision_id_migration import DecisionVectorRecoveryError
+
+    if not opts.dry_run:
+        try:
+            run_async(recover_pending_decision_vectors(repo_path))
+        except DecisionVectorRecoveryError as exc:
+            raise click.ClickException(str(exc)) from exc
     run = _prepare_single_repo(opts, repo_path, start)
     if run is None:
         return
