@@ -13,6 +13,7 @@ from .service_boundary import (
     assign_service,
     detect_service_boundaries,
 )
+from .soap import SoapExtractor
 from .socket import SocketExtractor
 from .topic import TopicExtractor
 
@@ -23,6 +24,7 @@ __all__ = [
     "MassTransitExtractor",
     "OpenApiExtractor",
     "ServiceBoundary",
+    "SoapExtractor",
     "SocketExtractor",
     "TopicExtractor",
     "assign_service",
