@@ -18,9 +18,10 @@ import click
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.exit_codes import EXIT_CODES_HELP
-from repowise.cli.helpers import console, get_head_commit, resolve_repo_path
+from repowise.cli.helpers import console, get_head_commit, get_repowise_dir, resolve_repo_path
 from repowise.cli.ui import WARN
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
@@ -602,6 +603,8 @@ def _run_init(opts: InitOptions) -> None:
                 "Run `repowise init` again when it finishes."
             )
         try:
+            if not opts.dry_run:
+                sweep_orphan_temps(get_repowise_dir(repo_path))
             _run_single_repo(opts, repo_path, start)
         finally:
             release_update_lock(repo_path)

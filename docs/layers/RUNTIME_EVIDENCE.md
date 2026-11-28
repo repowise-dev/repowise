@@ -16,11 +16,108 @@ what did not map.
 - **What it never guesses:** an entry that does not join exactly is skipped and
   counted by reason, and a value that was not measured is unknown, never zero.
 
-Stored evidence is read by `repowise evidence status` and `repowise evidence
-setup`. The static findings it sits beside are in
-[PERFORMANCE.md](PERFORMANCE.md).
+Repowise already holds the call graph, git and fix history, owners, which tests
+cover which code and the static performance findings. Evidence adds what a run
+measured, and the two together answer three questions no profiler answers on
+its own.
 
-## Quick start
+## What you learn
+
+### What to fix, why, and how to check it
+
+`repowise health` lists, for each workload's newest run, the functions that cost
+the most, each as one row: the next step first, then what the run measured
+inside the function, the callers that drove it, the measurement with its owner
+and last change, the tests that ran it and one command to run before and after
+the fix.
+
+```text
+Measured (entry_point "repowise status" at 3f9c2b7, 0 days old: repo code itself 41%, waits 12%, libraries 38% of 700 samples)
+  1. packages/cli/status_cmd.py::_index_storage_bytes
+     next: walk with os.scandir and use each entry's is_file() and stat(), which reuse the directory read, instead of a Path.is_file or stat per path
+     why: 96% of it is filesystem metadata calls during a directory walk (57% is_file, 25% select_recursive, 15% stat): a stat per entry
+     driven by: status_cmd.py::_workspace_rows 100%
+     self 9% of the run (7% to 11%) · with callees 12% · 63 samples · 2 callers · owner Ada · last changed 2026-10-03 (abcdef1, #42) · test that ran it tests/unit/cli/test_status_storage.py::test_sums
+     verify: repowise perf measure --save before -- repowise status before the change, then --against before after it
+```
+
+A row with a next step from an entry-point, load-test or production run becomes
+a Fix first item ("Speed up `_index_storage_bytes`", gain `up to 9% of the
+"repowise status" run`) and leads it: see
+[how measured evidence creates and orders work](PERFORMANCE.md#how-measured-evidence-creates-and-orders-work).
+An agent gets the same row: `get_health(include=["performance"])` lists it
+compactly (`symbol_id`, `share`, `next`, and `verify` when a benchmark
+measures the function), and `get_context` on the function adds the `why` and
+`driven by` parts to its `measured` line. The rules for each field are under
+[Where it shows up](#where-it-shows-up).
+
+### When a change touches measured code
+
+`repowise risk` and MCP `get_change_risk` add a `measured` block when the change
+edits a function an entry-point, load-test or production run ranks, or that a
+stored benchmark measures, with the one command that checks it:
+
+```text
+This change edits 1 measured function: run each verify before and after it and compare.
+  context.go::getMapFromFormData (benchmark): go test -run '^$' -bench '^BenchmarkGetMapFromFormData$' -count 5 .
+```
+
+It names functions, never a file that merely holds one, and it never moves the
+risk score.
+
+### What got slower, and which commit did it
+
+`repowise evidence status --compare` sets each workload's newest run against a
+band of earlier runs and names the commits in between that changed a function
+the slower workload ran:
+
+```text
+"go bench .": 1 benchmark slower than the band of 5 earlier runs (BenchmarkOneRouteParam 1.30x (48.1 ns/op to 62.3 ns/op)); changed in a1b2c3d..f6a7b8c: tree.go::node::getValue in d4e5f6a "tree: walk params once" (#812).
+```
+
+For a test suite, `repowise evidence tests` then says which group of tests
+holds the time and the fixture they share:
+
+```text
+Start with the 29 tests that run persistence/database.py and 3 more files: they take 39.2 s more
+than the rest's pace (55% of the suite), 15 of them through fixture indexed (tests/unit/evidence/test_add.py:48).
+```
+
+`evidence add` prints the comparison line for the workload it stored,
+`repowise update` prints it when a workload is slower, and `get_health` lists
+it under `performance_measured.slower`.
+
+Every answer stays silent when the evidence does not hold it: no list for a
+suite under a minute, no ranked function from a benchmark profile, no
+regression inside the band's own noise, no `why` without a dominant callee,
+and no owner or last change when function-level blame has none (never the
+file's owner instead).
+
+## Connect it
+
+Paste this prompt into your coding agent, from the repository root. It runs
+`evidence setup`, follows its `next_call` steps until there is nothing left to
+collect, and reports what is stored. The commands always come from `setup`, so
+the prompt is the same for every stack.
+
+```text
+Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in and any environment variables (`env`) it sets. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
+```
+
+From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
+returns the same text with the agent's role line before it. To keep evidence
+fresh on every push, `repowise evidence setup --write` writes a CI file
+([In CI](#in-ci)).
+
+A service that already holds measurements (a database's statement statistics,
+a continuous profiler) connects through a plugin instead of a file:
+**[Writing an evidence source](../reference/PLUGINS.md#writing-an-evidence-source)**.
+Its runs are stored exactly as a file of the same entries would be.
+
+The rest of this page is the reference: the steps `setup` prints, every input
+format, how entries join to code, and where each answer shows up.
+
+## Run the steps yourself
 
 Four commands, run from the repository root. `add` needs an index. On a
 repository with none, `setup` prints the coverage plan and a `next_call` of
@@ -162,18 +259,6 @@ go test '-run=^$' -bench . -benchmem -count=1 ./work > .repowise/go-bench-result
 repowise evidence add .repowise/go-bench-results-work.txt --workload "go bench results ./work" --class benchmark --commit <sha>
 ```
 
-### Hand it to an agent
-
-The "Connect evidence" prompt hands an agent the loop instead of stack
-commands, so the commands always come from `setup`:
-
-```text
-Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in and any environment variables (`env`) it sets. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
-```
-
-From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
-returns the same text with the agent's role line before it.
-
 ## Reading the results
 
 ### `evidence add`
@@ -312,7 +397,7 @@ migration.
 | Format | Written by | What a frame carries |
 |---|---|---|
 | `speedscope` | pyinstrument through its API, as `setup` prints (sampled), `pyinstrument -r speedscope` (evented, no sample count), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
-| `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
+| `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, `perf record -e cpu-clock -g` converted with `perf_to_profile` and given its files and lines by `pprof -proto` with the binary (Free Pascal built with `-gw3`), any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it, or the `cpu-clock` / `task-clock` event value of a `perf_to_profile` profile; memory, block, mutex and hardware-counter profiles are refused |
 | `cpuprofile` | `node --cpu-prof`, as `setup` prints, or a CPU profile saved from a browser's developer tools (plain JavaScript) | function name, `file://` URL or path, and the function's start line and column. Frames join by file, line and column only, never by name: V8 names a function by its own name. `node:` modules and the runtime (`(program)`, `(garbage collector)`) sit outside the checkout, `node_modules` is a library, and both are charged to the calling repo function; `(idle)` is a wait. The weight is the time to the next sample, in microseconds, with one sample each; the clock is `wall` |
 | `jfr` | `jfr print --events jdk.ExecutionSample --stack-depth 64 run.jfr > run.txt` of a JDK Flight Recorder run (`-XX:StartFlightRecording=filename=run.jfr,settings=profile`, through `JAVA_TOOL_OPTIONS` when the build pins surefire's `argLine`) | class, method, parameter types and executing line per frame, one sample per event; the clock is `cpu`. Frames name no file: each goes on its class's indexed `.java` or `.kt` file by package directories and class name. `jfr print --json` is not read (about 1 KB per frame) |
 | `collapsed` | `py-spy record --format raw --full-filenames`, async-profiler `-o collapsed` (with `lines` or `sig` for overloads), jfrconv, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line`. A JVM frame with no line joins by class and method when one method has the name, by parameter count and types from a `sig` descriptor among overloads, else `ambiguous` |
@@ -326,13 +411,24 @@ migration.
   Profile the emitted JavaScript with a `//# sourceMappingURL=` comment and a
   local Source Map v3 file instead. Before joining, the shared converter maps
   positions to the original checkout source (JavaScript or TypeScript), then
-  applies the usual position, dirty-file and code-origin checks. Generated
-  bundles with usable maps can resolve to maintained sources; generated files
-  with unavailable or unsupported maps and vendored files remain libraries.
-  Missing maps for maintained files and unmapped positions
-  are refused. Inline, remote and indexed maps are unsupported; map paths and
-  sources must stay inside the checkout. Collapsed frames without columns need
-  exactly one mapping segment starting at column zero on their generated line.
+  applies the usual position, dirty-file and code-origin checks. Map sources
+  are checkout-relative paths or webpack's `webpack://<namespace>/<path>`
+  form (Next.js writes `webpack://_N_E/./src/page.tsx`), read from the
+  deepest directory above the map where the file exists; a webpack module
+  that names no file (`webpack://_N_E/?3f2a`) stays unjoined. Generated bundles
+  with usable maps can resolve to maintained sources; vendored files remain
+  libraries. A bundle with no `sourceMappingURL` comment joins at its own
+  positions. When a bundle's comment points at a map that cannot be used
+  (missing, inline `data:`, remote, indexed, or with sources outside the
+  checkout or in another scheme), a generated bundle stays a library frame,
+  and any other bundle refuses the whole profile with an error naming that
+  bundle. A frame at a position the map leaves unmapped (tsc's shebang line,
+  a helper the compiler wrote) is skipped as `not_indexed` and the rest of the
+  profile joins; a frame past the map's last line still refuses it, since that
+  map was built from another bundle. Generate
+  external maps for every bundle the profile runs. Collapsed frames without
+  columns need exactly one mapping segment starting at column zero on their
+  generated line.
 - **Go `-trimpath`.** A binary built with `-trimpath` names its files by import
   path, under no checkout, so its profile is refused. Profile a build without
   it. A build made in another directory (CI, a container) joins with that
@@ -437,9 +533,79 @@ production window spans deploys. A file that names the window (`window`) and
 the commits deployed in it (`commit_sha` the newest, `base_commit_sha` the
 oldest) keeps them on the run; one that names no commit is stored with a
 "deployed commit unknown" warning, and its rows never rank against code
-changed since. Until the route table and the statement-site index link them,
-their rows are stored without a function. Joins come next; nothing ranks by
-them yet.
+changed since. Every run listing names a production run's window and deploy
+as its rows' claim, `window`: "in production over 2026-10-30 to 2026-11-26,
+deployed commit unknown" (`evidence status`, the REST `status`, `runs` and
+`measured` routes, and `get_health`'s measured `runs`). A run of any other
+class has no `window` key.
+
+A route row names the function that handles it. Every index stores the repo's
+routes (`http_routes`: method, path template and handler), and the join reads
+both templates in one form first: every parameter is the same whatever its
+syntax (`{repo_id}`, `{path:path}`, `:id`, `<int:id>`, `[id]`, a whole-segment
+`*` or `*name`), with case and a trailing slash ignored. It then needs the same
+method (a stored route that serves every method answers only when no route
+names the method) and the same template, never a pattern match of one against
+the other. A row names a handler only when every matching route names that one;
+otherwise it names none and `evidence add` counts why in `unlinked`:
+`ambiguous_route` (routes with different handlers match), `no_handler` (the
+route's handler is inline, so the index names none) or `unknown_route` (no
+stored route matches: a prefix the index could not see, a route another
+service serves). A route row is joined once, when it is stored.
+
+A statement row names the function that issues it. Every index stores the
+repo's statement sites (`statement_sites`): each PostgREST client call
+(`client.table("events").insert(...)`, `.delete().eq("id", ...)`,
+`client.rpc("search", {...})`), SQLAlchemy model or `Table` use, and literal SQL
+string in its Python code, with the table or database function, the verb, the
+columns or arguments it sends and the columns it filters on. A table name held
+in a constant, passed through a helper (the caller that names it holds the
+site) or read from a constant table a loop walks is followed; a name only known
+at run time is kept as a site with no name. `cron.schedule(...)` jobs in SQL or
+Python files are sites with no function. Test, docs-example, vendored and build
+files issue nothing.
+
+The join reads the statement's whole text (the stored text is cut short) and
+keeps a site only when nothing it says contradicts the statement: the same
+channel (PostgREST's `WITH pgrst_source AS (...)` against a client call, plain
+SQL against literal SQL, a model or a schedule), table or function, verb, and
+columns and filter columns as far as each side knows them. The row's `issuer`
+says what it found:
+
+| `issuer` | Meaning |
+|---|---|
+| `function` | Every matching site sits in one function; `symbol_id` names it |
+| `ambiguous` | Sites in more than one function could issue it, or one whose table is only known at run time; no function is named |
+| `database_schedule` | Only a `cron.schedule` job runs it, no code does |
+| empty | No site matches (a statement from another language, a tool or the database itself) |
+
+Ceiling: only Python code issues sites so far; a statement another language
+sends stays unjoined, never joined wrong.
+
+Each statement workload's newest run is read back as the `statements` group of
+the measured view (REST `measured` route, `repowise health`, MCP
+`performance_measured`): one row per function the join named, ranked by the
+time its statements took. A row is the same action row as a profile's, with
+`share` the function's part of the window's stored statement time,
+`statements` (`calls`, `total_ms`, `mean_ms` per call, how many distinct
+statements) and `verify` the next production window. Only a statement whose
+`issuer` is `function` counts toward a function; the run's `unattributed`
+counts the rest by `issuer` (`ambiguous`, `database_schedule`, `unjoined`), so
+no statement is ever put on a function the join did not name. These rows are
+listed, never leading: no rule reads a statement's cost into a next step yet,
+so they mint no measured hotspot and no Fix first item. A store with statement
+runs is never `no_runtime_data`; one whose newest windows name no function
+reads `not_ranked`.
+
+Route runs read back the same way, as the `routes` group: one row per handler
+the route join named, ranked by the request time of its routes, with `share` of
+the window's stored request time, `routes` (`requests`, `total_ms`, `mean_ms`
+per request, the slowest route's `p95_ms`, `errors`, and its `routes` as
+`METHOD template`, costliest first) and `verify` the next production window.
+The run's `unattributed` counts the routes on no handler as `unjoined`. Route
+rows never lead either, and a store with route runs is never
+`no_runtime_data`. The group is left out of every response when no route run
+names a handler, so those responses are unchanged.
 
 A Postgres database's statement statistics are one SELECT away, run by whoever
 may read the database, with no connector:
@@ -487,7 +653,7 @@ they are joined.
 | `value_kind` | profile | `cpu` or `wall` |
 | `unit` | profile | One word naming what every value counts: `samples`, `ns`, `ms`, `s` |
 | `total`, `explained` | no | The whole run's value, and the part with a production frame anywhere on the stack |
-| `repo_self`, `waits`, `libraries` | no | Where the run's value went: production repo code itself, blocked waiting, in dependencies (see below) |
+| `repo_self`, `waits`, `libraries` | no | Where the run's value went: production repo code itself, blocked waiting, in libraries: dependencies and the standard library (see below) |
 | `commit_sha` | no | The full commit measured, from `git rev-parse HEAD` at measurement; for a production window, the newest commit deployed in it |
 | `base_commit_sha` | no | The oldest commit deployed in a production window |
 | `window` | no | `{"start", "end"}`, ISO 8601 times with their offset: what a production run's counters cover |
@@ -500,7 +666,7 @@ they are joined.
 | `profile` | location (`function` `<module>` with no `line` is the file's import time); `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only; optional `inside` (up to 3 of `{name, kind, share}`, each with an optional `leaf` of the same shape) and `drivers` (up to 3 of `{function, share}`, plus `path` and `line` for a repo caller), shares of `total` |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required); optional `classname` (a dotted name, placed on its file at ingest, when there is no `path`) and `first_in_class` |
-| `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
+| `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location, or no `site` and the statement's `query` text, which joins to the one function the statement sites name (else the entry is skipped as `ambiguous_statement` or `no_statement_site`); `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
 | `route_latency` | `method` (one word, stored upper case); `route` (the template the framework routes by, starting with `/`; one with a query string, a fragment or a segment that reads as a value (a number, an `@` handle, a long hex id or UUID) is skipped as `not_a_route_template`, so name such a segment `:id`); `count`; optional `p50_ms`, `p95_ms`, `total_ms`, `errors` |
 | `statement_stats` | `statement_fp` (a hex id or digest, 8 to 32 characters); `calls`; optional `query` (stored short and with every value masked, as above), `total_ms`, `mean_ms`, `rows` |
 
@@ -545,24 +711,26 @@ is counted there as `unplaced`.
   never joins.
 - **Two signals.** The line must fall in an indexed function, and a second
   signal from the frame must agree: the qualified name for Python, the start
-  line for Go, the start line and column for JavaScript.
+  line for Go, the start line and column for JavaScript, the name in any case
+  for Object Pascal.
 - **Skip reasons, counted:** `outside_root` (stored as `outside_repo`),
   `unsupported_language`, `bad_line`, `dirty`, `generated`, `vendored`,
   `not_indexed`, `no_span`, `ambiguous`, `no_second_signal`, `no_source`,
   `second_signal_mismatch`.
 - **Nested code.** Lambdas, generator expressions and nested functions with no
   symbol of their own are charged to the enclosing function when the frame's
-  qualified name shows it.
+  qualified name shows it, and a Pascal nested routine when the enclosing
+  function's source declares it above the sampled line.
 - **Import time is a row.** Import-time code (Python `<module>`, Go package
-  `init`) resolves to its file. A Python module body is ranked with the
-  functions as the row `<path>::<module>` (no lines), shown as "import time":
+  `init`, a Pascal program, `initialization` or `finalization` block) resolves
+  to its file. A Python module body is ranked with the functions as the row `<path>::<module>` (no lines), shown as "import time":
   a module and the repo modules it imports in turn are one import, charged to
   the outermost one, with the libraries and standard-library modules they load
   named by package in `inside` (`sqlalchemy`, `json`). A module a function
   imports starts its own row, driven by that function; a library a function
   imports stays that function's cost. The row takes no next step: whether the
-  run needed the import is not in the profile. Go package `init` and the
-  CommonJS wrapper have no row yet; their self time is reported under
+  run needed the import is not in the profile. Go package `init`, the
+  CommonJS wrapper and Pascal blocks have no row yet; their self time is reported under
   `self_unattributed` as `module_body`, never dropped. An import row measured
   at another commit than the indexed one reads stale, as a module's top level
   has no stored body to compare.
@@ -606,12 +774,16 @@ is counted there as `unplaced`.
   driver; a static finding on the function itself becomes the `why` when its
   boundary agrees with the callee.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
-  `libraries` (a dependency frame, including Go's module cache, runs below the
-  innermost repo frame, or on a stack with no repo frame),
-  `repo_self` (neither, and that frame is a production function by
-  `code_origin`: time in production repo code itself), or none of them (test or
+  `libraries` (a library frame runs below the innermost repo frame, or on a
+  stack with no repo frame: a dependency, including Go's module cache, or the
+  standard library: GOROOT, CPython's `Lib`, the JDK (by name in a stack with
+  no files), Node's `node:` modules;
+  the frames `inside` calls `library`), `repo_self` (neither, and that frame is
+  a production function by `code_origin`: time in production repo code itself,
+  the built-ins and runtime it called included), or none of them (test or
   tooling code, module bodies, unjoined frames, stacks with no repo frame that
-  run only the runtime and standard library).
+  run only the runtime). A run stored by 0.62 or earlier counts the standard
+  library in `repo_self`: add the profile again, or let CI upload the next run.
   `add` prints the three shares beside the skip rate, the share of repo frame
   time that did not join, broken down by reason. `explained` (a production
   frame anywhere on the stack) is still written but says nothing about cost.
@@ -669,6 +841,21 @@ checkout only the range is named. `evidence add` prints the same line for the
 workload it stored, `repowise update` prints one line when a workload is slower,
 and MCP `get_health(include=["performance"])` lists the lines under
 `performance_measured.slower`, only when there are any.
+
+One benchmark run of unchanged code can drift 1.4x on a busy machine, which is
+why a single run needs 25%. For a comparison you can trust at every commit, run
+the benchmark step twice per commit in CI and add both files under the same
+workload and commit: the two runs pool their samples and the floor drops to 10% (the band's own
+spread still applies when it is wider).
+For Go, `-count=10` in the one run also helps: the ten repeats fold into one
+result whose median, minimum and maximum the overlap check reads.
+
+```bash
+for i in 1 2; do
+  go test '-run=^$' -bench . -benchmem -count=5 ./... > bench-$i.txt
+  repowise evidence add bench-$i.txt --workload "go bench" --class benchmark --commit $(git rev-parse HEAD)
+done
+```
 
 ### `evidence tests`
 
@@ -733,7 +920,8 @@ Evidence lives in the local index (`evidence_runs` and one table per kind:
 | Per statement: its id, the text cut short with every value masked, calls, total and mean time, rows | Literal values, comments |
 | Per production run: its window and the commits deployed in it | |
 
-Entry paths are repo-relative; the checkout root is stored as given. Retention is by kind: each workload and environment
+Entry paths are repo-relative; the checkout root is stored as given, and not
+at all for a source batch of entries stored where there is no checkout. Retention is by kind: each workload and environment
 keeps its newest `history_runs` runs, and the kind keeps `max_runs` overall,
 oldest first, though every workload always keeps its newest run.
 
@@ -770,14 +958,20 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   suffix (a JVM frame, which names a class and no file, is placed on the one
   indexed file its package and class name spell). What does not join is counted by reason, and a value that was not
   measured is unknown, never zero.
-- A profile joins to code for Python, Go, JavaScript, Java and Kotlin frames.
+- A profile joins to code for Python, Go, JavaScript, Java, Kotlin, Rust and Object Pascal
+  frames.
   A JVM frame joins by its line to the method holding it, with the method name
   and class checked; without a line, by name only when one method fits.
   Compiler-made JVM frames (bridges, accessors, `$$Lambda`) count as generated
   and charge their caller, and a Kotlin class is found only in a file named
-  after it, under its package directories. TypeScript and
-  bundled code are refused, since source maps are not read, and so is a Go binary
-  built with `-trimpath`.
+  after it, under its package directories. TypeScript and bundled code join
+  their original source through a local external source map; a frame that
+  names a TypeScript file directly is refused, and so is a Go binary built
+  with `-trimpath`.
+  A Rust frame (pprof-rs) joins by its line and demangled name, with the
+  type checked for a method or trait impl; closures and async bodies charge
+  the function around them, and code an attribute macro such as
+  `#[instrument]` writes joins the function the attribute sits on.
 - A profile or query-count run where more than half the entries did not map is
   refused unless `--allow-partial`.
 - A profile of one process misses the processes it starts; profile each one and
@@ -796,13 +990,31 @@ regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../
   the file, and `render_connect_evidence` for the agent prompt.
 - **Performance findings**: the static findings evidence sits beside, in
   [PERFORMANCE.md](PERFORMANCE.md).
-- **Measured rows** (`repowise health`, the Performance tab and its REST view): each
-  ranked function names up to 3 tests. With a stored per-test map that has the
-  function's file, they are tests that ran its lines (`tests_basis: per_test_map`;
-  an empty list means none did); otherwise its nearest tests on the call graph
-  (`call_graph`). A benchmark that calls the function or ran its lines is never
-  listed as a test: `verify` is the command that reruns it before and after a fix
-  (`go test -run '^$' -bench ...` or `pytest ... --benchmark-only`).
+- **Measured rows** (`repowise health`, the Performance tab and its REST view): one
+  row per ranked function, built by `repowise.core.evidence.action_row`. It leads
+  with the `next_step` from what the run measured inside the function (the same
+  rule as the `functions` route), then the callers that drove it, the
+  measurement, the function's own owner and last change, its tests and one
+  `verify` command. Each row names where every field it holds came from in
+  `sources`.
+  - **Tests**: up to 3. With a stored per-test map that has the function's file,
+    they are tests that ran its lines (`tests_basis: per_test_map`; an empty list
+    means none did); otherwise its nearest tests on the call graph (`call_graph`).
+    A benchmark is never listed as a test.
+  - **Verify**: one command, run before and after a fix. A benchmark that calls
+    the function or ran its lines wins (`verify_basis: benchmark`:
+    `go test -run '^$' -bench ...` or `pytest ... --benchmark-only`): it times the
+    function alone. Otherwise the workload's own rerun (`verify_basis: workload`:
+    `repowise perf measure` for an entry point, the load again for a load test).
+    A unit-test run has neither.
+  - **Slower**: in `get_health`, a row a slower comparison names says so
+    (`slower`: its own measure that got worse and the commits that changed it).
+- **Change risk** (`get_change_risk`, `repowise risk` table and JSON): a
+  `measured` block, only when the change edits a function an entry-point,
+  load-test or production run ranks, or a benchmark with stored results measures.
+  Each function comes with the same one `verify` command as its measured row.
+  Function level only, and it never moves the score
+  (`repowise.core.evidence.change_measured`).
 
 ## Reference
 
@@ -823,6 +1035,12 @@ profile_formats.register("myprof", ProfileFormat(sniff=my_sniff, read=my_read))
 Detection takes the first format that claims the file, built-in formats first,
 and `--input-format myprof` picks it by name. Entry points, testing and
 publishing: [PLUGINS.md](../reference/PLUGINS.md#seams).
+
+A service that holds measurements (a database's statement statistics, a
+continuous profiler) registers on the `evidence-source` seam instead: it
+fetches runs for a window from a cursor, with credentials the host keeps, and
+each run is stored exactly as a file of the same entries would be. See
+[Writing an evidence source](../reference/PLUGINS.md#writing-an-evidence-source).
 
 Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 

@@ -31,11 +31,22 @@ export type {
   MeasuredResponse,
   MeasuredRow,
   MeasuredRun,
+  ProductionWindow,
+  RouteFacts,
+  RouteGroup,
+  RouteRow,
+  RouteRun,
   SlowTest,
+  StatementFacts,
+  StatementGroup,
+  StatementRow,
+  StatementRun,
   SuiteCost,
   SuiteCostResponse,
   SuiteFileTime,
   SuiteSummary,
+  UnattributedRoutes,
+  UnattributedStatements,
 } from "./generated/http.js";
 
 import type { EvidenceStatusResponse } from "./generated/http.js";

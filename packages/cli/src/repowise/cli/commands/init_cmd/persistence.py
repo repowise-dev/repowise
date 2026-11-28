@@ -225,6 +225,7 @@ async def persist_result(
     from repowise.core.pipeline.cleanup_debt import clear_cleanup_debt, record_cleanup_debt
     from repowise.core.pipeline.persist import (
         persist_routes,
+        persist_statement_sites,
         persist_symbol_analysis,
         sweep_store_hygiene,
     )
@@ -292,6 +293,8 @@ async def persist_result(
                 await persist_analysis(result, session, repo.id)
             with timed(timings, "persist.routes"):
                 await persist_routes(result, session, repo.id)
+            with timed(timings, "persist.statement_sites"):
+                await persist_statement_sites(result, session, repo.id)
             # Commit boundary 2 of 5: analysis.
             with timed(timings, "persist.commit.analysis"):
                 await session.commit()

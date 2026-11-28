@@ -231,10 +231,12 @@ Sometimes the iterative computation oscillates and doesn't settle on stable scor
 
 ```python
 try:
-    return nx.pagerank(filtered, alpha=alpha)
+    return pagerank(filtered, alpha=alpha)
 except nx.PowerIterationFailedConvergence:
     return {node: 1.0 / n for node in filtered.nodes()}
 ```
+
+`pagerank` (in `ingestion/graph/_pagerank.py`) is networkx's own pure-Python power iteration with the same arguments and scores as `nx.pagerank`, so ranking needs no scipy.
 
 If PageRank doesn't converge, every file gets equal score `1/N`. This is safe; no file gets unfairly prioritized.
 

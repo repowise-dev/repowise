@@ -32,7 +32,9 @@ from ..strings import (
 from .angular import environment_mounts
 from .client_calls import ClientCallMatch, consumer_contracts, join_base, method_from_options
 from .commonjs import exports_mounts
-from .node_clients import FieldScope, client_calls, client_mounts
+from .js_factories import factory_bases, factory_mounts
+from .node_clients import FieldScope, _imports, client_calls, client_mounts
+from .url_builders import settle_url_builders, url_builder_mounts
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
@@ -44,6 +46,103 @@ if TYPE_CHECKING:
 _FETCH_RE = re.compile(
     r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""",
 )
+_HTTP_RESOURCE_RE = re.compile(r"\bhttpResource\s*(?:<[^()\n]*>)?\s*\(")
+_URL_PROP_RE = re.compile(r"""(?<![\w$.])url\s*(?::\s*|(?=[,}\n]|$))""")
+_METHOD_PROP_RE = re.compile(r"""\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]""")
+_QUOTES = "'\"`"
+
+
+def _clean_resource_url(url: str | None) -> str | None:
+    if url and (url.startswith("this.") or (url.isidentifier() and not url.startswith(("'", '"', "`")))):
+        return f"`${{{url}}}`"
+    return url
+
+
+def _scan_quote(text: str, i: int, end: int, quote: str, depth: int, tmpl: list[int]) -> tuple[int, str | None, int]:
+    ch = text[i]
+    if ch == "\\":
+        return i + 2, quote, depth
+    if quote == "`" and ch == "$" and i + 1 < end and text[i + 1] == "{":
+        tmpl.append(depth)
+        return i + 2, None, depth + 1
+    return i + 1, (None if ch == quote else quote), depth
+
+
+def _extract_url_value(text: str, start: int) -> str:
+    depth = 0
+    tmpl: list[int] = []
+    quote: str | None = None
+    i, end = start, len(text)
+    while i < end:
+        if quote is not None:
+            i, quote, depth = _scan_quote(text, i, end, quote, depth, tmpl)
+            continue
+        ch = text[i]
+        if ch in _QUOTES:
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return text[start:i].strip()
+            depth -= 1
+            if tmpl and depth == tmpl[-1]:
+                tmpl.pop()
+                quote = "`"
+        elif ch == "," and depth == 0:
+            return text[start:i].strip()
+        i += 1
+    return text[start:i].strip()
+
+
+def _arrow_target(text: str) -> str | None:
+    if "=>" not in text:
+        return text
+    rhs = text.split("=>", 1)[1].strip()
+    if rhs.startswith("(") and rhs.endswith(")"):
+        rhs = rhs[1:-1].strip()
+    return None if rhs.startswith("{") and rhs.endswith("}") else rhs
+
+
+def _http_resource_url(arg_text: str) -> str | None:
+    if m_url := _URL_PROP_RE.search(arg_text):
+        if ":" in m_url.group(0):
+            val = _extract_url_value(arg_text, m_url.end())
+            val = _arrow_target(val) if val else None
+        else:
+            val = "`${url}`"
+        return _clean_resource_url(val)
+    if "=>" in arg_text:
+        return _clean_resource_url(_arrow_target(arg_text))
+    if not (arg_text.startswith("{") and arg_text.endswith("}")):
+        return _clean_resource_url(arg_text)
+    return None
+
+
+def http_resource_calls(content: str) -> Iterator[ClientCallMatch]:
+    """Angular ``httpResource(...)`` calls; method defaults to GET."""
+    if "httpResource" not in content:
+        return
+    for m in _HTTP_RESOURCE_RE.finditer(content):
+        paren = m.end() - 1
+        close = match_paren(content, paren)
+        if close <= 0:
+            continue
+        arg_text = content[paren + 1 : close].strip()
+        if not arg_text:
+            continue
+        url = _http_resource_url(arg_text)
+        if not url:
+            continue
+        m_method = _METHOD_PROP_RE.search(arg_text)
+        method = m_method.group(1).upper() if m_method else "GET"
+        yield ClientCallMatch(
+            client="angular",
+            url=url,
+            offset=m.start(),
+            callee="httpResource",
+            method=method,
+        )
 
 # Wrapper call: IDENT("<url>" | `<url>`, ...) where the URL literal is concrete,
 # i.e. starts with `/`, a `${...}` base placeholder, or a scheme. The scan is
@@ -62,7 +161,7 @@ _CALLEE_WINDOW = 200
 _HTTP_NAME_RE = re.compile(r"(?i)fetch|request|http|api|ajax|rest|rpc")
 
 # Callees already handled elsewhere (`ofetch(` is a fetch call), or never an HTTP wrapper.
-_WRAPPER_SKIP = frozenset({"fetch", "ofetch", "if", "for", "while", "switch", "catch", "return"})
+_WRAPPER_SKIP = frozenset({"fetch", "ofetch", "httpResource", "if", "for", "while", "switch", "catch", "return"})
 
 
 def fetch_calls(content: str) -> Iterator[ClientCallMatch]:
@@ -174,6 +273,7 @@ def with_bases(ctx: ScanContext, matches: list[ClientCallMatch]) -> list[ClientC
     if not callees and not any("this." in m.url for m in matches):
         return matches
     strings = FileStrings(content, JS_SYNTAX)
+    settle_url_builders(ctx, _imports(content), strings)
     fields = FieldScope(strings)
     prefixes = wrapper_prefixes(content, callees, strings, fields)
     out: list[ClientCallMatch] = []
@@ -353,14 +453,26 @@ class JsClientsDialect:
     requires = ("fetch", "'/", '"/', "`/", "${", "http", "axios", "import", "require", "export")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
-        return client_mounts(ctx) | environment_mounts(ctx) | exports_mounts(ctx)
+        return (
+            client_mounts(ctx)
+            | environment_mounts(ctx)
+            | exports_mounts(ctx)
+            | factory_mounts(ctx)
+            | url_builder_mounts(ctx)
+        )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
         from_clients, clients = client_calls(ctx)
         # A client named like `apifetch` is read with its base above, not as `fetch`.
         fetches = [m for m in fetch_calls(content) if _callee(content, m.offset, m.offset + 5) not in clients]
-        matches = with_bases(ctx, [*fetches, *wrapper_calls(content, clients)])
+        matches = factory_bases(
+            ctx,
+            with_bases(
+                ctx,
+                [*fetches, *http_resource_calls(content), *wrapper_calls(content, clients)],
+            ),
+        )
         # A `${BASE}` interpolation folds when the file binds BASE to a constant.
         constants = string_constants(content, JS_SYNTAX) if any("${" in m.url for m in matches) else {}
         return from_clients + consumer_contracts(ctx, matches, JS_SYNTAX, constants=constants)

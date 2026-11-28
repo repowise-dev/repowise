@@ -73,7 +73,7 @@ async def _ingest(repo: Path, progress: _RecordingProgress):
 
 
 async def test_tech_stack_failure_is_logged_and_surfaced(repo, monkeypatch):
-    from repowise.core.generation.editor_files import tech_stack
+    from repowise.core.ingestion import tech_stack
 
     def _boom(*_a, **_k):
         raise RuntimeError("stack probe exploded")

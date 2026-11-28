@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
 
@@ -52,7 +52,30 @@ class EvidenceUnits(_Strict):
     truncated: int | None
 
 
-class EvidenceRunSummary(_Strict):
+class ProductionWindow(_Strict):
+    """The window a production run covers: ``evidence.status.production_window``."""
+
+    start: UTCDateTime | None
+    end: UTCDateTime | None
+    #: The oldest commit deployed in the window, when the source knows it.
+    base_commit: str | None
+    #: What the run's rows claim: ``in production over 2026-10-30 to
+    #: 2026-11-26, deployed commit unknown``.
+    claim: str
+
+
+class _OmitAbsentWindow(_Strict):
+    """A run model whose ``window`` is sent only on a production run, so other runs do not grow."""
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_window(self, handler):  # no return annotation: keeps the schema
+        data = handler(self)
+        if getattr(self, "window", None) is None:
+            data.pop("window", None)
+        return data
+
+
+class EvidenceRunSummary(_OmitAbsentWindow):
     """One stored run: its workload, commit, freshness and where its time went."""
 
     run_id: str
@@ -93,6 +116,8 @@ class EvidenceRunSummary(_Strict):
     #: Fewer than half the entries mapped: stored, not a basis for ranking.
     mapping_partial: bool
     tests_failed: int | None
+    #: A production run's window; absent for every other class.
+    window: ProductionWindow | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -131,7 +156,7 @@ class NewerRun(_Strict):
     reason: Literal["ahead_of_index", "not_ranked", "stale"]
 
 
-class MeasuredRun(_Strict):
+class MeasuredRun(_OmitAbsentWindow):
     """A run's basis: workload, commit, age, samples and where its time went."""
 
     run_id: str
@@ -157,6 +182,8 @@ class MeasuredRun(_Strict):
     #: The workload's newer run this one is listed in place of (it ranks
     #: nothing); null when this is the workload's newest run.
     newer_run: NewerRun | None = None
+    #: A production run's window; absent for every other class.
+    window: ProductionWindow | None = None
 
 
 class MeasuredOwner(_Strict):
@@ -215,10 +242,181 @@ class MeasuredRow(_Strict):
     #: ``per_test_map``: tests the per-test map saw run its lines;
     #: ``call_graph``: its nearest tests by call graph, where no map has its file.
     tests_basis: Literal["per_test_map", "call_graph"] | None = None
-    #: The command that reruns the benchmarks that measure it, before and after a fix.
+    #: What the time is and the next step (``evidence.next_step``), from what
+    #: its run measured inside it; null when the profile does not say. Its
+    #: ``verify`` is never set here: the row's own ``verify`` is the one command.
+    next_step: MeasuredNextStep | None = None
+    #: The one command that verifies a fix, run before and after it: the
+    #: benchmarks that measure the function, else a rerun of its workload
+    #: (``evidence.action_row.row_verify``); null when neither has one.
     verify: str | None = None
+    #: ``benchmark`` or ``workload``: what ``verify`` reruns.
+    verify_basis: Literal["benchmark", "workload"] | None = None
     #: Open static performance causes on the function, by opportunity id.
     on_static_findings: list[str] = Field(default_factory=list)
+    #: What got slower about the function, when a comparison of its
+    #: workloads' runs names it (``evidence.compare``); only where the host
+    #: read the comparisons.
+    slower: MeasuredRowSlower | None = None
+    #: ``import time`` on a module body's row (the time to import its file);
+    #: absent on a function's row.
+    label: str | None = None
+    #: Where each field that holds a value came from: ``workload_hotness``
+    #: (``statement_stats`` on a production statement row, ``route_latency``
+    #: on a production route row),
+    #: ``symbols``, ``call_graph``, ``run_drivers``, ``function_blame``, the
+    #: ``tests_basis``, ``run_inside`` or ``static_finding``, the
+    #: ``verify_basis``, ``performance_findings``, ``compare``.
+    sources: dict[str, str] = Field(default_factory=dict)
+
+
+class StatementFacts(_Strict):
+    """What the statements one function issues did in a production window."""
+
+    calls: int
+    total_ms: float
+    #: Mean time per call across its statements; null with no calls.
+    mean_ms: float | None
+    #: Distinct statements the function issues.
+    statements: int
+
+
+class StatementRow(MeasuredRow):
+    """One function's production statements in one run, as a measured row.
+
+    ``rank`` is by statement time and ``share`` is of the window's stored
+    statement time; there is no interval, inclusive share or samples, and no
+    freshness: the statement was joined to the function when it was stored.
+    No ``next_step``: no rule reads a statement's cost yet. ``verify`` is the
+    next production window."""
+
+    freshness: MeasuredFreshness | None = None
+    statements: StatementFacts
+
+
+class UnattributedStatements(_Strict):
+    statements: int
+    total_ms: float
+    #: Of the window's stored statement time.
+    share: float | None
+
+
+class StatementRun(_Strict):
+    """A production statement workload's newest run."""
+
+    run_id: str
+    workload_class: str
+    workload_name: str
+    #: The newest deployed commit in the window; null when unknown.
+    commit: str | None
+    measured_at: str | None
+    age_days: int | None
+    window_start: str | None
+    window_end: str | None
+    #: All statement time and statements the run stored.
+    total_ms: float
+    statements: int
+    #: Statements on no single function, by what the join found:
+    #: ``ambiguous`` (several functions could issue it), ``database_schedule``
+    #: (only a ``cron.schedule`` job runs it), ``unjoined`` (nothing matched).
+    unattributed: dict[str, UnattributedStatements]
+    #: The window and deploy in words, as every production run names them.
+    window: ProductionWindow
+
+
+class StatementGroup(_Strict):
+    runs: list[StatementRun]
+    #: At most ``limit`` rows per run, by statement time.
+    rows: list[StatementRow]
+    #: Functions across the group's runs before the ``limit`` cut.
+    total: int
+
+
+class RouteFacts(_Strict):
+    """What the requests one handler's routes served did in a production window."""
+
+    requests: int
+    total_ms: float
+    #: Mean time per request across its routes; null with no requests.
+    mean_ms: float | None
+    #: The slowest 95th percentile among its routes; null when none said.
+    p95_ms: float | None
+    #: Failed requests across its routes; null when the source did not say.
+    errors: int | None
+    #: Its routes as ``METHOD template``, costliest first.
+    routes: list[str]
+
+
+class RouteRow(MeasuredRow):
+    """One handler's production requests in one run, as a measured row.
+
+    ``rank`` is by request time and ``share`` is of the window's stored
+    request time; there is no interval, inclusive share, samples or
+    freshness: the route was joined to its handler when it was stored. No
+    ``next_step``: no rule reads a route's cost yet. ``verify`` is the next
+    production window."""
+
+    freshness: MeasuredFreshness | None = None
+    routes: RouteFacts
+
+
+class UnattributedRoutes(_Strict):
+    routes: int
+    total_ms: float
+    #: Of the window's stored request time.
+    share: float | None
+
+
+class RouteRun(_Strict):
+    """A production route workload's newest run."""
+
+    run_id: str
+    workload_class: str
+    workload_name: str
+    #: The newest deployed commit in the window; null when unknown.
+    commit: str | None
+    measured_at: str | None
+    age_days: int | None
+    window_start: str | None
+    window_end: str | None
+    #: All request time, requests and routes the run stored.
+    total_ms: float
+    requests: int
+    routes: int
+    #: Routes on no handler, as ``unjoined``: no stored route matched, more
+    #: than one did, or the handler is inline (``evidence add`` counts each).
+    unattributed: dict[str, UnattributedRoutes]
+    #: The window and deploy in words, as every production run names them.
+    window: ProductionWindow
+
+
+class RouteGroup(_Strict):
+    runs: list[RouteRun]
+    #: At most ``limit`` rows per run, by request time.
+    rows: list[RouteRow]
+    #: Handlers across the group's runs before the ``limit`` cut.
+    total: int
+
+
+class MeasuredChangedIn(_Strict):
+    sha: str
+    pr: int | None
+
+
+class MeasuredRowSlower(_Strict):
+    """A slower comparison that names a measured function (``evidence.action_row.row_slower``)."""
+
+    workload: str
+    #: The band's newest commit.
+    base_commit: str | None
+    #: The function's own measure that got worse, when the comparison has one.
+    metric: str | None = None
+    before: float | None = None
+    after: float | None = None
+    ratio: float | None = None
+    unit: str | None = None
+    #: Commits in the range that changed the function.
+    changed_in: list[MeasuredChangedIn]
 
 
 class MeasuredGroup(_Strict):
@@ -278,8 +476,22 @@ class MeasuredResponse(_Strict):
     measured: MeasuredGroup | None
     #: ``unit_test`` runs, listed apart.
     measured_in_tests: MeasuredGroup | None
+    #: Production statement runs: the functions that issue each window's
+    #: statements, by statement time. Listed, never leading.
+    statements: StatementGroup | None = None
+    #: Production route runs: the handlers that serve each window's routes,
+    #: by request time. Listed, never leading. Sent only when a run names a
+    #: handler; absent otherwise, so every other response is unchanged.
+    routes: RouteGroup | None = None
     #: Benchmark results, per benchmark: a benchmark profile never ranks.
     benchmarks: BenchmarkGroup | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_routes(self, handler):  # no return annotation: keeps the schema
+        data = handler(self)
+        if self.routes is None:
+            data.pop("routes", None)
+        return data
 
 
 InsideKind = Literal["own", "repo", "wait", "import", "native", "library"]

@@ -1326,3 +1326,67 @@ def test_a_pinned_mocha_unit_runs_mocha_from_node_modules_under_c8():
     (stack,) = detect_stacks(["package.json"], files)
     # c8 is fetched as for every Mocha unit; mocha itself is never fetched.
     assert stack.test == "npx --yes c8 --reporter=lcov mocha test/"
+
+
+def test_rust_without_nextest_config_keeps_coverage_command_and_adds_note():
+    files = {"Cargo.toml": '[package]\nname = "my_app"\n', "src/main.rs": "fn main() {}\n"}
+    (stack,) = detect_stacks(list(files), files)
+    assert stack.test == "cargo llvm-cov --lcov --output-path lcov.info"
+    assert stack.junit_report == ""
+    assert any("cargo-nextest" in n for n in stack.notes)
+
+
+def test_rust_with_nextest_config_runs_llvm_cov_nextest_and_sets_junit_report():
+    files = {
+        "Cargo.toml": '[package]\nname = "my_app"\n',
+        "src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.ci.junit]\npath = "junit.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.test == "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/ci/junit.xml"
+    assert stack.prepare == (
+        "- uses: taiki-e/install-action@cargo-llvm-cov",
+        "- uses: taiki-e/install-action@cargo-nextest",
+    )
+    assert stack.requires == ("cargo install cargo-llvm-cov", "cargo install cargo-nextest")
+    assert stack.notes == ()
+
+
+def test_rust_with_nextest_target_prefixed_path():
+    files = {
+        "Cargo.toml": '[package]\nname = "my_app"\n',
+        "src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.ci.junit]\npath = "target/junit.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.junit_report == "target/nextest/ci/target/junit.xml"
+
+
+def test_rust_with_nextest_workspace_and_custom_profile():
+    files = {
+        "Cargo.toml": '[workspace]\nmembers = ["app"]\n',
+        "app/Cargo.toml": '[package]\nname = "app"\n',
+        "app/src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.default.junit]\npath = "reports/nextest.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.test == "cargo llvm-cov nextest --profile default --workspace --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/default/reports/nextest.xml"
+    assert stack.notes == ()
+
+
+def test_rust_detects_nextest_config_from_ancestor_directory(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            ".config/nextest.toml": '[profile.ci.junit]\npath = "junit.xml"\n',
+            "crates/core/Cargo.toml": '[package]\nname = "core"\n',
+            "crates/core/src/lib.rs": "pub fn f() {}\n",
+        },
+    )
+    stacks = detect_repo_stacks(tmp_path)
+    (stack,) = [s for s in stacks if s.language == "rust"]
+    assert stack.test == "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/ci/junit.xml"
+

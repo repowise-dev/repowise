@@ -21,7 +21,9 @@ import hashlib
 import hmac
 import os
 import pickle
+import re
 import secrets
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,7 @@ __all__ = [
     "load_sealed_pickle",
     "reset_key_cache_for_tests",
     "seal",
+    "sweep_orphan_temps",
     "unseal",
 ]
 
@@ -41,6 +44,15 @@ _MAGIC = b"RWCH1"
 _MAC_LEN = 32  # sha256 digest
 _MIN_KEY_LEN = 16
 _STREAM_CHUNK = 1024 * 1024
+#: Suffix of every temp file :func:`dump_sealed_pickle` writes, and only of those.
+_TEMP_SUFFIX = ".pkltmp"
+#: A temp file untouched this long is an orphan of a killed write, never one in flight.
+ORPHAN_TEMP_SECONDS = 3600
+# ``<cache name><token>.pkltmp``, the token 16 hex chars from make_temp_file.
+# Earlier releases wrote ``<cache>.pkl<8 chars>.pkltmp`` (mkstemp) and named the
+# second temp ``<cache name><token>.tmp``, so those orphans go too. Every name
+# needs the writer's token, so a file someone named by hand is left alone.
+_ORPHAN_TEMP_NAME = re.compile(r".+(?:[0-9a-f]{16}|\.pkl[a-z0-9_]{8})\.(?:pkltmp|tmp)")
 
 
 def _key_path() -> Path:
@@ -222,7 +234,7 @@ def dump_sealed_pickle(path: Path, obj: Any, *, domain: str) -> None:
                 h.update(chunk)
         mac = h.digest()
 
-        fd_out, tmp_out = make_temp_file(path.parent, prefix=path.name, suffix=".tmp")
+        fd_out, tmp_out = make_temp_file(path.parent, prefix=path.name, suffix=_TEMP_SUFFIX)
         try:
             with os.fdopen(fd_out, "wb") as out, open(tmp_pkl, "rb") as src:
                 fd_out = -1
@@ -247,3 +259,56 @@ def dump_sealed_pickle(path: Path, obj: Any, *, domain: str) -> None:
                 os.close(fd_pkl)
         with contextlib.suppress(OSError):
             os.unlink(tmp_pkl)
+
+
+def _is_orphan_temp_name(name: str) -> bool:
+    return _ORPHAN_TEMP_NAME.fullmatch(name) is not None
+
+
+def sweep_orphan_temps(directory: Path, *, max_age: float = ORPHAN_TEMP_SECONDS) -> int:
+    """Remove temp files killed :func:`dump_sealed_pickle` calls left; return how many.
+
+    Looks in *directory* and its direct subdirectories, where every sealed
+    cache lives (``.repowise/`` and its cache folders), so it never walks a
+    deep store such as the vector index, and never follows a link out of it.
+    Only names carrying the writer's random token, and only files older than *max_age*: a
+    write in flight touches its temp file within seconds, so it is never that
+    old. A file another process holds open (Windows refuses the delete) or one
+    already gone is skipped. Ceiling: a writer suspended for over an hour
+    mid-write loses its temp and its write fails, which every caller already
+    treats as a cache miss to rebuild.
+    """
+    cutoff = time.time() - max_age
+    removed = 0
+    folders = [directory, *_real_subdirectories(directory)]
+    for folder in folders:
+        try:
+            with os.scandir(folder) as it:
+                temps = [e for e in it if _is_orphan_temp_name(e.name)]
+        except OSError:
+            continue
+        for entry in temps:
+            with contextlib.suppress(OSError):
+                if entry.is_file(follow_symlinks=False) and entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+                    removed += 1
+    return removed
+
+
+def _real_subdirectories(directory: Path) -> list[Path]:
+    """Subdirectories of *directory* that resolve inside it.
+
+    Comparing resolved parents leaves out symlinks and Windows junctions on
+    every supported Python (``DirEntry.is_junction`` is 3.12+).
+    """
+    out: list[Path] = []
+    with contextlib.suppress(OSError):
+        root = Path(directory).resolve()
+        with os.scandir(directory) as it:
+            for entry in it:
+                with contextlib.suppress(OSError):
+                    if entry.is_dir(follow_symlinks=False):
+                        sub = Path(entry.path)
+                        if sub.resolve().parent == root:
+                            out.append(sub)
+    return out

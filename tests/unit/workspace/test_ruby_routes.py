@@ -110,6 +110,14 @@ class TestRailsRoutes:
         # Scoped routes
         assert "http::GET::/v1/status" in ids
 
+        # Concerns mixed into resources
+        assert "http::GET::/users/{param}" in ids
+        assert "http::GET::/users/{param}/followers" in ids
+        assert "http::GET::/followers" not in ids
+
+        # Drawn routes file
+        assert "http::GET::/api/v1/accounts" in ids
+
         # Commented-out route yields nothing
         assert not any("commented" in cid for cid in ids)
 
@@ -133,6 +141,73 @@ end
             "http::PATCH::/profile",
             "http::GET::/profile/settings",
         }
+
+    def test_route_containing_draw_is_not_treated_as_draw_call(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "config/routes.rb",
+            """Rails.application.routes.draw do
+  get "/draw" => "pages#show"
+  get "/draw/canvas", to: "canvas#show"
+end
+""",
+        )
+        ids = _provider_ids(tmp_path)
+        assert "http::GET::/draw" in ids
+        assert "http::GET::/draw/canvas" in ids
+
+    def test_multi_concern_and_percent_symbols(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "config/routes.rb",
+            """Rails.application.routes.draw do
+  concern :commentable do
+    resources :comments
+  end
+  concern :taggable do
+    resources :tags
+  end
+
+  resources :posts do
+    concerns :commentable, :taggable
+  end
+
+  resources :articles, concerns: %i[commentable taggable]
+end
+""",
+        )
+        ids = _provider_ids(tmp_path)
+        assert "http::GET::/posts/{param}/comments" in ids
+        assert "http::GET::/posts/{param}/tags" in ids
+        assert "http::GET::/articles/{param}/comments" in ids
+        assert "http::GET::/articles/{param}/tags" in ids
+
+    def test_draw_escape_and_concern_source_file(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "config/routes.rb",
+            """Rails.application.routes.draw do
+  concern :auditable do
+    get :audit
+  end
+  draw "../../../escape"
+  draw :api
+end
+""",
+        )
+        _write(
+            tmp_path,
+            "config/routes/api.rb",
+            """scope "/api" do
+  resources :users do
+    concerns :auditable
+  end
+end
+""",
+        )
+        contracts = [c for c in HttpExtractor().extract(tmp_path, "api") if c.role == "provider" and "/audit" in c.contract_id]
+        assert len(contracts) == 1
+        assert contracts[0].file_path == "config/routes.rb"
 
     def test_scope_namespace_and_member_inline_end(self, tmp_path: Path) -> None:
         _write(

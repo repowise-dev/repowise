@@ -68,7 +68,7 @@ def _build_init_shaped_graph(tmp_path: Path, git_meta_map: dict) -> GraphBuilder
     # Framework edges: tech-stack detection on a bare two-file repo adds
     # nothing, but run it anyway to mirror the phase order.
     try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+        from repowise.core.ingestion.tech_stack import detect_tech_stack
 
         gb.add_framework_edges([item.name for item in detect_tech_stack(tmp_path)])
     except Exception:

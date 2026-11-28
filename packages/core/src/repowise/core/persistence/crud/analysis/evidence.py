@@ -24,7 +24,9 @@ from ....evidence.kinds import STORE_TABLES, evidence_kinds
 from ...models import (
     Base,
     EvidenceBenchmarkResult,
+    EvidenceRouteLatency,
     EvidenceRun,
+    EvidenceStatementStats,
     EvidenceSymbolCost,
     SymbolHotness,
     WorkloadHotness,
@@ -35,6 +37,7 @@ from .._shared import _BATCH_SIZE
 
 if TYPE_CHECKING:
     from ....evidence.hotness import CostFacts, RunFacts
+    from ....evidence.measured_fold import RouteRun, StatementRun
 
 
 def evidence_row_table(kind: str) -> Table | None:
@@ -115,6 +118,9 @@ async def save_evidence_run(
     ).scalar_one_or_none()
     if same is not None:
         same.ingested_at = at
+        # A sender that says when the run was measured corrects the time (a source re-fetch).
+        if run.get("measured_at") is not None:
+            same.measured_at = run["measured_at"]
         # A run stored before the fold existed gets it from the same file.
         if same.timing_summary_json is None and run.get("timing_summary_json"):
             same.timing_summary_json = run["timing_summary_json"]
@@ -428,6 +434,77 @@ async def hotness_for_symbols(
     return out
 
 
+async def production_window_claims(
+    session: AsyncSession, repository_id: str, run_ids: Iterable[str]
+) -> dict[str, str]:
+    """``{run id: claim}`` for each of *run_ids* that is a stored production
+    run: what its rows claim in words (``evidence.status.window_claim``).
+
+    One keyed statement per chunk of ids, and none when *run_ids* is empty,
+    so a caller that passes only its production rows' runs costs every other
+    read nothing.
+    """
+    from ....evidence.status import production_window
+
+    wanted = sorted(set(run_ids))
+    out: dict[str, str] = {}
+    for i in range(0, len(wanted), _BATCH_SIZE):
+        runs = await session.execute(
+            select(EvidenceRun).where(
+                EvidenceRun.repository_id == repository_id,
+                EvidenceRun.id.in_(wanted[i : i + _BATCH_SIZE]),
+            )
+        )
+        for run in runs.scalars():
+            window = production_window(run)
+            if window is not None:
+                out[run.id] = window["claim"]
+    return out
+
+
+async def measured_callers(
+    session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
+) -> dict[str, list[str]]:
+    """Each row's production callers that its run measured calling it
+    (``drivers``), best first by the call graph: the *callers* that
+    :func:`~repowise.core.evidence.action_row.action_row` weighs by share.
+
+    A caller counts when the call graph lists it as a caller and its file is
+    production code (``code_origin``), as on the measured rows. The graph read
+    is ``_callers_of``'s (every caller edge of each function); only the callers
+    a run measured have their files judged. A row with no such caller is left
+    out; rows that stored no ``drivers`` cost no read.
+    """
+    from ....evidence.ingest import load_origins
+    from ....evidence.payloads import json_list
+    from ....ingestion.symbol_identity import file_of_symbol
+    from .performance import _callers_of
+
+    measured: dict[str, set[str]] = {}
+    for row in rows:
+        named = {
+            d["symbol"]
+            for d in json_list(getattr(row, "drivers_json", None)) or ()
+            if isinstance(d, dict) and isinstance(d.get("symbol"), str)
+        }
+        if named:
+            measured[row.symbol_id] = named
+    if not measured:
+        return {}
+    sources = await _callers_of(session, repository_id, sorted(measured))
+    graph = {
+        sid: [s for s in sources.get(sid, ()) if s in named] for sid, named in measured.items()
+    }
+    origins = await load_origins(
+        session, repository_id, {file_of_symbol(s) for found in graph.values() for s in found}
+    )
+    out = {
+        sid: [s for s in found if origins.get(file_of_symbol(s)) == "production"]
+        for sid, found in graph.items()
+    }
+    return {sid: found for sid, found in out.items() if found}
+
+
 async def step_findings(
     session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
 ) -> list[dict[str, Any]]:
@@ -519,11 +596,114 @@ async def ranked_by_workload(
     return [(run, by_run[run.id]) for run in found]
 
 
+async def statement_costs(session: AsyncSession, repository_id: str) -> list[StatementRun]:
+    """Each production statement workload's newest run, newest first, with
+    what each function that issues its statements cost in the window
+    (``evidence.measured_fold.fold_statements``: only statements the join put
+    on exactly one function count toward it; the rest are counted by label).
+
+    Two statements: the ``statement_stats`` runs, then the rows of the ones
+    that speak. Empty when no statement run is stored.
+    """
+    from ....evidence.measured_fold import fold_statements, query_runs_to_read
+
+    runs = await _production_runs(session, repository_id, "statement_stats")
+    keep = query_runs_to_read(runs)
+    if not keep:
+        return []
+    points = await session.execute(
+        select(
+            EvidenceStatementStats.run_id,
+            EvidenceStatementStats.symbol_id,
+            EvidenceStatementStats.issuer,
+            EvidenceStatementStats.calls,
+            EvidenceStatementStats.total_ms,
+        ).where(EvidenceStatementStats.run_id.in_(keep))
+    )
+    return fold_statements(runs, [tuple(p) for p in points])
+
+
+async def route_costs(session: AsyncSession, repository_id: str) -> list[RouteRun]:
+    """Each production route workload's newest run, newest first, with what
+    each handler's requests cost in the window
+    (``evidence.measured_fold.fold_routes``: only routes the route join put on
+    a handler when the run was stored count toward it; the rest are counted
+    as unjoined).
+
+    Two statements: the ``route_latency`` runs, then the rows of the ones
+    that speak. Empty when no route run is stored.
+    """
+    from ....evidence.measured_fold import fold_routes, query_runs_to_read
+
+    runs = await _production_runs(session, repository_id, "route_latency")
+    keep = query_runs_to_read(runs)
+    if not keep:
+        return []
+    points = await session.execute(
+        select(
+            EvidenceRouteLatency.run_id,
+            EvidenceRouteLatency.handler_symbol_id,
+            EvidenceRouteLatency.method,
+            EvidenceRouteLatency.route,
+            EvidenceRouteLatency.request_count,
+            EvidenceRouteLatency.total_ms,
+            EvidenceRouteLatency.p95_ms,
+            EvidenceRouteLatency.error_count,
+        ).where(EvidenceRouteLatency.run_id.in_(keep))
+    )
+    return fold_routes(runs, [tuple(p) for p in points])
+
+
+async def _production_runs(
+    session: AsyncSession, repository_id: str, kind: str
+) -> list[EvidenceRun]:
+    """Every stored run of production-only *kind* (none of its rows)."""
+    result = await session.execute(
+        select(EvidenceRun).where(
+            EvidenceRun.repository_id == repository_id,
+            EvidenceRun.kind == kind,
+        )
+    )
+    return list(result.scalars())
+
+
+async def _statement_names_a_function(session: AsyncSession, repository_id: str) -> bool:
+    """A production statement workload's newest run puts a statement on a
+    function: what :func:`statement_costs` would list, without folding it."""
+    from ....evidence.measured_fold import query_runs_to_read
+
+    keep = query_runs_to_read(await _production_runs(session, repository_id, "statement_stats"))
+    if not keep:
+        return False
+    named = select(EvidenceStatementStats.run_id).where(
+        EvidenceStatementStats.run_id.in_(keep),
+        EvidenceStatementStats.issuer == "function",
+        EvidenceStatementStats.symbol_id.is_not(None),
+    )
+    return (await session.execute(named.limit(1))).first() is not None
+
+
+async def _route_names_a_function(session: AsyncSession, repository_id: str) -> bool:
+    """A production route workload's newest run puts a route on a handler:
+    what :func:`route_costs` would list, without folding it."""
+    from ....evidence.measured_fold import query_runs_to_read
+
+    keep = query_runs_to_read(await _production_runs(session, repository_id, "route_latency"))
+    if not keep:
+        return False
+    named = select(EvidenceRouteLatency.run_id).where(
+        EvidenceRouteLatency.run_id.in_(keep),
+        EvidenceRouteLatency.handler_symbol_id.is_not(None),
+    )
+    return (await session.execute(named.limit(1))).first() is not None
+
+
 async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     """Why :func:`ranked_by_workload` has no row, as one token.
 
     ``no_runtime_data``: no profile run is stored outside the ``benchmark``
-    class. ``ahead_of_index``: every
+    class and no production statement or route run either (one that names
+    no function reads ``not_ranked``). ``ahead_of_index``: every
     function the stored runs mapped is stale, and a workload's newest run was
     added after the newest run at the indexed commit
     (``evidence.hotness.commit_position``): it ranks once the index reaches
@@ -537,9 +717,11 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     """
     has_profile = select(EvidenceRun.id).where(
         EvidenceRun.repository_id == repository_id,
-        EvidenceRun.kind == "profile",
-        # A benchmark profile never ranks (``evidence.hotness``).
-        EvidenceRun.workload_class != "benchmark",
+        or_(
+            # A benchmark profile never ranks (``evidence.hotness``).
+            (EvidenceRun.kind == "profile") & (EvidenceRun.workload_class != "benchmark"),
+            EvidenceRun.kind.in_(("statement_stats", "route_latency")),
+        ),
     )
     if (await session.execute(has_profile.limit(1))).first() is None:
         return "no_runtime_data"
@@ -650,10 +832,18 @@ async def _newest_ahead_of_index(session: AsyncSession, repository_id: str) -> b
 
 async def measured_status(session: AsyncSession, repository_id: str) -> str:
     """``measured`` when a workload's run ranks a function (what
-    :func:`ranked_by_workload` lists), else :func:`unranked_reason`'s token.
-    One indexed lookup when anything is ranked."""
+    :func:`ranked_by_workload` lists) or a production statement workload's
+    newest run puts a statement on a function (:func:`statement_costs`) or a
+    production route workload's newest run puts a route on a handler
+    (:func:`route_costs`), else :func:`unranked_reason`'s token. One indexed
+    lookup when a profile ranks anything; two more per production kind (its
+    runs, one row) otherwise."""
     ranked = select(WorkloadHotness.run_id).where(WorkloadHotness.repository_id == repository_id)
     if (await session.execute(ranked.limit(1))).first() is not None:
+        return "measured"
+    if await _statement_names_a_function(session, repository_id):
+        return "measured"
+    if await _route_names_a_function(session, repository_id):
         return "measured"
     return await unranked_reason(session, repository_id)
 
@@ -732,11 +922,14 @@ __all__ = [
     "list_evidence_runs",
     "measured_status",
     "newer_unranked",
+    "production_window_claims",
     "prune_evidence_runs",
     "ranked_by_workload",
     "replace_symbol_hotness",
     "replace_workload_hotness",
+    "route_costs",
     "save_evidence_run",
+    "statement_costs",
     "unranked_command",
     "unranked_reason",
 ]

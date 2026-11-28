@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from repowise.core.evidence.profile_formats import (
     detect_profile_format,
     profile_formats,
 )
-from repowise.core.frame_resolver import ProfileFrame
+from repowise.core.frame_resolver import ProfileFrame, checkout_reader
 from repowise.core.workspace.repo_index import IndexedSymbol
 
 ROOT = "C:\\work\\repo"
@@ -548,12 +549,13 @@ def test_waits_charge_no_self_time_and_libraries_stay_with_their_caller() -> Non
     assert [e["function"] for e in conv.document["symbols"]] == [
         "pkg.app.App.load", "pkg.app.App.run",
     ]
-    assert (conv.repo_self, conv.waits, conv.libraries) == (2, 6, 2)
+    # The split counts the standard library (json) as a library, like sqlalchemy.
+    assert (conv.repo_self, conv.waits, conv.libraries) == (0, 6, 4)
     summary = conv.summary()
     assert (summary["repo_self_share"], summary["wait_share"], summary["library_share"]) == (
-        0.2, 0.6, 0.2,
+        0.0, 0.6, 0.4,
     )
-    assert (conv.document["repo_self"], conv.document["waits"]) == (2, 6)
+    assert (conv.document["repo_self"], conv.document["waits"]) == (0, 6)
     assert parse_evidence(json.dumps(conv.document)).waits == 6
 
 
@@ -576,3 +578,88 @@ def test_a_speedscope_file_carries_the_failed_test_count_of_its_run(given, read)
     run = profile_formats.get("speedscope").read(_bytes({**PYINSTRUMENT, "testsFailed": given}))
     assert run.tests_failed == read
     assert profile_formats.get("speedscope").read(_bytes(PYINSTRUMENT)).tests_failed is None
+
+
+# -- perf (perf_to_profile) ----------------------------------------------
+
+# Written in /work/shop of an Ubuntu 24.04 container with FPC 3.2.2:
+#   fpc -gw3 shop.lpr
+#   perf record -e cpu-clock:u -F 999 -g -o /work/perf.data ./shop
+#   perf_to_profile -i /work/perf.data -o /work/raw.pb.gz -f
+#   pprof -proto -symbolize=local -output=/work/cpu.pb.gz shop /work/raw.pb.gz
+# perf_to_profile writes addresses only; pprof adds the files and lines.
+FPC_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "pprof_fpc"
+FPC_ROOT = "/work"
+
+
+def _fpc_symbols() -> dict[str, list[IndexedSymbol]]:
+    """The fixture's routines, with spans checked against its source."""
+    spans = {
+        "shop/cart.pas": [
+            ("cart.Mix", 30, 33, "function Mix("),
+            ("cart.TCart.Total", 35, 51, "function TCart.Total("),
+            ("cart.TCart.Total", 53, 61, "function TCart.Total("),
+            ("cart.tcart.DISCOUNT", 64, 71, "function tcart.DISCOUNT("),
+            ("cart.TTally.Sum", 73, 80, "function TTally.Sum("),
+            ("cart.Checksum", 82, 89, "function Checksum("),
+        ],
+        "shop/shop.lpr": [("shop.Run", 14, 21, "procedure Run;")],
+    }
+    out: dict[str, list[IndexedSymbol]] = {}
+    for path, routines in spans.items():
+        lines = (FPC_DIR / path).read_text(encoding="utf-8").splitlines()
+        for qualified, start, end, header in routines:
+            assert lines[start - 1].startswith(header), (path, qualified)
+            symbol = _sym(path, qualified, start, end, "function")
+            out.setdefault(path, []).append(replace(symbol, symbol_id=f"{path}:{start}"))
+    return out
+
+
+def test_a_perf_profile_of_a_free_pascal_program_joins_to_its_routines() -> None:
+    data = (FPC_DIR / "cpu.pb.gz").read_bytes()
+    assert detect_profile_format(data) == "pprof"
+    run = profile_formats.get("pprof").read(data)
+    assert (run.unit, run.value_kind) == ("ns", "cpu")
+    assert sum(s.samples for s in run.stacks) == 793
+
+    conv = convert_profile(
+        run,
+        root=FPC_ROOT,
+        symbols_by_file=_fpc_symbols(),
+        read_lines=checkout_reader(FPC_DIR),
+    )
+    assert conv.skip_rate <= 0.05
+    self_time = {(e["function"], e.get("line")): e["self"] for e in conv.document["symbols"]}
+    by_name = Counter()
+    for (function, _), value in self_time.items():
+        by_name[function] += value
+    for routine in ("cart.TCart.Total", "cart.Mix", "cart.TTally.Sum", "cart.Checksum"):
+        assert by_name[routine] > 0, routine
+    # The nested Accumulate has no symbol: its time is the first Total's.
+    assert by_name["cart.TCart.Total"] > 200_000_000
+    assert by_name["cart.tcart.DISCOUNT"] > 0
+
+
+@pytest.mark.parametrize("event", ["cpu-clock", "task-clock:u", "cpu-clock:pppH"])
+def test_perf_clock_events_are_cpu_time_in_nanoseconds(event: str) -> None:
+    data = _pprof(
+        samples=[([1], [2, 2_000_000])],
+        locations={1: [(1, 8)]},
+        functions={1: ("Total", "/work/shop/cart.pas", 0)},
+        sample_types=((f"{event}_sample", "count"), (f"{event}_event", "count")),
+    )
+    assert detect_profile_format(gzip.compress(data)) == "pprof"
+    run = profile_formats.get("pprof").read(data)
+    assert (run.unit, run.value_kind) == ("ns", "cpu")
+    assert [(s.weight, s.samples) for s in run.stacks] == [(2_000_000, 2)]
+
+
+def test_perf_events_that_do_not_count_time_are_refused() -> None:
+    data = _pprof(
+        samples=[([1], [2, 900])],
+        locations={1: [(1, 8)]},
+        functions={1: ("Total", "/work/shop/cart.pas", 0)},
+        sample_types=(("cycles:u_sample", "count"), ("cycles:u_event", "count")),
+    )
+    with pytest.raises(EvidenceFormatError, match="not CPU or wall time"):
+        profile_formats.get("pprof").read(data)

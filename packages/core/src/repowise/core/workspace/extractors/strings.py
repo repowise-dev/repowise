@@ -588,14 +588,16 @@ def _static_rebinding_re(key: str) -> re.Pattern[str]:
 # The header stops at another `class` word, so `// the base class` above a
 # declaration does not take the next word (`export`) as the class name.
 _CLASS_OPEN_RE = re.compile(
-    r"class(?<![\w$]class)\s+(?P<name>[A-Za-z_$][\w$]*)(?:(?!(?<![\w$.])class\b)[^{;])*\{"
+    r"class(?<![\w$]class)\s+(?P<name>[A-Za-z_$][\w$]*)(?:\s+extends\s+(?P<base>[A-Za-z_$][\w$]*))?(?:(?!(?<![\w$.])class\b)[^{;])*\{"
 )
 # A class field and what it is set to: a declaration on its own line
 # (`private base = x`, `base: string = x`) or `this.base = x` anywhere, with
 # `op` set for a compound assignment (`this.base += x`).
 _FIELD_DECL_RE = re.compile(
-    r"^[ \t]*(?P<mods>(?:(?:private|protected|public|readonly|static|override)[ \t]+)*)"
-    r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*[?!]?(?:[ \t]*:[^=\n]+)?=(?![=>])[ \t]*(?P<rhs>[^\n]+)$",
+    r"(?:^[ \t]*|(?<=[{;])[ \t]*)"
+    r"(?P<mods>(?:(?:private|protected|public|readonly|static|override)[ \t]+)*)"
+    r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*[?!]?(?:[ \t]*:[^=\n]+)?=(?![=>])[ \t]*"
+    r"(?P<rhs>[^\n;]+?)(?:[ \t]*(?:;|\}[ \t]*$)|$)",
     re.MULTILINE,
 )
 _THIS_ASSIGN_RE = re.compile(
@@ -627,6 +629,7 @@ class ClassFields:
     static_fields: dict[str, str] = field(default_factory=dict)
     static_spans: tuple[tuple[int, int], ...] = ()
     name: str = ""
+    base_name: str = ""
 
     def fields_at(self, pos: int) -> dict[str, str]:
         """The fields ``this.name`` reads at *pos*: static in a static member."""
@@ -646,11 +649,14 @@ def js_class_fields(content: str) -> list[ClassFields]:
     """
     spans: list[tuple[int, int]] = []
     names: dict[tuple[int, int], str] = {}
+    bases: dict[tuple[int, int], str] = {}
     for c in _CLASS_OPEN_RE.finditer(content):
         close = match_paren(content, c.end() - 1, len(content), closer="}")
         if close > 0:
             spans.append((c.end(), close))
             names[spans[-1]] = c.group("name")
+            if c.group("base"):
+                bases[spans[-1]] = c.group("base")
     out: list[ClassFields] = []
     for start, end in sorted(spans, key=lambda s: s[1] - s[0]):
         inner = [s for s in spans if start < s[0] and s[1] < end]
@@ -669,9 +675,17 @@ def js_class_fields(content: str) -> list[ClassFields]:
                 _record(seen_static if in_static else seen, content, m)
         fields = {name: rhs for name, rhs in seen.items() if rhs}
         static_fields = {name: rhs for name, rhs in seen_static.items() if rhs}
-        if fields or static_fields:
+        if fields or static_fields or (start, end) in bases:
             out.append(
-                ClassFields(start, end, fields, static_fields, statics, names[(start, end)])
+                ClassFields(
+                    start,
+                    end,
+                    fields,
+                    static_fields,
+                    statics,
+                    names[(start, end)],
+                    bases.get((start, end), ""),
+                )
             )
     return out
 

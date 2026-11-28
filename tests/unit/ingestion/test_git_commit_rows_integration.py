@@ -129,6 +129,50 @@ async def test_capture_new_commit_rows_bounds_by_since_ts(tmp_path) -> None:
     assert idx.capture_new_commit_rows(since_ts=int(newest_ts)) == []
 
 
+@pytest.mark.asyncio
+async def test_capture_new_commit_rows_retains_same_second_commits(tmp_path) -> None:
+    """Commits sharing the boundary timestamp with known_shas excluded are not dropped (#6150)."""
+    import os
+
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _configure_author(repo, "Test Author", "author@example.com")
+    env = os.environ.copy()
+    env["GIT_AUTHOR_DATE"] = "1700000000 +0000"
+    env["GIT_COMMITTER_DATE"] = "1700000000 +0000"
+    env["GIT_AUTHOR_NAME"] = "Test Author"
+    env["GIT_AUTHOR_EMAIL"] = "author@example.com"
+    env["GIT_COMMITTER_NAME"] = "Test Author"
+    env["GIT_COMMITTER_EMAIL"] = "author@example.com"
+
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    repo.git.add("a.py")
+    repo.git.commit("-m", "commit 1", env=env)
+    c1_sha = repo.head.commit.hexsha
+
+    f.write_text("x = 2\n")
+    repo.git.add("a.py")
+    repo.git.commit("-m", "commit 2", env=env)
+    c2_sha = repo.head.commit.hexsha
+
+    idx = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+
+    # When since_ts is 1700000000 and c1_sha is known, c2_sha is captured
+    new_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas={c1_sha})
+    assert len(new_rows) == 1
+    assert new_rows[0]["sha"] == c2_sha
+
+    # When both c1_sha and c2_sha are in known_shas, idle update skips walk and captures 0 rows
+    idle_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas={c1_sha, c2_sha})
+    assert len(idle_rows) == 0
+
+    # When since_ts is 1700000000 and known_shas is empty set, both same-second commits are captured
+    empty_known_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas=set())
+    assert len(empty_known_rows) == 2
+
+
 def _configure_author(repo, name: str, email: str) -> None:
     with repo.config_writer() as cw:
         cw.set_value("user", "name", name)
@@ -157,7 +201,6 @@ async def test_index_repo_captures_whole_history_totals(tmp_path) -> None:
     assert totals.total_contributor_count == 1
     assert totals.first_commit_author == "Ada Lovelace"
     assert totals.first_commit_at is not None
-
 
 
 @pytest.mark.asyncio

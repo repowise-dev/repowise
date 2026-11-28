@@ -36,6 +36,7 @@ from repowise.cli.helpers import (
     ensure_repowise_dir,
     find_workspace_root,
     get_head_commit,
+    get_repowise_dir,
     load_config,
     load_state,
     release_update_lock,
@@ -50,6 +51,7 @@ from repowise.cli.helpers import (
     write_update_pending,
 )
 from repowise.cli.ui.mode_names import scope_line
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_BACKFILL_REWALK,
@@ -1172,12 +1174,17 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
                 f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
             )
     if run.stale_pages_planned:
+        from repowise.cli.commands._page_freshness import WHOLE_WIKI_REMEDY, stale_remedy
+
         from .catch_up import catch_up_command
 
+        model = stale_remedy(run.state, run.repo_path) == "model"
         console.print(
             f"[dim]{run.stale_pages_planned} page(s) the last update at this commit left "
             "stale will refresh with the next commit, or now with "
-            f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
+            f"[bold]{catch_up_command(run.repo_path)}[/bold]."
+            + (f" It {WHOLE_WIKI_REMEDY}." if model else "")
+            + "[/dim]"
         )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
@@ -1387,6 +1394,9 @@ def _prepare_locked_run(opts: UpdateOptions, run: UpdateRun) -> None:
         save_state(repo_path, state)
 
     _assess_store_upgrade(opts, run)
+    from .page_history import trim_page_history
+
+    trim_page_history(repo_path, dry_run=opts.dry_run)
 
     # This run only reaches changed files, so name the command for missing slots.
     from .commit_limit_notice import surface_pinned_commit_limit
@@ -1731,7 +1741,7 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         # A generation-config, renderer or upgrade rebuild re-renders the full page set.
         affected.regenerate = [pf.file_info.path for pf in run.parsed_files]
     if run.renderer_changed and not run.full_generation and not run.index_only:
-        # A model wiki: model-written levels are only marked stale, for an opt-in
+        # A model run: the levels a model writes are only marked stale, for an opt-in
         # `generate --stale`.
         from .deterministic import load_cascade_overflow_split
 
@@ -1740,9 +1750,16 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         if split and split[0]:
             from .catch_up import catch_up_command
 
+            # Only `--docs` brings a wiki built from code here, and it asks for a
+            # model, so `--full` after it writes the whole wiki with one.
+            pages, remedy = (
+                ("written by a model", "rewrite them")
+                if resolve_docs_mode(run.state) == "llm"
+                else ("of the types a model writes", "write the whole wiki with a model")
+            )
             console.print(
-                f"  {split[0]} pages written by a model are marked stale: run "
-                f"[cyan]{catch_up_command(run.repo_path)}[/cyan] to rewrite them "
+                f"  {split[0]} pages {pages} are marked stale: run "
+                f"[cyan]{catch_up_command(run.repo_path)}[/cyan] to {remedy} "
                 "(it estimates the cost first)."
             )
 
@@ -1750,10 +1767,18 @@ def _widen_for_full_render(run: UpdateRun) -> None:
 def _report_page_plan(run: UpdateRun) -> None:
     affected = run.affected
     if affected.stale_due_to_budget > 0:
+        from repowise.cli.commands._page_freshness import stale_remedy
+
         from .catch_up import catch_up_command
         from .deterministic import load_cascade_overflow_split
         from .reporting import render_cascade_budget_warning
 
+        # A docs run asks for a model, so it gets the renderer notice's remedy.
+        # shortcut: with no provider and no terminal the run then stops and `--full`
+        # stays a code rebuild; resolve the provider before the plan to tell them apart.
+        remedy = stale_remedy(run.state, run.repo_path)
+        if remedy == "code" and not run.index_only:
+            remedy = "model"
         # The detector puts the budget overflow first in decay_only.
         skipped = affected.decay_only[: affected.stale_due_to_budget]
         render_cascade_budget_warning(
@@ -1761,6 +1786,7 @@ def _report_page_plan(run: UpdateRun) -> None:
             affected.stale_due_to_budget,
             load_cascade_overflow_split(run.repo_path, skipped),
             catch_up_command(run.repo_path),
+            remedy,
         )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
@@ -2251,6 +2277,8 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         run.repo_path,
         reasoning=opts.reasoning,
         interactive=_docs_provider_prompt_allowed(run.emitter),
+        # --yes answers no questions, so it never installs a package either.
+        allow_install=not opts.yes,
     )
 
     # Persist this update's model spend to llm_costs, as init does.
@@ -2638,6 +2666,9 @@ def run_update(
     deferred = _acquire_update_lock(run)
     if deferred is not None:
         return deferred
+    # Temp files killed cache writes left; the age guard spares one in flight.
+    if not opts.dry_run:
+        sweep_orphan_temps(get_repowise_dir(run.repo_path))
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")

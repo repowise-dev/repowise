@@ -131,7 +131,7 @@ async def _build_next_actions(
             view = await load_actions_view(
                 session, repository.id, setup=setup, **_cross_repo_cut(alias)
             )
-            hidden = await measured_hotspot_ids(session, repository.id)
+            hidden = await measured_hotspot_ids(session, repository.id, without_step=True)
         return compact_actions_view(without_evidence(view, hidden), full=full), None
     except Exception as exc:
         logger.warning("get_overview: next actions unavailable: %s", exc)

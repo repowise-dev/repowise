@@ -41,6 +41,7 @@ from .call_barrel_forwarding import (  # noqa: F401
 )
 from .call_cobol import CobolCallsMixin
 from .call_cpp_class_scope import CppClassScopeMixin
+from .call_external import ExternalCallsMixin
 from .call_inheritance import (  # noqa: F401
     _EXTERNAL_PREFIX,
     _MAX_ANCESTOR_EXPAND_DEPTH,
@@ -88,6 +89,7 @@ from .call_receiver_typing import (
 )
 from .call_rust_paths import RustPathCallsMixin
 from .decorator_names import is_property_accessor, property_mutator_role
+from .external_calls import ExternalCallSite
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
     get_builtin_methods,
@@ -339,6 +341,7 @@ class CallResolver(
     InheritanceMixin,
     CppClassScopeMixin,
     RustPathCallsMixin,
+    ExternalCallsMixin,
 ):
     """Resolve raw CallSites to symbol-level edges.
 
@@ -364,11 +367,14 @@ class CallResolver(
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
         csharp_project_usings: dict[str, frozenset[str]] | None = None,
         cpp_index: Any | None = None,
+        rails_index: Any | None = None,
         source_map: dict[str, bytes] | None = None,
     ) -> None:
         # {repo path: bytes} of the revision under analysis, when it is not the
         # working tree; a file it lacks is read from disk.
         self._source_map = source_map
+        # Calls whose package-call check raised (see ``resolve_file``).
+        self.external_call_failures = 0
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
         # which case the inherited tier simply never fires.
@@ -540,6 +546,9 @@ class CallResolver(
             # The C/C++ workspace index the build's warmup already made over
             # these files; without it one is built here on first use.
             self._cpp_index, self._cpp_index_built = cpp_index, True
+        if rails_index is not None:
+            # The Zeitwerk index the type-reference pass already built.
+            self._rails_index, self._rails_index_built = rails_index, True
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
@@ -1040,8 +1049,18 @@ class CallResolver(
             cache[file_path] = merged
         return merged
 
-    def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
-        """Resolve all calls in a single file to symbol-level edges."""
+    def resolve_file(
+        self,
+        file_path: str,
+        calls: list[CallSite],
+        external: list[ExternalCallSite] | None = None,
+    ) -> list[ResolvedCall]:
+        """Resolve all calls in a single file to symbol-level edges.
+
+        With *external*, a call bound to no repo symbol whose callee an import
+        provably binds to a package is appended there instead
+        (:meth:`_external_call_site`); it never becomes an edge.
+        """
         results: list[ResolvedCall] = []
         self._chain_inner_resolved.clear()
 
@@ -1054,6 +1073,16 @@ class CallResolver(
             resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
             if resolved:
                 resolved = self._settle_callee(resolved, call)
+            if resolved is None and external is not None:
+                try:
+                    site = self._external_call_site(file_path, call)
+                except Exception as exc:  # a derived record never fails the graph
+                    # Counted, so the build's package calls are stored as incomplete.
+                    self.external_call_failures += 1
+                    log.debug("external_call_site_failed", path=file_path, error=repr(exc))
+                    site = None
+                if site is not None:
+                    external.append(site)
             if resolved:
                 # The edge type is a property of the call syntax, not of the
                 # tier that answered, so it is stamped once here.

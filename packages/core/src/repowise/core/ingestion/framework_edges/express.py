@@ -152,10 +152,7 @@ def _add_nest_module_edges(
 
 class _ExpressHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        express_in_stack = any(
-            token in dctx.stack_lower for token in ("express", "nestjs", "nest", "nest.js")
-        )
-        return express_in_stack or _has_express_imports(dctx.parsed_files)
+        return dctx.uses("Express", "NestJS") or _has_express_imports(dctx.parsed_files)
 
     def add_edges(
         self,

@@ -11,6 +11,7 @@ from typing import Any
 
 import structlog
 
+from .category import classify_change
 from .reconstruct import ReconstructedChange, reconstruct_changes
 from .source import ChangeMetadata, resolve_source
 
@@ -40,6 +41,14 @@ def change_provenance(
     else:
         label = UNKNOWN
     return label, agent, known
+
+
+def stored_files(files_json: str | None) -> list[tuple[str, int, int]]:
+    """A row's ``files_json`` as ``(path, added, deleted)``."""
+    return [
+        (f.get("path", ""), f.get("added") or 0, f.get("deleted") or 0)
+        for f in json.loads(files_json or "[]")
+    ]
 
 
 def change_row(
@@ -73,7 +82,11 @@ def change_row(
         "files_changed": len(change.files),
         "lines_added": change.lines_added,
         "lines_deleted": change.lines_deleted,
-        "category": change.category,
+        # Labels arrive with the metadata, after reconstruction chose a category.
+        # Read from the files the row keeps, as reconcile_categories reads them.
+        "category": classify_change(
+            change.title, change.files[:MAX_STORED_FILES], meta.labels
+        ).category,
         "provenance": provenance[0] if provenance else None,
         "provenance_agent": provenance[1] if provenance else None,
         "provenance_known": provenance[2] if provenance else None,
@@ -180,10 +193,10 @@ async def refresh_changes(
 
 
 async def reconcile_categories(session: Any, repo_id: str) -> int:
-    """Re-label commits and changes the current classifier reads differently.
+    """Re-label commits and changes the current classifiers read differently.
 
-    Pure regex over stored subjects and titles, so an update keeps both
-    columns in step with the classifier without a re-index.
+    Pure regex over stored subjects, and over change titles, files and labels,
+    so an update keeps both columns in step without a re-index.
     """
     from sqlalchemy import update
 
@@ -200,8 +213,10 @@ async def reconcile_categories(session: Any, repo_id: str) -> int:
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
     moved = 0
-    for change_id, title, category in changes:
-        label = classify_commit_category(title or "")
+    for change_id, title, category, files_json, labels_json in changes:
+        label = classify_change(
+            title or "", stored_files(files_json), json.loads(labels_json or "null")
+        ).category
         if label != category:
             moved += 1
             await session.execute(
@@ -218,4 +233,5 @@ __all__ = [
     "change_row",
     "reconcile_categories",
     "refresh_changes",
+    "stored_files",
 ]

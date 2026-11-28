@@ -50,14 +50,18 @@ def signature_parameters(signature: str) -> list[str] | None:
     current: list[str] = []
     content = False
     closers: list[str] = []
+    previous = ""
     for char in signature[start + 1 :]:
+        # The ``>`` of ``->`` and of ``=>`` is an arrow, and closes no ``<``.
+        arrow = char == ">" and previous in ("-", "=")
+        previous = char
         if char == ")" and not closers:
             if not pieces or "".join(current).strip():
                 pieces.append("".join(current))
             return pieces if content and [p.strip() for p in pieces] != ["void"] else []
         if char in _PAIRS:
             closers.append(_PAIRS[char])
-        elif closers and char == closers[-1]:
+        elif closers and char == closers[-1] and not arrow:
             closers.pop()
         elif char == "," and not closers:
             pieces.append("".join(current))

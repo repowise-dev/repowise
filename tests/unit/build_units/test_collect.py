@@ -8,6 +8,9 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
+from repowise.core.build_units import BuildUnit
+from repowise.core.build_units import collect as collect_mod
+from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.adapters import cargo as cargo_adapter
 from repowise.core.build_units.adapters import dart as dart_adapter
 from repowise.core.build_units.adapters import dotnet as dotnet_adapter
@@ -259,6 +262,66 @@ def test_adapter_beats_fallback_and_nested_roots_deepest_wins(tmp_path):
     assert index.unit("manifest:rb/sub").manifest == "rb/sub/Gemfile"
     assert _owners(index, "rb/sub/x.rb") == ["manifest:rb/sub"]
     assert _owners(index, "rb/y.rb") == ["manifest:rb"]
+
+
+def _cmake_target(monkeypatch, root: str = "") -> None:
+    """Register a stand-in adapter declaring ``cmake:core`` at *root*, listing its ``c.cpp``."""
+    prefix = f"{root}/" if root else ""
+    unit = BuildUnit(
+        id="cmake:core", ecosystem="cmake", name="core", root=root,
+        manifest=f"{prefix}CMakeLists.txt", source="t",
+    )
+    monkeypatch.setattr(
+        collect_mod, "_ADAPTERS",
+        (*collect_mod._ADAPTERS, ("cmake", lambda ctx: Found([(unit, (f"{prefix}c.cpp",))]))),
+    )
+
+
+def test_build_file_unit_keeps_the_same_root_fallback(tmp_path, monkeypatch):
+    # #6141: a CMakeLists.txt is no package manifest, so the root Gemfile
+    # keeps its fallback unit and the Ruby files stay out of the C++ target.
+    _cmake_target(monkeypatch)
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "", "c.cpp": "", "util.h": "", "Gemfile": "", "lib/x.rb": "",
+    })
+    assert set(index.units) == {"cmake:core", "manifest:."}
+    assert _owners(index, "c.cpp") == ["cmake:core"]
+    assert _owners(index, "lib/x.rb") == ["manifest:."]
+    assert _owners(index, "CMakeLists.txt") == ["cmake:core", "manifest:."]
+    # The fallback is a package root, so like any two units at one root it
+    # shares the unlisted C/C++ files with the target (a gem's C extension).
+    assert _owners(index, "util.h") == ["cmake:core", "manifest:."]
+
+
+def test_build_file_unit_does_not_co_own_a_same_root_package(tmp_path, monkeypatch):
+    _cmake_target(monkeypatch)
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "", "c.cpp": "",
+        "pyproject.toml": "[project]\nname = 'pkg'\n", "pkg/__init__.py": "",
+    })
+    assert set(index.units) == {"cmake:core", "python:pkg"}
+    assert _owners(index, "pkg/__init__.py") == ["python:pkg"]
+    assert _owners(index, "c.cpp") == ["cmake:core"]
+
+
+def test_build_file_unit_nested_in_a_package_root(tmp_path, monkeypatch):
+    # A CMake extension inside a Python package: its C++ and build files are
+    # the target's, a Python file beside them walks up to the package.
+    _cmake_target(monkeypatch, root="pkg/native")
+    index = _collect(tmp_path, {
+        "pyproject.toml": "[project]\nname = 'pkg'\n",
+        "pkg/__init__.py": "",
+        "pkg/native/CMakeLists.txt": "",
+        "pkg/native/c.cpp": "",
+        "pkg/native/src/impl.cpp": "",
+        "pkg/native/cmake/flags.cmake": "",
+        "pkg/native/build.py": "",
+    })
+    assert set(index.units) == {"cmake:core", "python:pkg"}
+    for path in ("pkg/native/CMakeLists.txt", "pkg/native/src/impl.cpp", "pkg/native/cmake/flags.cmake"):
+        assert _owners(index, path) == ["cmake:core"], path
+    assert _owners(index, "pkg/native/build.py") == ["python:pkg"]
+    assert _owners(index, "pkg/__init__.py") == ["python:pkg"]
 
 
 def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):

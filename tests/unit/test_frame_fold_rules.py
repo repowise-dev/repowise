@@ -235,3 +235,142 @@ def test_javascript_reads_each_file_once() -> None:
     frames = [_js(6, 15), _js(6, 15, "x"), _js(5, 23, "handle")]
     resolve_frames(frames, root=ROOT, symbols_by_file={"lib/app.js": JS}, read_lines=read)
     assert calls == ["lib/app.js"]
+
+
+# -- Rust ------------------------------------------------------------------------
+
+RS_SYM = [
+    _sym("cart.rs", "cart.Cart", 1, 30, "struct"),
+    _sym("cart.rs", "cart.Cart.total", 5, 20, "method"),
+]
+
+H = "h0123456789abcdef"
+
+
+def _rs(line: int, name: str, path: str = "cart.rs") -> ProfileFrame:
+    return ProfileFrame(f"{ROOT}/{path}", line, "rust", function=name)
+
+
+def test_rust_closure_folds_into_enclosing_method() -> None:
+    assert _hit(_run(_rs(8, f"cart::Cart::total::{{{{closure}}}}::{H}"), RS_SYM)) == (RS_SYM[1], True)
+    assert _hit(_run(_rs(8, "Cart::total::{{closure}}"), RS_SYM)) == (RS_SYM[1], True)
+
+
+def test_rust_async_block_folds_into_enclosing_method() -> None:
+    assert _hit(_run(_rs(8, f"cart::Cart::total::{{{{async_block}}}}::{H}"), RS_SYM)) == (RS_SYM[1], True)
+
+
+def test_rust_closure_at_module_level_folds_into_file() -> None:
+    assert _hit(_run(_rs(35, "cart::{{closure}}"), RS_SYM)) == (None, True)
+
+
+def test_rust_closure_with_wrong_method_is_mismatch() -> None:
+    assert _run(_rs(8, "cart::Cart::other::{{closure}}"), RS_SYM).skipped == {"second_signal_mismatch": 1}
+
+
+# What pprof-rs writes (v0 names, no hash, no start line), on the shapes an
+# async service and a trait-heavy codec produce.
+LIB_SOURCE = [
+    "pub struct Cart {",                                   # 1
+    "    items: Vec<u32>,",                                # 2
+    "}",                                                   # 3
+    "",                                                    # 4
+    "impl Cart {",                                         # 5
+    "    #[instrument(skip(self))]",                       # 6
+    "    pub async fn total(&self) -> u32 {",              # 7
+    "        let calc = |x: u32| x + 1;",                  # 8
+    "        calc(1)",                                     # 9
+    "    }",                                               # 10
+    "}",                                                   # 11
+    "",                                                    # 12
+    "impl From<String> for Error {",                       # 13
+    "    fn from(src: String) -> Error {",                 # 14
+    "        Error::Other(src)",                           # 15
+    "    }",                                               # 16
+    "}",                                                   # 17
+    "",                                                    # 18
+    "impl From<&str> for Error {",                         # 19
+    "    fn from(src: &str) -> Error {",                   # 20
+    "        src.to_string().into()",                      # 21
+    "    }",                                               # 22
+    "}",                                                   # 23
+    "",                                                    # 24
+    "impl fmt::Display for Cart {",                        # 25
+    "    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {",  # 26
+    "        write!(f, \"cart\")",                         # 27
+    "    }",                                               # 28
+    "}",                                                   # 29
+]
+# The index keeps one of the two ``from`` methods: both are ``Error::from``.
+LIB = [
+    _sym("lib.rs", "lib.Cart", 5, 11, "impl"),
+    _sym("lib.rs", "lib.Cart.total", 7, 10, "method"),
+    _sym("lib.rs", "lib.Error.from", 20, 22, "method"),
+    _sym("lib.rs", "lib.Cart.fmt", 26, 28, "method"),
+]
+
+
+def _lib(line: int, name: str, lines: list[str] | None = LIB_SOURCE):
+    return _run(_rs(line, name, "lib.rs"), LIB, lines)
+
+
+def test_rust_v0_closure_and_async_body_fold_into_the_function() -> None:
+    assert _hit(_lib(8, "<cart::Cart>::total::{closure#0}::{closure#0}")) == (LIB[1], True)
+    assert _hit(_lib(9, "<cart::Cart>::total::{async_fn#0}")) == (LIB[1], True)
+
+
+def test_rust_frame_on_an_attribute_line_joins_the_function_below() -> None:
+    # ``#[instrument]`` writes the async body's code on the attribute's line.
+    assert _hit(_lib(6, "<cart::Cart>::total::{closure#0}")) == (LIB[1], True)
+    # Without the source the line cannot be read as an attribute: the body
+    # stays on the file, never on a function.
+    assert _hit(_lib(6, "<cart::Cart>::total::{closure#0}", None)) == (None, True)
+    assert _lib(6, "<cart::Cart>::total", None).skipped == {"no_span": 1}
+
+
+def test_rust_trait_impl_and_generic_type_join_by_the_type() -> None:
+    assert _hit(_lib(27, "<cart::Cart as core::fmt::Display>::fmt")) == (LIB[3], False)
+    assert _hit(_lib(27, f"<cart::Cart as core::fmt::Display>::fmt::{H}")) == (LIB[3], False)
+    assert _hit(_lib(9, "<cart::Cart<core::io::util::Sink>>::total")) == (LIB[1], False)
+
+
+def test_rust_frame_in_a_function_the_index_lost_is_never_given_to_its_twin() -> None:
+    frame = "<cart::Error as core::convert::From<alloc::string::String>>::from"
+    assert _lib(15, frame).skipped == {"no_span": 1}
+    assert _hit(_lib(21, "<cart::Error as core::convert::From<&str>>::from")) == (LIB[2], False)
+
+
+def test_rust_frame_without_a_line_joins_only_a_name_the_source_defines_once() -> None:
+    assert _hit(_lib(0, "<cart::Cart as core::fmt::Display>::fmt")) == (LIB[3], False)
+    assert _lib(0, "<cart::Error as core::convert::From<&str>>::from").skipped == {"bad_line": 1}
+    assert _lib(0, "<cart::Cart as core::fmt::Display>::fmt", None).skipped == {"bad_line": 1}
+
+
+def test_rust_derive_output_and_drop_glue_are_never_put_on_a_function_or_the_file() -> None:
+    assert _lib(1, "<cart::Cart as core::clone::Clone>::clone").skipped == {"no_span": 1}
+    glue = "core::ptr::drop_glue::<<cart::Cart>::total::{closure#0}>"
+    assert _lib(8, glue).skipped == {"second_signal_mismatch": 1}
+
+
+def test_rust_reference_and_dyn_self_types_name_the_type() -> None:
+    assert _hit(_lib(27, "<&cart::Cart as core::fmt::Display>::fmt")) == (LIB[3], False)
+    assert _hit(_lib(27, "<dyn cart::Cart>::fmt")) == (LIB[3], False)
+
+
+def test_rust_attribute_on_an_item_that_is_not_the_function_does_not_reach_it() -> None:
+    source = ["#[derive(Clone)]", "struct W(", "    u32,", ")", "", "fn W() {", "}"]
+    symbols = [_sym("w.rs", "w.W", 6, 7)]
+    res = _run(_rs(1, "w::W", "w.rs"), symbols, source)
+    assert res.skipped == {"no_span": 1}
+
+
+def test_rust_attribute_on_a_nested_fn_joins_the_nested_fn() -> None:
+    source = ["fn outer() {", "    #[inline(never)]", "    fn nested() {", "        work();", "    }", "}"]
+    outer, nested = _sym("n.rs", "n.outer", 1, 6), _sym("n.rs", "n.nested", 3, 5)
+    assert _hit(_run(_rs(2, "n::outer::nested", "n.rs"), [outer, nested], source)) == (nested, False)
+    assert _hit(_run(_rs(4, "n::outer::nested", "n.rs"), [outer, nested], source)) == (nested, False)
+
+
+def test_rust_qualified_self_with_an_inner_as_splits_at_its_own() -> None:
+    frame = "<cart::Cart<<u8 as cart::Conv>::Out> as core::fmt::Display>::fmt"
+    assert _hit(_lib(27, frame)) == (LIB[3], False)

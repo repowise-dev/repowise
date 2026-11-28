@@ -255,7 +255,9 @@ result as a place to look.
 - Secret detection matches shapes, with no entropy scoring. Providers outside
   the eight vendor shapes are caught only through custom patterns. Use gitleaks
   or trufflehog for full secret scanning.
-- No dependency or CVE scanning.
+- No advisory feed. Package advisories come from a file you import
+  (`repowise packages import`, see
+  [package advisories](../reference/PACKAGE_USAGE.md#advisories-and-tiers)).
 - `weak_hash` fires on an MD5 checksum unless the call passes
   `usedforsecurity=False`. `unsafe_inner_html` ships at `med` because it cannot
   tell a name pointing at a pinned constant from a dynamic value.
@@ -268,8 +270,8 @@ result as a place to look.
 
 | Surface | Where |
 |---|---|
-| CLI | `repowise security scan --history`, `repowise security check`, `repowise hook install --security` |
-| MCP | The `security_signals` block on `get_risk` |
+| CLI | `repowise security scan --history`, `repowise security check`, `repowise hook install --security`; package advisories: `repowise packages import`, `vulns`, `check` |
+| MCP | The `security_signals` block on `get_risk`; `advisory_call` on `get_risk` and `advisories` on `package:` cards once an advisory document is imported |
 | Dashboard | The Security tab of the Code Health page |
 | REST | `GET /api/repos/{repo_id}/security` |
 | CI | The GitHub Action's `security` gate (annotations, SARIF) and the GitLab template (Code Quality) |

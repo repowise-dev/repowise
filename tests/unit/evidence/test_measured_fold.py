@@ -7,8 +7,10 @@ from types import SimpleNamespace
 
 from repowise.core.evidence.measured_fold import (
     MeasuredFold,
+    StatementCost,
     fold_measured,
     fold_query_readings,
+    fold_statements,
     query_runs_to_read,
 )
 from repowise.core.evidence.query_counts import QueryReading
@@ -95,3 +97,57 @@ def test_fold_query_readings_reads_each_workloads_newest_complete_run() -> None:
 def test_fold_query_readings_without_a_usable_run_is_empty() -> None:
     assert fold_query_readings([], [("r", "test", "s", "fp", 1, 1)]) == {}
     assert fold_query_readings([_qrun("p", "w", 1, partial=True)], []) == {}
+
+
+def _window(run_id: str, name: str, day: int, partial: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=run_id,
+        workload_name=name,
+        environment="prod",
+        measured_at=datetime(2026, 11, day, tzinfo=UTC),
+        mapping_partial=partial,
+    )
+
+
+def test_fold_statements_puts_only_exactly_joined_statements_on_a_function() -> None:
+    runs = [
+        _window("old", "orders-db", 1),
+        _window("new", "orders-db", 2),
+        _window("other", "billing-db", 3),
+    ]
+    points = [
+        # Two statements one function issues, summed.
+        ("new", "src/a.py::save", "function", 40, 600.0),
+        ("new", "src/a.py::save", "function", 10, 200.0),
+        ("new", "src/b.py::load", "function", 5, 100.0),
+        # Never put on a function: several could issue it, only a schedule runs
+        # it, or nothing matched.
+        ("new", None, "ambiguous", 3, 50.0),
+        ("new", None, "database_schedule", 1, 40.0),
+        ("new", None, None, 2, 10.0),
+        # A superseded window of the same workload never adds to the newest.
+        ("old", "src/b.py::load", "function", 999, 9999.0),
+        # A run that names no function still folds, so it reads joined-nothing.
+        ("other", None, "ambiguous", 1, None),
+    ]
+    other, new = fold_statements(runs, points)
+    assert (other.run.id, other.rows, other.statements) == ("other", [], 1)
+    assert other.unattributed == {"ambiguous": {"statements": 1, "total_ms": 0.0, "share": None}}
+    assert new.run.id == "new" and (new.total_ms, new.statements) == (1000.0, 6)
+    assert new.rows == [
+        StatementCost("src/a.py::save", "new", 1, 0.8, 800.0, 50, 2),
+        StatementCost("src/b.py::load", "new", 2, 0.1, 100.0, 5, 1),
+    ]
+    assert new.unattributed == {
+        "ambiguous": {"statements": 1, "total_ms": 50.0, "share": 0.05},
+        "database_schedule": {"statements": 1, "total_ms": 40.0, "share": 0.04},
+        "unjoined": {"statements": 1, "total_ms": 10.0, "share": 0.01},
+    }
+
+
+def test_fold_statements_without_a_complete_run_is_empty() -> None:
+    assert fold_statements([], []) == []
+    assert (
+        fold_statements([_window("p", "db", 1, partial=True)], [("p", "x", "function", 1, 1.0)])
+        == []
+    )

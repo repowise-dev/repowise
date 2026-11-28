@@ -111,6 +111,14 @@ def _emit_upkeep_prompt(policy: DecisionPolicy) -> None:
         )
 
 
+def _emit_stop_prompt(policy: DecisionPolicy) -> None:
+    if policy.stop_capture:
+        console.print(
+            "  [dim]Stop prompt: on. A session that did real work and recorded no "
+            "decision is asked once, as it stops, to record one or say there is none.[/dim]"
+        )
+
+
 def _emit(repo_path: Path, resolution, fmt: str) -> None:
     """Render a resolved policy, plus any warnings, in the requested format."""
     policy = resolution.policy
@@ -182,6 +190,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     _emit_update_mining(policy)
     _emit_session_start(policy)
     _emit_upkeep_prompt(policy)
+    _emit_stop_prompt(policy)
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             _claude_code_settings_path,
@@ -312,6 +321,7 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
             "update_mining",
             "session_start",
             "upkeep_prompt",
+            "stop_prompt",
         ),
     )
     if before.harnesses != after.harnesses:

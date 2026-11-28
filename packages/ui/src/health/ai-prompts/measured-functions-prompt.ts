@@ -55,6 +55,10 @@ function entry(row: MeasuredRow, index: number, orderingOnly: boolean): string {
     `${index + 1}. \`${symbolSubject(row.symbol_id)}\` in \`${rowLocation(row)}\`: ${cost}`,
     `   - Symbol id: \`${row.symbol_id}\``,
   ];
+  if (row.next_step) {
+    lines.push(`   - Next step: ${row.next_step.next}`);
+    lines.push(`   - Why: ${row.next_step.why}`);
+  }
   if (!orderingOnly && row.inclusive != null) {
     lines.push(`   - Total time, with what it calls: ${shareText(row.inclusive)} of the run`);
   }
@@ -70,7 +74,10 @@ function entry(row: MeasuredRow, index: number, orderingOnly: boolean): string {
     const label = row.tests_basis === "per_test_map" ? "Tests that ran it" : "Nearest tests by call graph";
     lines.push(`   - ${label}: ${row.tests.map((t) => `\`${t}\``).join(", ")}`);
   }
-  if (row.verify) {
+  if (row.verify && row.verify_basis === "workload") {
+    // A workload check: a rerun for an entry point or load test, the next window for production.
+    lines.push(`   - How to check a fix: ${row.verify}`);
+  } else if (row.verify) {
     lines.push(`   - Benchmark to run before and after: \`${row.verify}\``);
   }
   if (row.on_static_findings && row.on_static_findings.length > 0) {
@@ -106,7 +113,7 @@ export function buildMeasuredFunctionsPrompt({
         run.samples != null ? `, ${formatNumber(run.samples)} samples` : ""
       }.`,
       run.repo_self_share != null
-        ? `Repo code itself explains ${shareText(run.repo_self_share)} of the run; the rest is libraries and waits, so a change here moves at most that share.`
+        ? `Repo code itself explains ${shareText(run.repo_self_share)} of the run; the rest is libraries and waits. A change here moves that share and the library calls the function makes.`
         : null,
       run.ordering_only
         ? "A deterministic tracer ran, so the rank orders the functions and no share is given."

@@ -10,6 +10,7 @@ here; its unit tests on small inputs can stay beside the code they test.
 from __future__ import annotations
 
 import ast
+import functools
 import re
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -23,6 +24,8 @@ from repowise.core.analysis.knowledge_graph import _DOC_EXTENSIONS as KG_DOC_EXT
 from repowise.core.generation.categories import _DOC_SUFFIXES
 from repowise.core.ingestion.git_commit_index import _DEEP_CACHE_GLOB, _deep_cache_name
 from repowise.core.ingestion.git_indexer.fix_shape import _DOC_EXT
+from repowise.core.ingestion.languages.registry import REGISTRY as LANGUAGE_REGISTRY
+from repowise.core.ingestion.languages.specs import ALL_SPECS as LANGUAGE_SPECS
 from repowise.core.ingestion.models import EDGE_TYPE_VALUES
 from repowise.core.pipeline.incremental.carried_files import (
     CARRIED_DIRS,
@@ -160,7 +163,9 @@ def _string_members(value: ast.expr) -> set[str]:
         return _string_members(value.left) | _string_members(value.right)
     if isinstance(value, ast.Set | ast.List | ast.Tuple):
         return {
-            el.value for el in value.elts if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            el.value
+            for el in value.elts
+            if isinstance(el, ast.Constant) and isinstance(el.value, str)
         }
     return set()  # a bare Name — checked where it is defined
 
@@ -226,9 +231,7 @@ def _resolved_call_origins() -> dict[str, set[float]]:
                 continue
             confidence = node.args[2] if len(node.args) > 2 else None
             confs = found.setdefault(origin.value, set())  # type: ignore[attr-defined]
-            if isinstance(confidence, ast.Constant) and isinstance(
-                confidence.value, int | float
-            ):
+            if isinstance(confidence, ast.Constant) and isinstance(confidence.value, int | float):
                 confs.add(float(confidence.value))
     return found
 
@@ -352,9 +355,7 @@ class TestEdgeTypeVocabulary:
         from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
 
         orphans = RESOLUTION_ORIGIN_VALUES - set(_resolved_call_origins())
-        assert not orphans, (
-            f"resolution origin(s) declared with no producer: {sorted(orphans)}"
-        )
+        assert not orphans, f"resolution origin(s) declared with no producer: {sorted(orphans)}"
 
     def test_each_resolution_origin_carries_one_confidence(self) -> None:
         """One origin, one confidence — what makes the stamping auditable.
@@ -372,15 +373,11 @@ class TestEdgeTypeVocabulary:
 
     def test_reads_edge_producer_is_strictly_file_level(self) -> None:
         """`reads` is produced only at the file level: C# member access and Salesforce schema."""
-        producers = [
-            path for path, types in _edge_type_literals().items() if "reads" in types
-        ]
+        producers = [path for path, types in _edge_type_literals().items() if "reads" in types]
         assert sorted(producers) == [
             "packages/core/src/repowise/core/ingestion/languages/csharp_member_reads.py",
             "packages/core/src/repowise/core/ingestion/salesforce_schema.py",
-        ], (
-            f"`reads` edge emitted by unexpected producers: {producers}"
-        )
+        ], f"`reads` edge emitted by unexpected producers: {producers}"
 
 
 # ============================================================================
@@ -710,7 +707,9 @@ class TestNoTestPathCopies:
     """
 
     def test_no_new_test_path_predicates(self) -> None:
-        offenders = {p: names for p, names in _test_path_offenders().items() if p not in _TEST_PATH_KNOWN}
+        offenders = {
+            p: names for p, names in _test_path_offenders().items() if p not in _TEST_PATH_KNOWN
+        }
         assert not offenders, (
             "New test-path predicate(s) outside repowise.core.test_paths:\n"
             + "\n".join(f"  {p}: {', '.join(names)}" for p, names in sorted(offenders.items()))
@@ -735,14 +734,15 @@ class TestNoTestPathCopies:
     def test_a_wrapper_is_not_a_copy(self) -> None:
         """The check must not push call sites into re-deriving to dodge it."""
         wrapper = ast.parse(
-            "def _is_test_path(p):\n"
-            "    return is_test_related_path(p) or p.endswith('.fixture')\n"
+            "def _is_test_path(p):\n    return is_test_related_path(p) or p.endswith('.fixture')\n"
         ).body[0]
         copy = ast.parse("def _is_test_path(p):\n    return '/tests/' in p\n").body[0]
         assert _delegates(wrapper)
         assert not _delegates(copy)
 
-    @pytest.mark.parametrize("name", ["is_test_path", "is_test_support_path", "is_test_related_path"])
+    @pytest.mark.parametrize(
+        "name", ["is_test_path", "is_test_support_path", "is_test_related_path"]
+    )
     def test_shared_module_exports_the_replacements(self, name: str) -> None:
         assert callable(getattr(test_paths, name))
 
@@ -807,12 +807,13 @@ _BARE_TYPE_KNOWN: dict[str, int] = {
     # dotted receiver (`this.a.b`) hop by hop: an instance path, where every
     # segment is a variable or a field and none is discarded, and the `go.py` one that
     # reads the head of a go return type (`pkg.T`) to find the package the
-    # callee's file imports as `pkg`; its tail comes from the shared helper.
+    # callee's file imports as `pkg`; its tail comes from the shared helper. The
+    # second `go.py` site walks a go receiver (`v.f.g`) the same way, hop by hop.
     _PREFIX + "call_resolver.py": 3,
     # Symbol IDs: a type node's file and name, and a method's enclosing class.
     _PREFIX + "call_inheritance.py": 3,
     _PREFIX + "call_receiver_typing/__init__.py": 3,
-    _PREFIX + "call_receiver_typing/go.py": 1,
+    _PREFIX + "call_receiver_typing/go.py": 2,
     _PREFIX + "models.py": 1,
     # Reads the head to decide whether taking a bare name is safe at all: a
     # qualifier that is a type rather than a package must not be discarded.
@@ -825,6 +826,8 @@ _BARE_TYPE_KNOWN: dict[str, int] = {
     _PREFIX + "dynamic_hints/swift.py": 1,
     # Splits an import statement's package path, not a type reference.
     _PREFIX + "languages/jvm_same_package.py": 1,
+    # Splits a major-version suffix off a go import path (`gopkg.in/yaml.v3`).
+    _PREFIX + "languages/go_selector_types.py": 1,
     # Splits a module-path string (`"pkg.mod.Name"`) into the module it loads
     # and the attribute it reads; the head is a module path, not a qualifier.
     _PREFIX + "dynamic_hints/python_imports.py": 1,
@@ -933,11 +936,17 @@ class TestNoBareTypeNameCopies:
     """
 
     def test_no_new_bare_type_name_expressions(self) -> None:
-        offenders = {p: hits for p, hits in _bare_type_offenders().items() if len(hits) > _BARE_TYPE_KNOWN.get(p, 0)}
+        offenders = {
+            p: hits
+            for p, hits in _bare_type_offenders().items()
+            if len(hits) > _BARE_TYPE_KNOWN.get(p, 0)
+        }
         assert not offenders, (
             "New qualifier-splitting expression(s) outside"
             " repowise.core.ingestion.type_names:\n"
-            + "\n".join(f"  {p}\n    " + "\n    ".join(hits) for p, hits in sorted(offenders.items()))
+            + "\n".join(
+                f"  {p}\n    " + "\n    ".join(hits) for p, hits in sorted(offenders.items())
+            )
             + "\n\nCall bare_type_name / strip_type_arguments / strip_call_arguments from"
             " repowise.core.ingestion.type_names instead. If a site genuinely asks a"
             " different question, say why in the code and add it to _BARE_TYPE_KNOWN in this file."
@@ -1043,7 +1052,8 @@ def _barrel_check_assignment(node: ast.AST) -> list[str]:
     if (
         isinstance(node, ast.Assign)
         and any(
-            isinstance(target, ast.Name) and target.id == "BARREL_FILENAMES" for target in node.targets
+            isinstance(target, ast.Name) and target.id == "BARREL_FILENAMES"
+            for target in node.targets
         )
     ) or (
         isinstance(node, ast.AnnAssign)
@@ -1092,7 +1102,6 @@ def _barrel_offenders() -> dict[str, list[str]]:
 
 
 class TestNoBarrelFilenameCopies:
-
     def test_no_new_barrel_filename_copies(self) -> None:
         offenders = {p: hits for p, hits in _barrel_offenders().items() if p not in _BARREL_KNOWN}
         assert not offenders, (
@@ -1117,7 +1126,9 @@ class TestNoBarrelFilenameCopies:
             ("src/component.tsx", False),
         ],
     )
-    def test_split_file_is_generated_path_covers_all_barrels(self, path: str, expected: bool) -> None:
+    def test_split_file_is_generated_path_covers_all_barrels(
+        self, path: str, expected: bool
+    ) -> None:
         assert _is_generated_path(path) is expected
 
 
@@ -1276,6 +1287,9 @@ _EMBEDDERS = frozenset(_BUILTIN_EMBEDDERS)
 
 #: Path (relative to ``packages/``) -> names it may spell, and why.
 _ALLOWED: dict[str, frozenset[str]] = {
+    # The extras table is keyed by extra name, and the ``litellm`` extra
+    # shares its name with the package it installs.
+    "core/src/repowise/core/extras.py": frozenset({"litellm"}),
     # ``opencode`` is a ``--target`` id as well as a provider.
     "cli/src/repowise/cli/agent_targets/registry.py": frozenset({"opencode"}),
     # Commit-trailer patterns naming the agent that wrote a commit.
@@ -1355,7 +1369,6 @@ def _sources() -> list[SourceFile]:
 
 
 class TestNoProviderNameBranches:
-
     def test_no_module_branches_on_a_provider_name(self):
         sources = _sources()
         unparsed = [src.rel for src in sources if src.tree is None]
@@ -1378,7 +1391,9 @@ class TestNoProviderNameBranches:
         for rel, names in _ALLOWED.items():
             path = PACKAGES / rel
             assert path.is_file(), f"{rel} is gone"
-            found = {node.value for node in _name_literals(ast.parse(path.read_text(encoding="utf-8")))}
+            found = {
+                node.value for node in _name_literals(ast.parse(path.read_text(encoding="utf-8")))
+            }
             assert found & names, f"{rel} no longer spells any of {sorted(names)}"
 
     @pytest.mark.parametrize(
@@ -1398,3 +1413,240 @@ class TestNoProviderNameBranches:
         """A glob that matched nothing, or a name set that emptied, passes vacuously."""
         assert len(_sources()) > 500
         assert {"claude_cli", "codex_cli", "opencode", "litellm", "openai"} <= _CHECKED
+
+
+# ============================================================================
+# Commit ids, module symbol ids and manifest name lists each have one owner.
+# ============================================================================
+#
+# docs/architecture/single-sources.md names the owners. Each guard below fails
+# on a new copy outside its owner. ``_KNOWN_COPIES`` holds the copies that
+# exist today, each with its reason. The list only shrinks: an entry whose
+# file no longer holds the copy fails until it is removed.
+
+# A hex character class with a quantifier, its bounds captured. The owner of
+# the commit-id shape is ``git_sha.FULL_SHA_PATTERN``.
+# Ceiling: one quantified class per match, so a run split across classes
+# (``[0-9a-f]{20}[0-9a-f]{20}``) passes. Nobody writes a commit id that way;
+# summing adjacent runs is the upgrade if one appears.
+_HEX_RUN = re.compile(
+    r"\[(?=[^\]]*(?:a-f|A-F))(?=[^\]]*(?:0-9|\\d))(?:[0-9a-fA-F-]|\\d)+\]\{(\d*)(,?)(\d*)\}"
+)
+
+
+def _admits_a_full_sha(text: str) -> bool:
+    """Whether *text* holds a hex run that takes a 40-digit commit id.
+
+    ``{40}``, ``{40,}`` and any closed range from at most 40 up to at most 64
+    (``{7,40}``, ``{7,64}``, ``{40,64}``). Open ranges below 40 (``{8,}``) and
+    ranges past 64 read any hex token, not a commit id, so they pass.
+    """
+    for low, comma, high in _HEX_RUN.findall(text):
+        least = int(low or 0)
+        if not (comma and high):  # ``{n}`` or ``{n,}``
+            if least == 40:
+                return True
+        elif least <= 40 <= int(high) <= 64:
+            return True
+    return False
+
+
+_OWNER_HOMES: dict[str, str] = {
+    "full-sha-regex": "packages/core/src/repowise/core/git_sha.py",
+    "module-symbol-id": "packages/core/src/repowise/core/ingestion/symbol_identity.py",
+}
+# Language specs declare manifest names and the registry unions them.
+_MANIFEST_HOME = "packages/core/src/repowise/core/ingestion/languages/"
+
+_KNOWN_COPIES: dict[tuple[str, str], str] = {
+    # full-sha-regex
+    (
+        "full-sha-regex",
+        "packages/cli/src/repowise/cli/commands/decision_batch.py",
+    ): "a decision id or prefix (4 to 64 hex digits), not a commit id",
+    (
+        "full-sha-regex",
+        "packages/cli/src/repowise/cli/platform/decision_sync.py",
+    ): "a commit prefix check that accepts upper case; git_sha.is_sha_prefix is the target",
+    (
+        "full-sha-regex",
+        "packages/core/src/repowise/core/analysis/decisions/reverts.py",
+    ): "a `git log --grep` argument in git's own regex dialect, which has no `(?:`",
+    (
+        "full-sha-regex",
+        "packages/core/src/repowise/core/analysis/security/patterns.py",
+    ): "a GitLab token shape, not a commit id",
+    (
+        "full-sha-regex",
+        "packages/core/src/repowise/core/changes/reconstruct.py",
+    ): "a Gerrit Change-Id (`I` and 40 hex digits), not a commit id",
+    # module-symbol-id
+    (
+        "module-symbol-id",
+        "packages/core/src/repowise/core/analysis/function_hunks.py",
+    ): "tests and strips the suffix by hand; symbol_identity.split_symbol_id is the target",
+    (
+        "module-symbol-id",
+        "packages/core/src/repowise/core/analysis/health/refactoring/recommendations.py",
+    ): "an endswith check; symbol_identity.split_symbol_id is the target",
+    (
+        "module-symbol-id",
+        "packages/core/src/repowise/core/generation/flow_pages.py",
+    ): "a suffix constant; symbol_identity.module_symbol_id is the target",
+    # manifest-list
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/code_origin.py",
+    ): "build files by ecosystem, a wider set than package manifests (wrappers, build tools)",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/analysis/test_selection.py",
+    ): "full-run patterns: lockfiles and manifests no ecosystem scope covers, beside globs",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/analysis/fixture_readers.py",
+    ): "configs that can hand a test a helper (aliases, setup files, plugins), not manifests",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/analysis/dead_code/constants.py",
+    ): "files that run or ship what they name, a wider set than manifests",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/ingestion/build_roots.py",
+    ): "roots of Gradle, Dart and Swift builds; the registry is the target",
+    (
+        "manifest-list",
+        "packages/core/src/repowise/core/ingestion/workspace_members.py",
+    ): "the root manifests a description is read from; the registry is the target",
+    (
+        "manifest-list",
+        "packages/server/src/repowise/server/mcp_server/tool_search/ranking.py",
+    ): "config-path tokens for the search kind filter, mixed with names that are not manifests",
+}
+
+
+@functools.cache
+def _manifest_owners() -> dict[str, frozenset[str]]:
+    """Package-manifest file name -> the languages whose spec declares it."""
+    package_names = LANGUAGE_REGISTRY.package_manifest_filenames()
+    owners: dict[str, set[str]] = {}
+    for spec in LANGUAGE_SPECS:
+        for name in spec.manifest_files:
+            if name in package_names:
+                owners.setdefault(name, set()).add(spec.tag)
+    return {name: frozenset(tags) for name, tags in owners.items()}
+
+
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                found.add(id(first.value))
+    return found
+
+
+def _is_cross_language_manifest_list(node: ast.AST) -> bool:
+    """A literal naming package manifests of languages no one spec spans."""
+    if not isinstance(node, ast.List | ast.Tuple | ast.Set):
+        return False
+    owners = _manifest_owners()
+    named = [
+        owners[e.value]
+        for e in node.elts
+        if isinstance(e, ast.Constant) and isinstance(e.value, str) and e.value in owners
+    ]
+    return len(named) >= 2 and not frozenset.intersection(*named)
+
+
+def _owner_copies(tree: ast.AST) -> set[str]:
+    """The kinds of copy *tree* holds: full-sha-regex, module-symbol-id, manifest-list."""
+    kinds: set[str] = set()
+    docstrings = _docstring_nodes(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in docstrings:
+                continue
+            if _admits_a_full_sha(node.value):
+                kinds.add("full-sha-regex")
+            if "::__module__" in node.value:
+                kinds.add("module-symbol-id")
+        elif _is_cross_language_manifest_list(node):
+            kinds.add("manifest-list")
+    return kinds
+
+
+def _owner_copies_by_file() -> set[tuple[str, str]]:
+    """(kind, repo-relative path) for every copy in the shipped package sources."""
+    found: set[tuple[str, str]] = set()
+    for src in _parsed():
+        if "/src/repowise/" not in src.rel:
+            continue
+        for kind in _owner_copies(src.tree):
+            if _OWNER_HOMES.get(kind) == src.rel:
+                continue
+            if kind == "manifest-list" and src.rel.startswith(_MANIFEST_HOME):
+                continue
+            found.add((kind, src.rel))
+    return found
+
+
+class TestNoOwnerCopies:
+    def test_no_new_copy_outside_its_owner(self) -> None:
+        new = sorted(_owner_copies_by_file() - _KNOWN_COPIES.keys())
+        assert not new, (
+            "A copy of an owned concept outside its owner (docs/architecture/single-sources.md):\n"
+            + "\n".join(f"  [{kind}] {rel}" for kind, rel in new)
+            + "\n\nfull-sha-regex: build from git_sha.FULL_SHA_PATTERN or call git_sha.is_full_sha."
+            "\nmodule-symbol-id: call symbol_identity.module_symbol_id or split_symbol_id."
+            "\nmanifest-list: read package_manifest_filenames() or is_package_manifest()"
+            " from the language registry."
+        )
+
+    def test_known_copies_still_exist(self) -> None:
+        stale = sorted(_KNOWN_COPIES.keys() - _owner_copies_by_file())
+        assert not stale, "No longer a copy; remove these from _KNOWN_COPIES: " + ", ".join(
+            f"[{kind}] {rel}" for kind, rel in stale
+        )
+
+    @pytest.mark.parametrize(
+        ("snippet", "kind"),
+        [
+            ('R = re.compile(r"^[0-9a-f]{40}$")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9a-fA-F]{7,40}")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9a-f]{7,64}")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9a-f]{4,41}")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9a-f]{40,}")', "full-sha-regex"),
+            ('R = re.compile(r"[0-9A-F]{40}")', "full-sha-regex"),
+            ('R = re.compile(r"[\\da-f]{40}")', "full-sha-regex"),
+            ('s = f"{path}::__module__"', "module-symbol-id"),
+            ('NAMES = ("package.json", "Cargo.toml")', "manifest-list"),
+        ],
+    )
+    def test_the_guard_sees_each_shape(self, snippet: str, kind: str) -> None:
+        assert kind in _owner_copies(ast.parse(snippet))
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            'R = re.compile(r"[0-9a-f]{64}")',  # a sha256 content hash
+            'R = re.compile(r"[0-9a-f]{12}")',
+            'R = re.compile(r"[0-9a-f]{8,}")',  # any hex token
+            'R = re.compile(r"[0-9a-f]{8,128}")',
+            'def f():\n    """Owns ``a.py::__module__``."""',
+            'NAMES = ("build.gradle", "build.gradle.kts")',  # one ecosystem's names
+        ],
+    )
+    def test_the_guard_passes_what_is_not_a_copy(self, snippet: str) -> None:
+        assert not _owner_copies(ast.parse(snippet))
+
+    def test_the_guard_is_looking_at_real_sources(self) -> None:
+        """An emptied manifest map or source list would pass vacuously."""
+        assert len(_manifest_owners()) > 20
+        assert {
+            "package.json",
+            "Cargo.toml",
+            "go.mod",
+            "pyproject.toml",
+        } <= _manifest_owners().keys()

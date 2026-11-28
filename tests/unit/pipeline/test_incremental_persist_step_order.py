@@ -309,3 +309,22 @@ async def test_complexity_is_restored_outside_the_diffed_files(repo, monkeypatch
 
     [(args, _kwargs)] = rec.args_of("restore_stored_complexity")
     assert args[-1] == ["src/a.py"]
+
+
+def test_install_shared_steps_restores_real_full_text_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import repowise.core.persistence as persistence
+    import repowise.core.persistence.search as search
+
+    had_cached = "FullTextSearch" in persistence.__dict__
+    cached = persistence.__dict__.pop("FullTextSearch", None)
+    try:
+        with monkeypatch.context() as mp:
+            install_shared_steps(StepRecorder(mp))
+        assert persistence.FullTextSearch is search.FullTextSearch
+    finally:
+        if had_cached:
+            persistence.__dict__["FullTextSearch"] = cached
+        else:
+            persistence.__dict__.pop("FullTextSearch", None)

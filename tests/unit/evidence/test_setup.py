@@ -423,3 +423,24 @@ def test_a_timings_report_written_at_head_ends_the_rerun(tmp_path: Path) -> None
     (tmp_path / "junit.xml").write_text("<testsuite/>")
 
     assert evidence_setup(tmp_path, **head)["next_call"] is None
+
+
+def test_rust_unit_with_nextest_config_says_how_tests_write_timings(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "app"\n')
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.rs").write_text("fn main() {}\n")
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "nextest.toml").write_text('[profile.ci.junit]\npath = "junit.xml"\n')
+
+    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
+    (unit,) = plan["units"]
+    assert unit["test_timings"] == {
+        "flag": None,
+        "env": None,
+        "report": "target/nextest/ci/junit.xml",
+        "command": "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info",
+        "workload": "cargo tests",
+        "ingest": 'repowise evidence add target/nextest/ci/junit.xml --workload "cargo tests" --class unit_test --commit '
+        + "a" * 40,
+    }
+

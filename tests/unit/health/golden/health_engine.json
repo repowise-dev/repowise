@@ -2492,7 +2492,7 @@
           "symbol_line": 6,
           "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_2dc2d05483e3be154222"
+          "opportunity_id": "perf5_2dc2d05483e3be154222"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2515,7 +2515,7 @@
           "symbol_line": 12,
           "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::dmlPerRecord",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_7adb36b5d04725ba470e"
+          "opportunity_id": "perf5_7adb36b5d04725ba470e"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2538,7 +2538,7 @@
           "symbol_line": 18,
           "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_8ecdf8a7dacf3c71dd27"
+          "opportunity_id": "perf5_8ecdf8a7dacf3c71dd27"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2562,7 +2562,7 @@
           "symbol_line": 18,
           "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_a850ad3bb607d14ed87e"
+          "opportunity_id": "perf5_a850ad3bb607d14ed87e"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -2585,7 +2585,7 @@
           "symbol_line": 26,
           "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::asyncPerRecord",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_c825658c4fdf4b8ecbff"
+          "opportunity_id": "perf5_c825658c4fdf4b8ecbff"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2608,7 +2608,7 @@
           "symbol_line": 26,
           "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::asyncPerRecord",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_c825658c4fdf4b8ecbff"
+          "opportunity_id": "perf5_c825658c4fdf4b8ecbff"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2630,7 +2630,7 @@
           "symbol_line": 37,
           "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::nested",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_009daa9fe845b0b0a724"
+          "opportunity_id": "perf5_009daa9fe845b0b0a724"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2651,7 +2651,7 @@
           "symbol_line": 37,
           "role_owner": "apex/perf_io_in_loop.cls::PerfIoInLoop::nested",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_009daa9fe845b0b0a724"
+          "opportunity_id": "perf5_009daa9fe845b0b0a724"
         },
         "health_impact": 0.0,
         "reason": "a database call runs inside a nested loop (O(n\u00b7m) round-trips); batch the inner query or restructure the loops",
@@ -2718,7 +2718,7 @@
           "symbol_line": 17,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::EfAsyncN1",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_95bb8ae957b8b655327e"
+          "opportunity_id": "perf5_95bb8ae957b8b655327e"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2741,7 +2741,7 @@
           "symbol_line": 25,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::HttpInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_3f08df93f1b3e36c763f"
+          "opportunity_id": "perf5_3f08df93f1b3e36c763f"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -2765,7 +2765,7 @@
           "symbol_line": 33,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::SaveInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_db17d793aaa4beb033a1"
+          "opportunity_id": "perf5_db17d793aaa4beb033a1"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2788,7 +2788,7 @@
           "symbol_line": 41,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::FileReadInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_c429bf008236dca10f03"
+          "opportunity_id": "perf5_c429bf008236dca10f03"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -2812,7 +2812,7 @@
           "symbol_line": 49,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::SyncLinqInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_87ea71b2c97643e64f9e"
+          "opportunity_id": "perf5_87ea71b2c97643e64f9e"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -2833,7 +2833,7 @@
           "symbol_line": 57,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::StringConcatInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_8b234729806b1ff9613d"
+          "opportunity_id": "perf5_8b234729806b1ff9613d"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -2852,7 +2852,7 @@
           "symbol_line": 67,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::SyncOverAsync",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_669d5b763f11aa6fb225"
+          "opportunity_id": "perf5_669d5b763f11aa6fb225"
         },
         "health_impact": 0.0,
         "reason": ".Result blocks the event loop inside an async function",
@@ -2871,7 +2871,7 @@
           "symbol_line": 67,
           "role_owner": "csharp/PerfIoInLoop.cs::PerfIoInLoop::SyncOverAsync",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_669d5b763f11aa6fb225"
+          "opportunity_id": "perf5_669d5b763f11aa6fb225"
         },
         "health_impact": 0.0,
         "reason": ".Wait() blocks the event loop inside an async function",
@@ -3024,7 +3024,7 @@
           "symbol_line": 8,
           "role_owner": "dart/perf_io_in_loop.dart::serialFetch",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_33de3d67ada57c94f63e"
+          "opportunity_id": "perf5_33de3d67ada57c94f63e"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -3048,7 +3048,7 @@
           "symbol_line": 14,
           "role_owner": "dart/perf_io_in_loop.dart::readFiles",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_a76757394590890d677d"
+          "opportunity_id": "perf5_a76757394590890d677d"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3072,7 +3072,7 @@
           "symbol_line": 20,
           "role_owner": "dart/perf_io_in_loop.dart::queryRows",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_f16b2a14051afa858b30"
+          "opportunity_id": "perf5_f16b2a14051afa858b30"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -3093,7 +3093,7 @@
           "symbol_line": 26,
           "role_owner": "dart/perf_io_in_loop.dart::concat",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_1b24c911f6c8a4b52508"
+          "opportunity_id": "perf5_1b24c911f6c8a4b52508"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -3113,7 +3113,7 @@
           "symbol_line": 34,
           "role_owner": "dart/perf_io_in_loop.dart::makeClients",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_c0a715a42fe48ca40678"
+          "opportunity_id": "perf5_c0a715a42fe48ca40678"
         },
         "health_impact": 0.0,
         "reason": "a heavy client / connection is constructed each loop iteration; hoist and reuse a single instance",
@@ -3236,7 +3236,7 @@
           "symbol_line": 18,
           "role_owner": "go/perf_io_in_loop.go::dbQueryInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_35b661ae09ee25af0697"
+          "opportunity_id": "perf5_35b661ae09ee25af0697"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -3259,7 +3259,7 @@
           "symbol_line": 24,
           "role_owner": "go/perf_io_in_loop.go::httpGetInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_91dadbe5903aff9695f8"
+          "opportunity_id": "perf5_91dadbe5903aff9695f8"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -3282,7 +3282,7 @@
           "symbol_line": 30,
           "role_owner": "go/perf_io_in_loop.go::osOpenInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_ba93597be8695e77aef8"
+          "opportunity_id": "perf5_ba93597be8695e77aef8"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3305,7 +3305,7 @@
           "symbol_line": 36,
           "role_owner": "go/perf_io_in_loop.go::deferInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_d743e5cb03ad33337138"
+          "opportunity_id": "perf5_d743e5cb03ad33337138"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3326,7 +3326,7 @@
           "symbol_line": 50,
           "role_owner": "go/perf_io_in_loop.go::stringConcatInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_a5c52085fe28e577fb7f"
+          "opportunity_id": "perf5_a5c52085fe28e577fb7f"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -3346,7 +3346,7 @@
           "symbol_line": 43,
           "role_owner": "go/perf_io_in_loop.go::regexpCompileInRange",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_e3ebce657d83f671209d"
+          "opportunity_id": "perf5_e3ebce657d83f671209d"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -3366,7 +3366,7 @@
           "symbol_line": 36,
           "role_owner": "go/perf_io_in_loop.go::deferInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_62acaef3397d76cbe2f5"
+          "opportunity_id": "perf5_62acaef3397d76cbe2f5"
         },
         "health_impact": 0.0,
         "reason": "a deferred call inside a loop runs only when the enclosing function returns, so the resource stays held across every iteration; close it in the loop body (or wrap the body in a function) instead",
@@ -3489,7 +3489,7 @@
           "symbol_line": 16,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::springDataN1",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_911dde4f6806cc6b75b7"
+          "opportunity_id": "perf5_911dde4f6806cc6b75b7"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -3512,7 +3512,7 @@
           "symbol_line": 22,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::jdbcInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_eb7be3ffffcf819dbfc9"
+          "opportunity_id": "perf5_eb7be3ffffcf819dbfc9"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -3535,7 +3535,7 @@
           "symbol_line": 28,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::filesInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_e156dff3c84c5779634b"
+          "opportunity_id": "perf5_e156dff3c84c5779634b"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3558,7 +3558,7 @@
           "symbol_line": 34,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::newStreamInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_22acf8c6252402350330"
+          "opportunity_id": "perf5_22acf8c6252402350330"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -3579,7 +3579,7 @@
           "symbol_line": 46,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::stringConcatInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_ceaed73c82949f778dae"
+          "opportunity_id": "perf5_ceaed73c82949f778dae"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -3599,7 +3599,7 @@
           "symbol_line": 40,
           "role_owner": "java/PerfIoInLoop.java::PerfIoInLoop::regexCompileInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_e63d99176047a0f3cd49"
+          "opportunity_id": "perf5_e63d99176047a0f3cd49"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -4053,7 +4053,7 @@
           "symbol_line": 18,
           "role_owner": "python/perf_io_in_loop.py::db_execute_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_3dc56d1298758cec0e7d"
+          "opportunity_id": "perf5_3dc56d1298758cec0e7d"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -4076,7 +4076,7 @@
           "symbol_line": 23,
           "role_owner": "python/perf_io_in_loop.py::subprocess_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_069d54d9219b684b8852"
+          "opportunity_id": "perf5_069d54d9219b684b8852"
         },
         "health_impact": 0.0,
         "reason": "a subprocess spawn runs once per loop iteration (I/O call inside a loop)",
@@ -4099,7 +4099,7 @@
           "symbol_line": 28,
           "role_owner": "python/perf_io_in_loop.py::http_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_cd8a40bdf6f8657389c1"
+          "opportunity_id": "perf5_cd8a40bdf6f8657389c1"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -4122,7 +4122,7 @@
           "symbol_line": 83,
           "role_owner": "python/perf_io_in_loop.py::open_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_177a2b674a1483bdb31a"
+          "opportunity_id": "perf5_177a2b674a1483bdb31a"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4143,7 +4143,7 @@
           "symbol_line": 38,
           "role_owner": "python/perf_io_in_loop.py::string_concat_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_02a9e6ff6fb58543432e"
+          "opportunity_id": "perf5_02a9e6ff6fb58543432e"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -4162,7 +4162,7 @@
           "symbol_line": 45,
           "role_owner": "python/perf_io_in_loop.py::blocking_in_async",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_07c417d2125a398652e2"
+          "opportunity_id": "perf5_07c417d2125a398652e2"
         },
         "health_impact": 0.0,
         "reason": "time.sleep blocks the event loop inside an async function",
@@ -4181,7 +4181,7 @@
           "symbol_line": 45,
           "role_owner": "python/perf_io_in_loop.py::blocking_in_async",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_07c417d2125a398652e2"
+          "opportunity_id": "perf5_07c417d2125a398652e2"
         },
         "health_impact": 0.0,
         "reason": "requests.get blocks the event loop inside an async function",
@@ -4267,7 +4267,7 @@
           "symbol_line": 6,
           "role_owner": "ruby/perf_io_in_loop.rb::sync_fetch_each",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_72ff99e9bea8942e1d56"
+          "opportunity_id": "perf5_72ff99e9bea8942e1d56"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -4290,7 +4290,7 @@
           "symbol_line": 12,
           "role_owner": "ruby/perf_io_in_loop.rb::read_files",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_2fdb693e277e138e8f8f"
+          "opportunity_id": "perf5_2fdb693e277e138e8f8f"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4313,7 +4313,7 @@
           "symbol_line": 16,
           "role_owner": "ruby/perf_io_in_loop.rb::nested_read",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_d1c54153bab1417f5dd4"
+          "opportunity_id": "perf5_d1c54153bab1417f5dd4"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4336,7 +4336,7 @@
           "symbol_line": 16,
           "role_owner": "ruby/perf_io_in_loop.rb::nested_read",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_d1c54153bab1417f5dd4"
+          "opportunity_id": "perf5_d1c54153bab1417f5dd4"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4359,7 +4359,7 @@
           "symbol_line": 24,
           "role_owner": "ruby/perf_io_in_loop.rb::orders_report",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_b52d9dad50af33698879"
+          "opportunity_id": "perf5_b52d9dad50af33698879"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -4382,7 +4382,7 @@
           "symbol_line": 65,
           "role_owner": "ruby/perf_io_in_loop.rb::fresh_clients",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_4c9a8d9d71f9abc2a65c"
+          "opportunity_id": "perf5_4c9a8d9d71f9abc2a65c"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -4405,7 +4405,7 @@
           "symbol_line": 72,
           "role_owner": "ruby/perf_io_in_loop.rb::shell_out",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_ec0090b8a2683a637225"
+          "opportunity_id": "perf5_ec0090b8a2683a637225"
         },
         "health_impact": 0.0,
         "reason": "a subprocess spawn runs once per loop iteration (I/O call inside a loop)",
@@ -4428,7 +4428,7 @@
           "symbol_line": 78,
           "role_owner": "ruby/perf_io_in_loop.rb::locked_write",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_604ed2f876f904e76aee"
+          "opportunity_id": "perf5_604ed2f876f904e76aee"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4449,7 +4449,7 @@
           "symbol_line": 39,
           "role_owner": "ruby/perf_io_in_loop.rb::build_report",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_f8009e55994b59b42b1b"
+          "opportunity_id": "perf5_f8009e55994b59b42b1b"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -4469,7 +4469,7 @@
           "symbol_line": 57,
           "role_owner": "ruby/perf_io_in_loop.rb::regex_scan",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_ec9fdd1aece3d2edc916"
+          "opportunity_id": "perf5_ec9fdd1aece3d2edc916"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -4489,7 +4489,7 @@
           "symbol_line": 65,
           "role_owner": "ruby/perf_io_in_loop.rb::fresh_clients",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_dca67c3bd9d21c04b3d9"
+          "opportunity_id": "perf5_dca67c3bd9d21c04b3d9"
         },
         "health_impact": 0.0,
         "reason": "a heavy client / connection is constructed each loop iteration; hoist and reuse a single instance",
@@ -4509,7 +4509,7 @@
           "symbol_line": 78,
           "role_owner": "ruby/perf_io_in_loop.rb::locked_write",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_89c5ae4309ebf07ea162"
+          "opportunity_id": "perf5_89c5ae4309ebf07ea162"
         },
         "health_impact": 0.0,
         "reason": "a lock is acquired every loop iteration; hoist the lock outside the loop or batch the critical section",
@@ -4531,7 +4531,7 @@
           "symbol_line": 16,
           "role_owner": "ruby/perf_io_in_loop.rb::nested_read",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_d1c54153bab1417f5dd4"
+          "opportunity_id": "perf5_d1c54153bab1417f5dd4"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs inside a nested loop (O(n\u00b7m) round-trips); batch the inner query or restructure the loops",
@@ -4551,7 +4551,7 @@
           "symbol_line": 78,
           "role_owner": "ruby/perf_io_in_loop.rb::locked_write",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_e9b2aa6f45b6556776a7"
+          "opportunity_id": "perf5_e9b2aa6f45b6556776a7"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs while a lock is held; every thread that needs the lock waits for it",
@@ -4658,7 +4658,7 @@
           "symbol_line": 14,
           "role_owner": "rust/perf_io_in_loop.rs::sqlx_fetch_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_939b75f0ac56803ff533"
+          "opportunity_id": "perf5_939b75f0ac56803ff533"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",
@@ -4681,7 +4681,7 @@
           "symbol_line": 22,
           "role_owner": "rust/perf_io_in_loop.rs::fs_read_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_adad65cebc5f1c75f474"
+          "opportunity_id": "perf5_adad65cebc5f1c75f474"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4704,7 +4704,7 @@
           "symbol_line": 28,
           "role_owner": "rust/perf_io_in_loop.rs::fs_read_to_string_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_f4f30f0e3cd8255db043"
+          "opportunity_id": "perf5_f4f30f0e3cd8255db043"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4727,7 +4727,7 @@
           "symbol_line": 34,
           "role_owner": "rust/perf_io_in_loop.rs::reqwest_get_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_0b5f442a6246aab14c0f"
+          "opportunity_id": "perf5_0b5f442a6246aab14c0f"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -4746,7 +4746,7 @@
           "symbol_line": 56,
           "role_owner": "rust/perf_io_in_loop.rs::thread_sleep_in_async",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_b1c2a1cc1e7062adeb82"
+          "opportunity_id": "perf5_b1c2a1cc1e7062adeb82"
         },
         "health_impact": 0.0,
         "reason": "thread::sleep blocks the event loop inside an async function",
@@ -4766,7 +4766,7 @@
           "symbol_line": 41,
           "role_owner": "rust/perf_io_in_loop.rs::regex_new_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_f658722384a884802dd9"
+          "opportunity_id": "perf5_f658722384a884802dd9"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -4786,7 +4786,7 @@
           "symbol_line": 49,
           "role_owner": "rust/perf_io_in_loop.rs::pgpool_connect_in_loop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_e0d343e0f04b46173da9"
+          "opportunity_id": "perf5_e0d343e0f04b46173da9"
         },
         "health_impact": 0.0,
         "reason": "a heavy client / connection is constructed each loop iteration; hoist and reuse a single instance",
@@ -4914,7 +4914,7 @@
           "symbol_line": 14,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::readAll",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_b7ae0ae40ee161bbb6a5"
+          "opportunity_id": "perf5_b7ae0ae40ee161bbb6a5"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4937,7 +4937,7 @@
           "symbol_line": 23,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::matrix",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_e976af66936a82c966c7"
+          "opportunity_id": "perf5_e976af66936a82c966c7"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs once per loop iteration (I/O call inside a loop)",
@@ -4957,7 +4957,7 @@
           "symbol_line": 50,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::concat",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_c5af9958214b7571ad9a"
+          "opportunity_id": "perf5_c5af9958214b7571ad9a"
         },
         "health_impact": 0.0,
         "reason": "string built by += in a loop; use a buffer / join for linear cost",
@@ -4976,7 +4976,7 @@
           "symbol_line": 67,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::slow",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_06c429b28b60dda16af1"
+          "opportunity_id": "perf5_06c429b28b60dda16af1"
         },
         "health_impact": 0.0,
         "reason": "Await.result blocks the event loop inside an async function",
@@ -4995,7 +4995,7 @@
           "symbol_line": 31,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::regexInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_daad2514fb5c14b02486"
+          "opportunity_id": "perf5_daad2514fb5c14b02486"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -5014,7 +5014,7 @@
           "symbol_line": 31,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::regexInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_daad2514fb5c14b02486"
+          "opportunity_id": "perf5_daad2514fb5c14b02486"
         },
         "health_impact": 0.0,
         "reason": "a regex with a static pattern is recompiled every loop iteration; compile it once outside the loop and reuse it",
@@ -5033,7 +5033,7 @@
           "symbol_line": 81,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::locked",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_446e8e6461f803f5222e"
+          "opportunity_id": "perf5_446e8e6461f803f5222e"
         },
         "health_impact": 0.0,
         "reason": "a lock is acquired every loop iteration; hoist the lock outside the loop or batch the critical section",
@@ -5055,7 +5055,7 @@
           "symbol_line": 23,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::matrix",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_e976af66936a82c966c7"
+          "opportunity_id": "perf5_e976af66936a82c966c7"
         },
         "health_impact": 0.0,
         "reason": "a filesystem call runs inside a nested loop (O(n\u00b7m) round-trips); batch the inner query or restructure the loops",
@@ -5283,7 +5283,7 @@
           "symbol_line": 7,
           "role_owner": "typescript/perf_io_in_loop.ts::fetchInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_f670b296bb8c129b3c74"
+          "opportunity_id": "perf5_f670b296bb8c129b3c74"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -5306,7 +5306,7 @@
           "symbol_line": 13,
           "role_owner": "typescript/perf_io_in_loop.ts::axiosInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_1acf767e3212f9ff02a9"
+          "opportunity_id": "perf5_1acf767e3212f9ff02a9"
         },
         "health_impact": 0.0,
         "reason": "a network call runs once per loop iteration (I/O call inside a loop)",
@@ -5329,7 +5329,7 @@
           "symbol_line": 19,
           "role_owner": "typescript/perf_io_in_loop.ts::prismaInLoop",
           "execution_role": "unknown",
-          "opportunity_id": "perf4_43357842949e4aa0d990"
+          "opportunity_id": "perf5_43357842949e4aa0d990"
         },
         "health_impact": 0.0,
         "reason": "a database call runs once per loop iteration (N+1 query)",

@@ -109,6 +109,30 @@ async def _query_database_stamp(repo_path: Path) -> tuple[str, int, str] | None:
         await engine.dispose()
 
 
+async def _external_calls_current(repo_path: Path, repo_id: str) -> bool:
+    """Whether the stored ``external_call_sites`` hold the current version.
+
+    A database that cannot answer reads as not current: a full build, never a
+    failed update.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import external_call_sites_complete
+    from repowise.core.persistence.database import resolve_db_url
+
+    try:
+        engine = create_engine(resolve_db_url(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                return await external_call_sites_complete(session, repo_id)
+        finally:
+            await engine.dispose()
+    except (SQLAlchemyError, OSError) as exc:
+        log.warning("graph_seed_external_calls_unavailable", error=str(exc))
+        return False
+
+
 def _incremental_cache_is_enabled(root: Path) -> bool:
     """Whether the last persisted index run had incremental graph state enabled."""
     try:
@@ -176,6 +200,11 @@ async def load_seed_edges(repo_path: Any) -> dict[str, list] | None:
 
     if not fingerprint or fingerprint != parser_fingerprint():
         log.info("graph_seed_cache_skipped", reason="edge parser fingerprint mismatch")
+        return None
+    # A patch re-resolves only its scope, so it can only maintain a package-call
+    # table some full build already filled at this version.
+    if not await _external_calls_current(root, repo_id):
+        log.info("graph_seed_cache_skipped", reason="external call sites are not current")
         return None
     cache_path = root / ".repowise" / _CACHE_NAME
     try:
@@ -480,7 +509,7 @@ def _metric_memo_code() -> str:
 
     digest = hashlib.sha256(
         "|".join(
-            (__version__, community_code_fingerprint(), version("numpy"), version("scipy"))
+            (__version__, community_code_fingerprint(), version("numpy"))
         ).encode()
     )
     for module in (

@@ -229,7 +229,6 @@ repowise/
     ui/          # Shared React UI components
     web/         # Next.js frontend
     vscode/      # VS Code extension (has its own CI job)
-    claude-mod/  # Repowise Lens, the Claude Code mod
   plugins/       # Agent plugins (Claude Code and others)
   tests/         # providers/, unit/ and integration/
   docs/          # Documentation

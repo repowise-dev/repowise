@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import iso_utc
+from repowise.core.exclusion import build_exclude_spec
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -397,7 +398,14 @@ async def symbol_detail(
     # own declaring file or class, which 34,570 of 34,808 symbols on this repo
     # have — was served as a caller.
     node = await crud.get_graph_node(session, repo_id, symbol_id)
-    relations = await load_symbol_relations(session, repo_id, symbol_id, present=node is not None)
+    repo = await crud.get_repository(session, repo_id)
+    relations = await load_symbol_relations(
+        session,
+        repo_id,
+        symbol_id,
+        present=node is not None,
+        exclude_spec=build_exclude_spec(repo.local_path) if repo is not None else None,
+    )
 
     governing = [
         {"id": d.id, "title": d.title, "status": d.status}

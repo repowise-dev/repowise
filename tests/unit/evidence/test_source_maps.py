@@ -55,7 +55,7 @@ def test_profiles_join_the_original_typescript_file(bundle, fmt):
     assert result.document["symbols"][0]["function"] == "original"
 
 
-@pytest.mark.parametrize("change", ["missing", "remote", "escape", "invalid", "unmapped"])
+@pytest.mark.parametrize("change", ["missing", "remote", "escape", "invalid"])
 def test_bad_maps_are_explicit_refusals(bundle, change):
     root, data = bundle
     if change == "missing":
@@ -65,14 +65,139 @@ def test_bad_maps_are_explicit_refusals(bundle, change):
     else:
         if change == "escape":
             data["sources"] = ["../outside.ts"]
-        elif change == "invalid":
-            data["mappings"] = "!"
         else:
-            data["mappings"] = "S"
+            data["mappings"] = "!"
         (root / "bundle.js.map").write_text(json.dumps(data))
-    with pytest.raises(EvidenceFormatError, match="source map"):
+    # The refusal names the bundle whose map could not be used.
+    with pytest.raises(EvidenceFormatError, match=r"source map.*\(in bundle\.js\)"):
         convert_profile(_run(root, "cpuprofile"), root=str(root), value_kind="cpu",
                         symbols_by_file={}, read_lines=checkout_reader(root))
+
+
+@pytest.mark.parametrize(
+    ("mappings", "body", "func"),
+    [
+        # tsc leaves a shebang line unmapped: the module body at 1:1 has no position.
+        (";AAASA", (0, 0), (1, 9)),
+        # A generated segment with no source (a helper the compiler wrote).
+        ("S;AAASA", (0, 10), (1, 9)),
+        # A frame that starts before its line's first mapped segment.
+        ("AAASA;SAASA", (1, 0), (0, 9)),
+    ],
+)
+def test_an_unmapped_frame_is_skipped_and_the_rest_joins(tmp_path, mappings, body, func):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.ts").write_text("function original() {}\n", encoding="utf-8")
+    (tmp_path / "bundle.js").write_text(
+        "#!/usr/bin/env node\nfunction a() {}\n//# sourceMappingURL=bundle.js.map\n",
+        encoding="utf-8",
+    )
+    data = {"version": 3, "sources": ["src/app.ts"], "names": ["original"], "mappings": mappings}
+    (tmp_path / "bundle.js.map").write_text(json.dumps(data), encoding="utf-8")
+    url = (tmp_path / "bundle.js").as_uri()
+    run = profile_formats.get("cpuprofile").read(_profile(
+        [(1, "(root)", "", -1, -1, [2]), (2, "", url, *body, [3]), (3, "a", url, *func, [])],
+        [2, 3, 3],
+    ))
+    result = convert_profile(
+        run, root=str(tmp_path), value_kind="cpu",
+        symbols_by_file={"src/app.ts": [_sym("src/app.ts", "original", 1, 1, "function")]},
+        read_lines=checkout_reader(tmp_path),
+    )
+    # The unmapped frame is counted, never joined; the mapped one still joins.
+    assert [(s["path"], s["function"]) for s in result.document["symbols"]] == [
+        ("src/app.ts", "original")
+    ]
+    assert result.document["skipped"] == {"not_indexed": 1}
+
+
+def test_a_columnless_frame_on_a_line_with_no_source_is_skipped(bundle):
+    root, data = bundle
+    data["mappings"] = "S"
+    (root / "bundle.js.map").write_text(json.dumps(data))
+    result = convert_profile(_run(root, "collapsed"), root=str(root), value_kind="cpu",
+                             symbols_by_file={}, read_lines=checkout_reader(root))
+    assert result.document["skipped"] == {"not_indexed": 1}
+
+
+def test_a_frame_past_the_maps_last_line_refuses_the_profile(bundle):
+    # The map holds one line and the frame starts on the third: another build's map.
+    root, _ = bundle
+    url = (root / "bundle.js").as_uri()
+    run = profile_formats.get("cpuprofile").read(
+        _profile([(1, "(root)", "", -1, -1, [2]), (2, "a", url, 2, 9, [])], [2])
+    )
+    with pytest.raises(EvidenceFormatError, match=r"outside the map.*\(in bundle\.js\)"):
+        convert_profile(run, root=str(root), value_kind="cpu",
+                        symbols_by_file={}, read_lines=checkout_reader(root))
+
+
+@pytest.mark.parametrize("source", ["webpack://_N_E/./src/app.ts", "webpack:///src/app.ts"])
+def test_webpack_sources_join_the_original_file(bundle, source):
+    root, data = bundle
+    data["sources"] = [source]
+    (root / "bundle.js.map").write_text(json.dumps(data))
+    result = convert_profile(
+        _run(root, "cpuprofile"), root=str(root), value_kind="cpu",
+        symbols_by_file={"src/app.ts": [_sym("src/app.ts", "original", 1, 1, "function")]},
+        read_lines=checkout_reader(root),
+    )
+    assert [s["path"] for s in result.document["symbols"]] == ["src/app.ts"]
+
+
+def test_a_nested_next_bundle_joins_the_apps_source(tmp_path):
+    (tmp_path / "apps/web/src").mkdir(parents=True)
+    (tmp_path / "apps/web/src/app.ts").write_text("function original() {}\n", encoding="utf-8")
+    chunks = tmp_path / "apps/web/.next/static/chunks"
+    chunks.mkdir(parents=True)
+    (chunks / "bundle.js").write_text(
+        "function a() {}\n//# sourceMappingURL=bundle.js.map\n", encoding="utf-8"
+    )
+    (chunks / "bundle.js.map").write_text(json.dumps(
+        {"version": 3, "names": ["original"], "mappings": "AAASA",
+         "sources": ["webpack://_N_E/./src/app.ts", "webpack://_N_E/?3f2a"]}))
+    data = _profile([(1, "(root)", "", -1, -1, [2]),
+                     (2, "a", (chunks / "bundle.js").as_uri(), 0, 9, [])], [2])
+    rel = "apps/web/src/app.ts"
+    result = convert_profile(
+        profile_formats.get("cpuprofile").read(data), root=str(tmp_path), value_kind="cpu",
+        symbols_by_file={rel: [_sym(rel, "original", 1, 1, "function")]},
+        read_lines=checkout_reader(tmp_path),
+    )
+    assert [s["path"] for s in result.document["symbols"]] == [rel]
+
+
+@pytest.mark.parametrize(("source", "found"), [
+    # Next.js: relative to the app's build context, not to the chunk's map.
+    ("webpack://_N_E/./src/x.ts", "apps/web/src/x.ts"),
+    # A monorepo package outside the app's context.
+    ("webpack://_N_E/../../packages/ui/b.ts", "packages/ui/b.ts"),
+    # A module that is not a checkout file reads from the map's directory.
+    ("webpack://_N_E/webpack/runtime/load", "apps/web/.next/static/webpack/runtime/load"),
+    # A module that names no file never becomes one.
+    ("webpack://_N_E/?3f2a", "apps/web/.next/static/<webpack module>"),
+    ("webpack://ns/C:/x.ts", "apps/web/.next/static/<webpack module>"),
+    ("webpack://_N_E/a%00b.ts", "apps/web/.next/static/<webpack module>"),
+    # A loader's query or fragment does not change the file.
+    ("webpack://_N_E/./src/x.ts?vue&type=script#frag", "apps/web/src/x.ts"),
+])
+def test_webpack_sources_resolve_against_the_build_context(source, found):
+    from repowise.core.evidence.source_maps import _decode
+
+    files = {"apps/web/src/x.ts", "packages/ui/b.ts"}
+    lines = _decode(json.dumps({"version": 3, "sources": [source], "mappings": "AAAA"}),
+                    "apps/web/.next/static/a.js.map", files.__contains__)
+    assert lines[0][0].source == found
+
+
+@pytest.mark.parametrize("source", ["webpack:///../outside.ts", "https://example.com/src/x.ts",
+                                    "webpack-internal:///./src/x.ts", "webpack://[_N_E/./src/x.ts"])
+def test_webpack_paths_stay_inside_the_checkout(source):
+    from repowise.core.evidence.source_maps import _decode
+
+    with pytest.raises(EvidenceFormatError, match="source map"):
+        _decode(json.dumps({"version": 3, "sources": [source], "mappings": "AAAA"}),
+                "a.js.map", lambda _: True)
 
 
 def test_ingestion_loads_the_original_symbols_before_joining(bundle):
@@ -133,15 +258,15 @@ def test_dirty_bundle_or_map_is_not_used(bundle, dirty):
                         symbols_by_file={}, read_lines=checkout_reader(root), dirty_paths=[dirty])
 
 
-@pytest.mark.parametrize("problem", ["inline", "remote", "webpack", "indexed", "invalid"])
+@pytest.mark.parametrize("problem", ["inline", "remote", "webpack-internal", "indexed", "invalid"])
 def test_unusable_generated_maps_remain_library_frames(bundle, problem):
     root, data = bundle
     if problem in ("inline", "remote"):
         url = "data:application/json;base64,e30=" if problem == "inline" else "https://example.com/a.map"
         (root / "bundle.js").write_text(f"//# sourceMappingURL={url}\n")
     else:
-        if problem == "webpack":
-            data["sources"] = ["webpack:///./src/app.ts"]
+        if problem == "webpack-internal":
+            data["sources"] = ["webpack-internal:///./src/app.ts"]
         elif problem == "indexed":
             data["sections"] = []
         else:

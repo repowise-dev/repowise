@@ -304,3 +304,48 @@ def test_roots_above_some_paths_agree_with_the_full_scan(tmp_path):
     above = package_roots_above(tmp_path, paths)
     assert above == {"services/api", "services/api/internal/tools", "web/Shop", "packages/tool"}
     assert [module_for(p, above) for p in paths] == [module_for(p, full) for p in paths]
+
+
+def test_cargo_manifest_publishes() -> None:
+    from repowise.core.analysis.published_packages import cargo_manifest_publishes
+
+    assert cargo_manifest_publishes({}) is False
+    assert cargo_manifest_publishes({"package": "not-a-dict"}) is False
+    assert cargo_manifest_publishes({"package": {"name": "foo"}}) is True
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": True}}) is True
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": ["crates-io"]}}) is True
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": ["none"]}}) is False
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": False}}) is False
+    assert cargo_manifest_publishes({"package": {"name": "foo", "publish": []}}) is False
+
+
+def test_traverser_package_root_cargo_published(tmp_path: Path) -> None:
+    _write(tmp_path, "crates/pub/Cargo.toml", '[package]\nname = "pub"\nversion = "0.1.0"\n')
+    _write(tmp_path, "crates/unpub/Cargo.toml", '[package]\nname = "unpub"\npublish = false\n')
+    _write(tmp_path, "crates/unpub_list/Cargo.toml", '[package]\nname = "unpub_list"\npublish = []\n')
+    _write(tmp_path, "crates/unpub_none/Cargo.toml", '[package]\nname = "unpub_none"\npublish = ["none"]\n')
+    _write(tmp_path, "crates/virtual_ws/Cargo.toml", '[workspace]\nmembers = ["a", "b"]\n')
+    _write(tmp_path, "crates/mixed/Cargo.toml", '[package]\nname = "mixed"\npublish = false\n')
+    _write(tmp_path, "crates/mixed/package.json", '{"name": "mixed-node"}\n')
+    _write(tmp_path, "crates/corrupt/Cargo.toml", "not valid toml ::: [[\n")
+
+    traverser = FileTraverser(tmp_path)
+    assert traverser._is_package_root_dir("crates/pub") is True
+    assert traverser._is_package_root_dir("crates/unpub") is False
+    assert traverser._is_package_root_dir("crates/unpub_list") is False
+    assert traverser._is_package_root_dir("crates/unpub_none") is False
+    assert traverser._is_package_root_dir("crates/virtual_ws") is True
+    assert traverser._is_package_root_dir("crates/mixed") is True
+    assert traverser._is_package_root_dir("crates/corrupt") is False
+
+
+def test_traverser_rust_tests_harness_crate_is_test_origin(tmp_path: Path) -> None:
+    _write(tmp_path, "tests-build/Cargo.toml", '[package]\nname = "tests-build"\npublish = false\n')
+    _write(tmp_path, "tests-build/src/main.rs", "fn main() {}\n")
+    _write(tmp_path, "tests-shipped/Cargo.toml", '[package]\nname = "tests-shipped"\n')
+    _write(tmp_path, "tests-shipped/src/main.rs", "fn main() {}\n")
+
+    traverser = FileTraverser(tmp_path)
+    files = {f.path: f.is_test for f in traverser.traverse()}
+    assert files["tests-build/src/main.rs"] is True
+    assert files["tests-shipped/src/main.rs"] is False

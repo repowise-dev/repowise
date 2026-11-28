@@ -14,6 +14,7 @@ import structlog
 
 from ...cancellation import check_cancelled
 from ..decorator_names import decorator_base
+from ..external_calls import ExternalCallSite
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ..models import REGISTRATION_HINT, CallSite, ParsedFile
 from ..symbol_identity import make_symbol_id
@@ -34,6 +35,15 @@ _MIN_REFERENCE_CONFIDENCE = 0.85
 _BARE_REFERENCE_KINDS = frozenset({"function", "class"})
 _QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method", "class"})
 
+#: Languages where a bare name may also land on a module-level binding
+#: (``const OP = ...``, ``let cache = ...``). Their symbol tables hold only
+#: top-level bindings, the shadow scan drops a name a parameter or local
+#: binds, and their queries capture read positions (``OP.equals``, ``x === GT``,
+#: ``{ id }``, ``typeof x``). Ceiling: other languages keep functions and
+#: classes only until their read positions and shadow scan are checked the same way.
+_BINDING_REFERENCE_LANGUAGES = frozenset({"typescript", "javascript"})
+_BINDING_REFERENCE_KINDS = _BARE_REFERENCE_KINDS | {"variable", "constant"}
+
 #: Languages that share the MSBuild project graph, so the namespace and
 #: partial-class passes below serve both. Call resolution and receiver typing
 #: stay per-language and are deliberately not gated on this.
@@ -49,7 +59,7 @@ class ResolveMixin:
         if maps is None:
             from ..import_index import build_import_name_maps
 
-            maps = build_import_name_maps(self._parsed_files)
+            maps = build_import_name_maps(self._parsed_files, self._implicit_imports)
             self._import_name_maps = maps
         return maps
 
@@ -645,12 +655,14 @@ class ResolveMixin:
         scope: frozenset[str] | None = None,
         registrations: bool = True,
         cpp_index: Any | None = None,
+        rails_index: Any | None = None,
     ) -> None:
         """Run three-tier call resolution and add CALLS edges to the graph.
 
         *registrations* also links registering decorators to what they
         decorate, over every file. *cpp_index* is the C/C++ workspace index
-        the build already made, so the call resolver does not make another.
+        the build already made, so the call resolver does not make another;
+        *rails_index* is the Zeitwerk index, on the same terms.
         """
         from ..call_resolver import CallResolver
 
@@ -663,6 +675,7 @@ class ResolveMixin:
             partial_fragments=self._partial_fragments,
             csharp_project_usings=self._csharp_project_usings,
             cpp_index=cpp_index,
+            rails_index=rails_index,
             source_map=self._source_map,
         )
 
@@ -678,10 +691,16 @@ class ResolveMixin:
         total_referenced = 0
 
         files_with_calls = [(p, pf) for p, pf in self._scoped_items(scope) if pf.calls]
+        # Package calls are kept beside the graph, never in it, so no metric moves.
+        external_sites: dict[str, list[ExternalCallSite]] = {}
+        self.external_call_sites, self.external_call_scope = external_sites, scope
         if progress:
             progress.on_phase_start("graph.calls", len(files_with_calls))
         for path, parsed in files_with_calls:
-            resolved = resolver.resolve_file(path, parsed.calls)
+            external: list[ExternalCallSite] = []
+            resolved = resolver.resolve_file(path, parsed.calls, external)
+            if external:
+                external_sites[path] = external
             for rc in resolved:
                 if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
                     continue
@@ -741,6 +760,10 @@ class ResolveMixin:
             if progress:
                 progress.on_item_done("graph.calls")
 
+        # A check that raised leaves the record set short; stored, it is unstamped.
+        self.external_calls_complete = resolver.external_call_failures == 0
+        if not self.external_calls_complete:
+            log.warning("external_call_sites_incomplete", failures=resolver.external_call_failures)
         if progress:
             _phase_done = getattr(progress, "on_phase_done", None)
             if _phase_done is not None:
@@ -772,7 +795,10 @@ class ResolveMixin:
         collision rather than a reference, and C++ names its getters exactly
         like the locals that feed them. Measured on leveldb, admitting methods
         there turned ``value``, ``status``, ``level``, ``key`` and ``offset``
-        into fifteen edges, every one of them wrong.
+        into fifteen edges, every one of them wrong. TS/JS also let a bare name
+        reach a module-level ``const``/``let`` (``_BINDING_REFERENCE_LANGUAGES``):
+        their symbol tables hold only top-level bindings and the shadow scan
+        drops a name a parameter or local binds, so a bare read of one is a use.
 
         A name that arrived with a receiver went through an operator only a
         callable accepts — ``Foo::bar``, ``pkg.Handler`` in argument position —
@@ -796,8 +822,13 @@ class ResolveMixin:
                 continue
             bare = [r for r in parsed.references if not r.receiver_name]
             qualified = [r for r in parsed.references if r.receiver_name]
+            bare_kinds = (
+                _BINDING_REFERENCE_KINDS
+                if parsed.file_info.language in _BINDING_REFERENCE_LANGUAGES
+                else _BARE_REFERENCE_KINDS
+            )
             batches = (
-                (bare, _BARE_REFERENCE_KINDS),
+                (bare, bare_kinds),
                 (qualified, _QUALIFIED_REFERENCE_KINDS),
             )
             for sites, allowed_kinds in batches:

@@ -11,6 +11,7 @@ file itself declares.
 
 from __future__ import annotations
 
+import gc
 import time
 from datetime import datetime
 
@@ -18,7 +19,7 @@ import pytest
 
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
-from repowise.core.ingestion.sfc_source import prepare_source
+from repowise.core.ingestion.sfc_source import _cached_scan, prepare_source
 
 _COMPONENT = b"""@page "/orders"
 @inject OrderService OrderService
@@ -113,9 +114,30 @@ class TestCalls:
         assert grid.caller_symbol_id.endswith("::Orders")
 
     def test_many_comments_and_tags_scan_in_linear_time(self) -> None:
-        start = time.perf_counter()
-        prepare_source("razor", b"@* c *@<Card />\n" * 20_000)
-        assert time.perf_counter() - start < 1
+        # Each tag once checked every comment span and counted newlines from the
+        # start of the file, so N lines cost N^2. A ratio rather than a wall-clock
+        # budget, so a slow shared runner cannot fail it.
+        sources = [b"@* c *@<Card />\n" * lines for lines in (2_500, 10_000)]
+        timings: list[list[float]] = [[], []]
+        # Alternate sizes and take the best of three runs to reduce scheduling
+        # noise; collection is held off so a pause lands on neither side.
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            for _ in range(3):
+                for source, samples in zip(sources, timings, strict=True):
+                    # The scan is memoised per source; clear it so every run scans.
+                    _cached_scan.cache_clear()
+                    started = time.perf_counter()
+                    prepare_source("razor", source)
+                    samples.append(time.perf_counter() - started)
+        finally:
+            if enabled:
+                gc.enable()
+
+        small, large = (min(samples) for samples in timings)
+        # A 4x input should take about 4x as long, not the 16x of quadratic work.
+        assert large < 8 * small, f"4x input took {large / small:.2f}x as long"
 
     @pytest.mark.xfail(
         strict=True,

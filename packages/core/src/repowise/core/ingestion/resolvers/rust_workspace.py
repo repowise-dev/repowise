@@ -47,6 +47,23 @@ class CargoCrate:
     # repo-relative POSIX paths to [[test]]/[[bench]]/[[example]] entries that
     # name an explicit ``path`` — runner-loaded, not entry points (#2936).
     reachability_root_paths: tuple[str, ...] = ()
+    # ``[lib] name``, when set. Cargo then imports the library by this name
+    # rather than by the package name (``lev-core`` with ``name = "leviathan"``
+    # is ``use leviathan::...``).
+    lib_name: str | None = None
+
+    @property
+    def import_names(self) -> tuple[str, ...]:
+        """Identifiers a ``use`` path can name this crate by, ``-`` already as ``_``."""
+        names = [self.package_import_name]
+        if self.lib_name:
+            names.insert(0, self.lib_name.replace("-", "_"))
+        return tuple(dict.fromkeys(names))
+
+    @property
+    def package_import_name(self) -> str:
+        # Cargo replaces "-" with "_" for the Rust import identifier.
+        return self.name.replace("-", "_")
 
 
 @dataclass(frozen=True)
@@ -58,10 +75,8 @@ class CargoWorkspaceIndex:
 
     def lookup(self, import_prefix: str) -> str | None:
         """Find the src/ dir for a crate referenced as ``import_prefix::...``."""
-        # Cargo replaces "-" with "_" for the Rust import identifier.
         for crate in self.crates:
-            normalised = crate.name.replace("-", "_")
-            if normalised == import_prefix:
+            if import_prefix in crate.import_names:
                 return crate.src_dir
         return None
 
@@ -172,6 +187,15 @@ def _parse_target_table(
     return tuple(paths)
 
 
+def _lib_name(cargo_data: dict) -> str | None:
+    """The ``[lib] name`` a manifest sets, or ``None``."""
+    lib_section = cargo_data.get("lib")
+    if not isinstance(lib_section, dict):
+        return None
+    name = lib_section.get("name")
+    return name if isinstance(name, str) and name else None
+
+
 def _parse_entry_targets(
     cargo_data: dict, member_rel: str, repo: Path
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -227,6 +251,7 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
             name=str(root_pkg["name"]), src_dir="src",
             dependencies=root_deps, bin_paths=root_bins,
             reachability_root_paths=root_roots,
+            lib_name=_lib_name(root_data),
         ))
 
     # Parse workspace-level shared dependencies
@@ -295,6 +320,7 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
                 is_proc_macro=is_proc_macro,
                 bin_paths=bin_paths,
                 reachability_root_paths=root_paths,
+                lib_name=_lib_name(member_data),
             ))
 
     crates.extend(_discover_isolated_crates(ctx, repo, tuple(crates)))
@@ -374,5 +400,6 @@ def _discover_isolated_crates(
             dependencies=deps,
             bin_paths=bin_paths,
             reachability_root_paths=root_paths,
+            lib_name=_lib_name(data),
         ))
     return crates

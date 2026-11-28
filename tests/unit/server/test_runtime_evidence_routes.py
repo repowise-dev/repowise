@@ -149,6 +149,7 @@ async def test_no_evidence_reads_unknown_with_the_setup_command(
         "command": "repowise evidence setup --format json",
         "measured": None,
         "measured_in_tests": None,
+        "statements": None,
         "benchmarks": None,
     }
     assert (await ev_client.get(f"/api/repos/{repo_id}/evidence/runs")).json() == {
@@ -437,3 +438,206 @@ async def test_routes_return_what_the_payload_builders_make_from_the_same_rows(
     for path, model in built.items():
         served = (await ev_client.get(f"/api/repos/{repo_id}/evidence/{path}")).json()
         assert served == model.model_dump(mode="json", by_alias=True), path
+
+
+def test_the_measured_row_schema_holds_the_action_row_json_form() -> None:
+    """Every key ``evidence.action_row`` writes is a ``MeasuredRow`` field (closed models)."""
+    from types import SimpleNamespace
+
+    from repowise.core.evidence.action_row import action_row, row_step
+    from repowise.core.evidence.compare import Cause, ChangedCommit, Comparison, Slower
+    from repowise.core.evidence.function_tests import RowTests
+    from repowise.server.schemas.runtime_evidence import MeasuredRow
+
+    fn = "src/app.py::scan"
+    inside = [{"name": "is_file", "kind": "library", "share": 0.8}]
+    measured = SimpleNamespace(
+        symbol_id=fn, run_id="r1", rank=1, self_share=0.2, share_low=0.1, share_high=0.3,
+        total_share=0.4, samples=50, freshness="current",
+    )
+    slower = Comparison(
+        kind="profile", workload="w", environment="local", verdict="slower", band_runs=3,
+        head_run_id="r1", current_runs=1, base_commit="a" * 40, head_commit="b" * 40,
+        slower=(Slower("self_seconds", fn, 1.0, 2.0, 2.0, "s", symbol_id=fn),),
+        cause=Cause("a" * 40, "b" * 40, 1, (ChangedCommit("c" * 40, None, None, (fn,)),)),
+    )
+    row = action_row(
+        measured, lines=(1, 9), workload_name="w", workload_class="entry_point",
+        next_step=row_step(fn, inside, None, "w", "entry_point"),
+        tests=RowTests(["tests/test_app.py::test_scan"], "per_test_map"),
+        history={"owner": {"name": "Ada", "line_pct": 1.0}, "last_change": None},
+        compare=[slower], static_causes={"perf3_x"},
+    ).as_dict()
+
+    parsed = MeasuredRow.model_validate(row)
+    assert parsed.next_step is not None and parsed.next_step.verify is None
+    assert parsed.verify_basis == "workload" and parsed.slower.ratio == 2.0
+    assert parsed.model_dump(exclude_unset=True).keys() == row.keys()
+    # A module body's row carries its import-time label through the closed model.
+    module = action_row(SimpleNamespace(**{**vars(measured), "symbol_id": "src/app.py::<module>"}))
+    assert MeasuredRow.model_validate(module.as_dict()).label == "import time"
+
+
+@pytest.mark.asyncio
+async def test_production_statements_are_measured_rows_on_the_measured_route(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    """A connected statement source and no profile: status says measured, and
+    each function the join named is a row with its calls and the next window
+    as its verify; the rest is counted by label, never on a function."""
+    from repowise.core.persistence.models import EvidenceStatementStats
+
+    repo_id = await _repo(ev_client, session_factory)
+    async with session_factory() as session:
+        session.add(
+            EvidenceRun(
+                id="s1", repository_id=repo_id, run_key="s1", kind="statement_stats",
+                format="repowise-evidence-v1", source="plugin", workload_name="orders-db",
+                workload_class="production", value_kind="wall", unit="ms", environment="prod",
+                commit_sha=HEAD, measured_at=MEASURED_AT,
+                window_start=datetime(2026, 11, 1, tzinfo=UTC), window_end=MEASURED_AT,
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                EvidenceStatementStats(
+                    run_id="s1", statement_fp="a" * 16, repository_id=repo_id, symbol_id=LOGIN,
+                    issuer="function", calls=8, total_ms=80.0, mean_ms=10.0,
+                ),
+                EvidenceStatementStats(
+                    run_id="s1", statement_fp="b" * 16, repository_id=repo_id, symbol_id=None,
+                    issuer="ambiguous", calls=2, total_ms=20.0, mean_ms=10.0,
+                ),
+            ]
+        )
+        await session.commit()
+
+    status = (await ev_client.get(f"/api/repos/{repo_id}/evidence/status")).json()
+    assert (status["status"], status["command"]) == ("measured", None)
+    body = (await ev_client.get(f"/api/repos/{repo_id}/evidence/measured")).json()
+    assert (body["basis"], body["status"], body["measured"]) == ("measured", "measured", None)
+    group = body["statements"]
+    (row,) = group["rows"]
+    assert (row["symbol_id"], row["share"], row["freshness"]) == (LOGIN, 0.8, None)
+    assert row["statements"] == {"calls": 8, "total_ms": 80.0, "mean_ms": 10.0, "statements": 1}
+    assert (row["verify"], row["verify_basis"]) == (
+        "compare this row in the next orders-db window",
+        "workload",
+    )
+    (run,) = group["runs"]
+    assert run["window_start"].startswith("2026-11-01")
+    assert run["unattributed"] == {"ambiguous": {"statements": 1, "total_ms": 20.0, "share": 0.2}}
+
+
+def test_a_statement_row_reads_as_statements_in_every_form() -> None:
+    """The JSON form validates against the closed ``StatementRow``; the text and
+    MCP forms say calls and mean, not a profile's self share."""
+    from repowise.core.evidence.action_row import (
+        action_row,
+        row_compact,
+        row_text,
+        statement_facts,
+    )
+    from repowise.core.evidence.measured_fold import StatementCost
+    from repowise.server.schemas.runtime_evidence import StatementRow
+
+    cost = StatementCost("src/app.py::save", "s1", 1, 0.25, 500.0, 1000, 2)
+    row = action_row(
+        cost, workload_name="orders-db", workload_class="production",
+        statements=statement_facts(cost),
+    ).as_dict()
+    parsed = StatementRow.model_validate(row)
+    assert parsed.statements.mean_ms == 0.5 and parsed.next_step is None
+    assert parsed.model_dump(exclude_unset=True).keys() == row.keys()
+    assert row["sources"] == {"share": "statement_stats", "verify": "workload"}
+    assert row_compact(row) == {
+        "symbol_id": "src/app.py::save", "run_id": "s1", "share": 0.25, "calls": 1000,
+        "mean_ms": 0.5,
+    }
+    assert row_text(row) == [
+        "25% of the window's statement time · 1,000 calls · 0.5 ms mean · 2 statements"
+        " · tests not mapped",
+        "verify: compare this row in the next orders-db window",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_production_routes_are_handler_rows_on_the_measured_route(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    """A connected route source and no profile: status says measured, and each
+    handler the route join named is a row with its requests; routes on no
+    handler are counted, never on a function."""
+    from repowise.core.persistence.models import EvidenceRouteLatency
+
+    repo_id = await _repo(ev_client, session_factory)
+    async with session_factory() as session:
+        session.add(
+            EvidenceRun(
+                id="q1", repository_id=repo_id, run_key="q1", kind="route_latency",
+                format="repowise-evidence-v1", source="plugin", workload_name="api",
+                workload_class="production", value_kind="wall", unit="ms", environment="prod",
+                commit_sha=HEAD, measured_at=MEASURED_AT,
+                window_start=datetime(2026, 11, 1, tzinfo=UTC), window_end=MEASURED_AT,
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                EvidenceRouteLatency(
+                    run_id="q1", method="GET", route="/login", repository_id=repo_id,
+                    handler_symbol_id=LOGIN, request_count=8, p50_ms=5.0, p95_ms=30.0,
+                    total_ms=80.0, error_count=1,
+                ),
+                EvidenceRouteLatency(
+                    run_id="q1", method="GET", route="/elsewhere", repository_id=repo_id,
+                    handler_symbol_id=None, request_count=2, p50_ms=None, p95_ms=None,
+                    total_ms=20.0, error_count=None,
+                ),
+            ]
+        )
+        await session.commit()
+
+    status = (await ev_client.get(f"/api/repos/{repo_id}/evidence/status")).json()
+    assert status["status"] == "measured"
+    body = (await ev_client.get(f"/api/repos/{repo_id}/evidence/measured")).json()
+    assert (body["basis"], body["measured"], body["statements"]) == ("measured", None, None)
+    (row,) = body["routes"]["rows"]
+    assert (row["symbol_id"], row["share"], row["freshness"]) == (LOGIN, 0.8, None)
+    assert row["routes"] == {
+        "requests": 8, "total_ms": 80.0, "mean_ms": 10.0, "p95_ms": 30.0, "errors": 1,
+        "routes": ["GET /login"],
+    }
+    assert row["verify"] == "compare this row in the next api window"
+    (run,) = body["routes"]["runs"]
+    assert (run["requests"], run["routes"]) == (10, 2)
+    assert run["unattributed"] == {"unjoined": {"routes": 1, "total_ms": 20.0, "share": 0.2}}
+
+
+def test_a_route_row_reads_as_requests_in_every_form() -> None:
+    """The JSON form validates against the closed ``RouteRow``; the text and
+    MCP forms name the route and say requests, mean and p95."""
+    from repowise.core.evidence.action_row import action_row, route_facts, row_compact, row_text
+    from repowise.core.evidence.measured_fold import RouteCost
+    from repowise.server.schemas.runtime_evidence import RouteRow
+
+    cost = RouteCost(
+        "src/app.py::serve", "q1", 1, 0.25, 500.0, 1000, 0.5, 4, 12.5, ("GET /x/{id}",)
+    )
+    row = action_row(
+        cost, workload_name="api", workload_class="production", routes=route_facts(cost)
+    ).as_dict()
+    parsed = RouteRow.model_validate(row)
+    assert parsed.routes.mean_ms == 0.5 and parsed.next_step is None
+    assert parsed.model_dump(exclude_unset=True).keys() == row.keys()
+    assert row["sources"] == {"share": "route_latency", "verify": "workload"}
+    assert row_compact(row) == {
+        "symbol_id": "src/app.py::serve", "run_id": "q1", "share": 0.25,
+        "route": "GET /x/{id}", "requests": 1000, "mean_ms": 0.5, "p95_ms": 12.5,
+    }
+    assert row_text(row) == [
+        "GET /x/{id} · 25% of the window's request time · 1,000 requests · 0.5 ms mean"
+        " · 12.5 ms p95 · 4 errors · tests not mapped",
+        "verify: compare this row in the next api window",
+    ]

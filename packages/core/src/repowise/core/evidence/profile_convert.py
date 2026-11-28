@@ -25,15 +25,15 @@ The run's time is split four ways, each stack into exactly one:
 
 - ``waits``: blocked in a wait frame below its innermost maintained repo frame
   (or anywhere, with no repo frame);
-- ``libraries``: not waiting, and a dependency frame (vendored, generated, or
-  outside the checkout under a vendored path such as ``site-packages`` or in
-  Go's module cache, :func:`is_dependency_path`) runs
-  below its innermost repo frame, or anywhere on a stack with no repo frame;
+- ``libraries``: not waiting, and a library frame (:func:`is_library_frame`:
+  a dependency or the standard library, GOROOT, CPython's ``Lib``, the JDK and
+  Node's ``node:`` modules included) runs below its innermost repo frame, or
+  anywhere on a stack with no repo frame;
 - ``repo_self``: neither, and the innermost repo frame is a production
-  function (``code_origin``): time in production repo code itself, built-ins
-  and the standard library it called included;
+  function (``code_origin``): time in production repo code itself, the
+  built-ins and runtime it called included;
 - the rest: test or tooling code, module bodies, unresolved frames, and
-  stacks with no repo frame that run only the runtime and standard library.
+  stacks with no repo frame that run only the runtime.
 
 Import time is a row of its own. A Python module body (``<module>``: a
 file's top level, run when it is imported) and the repo modules it imports in
@@ -66,13 +66,14 @@ a share of its inclusive weight, up to :data:`TOP_SPLIT` of each:
   the symbol is the leaf, ``repo`` for a maintained repo frame, else by the
   unmaintained frames down to the next repo frame: ``wait`` when one blocks
   (:func:`is_wait_frame`, so a subprocess or an event loop the symbol waits on
-  is a wait), ``import`` when one is import machinery, ``native`` when the
-  frame has no source (a built-in, the Go runtime), ``library`` otherwise (the
-  standard library or a dependency). A callee seen with several kinds keeps
-  the one with the most weight. This is ``go tool pprof -peek``'s callee list
-  with the flat time as ``own``. A callee also names its heaviest ``leaf``, the
-  frame its stacks end in (``name``, ``kind`` as above, ``share``), when that
-  is not the callee itself: what a library call spends its time on.
+  is a wait), ``import`` when one is import machinery, ``library`` when the
+  frame is one (:func:`is_library_frame`, the rule the run's split uses),
+  ``native`` otherwise (a built-in, the Go runtime, assembly). A callee seen
+  with several kinds keeps the one with the most weight. This is
+  ``go tool pprof -peek``'s callee list with the flat time as ``own``. A callee
+  also names its heaviest ``leaf``, the frame its stacks end in (``name``,
+  ``kind`` as above, ``share``), when that is not the callee itself: what a
+  library call spends its time on.
 - ``drivers``: the nearest maintained repo frame above the symbol's outermost
   occurrence (the code that drove it, through any library in between), else
   the frame directly above; a root frame has none.
@@ -181,27 +182,6 @@ def is_import_frame(frame: ProfileFrame) -> bool:
     return frame.function in _IMPORT_FUNCTIONS or any(p in path for p in _IMPORT_PATHS)
 
 
-#: Go's module cache (``$GOPATH/pkg/mod/<module>@<version>/``): dependencies a
-#: build reads in place, which the vendored-path rule does not know.
-_GO_MODULE_CACHE_RE = re.compile(r"(?:^|/)pkg/mod/[^@]+@v")
-#: A Go toolchain the go command downloaded lives in the module cache too; its
-#: ``src`` is the standard library, which stays with the repo caller.
-_GO_TOOLCHAIN = "/pkg/mod/golang.org/toolchain@"
-
-
-def is_dependency_path(path: str) -> bool:
-    """Whether a frame outside the checkout runs a dependency: a vendored-looking
-    path (``site-packages``, ``node_modules``) or Go's module cache.
-
-    Ceiling: a standard library (GOROOT, CPython's ``Lib``, the JDK) is not a
-    dependency here; it stays with the repo caller, as the module docstring says.
-    """
-    norm = path.replace("\\", "/")
-    if is_vendored_or_generated_path(norm):
-        return True
-    return _GO_MODULE_CACHE_RE.search(norm) is not None and _GO_TOOLCHAIN not in norm
-
-
 def package_name(path: str) -> str:
     """The top-level package a library module file belongs to, as ``import`` names it.
 
@@ -231,8 +211,8 @@ def is_native_frame(frame: ProfileFrame) -> bool:
     """Whether *frame* runs code with no source: a built-in or the language runtime.
 
     A frame with no file (V8's natives, a collapsed stack's bare name), one
-    pyinstrument files under ``<built-in>``, assembly (Go's ``memeqbody``),
-    and Go's ``runtime`` package.
+    pyinstrument files under ``<built-in>`` or cProfile under ``~``, assembly
+    (Go's ``memeqbody``), and Go's ``runtime`` package.
     """
     path = frame.path
     if not path:
@@ -244,9 +224,38 @@ def is_native_frame(frame: ProfileFrame) -> bool:
         if name.startswith(("(", "runtime.")):
             return True
         return not any(mark in name for mark in (".", "/", "::"))
-    if path.startswith("<built-in") or path.lower().endswith((".s", ".asm")):
+    if path == "~" or path.startswith("<built-in") or path.lower().endswith((".s", ".asm")):
         return True
     return frame.language == "go" and frame.function.startswith("runtime.")
+
+
+#: The JDK's packages, as a collapsed stack with no files names them (dots or slashes).
+_JDK_NAMES = (
+    "java.", "java/", "javax.", "javax/", "jdk.", "jdk/", "sun.", "sun/", "com.sun.", "com/sun/",
+)  # fmt: skip
+
+
+def is_library_frame(frame: ProfileFrame, reason: str | None) -> bool:
+    """Whether *frame*, joined with skip *reason*, runs library code: code nobody
+    here maintains that has a source, so a dependency or the standard library.
+
+    A vendored or generated file is always one. Outside the checkout a frame with
+    a file is one unless it is the runtime or a built-in (:func:`is_native_frame`)
+    or import machinery (:func:`is_import_frame`, import time: the module it
+    loads decides): a module cache or ``site-packages``, GOROOT, CPython's
+    ``Lib`` and frozen modules, Node's ``node:`` modules. A frame with no file
+    (a collapsed stack's bare name, or a placeholder such as ``<string>`` for
+    code built at run time) says only its name, which places it only when it is
+    the JDK's (:data:`_JDK_NAMES`, ``java/util/HashMap.get``); an application's
+    own pathless frames are not known to be library code.
+    """
+    if reason in ("vendored", "generated"):
+        return True
+    if reason != "outside_root" or is_native_frame(frame) or is_import_frame(frame):
+        return False
+    path = frame.path
+    has_file = bool(path) and (not path.startswith("<") or path.startswith("<frozen "))
+    return has_file or frame.function.startswith(_JDK_NAMES)
 
 
 def is_child_process_frame(frame: ProfileFrame) -> bool:
@@ -339,7 +348,8 @@ class ProfileConversion:
     repo_self: float = 0.0
     #: Weight blocked in a wait frame.
     waits: float = 0.0
-    #: Weight in dependency code below the innermost repo frame.
+    #: Weight in library code (a dependency or the standard library) below the
+    #: innermost repo frame.
     libraries: float = 0.0
     #: Weight starting or waiting on another process below the innermost repo
     #: frame (:func:`is_child_process_frame`): that process's own work is not in
@@ -497,12 +507,9 @@ class _Tally:
         origins: Mapping[str, str],
     ) -> None:
         self._reasons = resolution.reasons
-        # Per frame, once: nobody here maintains it, it is a dependency, it blocks.
+        # Per frame, once: nobody here maintains it, it is a library, it blocks.
         self._unmaintained = [r in _UNMAINTAINED for r in self._reasons]
-        self._dependency = [
-            r in ("vendored", "generated") or (r == "outside_root" and is_dependency_path(f.path))
-            for f, r in zip(frames, self._reasons, strict=True)
-        ]
+        self._library = [is_library_frame(f, r) for f, r in zip(frames, self._reasons, strict=True)]
         self._wait = [is_wait_frame(f) for f in frames]
         self._child = [is_child_process_frame(f) for f in frames]
         self._import = [is_import_frame(f) for f in frames]
@@ -684,12 +691,16 @@ class _Tally:
 
     def _unmaintained_kind(self, segment: Sequence[int]) -> str:
         """A run of frames nobody here maintains: a wait or an import anywhere in it,
-        else what its first frame is."""
+        else what its first frame is: ``native`` for the runtime or a built-in
+        (:func:`is_native_frame`, which takes an unqualified pathless name for one), so a
+        qualified pathless name the split cannot place (:func:`is_library_frame`) still
+        reads as ``library``."""
         if any(self._wait[i] for i in segment):
             return "wait"
         if any(self._import[i] for i in segment):
             return "import"
-        return "native" if self._native[segment[0]] else "library"
+        first = segment[0]
+        return "native" if self._native[first] and not self._library[first] else "library"
 
     def _leaf_key(self, index: int) -> tuple[Any, ...]:
         """The frame a stack ended in, keyed like a callee, with its kind kept once."""
@@ -787,7 +798,7 @@ class _Tally:
         if any(self._wait[i] for i in tail):
             self.buckets["waits"] += weight
             return
-        in_library = any(self._dependency[i] for i in tail)
+        in_library = any(self._library[i] for i in tail)
         if in_library:
             self.buckets["libraries"] += weight
         if at is None:
@@ -892,8 +903,8 @@ __all__ = [
     "ProfileConversion",
     "convert_profile",
     "is_child_process_frame",
-    "is_dependency_path",
     "is_import_frame",
+    "is_library_frame",
     "is_native_frame",
     "merge_runs",
     "package_name",

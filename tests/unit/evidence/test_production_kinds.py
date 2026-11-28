@@ -118,11 +118,12 @@ def test_a_route_latency_file_reads_routes_and_skips_urls_by_reason() -> None:
     }
 
 
-def test_route_and_statement_rows_keep_no_function_until_their_join_exists() -> None:
+def test_a_route_row_with_no_stored_route_keeps_no_function() -> None:
     doc = parse_evidence(_fixture("route_latency.json").decode())
     assert entry_paths(doc) == set()
     joined = join_entries(doc, {}, {}, frozenset())
-    assert joined.matched == 2 and not joined.skipped and not joined.unlinked
+    assert joined.matched == 2 and not joined.skipped
+    assert joined.unlinked == {"unknown_route": 2}
     assert joined.rows[0] == {
         "method": "GET",
         "route": "/api/repos/:id",
@@ -176,6 +177,8 @@ def test_a_statement_stats_file_keeps_normalized_text_and_masks_values() -> None
     assert first == {
         "statement_fp": "a0b1c2d3e4f50617",
         "query": "select * from search_repos($1, $2)",
+        # The uncut masked text the statement-site join reads; never stored.
+        "shape_text": "select * from search_repos($1, $2)",
         "calls": 50000,
         "total_ms": 31950000.5,
         "mean_ms": 639.0,

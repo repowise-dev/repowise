@@ -31,7 +31,8 @@ export function registerStaleness(ctx: RepowiseContext): vscode.Disposable {
   item.tooltip =
     "The Repowise index is behind the checked-out commit. Click to run an index update.";
   item.command = Commands.updateIndex;
-  item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+  // Neutral: a stale index is a state to notice, not a warning. The item's
+  // presence is the mark.
 
   let watcherSub: vscode.Disposable | null = null;
   /** True while an update is in flight, to enforce single-flight. */
