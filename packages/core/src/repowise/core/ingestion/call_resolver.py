@@ -705,9 +705,10 @@ class CallResolver(
         if sym.language != "csharp":
             return None
         extended = csharp_extension_receiver(sym.signature)
-        if extended is None or not is_resolvable_type_name(extended, "csharp"):
+        bare = extended.partition("`")[0] if extended else None
+        if bare is None or not is_resolvable_type_name(bare, "csharp"):
             return None
-        return extended if extended in self._csharp_type_names else None
+        return extended if bare in self._csharp_type_names else None
 
     def _pascal_extended_type(self, path: str, sym: Symbol) -> str | None:
         """The type a Pascal ``class``/``record helper for T`` method extends.

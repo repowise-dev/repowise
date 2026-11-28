@@ -1261,11 +1261,91 @@ class TestCSharpArgumentShapes:
             "double", "float", "decimal", None, None,
         )
 
-    def test_a_named_argument_reads_no_position(self) -> None:
-        parsed = _parse("C.cs", "csharp", "class C { void R() { F(on: x => 1, 2); G(x => 1, new Ttl()); } }")
-        shapes = {c.target_name: c.argument_types for c in parsed.calls}
-        assert shapes["F"] is None
+    def test_a_named_argument_keeps_its_name_and_an_async_lambda_its_mark(self) -> None:
+        source = "class C { void R() { F(on: x => 1, 2); G(x => 1, new Ttl()); H(async () => 1, k: n); } }"
+        shapes = {c.target_name: c.argument_types for c in _parse("C.cs", "csharp", source).calls}
+        assert shapes["F"] == ("on:=>1", "int constant")
         assert shapes["G"] == ("=>1", "new Ttl")
+        assert shapes["H"] == ("async =>0", "k:")
+
+
+_CS_RETRY = (
+    "using System;\nusing System.Threading.Tasks;\nnamespace App;\n"
+    "public interface IBag { }\npublic class Ctx : IBag { }\npublic class Order { }\n"
+    "public interface IKey { string Get(int n); }\n"
+    "public static class R {\n"
+    "  public static void Run(IBag bag, int n) { }\n"
+    "  public static void Run(Ctx ctx, int n) { }\n"
+    "  public static void On(int n, Action<Exception, int> onRetry) { }\n"
+    "  public static void On(int n, Func<Exception, int, Task> onRetryAsync) { }\n"
+    "  public static void Key(IKey key) { }\n"
+    "  public static void Key(Func<int, string> key) { }\n"
+    "  public static void Ext(this Order o) { }\n"
+    "  public static void Ext(this Order o, int n) { }\n"
+    "  public static void Ext(this Order o, int n, Action<int> a) { }\n"
+    "}\n"
+)
+
+
+class TestCSharpBetterConversion:
+    """Same-count C# overloads that only C#'s better-conversion rules tell apart."""
+
+    def _callees(self, tmp_path: Path, members: str) -> set[tuple[str, str]]:
+        caller = "using System;\nusing System.Threading.Tasks;\nnamespace App;\npublic class C {\n" + members + "}\n"
+        edges = _edges(tmp_path, {"R.cs": ("csharp", _CS_RETRY), "C.cs": ("csharp", caller)})
+        return {
+            (a.removeprefix("C.cs::C::"), c.removeprefix("R.cs::R::"))
+            for a, c in edges
+            if a.startswith("C.cs") and c.startswith("R.cs::R::")
+        }
+
+    def test_an_argument_of_the_parameters_own_type_beats_a_conversion(self, tmp_path: Path) -> None:
+        members = (
+            "  public void Typed(Ctx ctx) { R.Run(ctx, 1); }\n"
+            "  public void Made() { R.Run(new Ctx(), 1); }\n"
+            "  public void Bag(IBag bag) { R.Run(bag, 1); }\n"
+        )
+        assert self._callees(tmp_path, members) == {
+            ("Typed", "Run#2(Ctx,int)"),
+            ("Made", "Run#2(Ctx,int)"),
+            ("Bag", "Run#2(IBag,int)"),
+        }
+
+    def test_an_async_lambda_takes_only_the_task_returning_delegate(self, tmp_path: Path) -> None:
+        members = (
+            "  public void Async() { R.On(1, async (e, i) => { await Task.Yield(); }); }\n"
+            "  public void Plain() { R.On(1, (e, i) => { }); }\n"
+        )
+        callees = self._callees(tmp_path, members)
+        assert ("Async", "On#2(int,Func)") in callees
+        # A plain lambda may return a task too: still a tie, which keeps the first.
+        assert ("Plain", "On#2(int,Action)") in callees
+
+    def test_a_named_argument_takes_the_member_declaring_that_parameter(self, tmp_path: Path) -> None:
+        members = "  public void Named() { R.On(1, onRetryAsync: null); }\n"
+        assert self._callees(tmp_path, members) == {("Named", "On#2(int,Func)")}
+
+    def test_a_method_group_on_a_typed_name_takes_the_delegate(self, tmp_path: Path) -> None:
+        members = (
+            "  public void Group(IKey strategy) { R.Key(strategy.Get); }\n"
+            "  public void Value(IKey strategy) { R.Key(strategy); }\n"
+        )
+        assert self._callees(tmp_path, members) == {
+            ("Group", "Key#1(Func)"),
+            ("Value", "Key#1(IKey)"),
+        }
+
+    def test_an_extension_called_on_a_value_counts_its_receiver(self, tmp_path: Path) -> None:
+        members = (
+            "  public void One(Order o) { o.Ext(1); }\n"
+            "  public void Two(Order o) { o.Ext(1, x => { }); }\n"
+            "  public void Static(Order o) { R.Ext(o, 1); }\n"
+        )
+        assert self._callees(tmp_path, members) == {
+            ("One", "Ext#2"),
+            ("Two", "Ext#3"),
+            ("Static", "Ext#2"),
+        }
 
 
 class TestNarrowingShapes:

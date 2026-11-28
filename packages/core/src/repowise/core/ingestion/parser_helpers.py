@@ -637,9 +637,7 @@ def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
         c for c in arg_nodes[0].children if c.type not in skip_types and "comment" not in c.type
     ]
     if language == "csharp":
-        # A named argument (``onRetry: f``) binds by name, so no position is known.
-        if any(a.child_by_field_name("name") is not None for a in arguments):
-            return []
+        # A named argument (``onRetry: f``) keeps its name: ``_csharp_argument_shape``.
         return [a.named_children[-1] if a.named_children else a for a in arguments]
     return arguments
 
@@ -740,15 +738,39 @@ def _argument_literal_types(
         return marks if any(marks) else None
     literal_type = {
         "apex": _apex_literal_type,
-        "csharp": _csharp_argument_shape,
+        "csharp": _csharp_labelled_shape,
         "kotlin": _kotlin_literal_type,
     }.get(language, _java_literal_type)
     types = tuple(literal_type(argument, src) for argument in arguments)
     return types if any(types) else None
 
 
+def _csharp_labelled_shape(node: Node, src: str) -> str | None:
+    """``_csharp_argument_shape``, after the parameter a named argument names (``onRetry:=>2``).
+
+    A named argument with no shape still carries its name (``onRetry:``).
+    """
+    shape = _csharp_argument_shape(node, src)
+    argument = node.parent
+    name = argument.child_by_field_name("name") if argument and argument.type == "argument" else None
+    return shape if name is None else f"{node_text(name, src)}:{shape or ''}"
+
+
 def _csharp_argument_shape(node: Node, src: str) -> str | None:
-    """``=>2`` for a two-parameter lambda (``=>`` when unwritten), ``new Foo`` for a construction."""
+    """``=>2`` for a two-parameter lambda (``=>`` when unwritten), ``new Foo`` for a construction.
+
+    An ``async`` lambda is marked so (``async =>2``): it converts only to a
+    delegate returning a task.
+    """
+    shape = _csharp_unmarked_shape(node, src)
+    if shape and shape.startswith("=>") and any(
+        c.type == "modifier" and node_text(c, src) == "async" for c in node.children
+    ):
+        return f"async {shape}"
+    return shape
+
+
+def _csharp_unmarked_shape(node: Node, src: str) -> str | None:
     if node.type == "lambda_expression":
         parameters = node.child_by_field_name("parameters")
         if parameters is not None and parameters.type == "implicit_parameter":
@@ -795,10 +817,26 @@ def _argument_names(arguments: list[Node], src: str) -> tuple[str | None, ...] |
     None overall when no argument is one. The resolver reads their declared types.
     """
     names = tuple(
-        node_text(a, src) if a.type == "identifier" and a.text not in _NOT_NAMES else None
+        node_text(a, src)
+        if (a.type == "identifier" and a.text not in _NOT_NAMES) or _is_member_of_name(a)
+        else None
         for a in arguments
     )
     return names if any(names) else None
+
+
+def _is_member_of_name(node: Node) -> bool:
+    """Is *node* a C# member access on a bare name (``strategy.GetKey``), a possible method group?"""
+    if node.type != "member_access_expression":
+        return False
+    owner, member = node.child_by_field_name("expression"), node.child_by_field_name("name")
+    return (
+        owner is not None
+        and owner.type == "identifier"
+        and owner.text not in _NOT_NAMES
+        and member is not None
+        and member.type == "identifier"
+    )
 
 
 # A unary operator on a literal, by operand type: ``-'a'`` promotes to int.
